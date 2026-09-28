@@ -5,25 +5,32 @@ A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps 
 
 <div align="center">
 
-<a href="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86">
-<img src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86" width="19%">
-</a>
+<table>
+<tr>
+<td>
+<img src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86" width="100%">
+</td>
+<td>
+<img src="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db" width="100%">
+</td>
+</tr>
 
-<a href="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db">
-<img src="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db" width="19%">
-</a>
+<tr>
+<td>
+<img src="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134" width="100%">
+</td>
+<td>
+<img src="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac" width="100%">
+</td>
+</tr>
 
-<a href="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134">
-<img src="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134" width="19%">
-</a>
+<tr>
+<td colspan="2">
+<img src="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40" width="100%">
+</td>
+</tr>
 
-<a href="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac">
-<img src="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac" width="19%">
-</a>
-
-<a href="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40">
-<img src="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40" width="19%">
-</a>
+</table>
 
 </div>
 
