@@ -510,7 +510,7 @@ void GameEdgeSmoothingNote(const char* forWhat) {
 
 void DepthBlurContent() {
     GameEdgeSmoothingNote("Depth Blur");
-    FeatureCard("DepthBlur", IconId::Aperture, "Depth Blur", "Like a camera focused on what's near");
+    FeatureCard("DepthBlur", IconId::Aperture, "Depth Blur", "Like a camera focused on what you look at");
 }
 
 void DepthBlurPage() {
@@ -588,7 +588,7 @@ void DevDebugViewsTab() {
     ApexPatch* edge = Find("EdgeSmoothing");
     DevCard("DebugEdge", IconId::Bug, "Edge Smoothing", "Status, GPU cost, smoothed pixels in red", edge && edge->IsEnabled(), [edge] { edge->RenderDeveloperUI(); });
     ApexPatch* blur = Find("DepthBlur");
-    DevCard("DebugBlur", IconId::Bug, "Depth Blur", "Status, blur mask, far plane", blur && blur->IsEnabled(), [blur] { blur->RenderDeveloperUI(); });
+    DevCard("DebugBlur", IconId::Bug, "Depth Blur", "Status, focus, GPU cost, blur amount view", blur && blur->IsEnabled(), [blur] { blur->RenderDeveloperUI(); });
     DevCard("DebugPicture", IconId::Bug, "Picture", "Technical note and GPU cost", true, [] { Picture::Get().RenderDeveloperUI(); });
 }
 

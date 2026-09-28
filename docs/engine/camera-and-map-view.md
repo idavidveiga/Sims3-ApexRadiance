@@ -5,9 +5,10 @@ What Apex knows about the game camera: the map view flag (read through the scrip
 reaches the shaders (vertex constants), including how scene depth is turned back into distance. All addresses are
 `TS3W.exe` 1.67.2 Steam, image base 0x00400000.
 
-Consumers in Apex: Depth Blur (map view fade, INTZ depth), Reflections (water depth linearisation), the post-scene
-camera vote in post_scene.cpp (used by the Frame Profiler; in the combined build also by Ambient Occlusion), Frame
-Profiler (camera motion, dev build only), Lot Map Probe (dev). The combined build's Script GC Scheduler also read the
+Consumers in Apex: Depth Blur (map view fade; INTZ depth, with A = 1.00008 in its Auto focus), Reflections (water depth
+linearisation), Frame Profiler (camera motion, dev build only), Lot Map Probe (dev). The combined build also had a
+post-scene camera vote in post_scene.cpp (for Ambient Occlusion and a Frame Profiler fallback); the standalone does
+not (see "Camera vote (combined build only)" below). The combined build's Script GC Scheduler also read the
 camera motion sources below; it is removed from the standalone ([../removed-features.md](../removed-features.md)).
 S3SS's own Lot Streaming Optimizations (not Apex) calls the same map view getter.
 
@@ -89,7 +90,7 @@ Scheduler's) stops updating; both have / had a second source (below).
 
 | Feature | Use |
 |---|---|
-| Depth Blur (`StepMapFade`) | `offInMapView` (default on): blur strength x (1 - fade), fade eased over 0.3 s (`kMapFadeSeconds`); no GPU work when fully faded |
+| Depth Blur (`StepMapFade`) | `offInMapView` (default on): blur amount x (1 - fade), fade eased over 0.3 s (`kMapFadeSeconds`); no GPU work when fully faded; the frame the map closes, the Auto focus snaps to the new view |
 | LSO (S3SS) | map view blocker (above) |
 
 ## Camera position / motion sources
@@ -98,7 +99,7 @@ Scheduler's) stops updating; both have / had a second source (below).
 |---|---|---|
 | Camera point, arg 2 of `0x00C6C290` (copied to WorldManager+0x3A0) | Frame Profiler (`Hook_LotLodScoring`, render thread, moved if any component changes by > 1e-3); GC Scheduler (combined build only, removed: read WorldManager+0x3A0 from `[0x011ECBC4]`, SEH-guarded, every 50 ms) | Not updated while WorldManager+0x258 is set (map view blocker, loading) |
 | Camera eye `[[0x011D1860]+0x24]+0x60` | GC Scheduler (combined build only, removed; its second source) | On Steam the resolved chain must equal `[0x011D1860]+0x24+0x60` or it is not used |
-| View-projection `c40..c43` of the scene draws | Frame Profiler fallback (`PostScene::CameraViewProj`, element change > 1e-5 relative) | Only while a PostScene effect is on |
+| View-projection `c40..c43` of the scene draws | Combined build only: Frame Profiler fallback (`PostScene::CameraViewProj`, element change > 1e-5 relative) | Not in the standalone: its post_scene.cpp has no camera vote, and frame_profiler.cpp counts frames without the lot LOD call as "unknown" |
 
 GC Scheduler (removed): moving when either point exceeded `cameraSpeedThreshold` (default 0.25 m/s); see
 [../removed-features.md](../removed-features.md) and [mono-gc.md](mono-gc.md). Frame Profiler: see
@@ -145,9 +146,13 @@ Depth precision (lab, notes 27/09): on the road at z/near about 100 - 120, d cha
 ULP near 1 is 6e-8, so reconstructed depth carries about +/-0.8% noise; far away with the camera looking down, the
 ground changes by a few 2^-24 steps per pixel and turns into stairs (hypothesis for the lines of the first SSAO).
 
-### PostScene's camera vote (post_scene.cpp)
+### Camera vote (combined build only)
 
-Runs only while at least one PostScene effect is registered (standalone: Edge Smoothing or Depth Blur on).
+**Not in the standalone.** Apex Radiance's `post_scene.cpp` is the v0.1.0 one (no `VoteNear`, `CameraNear`,
+`CameraViewProj`, `CameraDepthA`); nothing in the standalone reads the near plane or the view-projection. Depth Blur's
+Auto focus does not need them (depth ratios, the near plane cancels). Kept here as the recipe for a revival (AO, or
+metres in Depth Blur); the code is at tag `combined-final`. In the combined build it ran only while at least one
+PostScene effect was registered:
 - For each of the first `kNearDraws` = 24 scene draws of a frame (backbuffer RT0, ZENABLE on, not an internal pass),
   `VoteNear` reads the VS constants of blocks `{0, 4, 40, 180, 192, 216}` with `GetVertexShaderConstantF` and runs
   `NearFromBlock`: `A = (row2.row3)/|row3|^2` must be in [0.999, 1.001]; the residual of `row2 - A*row3` must be tiny;
@@ -168,7 +173,8 @@ point-sampled; all treat `d >= 0.99999` as sky.
 
 | Consumer | Formula | Notes |
 |---|---|---|
-| Depth Blur | `lin = d / (F - d(F-1))`, F = `farPlane` (1000) | heuristic curve, not metres; the blur start therefore scales with near (see depth-blur.md for the metre table) |
+| Depth Blur, Auto focus (default) | `r = (A - d) / (A - d_f) = z_f / z` with A = 1.00008 and `d_f` the eased 25th percentile of 16 central depths | ratio of distances, near cancels; stored on the GPU as `A - d_f` (see depth-blur.md) |
+| Depth Blur, Fixed focus | `lin = d / (F - d(F-1))`, F = `farPlane` (1000) | heuristic curve, not metres; the blur start therefore scales with near (see depth-blur.md for the metre table) |
 | Reflections (water pass, lot_light_bridge.cpp) | from the water VS WVP rows: `A = row2.row3 / |row3|^2`, `B = row2.w - A*row3.w`, device `z = A + B/w`; passed in PS c59 (x = A, y = B, z = 1) | INTZ bound to s7 (POINT, CLAMP) with the depth-stencil unbound and ZENABLE off during the pass |
 | Ambient Occlusion (combined build only) | `1/z = max(A - d, 1e-7) / (near*A)` with `CameraNear()` (fallback 0.25) and `CameraDepthA()`; tanX/tanY from `CameraViewProj` rows 0/1 | see [../removed-features.md](../removed-features.md) |
 | HDR sky boost (combined build only) | `d >= 0.99999` test only | removed in the standalone |
@@ -180,8 +186,8 @@ point-sampled; all treat `d >= 0.99999` as sky.
 | `0x0073E060` map view getter | Depth Blur |
 | WorldManager `+0x3A0` / `0x00C6C290` arg, `[0x011ECBC4]` | Frame Profiler (dev build); GC Scheduler (combined build only, removed) |
 | `[0x011D1860]+0x24+0x60` | GC Scheduler (combined build only, removed); nothing in the standalone |
-| VS `c40..c43` and the near vote | Frame Profiler (fallback), Ambient Occlusion (combined build) |
-| Projection shape (A, near) | Reflections (own WVP), Depth Blur (implicitly, through the heuristic), AO (combined build) |
+| VS `c40..c43` and the near vote | Combined build only: Frame Profiler (fallback), Ambient Occlusion. Nothing in the standalone |
+| Projection shape (A, near) | Reflections (own WVP), Depth Blur (A in Auto focus; implicitly through the heuristic in Fixed), AO (combined build) |
 | WorldManager `+0x258` | LSO (S3SS); read indirectly by the profiler's behaviour (and the removed GC Scheduler's) |
 
 ## Pitfalls

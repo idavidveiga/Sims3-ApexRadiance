@@ -435,8 +435,8 @@ This is one shared trigger for effects that work on the finished 3D scene, befor
 [features/depth-blur.md](features/depth-blur.md), [features/edge-smoothing.md](features/edge-smoothing.md) and
 [removed-features.md](removed-features.md) (Ambient Occlusion, combined build only; the standalone chain is Edge Smoothing 20 then Depth Blur 30).
 
-- `PostScene::Add(order, fn)` sorts the effects with `stable_sort` on `order`: `kAmbientOcclusion = 10`,
-  `kEdgeSmoothing = 20`, `kDepthBlur = 30`.
+- `PostScene::Add(order, fn)` sorts the effects with `stable_sort` on `order`: `kEdgeSmoothing = 20`, `kDepthBlur = 30`
+  (the combined build also had `kAmbientOcclusion = 10`).
   - The first `Add` registers the hooks under `"PostScene"`: Present, SetRenderTarget, DIP and DP, all at `First`.
   - `Remove` of the last effect unregisters them.
 - **Trigger:**
@@ -447,11 +447,10 @@ This is one shared trigger for effects that work on the finished 3D scene, befor
   4. Draws marked with `DepthShare::SetInternalPass(true)` are ignored. The lake-lamp pass in `lot_light_bridge.cpp`
      turns Z off and must not look like the UI.
   5. The Present hook resets the counters at the frame boundary.
-- **Camera for the effects:** `CameraNear()`, `CameraViewProj()` and `CameraDepthA()` are read from the scene draws'
-  vertex constants.
-  - Near-plane voting over blocks `c0`, `c4`, `c40`, `c180`, `c192`, `c216`, first 24 scene draws.
-  - The view-projection is `c40..c43`.
-  - The measured A is 1.00008 (LightProbe-m70..m80).
+- **Camera for the effects (combined build only):** `CameraNear()`, `CameraViewProj()` and `CameraDepthA()` (near vote
+  over VS blocks `c0`, `c4`, `c40`, `c180`, `c192`, `c216`; view-projection `c40..c43`) existed for Ambient Occlusion.
+  The standalone's `post_scene.cpp` is the v0.1.0 one and has none of them; Depth Blur's Auto focus uses depth ratios
+  (A = 1.00008 as a constant, the near plane cancels). Recipe: [engine/camera-and-map-view.md](engine/camera-and-map-view.md).
 - **INTZ swap (`DepthShare`, implemented in `patches/depth_blur_patch.cpp`):**
   - The game's auto depth-stencil (D24S8 or D24X8, same size as the back buffer, not multisampled) is swapped for an INTZ
     texture with `D3DUSAGE_DEPTHSTENCIL`, through the ExtraHooks substitution.
@@ -518,7 +517,8 @@ This is one shared trigger for effects that work on the finished 3D scene, befor
   setting's `name` argument.
   - Some Night Lighting keys are Portuguese identifiers (`luzDoPosteNaGramaDoLote`, `postesNosObjetos`,
     `cercasComLuzDoChao` and more).
-  - Depth Blur keys are also Portuguese: `distancia`, `transicao`, `forca`, `tamanho`, `qualidade`.
+  - Depth Blur keys are also Portuguese: `distancia`, `transicao`, `forca`, `tamanho` (legacy, unused), `qualidade`,
+    and since 2026-09-28 `focoAuto`, `quantidade`, `areaNitida`, `velocidadeFoco`, `realceLuzes`.
   - **Never rename a key.** Saved configs use them (comment in the `NightTerrainRelightPatch` constructor).
 - **When things are saved:**
   - Patch enable state and patch settings are saved **only by File > Save Settings**. The window title shows "Unsaved
