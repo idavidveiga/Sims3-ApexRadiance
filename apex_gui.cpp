@@ -74,7 +74,6 @@ bool g_menuEverOpened = false;    // this session (the first-launch hint stops)
 bool g_tourChecked = false;       // the welcome tour was considered at the first open of this session
 bool g_tourActive = false;
 int g_tourStep = 0;
-int g_pendingLook = -1;           // a look waiting for its inline confirmation
 std::atomic<unsigned long long> g_hintUntil{0}; // the first-launch corner hint shows until this tick (GetTickCount64)
 std::atomic<bool> g_hintConsidered{false};
 
@@ -276,224 +275,6 @@ void RecommendS3SSCard() {
     ImGui::PopID();
 }
 
-// ---- Looks (Overview and the welcome tour) ----
-// A look sets a few features to a known setup (docs/ui.md "Looks"): it is built on top of the current feature state, so
-// everything it does not name stays as it is, and it is active when building it changes nothing.
-
-enum Look : int { LookClassic, LookBalanced, LookCinematic, LookCount };
-struct LookInfo {
-    const char* name;
-    const char* phrase;
-    IconId icon;
-};
-constexpr LookInfo kLooks[LookCount] = {
-    {"Classic", "Close to the base game", IconId::Moon},
-    {"Balanced", "Warm lamps, clean image", IconId::SunMedium},
-    {"Cinematic", "Soft blur, rich color", IconId::Camera},
-};
-
-toml::table* PatchTable(toml::table& state, const char* name) {
-    toml::table* patches = state["patches"].as_table();
-    return patches ? (*patches)[name].as_table() : nullptr;
-}
-
-void SetF(toml::table& t, const char* key, float v) { t.insert_or_assign(key, static_cast<double>(v)); } // the same double a save writes
-void SetI(toml::table& t, const char* key, int v) { t.insert_or_assign(key, static_cast<int64_t>(v)); }
-
-// state = a CaptureFeatureState of every feature; the look's values are written into it
-void BuildLook(int look, toml::table& state) {
-    // Night Lights: on, every option at its default; Classic keeps the game's pink lamps and dims the extra light
-    if (toml::table* t = PatchTable(state, kNightLighting)) {
-        if (ApexPatch* p = Find(kNightLighting)) p->DefaultsToToml(*t);
-        t->insert_or_assign("enabled", true);
-        if (look == LookClassic) {
-            SetF(*t, "luzDasLampadasNatural", 0.0f); // Lamp color: Pink (the game's)
-            SetF(*t, "forcaNasParedes", 1.5f);       // walls 150% (default 200%)
-            SetF(*t, "forcaNosTelhados", 0.4f);      // roofs 40% (default 60%)
-            SetF(*t, "forcaNosObjetos", 0.75f);      // objects 75% (default 100%)
-            SetF(*t, "brilhoNaAgua", 0.6f);          // glow on ponds 60% (default 100%)
-        }
-    }
-    // Depth Blur: off, or (Cinematic) on at Medium with a slightly softer strength; its developer keys are left alone
-    if (toml::table* t = PatchTable(state, "DepthBlur")) {
-        t->insert_or_assign("enabled", look == LookCinematic);
-        if (look == LookCinematic) {
-            SetF(*t, "distancia", 0.349f); // Medium (the default)
-            SetF(*t, "transicao", 0.20f);
-            SetF(*t, "forca", 0.8f);
-            SetF(*t, "tamanho", 1.5f);
-            SetI(*t, "qualidade", 2);
-            t->insert_or_assign("blurSky", true);
-            t->insert_or_assign("offInMapView", true);
-        }
-    }
-    // Edge Smoothing: SMAA, High (Ultra for Cinematic); the FXAA tuning keys are left alone
-    if (toml::table* t = PatchTable(state, "EdgeSmoothing")) {
-        t->insert_or_assign("enabled", true);
-        SetI(*t, "metodo", 1);
-        SetI(*t, "qualidadeSmaa", look == LookCinematic ? 3 : 2);
-    }
-    // Picture ([qol.picture]): off for Classic, else the defaults plus a little sharpness (and more for Cinematic)
-    if (toml::table* qol = state["qol"].as_table()) {
-        if (look == LookClassic) {
-            if (toml::table* pic = (*qol)["picture"].as_table()) pic->insert_or_assign("enabled", false);
-        } else {
-            PictureParams p;
-            p.enabled = true;
-            if (look == LookBalanced) {
-                p.sharpen = 0.25f;
-            } else {
-                p.contrast = 1.10f;
-                p.saturation = 1.10f;
-                p.vibrance = 0.15f;
-                p.vignette = 0.25f;
-                p.sharpen = 0.15f;
-            }
-            Picture::ParamsToToml(p, *qol);
-        }
-    }
-}
-
-bool SameNode(toml::node_view<toml::node> a, toml::node_view<toml::node> b) {
-    const toml::table* ta = a.as_table();
-    const toml::table* tb = b.as_table();
-    if (!ta || !tb) return !ta && !tb;
-    return *ta == *tb;
-}
-
-// What applying the look changes, in words ("Night Lights, Color and Depth Blur"); empty = nothing (it is active)
-std::string LookChanges(int look, toml::table& current) {
-    toml::table target = current;
-    BuildLook(look, target);
-    std::vector<const char*> parts;
-    if (!SameNode(target["patches"][kNightLighting], current["patches"][kNightLighting])) parts.push_back("Night Lights");
-    if (!SameNode(target["qol"]["picture"], current["qol"]["picture"])) parts.push_back("Color");
-    if (!SameNode(target["patches"]["DepthBlur"], current["patches"]["DepthBlur"])) parts.push_back("Depth Blur");
-    if (!SameNode(target["patches"]["EdgeSmoothing"], current["patches"]["EdgeSmoothing"])) parts.push_back("Edge Smoothing");
-    std::string s;
-    for (size_t i = 0; i < parts.size(); i++) {
-        if (i > 0) s += i + 1 == parts.size() ? " and " : ", ";
-        s += parts[i];
-    }
-    return s;
-}
-
-// The active look (-1 = Custom), recomputed a few times a second
-int ActiveLook() {
-    static int cached = -1;
-    static double at = -10.0;
-    const double now = ImGui::GetTime();
-    if (now - at < 0.3) return cached;
-    at = now;
-    toml::table current;
-    ApexConfig::CaptureFeatureState(current);
-    cached = -1;
-    for (int look = 0; look < LookCount; look++) {
-        toml::table target = current;
-        BuildLook(look, target);
-        if (target == current) {
-            cached = look;
-            break;
-        }
-    }
-    return cached;
-}
-
-void ApplyLook(int look) {
-    toml::table before;
-    ApexConfig::CaptureFeatureState(before);
-    toml::table target = before;
-    BuildLook(look, target);
-    ApexConfig::ApplyFeatureState(target);
-    LOG_INFO(std::string("[Menu] Look applied: ") + kLooks[look].name);
-    ShowToast("Look applied", std::move(before));
-}
-
-// The three look tiles (a row, or a column when narrow) and the inline confirmation of the one clicked
-void LookTiles() {
-    const float u = ApexUi::Unit();
-    const int active = ActiveLook();
-    const float avail = ImGui::GetContentRegionAvail().x;
-    const float gap = ApexUi::kSpace2 * u, pad = 10.0f * u;
-    const bool row = avail >= 3.0f * 120.0f * u + 2.0f * gap;
-    const float tileW = row ? (avail - 2.0f * gap) / 3.0f : avail;
-    const float is = ApexUi::kIconMedium * u;
-    // Height: the tallest tile (icon, name, wrapped phrase)
-    ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
-    float phraseH = 0.0f;
-    for (const LookInfo& l : kLooks) phraseH = std::fmax(phraseH, ImGui::CalcTextSize(l.phrase, nullptr, false, tileW - 2.0f * pad).y);
-    ImGui::PopFont();
-    const float nameH = ImGui::GetTextLineHeight();
-    const float tileH = pad + is + 6.0f * u + nameH + 2.0f * u + phraseH + pad;
-
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::BeginDisabled(Loading());
-    for (int i = 0; i < LookCount; i++) {
-        const ImVec2 p(origin.x + (row ? static_cast<float>(i) * (tileW + gap) : 0.0f), origin.y + (row ? 0.0f : static_cast<float>(i) * (tileH + gap)));
-        ImGui::SetCursorScreenPos(p);
-        ImGui::PushID(i);
-        const bool clicked = ImGui::InvisibleButton("##Look", ImVec2(tileW, tileH), ImGuiButtonFlags_EnableNav);
-        ImGui::PopID();
-        const bool hovered = ImGui::IsItemHovered();
-        const bool selected = i == active, pending = i == g_pendingLook;
-        const ImVec2 q(p.x + tileW, p.y + tileH);
-        const float r = 8.0f * u;
-        dl->AddRectFilled(p, q, ImGui::GetColorU32(Col(hovered ? 0x2A2B33 : VioletTheme::kSelectedBg)), r);
-        dl->AddRect(p, q, ImGui::GetColorU32(Col(selected || pending ? VioletTheme::kAccent : hovered ? VioletTheme::kAccentDark : 0x34353D)), r, 0,
-                    selected || pending ? 2.0f * u : 1.0f);
-        ApexUi::DrawIcon(dl, kLooks[i].icon, ImVec2(p.x + pad, p.y + pad), is, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
-        if (selected) ApexUi::DrawIcon(dl, IconId::Check, ImVec2(q.x - pad - ApexUi::kIconSmall * u, p.y + pad), ApexUi::kIconSmall * u,
-                                       ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
-        ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize());
-        dl->AddText(ImVec2(p.x + pad, p.y + pad + is + 6.0f * u), ImGui::GetColorU32(Col(VioletTheme::kText)), kLooks[i].name);
-        ImGui::PopFont();
-        ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
-        dl->AddText(nullptr, 0.0f, ImVec2(p.x + pad, p.y + pad + is + 6.0f * u + nameH + 2.0f * u), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), kLooks[i].phrase,
-                    nullptr, tileW - 2.0f * pad);
-        ImGui::PopFont();
-        if (clicked) g_pendingLook = selected ? -1 : i;
-    }
-    ImGui::EndDisabled();
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + (row ? tileH : 3.0f * tileH + 2.0f * gap)));
-    ImGui::Dummy(ImVec2(avail, 0.0f));
-
-    // Inline confirmation
-    if (g_pendingLook >= 0 && g_pendingLook < LookCount) {
-        toml::table current;
-        ApexConfig::CaptureFeatureState(current);
-        const std::string changes = LookChanges(g_pendingLook, current);
-        if (changes.empty()) {
-            g_pendingLook = -1; // already active
-            return;
-        }
-        ApexUi::Gap(ApexUi::kSpace1);
-        const std::string text = std::string("Apply ") + kLooks[g_pendingLook].name + "? This changes " + changes + " settings";
-        ApexUi::IconNote(IconId::Info, text.c_str());
-        ApexUi::Gap(ApexUi::kSpace1);
-        if (ApexUi::IconTextButton("Apply##Look", IconId::Check, nullptr, ButtonKind::Primary)) {
-            ApplyLook(g_pendingLook);
-            g_pendingLook = -1;
-        }
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Cancel##Look")) g_pendingLook = -1;
-    }
-}
-
-void LooksCard() {
-    ImGui::PushID("Looks");
-    if (ApexUi::BeginCard("##Card")) {
-        const int active = ActiveLook();
-        const std::string subtitle = active >= 0 ? std::string("Active: ") + kLooks[active].name : std::string("Custom: your own settings");
-        ApexUi::CardHeader(IconId::Sparkles, "Looks", subtitle.c_str(), "One click sets Night Lights, Color, Depth Blur and Edge Smoothing to a ready-made look. "
-                                                                          "Everything stays adjustable, and Undo puts your settings back.", nullptr);
-        ApexUi::CardDivider();
-        LookTiles();
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-}
-
 // ---- Overview ----
 
 const char* BorderlessModeText() {
@@ -519,7 +300,6 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
 void OverviewPage() {
     ApexUi::PageTitle("Overview", "Everything at a glance; click a name to open its page");
     RecommendS3SSCard();
-    LooksCard();
     ImGui::PushID("Overview");
     if (ApexUi::BeginCard("##Card")) {
         bool nameClicked = false;
@@ -932,12 +712,11 @@ void TextSizeRow() {
 void StartTour() {
     g_tourActive = true;
     g_tourStep = 0;
-    g_pendingLook = -1;
     g_search[0] = '\0';
 }
 
 void WelcomeRow() {
-    if (!ApexUi::BeginControlRow("Show the welcome tour again", "Looks, Sims3SettingsSetter and your menu key", ApexUi::ButtonWidth("Show##Tour", false))) return;
+    if (!ApexUi::BeginControlRow("Show the welcome tour again", "Sims3SettingsSetter and your menu key", ApexUi::ButtonWidth("Show##Tour", false))) return;
     if (ApexUi::TextButton("Show##Tour")) StartTour();
     ApexUi::EndControlRow();
 }
@@ -1246,7 +1025,6 @@ void SearchResults() {
 
 void FinishTour() {
     g_tourActive = false;
-    g_pendingLook = -1;
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
     if (!ui.welcomeDone) {
         ui.welcomeDone = true; // [ui] welcome_done
@@ -1256,12 +1034,12 @@ void FinishTour() {
 
 void TourPanel() {
     const float u = ApexUi::Unit();
-    constexpr int kSteps = 3;
+    constexpr int kSteps = 2;
     g_tourStep = std::clamp(g_tourStep, 0, kSteps - 1);
     ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace4 * u));
     ImGui::PushID("WelcomeTour");
     if (ApexUi::BeginCard("##Card")) {
-        // Step dots and "Step n of 3"
+        // Step dots and "Step n of N"
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
             const float r = 3.5f * u, step = 12.0f * u;
@@ -1277,12 +1055,7 @@ void TourPanel() {
             ApexUi::Gap(ApexUi::kSpace1);
         }
         switch (g_tourStep) {
-        case 0:
-            ApexUi::CardHeader(IconId::Sparkles, "Pick a look", "Start from one of these; you can change anything later", nullptr, nullptr);
-            ApexUi::CardDivider();
-            LookTiles();
-            break;
-        case 1: {
+        case 0: {
             ApexUi::CardHeader(IconId::Puzzle, "Sims3SettingsSetter", "A companion mod by sims3fiend", nullptr, nullptr);
             ApexUi::CardDivider();
             if (S3SSDetect::Scan().s3ssLoaded) {
@@ -1316,12 +1089,10 @@ void TourPanel() {
         if (g_tourStep > 0) {
             if (ApexUi::TextButton("Back##Tour")) {
                 g_tourStep--;
-                g_pendingLook = -1;
             }
             ImGui::SameLine();
         }
         if (ApexUi::TextButton(nextLabel, nullptr, ButtonKind::Primary)) {
-            g_pendingLook = -1;
             if (last) FinishTour();
             else g_tourStep++;
         }
@@ -1624,7 +1395,6 @@ void DrawToast(float bottomY) {
             ApexConfig::ApplyFeatureState(g_toast.undo);
             LOG_INFO("[Menu] Undo: " + g_toast.text);
             g_toast.active = false;
-            g_pendingLook = -1;
         }
     }
     ImGui::EndChild();
@@ -1646,11 +1416,10 @@ void MainWindow() {
     const bool peek = g_menuHovered && io.KeyAlt && !io.WantTextInput && !dragging && !ImGui::IsAnyItemActive();
     if (g_menuFocused && !peek) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) g_focusSearch = true;
-        // Esc: clears the search, then cancels a pending look, then closes the menu (never while a field is being
+        // Esc: clears the search, then closes the menu (never while a field is being
         // edited or the menu key is being chosen)
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !g_waitingForKey && !ImGui::IsAnyItemActive()) {
             if (g_search[0]) g_search[0] = '\0';
-            else if (g_pendingLook >= 0) g_pendingLook = -1;
             else closeRequested = true;
         }
     }

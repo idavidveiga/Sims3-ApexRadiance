@@ -8,12 +8,12 @@ The in-game menu of Apex Radiance (window id `###ApexWindow`, default key Ctrl+S
 History: reorganised on 2026-09-28 for players (short plain words, one feature per card, developer items on one
 Developer page); the same day it got a design polish (spacing scale, row descriptions, dividers, tinted notes, button
 styles), a full copy rewrite, and the grouped sidebar with tabbed pages below. Later that day (approved from a mockup):
-search, changed markers with per-setting Reset, the undo toast, Looks, Profiles, peek, hold to compare, GPU cost
+search, changed markers with per-setting Reset, the undo toast, Profiles, peek, hold to compare, GPU cost
 chips, "Reload save" badges, inline "Turn on" dependencies, the welcome tour, the status bar, the collapsible sidebar,
 colour tracks and keyboard use (sections below).
 
 ## Files
-- `apex_gui.cpp`: window, header, sidebar, pages, search results, Looks, Profiles, welcome tour, undo toast, status
+- `apex_gui.cpp`: window, header, sidebar, pages, search results, Profiles, welcome tour, undo toast, status
   bar, first-launch hint. Header: logo tile, name and tagline (centred on the tile), the search field, Night/Day pill
   (moon / sun), frame-time pill, close (x); all vertically centred on the 32 px tile (narrow windows drop the Night/Day
   pill, then the frame-time pill, to keep the search field at least 110 px). Sidebar 170 px at scale 1 (or the 44 px
@@ -37,7 +37,7 @@ not saved; `Go(page, &tab, n)` opens a page on a tab).
 
 | Page (sidebar icon) | Content |
 |---|---|
-| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). The **Looks** card (see "Looks"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing. |
+| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing. |
 | WORLD > Lighting (moon-star) | Tabs **Lamps** (Night Lights card: master switch `NightTerrainRelight` + "Lamp color" Pink ... Warm white with a colour track, swatch and "Reload save" badge; then "Reset Night Lights"), **Ground** (Ground & Lots: street lamps light lots, lot lamps light the street, "Upper floors light the ground" = the separate `SplitLevelGroundLight` feature, shown on and disabled with "Already handled by Sims3SettingsSetter ..." when S3SS's own fix is on; light passes between floors; smooth ground light), **Objects** (every option shown, groups LAMP LIGHT and DOORS, COUNTERS AND FENCES; "Light stairs, railings, columns" has the "Reload save" badge; the DOORS group needs two Ground options: a note naming the missing one(s) and a primary "Turn it on" / "Turn both on"), **Buildings** (groups WALLS and ROOFS). While Night Lights is off, the other tabs show a note and a primary "Turn on Night Lights" button. |
 | WORLD > Water & Snow (waves-horizontal) | Tabs **Water** (Lamp Glow card while Night Lights is on, else "Lamp glow on ponds needs Night Lights" + "Turn on Night Lights"; Water Reflections card = `reflexoNoLago`, with "Needs Night Lights (Lighting page)" / "Needs Depth Blur (Depth Blur page)" and primary "Turn on ..." buttons) and **Snow** (walked-on sidewalks; needs Night Lights; needs "Street lamps light lots": note + "Turn it on"). |
 | IMAGE > Color (palette) | The Picture card header above the tabs (switch = `[qol.picture] enabled`; GPU cost chip; hold to compare (eye) and before / after (columns-2) buttons, disabled while Picture is off, never saved). Tabs **Basic** (brightness, contrast, saturation, temperature, sharpness, smooth gradients), **Tones** (midtones, shadows, highlights, blacks), **Color** (tint, vibrance; FILM TONES = split toning, hue sliders on a hue-circle track with a swatch; COLOR MIXER + "Reset mixer"), **Detail** (clarity, vignette, vignette size); each tab ends with "Reset Picture". Rows stay visible, greyed out, while Picture is off. |
@@ -163,24 +163,11 @@ last report of a frame becomes the toast at the bottom right of the window, abov
 save. Only the last change is undoable. The Developer page does not report (`SetChangeReporting(false)`); menu
 preferences (text size, menu key, sidebar) are not part of the undoable state.
 
-### Looks (Overview, and step 1 of the tour)
-Three tiles (icon, name, phrase; a row, or a column when narrow). Clicking one shows an inline confirmation ("Apply
-Cinematic? This changes Night Lights, Color and Depth Blur settings", listing only what would change) with Apply
-(primary) and Cancel; Esc cancels too. Applying snapshots the state, builds the look on top of it (`BuildLook`) and
-applies it with `ApplyFeatureState`; the toast says "Look applied" and Undo restores every value it changed. The card
-subtitle says "Active: <look>" when building a look on the current state changes nothing, else "Custom: your own
-settings" (recomputed about 3 times a second); the active tile has an accent border and a check. Tiles are inert while
-features start. What each look sets (anything not listed stays as it is):
-
-| | Classic "Close to the base game" | Balanced "Warm lamps, clean image" | Cinematic "Soft blur, rich color" |
-|---|---|---|---|
-| Night Lights (`NightTerrainRelight`) | on; every option at its registered default, except Lamp color 0 (the game's pink), outside walls 150% (`forcaNasParedes` 1.5, default 2.0), roofs 40% (`forcaNosTelhados` 0.4, default 0.6), objects 75% (`forcaNosObjetos` 0.75, default 1.0), glow on ponds 60% (`brilhoNaAgua` 0.6, default 1.0) | on; every option at its registered default | on; every option at its registered default |
-| Picture (`[qol.picture]`) | off (its values are kept) | on; `PictureParams{}` defaults with Sharpness 25% (`sharpen` 0.25) | on; defaults with Contrast 110%, Saturation 110%, Vibrance +15, Vignette 31% (`vignette` 0.25 of 0..0.8), Sharpness 15% |
-| Depth Blur | off | off | on; Medium (`distancia` 0.349), `transicao` 0.20, Strength 80% (`forca` 0.8, default 1.0), `tamanho` 1.5, Quality High, blur the sky, sharp in map view (developer keys `farPlane` / `debugView` untouched) |
-| Edge Smoothing | on; SMAA, High | on; SMAA, High | on; SMAA, Ultra |
-
-"Every option at its registered default" includes the developer-only experimental switches (all off by default).
-Every-Story Ground Light and Water Reflections are not touched by the looks.
+### Looks (removed)
+A "Looks" card (Classic / Balanced / Cinematic presets on Overview and in the tour) existed briefly and was removed on
+2026-09-28 at the user's request: applying a look rewrote the player's tuned Night Lights, Picture and Depth Blur values
+(only the last change is undoable), which destroyed a hand-tuned setup. Do not bring presets back without the user asking;
+if ever, save the current setup as a profile first.
 
 ### Profiles (Settings > Profiles)
 "SAVE CURRENT SETUP": a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
@@ -232,9 +219,8 @@ option, so it stays a plain note.
 
 ### Welcome tour and the first-launch hint
 The first time the menu opens in a session while `[ui] welcome_done` is false, the content area shows the tour (a card
-with step dots; the sidebar and the search field are disabled meanwhile): 1) "Pick a look" (the Looks tiles), 2)
-"Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 3) "Your menu key" (the key +
-Change). Buttons: Skip (link, steps 1-2), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
+with step dots; the sidebar and the search field are disabled meanwhile): 1) "Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 2) "Your menu key" (the key +
+Change). Buttons: Skip (link, step 1), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
 "Show the welcome tour again". The menu is never opened automatically: instead, once features run at a launch where the
 tour was never done and the menu has not been opened, a small non-blocking hint (no input, no focus) shows in the top-right
 corner for 10 s: "Apex Radiance is ready · press <menu key>" (it fades out; `Client::AlwaysDraw` keeps ImGui frames going
@@ -260,7 +246,7 @@ hue-circle track and a swatch of the hue.
 ### Keyboard
 `ImGuiConfigFlags_NavEnableKeyboard` is on (overlay). Arrows / Tab move between widgets; Space / Enter toggles switches
 and presses buttons; a slider is adjusted with the arrows after Space / Enter. Esc (when the menu has focus, no field is
-being edited and the menu key is not being chosen): clears the search, else cancels a pending look, else closes the
+being edited and the menu key is not being chosen): clears the search, else closes the
 menu. Ctrl+F: the search field.
 
 ## Copy guidelines

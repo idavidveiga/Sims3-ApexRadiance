@@ -17,7 +17,7 @@ Apex Radiance is a native `.asi` plugin. It runs on its own, or next to the offi
 **System**
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
 - **Borderless window:** windowed or fullscreen, without a title bar.
-- **Menu:** looks presets (Classic, Balanced, Cinematic), search, profiles, undo, per-setting reset and a hold-to-compare view.
+- **Menu:** search, profiles, undo, per-setting reset and a hold-to-compare view.
 
 ## Requirements
 
