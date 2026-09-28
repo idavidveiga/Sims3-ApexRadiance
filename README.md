@@ -2,8 +2,6 @@
 
 A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
-Apex Radiance is a native `.asi` plugin. It runs on its own, or next to the official [Sims3SettingsSetter](https://github.com/sims3fiend/Sims3SettingsSetter).
-
 ## Features
 
 **World**
