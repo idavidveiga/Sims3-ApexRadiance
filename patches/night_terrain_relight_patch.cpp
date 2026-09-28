@@ -45,6 +45,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <string>
@@ -74,7 +75,48 @@ constexpr ArmSite kArmSites[] = {
 const std::vector<BYTE> kArmOrig = {0x8B, 0x17, 0x8B, 0x42, 0x20, 0x8B, 0xCF, 0xFF, 0xD0};
 // mov edx,[edi]; mov eax,[edx+20h]; mov ecx,edi; call eax      (followed by test al,al; jz; mov [esi+38h],32h)
 
-constexpr int kArmFrames = 50; // same value the game writes
+// Apex's own kicks only (the game keeps writing 50 at its three arm sites): every Apex kick is already debounced (lamp
+// edits 250 ms, dusk atrasoSegundos, load: world drawn + steady night level), so the game's extra 50-frame wait (~0.8 s)
+// only delayed the result. 3 frames still lets the game's own per-frame decrement (0x006B5DA0) run before the consume
+// in the terrain update (0x00C84C1B), exactly as with 50.
+constexpr int kArmFrames = 3;
+
+// The terrain update's per-chunk loop re-renders ONE chunk's composited textures per call (chunk+0x54 set):
+// 0x00C85041 cmp byte [esi+54h],0; jz; 0x00C85047 push 0; push esi; mov ecx,edi; call 0x00C7E7A0 (at 0x00C8504C).
+// FUN_00C7E7A0 = void __thiscall(terrain, chunk, char force), RET 8 (re/out/dump/asm/00c7e7a0.asm line 163); its full
+// render path ends with "mov byte [esi+54h],0" (0x00C7E978), the only write of +0x54 in it. Redirecting this one CALL
+// (the other callers 0xC8088E / 0xC8307E are left alone) tells the smoothed maps exactly which chunk map the game just
+// re-rendered: chunk+0x0C / +0x10 = chunk x / z in world units, >> 8 = grid index (docs/engine/terrain-and-light-bake.md
+// 3.3), the same index as the smoothed maps' key (centre = 256 i + 128).
+constexpr uintptr_t kChunkRenderCall = 0x00C8504C;
+constexpr uintptr_t kChunkRenderContextAt = 0x00C85047;
+const BYTE kChunkRenderContext[] = {0x6A, 0x00, 0x56, 0x8B, 0xCF, 0xE8, 0x4F, 0x97, 0xFF, 0xFF, 0xC6, 0x44, 0x24, 0x0C, 0x01};
+const std::vector<BYTE> kChunkRenderOrig = {0xE8, 0x4F, 0x97, 0xFF, 0xFF};
+constexpr uintptr_t kChunkRenderFn = 0x00C7E7A0;
+using ChunkRender_t = void(__thiscall*)(void* terrain, void* chunk, char force);
+std::atomic<int> g_chunkRenders{0};
+bool g_chunkHookInstalled = false;
+
+bool ReadRenderedChunk(const BYTE* chunk, int& ix, int& iz) {
+    __try {
+        if (chunk[0x54] != 0) return false; // this call did not re-render (early return)
+        ix = *reinterpret_cast<const int*>(chunk + 0x0C) >> 8;
+        iz = *reinterpret_cast<const int*>(chunk + 0x10) >> 8;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// __fastcall with two stack arguments = __thiscall(terrain, chunk, force) for the caller (ECX = terrain, callee pops 8).
+void __fastcall ChunkRenderThunk(void* terrain, void* /*edx*/, BYTE* chunk, int force) {
+    reinterpret_cast<ChunkRender_t>(kChunkRenderFn)(terrain, chunk, static_cast<char>(force));
+    int ix = 0, iz = 0;
+    if (ReadRenderedChunk(chunk, ix, iz)) {
+        g_chunkRenders.fetch_add(1, std::memory_order_relaxed);
+        LightmapSmooth::NoteChunkRendered(ix, iz);
+    }
+}
 
 // Lot room light solve: FUN_006be020 (street-lamp class contribution, vfunc+0x4C) reads the lamp's effective colour
 // +0xE0, which is zero while the lamp is off. Lot grass samples ONLY the lot's room-0 LightMap, so a lot solved by day
@@ -99,6 +141,8 @@ bool g_objLamps = true;
 float g_objStrength = 1.0f;
 bool g_objAll = true;
 bool g_smoothMaps = true;
+bool g_smoothMapsGpu = true; // developer A/B: smoothing on the GPU (default) or on the CPU worker (dev-only setting)
+bool g_softLotEdges = true; // lot grass feathers to the terrain light within 3 m of the lot edge (developer A/B, dev-only setting)
 float g_sidewalkClear = 0.5f;
 float g_lampTint = 1.0f;
 bool g_fenceGround = true;
@@ -146,8 +190,15 @@ int g_stuckFrames = 0;
 Clock::time_point g_lastStuckKick{};
 int g_armsAtLastStuckKick = 0;
 int g_lastLampEdits = 0;
+// Lamp changes (and the live "lot lamps on the ground" switch) are coalesced: a rebuild once nothing changed for 250 ms,
+// and at most one every 3 s while changes keep coming.
 bool g_editKickPending = false;
-Clock::time_point g_editKickAt{};
+Clock::time_point g_editLastAt{};
+Clock::time_point g_lastEditKick{};
+std::string g_editReason = "lot lamps changed";
+std::string g_lastEditOutcome = "none";
+constexpr auto kEditQuiet = std::chrono::milliseconds(250);
+constexpr auto kEditMinInterval = std::chrono::seconds(3);
 
 // Lot lighting quality: FUN_00adb5a0 and FUN_00adb850 pass (lot is active || Build mode) to FUN_006a5ef0. The default
 // "mov byte [esp+0Ch],0" becomes 1 so every lot is lit at the high quality the active lot uses.
@@ -162,8 +213,18 @@ std::atomic<int> g_roomsQueued{0};
 std::atomic<bool> g_relightLotsRequested{false};
 bool g_lotRelightPending = false;
 bool g_loadKickPending = false;
-Clock::time_point g_loadKickAt{};
 Clock::time_point g_lotRelightAt{};
+// World load: the rebuild waits until the world is live (its terrain is drawn) and the night level has been steady for
+// 1 s, so it never runs during the loading screen with the night level still at 0 (lamps off).
+Clock::time_point g_worldAt{}, g_liveAt{}, g_levelRefAt{};
+bool g_live = false;
+std::string g_liveSignal = "none";
+std::string g_loadInfo = "none";
+float g_levelRef = -1.0f;
+constexpr auto kLiveSettle = std::chrono::seconds(1);   // world drawn for this long
+constexpr auto kLevelSteady = std::chrono::seconds(1);  // night level within 0.02 for this long
+constexpr auto kLevelWaitMax = std::chrono::seconds(20); // after the world is live: rebuild even if the level keeps moving
+constexpr auto kLiveFallback = std::chrono::seconds(30); // no draw seen (street lamps on lots off): assume live
 std::string g_lastLotRelight = "none";
 
 // Replaces movaps xmm0,[esi+0E0h] at 0x6BE18C (ESI = light). May clobber EAX, XMM2 and flags (dead at that point).
@@ -235,6 +296,12 @@ bool g_scheduled = false;
 Clock::time_point g_scheduledAt{};
 int g_prevCounter = INT_MIN;
 std::string g_pendingReason;
+bool g_pendingDusk = false; // the armed rebuild is (also) the dusk rebuild
+Clock::time_point g_kickAt{};
+std::string g_lastTiming = "none";
+int g_crossUp = 0, g_crossDown = 0;
+Clock::time_point g_lastCrossAt{};
+bool g_lotLampsSeen = true; // g_lotLamps as OnPresent last saw it (the switch applies live: one rebuild at night)
 std::atomic<bool> g_kickRequested{false};
 
 std::atomic<int> g_kicks{0};
@@ -342,13 +409,19 @@ std::string LevelText(float level) {
     return std::format("night level {:.2f}", level);
 }
 
-void Kick(uintptr_t cells, float level, const char* reason) {
+double MsSince(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+
+void Kick(uintptr_t cells, float level, const std::string& reason, bool dusk = false) {
     if (!ArmCounters(cells)) {
         g_lastEvent = std::format("Could not arm the rebuild ({})", reason);
         return;
     }
     g_kicks.fetch_add(1);
     g_pendingReason = reason;
+    g_pendingDusk = dusk;
+    g_kickAt = Clock::now();
+    g_prevCounter = kArmFrames;
+    LightmapSmooth::NoteKick(reason.c_str());
     g_lastEvent = std::format("Rebuild armed: {} ({})", reason, LevelText(level));
     LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
 }
@@ -365,6 +438,7 @@ void OnPresent() {
         g_menuLevel.store(-1.0f);
         return;
     }
+    const auto now = Clock::now();
     const bool night = s.level > 0.99f;
     int c38 = 0, c3C = 0;
     ReadCounters(s.cells, c38, c3C);
@@ -380,69 +454,134 @@ void OnPresent() {
         g_prevCounter = c38;
         g_lotRelightPending = false;
         g_pendingReason.clear();
-        LOG_INFO(std::format("[NightTerrainRelight] World loaded ({})", LevelText(s.level)));
+        g_pendingDusk = false;
+        g_editKickPending = false;
+        LOG_INFO(std::format("[NightTerrainRelight] World loaded ({}): the terrain rebuild waits until the world is drawn and the night level is steady",
+                             LevelText(s.level)));
         LotLightBridge::OnWorldChanged(); // drop the previous world's chunk maps, smoothed maps and atlas
         LevelLightShare::OnWorldChanged();
         // Rebuild the terrain light maps once after loading: the ones baked into the world file miss the part of a lamp's
-        // light that crosses into the neighbouring 256 m chunk (straight cut on world grass at chunk borders).
+        // light that crosses into the neighbouring 256 m chunk (straight cut on world grass at chunk borders). Not during
+        // the loading screen (a kick there was consumed at the first world update with the night level still 0.00: a
+        // lamps-off bake, then the dusk rebuild on top): see "world live" below.
         g_loadKickPending = true;
-        g_loadKickAt = Clock::now() + std::chrono::seconds(5); // was 15 s: the dark seams lasted over 20 s after loading (user, 25/09)
+        g_worldAt = now;
+        g_live = false;
+        g_liveSignal = "none";
+        g_levelRef = s.level;
+        g_levelRefAt = now;
+    }
+
+    // Night level steady: no move of more than 0.02 for kLevelSteady (the level jumps 0 -> 1 when a night save starts).
+    if (std::fabs(s.level - g_levelRef) > 0.02f) {
+        g_levelRef = s.level;
+        g_levelRefAt = now;
+    }
+    const bool levelSteady = now - g_levelRefAt >= kLevelSteady;
+
+    // World live: its terrain is being drawn (the lot light bridge saw a world terrain chunk draw after the world
+    // change; the loading screen draws no terrain). Without the bridge ("Street lamps light lots" off) no draw is
+    // recorded: then 30 s after the world change.
+    if (!g_live) {
+        const char* signal = nullptr;
+        if (LotLightBridge::ChunkCount() > 0) signal = "world terrain drawn";
+        else if (now - g_worldAt >= kLiveFallback) signal = "30 s after the world change (no terrain draw seen)";
+        if (signal) {
+            g_live = true;
+            g_liveAt = now;
+            g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
+            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
+        }
     }
 
     // The game consumed the countdown: the terrain chunks were rebuilt this frame.
     if (g_prevCounter >= 0 && c38 == -1) {
         g_rebuilds.fetch_add(1);
-        const bool duskRebuild = g_pendingReason == "dusk";
-        g_lastEvent = std::format("Terrain rebuilt ({}; {})", g_pendingReason.empty() ? "by the game itself" : g_pendingReason, LevelText(s.level));
+        const bool duskRebuild = g_pendingDusk;
+        const bool ours = !g_pendingReason.empty();
+        g_lastEvent = std::format("Terrain rebuilt ({}; {})", ours ? g_pendingReason : "by the game itself", LevelText(s.level));
+        if (ours) g_lastTiming = std::format("{}: armed -> rebuilt {:.0f} ms", g_pendingReason, MsSince(g_kickAt));
         g_pendingReason.clear();
-        LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
+        g_pendingDusk = false;
+        LOG_INFO("[NightTerrainRelight] " + g_lastEvent + (ours ? std::format(" {:.0f} ms after it was armed", MsSince(g_kickAt)) : std::string()));
+        LightmapSmooth::OnTerrainRebuilt(); // every chunk map is re-rendered over the next frames
         // Relight lots ONLY after the dusk rebuild. Relighting re-registers lot lamps, which re-arms the countdown; doing it
         // after every rebuild made a loop that kept invalidating the (slow, high quality) lot solves.
         if (night && g_relightLots && duskRebuild) {
             g_lotRelightPending = true;
-            g_lotRelightAt = Clock::now() + std::chrono::seconds(3);
+            g_lotRelightAt = now + std::chrono::seconds(3);
         }
     }
     g_prevCounter = c38;
 
+    // Night level crossings, both directions (developer log: finds rebuilds triggered by a flickering level).
+    if (night != g_lastNight) {
+        (night ? g_crossUp : g_crossDown)++;
+        g_lastCrossAt = now;
+        if constexpr (!kPublicBuild)
+            LOG_INFO(std::format("[NightTerrainRelight] Night level crossed 0.99 {} ({}; {:.1f} s after the world change; up {} / down {})", night ? "upwards" : "downwards",
+                                 LevelText(s.level), MsSince(g_worldAt) / 1000.0, g_crossUp, g_crossDown));
+    }
     if (g_autoDusk && night && !g_lastNight) {
-        g_scheduled = true;
-        g_scheduledAt = Clock::now() + std::chrono::milliseconds(static_cast<int>(g_delaySec * 1000.0f));
+        if (g_loadKickPending) { // the load rebuild runs at night: it is the dusk rebuild too (one rebuild, not two)
+            if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Dusk during the world load: merged into the load rebuild");
+        } else {
+            g_scheduled = true;
+            g_scheduledAt = now + std::chrono::milliseconds(static_cast<int>(g_delaySec * 1000.0f));
+        }
     }
     g_lastNight = night;
 
-    if (g_loadKickPending && Clock::now() >= g_loadKickAt) {
+    if (g_loadKickPending && g_live && now - g_liveAt >= kLiveSettle && (levelSteady || now - g_liveAt >= kLevelWaitMax)) {
         g_loadKickPending = false;
-        Kick(s.cells, s.level, "world load");
-        g_prevCounter = kArmFrames;
+        g_scheduled = false; // a dusk rebuild waiting is covered by this one
+        g_loadInfo = std::format("{}; rebuilt {:.1f} s after the world change ({})", g_liveSignal, MsSince(g_worldAt) / 1000.0, LevelText(s.level));
+        Kick(s.cells, s.level, night ? "world load (night: also the dusk rebuild)" : "world load", night);
     }
-    if (g_kickRequested.exchange(false)) {
-        Kick(s.cells, s.level, "button");
-        g_prevCounter = kArmFrames;
-    }
-    if (g_scheduled && Clock::now() >= g_scheduledAt) {
+    if (g_kickRequested.exchange(false)) Kick(s.cells, s.level, "button");
+    if (g_scheduled && now >= g_scheduledAt) {
         g_scheduled = false;
         if (night) {
-            Kick(s.cells, s.level, "dusk");
-            g_prevCounter = kArmFrames;
+            Kick(s.cells, s.level, "dusk", true);
             if (g_relightLots) { // fallback if the terrain rebuild does not happen
                 g_lotRelightPending = true;
-                g_lotRelightAt = Clock::now() + std::chrono::seconds(6);
+                g_lotRelightAt = now + std::chrono::seconds(6);
             }
         }
     }
 
-    // A lot lamp that already existed was edited (colour, brightness, on/off, e.g. in build mode): the game rebuilds
-    // its light on the ground only when the lot is reloaded. Rebuild 0.7 s after the last change.
+    // Outdoor lot lamps changed (edited, added or removed, e.g. in Build mode, on lots that were already loaded; see
+    // LotLightBridge::TrackLotLampEdits): the game rebuilds their light on the ground only when the lot is reloaded. And
+    // the "lot lamps light the street" switch applies live (the bake reads it at run time): one rebuild.
     if (const int edits = LotLightBridge::LotLampEdits(); edits != g_lastLampEdits) {
         g_lastLampEdits = edits;
         g_editKickPending = true;
-        g_editKickAt = Clock::now() + std::chrono::milliseconds(700);
+        g_editLastAt = now;
+        g_editReason = "lot lamps changed";
     }
-    if (g_editKickPending && Clock::now() >= g_editKickAt) {
+    if (g_lotLamps != g_lotLampsSeen) {
+        g_lotLampsSeen = g_lotLamps;
+        g_editKickPending = true;
+        g_editLastAt = now - kEditQuiet;
+        g_editReason = g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off";
+    }
+    if (g_editKickPending && now - g_editLastAt >= kEditQuiet && now - g_lastEditKick >= kEditMinInterval) {
         g_editKickPending = false;
-        Kick(s.cells, s.level, "lot lamp edited");
-        g_prevCounter = kArmFrames;
+        if (!night && g_autoDusk) // lamps are off by day and not in the bake; the dusk rebuild takes the change
+            g_lastEditOutcome = std::format("{}: left to the dusk rebuild (day)", g_editReason);
+        else if (g_loadKickPending || (g_scheduled && night))
+            g_lastEditOutcome = std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk");
+        else if (!g_pendingReason.empty() && c38 > 0)
+            g_lastEditOutcome = std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason);
+        else {
+            Kick(s.cells, s.level, g_editReason);
+            g_lastEditKick = now;
+            // the "lights changed" fallback below must not rebuild again for the same arms
+            g_lastStuckKick = now;
+            g_armsAtLastStuckKick = g_lotLampArms.load();
+            g_lastEditOutcome = std::format("{}: rebuilt", g_editReason);
+        }
+        if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
     }
 
     // A light change armed only +0x38: the full rebuild also needs +0x3C (TerrainData expand), so it would wait forever.
@@ -450,17 +589,21 @@ void OnPresent() {
         // Only when an outdoor LOT lamp armed it (street lamps streaming in with lots also arm it, and the vanilla game
         // never rebuilds for those), and at most every 15 s (was 60: a newly placed lamp took up to a minute to light the ground): each full rebuild is a small hitch.
         const int arms = g_lotLampArms.load();
-        if (++g_stuckFrames >= 120 && arms != g_armsAtLastStuckKick && Clock::now() - g_lastStuckKick > std::chrono::seconds(15)) {
-            g_lastStuckKick = Clock::now();
+        if (++g_stuckFrames >= 120 && arms != g_armsAtLastStuckKick && now - g_lastStuckKick > std::chrono::seconds(15)) {
+            g_lastStuckKick = now;
             g_armsAtLastStuckKick = arms;
             Kick(s.cells, s.level, "lights changed");
-            g_prevCounter = kArmFrames;
         }
     } else
         g_stuckFrames = 0;
 
+    // A rebuild is coming (load, dusk, lamp change, armed): the smoothed maps hold new smoothing jobs until it happened
+    // (the game's maps are shown meanwhile), so no chunk is smoothed twice.
+    const bool armed = !g_pendingReason.empty() && c38 >= 0 && now - g_kickAt < std::chrono::seconds(5);
+    if (g_loadKickPending || (g_scheduled && night) || (g_editKickPending && (night || !g_autoDusk)) || armed) LightmapSmooth::ExpectRebuild(30);
+
     const bool relightNow = g_relightLotsRequested.exchange(false);
-    if (relightNow || (g_lotRelightPending && Clock::now() >= g_lotRelightAt)) {
+    if (relightNow || (g_lotRelightPending && now >= g_lotRelightAt)) {
         g_lotRelightPending = false;
         const int n = QueueAllLotOutdoorRooms(s.lightMgr);
         if (n >= 0) {
@@ -471,7 +614,9 @@ void OnPresent() {
         LOG_INFO("[NightTerrainRelight] Lots: " + g_lastLotRelight);
     }
 
-    if (c38 == 0 && !night)
+    if (g_loadKickPending)
+        g_status = g_live ? "World loaded: rebuilding the terrain light once the night level is steady" : "World loading: the terrain light is rebuilt once the world is drawn";
+    else if (c38 == 0 && !night)
         g_status = "Rebuild pending: the game only rebuilds the terrain at night (or in Build mode)";
     else if (c38 > 0)
         g_status = std::format("Rebuild in {} frames", c38);
@@ -527,7 +672,7 @@ void DeferredReinstall(IDirect3DDevice9*) {
 
 class NightTerrainRelightPatch : public ApexPatch {
     std::vector<MemPatch::PatchLocation> patchedLocations;
-    bool installedLotLamps = false;
+    bool installedLotLampCode = false; // visitor + arm sites patched (the option itself is read live)
     bool installedStreetLamps = false;
     bool installedAllLotsHQ = false;
     bool installedLotPass = false;
@@ -552,6 +697,14 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_smoothMaps, "mapaDeLuzSuavizado", true,
             S3SS_TR("Luz dos postes no chao mais lisa e sem manchas coloridas: o mapa de luz do terreno e ampliado 4x e limpo da compressao.",
                     "Smooth lamp light on the ground, with no blocky steps or colored specks."));
+        if constexpr (!kPublicBuild) // developer A/B only; the public build always prefers the GPU (CPU when it is not available)
+            RegisterBoolSetting(&g_smoothMapsGpu, "mapaDeLuzSuavizadoNaGpu", true,
+                "Developer: smooth the ground light maps on the GPU in the same frame they change (off = the CPU worker path, "
+                "with a plain copy until each map is ready). Falls back to the CPU by itself when the GPU path is not available.");
+        if constexpr (!kPublicBuild) // developer A/B only; the public build always has soft lot edges
+            RegisterBoolSetting(&g_softLotEdges, "bordaSuaveLote", true,
+                "Developer: within 3 m of a lot edge, lot grass fades its lamp light to the ground light the world grass shows "
+                "outside the lot, so a lamp near a lot edge leaves no step at the edge (off = the plain max of lot and ground light).");
         RegisterFloatSetting(&g_sidewalkClear, "calcadaComNevePisada", SettingWidget::Slider, 0.5f, 0.0f, 1.0f,
             S3SS_TR("Na neve, quanto do concreto das calcadas aparece por baixo da neve (0 = igual ao jogo, tudo coberto).",
                     "In snow, how much of the sidewalk concrete shows through (0 = like the game, fully covered)."));
@@ -625,14 +778,20 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_rootPtrAddr = *reinterpret_cast<const uint32_t*>(kRootGetter + 1);
         if (!LightDiag::Init()) LOG_WARNING("[NightTerrainRelight] Light diagnostics not available on this game version");
 
-        if (g_lotLamps) {
-            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kVisitorSite), kVisitorOrig.data(), kVisitorOrig.size()))
-                return Fail(S3SS_TR("Coleta de luzes do terreno nao confere em 0xC29626 (versao do jogo diferente ou outro mod?)",
-                                    "Terrain light gathering differs at 0xC29626 (different game version or another mod?)"));
-            for (const auto& s : kArmSites)
-                if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(s.addr), kArmOrig.data(), kArmOrig.size()))
-                    return Fail(std::format(S3SS_TR("Teste de luz nao confere em {:#x}: {}", "Light test differs at {:#x}: {}"), s.addr, s.name));
-
+        // The lot-lamp predicates read luzDoLoteNaGrama (g_lotLamps) at run time and, with it off, answer exactly like
+        // the game's own test (OriginalWorldLightTest first). So they are installed whatever the option says and the
+        // option applies live (no reinstall); only when the code differs is the option required to be off.
+        bool lotCodeOk = MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kVisitorSite), kVisitorOrig.data(), kVisitorOrig.size());
+        if (!lotCodeOk && g_lotLamps)
+            return Fail(S3SS_TR("Coleta de luzes do terreno nao confere em 0xC29626 (versao do jogo diferente ou outro mod?)",
+                                "Terrain light gathering differs at 0xC29626 (different game version or another mod?)"));
+        for (const auto& s : kArmSites)
+            if (lotCodeOk && !MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(s.addr), kArmOrig.data(), kArmOrig.size())) {
+                if (g_lotLamps) return Fail(std::format(S3SS_TR("Teste de luz nao confere em {:#x}: {}", "Light test differs at {:#x}: {}"), s.addr, s.name));
+                lotCodeOk = false;
+            }
+        if (!lotCodeOk) LOG_WARNING("[NightTerrainRelight] Terrain light code differs: \"Lot lamps light the street\" cannot be turned on");
+        if (lotCodeOk) {
             // mov esi,ecx; push edi; call TerrainLightTest; nop x3
             const auto visitorBytes = CallPatch(kVisitorSite, 3, {0x8B, 0xF1, 0x57}, reinterpret_cast<void*>(&TerrainLightTest), kVisitorOrig.size());
             if (!MemPatch::WriteBytes(kVisitorSite, visitorBytes, &patchedLocations, &kVisitorOrig)) {
@@ -697,7 +856,26 @@ class NightTerrainRelightPatch : public ApexPatch {
             FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
         }
         installedLotPass = g_lotPassNoTerrainMap;
-        installedLotLamps = g_lotLamps;
+        installedLotLampCode = lotCodeOk;
+        g_lotLampsSeen = g_lotLamps; // installed with the current value: no "switch changed" rebuild for it
+
+        // Chunk re-render notices for the smoothed maps (optional: without it the maps are found by hashing).
+        g_chunkHookInstalled = false;
+        if (MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kChunkRenderContextAt), kChunkRenderContext, sizeof(kChunkRenderContext))) {
+            const auto callBytes = CallPatch(kChunkRenderCall, 0, {}, reinterpret_cast<void*>(&ChunkRenderThunk), kChunkRenderOrig.size());
+            g_chunkHookInstalled = MemPatch::WriteBytes(kChunkRenderCall, callBytes, &patchedLocations, &kChunkRenderOrig);
+            if (g_chunkHookInstalled) FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(kChunkRenderCall), 5);
+        }
+        if (!g_chunkHookInstalled)
+            LOG_WARNING("[NightTerrainRelight] Terrain chunk re-render call differs at 0xC8504C: changed ground light maps are found by hashing only");
+
+        // Installed again in the world it was removed from (the menu's on/off): no new-world handling (no clear, no load
+        // rebuild), only one rebuild at night so lot lamps changed meanwhile reach the ground.
+        if (g_lastCells != 0 && !reinstalling) {
+            g_editKickPending = true;
+            g_editLastAt = Clock::now() - kEditQuiet;
+            g_editReason = "Night Lights turned on";
+        }
 
         D3D9Hooks::RegisterPresent("NightTerrainRelight", [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
             static bool capsLogged = false; // step 3 (increment 0): the per-pixel lamp shaders need about 600 slots
@@ -729,6 +907,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             LotLightBridge::SetWallGain(g_wallStrength);
             LotLightBridge::SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength);
             LotLightBridge::SetObjectPixelLights(g_objPixelLights, g_objPixelLightStrength);
+            LightmapSmooth::SetGpuPreferred(g_smoothMapsGpu);
+            LotLightBridge::SetSoftLotEdges(g_softLotEdges);
             LightmapSmooth::OnPresent(ctx.device);
             return D3D9Hooks::HookAction::Continue;
         }, D3D9Hooks::Priority::Last);
@@ -760,8 +940,10 @@ class NightTerrainRelightPatch : public ApexPatch {
         D3D9Hooks::UnregisterAll("NightTerrainRelight");
         LightProbe::Shutdown();
         RenderCallbacks::Remove(RenderCallbacks::preReset, LightmapSmooth::OnPreReset);
-        LotLightBridge::Shutdown();
-        LightmapSmooth::Clear();
+        // A reinstall (render thread, Install follows at once in the same world) keeps the chunk maps, smoothed maps and
+        // atlas: no device reset can happen in between. A real uninstall releases them (the preReset callback is gone).
+        LotLightBridge::Shutdown(reinstalling);
+        if (!reinstalling) LightmapSmooth::Clear();
         ObjectLightBridge::UninstallLampColour();
         ObjectLightBridge::Uninstall();
         if (!reinstalling) LevelLightShare::Uninstall();
@@ -769,20 +951,26 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (!MemPatch::RestoreAll(patchedLocations)) return Fail(S3SS_TR("Falha ao restaurar os bytes originais", "Could not restore the original code"));
         FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
         patchedLocations.clear();
+        g_chunkHookInstalled = false;
         g_lotRelightPending = false;
         g_scheduled = false;
-        g_lastCells = 0;
+        // g_lastCells is kept: installing again in the same world is not a world load (no clear, no load rebuild). A
+        // world that changed meanwhile has another cells pointer and is handled as new; with no world at all OnPresent
+        // resets it.
         g_menuLevel.store(-1.0f);
         isEnabled = false;
         LOG_INFO("[NightTerrainRelight] Uninstalled");
         return true;
     }
 
-    // "At dusk" and the delay are read live; only the lot lamp options change code bytes (reinstall). Runs on the
-    // message-loop thread: it only schedules the reinstall, which DeferredReinstall runs on the render thread.
+    // "At dusk", the delay and "lot lamps light the street" (luzDoLoteNaGrama: its predicates read it at run time) are
+    // live; only the developer options that change code bytes need a reinstall (and luzDoLoteNaGrama if its code could
+    // not be installed). Runs on the message-loop thread: it only schedules the reinstall, which DeferredReinstall runs on
+    // the render thread. The reinstall keeps the world state and the ground light maps (see Uninstall).
     void Update() override {
         if (!pendingReinstall) return;
-        if (!isEnabled.load() || (g_lotLamps == installedLotLamps && g_streetLampsLit == installedStreetLamps && g_allLotsHQ == installedAllLotsHQ &&
+        const bool lotCodeMissing = g_lotLamps && !installedLotLampCode;
+        if (!isEnabled.load() || (!lotCodeMissing && g_streetLampsLit == installedStreetLamps && g_allLotsHQ == installedAllLotsHQ &&
                                   g_lotPassNoTerrainMap == installedLotPass)) {
             pendingReinstall = false;
             return;
@@ -798,10 +986,16 @@ class NightTerrainRelightPatch : public ApexPatch {
         reinstalling = true;
         const bool removed = Uninstall();
         reinstalling = false;
-        // LevelLightShare was left in place: if the rest cannot come back, take it out too (the patch shows as off).
-        if (removed && !Install()) {
+        // LevelLightShare was left in place: if the rest cannot come back, take it out too (the patch shows as off). The
+        // chunk maps kept for the reinstall are released as well (no preReset callback without the patch).
+        reinstalling = true; // Install below: not "turned on again" (no extra rebuild)
+        const bool installed = removed && Install();
+        reinstalling = false;
+        if (removed && !installed) {
             if (LevelLightShare::IsInstalled()) LevelLightShare::Uninstall();
             RigTracker::Uninstall();
+            LotLightBridge::OnWorldChanged();
+            LightmapSmooth::Clear();
         }
     }
 
@@ -847,6 +1041,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_autoDusk = true;
         g_levelShare = true;
         g_smoothMaps = true;
+        g_smoothMapsGpu = true;
+        g_softLotEdges = true;
         g_lampTint = 1.0f;
         g_objLamps = true;
         g_objStrength = 1.0f;
@@ -1081,12 +1277,18 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextDisabled("(or Ctrl+Shift+F8)");
         ImGui::TextWrapped("Diagnostics: %s", LightDiag::Status().c_str());
         ImGui::TextWrapped("Street lamps in lots: %s", LotLightBridge::Status().c_str());
+        if (ImGui::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();
+        ImGui::TextWrapped("Soft lot edges: %s", LotLightBridge::LotEdgeStatus().c_str());
         ImGui::TextWrapped("Objects: %s", ObjectLightBridge::Status().c_str());
         ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
         ImGui::TextWrapped("Walls: %s", LotLightBridge::WallStatus().c_str());
         ImGui::TextWrapped("Roofs: %s", LotLightBridge::RoofStatus().c_str());
         ImGui::TextWrapped("Water: %s", LotLightBridge::WaterStatus().c_str());
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
+        if (ImGui::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
+        ImGui::SameLine();
+        if (ImGui::Button("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
+        ImGui::TextDisabled("GPU vs CPU: %s", LightmapSmooth::CompareStatus().c_str());
         ImGui::TextWrapped("Lamp colour: %s", ObjectLightBridge::LampColourStatus().c_str());
         ImGui::TextWrapped("Stories: %s", LevelLightShare::Status().c_str());
         ImGui::Separator();
@@ -1095,7 +1297,11 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::Separator();
         ImGui::TextWrapped("Last event: %s", g_lastEvent.c_str());
         ImGui::Text("Night level: %.2f | countdown: %d / %d", g_level, g_counter38, g_counter3C);
-        ImGui::Text("Terrain: armed %d | rebuilt %d", g_kicks.load(), g_rebuilds.load());
+        ImGui::Text("Terrain: armed %d | rebuilt %d | last: %s", g_kicks.load(), g_rebuilds.load(), g_lastTiming.c_str());
+        ImGui::TextWrapped("World load: %s | night level crossings: up %d, down %d", g_loadKickPending ? (g_live ? "live, waiting for a steady night level" : "waiting for the world to be drawn") : g_loadInfo.c_str(),
+                           g_crossUp, g_crossDown);
+        ImGui::TextWrapped("Lamp changes: %s | %s%s", LotLightBridge::LotLampStatus().c_str(), g_lastEditOutcome.c_str(), g_editKickPending ? " | rebuild pending" : "");
+        ImGui::Text("Chunk re-render notices: %d (%s)", g_chunkRenders.load(), g_chunkHookInstalled ? "hooked at 0xC8504C" : "not hooked: hashing only");
         ImGui::TextWrapped("Lots: %s (times: %d, stories: %d)", g_lastLotRelight.c_str(), g_lotRelights.load(), g_roomsQueued.load());
         ImGui::Text("Street lamps counted as lit: %ld", static_cast<long>(g_forcedLampUses));
         ImGui::Text("Lot lamps: armed %d | on the ground %d | off %d", g_lotLampArms.load(), g_lotLampsBaked.load(), g_lotLampsSkippedOff.load());

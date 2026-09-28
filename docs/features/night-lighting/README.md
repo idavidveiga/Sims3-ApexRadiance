@@ -56,7 +56,7 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | UI label | TOML key | Type | Default | Range | UI | Applied | Sub-doc |
 |---|---|---|---|---|---|---|---|
 | Street lamps light inside lots | `luzDoPosteNaGramaDoLote` | bool | true | | Main | live (`ApplyLive` -> `LotLightBridge::SetEnabled`) | [lot-light-pass](lot-light-pass.md) |
-| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main (also sets `automaticoAoAnoitecer` to the same value) | reinstall (code bytes) | [terrain-relight](terrain-relight.md) |
+| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main (also sets `automaticoAoAnoitecer` to the same value) | live since 28/09 (read at run time by the always-installed predicates; one rebuild at night) | [terrain-relight](terrain-relight.md) |
 | Outdoor lights reach every story | `luzExternaEntreAndares` | bool | true | | Main | live (`LevelLightShare::Install/Uninstall`) | [level-light-share](level-light-share.md) |
 | Lamps light nearby objects | `postesNosObjetos` | bool | true | | Main | live (`ObjectLightBridge::Install/Uninstall`, `SetObjectShadowFix`) | [objects-and-rigs](objects-and-rigs.md), [foliage](foliage.md) |
 | Roofs receive lamp light | `telhadosComLuz` | bool | true | | Main | live (per frame) | [roofs](roofs.md) |
@@ -71,12 +71,14 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | 1..4 (`SetWallGain` clamps 0.25..8) | Adv/Walls and roofs | live | [walls](walls.md) |
 | Roof light strength | `forcaNosTelhados` | float | 0.6 | 0.05..2 | Adv/Walls and roofs | live | [roofs](roofs.md) |
 | Smooth light on the ground | `mapaDeLuzSuavizado` | bool | true | | Adv/Ground and snow | live | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) |
+| Smooth the ground light maps on the GPU (A/B) | `mapaDeLuzSuavizadoNaGpu` | bool | true | | Dev only (registered in the dev build; public = always GPU when available) | live (next Present: switching drops the smoothed maps, the new path rebuilds them) | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) "GPU path" |
 | Trodden snow on sidewalks | `calcadaComNevePisada` | float | 0.5 | 0..1 | Adv/Ground and snow (needs bridge) | live | [roads](roads.md) |
 | Update automatically at dusk | `automaticoAoAnoitecer` | bool | true | | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
 | Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5..10 | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
 | Relight only around changed lamps | `relightLocal` | bool | true | | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
 | Street lamps count as lit in lot light solves | `postesAcesosNoCalculo` | bool | false | | Dev (experimental) | reinstall (0x6BE18C) | [terrain-relight](terrain-relight.md), [lot-light-pass](lot-light-pass.md) |
 | High lighting quality on every lot | `qualidadeAltaEmTodosOsLotes` | bool | false | | Dev (experimental) | reinstall; lots loaded afterwards | [lot-light-pass](lot-light-pass.md) |
+| Soft lot edges (A/B) | `bordaSuaveLote` | bool | true | | Dev only (registered in the dev build; public = always on) | live (per frame) | [lot-light-pass](lot-light-pass.md) "Soft lot edges" |
 | Lot grass keeps the lot's own light | `gramaDoLoteUsaLuzDoLote` | bool | false | | Dev (experimental) | reinstall (0xC7F87D) | [lot-light-pass](lot-light-pass.md) |
 | Recalculate every lot at dusk | `recalcularLotesAoAnoitecer` | bool | false | | Dev (experimental) | live | [terrain-relight](terrain-relight.md) |
 | Ponds reflect lamps | `lagosRefletemLampadas` | bool | true | | Refl | live | [water](water.md), [../reflections.md](../reflections.md) |
@@ -89,8 +91,10 @@ Notes on the table:
 - Dependency gates in the UI (`BeginDisabled`): `groundLight = g_bridge && g_smoothMaps` gates the three
   ground-light object/fence options (they read the world atlas, which exists only with both on); the strengths are
   greyed out when their parent is off; "Trodden snow on sidewalks" needs the bridge.
-- **Reinstall vs live.** `Update()` (message-loop thread) schedules a reinstall only when `luzDoLoteNaGrama`,
-  `postesAcesosNoCalculo`, `qualidadeAltaEmTodosOsLotes` or `gramaDoLoteUsaLuzDoLote` changed (they change code bytes).
+- **Reinstall vs live.** `Update()` (message-loop thread) schedules a reinstall only when `postesAcesosNoCalculo`,
+  `qualidadeAltaEmTodosOsLotes` or `gramaDoLoteUsaLuzDoLote` changed (they change code bytes), or when `luzDoLoteNaGrama`
+  is on but its code could not be installed (28/09: it is otherwise live). The reinstall keeps the world state and the
+  ground light maps (`LotLightBridge::Shutdown(true)`, `g_lastCells` kept).
   The reinstall itself (`ReinstallNow`) runs on the render thread through `DeferredReinstall`, registered in
   `RenderCallbacks::endSceneBeforeOverlay` (a crash fix, see Pitfalls). Everything else is pushed every frame from the
   Present hook or applied by `ApplyLive`.
@@ -109,7 +113,7 @@ Notes on the table:
 | Dev/Status "Shadow" | `LotLightBridge::ObjectStatus()` | moon-shadow fix, foliage counters |
 | Dev/Status "Walls" | `LotLightBridge::WallStatus()` | "outside walls: strength S \| draws: N \| variants seen: M" |
 | Dev/Status "Roofs", "Water" | `RoofStatus()`, `WaterStatus()` | |
-| Dev/Status "Smoothed map" | `LightmapSmooth::Status()` | "chunks smoothed: R of N \| queued \| uploaded \| unreadable \| world map: WxH chunks (C copies)" |
+| Dev/Status "Smoothed map" | `LightmapSmooth::Status()` | GPU path: "GPU (F intermediates) \| chunks smoothed: R of N \| waiting \| built (in view, out of view, borders) \| GPU time per chunk \| changes seen \| world map ... \| GPU vs CPU: ..."; CPU path: "CPU \| chunks smoothed: R of N \| queued \| uploaded \| unreadable \| world map: WxH chunks (C copies)". Below it (dev): the GPU A/B checkbox and "Compare GPU vs CPU (one chunk)" |
 | Dev/Status "Lamp colour" | `ObjectLightBridge::LampColourStatus()` | |
 | Dev/Status "Stories" | `LevelLightShare::Status()` | |
 | Dev/Status counters | `RenderDeveloperUI` | last event, night level + countdowns +0x38/+0x3C, terrain armed/rebuilt/local relights, lot relights, "Street lamps counted as lit", lot-lamp arms/baked/off, story-gate counters |
@@ -129,7 +133,7 @@ that runs, in this order:
    flush, every 20 frames the light enumeration `FUN_006ACF70` that feeds the lamp lists);
 6. `LightmapSmooth::SetEnabled`, the remaining setters (`SetSidewalkClear`, `SetLampTint`, `SetFenceGroundLight`,
    `SetWallGain`, `SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength)`,
-   `SetObjectPixelLights`), then `LightmapSmooth::OnPresent(device)` (reads changed chunk maps, queues smoothing jobs,
+   `SetObjectPixelLights`), `LightmapSmooth::SetGpuPreferred`, then `LightmapSmooth::OnPresent(device)` (GPU path: timings, fallback hash checks, atlas growth; CPU path: reads changed chunk maps, queues smoothing jobs,
    uploads one finished map).
 
 ### Per draw (lot_light_bridge.cpp)

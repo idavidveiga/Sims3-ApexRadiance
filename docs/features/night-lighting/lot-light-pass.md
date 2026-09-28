@@ -32,6 +32,7 @@ c15.xz), so the fix only needs the pixel shader.
 |---|---|---|---|---|
 | Street lamps light inside lots | `luzDoPosteNaGramaDoLote` | bool | true | Main section. Live: `ApplyLive` -> `LotLightBridge::SetEnabled`. Off also disables roads, floors, fences, snow, objects (everything after order 6 in the dispatch, see [README](README.md)) |
 | Smooth light on the ground | `mapaDeLuzSuavizado` | bool | true | Needed for the atlas; without it the pass falls back to the home chunk's game map |
+| Soft lot edges (A/B) | `bordaSuaveLote` | bool | true | Dev only (registered in the dev build; the public build always has it on). Checkbox under "Street lamps in lots" in Developer > Lighting. Pushed every frame (`SetSoftLotEdges`), live. See "Soft lot edges" |
 | Lot grass keeps the lot's own light | `gramaDoLoteUsaLuzDoLote` | bool | false | Dev only, experimental; see "Experimental game patches" |
 | High lighting quality on every lot | `qualidadeAltaEmTodosOsLotes` | bool | false | Dev only, experimental |
 | Street lamps count as lit in lot light solves | `postesAcesosNoCalculo` | bool | false | Dev only, experimental |
@@ -54,8 +55,12 @@ the bound PS classifies as `PsClass::LotLight` (exact `kLotLightPs` = 568 bytes,
    - **No atlas**: the chunk texture recorded from the world chunk draw with key `Key(c15.x, c15.z)` (the home
      chunk), or its smoothed version (`ChunkTexture` -> `LightmapSmooth::Find`). If no chunk was recorded,
      `g_lotMissing++` ("without terrain texture" in the status) and the game draws.
-4. Binds the terrain texture to **s2**, sets s2 to CLAMP/CLAMP, LINEAR min/mag/mip, sRGB off; sets the replacement PS;
-   draws; restores texture, 6 sampler states, c14 and the PS. Counter `g_lotDrawn` ("lot light fixed: N draws").
+4. Soft lot edges (28/09): reads VS c8..c10 (lot matrix), finds the lot's rectangle (`FindLotRect`) and builds PS
+   c28..c30 (`LotEdgeConstants`); see "Soft lot edges" below. Without a rectangle, or with the option off, c30 = (0, 1)
+   and the pass is the plain max().
+5. Binds the terrain texture to **s2**, sets s2 to CLAMP/CLAMP, LINEAR min/mag/mip, sRGB off; sets the replacement PS
+   and PS c28..c30; draws; restores texture, 6 sampler states, c14, PS c28..c30 and the PS. Counter `g_lotDrawn` ("lot
+   light fixed: N draws").
 
 ### The replacement shader (`kReplacementHlsl`, ps_3_0)
 
@@ -66,6 +71,9 @@ the bound PS classifies as `PsClass::LotLight` (exact `kLotLightPs` = 568 bytes,
 | c2 | shadow-map offsets (game) |
 | c3.x | lamp scale (game) |
 | c4.x | sky scale (game) |
+| c28 | soft edges (mod): `(dLx/du, dLx/dv, Lx0, W)`: lot-local x in metres = `dot(float3(terrainUv, 1), c28.xyz)`; W = lot width |
+| c29 | soft edges (mod): `(dLz/du, dLz/dv, Lz0, D)`: lot-local z; D = lot depth |
+| c30 | soft edges (mod): `(1 / band, bias, 0, 0)`: `(1/3, 0)` on, `(0, 1)` off (w = 1 everywhere) |
 | s0 | sky cube (game) |
 | s1 | lot light map (game) |
 | s2 | terrain light (mod: atlas or chunk map) |
@@ -75,15 +83,82 @@ the bound PS classifies as `PsClass::LotLight` (exact `kLotLightPs` = 568 bytes,
 | TEXCOORD4 | normal |
 | TEXCOORD5 | lot map uv |
 
-Body, equal to the game's pass except the marked line:
+Body, equal to the game's pass except the marked lines:
 ```
 sun   = lerp(avg of 4 tex2Dproj shadow taps, 1, edge fade) * saturate(dot(n, c1.xyz))
-lamps = max(tex2D(sLot, lotUv).rgb, tex2D(sTerrain, terrainUv.xy).rgb) * c3.x   // was: tex2D(sLot).rgb * c3.x
+t     = tex2D(sTerrain, terrainUv.xy).rgb
+lp    = (dot(float3(terrainUv.xy, 1), c28.xyz), dot(float3(terrainUv.xy, 1), c29.xyz))    // lot-local metres
+e     = min(lp, (c28.w, c29.w) - lp);  w = smoothstep01(saturate(min(e.x, e.y) * c30.x + c30.y))
+lamps = lerp(t, max(tex2D(sLot, lotUv).rgb, t), w) * c3.x         // was: tex2D(sLot).rgb * c3.x
 col   = sun * c0.rgb + lamps
 col   = texCUBE(sSky, n).rgb * c4.x + col
-return float4(col * 0.5, 0)                                                        // modulate2x
+return float4(col * 0.5, 0)                                        // modulate2x
 ```
-Capture id of the compiled replacement: F688FB46/1020 (MD5 prefix / size, ground_report.md).
+Capture id of the compiled replacement before the soft edges: F688FB46/1020 (MD5 prefix / size, ground_report.md). The
+soft-edge version is larger (new id: read it from the next F7 capture). fxc check: `fxc /T ps_3_0 /E main` on the
+string's contents (no macros; entry point `main`).
+
+### Soft lot edges (`bordaSuaveLote`, 28/09)
+
+**Problem** (`research\borda2`, `research\borda3`): a street lamp (#1929, type 11, head (958.4, 61.8, 1199)) stands
+0.7 m inside the edge of lot 09080020A1D28860 (lot-local (29.3, 11.5); the edge is lot-local x = 30). The lot map
+(s1, 256x128 A8R8G8B8, 3.94 texels/m) saturates at 1.0 within ~2.5 m of the lamp; the world atlas (terrain stamp baked
+at 1 texel/m, smoothed) peaks at R 0.89 / G 0.69 there. So `max(lot, atlas)` is 1.0 just inside the edge and the world
+grass shows the atlas just outside: a step at the edge. Beyond ~3.5 m inside, the atlas already wins the max (the two
+terms cross at ~4 m). It happens whenever a lamp stands within ~2.5 m of a lot edge, also right after loading.
+
+**Fix.** Within `kEdgeBand` = 3 m of the lot rectangle, the lamp term blends from `max(lot, atlas)` to the atlas term:
+`w = smoothstep(0, 3, distance to the nearest edge)`; `lamps = lerp(atlas, max(lot, atlas), w)`. At the edge w = 0,
+so the lot grass shows exactly the terrain term the world grass shows on the other side; the smoothstep has zero slope
+at the edge, so the lot side continues the terrain's own gradient; 3 m inside and beyond nothing changes. It can only
+lower the lamp term (never below the atlas), so lot edges without a lamp are unchanged. Two lots that share an edge both
+fade to the same atlas at it. Only this pass (lot ground) is touched; floors, walls and indoor passes are other shaders.
+
+**Where the lot rectangle comes from** (option (c) of the design; (a) and (b) were rejected, see Pitfalls):
+- Lot-local position: the PS already receives the terrain uv `(world.xz - c15.xz) * k.xy + k.zw` (k = the c14 the draw
+  runs with: the atlas mapping, or the game's 1/256 chunk mapping). The lot pass VS has the lot matrix in c8 / c10
+  (`world.x = c8.x lx + c8.z lz + c8.w`, `world.z = c10.x lx + c10.z lz + c10.w`). `LotEdgeConstants` inverts both on
+  the CPU (double precision) into `lotLocal = A * uv + b`, so the shader does two dot products and works for any lot
+  rotation. No new dependency on the VS internals: the terrain uv formula is the one the bridge already relies on.
+- Lot size: room 0 of the lot, `+0xC0` / `+0xC4` (tiles along lot-local x / z; 1 tile = 1 m). Verified in the decompile
+  (28/09): `FUN_006a2740` (room rebuild) sets room 0's +0xC0 / +0xC4 from the manager's tile grid size +0x264 / +0x268
+  (and +0x20 / +0x28 = size - 1, +0x1C / +0x24 = 0: the tile bounds); `FUN_0069efc0` walks tiles `[0, C0) x [0, C4)`;
+  the manager's room-id grid +0x260 is bounds-checked with +0x264 / +0x268 in `FUN_006a4300`, `006a4890`, `006a4a00`...;
+  `FUN_006a4c10` publishes "LotSizeParameters" = (+0x264 / 64, +0x268 / 64); `FUN_006c6ab0` gathers world lights at the
+  lot centre `(C0 / 2, 0, C4 / 2)` through +0xF8. The runtime value itself has not been printed yet (see Testing).
+- Matching the draw to its lot: `RefreshLotRects` (Present, every 20 frames, or 5 frames after a lot pass found no
+  rectangle) walks the light update tree like LightDiag (tracker + 0x6A0 + level * 0x1A4, level 0 first, manager room
+  hash +0x234 / +0x238, room 0) and keeps `{origin m12/m14, m0, m8, W, D, lot id}` from room 0's +0xF8 matrix and
+  +0xC0 / +0xC4. `FindLotRect` matches VS c8.w / c10.w within 5 cm and c8.x / c8.z within 2e-3. Verified: LightDiag's
+  `matriz[+0xF8]` of lot 09080020A1D28860, (-0.3746 0 -0.9272 0 | 0 1 0 0 | 0.9272 0 -0.3746 0 | 958.7 60.52 1230 1),
+  is the lot pass VS c8 = (-0.3746, 0, 0.9272, 958.74), c10 = (-0.9272, 0, -0.3746, 1230.44) (this answers PASSO3
+  question 3 for rotation and translation).
+
+**Numbers from the capture** (borda3/clara, lot map T6 and atlas T7 2048x1536 with c14 = (1/1024, 1/768, 0.375, 0.5),
+bilinear, along lot-local z = 11.46 through the lamp, assuming W = 30 as the lot map content ends at texel 119 =
+3.9375 x 30 + 1):
+
+| lot-local x | from edge | lot R | atlas R | before (max) | soft edges |
+|---|---|---|---|---|---|
+| 27.0 | 3.0 in | 0.974 | 0.644 | 0.974 | 0.974 |
+| 28.0 | 2.0 in | 1.000 | 0.777 | 1.000 | 0.942 |
+| 29.0 | 1.0 in | 1.000 | 0.879 | 1.000 | 0.911 |
+| 29.75 | 0.25 in | 1.000 | 0.886 | 1.000 | 0.889 |
+| 30.0 | edge | 1.000 | 0.876 | **1.000** | **0.876** |
+| 30.25 | 0.25 out | - | 0.862 | 0.862 | 0.862 |
+| 31.0 | 1.0 out | - | 0.803 | 0.803 | 0.803 |
+
+G channel at the edge: 1.000 before, 0.683 after, 0.672 at 0.25 m outside. So the step at the edge was +14% (R) and
++46% (G) of the lamp term; after the fix the two sides of the edge are the same sample of the same atlas (0 % by
+construction; 0.25 m apart they differ by 1.6 % R / 1.6 % G, the atlas' own slope). The two
+probe pixels map (through the lot pass VS c4..c7, on the ground plane) to lot-local (29.68, 10.86) = 0.32 m inside
+(borda3/clara, screen (0.275, 0.333, 0.039)) and (30.48, 11.22) = 0.48 m outside (borda3/escura, (0.259, 0.267,
+0.027)). The affine map was checked on those points: uv (0.435249, 0.561012) -> (29.6800, 10.8600) in float32.
+
+**Limits:** the snow lot pass (`LotLightSnow`, bytecode patch) has no feather yet; a porch lamp of the lot within 3 m of
+the edge fades to the atlas near the edge (with "Lot lamps light the street" on the atlas contains it, so the change is
+small); a lot the tree walk does not list (no lighting manager, room 0 not rebuilt: +0xC0 == 0) draws the plain max
+(counted as "without a lot rectangle").
 
 ### Chunk registration (`RecordWorldChunk`)
 
@@ -110,6 +185,34 @@ chunk, so a rebuild after loading fixes it (now the "world loaded" full rebuild 
 [terrain-relight.md](terrain-relight.md)). The smoothed maps read 6 texels from each neighbour, and lots read the atlas,
 so no seam comes from the mod's side.
 
+### Terrain source while a chunk map changes (28/09)
+
+The smoothed maps are "correct first" ([world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md) "Update
+path"): `LightmapSmooth::Find` (used by `ChunkTexture` for the no-atlas fallback and by roads) and the world draw's `Get`
+return nullptr while the smoothed map is older than the game's current map, so the draw uses the game's map; the atlas
+cell holds a plain 2x copy of the current map until the smoothed one replaces it. The lot pass therefore never reads a
+stale or black terrain term after a rebuild or while the atlas grows.
+
+### Lot lamp change tracking (`TrackLotLampEdits`, 28/09)
+
+Lives here (it uses the bridge's light enumeration, every 20 frames in `LotLightBridge::OnPresent`) and drives the
+lamp-change rebuild of [terrain-relight.md](terrain-relight.md). For every lot light (lot id +0xC0/+0xC4 != 0, alive,
+room known, room 0) it keeps a signature (base colour +0xF0, intensity +0x10, lit bit, position +0x120), the lot id, the
+lit bit and whether its type +0xB0 is 3..6. It compares the whole SET with the previous enumeration:
+- edited (same pointer, other signature), added (new pointer), removed (pointer gone);
+- relevant to the bake only: type 3..6 lamps must be lit before or after (unlit ones are not baked); other types always;
+- per lot: counted only if the lot is **settled**: present in every enumeration for 10 s and without an uncounted change
+  for 5 s. An uncounted change restarts the 5 s, so a lot that is still loading (lamps trickling in) never counts;
+- more than 8 relevant changes in one enumeration = bulk (lamps switching together at dusk / dawn, or streaming): none
+  counted, their lots restart the 5 s;
+- removals are confirmed at the next enumeration: the lot must still be there and have lost no further lamp. A lot that
+  vanishes (streaming out) cancels them; so the removal of a lot's only lamp is never counted (the stuck-countdown
+  fallback of the terrain relight can still catch it at night, at most every 15 s).
+Counted changes increment `LotLampEdits()` (log in the dev build: `[LotLightBridge] Lot lamp change: lot <id>: A added, E
+edited, R removed` or `lamp removed on lot <id>`); `LotLampStatus()` feeds the Developer line "Lamp changes". A world
+change clears the tracking. v0.1.0 compared only lamps that existed in both enumerations, so additions and removals
+waited for the 15 s stuck-countdown fallback.
+
 ### Snow variant
 
 In snow the lot light pass is another shader (`PsClass::LotLightSnow`, 1852 bytes): it is bytecode-patched rather than
@@ -124,10 +227,13 @@ replaced, see [snow.md](snow.md) section "Snowy lot ground".
 | | `OnDrawInner` (last block) | the lot pass redraw |
 | | `RecordWorldChunk`, `g_chunks`, `Key`, `ChunkTexture` | chunk light map registry (key = chunk centre) |
 | | `ClassifyPsCode` | `LotLight` / `WorldCandidate` classes |
-| | `LotLightBridge::SetEnabled`, `Status`, `OnWorldChanged` (`ClearChunks`) | lifecycle |
+| | `LotLightBridge::SetEnabled`, `Status`, `OnWorldChanged` (`ClearChunks`), `Shutdown(keepChunkMaps)`, `ChunkCount` | lifecycle |
+| | `ReadLotLamp`, `TrackLotLampEdits`, `LotLampEdits`, `LotLampStatus` | lot lamp change tracking |
+| | `LotRect`, `ReadLotRects` (SEH walk), `RefreshLotRects`, `FindLotRect`, `LotEdgeConstants`, `g_softEdges`, `kEdgeBand`; `LotLightBridge::SetSoftLotEdges`, `LotEdgeStatus` | soft lot edges |
 | shader_ids.h | `kLotLightPs` {568, 0xFDAD274B} | exact gate |
 | lightmap_smooth.cpp | `LightmapSmooth::Atlas`, `Find`, `Get` | terrain light source |
 | patches/night_terrain_relight_patch.cpp | `LotPassStub`, `StreetLampColourStub`, `kQualitySites` | experimental game patches |
+| | `g_softLotEdges` (`bordaSuaveLote`, dev-only registration), `SetSoftLotEdges` in the Present hook, checkbox + "Soft lot edges" line in `RenderDeveloperUI` | soft lot edges switch |
 
 ## Game addresses and patterns
 
@@ -187,6 +293,12 @@ From notes section 1 ("do not repeat"):
 - m76 (25/09 16:25): a lot at z 1290 on the chunk that ends at z 1280, sampling its home chunk map with CLAMP,
   stretched the chunk's last row: dark lot with a straight edge next to a lit sidewalk. Fixed by reading the atlas; do
   not go back to home-chunk sampling when the atlas is available.
+- Soft lot edges, rejected designs (28/09): (a) the lot map UV rect cannot give the lot size: the texture is sized
+  `nextPow2(4 x size)` by `FUN_006a8de0` and holds more than the ground (256 wide for a 30 m lot, content ends at
+  texel 119 of 256), and the VS lot-map formula `(v0 x 63/128 + 0.25) x c12` uses `def` constants the CPU cannot
+  read; (b) the lot map has no coverage signal: room-0 texels have alpha 0 and outside texels are black, like any
+  unlit texel (T6 dump); a content bounding box would fade porch-lamp pools in the middle of a lot. Using the lot
+  pass geometry (vertex buffer bounds) was also rejected: tiles under floors may be missing, and the VB pool is unknown.
 
 ## Testing in game
 
@@ -196,6 +308,13 @@ From notes section 1 ("do not repeat"):
 - F7 on lot grass: the covering light pass shows PS size 1020 (our replacement; MD5 prefix F688FB46) with s2 bound to
   the 2D atlas render target (2560x2560 or 4096x4096 in the captures) or a 1024x1024 A8R8G8B8 smoothed map.
 - Toggle "Street lamps light inside lots" live to compare.
+- Soft lot edges: F7 on the lot grass just inside the edge next to a lamp (0.2-0.5 m), then F7 on the world grass
+  just outside at the same spot. The lot pass line says `mod draw: lot light pass | soft edges: lot <id>, W x D m,
+  origin (x, z), band 3.0 m (PS c28..c30)`; W x D must be the real lot size (e.g. 30 x 30) and PS c28..c30 are
+  listed with it. The lamp term just inside should match the terrain term just outside within ~2-3 % (the whole
+  pixel within the albedo difference of the two paints). Toggle Developer > "Soft lot edges" for A/B; the line
+  "Soft lot edges: on, band 3.0 m | lots known: N | lot passes feathered: M | without a lot rectangle: K" should show
+  K staying near 0 once lots are loaded.
 
 ## Open items
 

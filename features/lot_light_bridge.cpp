@@ -39,6 +39,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -54,12 +55,23 @@ namespace {
 
 constexpr const char* kHookName = "LotLightBridge";
 
+//
+// Soft lot edges (28/09, research\borda2 + borda3): the lot map saturates at 1.0 within ~2.5 m of a street lamp while
+// the terrain stamp outside the lot peaks at ~0.7-0.9, so a lamp near a lot edge left a step at the edge. Within the
+// band c30.x = 1/band metres of the lot rectangle, the lamp term blends from max(lot, terrain) to the terrain term, which
+// is exactly what the world grass shows on the other side. Lot-local position = affine map of the terrain uv (c28, c29,
+// built on the CPU from VS c14/c15 and the lot matrix VS c8/c10); lot size W x D (tiles = metres) from room 0 of the
+// lot (+0xC0/+0xC4). c30 = (0, 1) turns it off (w = 1 everywhere): unmatched lot or option off.
+//   c28 = (dLx/du, dLx/dv, Lx0, W)   c29 = (dLz/du, dLz/dv, Lz0, D)   c30 = (1/band, bias, 0, 0)
 const char* kReplacementHlsl = R"(
 float4 c0 : register(c0);
 float4 c1 : register(c1);
 float4 c2 : register(c2);
 float4 c3 : register(c3);
 float4 c4 : register(c4);
+float4 cLotX : register(c28);
+float4 cLotZ : register(c29);
+float4 cEdge : register(c30);
 samplerCUBE sSky : register(s0);
 sampler2D sLot : register(s1);
 sampler2D sTerrain : register(s2);
@@ -81,7 +93,13 @@ float4 main(PSIn i) : COLOR0 {
     float2 d = i.shadowPos.xy - 0.5;
     float edge = saturate(max(abs(d.x), abs(d.y)) * 8 - 3);
     float sun = lerp(avg, 1, edge) * saturate(dot(i.normal, c1.xyz));
-    float3 lamps = max(tex2D(sLot, i.lotUv).rgb, tex2D(sTerrain, i.terrainUv.xy).rgb) * c3.x;
+    float3 terrain = tex2D(sTerrain, i.terrainUv.xy).rgb;
+    float3 uv1 = float3(i.terrainUv.xy, 1);
+    float2 lp = float2(dot(uv1, cLotX.xyz), dot(uv1, cLotZ.xyz)); // lot-local metres
+    float2 e = min(lp, float2(cLotX.w, cLotZ.w) - lp);             // distance to the nearer edge on each axis
+    float w = saturate(min(e.x, e.y) * cEdge.x + cEdge.y);
+    w = w * w * (3 - 2 * w);
+    float3 lamps = lerp(terrain, max(tex2D(sLot, i.lotUv).rgb, terrain), w) * c3.x;
     float3 col = sun * c0.rgb + lamps;
     col = texCUBE(sSky, i.normal).rgb * c4.x + col;
     return float4(col * 0.5, 0);
@@ -153,6 +171,138 @@ IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBas
 }
 
 bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(0x011D1860);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
 
 // ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
 // dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
@@ -411,20 +561,50 @@ void UpdateLampList() {
     g_lampCount = static_cast<int>(g_allLamps.size());
 }
 
-// ---- Edits of outdoor lot lamps (colour, brightness, on/off) on lamps that already existed ----
+// ---- Changes of outdoor lot lamps: edits (colour, brightness, on/off, position), additions and removals, e.g. in
+// Build mode. The terrain light has to be rebuilt for those; the game does it only when the lot is reloaded.
+// Lots streaming in and out must never look like edits (NOTAS 1c: a rebuild every ~30 s from streaming lamps), so a
+// change counts only when:
+//  - it matters to the terrain bake: a lamp of type 3..6 counts only if it is lit before or after (unlit ones are not
+//    baked, TerrainLightTest); other types on lots always;
+//  - its lot is settled: seen in every enumeration for at least 10 s, and no uncounted change on it for 5 s (a lot that
+//    is still loading keeps adding lamps and so never becomes settled while it trickles in);
+//  - at most 8 changes in the enumeration (more = lamps switching at dusk / dawn, or streaming in bulk);
+//  - removals: the lot is still there in the NEXT enumeration and lost no more lamps (a lot unloading lamp by lamp, or
+//    vanishing, is streaming out). The removal of a lot's last lamp is therefore never counted (the lot vanishes).
+using Clock = std::chrono::steady_clock;
 using LampSig = std::array<uint32_t, 8>; // colour, intensity, lit, position (moving a lamp in build mode, 25/09)
-std::map<uintptr_t, LampSig> g_lotLampSig;
+struct LotLampState {
+    LampSig sig{};
+    uint64_t lot = 0;
+    bool lit = false;
+    bool plain = false; // type 3..6: baked only while lit
+};
+struct LotSeen {
+    Clock::time_point firstSeen{}, lastUncounted{};
+    bool removalPending = false;
+};
+std::map<uintptr_t, LotLampState> g_lotLampSig;
+std::map<uint64_t, LotSeen> g_lotSeen;
 std::atomic<int> g_lotLampEdits{0};
+int g_lotChangesCounted = 0, g_lotChangesIgnored = 0;
+std::string g_lastLotChange = "none";
 
-bool ReadLotLampSig(uintptr_t L, uint32_t out[8]) {
+bool ReadLotLamp(uintptr_t L, LotLampState& out) {
     __try {
-        if ((*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) == 0) return false; // not a lot lamp
+        const uint32_t lo = *reinterpret_cast<const uint32_t*>(L + 0xC0), hi = *reinterpret_cast<const uint32_t*>(L + 0xC4);
+        if ((lo | hi) == 0) return false; // not a lot lamp
         const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
         if (!(f & 0x01) || !(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0) return false; // alive, outdoors
-        std::memcpy(out, reinterpret_cast<const void*>(L + 0xF0), 12); // base colour
-        out[3] = *reinterpret_cast<const uint32_t*>(L + 0x10);          // intensity
-        out[4] = f & 0x20;                                               // lit
-        std::memcpy(out + 5, reinterpret_cast<const void*>(L + 0x120), 12); // position
+        uint32_t* out8 = out.sig.data();
+        std::memcpy(out8, reinterpret_cast<const void*>(L + 0xF0), 12); // base colour
+        out8[3] = *reinterpret_cast<const uint32_t*>(L + 0x10);          // intensity
+        out8[4] = f & 0x20;                                               // lit
+        std::memcpy(out8 + 5, reinterpret_cast<const void*>(L + 0x120), 12); // position
+        const int type = *reinterpret_cast<const int*>(L + 0xB0);
+        out.lot = (static_cast<uint64_t>(hi) << 32) | lo;
+        out.lit = (f & 0x20) != 0;
+        out.plain = type >= 3 && type <= 6;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -432,17 +612,85 @@ bool ReadLotLampSig(uintptr_t L, uint32_t out[8]) {
 }
 
 void TrackLotLampEdits() {
-    std::map<uintptr_t, LampSig> now;
-    bool edited = false;
+    const auto now = Clock::now();
+    std::map<uintptr_t, LotLampState> cur;
     for (uintptr_t L : g_enumLights) {
-        LampSig s;
-        if (!ReadLotLampSig(L, s.data())) continue;
-        auto it = g_lotLampSig.find(L);
-        if (it != g_lotLampSig.end() && it->second != s) edited = true;
-        now.emplace(L, s);
+        LotLampState s;
+        if (ReadLotLamp(L, s)) cur.emplace(L, s);
     }
-    g_lotLampSig.swap(now);
-    if (edited) g_lotLampEdits.fetch_add(1, std::memory_order_relaxed);
+    std::map<uint64_t, int> lotsNow;
+    for (const auto& [L, s] : cur) lotsNow[s.lot]++;
+    // per lot: relevant additions / edits / removals in this enumeration
+    struct Change { int added = 0, edited = 0, removed = 0; };
+    std::map<uint64_t, Change> changes;
+    int total = 0;
+    for (const auto& [L, s] : cur) {
+        auto it = g_lotLampSig.find(L);
+        if (it == g_lotLampSig.end()) {
+            if (!s.plain || s.lit) { changes[s.lot].added++; total++; }
+        } else if (it->second.sig != s.sig && (!s.plain || s.lit || it->second.lit)) {
+            changes[s.lot].edited++;
+            total++;
+        }
+    }
+    for (const auto& [L, s] : g_lotLampSig)
+        if (!cur.count(L) && (!s.plain || s.lit)) {
+            changes[s.lot].removed++;
+            total++;
+        }
+    g_lotLampSig.swap(cur);
+
+    // lots seen: new lots start their settle time, vanished lots are forgotten (with any pending removal)
+    for (const auto& [lot, n] : lotsNow)
+        if (!g_lotSeen.count(lot)) g_lotSeen[lot] = LotSeen{now, now, false};
+    for (auto it = g_lotSeen.begin(); it != g_lotSeen.end();) {
+        if (!lotsNow.count(it->first)) it = g_lotSeen.erase(it);
+        else ++it;
+    }
+
+    int counted = 0, ignored = 0;
+    std::string what;
+    // removals seen last time: confirmed when the lot is still here and lost no more lamps
+    for (auto& [lot, seen] : g_lotSeen) {
+        if (!seen.removalPending) continue;
+        auto c = changes.find(lot);
+        if (c != changes.end() && c->second.removed > 0) continue; // still losing lamps: wait
+        seen.removalPending = false;
+        counted++;
+        what = std::format("lamp removed on lot {:016X}", lot);
+    }
+    const bool bulk = total > 8;
+    for (const auto& [lot, c] : changes) {
+        auto s = g_lotSeen.find(lot);
+        if (s == g_lotSeen.end()) { // the lot vanished: streaming out
+            ignored++;
+            continue;
+        }
+        LotSeen& seen = s->second;
+        const bool settled = now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5);
+        if (!settled || bulk) {
+            seen.lastUncounted = now;
+            seen.removalPending = false;
+            ignored++;
+            continue;
+        }
+        if (c.removed > 0) seen.removalPending = true; // confirmed at the next enumeration
+        if (c.added > 0 || c.edited > 0) {
+            counted++;
+            what = std::format("lot {:016X}: {} added, {} edited, {} removed", lot, c.added, c.edited, c.removed);
+        }
+    }
+    g_lotChangesIgnored += ignored;
+    if (counted > 0) {
+        g_lotChangesCounted += counted;
+        g_lastLotChange = what;
+        g_lotLampEdits.fetch_add(1, std::memory_order_relaxed);
+        if constexpr (!kPublicBuild) LOG_INFO("[LotLightBridge] Lot lamp change: " + what);
+    } else if (ignored > 0) {
+        if constexpr (!kPublicBuild)
+            LOG_DEBUG(std::format("[LotLightBridge] Lot lamp changes ignored ({} lots; {}): streaming, lots still loading or lamps switching together", ignored,
+                                  bulk ? "bulk" : "not settled"));
+    }
 }
 
 // Picks up to 16 lamps whose light can reach the roof piece at world position (x, z): chosen per draw from the roof
@@ -1473,6 +1721,28 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     }
     const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
 
+    // Soft lot edges: PS c28..c30 (see kReplacementHlsl). Without a known lot rectangle the pass is the plain max().
+    float edge[12];
+    float lotM[12] = {};
+    const LotRect* rect = nullptr;
+    if (g_softEdges.load(std::memory_order_relaxed) && SUCCEEDED(dev->GetVertexShaderConstantF(8, lotM, 3))) {
+        rect = FindLotRect(&lotM[0], &lotM[8]);
+        if (!rect) g_lotRectMiss = true;
+    }
+    const bool feather = LotEdgeConstants(atlas ? atlasMap : v, &v[4], &lotM[0], &lotM[8], rect, edge);
+    if (feather) {
+        g_edgeMatched.fetch_add(1, std::memory_order_relaxed);
+        g_lastEdgeRect = *rect;
+        g_haveLastEdgeRect = true;
+    } else if (g_softEdges.load(std::memory_order_relaxed))
+        g_edgeUnmatched.fetch_add(1, std::memory_order_relaxed);
+    if (LightProbe::Capturing())
+        g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
+                                              rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
+                                : std::string("mod draw: lot light pass | soft edges: ") + (g_softEdges.load() ? "NOT applied, lot rectangle not found" : "off (option)");
+    float savedEdge[12];
+    dev->GetPixelShaderConstantF(28, savedEdge, 3);
+
     IDirect3DPixelShader9* original = g_curPs;
     IDirect3DBaseTexture9* old2 = nullptr;
     dev->GetTexture(2, &old2);
@@ -1488,6 +1758,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     dev->SetPixelShader(g_replacementPs);
     dev->SetTexture(2, terrain);
     if (atlas) dev->SetVertexShaderConstantF(14, atlasMap, 1);
+    dev->SetPixelShaderConstantF(28, edge, 3);
     dev->SetSamplerState(2, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     dev->SetSamplerState(2, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
     dev->SetSamplerState(2, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
@@ -1504,6 +1775,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     dev->SetTexture(2, old2);
     if (old2) old2->Release();
     if (atlas) dev->SetVertexShaderConstantF(14, v, 1);
+    dev->SetPixelShaderConstantF(28, savedEdge, 3);
+    g_objDrawInfo.clear();
     dev->SetPixelShader(original);
     g_inOwnCall = false;
     g_lotDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -1705,6 +1978,8 @@ void WriteCensus() {
     g_census.clear();
 }
 
+bool g_keepChunks = false; // Shutdown(true): a reinstall keeps the chunk maps, smoothed maps and atlas (same world)
+
 void ClearChunks() {
     for (auto& [k, v] : g_chunks)
         if (v.tex) v.tex->Release();
@@ -1773,7 +2048,7 @@ void UpdateHooks() {
     } else if (!on && g_hooksRegistered) {
         D3D9Hooks::UnregisterAll(kHookName);
         g_hooksRegistered = false;
-        ClearChunks();
+        if (!g_keepChunks) ClearChunks();
         g_status = "Off";
     }
 }
@@ -1781,7 +2056,7 @@ void UpdateHooks() {
 void SetEnabled(bool on) {
     g_enabled = on;
     if (!on) {
-        ClearChunks();
+        if (!g_keepChunks) ClearChunks();
         g_status = "Off";
     }
     UpdateHooks();
@@ -1813,7 +2088,28 @@ void SetWaterFix(bool on, float strength, float reflection) {
 
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
-void OnWorldChanged() { ClearChunks(); }
+void OnWorldChanged() {
+    ClearChunks();
+    g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
+    g_lotSeen.clear();
+    g_lotRects.clear(); // soft lot edges: the next Present reads the new world's lots
+    g_lotRectMiss = true;
+    g_haveLastEdgeRect = false;
+}
+
+void SetSoftLotEdges(bool on) { g_softEdges = on; }
+
+std::string LotEdgeStatus() {
+    if (!g_softEdges.load()) return "off";
+    std::string s = std::format("on, band {:.1f} m | lots known: {} | lot passes feathered: {} | without a lot rectangle: {}", kEdgeBand, g_lotRects.size(),
+                                g_edgeMatched.load(), g_edgeUnmatched.load());
+    if (g_haveLastEdgeRect)
+        s += std::format(" | last: lot {:08X}{:08X} {:.0f} x {:.0f} m at ({:.1f}, {:.1f})", g_lastEdgeRect.lotHi, g_lastEdgeRect.lotLo, g_lastEdgeRect.w, g_lastEdgeRect.d,
+                         g_lastEdgeRect.tx, g_lastEdgeRect.tz);
+    return s;
+}
+
+int ChunkCount() { return static_cast<int>(g_chunks.size()); }
 
 void SetObjectPixelLamps(bool on, float strength) {
     g_objPixel = on;
@@ -1859,6 +2155,16 @@ void OnPresent() {
         WriteCensus();
         g_censusPending = false;
     }
+    // Lot rectangles for the soft lot edges: every 20 frames, or 5 frames after a lot pass found none (a lot that
+    // streamed in) so a new lot gets its feather within a few frames.
+    if (g_softEdges.load(std::memory_order_relaxed) && g_enabled.load(std::memory_order_relaxed)) {
+        ++g_lotRectFrame;
+        if (g_lotRectFrame >= 20 || (g_lotRectMiss && g_lotRectFrame >= 5)) {
+            g_lotRectFrame = 0;
+            g_lotRectMiss = false;
+            RefreshLotRects();
+        }
+    }
     if (++g_lampFrame < 20) return;
     g_lampFrame = 0;
     if (g_roofFix.load() || g_waterFix.load() || g_objPixelLamps.load()) UpdateLampList(); // enumerates the lights
@@ -1867,6 +2173,11 @@ void OnPresent() {
 }
 
 int LotLampEdits() { return g_lotLampEdits.load(std::memory_order_relaxed); }
+
+std::string LotLampStatus() {
+    return std::format("changes counted: {} | ignored (streaming, still loading, bulk): {} | lots tracked: {} | last: {}", g_lotChangesCounted, g_lotChangesIgnored,
+                       g_lotSeen.size(), g_lastLotChange);
+}
 
 std::string RoofStatus() {
     return std::format("roofs: {} | lamps on: {} | draws fixed: {} | with snow: {}", g_roofFix.load() ? (g_roofPs ? "fixed" : "waiting") : "off",
@@ -1900,7 +2211,7 @@ std::string DescribeDraw() {
         if (!g_objPixel.load(std::memory_order_relaxed)) s += " | object option off";
         if (rig != 1 && rig != 2) s += " | indoor rig (the game uses the lot light map; the mod leaves it)";
         float c[4];
-        if (!LightmapSmooth::Atlas(c)) s += " | no ground light atlas";
+        if (!LightmapSmooth::Atlas(c, false)) s += " | no ground light atlas";
     }
     return s;
 }
@@ -1910,7 +2221,8 @@ std::string ObjectStatus() {
                        g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_foliageDrawn.load(), g_leafDrawn.load());
 }
 
-void Shutdown() {
+void Shutdown(bool keepChunkMaps) {
+    g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
     g_roofFix = false;
@@ -1990,6 +2302,7 @@ void Shutdown() {
     g_curPs = nullptr;
     g_curVs = nullptr;
     g_stateUnknown = true;
+    g_keepChunks = false;
 }
 
 } // namespace LotLightBridge

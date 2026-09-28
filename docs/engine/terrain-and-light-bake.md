@@ -51,6 +51,7 @@ crossing a chunk border. Everything Apex does to the terrain light goes through 
 | `0x00C84C09..0x00C84C3A` | Arm test: cells = `0x006E97D0()`; `0x006B5750(live)`; if not live also `IsNight` | full.asm |
 | `0x00C84C3C` | `mov ecx,esi; call 0x006B5770` (consume) then the loop `0x00C84C43..0x00C84C5E` that sets `chunk+0x55 = 1` on every chunk | full.asm; smooth_streaming `kTerrainArm` pattern `8B CE E8 ?? ?? ?? ?? 8B 87 B0 00 00 00 8B 8F B4 00 00 00 3B C1 74 0D 8B 10 83 C0 04 3B C1 C6 42 55 01 75 F3 E8` |
 | `0x00C84FDC`, `0x00C85041` | Per-chunk loop: chunks skipped after another did work keep `+0x55`; the texture-render branch does one chunk per call | smooth_streaming note 4 |
+| `0x00C8504C` | In the per-chunk loop: `push 0; push esi; mov ecx,edi; call 0x00C7E7A0` (the +0x54 texture re-render, one chunk per call; context bytes at `0x00C85047`: `6A 00 56 8B CF E8 4F 97 FF FF C6 44 24 0C 01`). `0x00C7E7A0` = `void __thiscall(terrain, chunk, char force)`, `RET 8`; its full path ends with `mov byte [esi+54h],0` at `0x00C7E978` (the only +0x54 write in it). Other callers: `0x00C8088E`, `0x00C8307E`. Apex (28/09) redirects only this CALL to report re-rendered chunks to the smoothed maps | full.asm, `re/out/dump/asm/00c7e7a0.asm`, `00c845c0.asm`, engine_map calls.tsv |
 | `0x00C834F0` / `0x00C80E50` | Chunk geometry rebuild (which one depends on a local flag) | `fn_00c845c0.c` lines ~445-448 |
 | `0x00C83060`, `0x00C7FA70` | Further per-chunk rebuild steps run for `+0x55`/`+0x56` | `fn_00c845c0.c` |
 | `0x00B789B0` | Marks the road partition of the chunk (`chunk+4`, `chunk+8`) when `+0x55` was set | `fn_00c845c0.c`; smooth_streaming |
@@ -245,8 +246,9 @@ Code: `lightmap_smooth.cpp`, `lot_light_bridge.cpp` (`RecordWorldChunk`, `ChunkT
   recent draws (`Entry::lastUse`) go first. A worker thread does the heavy work; at most 2 results wait.
 - **World atlas**: one `D3DUSAGE_RENDERTARGET A8R8G8B8 D3DPOOL_DEFAULT` texture, 512 texels per 256 m chunk (2 texels/m,
   mip 1 of the smoothed maps), covering every chunk seen plus one chunk of margin, at most 16×16 chunks (8192²; larger
-  worlds get no atlas). Cleared black with `ColorFill`, filled per chunk with `UpdateSurface` from a 512² SYSTEMMEM staging
-  texture, rebuilt (all chunks) when the world grows. Mapping: `uv = world.xz × c.xy + c.zw`, `c.xy = 1/(chunks × 256)`,
+  worlds get no atlas). Cleared black with `ColorFill` when created, filled per chunk with `UpdateSurface` from 512² SYSTEMMEM staging
+  textures (since 28/09: a plain 2x copy of a changed chunk at once, then its smoothed mip 1; on growth the old contents
+  are copied into the larger atlas with `StretchRect`, no black cells). Mapping: `uv = world.xz × c.xy + c.zw`, `c.xy = 1/(chunks × 256)`,
   `c.zw = −minChunk × 256 × c.xy` (`LightmapSmooth::Atlas`).
 - **Why the atlas exists**: a lot or road can extend past its "home" chunk. With CLAMP addressing the lot pass stretched
   the chunk's last row (LightProbe-m76: lot origin (1440, 1290), rotated 45°, reading the chunk centred (1408, 1152) that
@@ -270,10 +272,11 @@ All in `patches/night_terrain_relight_patch.cpp` unless noted; every site is byt
 | `0x00C294D9` (story gate) | `83 BF D0 00 00 00 00` | `call BakeLevelStub; nop×2` (the `jnz` kept; ZF = 1 keeps the light). `BakeLevelTest`: story 0 → keep (as the game); story > 0 → keep only an outdoor lot lamp that is lit (and the option is on); basements (< 0) refused. Optional: if the surrounding bytes differ, the rest installs without it | `luzDoLoteNaGrama` |
 | `0x00C7F87D` (lot pass) | `8B 87 D8 00 00 00 85 C0` | `call LotPassStub`: world pass unchanged; lot pass jumps to the null-bind `0x00C7F8B7` so lot grass keeps the lot LightMap | `gramaDoLoteUsaLuzDoLote` (experimental, default false, dev UI only) |
 | `0x00C84C43` arm loop | set `+0x55` on all chunks | Combined build only: Smooth Streaming queued the chunks and released K per call, nearest to the camera (`patches/smooth_streaming_patch.cpp`). **Removed in the standalone**: the game's loop is left alone | (Smooth Streaming, removed) |
+| `0x00C8504C` (chunk texture re-render call) | `call 0x00C7E7A0` | `call ChunkRenderThunk` (`__fastcall`, 2 stack args: same contract), calls the original, then if chunk+0x54 == 0 reports `(chunk+0x0C >> 8, chunk+0x10 >> 8)` to `LightmapSmooth::NoteChunkRendered`. Optional (warning if the context differs) | always (Night Lighting installed) |
 
 Runtime logic (render thread, `OnPresent` from the Present hook):
 
-- **Kick** = write `cells+0x38 = cells+0x3C = 50` (same value the game writes). It is consumed by the game within 50
+- **Kick** = write `cells+0x38 = cells+0x3C` (50 in the combined build; **3** in the standalone since 28/09, `kArmFrames`). It is consumed by the game within that many
   frames; Apex detects consumption as `+0x38` going from ≥ 0 to -1 and then treats every lamp as covered
   (`MarkAllCovered`).
 - **Dusk**: when lightMgr+0xF0 crosses 0.99 upwards, a kick is scheduled after `atrasoSegundos` (default 2 s, 0.5..10)

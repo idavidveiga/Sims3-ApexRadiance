@@ -1,14 +1,54 @@
 # Terrain relight (lot lamps in the terrain bake, story gate, dusk rebuild, reconciliation)
 
 > **Status in the standalone:** only the v0.1.0 part is in the standalone: visitor 0xC29626, the 3 arm sites, the dusk
-> kick, the experimental switches and the dev buttons. v0.1.0 triggers full rebuilds instead of the reconciliation: a load
-> kick 5 s after "world loaded" (reason "carregamento"), a lamp-edit kick 0.7 s after the lot-lamp signature changes
-> (`TrackLotLampEdits` / `LotLampEdits` in `lot_light_bridge.cpp`, colour/brightness/on-off/position, every 20 frames), and
-> at night with c38 == 0 and c3C <= 0 a "luzes mudaram" kick after 120 frames when `g_lotLampArms` changed, at most every
-> 15 s. **Not in the standalone yet (post-0.1.0, re-add one by one after user tests):** the story gate 0xC294D9
+> kick, the experimental switches and the dev buttons, with full rebuilds (never the reconciliation). Its triggers were
+> reworked on 28/09 ("Standalone triggers" below, **not yet tested in game**): the load rebuild waits for the world to be
+> drawn and a steady night level and merges with the dusk rebuild; lamp additions and removals count like edits (only on
+> lots already loaded), coalesced (250 ms quiet, at most one rebuild per 3 s, night only); Apex's own countdown is 3
+> frames instead of 50; "Lot lamps light the street" applies live; a reinstall keeps the world state; the game's per-chunk
+> texture re-render (call `0x00C8504C`) reports changed chunks to the smoothed maps. v0.1.0 had: a load kick 5 s after
+> "world loaded", a lamp-edit kick 0.7 s after an existing lamp's signature changed, and at night with c38 == 0 and
+> c3C <= 0 a "lights changed" kick after 120 frames when `g_lotLampArms` changed, at most every 15 s (kept as a fallback).
+> **Not in the standalone yet (post-0.1.0, re-add one by one after user tests):** the story gate 0xC294D9
 > (`BakeLevelStub` / `BakeLevelTest` and its counters), the reconciliation (`Bakeable`, `DiffBaked`, `Reconcile`,
 > `Settle`, `ForEachOutdoorLotLamp`), the setting `relightLocal`, and the localized relight
-> `SmoothStreamingRelightTerrainRects` (Smooth Streaming itself did not exist in v0.1.0).
+> `SmoothStreamingRelightTerrainRects` (Smooth Streaming itself did not exist in v0.1.0). Nothing of 28/09 rebuilds on
+> streaming churn (the reconciliation's 12-60 ms hitches, [../../changes-since-0.1.0.md](../../changes-since-0.1.0.md) 2.1).
+>
+> ### Standalone triggers (28/09)
+>
+> | Trigger | Rule | Signal / code |
+> |---|---|---|
+> | World load | On a new cells pointer: log `World loaded (...)`, clear chunk maps. The rebuild is armed only when the world is **live** (the lot light bridge recorded a world terrain chunk draw after the change, `LotLightBridge::ChunkCount() > 0`; fallback 30 s after the change when no draw is recorded, e.g. "Street lamps light lots" off), 1 s after that, and once the night level moved less than 0.02 for 1 s (at most 20 s after live). At night the reason is "world load (night: also the dusk rebuild)": a dusk rising edge while the load rebuild waits is merged (log `Dusk during the world load: merged into the load rebuild`) and a waiting dusk kick is cancelled: **one** rebuild | `OnPresent`, `g_live`, `g_levelRef` |
+> | Dusk | Night level crosses 0.99 upwards, `automaticoAoAnoitecer`: kick after `atrasoSegundos` (unchanged) | |
+> | Lot lamp changes | `LotLightBridge::TrackLotLampEdits` (every 20 frames) compares the lamp SET: edits, additions, removals, with the streaming rules of [lot-light-pass.md](lot-light-pass.md) "Lot lamp change tracking". Rebuild once nothing changed for 250 ms and at least 3 s after the previous lamp rebuild; only at night (by day lamps are unlit and not baked: left to the dusk rebuild) unless `automaticoAoAnoitecer` is off; merged into a pending load / dusk / armed rebuild | `g_editKickPending`, `kEditQuiet`, `kEditMinInterval` |
+> | "Lot lamps light the street" switch | `luzDoLoteNaGrama` is read at run time by `TerrainLightTest` / `ArmTest`, whose patches are now installed whatever the option (with it off they answer exactly like the game). Toggling it goes through the lamp-change rule above (one rebuild at night). A reinstall is only needed if its code bytes could not be installed | `g_lotLampsSeen`, `installedLotLampCode` |
+> | Night Lights turned on again in the same world | No new-world handling; one lamp-change rebuild at night ("Night Lights turned on") | `Install` |
+> | Stuck countdown | v0.1.0 fallback kept: night, c38 == 0, c3C <= 0 for 120 frames, arms changed, at most every 15 s. A lamp-change rebuild updates its bookkeeping so it does not fire again for the same arms | |
+> | Button | "Rebuild terrain light now" | |
+>
+> Apex's kick writes **3** (`kArmFrames`, was 50) to cells+0x38/+0x3C; the game's own arm sites still write 50. Every Apex
+> kick is already debounced, so the extra 50 frames only delayed the result by ~0.8 s. Risk: none known; the decrement
+> (`0x006B5DA0`) and the consume (`0x00C84C1B`) treat any positive value the same.
+>
+> A reinstall (`ReinstallNow`, developer options that change code bytes) keeps `g_lastCells`, the chunk maps, the smoothed
+> maps and the atlas (`LotLightBridge::Shutdown(true)`); a real uninstall keeps `g_lastCells` (installing again in the
+> same world is not a world load) but releases the maps.
+>
+> Every armed rebuild also tells the smoothed maps (`LightmapSmooth::NoteKick`, `ExpectRebuild`, `OnTerrainRebuilt`:
+> [world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md) "Rebuild sweep"). Developer log (dev build):
+> `World live: <signal> after X s`, `Night level crossed 0.99 upwards|downwards (...; up U / down D)`, `Lamp change:
+> <reason>: rebuilt | merged into ... | left to the dusk rebuild (day)`, `Terrain rebuilt (...) N ms after it was armed`.
+> Developer status: "Terrain: armed / rebuilt / last: reason: armed -> rebuilt ms", "World load: <signal>; rebuilt X s
+> after the world change | night level crossings", "Lamp changes: counted / ignored / lots tracked / last", "Chunk
+> re-render notices".
+>
+> Expected latency (estimates; the game re-renders one chunk per frame after a consumed rebuild, in its own chunk order):
+> save load: rebuild armed ~1-2 s after the world is first drawn (was 5 s after the cells change, often inside the
+> loading screen, then a second dusk rebuild 2 s + 50 frames later); dusk: `atrasoSegundos` + 3 frames; Build-mode lamp
+> add / edit / remove at night: up to 20 frames (enumeration) + 250 ms + 3 frames (+ 20 frames more for a removal, which
+> is confirmed at the next enumeration), then the chunk's turn in the sweep (up to ~1 frame per world chunk); menu toggle
+> of "Lot lamps light the street" at night: ~250 ms + 3 frames (was 2 s debounce + reinstall + a full new-world cycle).
 
 > The game-code half of Night Lighting, in `patches/night_terrain_relight_patch.cpp`. It makes outdoor **lot** lamps
 > part of the world terrain light bake (visitor patch 0xC29626 and, since 28/09, the **story gate** 0xC294D9 so lamps
@@ -51,7 +91,7 @@ Reverse-engineering summary (header comment of the patch file, Steam 1.67.2.0240
 
 | UI label | TOML key | Type | Default | Range | UI | Notes |
 |---|---|---|---|---|---|---|
-| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main | Installs the visitor, arm-site and story-gate patches (reinstall on change). The checkbox also sets `automaticoAoAnoitecer` to the same value |
+| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main | Standalone (28/09): live; the visitor and arm-site patches are always installed and read it at run time; toggling it rebuilds once at night. (Combined build: installs the patches, reinstall on change.) The checkbox also sets `automaticoAoAnoitecer` to the same value |
 | Update automatically at dusk | `automaticoAoAnoitecer` | bool | true | | Adv / Dusk | live |
 | Delay after dusk | `atrasoSegundos` | float | 2.0 | 0.5..10 s | Adv / Dusk | live |
 | Relight only around changed lamps | `relightLocal` | bool | true | | Adv / Dusk | live; off = changes get a full rebuild (at most every 15 s) |
@@ -238,6 +278,11 @@ None: this part only changes game code and triggers. Its output (chunk light map
 - 24/09: a full rebuild 15 s after "world loaded" (reason "carregamento") -> later 5 s (25/09 16:25, the user waited
   more than 20 s for snow), and finally replaced by `Settle` (5..60 s, quiet for 3 s), because a fixed delay often ran
   before nearby lots had loaded and lit their lamps.
+- 28/09 study (standalone): the 5 s load kick fired during the loading screen; the countdown was consumed at the first
+  world update while the night level still read 0.00 (a lamps-off bake), then the dusk rebuild followed. Do not arm a
+  load rebuild from a timer started at the cells change: wait for the world to be drawn and a steady night level.
+- Do not rebuild on lamp changes that streaming produces (lots loading or unloading, lamps switching together at dusk
+  or dawn): NOTAS 1c and the reconciliation's hitches. The lamp-change tracking counts only settled lots.
 - 24/09 23:54 (`LightProbe-grama3-escura` session log): 16 rebuilds per session, "luzes mudaram" every ~30 s: the
   automatic unlock reacted to **any** armed +0x38, including street lamps of lots streaming in as the camera moved.
   Fixed then by "only if `g_lotLampArms` changed, at most once per minute"; superseded by the reconciliation (arms are
