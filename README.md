@@ -3,26 +3,29 @@
 A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
 
-<p align="center">
-  <a href="#image-2">
-    <img
-      src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86"
-      width="100%"
-    >
-  </a>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="#image-1">←</a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="#image-3">→</a>
-</p>
+<a href="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86">
+<img src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86" width="19%">
+</a>
 
-<a id="image-2"></a>
+<a href="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db">
+<img src="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db" width="19%">
+</a>
 
+<a href="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134">
+<img src="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134" width="19%">
+</a>
 
+<a href="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac">
+<img src="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac" width="19%">
+</a>
 
+<a href="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40">
+<img src="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40" width="19%">
+</a>
 
+</div>
 
 
 ## Features
