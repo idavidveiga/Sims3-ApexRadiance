@@ -3,11 +3,164 @@
 A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
 
-<img width="3712" height="2140" alt="Frame 4" src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86" />
-<img width="3712" height="2140" alt="Frame 3" src="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db" />
-<img width="3712" height="2140" alt="Frame 2" src="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134" />
-<img width="3712" height="2140" alt="Frame 6" src="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac" />
-<img width="3712" height="2140" alt="Frame 5" src="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40" />
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Gallery</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0d1117;
+      font-family: Arial, sans-serif;
+    }
+
+    .gallery {
+      width: min(1200px, 95vw);
+      position: relative;
+    }
+
+    .image-container {
+      position: relative;
+      overflow: hidden;
+      border-radius: 12px;
+      background: #161b22;
+    }
+
+    .image-container img {
+      display: block;
+      width: 100%;
+      height: auto;
+      user-select: none;
+    }
+
+    button {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.65);
+      color: white;
+      font-size: 28px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s, transform 0.2s;
+    }
+
+    button:hover {
+      background: rgba(0, 0, 0, 0.85);
+      transform: translateY(-50%) scale(1.08);
+    }
+
+    .prev {
+      left: 16px;
+    }
+
+    .next {
+      right: 16px;
+    }
+
+    .counter {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      padding: 6px 12px;
+      border-radius: 20px;
+      background: rgba(0, 0, 0, 0.65);
+      color: white;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="gallery">
+
+    <div class="image-container">
+
+      <img
+        id="gallery-image"
+        src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86"
+        alt="Screenshot"
+      >
+
+      <button class="prev" onclick="previousImage()" aria-label="Previous image">
+        &#10094;
+      </button>
+
+      <button class="next" onclick="nextImage()" aria-label="Next image">
+        &#10095;
+      </button>
+
+      <div class="counter">
+        <span id="current">1</span> / <span id="total">5</span>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const images = [
+      "https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86",
+      "https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db",
+      "https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134",
+      "https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac",
+      "https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40"
+    ];
+
+    let currentIndex = 0;
+
+    const image = document.getElementById("gallery-image");
+    const current = document.getElementById("current");
+
+    function showImage(index) {
+      currentIndex = (index + images.length) % images.length;
+
+      image.src = images[currentIndex];
+      current.textContent = currentIndex + 1;
+    }
+
+    function nextImage() {
+      showImage(currentIndex + 1);
+    }
+
+    function previousImage() {
+      showImage(currentIndex - 1);
+    }
+
+    document.addEventListener("keydown", function(event) {
+      if (event.key === "ArrowRight") {
+        nextImage();
+      }
+
+      if (event.key === "ArrowLeft") {
+        previousImage();
+      }
+    });
+  </script>
+
+</body>
+</html>
 
 
 
