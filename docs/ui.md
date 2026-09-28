@@ -1,0 +1,325 @@
+# Menu UI (Violet design)
+
+The in-game menu of Apex Radiance (window id `###ApexWindow`, default key Ctrl+Shift+F11; layout saved in
+`Documents\...\Apex Radiance\apex_radiance_imgui.ini`). Visible names come from `apex_version.h` (`APEX_PRODUCT_NAME` =
+"Apex Radiance", `APEX_PRODUCT_TAGLINE` = "for The Sims 3", `APEX_LOGO_LETTER`); internal names keep "Apex". Write
+"Apex Radiance" in visible text through `APEX_PRODUCT_NAME`, never the old "S3SS Apex" / "Apex Edition".
+
+History: reorganised on 2026-09-28 for players (short plain words, one feature per card, developer items on one
+Developer page); the same day it got a design polish (spacing scale, row descriptions, dividers, tinted notes, button
+styles), a full copy rewrite, and the grouped sidebar with tabbed pages below. Later that day (approved from a mockup):
+search, changed markers with per-setting Reset, the undo toast, Looks, Profiles, peek, hold to compare, GPU cost
+chips, "Reload save" badges, inline "Turn on" dependencies, the welcome tour, the status bar, the collapsible sidebar,
+colour tracks and keyboard use (sections below).
+
+## Files
+- `apex_gui.cpp`: window, header, sidebar, pages, search results, Looks, Profiles, welcome tour, undo toast, status
+  bar, first-launch hint. Header: logo tile, name and tagline (centred on the tile), the search field, Night/Day pill
+  (moon / sun), frame-time pill, close (x); all vertically centred on the 32 px tile (narrow windows drop the Night/Day
+  pill, then the frame-time pill, to keep the search field at least 110 px). Sidebar 170 px at scale 1 (or the 44 px
+  icon rail) with group labels and, at the bottom, the collapse button and the version; the page in a scrolling child;
+  the status bar under both. Default window 560 x 640 at scale 1 (min 400 x 300).
+- `ui/widgets.{h,cpp}` (`ApexUi`): cards, rows and the other components, see "Components".
+- `ui/icons.{h,cpp}` + `ui/lucide_data.h`: the icons, see "Icons".
+- `ui/violet_theme.{h,cpp}` (`VioletTheme`): palette, the global style and the fonts. Apex owns its ImGui context, so
+  `Overlay::Init` applies both once. Sizes are at 1080p; the overlay scales the style by resolution
+  (`0.9 * pow(h / 1080, 0.8)`) and the user's text size and sets `style.FontScaleMain`. Widget geometry uses
+  `ApexUi::Unit()` (= `FontScaleMain`): never write a pixel size without `* u`.
+- Fonts: Segoe UI 15 px (+ Bold for titles). Missing files: ImGui's default font. No icon font.
+- Feature code draws its own controls: `EdgeSmoothingPatch` / `DepthBlurPatch::RenderCustomUI` (card body) and
+  `RenderDeveloperUI` (Developer page), `Picture::RenderUI(tab)` / `RenderDeveloperUI`, `Borderless::RenderUI`, and
+  Night Lights through `patches/night_lighting.h` (one function per card).
+
+## Pages
+Sidebar: Overview, then three groups (small upper-case muted labels): WORLD, IMAGE, SYSTEM. Pages with tabs use the
+underline `TabBar` under the page title; the selected page and each page's tab are statics (kept while the game runs,
+not saved; `Go(page, &tab, n)` opens a page on a tab).
+
+| Page (sidebar icon) | Content |
+|---|---|
+| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). The **Looks** card (see "Looks"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing. |
+| WORLD > Lighting (moon-star) | Tabs **Lamps** (Night Lights card: master switch `NightTerrainRelight` + "Lamp color" Pink ... Warm white with a colour track, swatch and "Reload save" badge; then "Reset Night Lights"), **Ground** (Ground & Lots: street lamps light lots, lot lamps light the street, "Upper floors light the ground" = the separate `SplitLevelGroundLight` feature, shown on and disabled with "Already handled by Sims3SettingsSetter ..." when S3SS's own fix is on; light passes between floors; smooth ground light), **Objects** (every option shown, groups LAMP LIGHT and DOORS, COUNTERS AND FENCES; "Light stairs, railings, columns" has the "Reload save" badge; the DOORS group needs two Ground options: a note naming the missing one(s) and a primary "Turn it on" / "Turn both on"), **Buildings** (groups WALLS and ROOFS). While Night Lights is off, the other tabs show a note and a primary "Turn on Night Lights" button. |
+| WORLD > Water & Snow (waves-horizontal) | Tabs **Water** (Lamp Glow card while Night Lights is on, else "Lamp glow on ponds needs Night Lights" + "Turn on Night Lights"; Water Reflections card = `reflexoNoLago`, with "Needs Night Lights (Lighting page)" / "Needs Depth Blur (Depth Blur page)" and primary "Turn on ..." buttons) and **Snow** (walked-on sidewalks; needs Night Lights; needs "Street lamps light lots": note + "Turn it on"). |
+| IMAGE > Color (palette) | The Picture card header above the tabs (switch = `[qol.picture] enabled`; GPU cost chip; hold to compare (eye) and before / after (columns-2) buttons, disabled while Picture is off, never saved). Tabs **Basic** (brightness, contrast, saturation, temperature, sharpness, smooth gradients), **Tones** (midtones, shadows, highlights, blacks), **Color** (tint, vibrance; FILM TONES = split toning, hue sliders on a hue-circle track with a swatch; COLOR MIXER + "Reset mixer"), **Detail** (clarity, vignette, vignette size); each tab ends with "Reset Picture". Rows stay visible, greyed out, while Picture is off. |
+| IMAGE > Depth Blur (aperture) | Note: turn off the game's own Edge Smoothing. Depth Blur card: Distance Near / Medium / Far + "Fine-tune distance" (0-100% of 0..0.5), Strength, Sharp in map view; Advanced (rare knobs): Transition, Blur size, Quality, Blur the sky; "Reset Depth Blur". |
+| SYSTEM > Display (monitor) | Tabs **Window** (Borderless card: Window mode Normal / Borderless window / Borderless fullscreen (maximize) as a segmented row, a list when it does not fit; restart / info note; "Handled by Sims3SettingsSetter" when S3SS owns it) and **Anti-aliasing** (note: turn off the game's own Edge Smoothing; Edge Smoothing card: Method SMAA (recommended) / FXAA, Quality steps per method, FXAA-only Softness / Sensitivity shown with FXAA; "Reset Edge Smoothing"). |
+| SYSTEM > Developer (wrench; development build only) | ImGui tabs: Lighting (Night Lights status, census (list-checks), diagnostics (stethoscope), light probe (crosshair), counters, the generic list of every option; Every-Story Ground Light state), Profiler (activity; Frame Profiler), Capture (camera; Frame Capture), Debug views (bug; Edge Smoothing status / GPU cost / red pixels, Depth Blur status / mask / far plane, Picture's 8-bit note and GPU cost). |
+| SYSTEM > Settings (settings) | Tabs **Menu** (control rows: menu key + Change, text size - 100% + Reset steps, "Show the welcome tour again" + Show, Save now), **Profiles** (see "Profiles"), **Compatibility** (rows Game, Sims3SettingsSetter Installed (circle-check) / Not installed, Features; the recommendation + Download while S3SS is missing; "Details" = the raw S3SS summary and settings migration note), **About** (name, version and build in the header; CREDITS). |
+
+Every card is `PushID(<name>)` + `BeginCard("##Card")` ... `EndCard()` + `PopID()`. Every setting is a row drawn by
+`SwitchRow` / `Slider` / `SliderPercent` / `SegmentedRow` whose label is its stable id (unique within its card, `##`
+suffix when two labels read the same, e.g. `Brightness##Walls`); keep it that way: search, changed markers and undo
+reports all hang off these rows. Each page tab's content is its own function in `apex_gui.cpp` (`LampsTabContent`,
+`GroundTabContent`, ..., `PictureHeaderCard`, `PictureRows(tab)`, `DepthBlurContent`, `BorderlessCard`,
+`AntiAliasingContent`, `MenuTab`) so the page and the search results draw the same code.
+
+## Design tokens
+All sizes are 1080p pixels at text size 1, times `ApexUi::Unit()`.
+
+**Palette** (`violet_theme.h`): accent #7F77DD, accent dark #534AB7, accent light #CECBF6, window #15161A, card #1C1D22,
+border / dividers #2A2B31, selected #24252B, hover #1F2025, switch off #3A3B42, text #E8E8EC, muted #8B8C96, warning
+(amber) #E0A84F, error (soft red) #E8716B, success (muted green, status bar only) #7DBE9A. Disabled = style alpha 0.5
+(`DisabledAlpha`) on the whole row. Keyboard focus ring = ImGui's nav cursor in accent light (#CECBF6), 2 px, rounded
+like the frame, on every nav-focusable widget (all custom widgets use `InvisibleButton` with
+`ImGuiButtonFlags_EnableNav`, so ImGui draws it).
+
+**Chips** (`Chip`, 0.8x text, 6 px side padding, 14% fill of their colour): muted for GPU cost ("~0.4 ms"), amber for
+"Reload save". **Changed dot**: 3 px radius, accent, 6 px after the label (after the badge when there is one).
+
+**Spacing scale** (`kSpace1..4` = 4 / 8 / 12 / 16):
+- window padding 12; content area padding 8 x 4; sidebar hairline, then 12 to the page;
+- card padding 16 x 12, card rounding 10, 12 between cards (`EndCard`), 12 under the page title / tab bar;
+- `CardDivider()` between a card's header and its body: 12 above the hairline, 12 below; only when a body follows;
+- rows: consecutive rows are `kRowGap` (16) apart, label to label, with a hairline in the middle; anything that is not a
+  row (note, button, "Advanced", group label) keeps 8 from a row above it (12 for a group label);
+- label to description 2; description / label to a slider track or segmented control 5 (item spacing).
+
+**Typography**: page title bold 1.3x, page subtitle muted 1x; card title bold 1.05x, card subtitle muted 1x; row
+label 1x `kText`; description 0.87x muted; slider value 1x muted, right-aligned on the label's line; end labels, pills
+and the sidebar version 0.87x muted; group labels ("WALLS", sidebar "WORLD") bold 0.8x muted, upper case, letter-spaced.
+
+**Icons**: on card headers (18, accent), the sidebar (18), overview rows (18), notes (14), buttons (14), pills (14).
+Setting rows have no icons (all rows in a card look the same).
+
+## Components (`ApexUi`, ui/widgets.h)
+- `PageTitle(title, subtitle)`; `TabBar(id, &tab, labels, n, icons)`: underline tabs (selected = white text + 2 px
+  accent underline, others muted, hairline under the bar, wraps when narrow).
+- `BeginCard` / `EndCard` (always call EndCard), `CardHeader(icon, title, subtitle, tooltip, toggle, toggleEnabled,
+  extra)` (`HeaderExtra`: an icon toggle left of the switch, used by before / after), `CardDivider()`.
+- Rows (dividers between consecutive rows): `SwitchRow(label, v, description, default)` (switch right, centred on the
+  text block); `Slider(label, v, min, max, SliderOptions)` (label + value on one line, description, track; options:
+  format / scale / offset, fixed value text, end labels, colour swatch, `defaultValue`, a gradient track
+  `trackFrom`/`trackTo` or the hue circle `hueTrack`) and `SliderPercent(label, v, min, max, description, default)`;
+  `SegmentedRow(label, description, id, current, labels, count, tooltips, icons, defaultIndex)`;
+  `BeginControlRow(label, description, controlsWidth)` (returns false when the search hides it: then draw nothing and
+  skip `EndControlRow`) / `EndControlRow()` for custom controls on the right (menu key, text size, info rows, profiles);
+  `OverviewRow(..., chip)`. The description is always visible (no hover tooltip on rows); `SliderCommitted()` =
+  deactivated after edit of the last slider, or its Reset (Picture saves then). `SetNextRowBadge(text, tooltip)` puts a
+  chip after the next row's label.
+- Defaults are optional arguments (`BoolDefault` from a bool, `kNoDefault` / `kNoDefaultIndex` = none); pass them
+  from the code's real defaults (registered setting defaults, `PictureParams{}`, the `Params{}` of Edge Smoothing and
+  Depth Blur, `Borderless::Mode::Off`, `ApexPatch::IsEnabledByDefault()`), never guessed.
+- `CardHeader(..., extra, chip)`: `HeaderExtra` also has a hold button (`holdIcon`, `holdTooltip`, `held` while
+  pressed); `chip` = GPU cost. Header switches, overview switches and rows report their changes (`ReportChange`).
+- `Segmented(id, current, labels, count, tooltips, compact, icons)`: segments share the width (a vertical list when they
+  do not fit); selected = accent dark fill with accent light text; hover tooltips per segment; `current = -1` = none
+  selected (a fine-tuned Depth Blur distance).
+- `BeginAdvanced` / `EndAdvanced`: hairline, then an accent chevron + "Advanced" row (full-width click target),
+  collapsed by default (state per id in the card's storage); contents are not indented. Use it only for rare knobs (a
+  page or tab with room shows options directly). `AdvancedNode` (tree node) stays for the Frame Profiler.
+- `GroupLabel("WALLS")`: groups inside a card.
+- `IconNote(icon, text, rgb)`: icon + wrapped text in a tinted rounded box (10% of its colour): info = `Info`, muted;
+  warning = `TriangleAlert`, `kWarning`; error = `TriangleAlert`, `kError`.
+- Buttons, one frame high: `IconTextButton(label, icon, tooltip, ButtonKind)` and `TextButton(label, tooltip, kind,
+  minWidth)`; `ButtonKind::Secondary` (neutral fill, border turns accent on hover: Reset, Save, Change, - / +) and
+  `ButtonKind::Primary` (accent dark fill, accent on hover, white text: "Turn on ...", "Download"). `ButtonWidth` for
+  control rows. "Don't show again" stays a text link.
+- `IconButton`, `Pill`, `Chip`, `SidebarItem(icon, label, selected, collapsed)` (32 high; collapsed = icon only, label
+  as tooltip), `SidebarGroup(text, collapsed)` (collapsed = a short hairline), `ToggleSwitch`, `Tooltip`, `MutedText`,
+  `Gap`.
+- Search filter: `BeginFilter(query)`, `SetFilterCrumb(crumb, id)`, `EndFilter(&clicked)`, `FilterActive()`; change
+  reports: `ReportChange`, `SetChangeReporting`, `TakeChange`; drag fade: `SliderDragging`, `SetKeepActiveSliderOpaque`.
+
+## Features of the menu (how they work, where their state lives)
+
+State: everything below lives in `apex_gui.cpp` statics (render thread, inside the overlay's ImGui frame) unless a
+`[ui]` key is named. Persisted `[ui]` keys go through `ApexConfig::GetUi` / `SetUi` (saved by the pump thread a second
+later): `welcome_done` (default false; missing = false, so migrated configs see the tour once) and `sidebar_collapsed`
+(default false). Feature state changes go through the features' own paths (`ApexPatch`, `NotifySettingChanged`,
+`PatchManager` unsaved flag, `Picture::SetParams`, `Borderless::SetMode`), so autosave works as before.
+
+### Search
+Header field "Search settings" (search icon, "Ctrl+F" hint while empty; Esc or the x clears it). Ctrl+F focuses it,
+only while the menu window has keyboard focus (then ImGui captures the keyboard, so the game never sees it). While the
+query is not empty the content shows **Search**: one card with every matching row, live (the real controls). Matching:
+every word of the query (case-insensitive, ASCII) must appear in the row's visible label or its description. How: the
+page tabs are functions; `SearchResults` calls each one (`SearchParts`, in sidebar order: Lighting tabs, Water & Snow
+tabs, Color header + Color tabs, Depth Blur, Display tabs, Settings > Menu) between `ApexUi::BeginFilter` and
+`EndFilter`. In filter mode the row widgets draw only when they match, each after a small muted breadcrumb link
+("Lighting › Lamps"); card frames, dividers, notes, buttons, group labels, page titles, tab bars and "Advanced"
+headers draw nothing (buttons inside a visible control row still draw); a card header with a switch becomes a
+searchable switch row (so "night lights" or "depth blur" finds the master switches). Feature card bodies and Night
+Lights tabs are searched even while the feature is off. Clicking a breadcrumb opens that page and tab and clears the
+search; so does picking a sidebar page. Not searched: Overview (it repeats the master switches), Developer, Profiles,
+Compatibility, About.
+
+### Changed markers and per-setting Reset
+A row with a default shows a violet dot after its label while its value differs from the default ("Changed from the
+default" on hover); hovering the row shows a small Reset button (rotate-ccw) right after it, which puts that one setting
+back through the row's normal change path (the widget sets the value and returns "changed", so Night Lights'
+`ApplyLive`, Picture's save, etc. run as for a click). Sliders compare with a tolerance of 1/10000 of their range.
+The small Reset buttons are not keyboard stops (they only exist on hover).
+
+### Undo toast
+At the start of each frame, when the left mouse button goes down inside the menu window or Space / Enter / keypad Enter
+is pressed while it has focus (and no slider was active in the previous frame, so the key that ends a keyboard
+adjustment does not count), the menu takes `ApexConfig::CaptureFeatureState` (every `[patches.*]` table, `[qol.picture]`,
+`[display]`). Rows, card-header switches and overview switches report what changed (`"<Label> turned on/off"`,
+`"<Label> changed"`, `"<Label> reset"`; sliders once, on release); Reset buttons and "Turn on" buttons report too. The
+last report of a frame becomes the toast at the bottom right of the window, above the status bar: the text and an
+"Undo" link (undo-2), about 4 s, fading in and out; the timer waits while the pointer is on it. Undo =
+`ApexConfig::ApplyFeatureState(snapshot)`: only sections that differ are applied (feature settings and on / off through
+`ApexPatch::ApplyTableLive`, Picture through `SetParams`, the window mode through `Borderless::SetMode`), then unsaved +
+save. Only the last change is undoable. The Developer page does not report (`SetChangeReporting(false)`); menu
+preferences (text size, menu key, sidebar) are not part of the undoable state.
+
+### Looks (Overview, and step 1 of the tour)
+Three tiles (icon, name, phrase; a row, or a column when narrow). Clicking one shows an inline confirmation ("Apply
+Cinematic? This changes Night Lights, Color and Depth Blur settings", listing only what would change) with Apply
+(primary) and Cancel; Esc cancels too. Applying snapshots the state, builds the look on top of it (`BuildLook`) and
+applies it with `ApplyFeatureState`; the toast says "Look applied" and Undo restores every value it changed. The card
+subtitle says "Active: <look>" when building a look on the current state changes nothing, else "Custom: your own
+settings" (recomputed about 3 times a second); the active tile has an accent border and a check. Tiles are inert while
+features start. What each look sets (anything not listed stays as it is):
+
+| | Classic "Close to the base game" | Balanced "Warm lamps, clean image" | Cinematic "Soft blur, rich color" |
+|---|---|---|---|
+| Night Lights (`NightTerrainRelight`) | on; every option at its registered default, except Lamp color 0 (the game's pink), outside walls 150% (`forcaNasParedes` 1.5, default 2.0), roofs 40% (`forcaNosTelhados` 0.4, default 0.6), objects 75% (`forcaNosObjetos` 0.75, default 1.0), glow on ponds 60% (`brilhoNaAgua` 0.6, default 1.0) | on; every option at its registered default | on; every option at its registered default |
+| Picture (`[qol.picture]`) | off (its values are kept) | on; `PictureParams{}` defaults with Sharpness 25% (`sharpen` 0.25) | on; defaults with Contrast 110%, Saturation 110%, Vibrance +15, Vignette 31% (`vignette` 0.25 of 0..0.8), Sharpness 15% |
+| Depth Blur | off | off | on; Medium (`distancia` 0.349), `transicao` 0.20, Strength 80% (`forca` 0.8, default 1.0), `tamanho` 1.5, Quality High, blur the sky, sharp in map view (developer keys `farPlane` / `debugView` untouched) |
+| Edge Smoothing | on; SMAA, High | on; SMAA, High | on; SMAA, Ultra |
+
+"Every option at its registered default" includes the developer-only experimental switches (all off by default).
+Every-Story Ground Light and Water Reflections are not touched by the looks.
+
+### Profiles (Settings > Profiles)
+"SAVE CURRENT SETUP": a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
+saves) and Save; an existing name asks "... already exists; replace it?" inline. "SAVED": one row per profile with Load
+and Delete (Delete asks inline, "Delete this profile?" with Delete / Cancel). Files:
+`Documents\...\Apex Radiance\Profiles\<name>.toml`, written by `ApexConfig::SaveProfile` = `CaptureFeatureState(profile
+features only)` + `[meta]`: the same tables the main config saves for Night Lights (`NightTerrainRelight`), Every-Story
+Ground Light, Edge Smoothing and Depth Blur (`[patches.<Name>]` with `enabled`), Picture (`[qol.picture]`) and the
+window mode (`[display]`); developer tools stay out. Load = `ReadProfile` + `ApplyFeatureState` (live, marks unsaved
+changes, autosaves into ApexRadiance.toml) + the undo toast "Profile loaded". Names are sanitised
+(`SanitizeProfileName`: allowed characters only, no leading / double / trailing spaces, Windows device names refused);
+files whose names do not survive it are not listed. The list is read when the tab opens and after each action.
+
+### Peek and the drag fade
+Holding Alt while the pointer is over the menu makes it nearly transparent (window 0.2, contents 0.1 through the
+disabled alpha) and inert (`BeginDisabled`), so the game shows through; releasing restores it (eased over about 0.1 s).
+Not while typing or dragging. While a slider is dragged (or adjusted with the keyboard) the window fades to 0.35 and the
+active slider's row stays fully opaque (`SetKeepActiveSliderOpaque`). The status bar says "Hold Alt to peek". Keys:
+while the menu has keyboard focus ImGui captures the keyboard (the existing policy), so Alt never reaches the game;
+while the pointer is only hovering the menu, `GuiClient::CaptureKey` claims Alt and B (not while typing): the overlay
+eats their key-down, key-up and character after ImGui saw them (`framework/overlay.cpp`; cleared on focus loss). Alt+Tab
+is handled by Windows before any window sees it, so it keeps working.
+
+### Hold to compare (Color page)
+The eye button in the Picture header (left of before / after), or holding B while the pointer is over the menu (not
+while typing), calls `Picture::HoldBypass()` every frame: the Picture pass is skipped for 0.15 s after the last call
+(`m_holdUntil`, never saved), so the game shows its original picture and it comes back by itself on release.
+
+### GPU cost chips
+The Overview rows and card headers of Picture, Edge Smoothing and Depth Blur show "~0.4 ms" (tooltip "Measured cost on
+your GPU per frame") from the features' own timestamp queries: `Picture::GpuMs()` and `ApexPatch::GpuCostMs()`
+(Edge Smoothing overrides it with its measured pass time). Hidden while the feature is off or not measured yet. Depth
+Blur has no GPU timing in its code, so it shows no chip (the hook is there for when it gets one).
+
+### "Reload save" badges
+An amber chip after the label of rows whose change shows only after a save or world loads again, tooltip "This change
+shows after you load a save again": Lamp color (lamps are tinted when their colour is written, i.e. when a save loads)
+and "Light stairs, railings, columns" (those pieces get their light when a world loads). Their descriptions no longer say
+it, and the old footer "Some changes show after you reload your save" is gone. Every other Night Lights option applies
+live (docs/features/night-lighting/README.md, "Applied" column).
+
+### Inline dependencies
+A row or card whose effect needs another feature or option shows an info note naming it (and where it is) plus a primary
+button that turns it on directly (and reports the change, so it can be undone): Night Lights tabs ("Turn on Night
+Lights"), Lamp Glow ("Turn on Night Lights"), Water Reflections ("Turn on Night Lights" / "Turn on Depth Blur"), Objects >
+DOORS, COUNTERS AND FENCES ("Turn it on" / "Turn both on" for "Street lamps light lots" and "Smooth ground light"), Snow
+("Turn it on" for "Street lamps light lots"). The game's own Edge Smoothing (Depth Blur, Edge Smoothing) is a game
+option, so it stays a plain note.
+
+### Welcome tour and the first-launch hint
+The first time the menu opens in a session while `[ui] welcome_done` is false, the content area shows the tour (a card
+with step dots; the sidebar and the search field are disabled meanwhile): 1) "Pick a look" (the Looks tiles), 2)
+"Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 3) "Your menu key" (the key +
+Change). Buttons: Skip (link, steps 1-2), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
+"Show the welcome tour again". The menu is never opened automatically: instead, once features run at a launch where the
+tour was never done and the menu has not been opened, a small non-blocking hint (no input, no focus) shows in the top-right
+corner for 10 s: "Apex Radiance is ready · press <menu key>" (it fades out; `Client::AlwaysDraw` keeps ImGui frames going
+meanwhile).
+
+### Status bar
+A thin footer under the sidebar and page (hairline, then one line of small text): left "All changes saved" (circle-check,
+muted green) or "Saving…" (save icon) while `ApexConfig::SavePending()` (a requested save or unsaved feature changes);
+middle "Sims3SettingsSetter detected" (violet check) / "Sims3SettingsSetter not installed" (dropped when narrow); right
+"Hold Alt to peek". It replaces the header's unsaved dot.
+
+### Collapsible sidebar
+The chevrons button at the bottom of the sidebar collapses it to a 44 px icon rail (items show their name as a tooltip,
+group labels become short hairlines, the version hides) and expands it again; saved in `[ui] sidebar_collapsed`.
+
+### Colour tracks
+Lamp color: a gradient track from the game's pink to warm white and a swatch of the current colour, both computed from
+the real tint math (`LampColourAt` in `night_terrain_relight_patch.cpp`, the same blend as
+`ObjectLightBridge::TintStockColour`: stock pink (1, 0.75, 0.79) to warm white (1, 0.80, 0.62) scaled to the pink's
+luminance; shown as they are, an approximation of the on-screen colour). Picture's Shadow color / Highlight color: a
+hue-circle track and a swatch of the hue.
+
+### Keyboard
+`ImGuiConfigFlags_NavEnableKeyboard` is on (overlay). Arrows / Tab move between widgets; Space / Enter toggles switches
+and presses buttons; a slider is adjusted with the arrows after Space / Enter. Esc (when the menu has focus, no field is
+being edited and the menu key is not being chosen): clears the search, else cancels a pending look, else closes the
+menu. Ctrl+F: the search field.
+
+## Copy guidelines
+- American English, friendly and plain, for players: say what the player will **see**, not how it works. No jargon
+  outside the Developer page (no "per-pixel", "lightmap", "shader", "depth", "bridge", "rig", "story").
+- Vocabulary: **lamps** (not lights / lamp light mixed), **lots**, **street**, **ground**, **brightness** (for
+  strengths, shown in %), **upper floors** (not stories). "Night Lights" is the feature name everywhere; "Lighting" is
+  only its page.
+- Sentence case for labels, tabs and buttons ("Street lamps light lots"); Title Case only for page and card titles
+  ("Ground & Lots", "Lamp Glow").
+- Labels: at most ~32 characters, no final period, positive (a switch says what turning it on does: "Sharp in map
+  view", "Light passes between floors", not "Off in ..." / "... aren't cut").
+- Descriptions, notes, button and segment tooltips: one short sentence, ideally at most 60 characters (never more than
+  ~90), **no final period**; join two ideas with a semicolon ("How bright lit roofs get; 60% is the default").
+- Defaults are written "100% is the default" / "0% is off" / "100% is unchanged".
+- Values: % or named steps (Near / Medium / Far, Low ... Ultra) instead of raw numbers; signed amounts as "+25".
+- Notes that point elsewhere name the place: "(Ground tab)", "(Lighting page)", "(Depth Blur page)", "(Options ›
+  Graphics)".
+- Prose blocks keep full sentences with periods: feature hover descriptions (they end with "Part of Apex Radiance.
+  Credits: @loinyx"), the Sims3SettingsSetter recommendation, the startup banners and the credits.
+
+## Icons (ui/icons.h)
+Lucide icons (ISC License, Copyright (c) Lucide Icons and Contributors; the license text is
+`third_party/lucide/LICENSE`, the source SVGs are `third_party/lucide/icons/*.svg`). Credited in Settings > About >
+Credits ("Lucide icons (ISC)").
+- `ui/lucide_data.h`: each used icon's SVG elements copied as data (path `d` strings, circle cx/cy/r, rect
+  x/y/width/height/rx, line x1/y1/x2/y2, and `filled` for `fill="currentColor"` dots). No build step: to add an icon,
+  copy its elements from the .svg by hand, append it to `kIcons` and to `ApexUi::IconId` in the same order (a
+  static_assert checks the count). Ten icons at the end of the list (search, undo-2, chevron-left, chevrons-left,
+  chevrons-right, check, gauge, eye, bookmark, trash-2) are not in `third_party/lucide/icons/`: their elements were
+  entered by hand from Lucide's published icons; if one looks off, download its .svg and replace the data.
+- `ui/icons.cpp`: on first use an icon's paths are parsed (M L H V C S Q T A Z, absolute and relative; arcs by the SVG
+  endpoint-to-centre conversion) and flattened to polylines in the 24x24 viewBox, then cached. Drawing scales them:
+  `ImDrawList::AddPolyline` with thickness 2/24 of the size (Lucide's stroke-width 2, at least 1 px), closed for Z; round
+  caps and joins as small filled circles at open ends and at corners sharper than ~25 degrees; circles with `AddCircle`,
+  rects with `AddRect` and their corner radius; filled dots with `AddCircleFilled`. No texture, no device dependency,
+  render thread only.
+- API: `DrawIcon(dl, id, pos, size, color)`, `Icon(id, pos, size, color)` (current window), `InlineIcon(id, size, color)`
+  (reserves the square with a Dummy), `IconLabel(id, label, color)`. Sizes: `kIconSmall` 14 and `kIconMedium` 18, times
+  `Unit()`.
+
+## Rules kept from the previous menu
+- Feature switches are inert while features start ("Starting…") or on an unsupported game ("Not available on ...");
+  `GetLastError()` shows as an error note; a feature's own controls appear only while it is on (Picture's stay visible,
+  greyed; the search results show them either way).
+- The description (ending with "Credits: @loinyx") is the hover tooltip of the card title, the card switch and the
+  overview name; no visible credit lines besides the Credits section.
+- Developer items only under `if constexpr (!kPublicBuild)` (the Developer page is not in the public sidebar).
+
+## Startup banners (drawn even while the menu is closed)
+- Old combined build loaded (`Startup::RefusedOldBuild`): "Apex Radiance is off" (error colour), the module name, and
+  "Delete that file from Game\Bin, keep the official Sims3SettingsSetter.asi, then restart the game." Features stay off.
+- Older standalone `S3SSApex.asi` loaded too (`ApexGui::SetOldStandaloneNotice`): "An older S3SSApex.asi is also
+  installed. Delete it from Game\Bin." (warning colour). Features keep running (the old copy idles). When the old copy
+  loaded first, Apex Radiance itself idles (no menu, no banner) and only writes an error line to `ApexRadiance_LOG.txt`.
+
+## Credits (Settings > About)
+sims3fiend (Sims3SettingsSetter, the model for the rewritten framework), FXAA 3.11 (Timothy Lottes), third-party code
+(Dear ImGui, Microsoft Detours, toml++, SMAA, Lucide icons), the single line "Every-Story Ground Light uses a technique
+first shared by Arro.", and "Apex Radiance by @loinyx". Do not mention Arro or the Split-Level fix anywhere else
+(feature descriptions, tooltips, release notes, promo text); functional notices about official S3SS's own fix being on
+("Already handled by Sims3SettingsSetter (its Split-Level Lighting Fix is on)") stay.

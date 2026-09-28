@@ -1,0 +1,102 @@
+// Generated from water_lamps_ps.hlsl
+#pragma once
+static const char* kWaterLampsHlsl = R"RAW(
+// Pass drawn right after the game's lake water (blend ONE / INVSRCALPHA, premultiplied):
+//  - reflection: screen-space ray march against the scene depth (Depth Blur's INTZ in s7) along the reflected ray, colour
+//    from the scene copy the game already binds for refraction (s6). No depth: no screen reflection.
+//  - reflections and glow of nearby lamps.
+// Uses the game's own wave normal maps (s0, s1) and constants (c1 = camera, c5 = wave normal scales).
+float4 c1 : register(c1);
+float4 c5 : register(c5);
+float4 lampPos[16] : register(c20); // xyz = lamp head, w = visual radius
+float4 lampCol[16] : register(c36); // rgb = colour x intensity x night fade
+float4 params : register(c52);      // x = lamp strength
+float4 wvp[4] : register(c53);      // local -> clip of the water mesh
+float4 worldT : register(c57);      // xyz = world translation of the water mesh
+float4 reflParams : register(c58);  // x = reflection strength
+float4 depthParams : register(c59); // x = A, y = B (device z = A + B / w), z = 1 when s7 holds the scene depth
+sampler2D sWave0 : register(s0);
+sampler2D sWave1 : register(s1);
+sampler2D sScene : register(s6);
+sampler2D sDepth : register(s7);
+struct PSIn {
+    float4 uv : TEXCOORD0;   // xy = wave map 0, zw = wave map 1
+    float4 pos : TEXCOORD1;  // xyz = world position
+    float4 fog : TEXCOORD3;  // w = fog amount
+};
+
+float4 Project(float3 world) {
+    float4 p = float4(world - worldT.xyz, 1);
+    return float4(dot(wvp[0], p), dot(wvp[1], p), dot(wvp[2], p), dot(wvp[3], p));
+}
+float2 ClipToUv(float4 c) { return float2(c.x / c.w * 0.5 + 0.5, -c.y / c.w * 0.5 + 0.5); }
+float SceneW(float2 uv) { return depthParams.y / (tex2Dlod(sDepth, float4(uv, 0, 0)).r - depthParams.x); }
+float EdgeFade(float2 uv) { float2 e = saturate(min(uv, 1 - uv) * 8); e = e * e * (3 - 2 * e); return e.x * e.y; }
+
+float4 main(PSIn i) : COLOR0 {
+    const bool haveDepth = depthParams.z > 0.5;
+    float4 cp = Project(i.pos.xyz);
+    // Depth test in the shader (the depth-stencil is unbound during this pass so its texture can be read)
+    if (haveDepth && cp.w > SceneW(ClipToUv(cp)) + 0.3 + cp.w * 0.01) return 0;
+
+    float4 a = tex2D(sWave0, i.uv.xy);
+    float4 b = tex2D(sWave1, i.uv.zw);
+    float3 n = normalize(float3(a.x * c5.x + b.x * c5.y, a.z + b.z, a.y * c5.x + b.y * c5.y));
+    float3 v = normalize(c1.xyz - i.pos.xyz);
+    float fres = 0.25 + 0.75 * pow(1 - saturate(dot(n, v)), 5);
+    float fogKeep = 1 - saturate(i.fog.w);
+
+    float3 nr = normalize(float3(n.x * 0.5, 1, n.z * 0.5));
+    float3 r = reflect(-v, nr);
+    float3 refl = 0;
+    float cover = 0;
+    if (haveDepth) {
+        // Only real hits are used; a ray that leaves the screen or finds nothing keeps the game's own sky reflection.
+        // Every hit fades out smoothly (screen edges, ray length, how well the depth matched), so there is no hard line
+        // between pixels that found a surface and pixels that did not.
+        float t = 0.4, tPrev = 0;
+        [loop] for (int s = 0; s < 48; s++) {
+            float4 c = Project(i.pos.xyz + r * t);
+            if (c.w <= 0.05) break;
+            float2 uv = ClipToUv(c);
+            if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) break;
+            float diff = c.w - SceneW(uv);
+            float thick = 1.5 + t * 0.3;
+            if (diff > 0 && diff < thick) { // behind a surface, close enough to be that surface
+                float lo = tPrev, hi = t;
+                [unroll] for (int k = 0; k < 5; k++) {
+                    float m = (lo + hi) * 0.5;
+                    float4 cm = Project(i.pos.xyz + r * m);
+                    if (cm.w - SceneW(ClipToUv(cm)) > 0) hi = m; else lo = m;
+                }
+                float4 ch = Project(i.pos.xyz + r * hi);
+                float2 uh = ClipToUv(ch);
+                float match = 1 - saturate((ch.w - SceneW(uh)) / thick);
+                refl = tex2Dlod(sScene, float4(uh, 0, 0)).rgb;
+                cover = EdgeFade(uh) * match * saturate(1.5 - hi / 60);
+                break;
+            }
+            // diff >= thick: a thin object in front of the ray (post, leaf); keep marching behind it
+            tPrev = t;
+            t = t * 1.15 + 0.3;
+        }
+    }
+    // No scene depth (Depth Blur off, or the game's antialiasing on): no screen reflection at all. A fixed-distance guess
+    // samples the wrong part of the screen and paints dark patches; the game's own sky reflection stays.
+    float alpha = saturate(fres * reflParams.x) * cover * fogKeep;
+
+    float3 spec = 0, glow = 0;
+    [unroll] for (int k = 0; k < 16; k++) {
+        float3 l = lampPos[k].xyz - i.pos.xyz;
+        float d2 = dot(l, l);
+        float rr = lampPos[k].w * lampPos[k].w + 1e-3;
+        float3 h = normalize(l * rsqrt(d2 + 1e-4) + v);
+        float sp = pow(saturate(dot(n, h)), 250) * 2 / (1 + d2 / (rr * 16));
+        float g = saturate(1 - d2 / rr);
+        spec += lampCol[k].rgb * sp;
+        glow += lampCol[k].rgb * (g * g);
+    }
+    float3 lamps = min((spec * fres + glow * 0.08) * params.x * fogKeep, 0.8);
+    return float4(refl * alpha + lamps, alpha);
+}
+)RAW";

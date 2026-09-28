@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}</ProjectGuid>
+    <RootNamespace>ApexRadiance</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>ApexRadiance</ProjectName>
+    <VcpkgTriplet>x86-windows-static</VcpkgTriplet>
+    <!-- vcpkg manifest (vcpkg.json). Build with /p:VcpkgEnableManifest=false to use the prebuilt vcpkg_installed folder. -->
+    <ApexVcpkgRoot Condition="'$(ApexVcpkgRoot)'==''">$(MSBuildProjectDirectory)\vcpkg_installed\$(VcpkgTriplet)\</ApexVcpkgRoot>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <TargetName>ApexRadiance</TargetName>
+    <TargetExt>.asi</TargetExt>
+  </PropertyGroup>
+  <!-- Public release flavour (build_flavor.h): msbuild /p:ApexPublic=true defines S3SS_PUBLIC and builds into Public\ -->
+  <PropertyGroup Condition="'$(ApexPublic)'=='true'">
+    <ApexFlavorDefines>S3SS_PUBLIC</ApexFlavorDefines>
+    <OutDir>$(ProjectDir)Public\</OutDir>
+    <IntDir>$(ProjectDir)Public\obj\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)framework;$(ProjectDir)features;$(ProjectDir)patches;$(ProjectDir)shaders;$(ApexVcpkgRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>imgui.lib;detours.lib;d3d9.lib;d3dcompiler.lib;dxguid.lib;psapi.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ApexVcpkgRoot)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;$(ApexFlavorDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="apex_config.cpp" />
+    <ClCompile Include="apex_gui.cpp" />
+    <ClCompile Include="apex_main.cpp" />
+    <ClCompile Include="features\borderless.cpp" />
+    <ClCompile Include="features\frame_profiler.cpp" />
+    <ClCompile Include="features\level_light_share.cpp" />
+    <ClCompile Include="features\light_diag.cpp" />
+    <ClCompile Include="features\light_probe.cpp" />
+    <ClCompile Include="features\lightmap_smooth.cpp" />
+    <ClCompile Include="features\lot_light_bridge.cpp" />
+    <ClCompile Include="features\map_view.cpp" />
+    <ClCompile Include="features\object_light_bridge.cpp" />
+    <ClCompile Include="features\picture.cpp" />
+    <ClCompile Include="features\post_scene.cpp" />
+    <ClCompile Include="features\rig_tracker.cpp" />
+    <ClCompile Include="features\shader_patches.cpp" />
+    <ClCompile Include="framework\apex_log.cpp" />
+    <ClCompile Include="framework\apex_paths.cpp" />
+    <ClCompile Include="framework\apex_util.cpp" />
+    <ClCompile Include="framework\d3d9_bootstrap.cpp" />
+    <ClCompile Include="framework\d3d9_extra_hooks.cpp" />
+    <ClCompile Include="framework\d3d9_hooks.cpp" />
+    <ClCompile Include="framework\game_version.cpp" />
+    <ClCompile Include="framework\hook_chain.cpp" />
+    <ClCompile Include="framework\memory_patch.cpp" />
+    <ClCompile Include="framework\overlay.cpp" />
+    <ClCompile Include="framework\patch_base.cpp" />
+    <ClCompile Include="framework\s3ss_detect.cpp" />
+    <ClCompile Include="patches\depth_blur_patch.cpp" />
+    <ClCompile Include="patches\edge_smoothing_patch.cpp" />
+    <ClCompile Include="patches\frame_capture_patch.cpp" />
+    <ClCompile Include="patches\night_terrain_relight_patch.cpp" />
+    <ClCompile Include="patches\split_level_ground_light_patch.cpp" />
+    <ClCompile Include="ui\icons.cpp" />
+    <ClCompile Include="ui\violet_theme.cpp" />
+    <ClCompile Include="ui\widgets.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="apex_config.h" />
+    <ClInclude Include="apex_gui.h" />
+    <ClInclude Include="apex_version.h" />
+    <ClInclude Include="build_flavor.h" />
+    <ClInclude Include="features\borderless.h" />
+    <ClInclude Include="features\depth_share.h" />
+    <ClInclude Include="features\frame_profiler.h" />
+    <ClInclude Include="features\level_light_share.h" />
+    <ClInclude Include="features\light_diag.h" />
+    <ClInclude Include="features\light_probe.h" />
+    <ClInclude Include="features\lightmap_smooth.h" />
+    <ClInclude Include="features\lot_light_bridge.h" />
+    <ClInclude Include="features\map_view.h" />
+    <ClInclude Include="features\object_light_bridge.h" />
+    <ClInclude Include="features\picture.h" />
+    <ClInclude Include="features\post_scene.h" />
+    <ClInclude Include="features\rig_tracker.h" />
+    <ClInclude Include="features\shader_patches.h" />
+    <ClInclude Include="framework\apex_log.h" />
+    <ClInclude Include="framework\apex_paths.h" />
+    <ClInclude Include="framework\apex_util.h" />
+    <ClInclude Include="framework\conflict_guard.h" />
+    <ClInclude Include="framework\d3d9_bootstrap.h" />
+    <ClInclude Include="framework\d3d9_extra_hooks.h" />
+    <ClInclude Include="framework\d3d9_hooks.h" />
+    <ClInclude Include="framework\game_version.h" />
+    <ClInclude Include="framework\hook_chain.h" />
+    <ClInclude Include="framework\memory_patch.h" />
+    <ClInclude Include="framework\overlay.h" />
+    <ClInclude Include="framework\patch_base.h" />
+    <ClInclude Include="framework\render_callbacks.h" />
+    <ClInclude Include="framework\s3ss_detect.h" />
+    <ClInclude Include="patches\night_lighting.h" />
+    <ClInclude Include="shaders\floor_atlas_table.h" />
+    <ClInclude Include="shaders\roof_ps_hlsl.h" />
+    <ClInclude Include="shaders\roof_snow_lamps_hlsl.h" />
+    <ClInclude Include="shaders\shader_ids.h" />
+    <ClInclude Include="shaders\wall_lamp_table.h" />
+    <ClInclude Include="shaders\water_lamps_hlsl.h" />
+    <ClInclude Include="third_party\smaa\AreaTex.h" />
+    <ClInclude Include="third_party\smaa\SearchTex.h" />
+    <ClInclude Include="third_party\smaa\smaa_hlsl.h" />
+    <ClInclude Include="ui\icons.h" />
+    <ClInclude Include="ui\lucide_data.h" />
+    <ClInclude Include="ui\violet_theme.h" />
+    <ClInclude Include="ui\widgets.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\roof_ps.hlsl" />
+    <None Include="shaders\roof_snow_lamps_ps.hlsl" />
+    <None Include="shaders\water_lamps_ps.hlsl" />
+    <None Include="third_party\smaa\SMAA.hlsl" />
+    <None Include="third_party\smaa\LICENSE.txt" />
+    <None Include="third_party\lucide\LICENSE" />
+    <None Include="vcpkg.json" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

@@ -1,0 +1,104 @@
+#pragma once
+// Picture filters (Apex Radiance): colour and image filters for the game's 3D scene, applied at the
+// end of the frame on the normal 8-bit back buffer. The interface (the game's UI and the Apex menu) keeps its own
+// colours: the back buffer is copied at the point where the game goes from the scene to its UI, and pixels that
+// changed after that copy are left as they are.
+//
+// The pass: gamma 2.2 decode, gradient smoothing (deband), sharpening, clarity (local contrast against a 1/8-size copy
+// of the scene), exposure, white balance, contrast, midtones / shadows / highlights / blacks, split toning, vibrance,
+// saturation with a per-hue colour mixer, vignette, then gamma 2.2 encode with a fixed dither below one 8-bit step so the
+// grading adds no banding. Before/after compare shows the left half unprocessed.
+// Settings: [qol.picture] in ApexRadiance.toml (same keys as the combined build).
+//
+// Extracted from the combined build's hdr_output.cpp (SDR path only; the HDR output was removed from the standalone).
+#include <windows.h>
+#include <d3d9.h>
+#include <atomic>
+#include <mutex>
+#include <string>
+
+namespace toml {
+inline namespace v3 {
+class table;
+}
+} // namespace toml
+
+struct PictureParams {
+    bool enabled = false;
+    float exposure = 0.0f;    // scene brightness in stops (EV)
+    float contrast = 1.0f;    // around mid grey (0.18 of white)
+    float midtones = 1.0f;    // > 1 brighter midtones (black and white stay)
+    float shadows = 0.0f;     // -1..1
+    float highlights = 0.0f;  // -1..1
+    float blacks = 0.0f;      // -1 lifts the blacks, +1 deepens them (2% of white at the ends)
+    float temperature = 0.0f; // -1 cooler (bluer) .. +1 warmer
+    float tint = 0.0f;        // -1 greener .. +1 more magenta
+    float saturation = 1.0f;
+    float vibrance = 0.0f;    // -1..1
+    float shadowHue = 215.0f; // split toning: colour of the shadows (hue in degrees) and how much
+    float shadowTint = 0.0f;
+    float highlightHue = 40.0f; // ... and of the highlights
+    float highlightTint = 0.0f;
+    float mixer[6] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}; // saturation per hue: red, yellow, green, cyan, blue, magenta
+    float deband = 1.0f;      // gradient smoothing: 0 = off, 1 = steps up to 6/255, 2 = up to 12/255
+    float sharpen = 0.0f;     // 0..1.5
+    float clarity = 0.0f;     // local contrast of the midtones, -1..1
+    float vignette = 0.0f;    // darker corners, 0..0.8
+    float vignetteSize = 0.5f; // where the darkening starts (0 = centre, 1 = corners)
+    bool compare = false;     // before/after: the left half unprocessed (not saved)
+};
+
+class Picture {
+  public:
+    static Picture& Get() {
+        static Picture instance;
+        return instance;
+    }
+
+    // D3D9 bootstrap: around IDirect3DDevice9::Reset (the pass's D3DPOOL_DEFAULT targets are recreated lazily)
+    void BeforeReset();
+    // End of the frame, before the Apex overlay: when the frame ended on the scene (no game UI after it), the scene copy
+    // is taken now.
+    void BeforeOverlay(IDirect3DDevice9* dev);
+    // End of the frame, after the Apex overlay (inside the game's EndScene): the filter pass, once per frame.
+    void OnEndScene(IDirect3DDevice9* dev);
+
+    PictureParams GetParams() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_p;
+    }
+    void SetParams(const PictureParams& p, bool save);
+    float GpuMs() const { return m_gpuMs; }
+
+    // Hold to compare (menu: the eye button, or B over the menu): while it is called every frame, the pass is skipped
+    // and the game shows its original picture. It lapses by itself about 0.15 s after the last call (never saved).
+    void HoldBypass();
+
+    void SaveToToml(toml::table& qolTable) const; // [qol.picture]
+    void LoadFromToml(const toml::table& qolTable);
+    // The same [qol.picture] table for any parameters (looks, profiles, undo); FromToml: false when qolTable has no
+    // picture table (out untouched). compare is not saved (FromToml leaves it false).
+    static void ParamsToToml(const PictureParams& p, toml::table& qolTable);
+    static bool ParamsFromToml(const toml::table& qolTable, PictureParams& out);
+    // Keys of [qol.picture] this build reads (config migration copies only these)
+    static const char* const* Keys(size_t& count);
+
+    // Tabs of the Color page (menu: Image > Color), in order
+    enum Tab : int { TabBasic, TabTones, TabColor, TabDetail, TabCount };
+    // The rows of one tab of the Color page (inside a card the menu opens), then "Reset Picture". The menu draws the
+    // Picture card header with the on/off switch ([qol.picture] enabled) and the before / after button (compare) above
+    // the tabs itself. The rows stay visible, greyed out, while Picture is off.
+    void RenderUI(int tab);
+    // Developer page > Debug views: the 8-bit / dither note and the GPU cost
+    void RenderDeveloperUI();
+
+  private:
+    Picture() = default;
+    void ReleaseResources();
+    bool InitResources(IDirect3DDevice9* dev);
+
+    mutable std::mutex m_mutex;
+    PictureParams m_p;
+    float m_gpuMs = -1.0f;
+    std::atomic<unsigned long long> m_holdUntil{0}; // GetTickCount64 until which the pass is skipped (hold to compare)
+};

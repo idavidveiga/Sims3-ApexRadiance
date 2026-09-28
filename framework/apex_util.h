@@ -1,0 +1,31 @@
+#pragma once
+// Small string and file helpers shared by the framework.
+#include <windows.h>
+#include <string>
+
+namespace ApexUtil {
+
+inline std::wstring ToWide(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    std::wstring out(static_cast<size_t>(n > 0 ? n : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), n);
+    return out;
+}
+
+inline std::string ToUtf8(const std::wstring& wide) {
+    if (wide.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+// Whole file as bytes; false when it cannot be opened or read.
+bool ReadFileBytes(const std::wstring& path, std::string& out);
+// Writes data to path through a temporary file in the same folder and an atomic replace, so a crash or a full disk never
+// leaves a half-written file behind.
+bool WriteFileAtomic(const std::wstring& path, const std::string& data, std::string* error = nullptr);
+bool FileExists(const std::wstring& path);
+
+} // namespace ApexUtil

@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35303.130
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ApexRadiance", "ApexRadiance.vcxproj", "{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x86 = Debug|x86
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}.Debug|x86.ActiveCfg = Debug|Win32
+		{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}.Debug|x86.Build.0 = Debug|Win32
+		{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}.Release|x86.ActiveCfg = Release|Win32
+		{6F2C1B7A-3D54-4E8B-9A61-5C0E7D2F4A93}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A1E8D3C4-5B6F-4A7E-8C9D-0E1F2A3B4C5D}
+	EndGlobalSection
+EndGlobal

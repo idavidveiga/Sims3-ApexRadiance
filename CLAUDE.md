@@ -1,0 +1,123 @@
+# CLAUDE.md: Apex Radiance
+
+## What this is
+**Apex Radiance** ("Apex Radiance for The Sims 3"; file `ApexRadiance.asi`; author @loinyx; renamed 2026-09-28 from
+"Sims3 Settings Setter Apex Edition" / "S3SS Apex" / `S3SSApex.asi`) is a native mod for The Sims 3 (Steam 1.67.2,
+`TS3W.exe`, 32-bit). It is an ASI loaded by Ultimate ASI Loader, running next to an unmodified official
+Sims3SettingsSetter. It hooks the D3D9 device (the game runs on the official DXVK 3.1.1 `d3d9.dll`) and patches game
+code in memory: Detours, pattern scans, ImGui menu, TOML config. Visible names come from `apex_version.h`
+(`APEX_PRODUCT_NAME`, `APEX_PRODUCT_TAGLINE`); internal identifiers keep "Apex" (namespaces, `ApexPatch`, `APEX_`
+macros, `apex_*` source files).
+
+Features: Night Lighting (rebuilt night lamp light on ground, roads, floors, walls, roofs, water, foliage, objects,
+fences, snow; key `NightTerrainRelight`), Every-Story Ground Light (`SplitLevelGroundLight`, lot lamps on any story
+light the ground; part of Night Lighting), Reflections, Picture filters (SDR), Edge Smoothing
+(SMAA/FXAA), Depth Blur, Borderless window, Frame Profiler (dev build only), plus dev tools (Light Probe
+Ctrl+Shift+F7, Light Diag Ctrl+Shift+F8, Frame Capture Ctrl+Shift+F9, Lot Map Probe, census). Menu: Violet UI
+(sidebar plus feature cards), hotkey Ctrl+Shift+F11. Smooth Streaming, Script GC Scheduler and Service Frame Budget
+were removed (see below).
+
+**Scope (user decision 2026-09-28):** HDR output, Native HDR, Ambient Occlusion, Smooth Streaming, Script GC Scheduler
+and Service Frame Budget are removed from the standalone. Their findings are kept in `docs/removed-features.md`; do not
+bring them back without the user asking.
+
+## State of the code
+- Frozen combined build (Apex inside a fork of S3SS): `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`, branch
+  `night-remake`, tag `combined-final` (commit 45e36e2, local only). Full copy in
+  `Backups Sims 3\16-antes da separacao (codigo completo)`. Treat it as read-only reference.
+- This folder (`S3SSApex\`; the folder name is not changed yet, the user decides) is Apex Radiance, the standalone ASI
+  that runs next to an unmodified official S3SS. The plan is `%USERPROFILE%\Desktop\S3SS-dev\PLANO-SEPARACAO.md`,
+  summarised in `docs/architecture.md`. New work goes here. The framework is rewritten from scratch (no S3SS code).
+- The docs cite files by their combined-tree names; the standalone keeps the module names.
+
+## Read before touching anything
+- `docs/README.md`: index. Then `docs/architecture.md` and `docs/workflow.md`.
+- Before any lighting change: `docs/features/night-lighting/README.md`, the sub-part doc, and the engine docs
+  (`docs/engine/`). Each feature doc has a "Pitfalls and failed approaches" section. Do not retry what is listed there
+  without new evidence.
+- Raw sources, in Portuguese and chronological (later entries win): `S3SS-dev\NOTAS-ILUMINACAO.md`, `PASSO3-PLANO.md`,
+  `ROADMAP-NIGHT-REMAKE.md`. Decompile: `S3SS-dev\re\out`. Game shaders: `Game\Bin\Shaders_Win32.precomp` (read-only).
+
+## Build
+MSBuild: `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe`, v143,
+Release|Win32, C++20, static CRT, vcpkg triplet `x86-windows-static` (always `/p:VcpkgEnableManifest=false`).
+
+Apex Radiance (this folder; `ApexRadiance.sln` / `ApexRadiance.vcxproj`, `TargetName` `ApexRadiance`). The user
+compiles; do not build unless asked:
+```
+MSBuild ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false                     -> Release\ApexRadiance.asi (dev)
+MSBuild ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexPublic=true  -> Public\ApexRadiance.asi (public)
+```
+`/p:ApexPublic=true` defines `S3SS_PUBLIC` (objects in `Public\obj\`). Combined tree (frozen, for reference):
+`MSBuild Sims3SettingsSetter.sln ... [/p:S3SSPublic=true]` -> `Release\` / `Public\S3SSApex.asi`.
+
+Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI sections; public = `S3SS_PUBLIC` /
+`kPublicBuild`, dev tools compiled out. The user plays the dev build; releases ship the public build.
+
+## Install (only with the game closed)
+1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
+   them without asking.
+2. Back up the installed `C:\Games\Hydra\The Sims 3\Game\Bin\ApexRadiance.asi` (the first time: the old
+   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 25; 23 = source before the menu UX features).
+3. Copy the dev `Release\ApexRadiance.asi` into `Game\Bin\`. Exactly one copy of the mod in `Bin`: **delete the old
+   `S3SSApex.asi`** (previous standalone and combined-build name). The official `Sims3SettingsSetter.asi` stays beside
+   it. A leftover `S3SSApex.asi` is detected: if it loaded first Apex Radiance idles (log error only), otherwise the old
+   one idles and a banner asks to delete it; the old combined build makes Apex Radiance keep its features off.
+4. Config, log and dev outputs: `Documents\Electronic Arts\The Sims 3\Apex Radiance\` (`ApexRadiance.toml`,
+   `ApexRadiance_LOG.txt`, `apex_radiance_imgui.ini`, `ApexRadiance_Hitches.txt`, `ApexRadiance_FrameCapture.txt`,
+   `ApexRadiance_LightDiag.txt`, `ApexRadiance_LightProbe.txt` + `LightProbe\`, `ApexRadiance_Censo.txt` + `Censo\`,
+   `Profiles\<name>.toml` = the menu's profiles, see `docs/ui.md`).
+   First start without `ApexRadiance.toml`: copies the previous standalone's `...\S3SS\Apex\Apex.toml` as it is (old
+   folder left in place; its `apex_imgui.ini` is not copied), else migrates from `...\S3SS\S3SS.toml` (backup
+   `S3SS.toml.pre-split.bak` in the new folder). Official S3SS keeps `...\S3SS\` (`S3SS.toml`, `S3SS_LOG.txt`); Apex
+   Radiance never writes there.
+
+## Rules from the user (always)
+- **Back up before modifying** any game, mod, config or source file, into `Backups Sims 3\<numbered folder>`, never
+  only the scratchpad.
+- **No guessing.** Study before implementing. What works: F7 GPU probe, F8 diag, read the real shader and its
+  constants, patch by pattern, test offline over all captured shaders, adversarial review. Mark unverified facts as
+  unverified.
+- **English-only** UI, tooltips, status and log text in both builds. **The user chats in Portuguese; reply in
+  Portuguese.**
+- **Credits:** "Credits: @loinyx" only at the end of each feature description shown on hover; no visible credit lines
+  outside the menu's Settings > Credits section, which lists sims3fiend (Sims3SettingsSetter, the model for the
+  rewritten framework), the single line "Every-Story Ground Light uses a technique first shared by Arro." (the only public mention: never name Arro or the Split-Level fix in feature descriptions, README or promo text), FXAA and third-party code (ImGui, Detours, toml++, SMAA, Lucide icons ISC). The framework was rewritten, so
+  there are no carried sims3fiend file headers. Sims3SettingsSetter is named only in compatibility notices, detection,
+  the S3SS recommendation card, Credits and the S3SS.toml migration.
+- **Name:** visible text says "Apex Radiance" via `APEX_PRODUCT_NAME`; never "S3SS Apex" / "Apex Edition" again.
+- **UI:** main controls visible, tuning in collapsed "Advanced", dev tools apart (Developer sections, public build
+  hides them). New standalone UI theme: **Violet** (accent #7F77DD, dark #534AB7, light #CECBF6; window #15161a, cards
+  #1c1d22), sidebar plus feature cards, own hotkey Ctrl+Shift+F11 (see `docs/ui.md`).
+- **Git:** author the maintainer's git identity (loinyx). Never commit game shader bytecode (`*_ref.h`), dev
+  leftovers (`patches/call_trace_patch.cpp`, `patches/lot_edge_lighting_patch.cpp`, `patches/light_diag_patch.cpp`,
+  `trace_targets.h`), or `Public/`. Commit only when asked.
+- **Publishing, pushing, releases, renames: only with the user's explicit OK.** Licensing is open (upstream has no
+  license; the user should ask sims3fiend before the standalone is published).
+- Offline test harnesses: read-only, never write many files from a test exe (Kaspersky flagged one as ransomware).
+
+## Diagnosing
+Ask what the user saw first. Then read `ApexRadiance_LOG.txt` (patterns found/installed; shaders that did not match;
+`[Config] Migration path:`; S3SS / old-build detection), the feature's status lines, an F7 capture, the F8 diag, and
+the Frame Profiler / `ApexRadiance_Hitches.txt` for performance. The docs quote the combined build's names
+(`S3SS_LOG.txt`, `S3SS_Hitches.txt`, ...). See
+`docs/workflow.md` section 4 and `docs/features/dev-tools/`.
+
+## Release
+GitHub `loinyx/Sims3SettingsSetter-Apex` (combined build; releases `nightremake-v0.1.0-alpha`, `apex-v0.2.0-alpha`
+Latest). Push:
+`git -c credential.helper= -c 'credential.helper=!"/c/Program Files/GitHub CLI/gh.exe" auth git-credential' push fork night-remake:main`.
+Release asset = public `S3SSApex.asi`, English notes in the v0.2.0 shape. Details: `docs/workflow.md` section 5.
+Apex Radiance releases will ship `Public\ApexRadiance.asi`; its repository (and any GitHub repo rename) is not decided
+and needs the user's explicit OK.
+
+## Map of docs
+- `docs/architecture.md`: hooks, registry priorities and Skip, post-scene chain (Edge 20, DepthBlur 30), INTZ depth
+  share, patch system, TOML, logger, flavours, threads, standalone split.
+- `docs/engine/*.md`: TS3W.exe RE with address tables (main loop, streaming, terrain light bake, room light maps,
+  light objects and rigs, shaders, camera/map view, Mono GC, timers).
+- `docs/features/**/*.md`: one per feature and per Night Lighting sub-part: settings (TOML keys, defaults), how it
+  works, files, addresses and patterns, interactions, pitfalls, in-game tests.
+- `docs/ui.md`: the Violet menu (pages, widgets, startup banners).
+- `docs/removed-features.md`: HDR, Native HDR, AO, Smooth Streaming, Script GC Scheduler, Service Frame Budget
+  (revival notes).

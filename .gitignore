@@ -1,0 +1,45 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Dd]ebug/
+[Rr]elease/
+Public/
+x64/
+x86/
+[Oo]bj/
+*.asi
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.log
+*.tlog
+*.lastbuildstate
+ipch/
+
+# vcpkg (managed by vcpkg.json)
+vcpkg_installed/
+
+# Never commit the game's shader bytecode
+*_ref.h
+
+# Intermediate build folders (per project name)
+ApexRadiance/
+S3SSApex/
+vcpkg/
+
+# Dev leftovers and backups
+*.bak
+*.orig
+patches/call_trace_patch.cpp
+patches/lot_edge_lighting_patch.cpp
+patches/light_diag_patch.cpp
+trace_targets.h

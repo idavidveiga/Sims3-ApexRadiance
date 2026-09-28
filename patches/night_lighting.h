@@ -1,0 +1,42 @@
+#pragma once
+// Night Lighting (NightTerrainRelight): what the menu may read and draw of it. The settings, their TOML keys, defaults
+// and live install/uninstall rules stay in patches/night_terrain_relight_patch.cpp; these functions only draw them.
+// All of them: render thread, inside the menu's ImGui frame. The Draw*Card functions open and close their own card
+// (ApexUi::BeginCard / EndCard, one PushID each) and do nothing when the feature does not exist.
+
+namespace NightLighting {
+
+// The game's night level as Night Lighting read it at the last Present (lightMgr+0xF0: 0 = day, 1 = night; the feature
+// treats > 0.99 as night). False while no world is loaded or the feature is off. Render thread (the menu).
+bool MenuNightLevel(float& level);
+
+// Every-Story Ground Light (SplitLevelGroundLight) is on only because official Sims3SettingsSetter's own fix already
+// does the same (Apex wrote nothing). Implemented in patches/split_level_ground_light_patch.cpp.
+bool SplitLevelProvidedByS3SS();
+
+// ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings) and Water & Snow page (tabs Water / Snow) ----
+// Lamps tab, inside the "Night Lights" card, under its on/off switch: the lamp colour slider (luzDasLampadasNatural; a
+// pink-to-warm-white gradient track and a swatch, from the real tint math, and a "Reload save" badge).
+void DrawLampColor();
+// Ground tab. drawUpperFloorRow draws the "Upper floors light the ground" row (the SplitLevelGroundLight feature's own
+// switch, owned by the menu); it is called between the second and the third option of the card.
+void DrawGroundCard(void (*drawUpperFloorRow)());
+void DrawObjectsCard();   // Objects tab (every option shown, in two groups)
+void DrawBuildingsCard(); // Buildings tab (walls and roofs)
+void DrawWaterCard();     // Water tab: lamp glow on ponds (not the shore reflection)
+void DrawSnowCard();      // Snow tab
+// Lamps tab, under the Night Lights card: the "Reset Night Lights" button (rows that need a reload carry a "Reload save" badge)
+void DrawFooter();
+
+// ---- menu: Water & Snow page, Water tab (Water Reflections card) ----
+// Shore reflection strength (reflexoNoLago, 0..3, default 1; 0 = off). It is drawn in the lake pass of Night Lighting,
+// which reads the scene depth of Depth Blur. Set saves the config like any Night Lighting option.
+float ShoreReflection();
+void SetShoreReflection(float strength);
+
+// ---- menu: Developer page (development build) ----
+// Status, census, false colour, rebuild / relight buttons, light diagnostics, the light probe, counters and the generic
+// list of every individual option.
+void DrawDeveloper();
+
+} // namespace NightLighting

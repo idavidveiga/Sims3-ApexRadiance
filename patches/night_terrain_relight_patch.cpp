@@ -1,0 +1,1178 @@
+// Night Terrain Relight
+//
+// Problem 1: street-lamp light stops in a straight line at lot borders when the save was loaded during the day.
+// Problem 2: lamps placed on a lot (outdoors) never light the world grass just outside the lot.
+//
+// Reverse-engineering notes (Steam 1.67.2.024037):
+//  - The world terrain chunks are relit by FUN_00c845c0 (per frame, render thread). It sets byte +0x55 on EVERY chunk
+//    (which rebuilds the chunk and its light textures through FUN_00c834f0 / FUN_00c83060 / FUN_00c7fa70 /
+//    FUN_00c7e7a0 / FUN_00c25a90) when the world-light counter of the light cells reaches 0 AND it is night
+//    (lightMgr+0xF0 > 0.99, FUN_006ac560) or the game is in edit mode.
+//      cells = *(lightMgr + 0x104), lightMgr = *(*(0x011D1860) + 0x1C0)
+//      +0x38 / +0x3C: countdowns set to 50 by FUN_006b64b0 (register), FUN_006b6090 (unregister), FUN_006b6590
+//      (move / toggle), decremented to 0 each frame by FUN_006b5da0, reset to -1 by FUN_006b5770 when consumed.
+//  - Picking up a street lamp in Build mode arms that counter (verified with a call trace: 128 chunk rebuilds and 243
+//    light texture rebuilds follow). That is why it fixes the lighting. The night level setter FUN_006add60 switches
+//    the lamps on at dusk but never arms the counter, so a save loaded by day keeps the "lamps off" terrain light.
+//  - Only lights whose vfunc+0x20 returns 1 (class 0xFF42F8, type 0xB "world light") can arm the counter or enter the
+//    terrain light bake: the visitor at 0xC29620 (vtable 0x010768A0) filters with the same vfunc. Ordinary lamps on a
+//    lot (types 3..6) never reach the world terrain, hence the hard edge around lots.
+//
+// Fix:
+//  - At dusk (level crosses 0.99 upwards) arm both countdowns, exactly like a lamp pick-up does. Also a button.
+//  - Optional: outdoor lot lamps (lot id != 0, type 3..6, alive, enabled, room known and room 0) arm the counter like
+//    world lights (3 call sites) and, when switched on, are accepted by the terrain light bake (visitor).
+
+#include "patch_base.h"
+#include "apex_version.h"
+#include "memory_patch.h"
+#include "apex_log.h"
+#include "d3d9_hooks.h"
+#include "depth_share.h"
+#include "light_diag.h"
+#include "light_probe.h"
+#include "lot_light_bridge.h"
+#include "lightmap_smooth.h"
+#include "render_callbacks.h"
+#include "object_light_bridge.h"
+#include "level_light_share.h"
+#include "rig_tracker.h"
+#include "build_flavor.h"
+#include "night_lighting.h"
+#include "imgui.h"
+#include "ui/widgets.h"
+#include <windows.h>
+#include <atomic>
+#include <chrono>
+#include <climits>
+#include <cstring>
+#include <format>
+#include <string>
+#include <vector>
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+// ---- addresses (Steam 1.67.2.024037), all validated byte for byte before use ----
+constexpr uintptr_t kRootGetter = 0x006E97B0; // A1 <imm32 = &root> 85 C0 75 01 C3 8B 80 C0 01 00 00
+constexpr BYTE kRootGetterBytes[] = {0xA1, 0, 0, 0, 0, 0x85, 0xC0, 0x75, 0x01, 0xC3, 0x8B, 0x80, 0xC0, 0x01, 0x00, 0x00};
+
+constexpr uintptr_t kVisitorSite = 0x00C29626; // inside the "Terrain/Lights" collector visitor (0xC29620)
+const std::vector<BYTE> kVisitorOrig = {0x8B, 0x07, 0x8B, 0x50, 0x20, 0x8B, 0xF1, 0x8B, 0xCF, 0xFF, 0xD2};
+// mov eax,[edi]; mov edx,[eax+20h]; mov esi,ecx; mov ecx,edi; call edx      (followed by test al,al; jz)
+
+struct ArmSite {
+    uintptr_t addr;
+    const char* name;
+};
+constexpr ArmSite kArmSites[] = {
+    {0x006B6516, "light registration (0x6B64B0)"},
+    {0x006B60D3, "light removal (0x6B6090)"},
+    {0x006B6618, "light moved/toggled (0x6B6590)"},
+};
+const std::vector<BYTE> kArmOrig = {0x8B, 0x17, 0x8B, 0x42, 0x20, 0x8B, 0xCF, 0xFF, 0xD0};
+// mov edx,[edi]; mov eax,[edx+20h]; mov ecx,edi; call eax      (followed by test al,al; jz; mov [esi+38h],32h)
+
+constexpr int kArmFrames = 50; // same value the game writes
+
+// Lot room light solve: FUN_006be020 (street-lamp class contribution, vfunc+0x4C) reads the lamp's effective colour
+// +0xE0, which is zero while the lamp is off. Lot grass samples ONLY the lot's room-0 LightMap, so a lot solved by day
+// never gets the street lamps. We replace "movaps xmm0,[esi+0E0h]" with a call that uses colour(+0xF0) x
+// intensity(+0x10) for street lamps (type 0xB, raw lot id 0) that are off.
+constexpr uintptr_t kLampColourSite = 0x006BE18C;
+const std::vector<BYTE> kLampColourOrig = {0x0F, 0x28, 0x86, 0xE0, 0x00, 0x00, 0x00};
+
+// Room queue used when a lamp changes (Build-mode pick-up path): FUN_006c7160 thiscall(treeLevel, roomId), ret 4.
+// The light update tree then invalidates the room on all levels, re-gathers world lights and re-solves it.
+constexpr uintptr_t kQueueRoom = 0x006C7160;
+constexpr BYTE kQueueRoomBytes[] = {0x83, 0xEC, 0x2C, 0x53, 0x55, 0x56, 0x33, 0xDB, 0x8B, 0xF1};
+using QueueRoom_t = void(__thiscall*)(void* treeLevel, int roomId);
+
+// ---- settings ----
+bool g_autoDusk = true;
+bool g_lotLamps = true;
+bool g_streetLampsLit = false;
+bool g_relightLots = false;
+bool g_bridge = true;
+bool g_objLamps = true;
+float g_objStrength = 1.0f;
+bool g_objAll = true;
+bool g_smoothMaps = true;
+float g_sidewalkClear = 0.5f;
+float g_lampTint = 1.0f;
+bool g_fenceGround = true;
+bool g_levelShare = true;
+bool g_objPixel = true;
+bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
+float g_objPixelLightStrength = 1.0f;
+float g_fenceGroundStrength = 1.0f;
+float g_wallStrength = 2.0f; // outdoor walls: baked lamp light x this (1 = the game)
+bool g_roofs = true;
+float g_roofStrengthSetting = 0.6f;
+bool g_water = true;
+float g_waterStrengthSetting = 1.0f;
+float g_waterReflSetting = 1.0f;
+bool g_allLotsHQ = false;
+bool g_lotPassNoTerrainMap = false;
+
+// FUN_00c7f750(chunk, lot, out) builds the per-chunk light/fog pass. For the LOT pass (lot=1, [ebp+0Ch]) it binds the
+// rebuilt terrain lightmap chunk+0xD8 when it exists; that texture has no street-lamp light inside lot footprints, so
+// after any full terrain rebuild lot grass loses street lamps. Before a rebuild the lot pass binds nothing and lot grass
+// uses the lot LightMap (which has them). We keep the lot pass on "nothing" (0xC7F8B7) and leave the world pass alone.
+constexpr uintptr_t kLotPassSite = 0x00C7F87D;
+const std::vector<BYTE> kLotPassOrig = {0x8B, 0x87, 0xD8, 0x00, 0x00, 0x00, 0x85, 0xC0};
+const BYTE kLotPassContext[] = {0xF3, 0x0F, 0x10, 0x05, 0x38, 0xA5, 0x07, 0x01, 0xF3, 0x0F, 0x11, 0x44, 0x24, 0x18, 0x74, 0x13};
+constexpr uintptr_t kLotPassNullBind = 0x00C7F8B7;
+const BYTE kLotPassNullBindBytes[] = {0xA1, 0x80, 0xCE, 0x1E, 0x01, 0x6A, 0x00, 0x6A, 0x00};
+std::atomic<int> g_lotPassRedirects{0};
+
+__declspec(naked) void LotPassStub() {
+    __asm {
+        mov eax, dword ptr [edi+0xD8]
+        cmp byte ptr [ebp+0x0C], 0
+        jne lot
+        test eax, eax
+        ret
+    lot:
+        movss xmm0, dword ptr ds:[0x0107A538]
+        movss dword ptr [esp+0x1C], xmm0
+        add esp, 4
+        mov eax, 0x00C7F8B7
+        jmp eax
+    }
+}
+int g_stuckFrames = 0;
+Clock::time_point g_lastStuckKick{};
+int g_armsAtLastStuckKick = 0;
+int g_lastLampEdits = 0;
+bool g_editKickPending = false;
+Clock::time_point g_editKickAt{};
+
+// Lot lighting quality: FUN_00adb5a0 and FUN_00adb850 pass (lot is active || Build mode) to FUN_006a5ef0. The default
+// "mov byte [esp+0Ch],0" becomes 1 so every lot is lit at the high quality the active lot uses.
+constexpr uintptr_t kQualitySites[] = {0x00ADB66B, 0x00ADB884};
+const std::vector<BYTE> kQualityOrig = {0xC6, 0x44, 0x24, 0x0C, 0x00};
+const std::vector<BYTE> kQualityNew = {0xC6, 0x44, 0x24, 0x0C, 0x01};
+float g_delaySec = 2.0f;
+
+volatile LONG g_forcedLampUses = 0;
+std::atomic<int> g_lotRelights{0};
+std::atomic<int> g_roomsQueued{0};
+std::atomic<bool> g_relightLotsRequested{false};
+bool g_lotRelightPending = false;
+bool g_loadKickPending = false;
+Clock::time_point g_loadKickAt{};
+Clock::time_point g_lotRelightAt{};
+std::string g_lastLotRelight = "none";
+
+// Replaces movaps xmm0,[esi+0E0h] at 0x6BE18C (ESI = light). May clobber EAX, XMM2 and flags (dead at that point).
+__declspec(naked) void StreetLampColourStub() {
+    __asm {
+        test byte ptr [esi+0x100], 0x20
+        jnz lit
+        cmp dword ptr [esi+0xB0], 0x0B
+        jne lit
+        mov eax, dword ptr [esi+0xC0]
+        or eax, dword ptr [esi+0xC4]
+        jnz lit
+        lock inc dword ptr [g_forcedLampUses]
+        movups xmm0, xmmword ptr [esi+0xF0]
+        mov eax, dword ptr [esi+0x10]
+        test eax, 0x7FFFFFFF
+        jz done
+        movups xmm2, xmmword ptr [esi+0x10]
+        mulps xmm0, xmm2
+    done:
+        ret
+    lit:
+        movaps xmm0, xmmword ptr [esi+0xE0]
+        ret
+    }
+}
+
+// Queues room 0 of every loaded lot level, like picking up a lamp does. Returns rooms queued, -1 on failure.
+int QueueAllLotOutdoorRooms(uintptr_t lightMgr) {
+    int queued = 0;
+    __try {
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        auto* buckets = *reinterpret_cast<uintptr_t**>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || bucketCount == 0 || bucketCount > (1u << 20)) return -1;
+        const uintptr_t endNode = buckets[bucketCount];
+        uintptr_t* slot = buckets;
+        uintptr_t node = *slot;
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *++slot;
+        guard = 0;
+        while (node != endNode && guard++ < 100000) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            if (tracker) {
+                for (int level = -4; level <= 7; level++) {
+                    const uintptr_t treeLevel = tracker + 0x6A0 + static_cast<intptr_t>(level) * 0x1A4;
+                    const uintptr_t manager = *reinterpret_cast<const uintptr_t*>(treeLevel);
+                    if (!manager || *reinterpret_cast<const uintptr_t*>(manager) != lightMgr) continue;
+                    reinterpret_cast<QueueRoom_t>(kQueueRoom)(reinterpret_cast<void*>(treeLevel), 0);
+                    queued++;
+                }
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g2 = 0;
+            while (node == 0 && g2++ < (1 << 20)) node = *++slot;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return queued;
+}
+
+// ---- runtime state (render thread) ----
+uintptr_t g_rootPtrAddr = 0;
+uintptr_t g_lastCells = 0;
+bool g_lastNight = false;
+bool g_scheduled = false;
+Clock::time_point g_scheduledAt{};
+int g_prevCounter = INT_MIN;
+std::string g_pendingReason;
+std::atomic<bool> g_kickRequested{false};
+
+std::atomic<int> g_kicks{0};
+std::atomic<int> g_rebuilds{0};
+std::atomic<int> g_lotLampArms{0};
+std::atomic<int> g_lotLampsBaked{0};
+std::atomic<int> g_lotLampsSkippedOff{0};
+float g_level = 0.0f;
+std::atomic<float> g_menuLevel{-1.0f}; // g_level for the menu's status pill; -1 = no world loaded or the feature is off
+int g_counter38 = 0;
+int g_counter3C = 0;
+std::string g_status = "Waiting for the game to load a world";
+std::string g_lastEvent = "none";
+
+// ---- light predicates (called from game code, must be __stdcall and preserve ebx/esi/edi/ebp) ----
+using BoolVfn = bool(__thiscall*)(void*);
+
+bool OriginalWorldLightTest(void* light) {
+    auto vtable = *reinterpret_cast<uintptr_t**>(light);
+    return reinterpret_cast<BoolVfn>(vtable[0x20 / 4])(light);
+}
+
+// Lamp that belongs to a lot, is an ordinary lamp type, is alive/enabled and sits outdoors (room 0).
+bool IsOutdoorLotLamp(const BYTE* L) {
+    __try {
+        const uint32_t lotLo = *reinterpret_cast<const uint32_t*>(L + 0xC0);
+        const uint32_t lotHi = *reinterpret_cast<const uint32_t*>(L + 0xC4);
+        if ((lotLo | lotHi) == 0) return false;
+        const int type = *reinterpret_cast<const int*>(L + 0xB0);
+        if (type < 3 || type > 6) return false;
+        const BYTE f = L[0x100];
+        if (!(f & 0x01) || !(f & 0x40) || !(f & 0x04)) return false; // alive, enabled, room known
+        return *reinterpret_cast<const int*>(L + 0x08) == 0;           // room 0 = outdoors
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Replaces the vfunc+0x20 test where the light cells arm the terrain relight countdown.
+bool __stdcall ArmTest(BYTE* light) {
+    if (OriginalWorldLightTest(light)) return true;
+    if (!g_lotLamps || !IsOutdoorLotLamp(light)) return false;
+    g_lotLampArms.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// Replaces the vfunc+0x20 test in the terrain light bake collector. Lot lamps only while switched on.
+bool __stdcall TerrainLightTest(BYTE* light) {
+    if (OriginalWorldLightTest(light)) return true;
+    if (!g_lotLamps || !IsOutdoorLotLamp(light)) return false;
+    if (!(light[0x100] & 0x20)) {
+        g_lotLampsSkippedOff.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    g_lotLampsBaked.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- game state access ----
+struct LightState {
+    uintptr_t lightMgr = 0;
+    uintptr_t cells = 0;
+    float level = 0.0f;
+};
+
+bool ReadLightState(LightState& out) {
+    if (!g_rootPtrAddr) return false;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(g_rootPtrAddr);
+        if (!root) return false;
+        const uintptr_t lightMgr = *reinterpret_cast<const uintptr_t*>(root + 0x1C0);
+        if (!lightMgr) return false;
+        const uintptr_t cells = *reinterpret_cast<const uintptr_t*>(lightMgr + 0x104);
+        if (!cells) return false;
+        out.lightMgr = lightMgr;
+        out.cells = cells;
+        out.level = *reinterpret_cast<const float*>(lightMgr + 0xF0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ReadCounters(uintptr_t cells, int& c38, int& c3C) {
+    __try {
+        c38 = *reinterpret_cast<const int*>(cells + 0x38);
+        c3C = *reinterpret_cast<const int*>(cells + 0x3C);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ArmCounters(uintptr_t cells) {
+    __try {
+        *reinterpret_cast<int*>(cells + 0x38) = kArmFrames;
+        *reinterpret_cast<int*>(cells + 0x3C) = kArmFrames;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+std::string LevelText(float level) {
+    return std::format("night level {:.2f}", level);
+}
+
+void Kick(uintptr_t cells, float level, const char* reason) {
+    if (!ArmCounters(cells)) {
+        g_lastEvent = std::format("Could not arm the rebuild ({})", reason);
+        return;
+    }
+    g_kicks.fetch_add(1);
+    g_pendingReason = reason;
+    g_lastEvent = std::format("Rebuild armed: {} ({})", reason, LevelText(level));
+    LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
+}
+
+// Runs on the render thread, the same thread as the game's light update and terrain update.
+void OnPresent() {
+    if constexpr (!kPublicBuild) LightDiag::OnPresent(); // Ctrl+Shift+F8: development build only
+    LightState s;
+    if (!ReadLightState(s)) {
+        g_lastCells = 0;
+        g_scheduled = false;
+        g_prevCounter = INT_MIN;
+        g_status = "Waiting for the game to load a world";
+        g_menuLevel.store(-1.0f);
+        return;
+    }
+    const bool night = s.level > 0.99f;
+    int c38 = 0, c3C = 0;
+    ReadCounters(s.cells, c38, c3C);
+    g_level = s.level;
+    g_menuLevel.store(s.level);
+    g_counter38 = c38;
+    g_counter3C = c3C;
+
+    if (s.cells != g_lastCells) { // new world
+        g_lastCells = s.cells;
+        g_lastNight = night;
+        g_scheduled = false;
+        g_prevCounter = c38;
+        g_lotRelightPending = false;
+        g_pendingReason.clear();
+        LOG_INFO(std::format("[NightTerrainRelight] World loaded ({})", LevelText(s.level)));
+        LotLightBridge::OnWorldChanged(); // drop the previous world's chunk maps, smoothed maps and atlas
+        LevelLightShare::OnWorldChanged();
+        // Rebuild the terrain light maps once after loading: the ones baked into the world file miss the part of a lamp's
+        // light that crosses into the neighbouring 256 m chunk (straight cut on world grass at chunk borders).
+        g_loadKickPending = true;
+        g_loadKickAt = Clock::now() + std::chrono::seconds(5); // was 15 s: the dark seams lasted over 20 s after loading (user, 25/09)
+    }
+
+    // The game consumed the countdown: the terrain chunks were rebuilt this frame.
+    if (g_prevCounter >= 0 && c38 == -1) {
+        g_rebuilds.fetch_add(1);
+        const bool duskRebuild = g_pendingReason == "dusk";
+        g_lastEvent = std::format("Terrain rebuilt ({}; {})", g_pendingReason.empty() ? "by the game itself" : g_pendingReason, LevelText(s.level));
+        g_pendingReason.clear();
+        LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
+        // Relight lots ONLY after the dusk rebuild. Relighting re-registers lot lamps, which re-arms the countdown; doing it
+        // after every rebuild made a loop that kept invalidating the (slow, high quality) lot solves.
+        if (night && g_relightLots && duskRebuild) {
+            g_lotRelightPending = true;
+            g_lotRelightAt = Clock::now() + std::chrono::seconds(3);
+        }
+    }
+    g_prevCounter = c38;
+
+    if (g_autoDusk && night && !g_lastNight) {
+        g_scheduled = true;
+        g_scheduledAt = Clock::now() + std::chrono::milliseconds(static_cast<int>(g_delaySec * 1000.0f));
+    }
+    g_lastNight = night;
+
+    if (g_loadKickPending && Clock::now() >= g_loadKickAt) {
+        g_loadKickPending = false;
+        Kick(s.cells, s.level, "world load");
+        g_prevCounter = kArmFrames;
+    }
+    if (g_kickRequested.exchange(false)) {
+        Kick(s.cells, s.level, "button");
+        g_prevCounter = kArmFrames;
+    }
+    if (g_scheduled && Clock::now() >= g_scheduledAt) {
+        g_scheduled = false;
+        if (night) {
+            Kick(s.cells, s.level, "dusk");
+            g_prevCounter = kArmFrames;
+            if (g_relightLots) { // fallback if the terrain rebuild does not happen
+                g_lotRelightPending = true;
+                g_lotRelightAt = Clock::now() + std::chrono::seconds(6);
+            }
+        }
+    }
+
+    // A lot lamp that already existed was edited (colour, brightness, on/off, e.g. in build mode): the game rebuilds
+    // its light on the ground only when the lot is reloaded. Rebuild 0.7 s after the last change.
+    if (const int edits = LotLightBridge::LotLampEdits(); edits != g_lastLampEdits) {
+        g_lastLampEdits = edits;
+        g_editKickPending = true;
+        g_editKickAt = Clock::now() + std::chrono::milliseconds(700);
+    }
+    if (g_editKickPending && Clock::now() >= g_editKickAt) {
+        g_editKickPending = false;
+        Kick(s.cells, s.level, "lot lamp edited");
+        g_prevCounter = kArmFrames;
+    }
+
+    // A light change armed only +0x38: the full rebuild also needs +0x3C (TerrainData expand), so it would wait forever.
+    if (night && c38 == 0 && c3C <= 0) {
+        // Only when an outdoor LOT lamp armed it (street lamps streaming in with lots also arm it, and the vanilla game
+        // never rebuilds for those), and at most every 15 s (was 60: a newly placed lamp took up to a minute to light the ground): each full rebuild is a small hitch.
+        const int arms = g_lotLampArms.load();
+        if (++g_stuckFrames >= 120 && arms != g_armsAtLastStuckKick && Clock::now() - g_lastStuckKick > std::chrono::seconds(15)) {
+            g_lastStuckKick = Clock::now();
+            g_armsAtLastStuckKick = arms;
+            Kick(s.cells, s.level, "lights changed");
+            g_prevCounter = kArmFrames;
+        }
+    } else
+        g_stuckFrames = 0;
+
+    const bool relightNow = g_relightLotsRequested.exchange(false);
+    if (relightNow || (g_lotRelightPending && Clock::now() >= g_lotRelightAt)) {
+        g_lotRelightPending = false;
+        const int n = QueueAllLotOutdoorRooms(s.lightMgr);
+        if (n >= 0) {
+            g_lotRelights.fetch_add(1);
+            g_roomsQueued.fetch_add(n);
+        }
+        g_lastLotRelight = n < 0 ? std::string("failed (light tree not found)") : std::format("{} lot stories queued ({}; {})", n, relightNow ? "button" : "automatic", LevelText(s.level));
+        LOG_INFO("[NightTerrainRelight] Lots: " + g_lastLotRelight);
+    }
+
+    if (c38 == 0 && !night)
+        g_status = "Rebuild pending: the game only rebuilds the terrain at night (or in Build mode)";
+    else if (c38 > 0)
+        g_status = std::format("Rebuild in {} frames", c38);
+    else
+        g_status = night ? "Night: ok" : "Day: ok";
+}
+
+// ---- menu helpers ----
+
+// "Reload save" badge of the rows whose change shows only when a save / world loads again
+constexpr const char* kReloadBadge = "Reload save";
+constexpr const char* kReloadTip = "This change shows after you load a save again";
+
+// Colour of the lamp colour slider at t (0 = pink ... 1 = warm white), from the real tint math of
+// ObjectLightBridge::TintStockColour (features/object_light_bridge.cpp): the stock pink base colour (1, 0.75, 0.79)
+// blended towards warm white (1, 0.80, 0.62) scaled to the pink's luminance. The game's values are light colours, shown
+// here as they are (an approximation of how they look on screen).
+ImU32 LampColourAt(float t) {
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float pink[3] = {1.0f, 0.75f, 0.79f};
+    const float lumPink = 0.2126f * pink[0] + 0.7152f * pink[1] + 0.0722f * pink[2];
+    const float lumWarm = 0.2126f + 0.7152f * 0.80f + 0.0722f * 0.62f;
+    const float k = pink[0] * lumPink / lumWarm;
+    const float warm[3] = {k, 0.80f * k, 0.62f * k};
+    int c[3];
+    for (int i = 0; i < 3; i++) {
+        const float v = pink[i] + (warm[i] - pink[i]) * t;
+        c[i] = static_cast<int>(v * 255.0f + 0.5f);
+        c[i] = c[i] < 0 ? 0 : (c[i] > 255 ? 255 : c[i]);
+    }
+    return IM_COL32(c[0], c[1], c[2], 255);
+}
+
+std::vector<BYTE> CallPatch(uintptr_t site, size_t prefixLen, const std::vector<BYTE>& prefix, void* target, size_t totalLen) {
+    std::vector<BYTE> b(prefix.begin(), prefix.end());
+    const uintptr_t callAt = site + prefixLen;
+    const int32_t rel = static_cast<int32_t>(reinterpret_cast<uintptr_t>(target) - (callAt + 5));
+    b.push_back(0xE8);
+    for (int i = 0; i < 4; i++) b.push_back(static_cast<BYTE>((rel >> (8 * i)) & 0xFF));
+    while (b.size() < totalLen) b.push_back(0x90);
+    return b;
+}
+
+} // namespace
+
+// Reinstalling after a setting change must happen on the render thread: Uninstall releases textures, shaders and maps
+// that the draw hooks are using, and rewrites code the game runs there. Update() (message-loop thread) only schedules it.
+std::atomic<bool> g_reinstallDue{false};
+void (*g_reinstallFn)() = nullptr;
+void DeferredReinstall(IDirect3DDevice9*) {
+    if (g_reinstallDue.exchange(false) && g_reinstallFn) g_reinstallFn();
+}
+
+class NightTerrainRelightPatch : public ApexPatch {
+    std::vector<MemPatch::PatchLocation> patchedLocations;
+    bool installedLotLamps = false;
+    bool installedStreetLamps = false;
+    bool installedAllLotsHQ = false;
+    bool installedLotPass = false;
+    bool reinstalling = false; // ReinstallNow: LevelLightShare does not depend on the reinstalled options, leave it alone
+
+  public:
+    NightTerrainRelightPatch() : ApexPatch("NightTerrainRelight", nullptr) {
+        g_reinstallFn = [] { if (g_self) g_self->ReinstallNow(); };
+        g_self = this;
+        RenderCallbacks::Add(RenderCallbacks::endSceneBeforeOverlay, DeferredReinstall);
+        RegisterBoolSetting(&g_bridge, "luzDoPosteNaGramaDoLote", true,
+            S3SS_TR("A grama do lote usa a mesma luz de poste que a grama do mundo (sem corte na divisa).",
+                    "Street lamp light reaches inside lots, with no straight cut at the lot border."));
+        RegisterBoolSetting(&g_objLamps, "postesNosObjetos", true,
+            S3SS_TR("Postes e luminarias iluminam cercas, arbustos e objetos de fora como iluminam o chao.",
+                    "Lamps light nearby fences, bushes and outdoor objects the way they light the ground."));
+        RegisterFloatSetting(&g_objStrength, "forcaNosObjetos", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            S3SS_TR("Forca da luz dos postes nos objetos.", "How strongly lamps light objects."));
+        RegisterBoolSetting(&g_objAll, "lampadasEmTodosObjetos", true,
+            S3SS_TR("Tambem escadas, grades, colunas e outros objetos que o jogo deixa sem luz de lampada (vale ao carregar o mundo).",
+                    "Also stairs, railings, columns and other objects the game leaves without lamp light (applies when a world loads)."));
+        RegisterBoolSetting(&g_smoothMaps, "mapaDeLuzSuavizado", true,
+            S3SS_TR("Luz dos postes no chao mais lisa e sem manchas coloridas: o mapa de luz do terreno e ampliado 4x e limpo da compressao.",
+                    "Smooth lamp light on the ground, with no blocky steps or colored specks."));
+        RegisterFloatSetting(&g_sidewalkClear, "calcadaComNevePisada", SettingWidget::Slider, 0.5f, 0.0f, 1.0f,
+            S3SS_TR("Na neve, quanto do concreto das calcadas aparece por baixo da neve (0 = igual ao jogo, tudo coberto).",
+                    "In snow, how much of the sidewalk concrete shows through (0 = like the game, fully covered)."));
+        RegisterFloatSetting(&g_lampTint, "luzDasLampadasNatural", SettingWidget::Slider, 1.0f, 0.0f, 1.0f,
+            S3SS_TR("Cor das lampadas de fabrica: 0 = rosada como no jogo, 1 = branco quente (vale ao carregar o save).",
+                    "Color of stock lamps: 0 = pink like the game, 1 = warm white (applies when a save loads)."));
+        RegisterBoolSetting(&g_fenceGround, "cercasComLuzDoChao", true,
+            S3SS_TR("Cercas, grades, postes de cerca e escadas recebem a luz das lampadas do chao em volta (o jogo quase nunca manda lampada para elas).",
+                    "Fences, railings, fence posts and stairs get the lamp light of the ground around them."));
+        RegisterFloatSetting(&g_fenceGroundStrength, "forcaNasCercas", SettingWidget::Slider, 1.0f, 0.25f, 2.0f,
+            S3SS_TR("Forca da luz do chao nas cercas, grades e escadas.", "How strongly fences, railings, stairs and the snow on them are lit."));
+        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 2.0f, 1.0f, 4.0f,
+            S3SS_TR("Multiplica a luz das lampadas nas paredes externas (1 = como o jogo). O jogo acende as paredes bem mais fraco que os objetos.",
+                    "How strongly lamps light outside walls (1 = like the game, which lights walls much dimmer than objects)."));
+        RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
+            S3SS_TR("Luminarias externas iluminam as paredes e pisos de todos os andares (a luz nao corta mais na linha do piso).",
+                    "Outdoor lights reach the walls and floors of every story (no cut at the floor line)."));
+        RegisterBoolSetting(&g_objPixel, "objetosDeForaComLuzDoChao", true,
+            S3SS_TR("Portas, janelas, balcoes e outros objetos de fora recebem, ponto a ponto, no minimo a luz do chao em volta (sem escurecer nada).",
+                    "Outdoor doors, windows, counters and similar objects get at least the ground light around them, point by point."));
+        RegisterBoolSetting(&g_objPixelLights, "luzPorPixelNosObjetos", true,
+            S3SS_TR("Objetos de fora (balcoes, pecas modulares, portas) recebem as lampadas calculadas em cada ponto, iguais para todas as pecas: sem emendas de cor entre pecas vizinhas.",
+                    "Outdoor objects (counters, modular pieces, doors) get lamp light computed at every point, the same for every piece: no colour seams between neighbouring pieces."));
+        RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            S3SS_TR("Forca das lampadas calculadas por ponto nos objetos de fora.", "Strength of the per-point lamp light on outdoor objects."));
+        RegisterBoolSetting(&g_roofs, "telhadosComLuz", true,
+            S3SS_TR("Telhados recebem a luz das lampadas e postes proximos (sombra mais suave tambem).",
+                    "Roofs receive light from nearby lamps (with softer shadows)."));
+        RegisterFloatSetting(&g_roofStrengthSetting, "forcaNosTelhados", SettingWidget::Slider, 0.6f, 0.05f, 2.0f,
+            S3SS_TR("Forca da luz das lampadas nos telhados.", "How strongly lamps light roofs."));
+        RegisterBoolSetting(&g_water, "lagosRefletemLampadas", true,
+            S3SS_TR("A agua dos lagos reflete as lampadas e postes proximos a noite.", "Ponds glow and reflect nearby lamps at night."));
+        RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 1.0f, 0.1f, 3.0f,
+            S3SS_TR("Brilho do reflexo das lampadas na agua.", "Brightness of lamp reflections on water."));
+        RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.0f, 0.0f, 3.0f,
+            S3SS_TR("Forca do reflexo da margem (arvores, casas, postes) na agua dos lagos.",
+                    "Strength of the shore reflection (trees, houses, lamps) on ponds (needs Depth Blur)."));
+        RegisterBoolSetting(&g_autoDusk, "automaticoAoAnoitecer", true,
+            S3SS_TR("Quando anoitece, manda o jogo refazer a luz do terreno com os postes acesos (o mesmo que acontece ao mover um poste no modo construcao).",
+                    "At dusk, rebuild the terrain light with the lamps on."));
+        RegisterBoolSetting(&g_lotLamps, "luzDoLoteNaGrama", true,
+            S3SS_TR("Luminarias externas do lote tambem iluminam a grama do mundo fora do lote (quando acesas).",
+                    "Outdoor lot lights also light the ground outside the lot."));
+        RegisterFloatSetting(&g_delaySec, "atrasoSegundos", SettingWidget::Slider, 2.0f, 0.5f, 10.0f,
+            S3SS_TR("Espera depois de anoitecer antes de refazer (da tempo de todas as luzes acenderem).",
+                    "Delay after dusk before the rebuild (lets every lamp switch on)."));
+        RegisterBoolSetting(&g_streetLampsLit, "postesAcesosNoCalculo", false,
+            S3SS_TR("Quando o jogo calcula a luz de um lote, os postes da rua contam como acesos (igual a carregar o save a noite).",
+                    "Experimental: street lamps count as lit when the game solves a lot's light."));
+        RegisterBoolSetting(&g_allLotsHQ, "qualidadeAltaEmTodosOsLotes", false,
+            S3SS_TR("Todos os lotes usam a qualidade de luz alta do lote ativo (corrige o corte da luz dos postes na divisa). Vale para lotes carregados depois de ligar.",
+                    "Experimental: every lot uses the active lot's high lighting quality."));
+        RegisterBoolSetting(&g_lotPassNoTerrainMap, "gramaDoLoteUsaLuzDoLote", false,
+            S3SS_TR("A grama do lote continua usando a luz do proprio lote mesmo depois de refazer o terreno (a luz dos postes nao some dentro do lote).",
+                    "Experimental: lot grass keeps the lot's own light after a terrain rebuild."));
+        RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", false,
+            S3SS_TR("Depois de refazer o terreno a noite, recalcula a luz de todos os lotes como quando um poste e movido no modo construcao.",
+                    "Experimental: after the dusk terrain rebuild, re-solve the light of every lot."));
+    }
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        LOG_INFO("[NightTerrainRelight] Installing...");
+
+        BYTE getter[sizeof(kRootGetterBytes)];
+        std::memcpy(getter, reinterpret_cast<const void*>(kRootGetter), sizeof(getter));
+        std::memcpy(getter + 1, kRootGetterBytes + 1, 4); // imm32 is the pointer we want, do not compare it
+        if (std::memcmp(getter, kRootGetterBytes, sizeof(getter)) != 0) return Fail(S3SS_TR("Funcao do gerenciador de luz nao confere em 0x6E97B0 (versao do jogo diferente?)",
+                                                                                          "Light manager code differs at 0x6E97B0 (different game version?)"));
+        g_rootPtrAddr = *reinterpret_cast<const uint32_t*>(kRootGetter + 1);
+        if (!LightDiag::Init()) LOG_WARNING("[NightTerrainRelight] Light diagnostics not available on this game version");
+
+        if (g_lotLamps) {
+            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kVisitorSite), kVisitorOrig.data(), kVisitorOrig.size()))
+                return Fail(S3SS_TR("Coleta de luzes do terreno nao confere em 0xC29626 (versao do jogo diferente ou outro mod?)",
+                                    "Terrain light gathering differs at 0xC29626 (different game version or another mod?)"));
+            for (const auto& s : kArmSites)
+                if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(s.addr), kArmOrig.data(), kArmOrig.size()))
+                    return Fail(std::format(S3SS_TR("Teste de luz nao confere em {:#x}: {}", "Light test differs at {:#x}: {}"), s.addr, s.name));
+
+            // mov esi,ecx; push edi; call TerrainLightTest; nop x3
+            const auto visitorBytes = CallPatch(kVisitorSite, 3, {0x8B, 0xF1, 0x57}, reinterpret_cast<void*>(&TerrainLightTest), kVisitorOrig.size());
+            if (!MemPatch::WriteBytes(kVisitorSite, visitorBytes, &patchedLocations, &kVisitorOrig)) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(S3SS_TR("Falha ao alterar a coleta de luzes do terreno", "Could not patch the terrain light gathering"));
+            }
+            for (const auto& s : kArmSites) {
+                // push edi; call ArmTest; nop x3
+                const auto armBytes = CallPatch(s.addr, 1, {0x57}, reinterpret_cast<void*>(&ArmTest), kArmOrig.size());
+                if (!MemPatch::WriteBytes(s.addr, armBytes, &patchedLocations, &kArmOrig)) {
+                    MemPatch::RestoreAll(patchedLocations);
+                    return Fail(std::format(S3SS_TR("Falha ao alterar {}", "Could not patch {}"), s.name));
+                }
+            }
+            FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+        }
+        if (std::memcmp(reinterpret_cast<const void*>(kQueueRoom), kQueueRoomBytes, sizeof(kQueueRoomBytes)) != 0) {
+            MemPatch::RestoreAll(patchedLocations);
+            return Fail(S3SS_TR("Fila de comodos nao confere em 0x6C7160 (versao do jogo diferente?)",
+                                "Room queue code differs at 0x6C7160 (different game version?)"));
+        }
+        if (g_streetLampsLit) {
+            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kLampColourSite), kLampColourOrig.data(), kLampColourOrig.size())) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(S3SS_TR("Calculo de luz do poste nao confere em 0x6BE18C (versao do jogo diferente ou outro mod?)",
+                                    "Street lamp light code differs at 0x6BE18C (different game version or another mod?)"));
+            }
+            // call StreetLampColourStub; nop x2
+            const auto lampBytes = CallPatch(kLampColourSite, 0, {}, reinterpret_cast<void*>(&StreetLampColourStub), kLampColourOrig.size());
+            if (!MemPatch::WriteBytes(kLampColourSite, lampBytes, &patchedLocations, &kLampColourOrig)) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(S3SS_TR("Falha ao alterar o calculo de luz do poste", "Could not patch the street lamp light"));
+            }
+            FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+        }
+        installedStreetLamps = g_streetLampsLit;
+        if (g_allLotsHQ) {
+            for (uintptr_t site : kQualitySites)
+                if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(site), kQualityOrig.data(), kQualityOrig.size())) {
+                    MemPatch::RestoreAll(patchedLocations);
+                    return Fail(std::format(S3SS_TR("Qualidade do lote nao confere em {:#x}", "Lot quality code differs at {:#x}"), site));
+                }
+            for (uintptr_t site : kQualitySites)
+                if (!MemPatch::WriteBytes(site, kQualityNew, &patchedLocations, &kQualityOrig)) {
+                    MemPatch::RestoreAll(patchedLocations);
+                    return Fail(S3SS_TR("Falha ao alterar a qualidade do lote", "Could not patch the lot quality"));
+                }
+        }
+        installedAllLotsHQ = g_allLotsHQ;
+        if (g_lotPassNoTerrainMap) {
+            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kLotPassSite), kLotPassOrig.data(), kLotPassOrig.size()) ||
+                std::memcmp(reinterpret_cast<const void*>(kLotPassSite + 8), kLotPassContext, sizeof(kLotPassContext)) != 0 ||
+                std::memcmp(reinterpret_cast<const void*>(kLotPassNullBind), kLotPassNullBindBytes, sizeof(kLotPassNullBindBytes)) != 0) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(S3SS_TR("Passada de luz do terreno nao confere em 0xC7F87D", "Terrain light pass differs at 0xC7F87D"));
+            }
+            const auto lotPassBytes = CallPatch(kLotPassSite, 0, {}, reinterpret_cast<void*>(&LotPassStub), kLotPassOrig.size());
+            if (!MemPatch::WriteBytes(kLotPassSite, lotPassBytes, &patchedLocations, &kLotPassOrig)) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(S3SS_TR("Falha ao alterar a passada de luz do lote", "Could not patch the lot light pass"));
+            }
+            FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+        }
+        installedLotPass = g_lotPassNoTerrainMap;
+        installedLotLamps = g_lotLamps;
+
+        D3D9Hooks::RegisterPresent("NightTerrainRelight", [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
+            static bool capsLogged = false; // step 3 (increment 0): the per-pixel lamp shaders need about 600 slots
+            if (!capsLogged && ctx.device) {
+                capsLogged = true;
+                D3DCAPS9 caps{};
+                if (SUCCEEDED(ctx.device->GetDeviceCaps(&caps)))
+                    LOG_INFO(std::format("[NightTerrainRelight] Shader limits: PS 3.0 {} instruction slots, VS 3.0 {}, PS version {:X}", caps.MaxPixelShader30InstructionSlots,
+                                         caps.MaxVertexShader30InstructionSlots, caps.PixelShaderVersion & 0xFFFF));
+            }
+            OnPresent();
+            if constexpr (!kPublicBuild) LightProbe::OnPresent(ctx.device); // Ctrl+Shift+F7: development build only
+            ObjectLightBridge::SetStrength(g_objStrength);
+            ObjectLightBridge::SetAllObjects(g_objAll);
+            ObjectLightBridge::OnPresent();
+            LevelLightShare::OnPresent();
+            LotLightBridge::SetNightLevel(g_level);
+            LotLightBridge::SetRoofFix(g_roofs, g_roofStrengthSetting);
+            // The lake pass draws the lamp glow AND the shore reflection: it runs while either is wanted. With the glow
+            // switched off its lamp strength is 0, so the pass adds the reflection alone (menu: Water Reflections card);
+            // the reflection alone needs the scene depth (Depth Blur), without it the pass would add nothing.
+            const bool shoreOnly = !g_water && g_waterReflSetting > 0.0f && DepthShare::Texture() != nullptr;
+            LotLightBridge::SetWaterFix(g_water || shoreOnly, g_water ? g_waterStrengthSetting : 0.0f, g_waterReflSetting);
+            LotLightBridge::OnPresent();
+            LightmapSmooth::SetEnabled(g_smoothMaps);
+            LotLightBridge::SetSidewalkClear(g_sidewalkClear);
+            ObjectLightBridge::SetLampTint(g_lampTint);
+            LotLightBridge::SetFenceGroundLight(g_fenceGround, g_fenceGroundStrength);
+            LotLightBridge::SetWallGain(g_wallStrength);
+            LotLightBridge::SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength);
+            LotLightBridge::SetObjectPixelLights(g_objPixelLights, g_objPixelLightStrength);
+            LightmapSmooth::OnPresent(ctx.device);
+            return D3D9Hooks::HookAction::Continue;
+        }, D3D9Hooks::Priority::Last);
+
+        ObjectLightBridge::SetLampTint(g_lampTint);
+        ObjectLightBridge::InstallLampColour();
+        LightmapSmooth::SetEnabled(g_smoothMaps);
+        RenderCallbacks::Add(RenderCallbacks::preReset, LightmapSmooth::OnPreReset);
+        LotLightBridge::SetEnabled(g_bridge);
+        LotLightBridge::SetObjectShadowFix(g_objLamps);
+        ObjectLightBridge::SetAllObjects(g_objAll);
+        if (g_objLamps) {
+            std::string objErr;
+            if (!ObjectLightBridge::Install(objErr)) LOG_WARNING("[NightTerrainRelight] " + objErr);
+        }
+        if (g_objPixel && !RigTracker::IsInstalled()) RigTracker::Install();
+        if (g_levelShare && !LevelLightShare::IsInstalled()) {
+            std::string shareErr;
+            if (!LevelLightShare::Install(shareErr)) LOG_WARNING("[NightTerrainRelight] " + shareErr);
+        }
+        isEnabled = true;
+        LOG_INFO(std::format("[NightTerrainRelight] Installed (at dusk={}, lot lamps on the ground={}, delay={}s, root={:#x})", g_autoDusk, g_lotLamps, g_delaySec, g_rootPtrAddr));
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        lastError.clear();
+        D3D9Hooks::UnregisterAll("NightTerrainRelight");
+        LightProbe::Shutdown();
+        RenderCallbacks::Remove(RenderCallbacks::preReset, LightmapSmooth::OnPreReset);
+        LotLightBridge::Shutdown();
+        LightmapSmooth::Clear();
+        ObjectLightBridge::UninstallLampColour();
+        ObjectLightBridge::Uninstall();
+        if (!reinstalling) LevelLightShare::Uninstall();
+        if (!reinstalling) RigTracker::Uninstall();
+        if (!MemPatch::RestoreAll(patchedLocations)) return Fail(S3SS_TR("Falha ao restaurar os bytes originais", "Could not restore the original code"));
+        FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+        patchedLocations.clear();
+        g_lotRelightPending = false;
+        g_scheduled = false;
+        g_lastCells = 0;
+        g_menuLevel.store(-1.0f);
+        isEnabled = false;
+        LOG_INFO("[NightTerrainRelight] Uninstalled");
+        return true;
+    }
+
+    // "At dusk" and the delay are read live; only the lot lamp options change code bytes (reinstall). Runs on the
+    // message-loop thread: it only schedules the reinstall, which DeferredReinstall runs on the render thread.
+    void Update() override {
+        if (!pendingReinstall) return;
+        if (!isEnabled.load() || (g_lotLamps == installedLotLamps && g_streetLampsLit == installedStreetLamps && g_allLotsHQ == installedAllLotsHQ &&
+                                  g_lotPassNoTerrainMap == installedLotPass)) {
+            pendingReinstall = false;
+            return;
+        }
+        if (std::chrono::steady_clock::now() - lastSettingChange < SETTING_CHANGE_DEBOUNCE) return;
+        pendingReinstall = false;
+        g_reinstallDue = true;
+    }
+
+    void ReinstallNow() {
+        if (!isEnabled.load()) return;
+        LOG_INFO("[NightTerrainRelight] Reinstalling after an option change");
+        reinstalling = true;
+        const bool removed = Uninstall();
+        reinstalling = false;
+        // LevelLightShare was left in place: if the rest cannot come back, take it out too (the patch shows as off).
+        if (removed && !Install()) {
+            if (LevelLightShare::IsInstalled()) LevelLightShare::Uninstall();
+            RigTracker::Uninstall();
+        }
+    }
+
+    static inline NightTerrainRelightPatch* g_self = nullptr;
+
+    // Parts that are installed or removed live when their option changes (public menu, reset to defaults).
+    void ApplyLive(bool bridgeBefore, bool objBefore, bool shareBefore, bool objPixelBefore) {
+        if (!isEnabled.load()) return;
+        if (g_bridge != bridgeBefore) LotLightBridge::SetEnabled(g_bridge);
+        if (g_objLamps != objBefore) {
+            if (g_objLamps) {
+                std::string objErr;
+                if (!ObjectLightBridge::Install(objErr)) LOG_WARNING("[NightTerrainRelight] " + objErr);
+            } else
+                ObjectLightBridge::Uninstall();
+            LotLightBridge::SetObjectShadowFix(g_objLamps);
+        }
+        if (g_levelShare != shareBefore) {
+            if (g_levelShare) {
+                std::string shareErr;
+                if (!LevelLightShare::Install(shareErr)) LOG_WARNING("[NightTerrainRelight] " + shareErr);
+            } else
+                LevelLightShare::Uninstall();
+        }
+        if (g_objPixel != objPixelBefore) {
+            if (g_objPixel) RigTracker::Install();
+            else RigTracker::Uninstall();
+        }
+    }
+
+    // Profiles, looks and undo: the settings (and on / off) of a saved table, with the parts that follow their option
+    // installed or removed live, like a change in the menu
+    void ApplyTableLive(const toml::table& table) override {
+        const bool wasEnabled = isEnabled.load();
+        const bool bridgeBefore = g_bridge, objBefore = g_objLamps, shareBefore = g_levelShare, objPixelBefore = g_objPixel;
+        ApexPatch::ApplyTableLive(table);
+        if (wasEnabled && isEnabled.load()) ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
+    }
+
+    static void ResetDefaults() {
+        g_bridge = true;
+        g_lotLamps = true;
+        g_autoDusk = true;
+        g_levelShare = true;
+        g_smoothMaps = true;
+        g_lampTint = 1.0f;
+        g_objLamps = true;
+        g_objStrength = 1.0f;
+        g_objAll = true;
+        g_objPixel = true;
+        g_objPixelLights = true;
+        g_objPixelLightStrength = 1.0f;
+        g_fenceGround = true;
+        g_fenceGroundStrength = 1.0f;
+        g_wallStrength = 2.0f;
+        g_roofs = true;
+        g_roofStrengthSetting = 0.6f;
+        g_water = true;
+        g_waterStrengthSetting = 1.0f;
+        g_waterReflSetting = 1.0f;
+        g_sidewalkClear = 0.5f;
+        g_delaySec = 2.0f;
+        g_streetLampsLit = false;
+        g_allLotsHQ = false;
+        g_lotPassNoTerrainMap = false;
+        g_relightLots = false;
+    }
+
+    // ---- menu (see night_lighting.h): the Night Lights page draws these pieces card by card ----
+
+    // Runs body() (it draws controls and returns whether one changed); on a change, installs / removes the parts that
+    // follow their option live and schedules the save (and, for the lot lamp options, the reinstall).
+    template <typename Body> void Edit(Body&& body) {
+        const bool bridgeBefore = g_bridge, objBefore = g_objLamps, shareBefore = g_levelShare, objPixelBefore = g_objPixel;
+        if (body()) {
+            ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
+            NotifySettingChanged();
+        }
+    }
+
+    // Every row goes through ApexUi::SwitchRow / Slider with its label as the stable id (unique within its card).
+
+    void DrawLampColor() {
+        Edit([] {
+            ApexUi::SliderOptions o;
+            o.valueText = ""; // the end labels and the swatch say it
+            o.leftLabel = "Pink";
+            o.rightLabel = "Warm white";
+            o.tooltip = "Stock lamps only; colors you chose in Build mode stay";
+            o.defaultValue = 1.0f;
+            o.trackFrom = LampColourAt(0.0f);
+            o.trackTo = LampColourAt(1.0f);
+            o.swatch = LampColourAt(g_lampTint);
+            ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // lamps are tinted when a save loads
+            return ApexUi::Slider("Lamp color", &g_lampTint, 0.0f, 1.0f, o);
+        });
+    }
+
+    // Lighting > Ground
+    void DrawGroundCard(void (*drawUpperFloorRow)()) {
+        using ApexUi::IconId;
+        ImGui::PushID("NightGround");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(IconId::LandPlot, "Ground & Lots", "Lamp light on grass, streets and lots", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
+                // One switch for both keys (luzDoLoteNaGrama + automaticoAoAnoitecer), as before
+                bool lotLamps = g_lotLamps && g_autoDusk;
+                if (ApexUi::SwitchRow("Lot lamps light the street", &lotLamps, "Outdoor lot lamps also light the grass and street nearby", true)) {
+                    g_lotLamps = lotLamps;
+                    g_autoDusk = lotLamps;
+                    changed = true;
+                }
+                return changed;
+            });
+            if (drawUpperFloorRow) drawUpperFloorRow();
+            Edit([] {
+                bool changed = ApexUi::SwitchRow("Light passes between floors", &g_levelShare, "Lamps light the floors above and below, with no hard edge", true);
+                changed |= ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true);
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Lighting > Objects (every option shown: the tab has the room)
+    void DrawObjectsCard() {
+        using ApexUi::IconId;
+        ImGui::PushID("NightObjects");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(IconId::Armchair, "Objects", "Fences, plants and outdoor furniture", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                ApexUi::GroupLabel("LAMP LIGHT");
+                bool changed = ApexUi::SwitchRow("Lamps light objects", &g_objLamps, "Outdoor objects get lamp light, even in the shade of walls", true);
+                if (g_objLamps)
+                    changed |= ApexUi::SliderPercent("Brightness##Objects", &g_objStrength, 0.25f, 3.0f, "Raise it if objects look dark next to lamps", 1.0f);
+                ImGui::BeginDisabled(!g_objLamps);
+                ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // the game builds these pieces' light when a world loads
+                changed |= ApexUi::SwitchRow("Light stairs, railings, columns", &g_objAll, "Pieces the game leaves unlit", true);
+                ImGui::EndDisabled();
+
+                ApexUi::GroupLabel("DOORS, COUNTERS AND FENCES");
+                // These read the ground light of two Ground & Lots options (lot light bridge + smoothed maps)
+                const bool groundLight = g_bridge && g_smoothMaps;
+                if (!groundLight) {
+                    const bool both = !g_bridge && !g_smoothMaps;
+                    ApexUi::IconNote(IconId::Info, both ? "Needs \"Street lamps light lots\" and \"Smooth ground light\" (Ground tab)"
+                                                        : !g_bridge ? "Needs \"Street lamps light lots\" (Ground tab)" : "Needs \"Smooth ground light\" (Ground tab)");
+                    if (ApexUi::IconTextButton(both ? "Turn both on##GroundLight" : "Turn it on##GroundLight", IconId::LandPlot, nullptr, ApexUi::ButtonKind::Primary)) {
+                        ApexUi::ReportChange(both ? "Ground light turned on" : !g_bridge ? "Street lamps light lots turned on" : "Smooth ground light turned on");
+                        g_bridge = true;
+                        g_smoothMaps = true;
+                        changed = true;
+                    }
+                }
+                ImGui::BeginDisabled(!groundLight);
+                changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
+                changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
+                if (g_objPixelLights)
+                    changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "How bright that light is; 100% is the default", 1.0f);
+                changed |= ApexUi::SwitchRow("Fences and stairs catch light", &g_fenceGround, "Fences, posts, stairs and their snow match the lit ground", true);
+                if (g_fenceGround)
+                    changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "100% matches the ground around them", 1.0f);
+                ImGui::EndDisabled();
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Lighting > Buildings
+    void DrawBuildingsCard() {
+        ImGui::PushID("NightBuildings");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(ApexUi::IconId::House, "Buildings", "Outside walls and roofs", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                ApexUi::GroupLabel("WALLS");
+                bool changed = ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 1.0f, 4.0f, "How bright lit walls get; 100% is the game's dim look", 2.0f);
+                ApexUi::GroupLabel("ROOFS");
+                changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
+                if (g_roofs)
+                    changed |= ApexUi::SliderPercent("Brightness##Roofs", &g_roofStrengthSetting, 0.05f, 2.0f, "How bright lit roofs get; 60% is the default", 0.6f);
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Water & Snow > Water (the lamp glow; the shore reflection is the menu's Water Reflections card)
+    void DrawWaterCard() {
+        ImGui::PushID("NightWater");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(ApexUi::IconId::WavesHorizontal, "Lamp Glow", "Lamp light on ponds at night", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                bool changed = ApexUi::SwitchRow("Lamps glow on ponds", &g_water, "Ponds glow and sparkle near lamps at night", true);
+                if (g_water)
+                    changed |= ApexUi::SliderPercent("Glow brightness", &g_waterStrengthSetting, 0.1f, 3.0f, "How bright the glow and sparkles are; 100% is the default", 1.0f);
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Water & Snow > Snow
+    void DrawSnowCard() {
+        using ApexUi::IconId;
+        ImGui::PushID("NightSnow");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(IconId::Snowflake, "Snow", "Sidewalks in winter", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                ImGui::BeginDisabled(!g_bridge);
+                bool changed = ApexUi::SliderPercent("Walked-on sidewalks", &g_sidewalkClear, 0.0f, 1.0f, "How much sidewalk shows through the snow; 0% is the game's look", 0.5f);
+                ImGui::EndDisabled();
+                if (!g_bridge) {
+                    ApexUi::IconNote(IconId::Info, "Needs \"Street lamps light lots\" (Lighting page, Ground tab)");
+                    if (ApexUi::IconTextButton("Turn it on##StreetLamps", IconId::LandPlot, nullptr, ApexUi::ButtonKind::Primary)) {
+                        ApexUi::ReportChange("Street lamps light lots turned on");
+                        g_bridge = true;
+                        changed = true;
+                    }
+                }
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Lighting > Lamps, under the Night Lights card: the reset button (the rows that need a reload say so themselves)
+    void DrawFooter() {
+        Edit([] {
+            if (!ApexUi::IconTextButton("Reset Night Lights", ApexUi::IconId::RotateCcw, "Put every Night Lights setting back to default")) return false;
+            ApexUi::ReportChange("Night Lights reset");
+            ResetDefaults();
+            return true;
+        });
+    }
+
+    // The generic per-feature controls: the lamp colour (the menu draws the cards itself)
+    void RenderCustomUI() override {
+        SAFE_IMGUI_BEGIN();
+        DrawLampColor();
+    }
+
+    // Development build, Developer page > Lighting: status lines, diagnostics, the census and every individual option.
+    void RenderDeveloperUI() override {
+        SAFE_IMGUI_BEGIN();
+        using ApexUi::IconId;
+        const ImU32 iconCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        ImGui::TextWrapped("Status: %s", g_status.c_str());
+        ImGui::Separator();
+        ApexUi::IconLabel(IconId::ListChecks, "Census", iconCol);
+        {
+            // Census: which lamp-lit draws no fix claimed
+            static bool falseColor = false;
+            if (ImGui::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
+            if (ImGui::Button("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
+        }
+        if (ImGui::Button("Rebuild terrain light now")) g_kickRequested = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Relight lots now")) g_relightLotsRequested = true;
+        ImGui::Separator();
+        ApexUi::IconLabel(IconId::Stethoscope, "Diagnostics", iconCol);
+        if (ImGui::Button("Save light diagnostics")) LightDiag::RequestDump();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(or Ctrl+Shift+F8)");
+        ImGui::TextWrapped("Diagnostics: %s", LightDiag::Status().c_str());
+        ImGui::TextWrapped("Street lamps in lots: %s", LotLightBridge::Status().c_str());
+        ImGui::TextWrapped("Objects: %s", ObjectLightBridge::Status().c_str());
+        ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
+        ImGui::TextWrapped("Walls: %s", LotLightBridge::WallStatus().c_str());
+        ImGui::TextWrapped("Roofs: %s", LotLightBridge::RoofStatus().c_str());
+        ImGui::TextWrapped("Water: %s", LotLightBridge::WaterStatus().c_str());
+        ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
+        ImGui::TextWrapped("Lamp colour: %s", ObjectLightBridge::LampColourStatus().c_str());
+        ImGui::TextWrapped("Stories: %s", LevelLightShare::Status().c_str());
+        ImGui::Separator();
+        ApexUi::IconLabel(IconId::Crosshair, "Light probe", iconCol);
+        LightProbe::RenderUI();
+        ImGui::Separator();
+        ImGui::TextWrapped("Last event: %s", g_lastEvent.c_str());
+        ImGui::Text("Night level: %.2f | countdown: %d / %d", g_level, g_counter38, g_counter3C);
+        ImGui::Text("Terrain: armed %d | rebuilt %d", g_kicks.load(), g_rebuilds.load());
+        ImGui::TextWrapped("Lots: %s (times: %d, stories: %d)", g_lastLotRelight.c_str(), g_lotRelights.load(), g_roomsQueued.load());
+        ImGui::Text("Street lamps counted as lit: %ld", static_cast<long>(g_forcedLampUses));
+        ImGui::Text("Lot lamps: armed %d | on the ground %d | off %d", g_lotLampArms.load(), g_lotLampsBaked.load(), g_lotLampsSkippedOff.load());
+        ImGui::Separator();
+        if (ImGui::TreeNode("Individual options (for tests)")) {
+            // The generic list only stores the value: install or remove the parts that are toggled live.
+            const bool shareBefore = g_levelShare, objBefore = g_objLamps, bridgeBefore = g_bridge, objPixelBefore = g_objPixel;
+            ApexPatch::RenderCustomUI();
+            ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
+            ImGui::TreePop();
+        }
+    }
+
+    float ShoreReflection() const { return g_waterReflSetting; }
+    void SetShoreReflection(float strength) {
+        g_waterReflSetting = strength < 0.0f ? 0.0f : (strength > 3.0f ? 3.0f : strength);
+        NotifySettingChanged();
+    }
+};
+
+static std::vector<std::string> NightRemakeDetails() {
+    if constexpr (kPublicBuild)
+        return {"Outdoor lot lamps join the terrain light bake (0xC29626) and arm its rebuild (0x6B6516/0x6B60D3/0x6B6618); street lamps count as lit in lot solves (0x6BE18C).",
+                "Outdoor lights are shared between the stories of a house, with the game's own wall occlusion.",
+                "Lamp light on objects, roofs, water and snow is added in the game's own shaders while they draw. At dusk the terrain and lot lighting are rebuilt through the game's own paths."};
+    else
+        return {"All lots use high lighting quality (0xADB66F/0xADB888); the lot light pass never binds the rebuilt terrain lightmap (0xC7F87D).",
+                "Outdoor lot lamps join the terrain light bake (0xC29626) and arm its rebuild (0x6B6516/0x6B60D3/0x6B6618); street lamps count as lit in lot solves (0x6BE18C).",
+                "At dusk the terrain and lot lighting are rebuilt through the game's own paths. Diagnostics: Ctrl+Shift+F8."};
+}
+
+APEX_REGISTER_FEATURE(NightTerrainRelightPatch, {.displayName = "Night Lights",
+                                             .description = "At night, street lamps and lot lamps light the ground, objects, fences, walls, roofs, ponds and "
+                                                            "snow around them with smooth, warm light and no hard edges at lot borders. Part of "
+                                                            APEX_PRODUCT_NAME ". Credits: @loinyx",
+                                             .category = "Graphics",
+                                             .experimental = true,
+                                             .supportedVersions = VERSION_STEAM,
+                                             .technicalDetails = NightRemakeDetails()})
+
+bool NightLighting::MenuNightLevel(float& level) {
+    const float v = g_menuLevel.load();
+    if (v < 0.0f) return false;
+    level = v;
+    return true;
+}
+
+// ---- menu pieces (night_lighting.h); nothing when the feature was not created ----
+namespace {
+NightTerrainRelightPatch* MenuPatch() { return ImGui::GetCurrentContext() ? NightTerrainRelightPatch::g_self : nullptr; }
+} // namespace
+
+void NightLighting::DrawLampColor() {
+    if (auto* p = MenuPatch()) p->DrawLampColor();
+}
+void NightLighting::DrawGroundCard(void (*drawUpperFloorRow)()) {
+    if (auto* p = MenuPatch()) p->DrawGroundCard(drawUpperFloorRow);
+}
+void NightLighting::DrawObjectsCard() {
+    if (auto* p = MenuPatch()) p->DrawObjectsCard();
+}
+void NightLighting::DrawBuildingsCard() {
+    if (auto* p = MenuPatch()) p->DrawBuildingsCard();
+}
+void NightLighting::DrawWaterCard() {
+    if (auto* p = MenuPatch()) p->DrawWaterCard();
+}
+void NightLighting::DrawSnowCard() {
+    if (auto* p = MenuPatch()) p->DrawSnowCard();
+}
+void NightLighting::DrawFooter() {
+    if (auto* p = MenuPatch()) p->DrawFooter();
+}
+void NightLighting::DrawDeveloper() {
+    if (auto* p = MenuPatch()) p->RenderDeveloperUI();
+}
+float NightLighting::ShoreReflection() { return g_waterReflSetting; }
+void NightLighting::SetShoreReflection(float strength) {
+    if (auto* p = NightTerrainRelightPatch::g_self) p->SetShoreReflection(strength);
+}

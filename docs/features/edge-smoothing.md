@@ -1,0 +1,260 @@
+# Edge Smoothing (SMAA 1x / FXAA)
+
+> Post-process anti-aliasing of the finished 3D scene, applied **before the game draws any UI**, so pie menus,
+> tooltips, the HUD and both overlays stay sharp. Two methods: **SMAA 1x** (the unmodified reference `SMAA.hlsl` by
+> Jimenez et al., MIT, in its `SMAA_HLSL_3` path; default) and a single-pass **FXAA 3.11-style "quality"** shader written
+> for ps_3_0. It only works with the **game's own Edge Smoothing (MSAA) off**. Status: working, used in game by the user
+> (log `[EdgeSmoothing] Resources ready (3840x2160)`, SMAA Ultra in the user's config), flagged `experimental`. Present
+> in both build flavours; the Developer subsection is dev-only.
+
+| Fact | Value |
+|---|---|
+| Patch name / TOML table | `EdgeSmoothing` / `[patches.EdgeSmoothing]` (combined `S3SS.toml`; standalone `ApexRadiance.toml`, same table name, PLANO-SEPARACAO.md "Config schema") |
+| UI (combined build) | Display tab, `RenderApexFeature("EdgeSmoothing", "Edge Smoothing")` after Picture (`gui.cpp` approx. 620); display name "Edge Smoothing (SMAA / FXAA)" |
+| Default | patch off until the user enables it (patch-system default, unverified for a fresh config); method SMAA, preset High |
+| Build flavour | dev and public; "Developer" tree node compiled out of public (`kPublicBuild`) |
+| Game code patched | none (pure D3D9 post-process) |
+| Needs | game Options > Graphics > Edge Smoothing **off**; runtime `D3DCompile` (`d3dcompiler_47.dll`, linked through `d3dcompiler.lib`) |
+| Credits | "Credits: @loinyx" at the end of the feature description; third-party credit "SMAA by Jimenez et al. (MIT)" in releases |
+
+## Purpose
+
+The game's own "Edge Smoothing" is multisampling. It blurs nothing, but it costs a lot at 4K and it makes the depth
+buffer multisampled, which D3D9 cannot sample: Depth Blur, the pond scenery reflection and every other depth-reading
+effect stop working with it on ([depth-blur.md](depth-blur.md), [reflections.md](reflections.md)). Edge Smoothing gives a
+post-process replacement that runs on the scene only (a ReShade-style AA would also smooth, and soften, the UI text) and
+coexists with the depth effects.
+
+History (NOTAS-ILUMINACAO.md): FXAA added 26/09 together with the PostScene trigger ("Pos-processamento: FXAA + SSAO +
+gatilho unico"); SMAA 1x added 28/09 ("SMAA 1x (28/09)"), made the default method.
+
+**Standalone baseline.** The standalone takes Edge Smoothing (and Depth Blur) from the v0.1.0 commit `b84d5f1` ("Night
+Remake alpha", FXAA only, `S3SS_TR` status strings) **plus** the SMAA 1x code and the Depth Blur map-view fade of
+`combined-final`. Line references below are for `combined-final`, which already contains all of it.
+
+## Settings
+
+All settings are read live every frame (`Update()` only clears `pendingReinstall`). Keys are the Portuguese names kept
+from the combined build.
+
+| UI label | TOML key | Type | Default | Range / values | Effect |
+|---|---|---|---|---|---|
+| (feature toggle) | `enabled` | bool | false | | Install / uninstall the patch |
+| Method | `metodo` | enum int | 1 | 0 FXAA, 1 SMAA | "SMAA: smoother long edges and sharp textures (3 passes). FXAA: lighter, a little blurrier." |
+| Quality (shown when SMAA) | `qualidadeSmaa` | enum int | 2 | 0 Low, 1 Medium, 2 High, 3 Ultra | The reference SMAA presets (table below). "High and Ultra also handle diagonals and corners; Ultra catches fainter edges (good at night)." |
+| Quality (shown when FXAA) | `qualidade` | enum int | 1 | 0 Fast, 1 Balanced, 2 High | FXAA edge-search length |
+| Advanced > Softness | `suavidade` | float | 0.5 | 0 .. 1 | FXAA sub-pixel amount (`cParams.x`). Disabled (greyed) with SMAA |
+| Advanced > Sensitivity | `sensibilidade` | float | 0.125 | 0.063 .. 0.333 | FXAA edge threshold (`cParams.y`); the minimum threshold is `sensitivity / 3` (`cParams.z`). Disabled with SMAA |
+| Advanced > Reset to defaults | | button | | | `g.p = Params{}` (all fields, including `debugView`) |
+| Developer > Show smoothed pixels in red (dev) | `debugView` | bool | false | | Tints every pixel the AA changed 60% red |
+
+Status line on the card: `Status: <text>` and, once timings arrive, `GPU cost: x.xx ms per frame`. Developer also shows
+`Frames smoothed: N`. Status strings: "Waiting for the game...", "Active", "The game's Edge Smoothing is on: turn it off in
+Options > Graphics to use this one", "ERROR: not enough video memory for the screen copy", "ERROR: not enough video memory
+for SMAA", "ERROR: SMAA did not compile (see S3SS_LOG.txt)", "ERROR: the shader did not compile (see S3SS_LOG.txt)",
+"Recreating after a video change...", "Off".
+
+### SMAA presets (`kSmaaPresets`, the "SMAA Presets" block of the reference, threshold passed as a constant)
+
+| Preset | `SMAA_THRESHOLD` | `SMAA_MAX_SEARCH_STEPS` | Diagonal steps | Corner rounding |
+|---|---|---|---|---|
+| 0 Low | 0.15 | 4 | off (`SMAA_DISABLE_DIAG_DETECTION`) | off (`SMAA_DISABLE_CORNER_DETECTION`) |
+| 1 Medium | 0.10 | 8 | off | off |
+| 2 High (default) | 0.10 | 16 | 8 | 25 |
+| 3 Ultra | 0.05 | 32 | 16 | 25 |
+
+Each preset is a separate compile of the three entry points (macros per preset, `SmaaShaders`), compiled on first use
+and cached for the session.
+
+### FXAA quality levels (`kQualities`, macros `STEPS` / `STEP_SIZES`)
+
+| Level | Steps | Step sizes (texels) | Code comment |
+|---|---|---|---|
+| 0 Fast | 5 | 1.0, 1.5, 2.0, 4.0, 12.0 | FXAA 3.11 preset 12 |
+| 1 Balanced (default) | 8 | 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0 | "20-ish" |
+| 2 High | 12 | 1.0, 1.5, 2.0 x8, 4.0, 8.0 | preset 29 |
+
+## How it works
+
+### Lifetime
+1. `Install()` registers a registry **Present** hook (name `"EdgeSmoothing"`, `Priority::First`) that calls
+   `OnFrameBoundary`, adds `OnPreReset` / `OnPostReset` to the Reset callbacks, and adds `FxaaEffect` to the PostScene
+   chain at order `PostScene::kEdgeSmoothing = 20` (`patches/edge_smoothing_patch.cpp:682-699`).
+2. `OnFrameBoundary` (every Present): while not `ready`, try `InitResources` immediately and then every
+   `kRetryFrames = 120` frames (`:643-649`).
+3. `InitResources` (`:342-379`):
+   - reads the back-buffer description; if `MultiSampleType != D3DMULTISAMPLE_NONE` the game's MSAA is on: status message,
+     no resources, retried every 120 frames (so turning the game's option off later picks it up after the device Reset);
+   - `copyTex`: render-target texture of the back buffer's size **and format** (the game's back buffer is
+     `D3DFMT_A8R8G8B8` = 21, verified in the log line `[HDR] Resources ready (3840x2160, format 21)` of 28/09);
+   - SMAA targets `edgesTex` and `blendTex`: back-buffer size, `D3DFMT_A8R8G8B8`;
+   - SMAA lookup textures (`CreateSmaaLookups`, `:308-319`, `D3DPOOL_MANAGED`, one mip):
+     `areaTex` 160 x 560 **`D3DFMT_A8L8`** from `AreaTex.h` (R8G8 bytes; D3D9 A8L8 stores L in the low byte and A in the
+     high byte, so the reference's R lands in `.r` and G in `.a`; the reference's `SMAA_HLSL_3` path reads it with
+     `SMAA_AREATEX_SELECT(sample) = sample.ra`), and `searchTex` 64 x 16 **`D3DFMT_L8`** from `SearchTex.h`;
+   - 4 sets of timestamp queries (`TIMESTAMPDISJOINT`, 2 x `TIMESTAMP`, `TIMESTAMPFREQ`);
+   - log `[EdgeSmoothing] Resources ready (WxH)`, status "Active".
+   Shaders are not compiled here: FXAA per quality level on first use (`ShaderFor`, `:321-340`), SMAA per preset on first
+   use (`SmaaShaders`, `:274-304`). A compile failure is remembered (`compileTried` / `smaaTried`) and not retried until
+   the patch is reinstalled.
+4. **Reset** (alt-tab, resolution change): `OnPreReset` releases every default-pool resource and the queries
+   (`ReleaseResources`, `:243-260`; the managed lookups too); `OnPostReset` sets `retryCountdown = 0`, so the next Present
+   re-creates them. Compiled shaders survive.
+5. `Uninstall()` removes the PostScene effect, unregisters the hooks and callbacks, releases resources and shaders.
+
+### Per frame (the PostScene trigger)
+PostScene (`post_scene.cpp`, see [depth-blur.md](depth-blur.md), "Shared machinery") fires once per frame at the first
+back-buffer draw with `ZENABLE = FALSE` after at least 20 depth-tested back-buffer draws, which is the bloom composite
+(when bloom is on) or the first UI draw. It calls the effects in order: Edge Smoothing (20), then Depth Blur (30). The
+effects run inside the hooked game draw call, before that draw executes, so the AA sees the scene **without bloom and
+without any UI**, and Depth Blur then blurs the already smoothed image.
+
+`FxaaEffect` (`:616-641`):
+1. Returns if not `ready`.
+2. Timing key = `method x 10 + quality`; when it changes, the GPU-cost average and pending queries are reset.
+3. `ReadTimings` (`:599-613`): collects any finished query set without waiting (`GetData` flags 0), converts ticks to ms,
+   smooths `gpuMs = 0.9 gpuMs + 0.1 ms`. Issues a new begin on a free set (4 sets rotate, so results are read a few
+   frames later).
+4. `RunSmaa` or `RunFxaa`, then the end timestamps.
+
+**SMAA 1x** (`RunSmaa`, `:487-596`):
+1. `StretchRect(backbuffer -> copyTex, D3DTEXF_NONE)`: a plain copy of the scene.
+2. Save exactly what the passes touch: RT0, PS, VS, vertex declaration / FVF, stream 0, textures and 8 sampler states of
+   s0..s4, 12 render states (`kRenderStates`, `:386-388`), PS constants c0..c1, viewport. No state block (CPU heavy).
+3. Neutral state: no VS, FVF `XYZRHW | TEX1`, Z off, blending off, alpha test off, stencil off, cull none, scissor off,
+   fog off, sRGB write off, clip planes off. Samplers s0..s4 linear and clamp, **s3 (searchTex) point**, no mips,
+   `SRGBTEXTURE = 0` everywhere.
+4. Constants: c0 `SMAA_RT_METRICS` = (1/W, 1/H, W, H); c1 = (preset threshold, 0, 0, debug).
+5. Pass 1, **luma edge detection**: RT = `edgesTex`, cleared to 0 (the reference `discard`s pixels with no edge, so the
+   target must start empty every frame), s0 = scene copy, `SmaaEdgePS`.
+6. Pass 2, **blending weights**: RT = `blendTex`, cleared, s1 = edges, s2 = areaTex, s3 = searchTex, `SmaaWeightPS`
+   (`subsampleIndices = 0`: SMAA 1x, no temporal/MSAA modes).
+7. Pass 3, **neighbourhood blending** into the back buffer: s0 = scene copy, s4 = blend weights, colour write RGB only
+   (the back buffer's alpha stays the game's), `SmaaBlendPS`.
+8. Restore (RT0 first because `SetRenderTarget` resets the viewport; stream 0 explicitly because `DrawPrimitiveUP`
+   clears it).
+
+All quads are `DrawPrimitiveUP` triangle strips with the -0.5 pixel offset of D3D9 (texel centres map to pixel
+centres). `DrawPrimitiveUP` is not a registry hook, so the AA's own draws never re-trigger PostScene or count as game
+draws for Picture.
+
+**The wrapper around the reference** (`kSmaaPrefix` / `kSmaaSuffix`, `:151-190`): the reference `SMAA.hlsl` is embedded
+byte for byte (`third_party/smaa/smaa_hlsl.h`, array `kSmaaHlsl`, generated from `SMAA.hlsl`) between a prefix that
+defines `SMAA_RT_METRICS cMetrics`, `SMAA_HLSL_3` and `SMAA_THRESHOLD cParams.x`, and a suffix with three pixel shader
+entry points. The reference computes its offsets in vertex shaders (`SMAAEdgeDetectionVS`,
+`SMAABlendingWeightCalculationVS`, `SMAANeighborhoodBlendingVS`); here those functions are called at the top of each
+pixel shader, because the effect draws pre-transformed quads with no vertex shader. Compiled `ps_3_0`,
+`D3DCOMPILE_OPTIMIZATION_LEVEL3`, source name "SMAA.hlsl". Offline fxc check (NOTAS 28/09): 35 / 442 / 62 instruction
+slots for the three passes (preset not recorded, unverified which).
+
+**FXAA** (`RunFxaa`, `:395-478`, shader `kShaderSource`, `:43-133`):
+1. `StretchRect(backbuffer -> copyTex)`, save the states touched (only sampler 0, texture 0, c0..c1), neutral state,
+   s0 linear clamp (FXAA reads between texels on purpose), draw one quad with the render target left on the back buffer,
+   restore.
+2. Shader: luma = `dot(rgb, (0.299, 0.587, 0.114))` of each tap (gamma-space colour; no pre-computed luma in alpha).
+   Early exit when the local range of the 5-tap cross is below `max(sensitivity / 3, rangeMax x sensitivity)` (5 texture
+   reads for most of the screen, `[branch]`). Otherwise the FXAA 3.11 quality steps: 4 diagonal taps, horizontal /
+   vertical edge decision, sub-pixel amount `subpixH = (smoothstep-like)^2 x softness`, edge-end search in both
+   directions with the level's step sizes, offset along the gradient, one final bilinear read. Debug: lerp 60% to red
+   on every pixel that did not take the early exit. SMAA's debug tints pixels whose blend weights (read like the
+   reference's blending pass) are non-zero.
+3. Offline fxc (NOTAS 26/09): 265 / 382 / 538 instruction slots for Fast / Balanced / High.
+
+## Code map (combined tree, tag `combined-final`)
+
+| File | Symbol | Lines | Role |
+|---|---|---|---|
+| `patches/edge_smoothing_patch.cpp` | `kShaderSource` (FXAA) | 43-133 | FXAA ps_3_0 source |
+| | `kQualities` | 136-144 | FXAA step tables |
+| | `kSmaaPrefix`, `kSmaaSuffix` | 151-190 | SMAA wrapper, three PS entries |
+| | `kSmaaPresets`, `Params`, `AaState` | 193-232 | presets, settings, state |
+| | `ReleaseResources`, `ReleaseShaders` | 243-271 | cleanup |
+| | `SmaaShaders`, `CreateSmaaLookups`, `ShaderFor` | 274-340 | compile / lookups |
+| | `InitResources` | 342-379 | targets, MSAA check |
+| | `RunFxaa`, `DrawQuad`, `RunSmaa` | 395-596 | the passes |
+| | `ReadTimings`, `FxaaEffect` | 599-641 | GPU cost, PostScene entry |
+| | `OnFrameBoundary`, `OnPreReset`, `OnPostReset` | 643-660 | Present / Reset |
+| | `EdgeSmoothingPatch` (settings, Install, Uninstall, UI), `APEX_REGISTER_FEATURE` | 664-787 | patch |
+| `third_party/smaa/` | `SMAA.hlsl`, `smaa_hlsl.h`, `AreaTex.h` (160x560, pitch 320), `SearchTex.h` (64x16), `LICENSE.txt` | | reference code (MIT), unchanged |
+| `post_scene.cpp/.h` | `PostScene::Add/Remove`, `kEdgeSmoothing = 20` | | trigger |
+
+## Game addresses and patterns
+
+None. Edge Smoothing depends only on the draw pattern the PostScene trigger relies on (>= 20 depth-tested back-buffer
+draws, then the first depth-off back-buffer draw) and on the game's back buffer not being multisampled.
+
+## Interactions
+
+- **Game's Edge Smoothing (MSAA):** mutually exclusive. With MSAA on, the effect never becomes ready (status tells the
+  user). The same applies to Depth Blur and the pond scenery reflection.
+- **Depth Blur (order 30):** runs after the AA on the same trigger; it blurs the smoothed image. Edge Smoothing does not
+  need the INTZ depth swap.
+- **Ambient Occlusion (order 10, combined build only):** ran before the AA. Removed in the standalone
+  ([../removed-features.md](../removed-features.md)).
+- **Picture filters** ([picture-filters.md](picture-filters.md)): Picture separates scene from UI by comparing the final
+  frame with a scene copy taken in its own `Priority::First` draw hooks at the depth-on -> depth-off transition, and marks
+  as UI any pixel that differs by 1/64 or more. With bloom on, the copy is taken after the bloom strip, i.e. after the
+  AA ran: fine. Without a bloom strip, Picture's copy and the PostScene trigger fire on the **same** draw, and the order
+  of two `Priority::First` hooks is not defined (`std::sort`, not stable, `d3d9_hook_registry.cpp:79`). If the copy is
+  taken first, the smoothed edge pixels differ from it and are treated as UI, so they stay ungraded (thin ungraded
+  outlines when a strong grade is used). Inferred from the code, not observed. A fix for the standalone: give the two
+  hooks explicit, different priorities, or let PostScene take the scene copy for Picture after the effects.
+- **Night Lighting pond pass:** marked `DepthShare::SetInternalPass`, so its depth-off draw does not fire PostScene
+  mid-frame.
+- **HDR output (combined build only):** with HDR the back buffer was FP16, so `copyTex` was FP16 while `edgesTex` /
+  `blendTex` stayed 8-bit. Irrelevant in the standalone.
+- **S3SS overlay / Apex menu:** drawn later in EndScene, never smoothed.
+
+## Limitations
+
+- SMAA reads and blends in **gamma space** (all samplers `SRGBTEXTURE = 0`). The reference allows this ("If sRGB reads in
+  this last pass are not possible, the technique will work anyway, but will perform antialiasing in gamma space",
+  `SMAA.hlsl` note 5). Edge detection in gamma space is what the reference wants.
+- SMAA 1x only: no temporal (T2x) or MSAA-combined (S2x/4x) modes, no predication, luma edges only (no colour or depth
+  edge detection).
+- Runs before the game's bloom composite, so bloom halos themselves are not smoothed (irrelevant in practice).
+- The trigger is the **first** depth-off back-buffer draw after 20 scene draws. In some interiors the game has depth-off
+  draws in the middle of the scene (HDR diagnostic 28/09); geometry drawn after that point is not smoothed (inferred, not
+  observed as a complaint; same caveat as Depth Blur).
+- Softness and Sensitivity apply to FXAA only; SMAA's threshold comes from the preset.
+- Cost scales with resolution (full-screen copy plus 1 or 3 full-screen passes). No measured GPU cost is recorded in the
+  notes; read it from the card ("GPU cost").
+
+## Pitfalls and failed approaches
+
+- **AreaTex format:** the reference ships R8G8 data. D3D9 has no plain unsigned R8G8 texture format; the reference's
+  own DX9 path uses A8L8 and reads `.ra`. Any other format or channel order feeds wrong area values to the blending
+  weights. Keep A8L8 + `SMAA_HLSL_3` (no wrong variant was tried here; this is the reference's requirement).
+- **SearchTex must be point-sampled** (s3); linear filtering corrupts the packed search results.
+- **Clear edges and blend targets every frame:** the reference discards where there is nothing to do; stale content
+  from the previous frame would blend ghost edges.
+- **Do not write alpha** to the back buffer in the final pass (the game's alpha is kept; RGB write mask).
+- **Save/restore precisely:** `SetRenderTarget` resets the viewport (restore RT first, viewport last),
+  `DrawPrimitiveUP` clears stream 0 (restore it), and the game's next draw depends on c0..c1 and s0..s4.
+- **Do not reinstall from `Update()`**; settings are live.
+- FXAA is the older method (26/09); SMAA 1x was added on 28/09 and made the default. The UI hint states the trade-off:
+  SMAA keeps textures sharper and smooths long edges better, FXAA is lighter and a little blurrier. No failed AA
+  attempt is recorded in the notes.
+
+## How to test
+
+1. Game Options > Graphics > Edge Smoothing **off**. Enable Edge Smoothing in the Apex menu. Status must say "Active".
+2. Log (`S3SS_LOG.txt`; standalone `ApexRadiance_LOG.txt`): `[EdgeSmoothing] Installed`, then `[EdgeSmoothing] Resources ready
+   (WxH)`. Compile failures log `[EdgeSmoothing] SMAA <entry> (preset N) failed to compile: ...` or `[EdgeSmoothing]
+   Shader (quality N) failed to compile: ...`.
+3. Dev build: Developer > "Show smoothed pixels in red": edges of roofs, fences and furniture turn red; the UI must not.
+   "Frames smoothed" increases every frame.
+4. Compare presets on fences, roof edges and power lines; Ultra should also catch low-contrast edges at night.
+5. Open a pie menu: its text must stay sharp (the AA runs before the UI).
+6. Alt-tab / change resolution: "Recreating after a video change..." then "Active".
+7. Turn the game's Edge Smoothing on: status must show the MSAA message and the image must be the game's MSAA only.
+8. Frame Capture (dev, Ctrl+Shift+F9) lists the StretchRect and the DrawPrimitiveUP passes through the ExtraHooks
+   observers ([dev-tools/frame-capture.md](dev-tools/frame-capture.md)).
+
+## Open questions / unverified
+
+- GPU cost per preset at 1080p / 1440p / 4K: not recorded.
+- Which SMAA preset the offline slot counts (35 / 442 / 62) refer to.
+- Whether the Picture copy / PostScene same-draw race happens in practice (frames without a bloom strip).
+- Whether the game's in-game screenshot contains the smoothed image (it is taken from the back buffer at an unknown
+  point).
