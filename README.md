@@ -2,6 +2,18 @@
 
 A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
+
+<img width="3712" height="2140" alt="Frame 4" src="https://github.com/user-attachments/assets/c2fb9c34-8545-49f4-a3ac-a65e9086de86" />
+<img width="3712" height="2140" alt="Frame 3" src="https://github.com/user-attachments/assets/3d287975-5231-475e-9cb8-37342915c7db" />
+<img width="3712" height="2140" alt="Frame 2" src="https://github.com/user-attachments/assets/3b748f76-115e-414e-831c-c55fc2e14134" />
+<img width="3712" height="2140" alt="Frame 6" src="https://github.com/user-attachments/assets/5902b18d-f29a-44b3-9cec-6817192344ac" />
+<img width="3712" height="2140" alt="Frame 5" src="https://github.com/user-attachments/assets/82856ded-a8b7-4c23-a3e9-5c3ed1631b40" />
+
+
+
+
+
+
 ## Features
 
 **World**
