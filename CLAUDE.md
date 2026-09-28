@@ -58,7 +58,7 @@ Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI 
 1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
    them without asking.
 2. Back up the installed `C:\Games\Hydra\The Sims 3\Game\Bin\ApexRadiance.asi` (the first time: the old
-   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 25; 23 = source before the menu UX features).
+   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 27; 23 = source before the menu UX features).
 3. Copy the dev `Release\ApexRadiance.asi` into `Game\Bin\`. Exactly one copy of the mod in `Bin`: **delete the old
    `S3SSApex.asi`** (previous standalone and combined-build name). The official `Sims3SettingsSetter.asi` stays beside
    it. A leftover `S3SSApex.asi` is detected: if it loaded first Apex Radiance idles (log error only), otherwise the old
