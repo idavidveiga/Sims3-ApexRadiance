@@ -1,0 +1,41 @@
+# Fills the Nexus Mods changelog with the notes of every GitHub release it does not have yet (by version), oldest first.
+# Run it by hand (Actions > Nexus changelogs > Run workflow); new releases get their changelog from nexus-upload.yml.
+# Uses the same setup as nexus-upload.yml (secret NEXUSMODS_API_KEY, variable NEXUS_MOD_ID).
+name: Nexus changelogs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changelogs:
+    runs-on: ubuntu-latest
+    if: ${{ vars.NEXUS_MOD_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Add the missing changelogs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXUS_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          GAME: ${{ vars.NEXUS_GAME || 'thesims3' }}
+          MOD: ${{ vars.NEXUS_MOD_ID }}
+        run: |
+          set -euo pipefail
+          api() { curl -sS -f -H "apikey: $NEXUS_KEY" -H "User-Agent: loinyx/Sims3-ApexRadiance" "$@"; }
+          V3_MOD=$(api "https://api.nexusmods.com/v3/games/$GAME/mods/$MOD" | jq -r '.data.id')
+          # versions the Nexus changelog already has (v1 API: { "1.4.2": [...], ... })
+          HAVE=$(api "https://api.nexusmods.com/v1/games/$GAME/mods/$MOD/changelogs.json" | jq -r 'keys[]' || true)
+          echo "Already on Nexus: $(echo $HAVE)"
+          for TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,publishedAt --jq 'sort_by(.publishedAt) | .[].tagName'); do
+            VERSION="${TAG#v}"
+            if echo "$HAVE" | grep -qx "$VERSION"; then echo "skip $VERSION (already there)"; continue; fi
+            TEXT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | bash .github/scripts/nexus-changelog.sh)
+            [ -n "$TEXT" ] || { echo "skip $VERSION (no notes)"; continue; }
+            jq -n --arg v "$VERSION" --arg c "$TEXT" '{version: $v, changelog: $c}' |
+              api -X POST -H "Content-Type: application/json" --data @- "https://api.nexusmods.com/v3/mods/$V3_MOD/changelogs" > /dev/null
+            echo "added $VERSION"
+          done
