@@ -76,13 +76,13 @@ const I18n::Entry kEntries[] = {
     // ---- feature cards and notes ----
     {"Water Reflections", "Reflexos na Água", "Reflejos en el Agua", "Reflets dans l'Eau"},
     {"Ponds and lakes mirror the trees, houses and lamps along their shore, on top of the game's sky reflection. "
-     "Needs Night Lights and Depth Blur. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Needs Night Lights and Depth Blur, with the game's own Edge Smoothing off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
      "Lagos e lagoas refletem as árvores, casas e lâmpadas da margem, além do reflexo do céu do jogo. "
-     "Precisa de Luzes Noturnas e Desfoque de Profundidade. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Precisa de Luzes Noturnas e Desfoque de Profundidade, com a Suavização de Bordas do próprio jogo desligada. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
      "Estanques y lagos reflejan los árboles, casas y lámparas de la orilla, además del reflejo del cielo del juego. "
-     "Necesita Luces Nocturnas y Desenfoque de Profundidad. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Necesita Luces Nocturnas y Desenfoque de Profundidad, con el Suavizado de Bordes del propio juego desactivado. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
      "Les étangs et les lacs reflètent les arbres, maisons et lampes de leur rive, en plus du reflet du ciel du jeu. "
-     "Nécessite Lumières Nocturnes et Flou de Profondeur. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+     "Nécessite Lumières Nocturnes et Flou de Profondeur, avec le lissage des bords du jeu désactivé. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Error: {}", "Erro: {}", "Error: {}", "Erreur : {}"},
     {"Starting\xE2\x80\xA6", "Iniciando…", "Iniciando…", "Démarrage…"},
     {"Turn on Night Lights to adjust {}", "Ligue as Luzes Noturnas para ajustar {}", "Activa las Luces Nocturnas para ajustar {}",

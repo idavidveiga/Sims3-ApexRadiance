@@ -160,6 +160,10 @@ enum class Id : uint16_t {
     //      changes keep the full terrain rebuild) ----
     WorldManagerPtr,          // the WorldManager global 0x011ECBC4 (FUN_00c6cf80 stores the manager there at 0x00C6D0CC)
     TerrainUpdateCall,        // "mov ecx,[esi+58h]; call FUN_00c845c0" in WorldManager::Update (0x00C6D68C): WorldManager+disp8 = terrain
+    // ---- Night Lights brightness controls (optional: without them "Street lamps" / "Lot lamps" on the ground and
+    //      "Moonlight" are not available) ----
+    BakeColourSite,           // movaps xmm0,[edi+0F0h] in the terrain bake FUN_00c292b0: the lamp colour copied to its shader parameter
+    SunlightScale,            // the "Sunlight Scale" float FUN_00c11ad0 multiplies the sun / moon colour by (mov ecx,imm32 at 0x00C11B01)
     Count
 };
 

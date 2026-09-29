@@ -34,6 +34,7 @@
 #include <format>
 #include <iterator>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -328,35 +329,83 @@ uintptr_t kSetColourCalls[7] = {};  // 0x006C047D, 0x006C051D, 0x006C05C1, 0x006
 uintptr_t kScriptSetColour = 0;     // 0x006BC3E0
 uintptr_t kScriptSetColourCall = 0; // 0x006B0BDE
 std::vector<MemPatch::PatchLocation> g_colourPatches;
-std::atomic<float> g_lampTint{1.0f};
+std::atomic<float> g_lampTint{1.0f};    // street lamps (and lot lamps unless they have their own)
+std::atomic<float> g_lotLampTint{1.0f}; // lot lamps (= g_lampTint when "own colour for lot lamps" is off)
 std::atomic<int> g_tinted{0};
 
 using SetColour_t = void(__thiscall*)(void* light, const float* rgb);
 
-void TintStockColour(float c[3]) {
-    const float t = g_lampTint.load(std::memory_order_relaxed);
-    if (t <= 0.0f || c[0] <= 0.05f) return;
+// Every light that got the stock pink: its pink and what was written, so a tint change can re-colour it live
+// (RetintLamps). Written by the two colour thunks (game thread), read by RetintLamps (render thread = the same thread in
+// this game; the mutex keeps it safe either way). Entries of freed lights are dropped by the next RetintLamps (they are
+// not in the light enumeration); a light created again at the same address replaces its entry.
+struct TintedLight {
+    float pink[3];
+    float written[3];
+    bool street;
+};
+std::mutex g_tintedMutex;
+std::unordered_map<uintptr_t, TintedLight> g_tintedLights;
+
+bool IsStockPink(const float c[3]) {
+    if (c[0] <= 0.05f) return false;
     const float g = c[1] / c[0], b = c[2] / c[0];
-    if (std::fabs(g - 0.75f) >= 0.03f || std::fabs(b - 0.79f) >= 0.03f) return; // not the stock pink
-    // warm white (1, 0.80, 0.62), scaled to keep the luminance of the original
-    const float lumPink = 0.2126f + 0.7152f * g + 0.0722f * b;
-    const float lumWarm = 0.2126f + 0.7152f * 0.80f + 0.0722f * 0.62f;
-    const float k = c[0] * lumPink / lumWarm;
-    const float warm[3] = {k, 0.80f * k, 0.62f * k};
-    for (int i = 0; i < 3; i++) c[i] += (warm[i] - c[i]) * t;
-    g_tinted.fetch_add(1, std::memory_order_relaxed);
+    return std::fabs(g - 0.75f) < 0.03f && std::fabs(b - 0.79f) < 0.03f;
 }
 
-void __fastcall LampColourSet(void* light, void*, const float* rgb) {
+// The stock pink turned towards warm white (1, 0.80, 0.62) by t, with the luminance of the original
+void TintPink(const float pink[3], float t, float out[3]) {
+    const float g = pink[1] / pink[0], b = pink[2] / pink[0];
+    const float lumPink = 0.2126f + 0.7152f * g + 0.0722f * b;
+    const float lumWarm = 0.2126f + 0.7152f * 0.80f + 0.0722f * 0.62f;
+    const float k = pink[0] * lumPink / lumWarm;
+    const float warm[3] = {k, 0.80f * k, 0.62f * k};
+    for (int i = 0; i < 3; i++) out[i] = pink[i] + (warm[i] - pink[i]) * t;
+}
+
+float TintFor(bool street) { return (street ? g_lampTint : g_lotLampTint).load(std::memory_order_relaxed); }
+
+// A street lamp: the street-lamp class (0xB) outside any lot (lot id +0xC0/+0xC4 = 0)
+bool IsStreetLight(const BYTE* light) {
+    __try {
+        return *reinterpret_cast<const int*>(light + 0xB0) == 0xB && *reinterpret_cast<const uint32_t*>(light + 0xC0) == 0 &&
+               *reinterpret_cast<const uint32_t*>(light + 0xC4) == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Tints c in place when it is the stock pink and records the light; any other colour forgets the light
+void TintStockColour(void* light, float c[3], bool street) {
+    const uintptr_t key = reinterpret_cast<uintptr_t>(light);
+    if (!IsStockPink(c)) {
+        std::lock_guard lock(g_tintedMutex);
+        g_tintedLights.erase(key);
+        return;
+    }
+    TintedLight rec{{c[0], c[1], c[2]}, {}, street};
+    const float t = TintFor(street);
+    if (t > 0.0f) {
+        TintPink(rec.pink, t, c);
+        g_tinted.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::memcpy(rec.written, c, sizeof(rec.written));
+    std::lock_guard lock(g_tintedMutex);
+    g_tintedLights[key] = rec;
+}
+
+// Creation (one call site per light class): the class decides street or lot (site 1 = the street-lamp class 0xB; its
+// lot id may not be set yet, the lamp's script colour, which comes later, decides with the lot id)
+template <bool Street> void __fastcall LampColourSet(void* light, void*, const float* rgb) {
     float c[4] = {rgb[0], rgb[1], rgb[2], 0.0f}; // this setter reads only rgb
-    TintStockColour(c);
+    TintStockColour(light, c, Street);
     reinterpret_cast<SetColour_t>(kSetLightColour)(light, c);
 }
 
 void __fastcall LampColourSetScript(void* light, void*, const float* rgba) {
     // FUN_006bc3e0 reads its argument with MOVAPS: the buffer must be 16-byte aligned (the game's caller aligns its frame).
     alignas(16) float c[4] = {rgba[0], rgba[1], rgba[2], rgba[3]}; // w = r (FUN_006b0b50 passes r, g, b, r)
-    TintStockColour(c);
+    TintStockColour(light, c, IsStreetLight(static_cast<const BYTE*>(light)));
     c[3] = c[0];
     reinterpret_cast<SetColour_t>(kScriptSetColour)(light, c);
 }
@@ -426,7 +475,8 @@ bool InstallLampColour() {
         return false;
     }
     bool ok = true;
-    for (uintptr_t site : kSetColourCalls) ok = ok && RedirectCall(site, kSetLightColour, reinterpret_cast<const void*>(&LampColourSet));
+    for (int i = 0; i < 7; i++) // site 1 (0x006C051D) is the street-lamp class's constructor
+        ok = ok && RedirectCall(kSetColourCalls[i], kSetLightColour, i == 1 ? reinterpret_cast<const void*>(&LampColourSet<true>) : reinterpret_cast<const void*>(&LampColourSet<false>));
     ok = ok && RedirectCall(kScriptSetColourCall, kScriptSetColour, reinterpret_cast<const void*>(&LampColourSetScript));
     if (!ok) {
         MemPatch::RestoreAll(g_colourPatches);
@@ -446,10 +496,64 @@ void UninstallLampColour() {
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
 }
 
-void SetLampTint(float amount) { g_lampTint = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
+void SetLampTint(float street, float lot) {
+    g_lampTint = street < 0 ? 0.0f : (street > 1 ? 1.0f : street);
+    g_lotLampTint = lot < 0 ? 0.0f : (lot > 1 ? 1.0f : lot);
+}
+
+} // namespace ObjectLightBridge
+
+namespace {
+// One tracked light with its current tint: -1 = not ours any more (another colour, or a light at a reused address),
+// 0 = already right, 1 = re-coloured (rec.written updated). No C++ objects here (SEH).
+int RetintLight(uintptr_t L, TintedLight& rec) {
+    __try {
+        if (std::memcmp(reinterpret_cast<const void*>(L + 0xF0), rec.written, sizeof(rec.written)) != 0) return -1;
+        alignas(16) float c[4];
+        const float t = TintFor(rec.street);
+        if (t > 0.0f) TintPink(rec.pink, t, c);
+        else std::memcpy(c, rec.pink, sizeof(rec.pink));
+        c[3] = c[0];
+        if (std::memcmp(c, rec.written, sizeof(rec.written)) == 0) return 0;
+        reinterpret_cast<SetColour_t>(kScriptSetColour)(reinterpret_cast<void*>(L), c); // +0xF0, and +0xE0 when lit
+        std::memcpy(rec.written, c, sizeof(rec.written));
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+} // namespace
+
+namespace ObjectLightBridge {
+
+int RetintLamps(const std::vector<uintptr_t>& lights) {
+    if (g_colourPatches.empty() || !kScriptSetColour) return 0;
+    std::lock_guard lock(g_tintedMutex);
+    std::unordered_map<uintptr_t, TintedLight> alive;
+    alive.reserve(g_tintedLights.size());
+    int changed = 0;
+    for (uintptr_t L : lights) {
+        auto it = g_tintedLights.find(L);
+        if (it == g_tintedLights.end()) continue;
+        TintedLight rec = it->second;
+        const int r = RetintLight(L, rec);
+        if (r < 0) continue;
+        changed += r;
+        alive.emplace(L, rec);
+    }
+    g_tintedLights.swap(alive);
+    if (changed > 0) {
+        g_refreshRequested = true; // the rigs gather the new colour (next OnPresent)
+        LOG_INFO(std::format("[ObjectLightBridge] Lamp colour changed live: {} lights re-coloured (street {:.2f}, lot {:.2f})", changed, g_lampTint.load(),
+                             g_lotLampTint.load()));
+    }
+    return changed;
+}
 
 std::string LampColourStatus() {
-    return std::format("{} | lights with corrected colour: {}", g_colourPatches.empty() ? "off" : "active", g_tinted.load());
+    std::lock_guard lock(g_tintedMutex);
+    return std::format("{} | lights with corrected colour: {} | stock lamps tracked: {}", g_colourPatches.empty() ? "off" : "active", g_tinted.load(),
+                       g_tintedLights.size());
 }
 
 bool Install(std::string& error) {
@@ -540,6 +644,8 @@ void OnPresent() {
 }
 
 void SetAllObjects(bool on) { g_forceAll = on; }
+
+void RequestRigRefresh() { g_refreshRequested = true; }
 
 std::string Status() {
     return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {}",

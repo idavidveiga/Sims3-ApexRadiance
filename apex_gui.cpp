@@ -113,7 +113,7 @@ constexpr const char* kPictureDescription = "Fine-tune how the world looks: brig
 constexpr const char* kBorderlessDescription = "Play in a window with no title bar or frame, at the game's resolution or filling the whole screen. Part of "
                                                APEX_PRODUCT_NAME ". Credits: @loinyx";
 constexpr const char* kShoreDescription = "Ponds and lakes mirror the trees, houses and lamps along their shore, on top of the game's sky reflection. "
-                                          "Needs Night Lights and Depth Blur. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx";
+                                          "Needs Night Lights and Depth Blur, with the game's own Edge Smoothing off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx";
 constexpr const char* kProfilerDescription = "Measures every frame and breaks down each hitch. Writes ApexRadiance_Hitches.txt. Development build only. Part of "
                                              APEX_PRODUCT_NAME ". Credits: @loinyx";
 
@@ -397,6 +397,8 @@ void LightingPage() {
 
 // ---- World > Water & Snow ----
 
+void GameEdgeSmoothingNote(const char* forWhat); // Image > Depth Blur, below
+
 void WaterReflectionsCard() {
     ApexPatch* ntr = Find(kNightLighting);
     if (!ntr) return;
@@ -416,6 +418,8 @@ void WaterReflectionsCard() {
             CardNote("Needs Depth Blur (Depth Blur page)");
             TurnOnButton(blur, "Turn on Depth Blur", IconId::Aperture, "Depth Blur turned on");
         }
+        // The reflection reads the scene depth, which the game's own (multisampled) Edge Smoothing does not give
+        if (on) GameEdgeSmoothingNote("Water Reflections");
         if (on) {
             float v = NightLighting::ShoreReflection();
             if (ApexUi::SliderPercent("Reflection brightness", &v, 0.05f, 3.0f, "How strong the reflection is; 100% is the default", kShoreDefault)) {

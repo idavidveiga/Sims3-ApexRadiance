@@ -43,6 +43,7 @@
 #include "night_lighting.h"
 #include "imgui.h"
 #include "ui/widgets.h"
+#include "overlay.h"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
@@ -162,12 +163,23 @@ bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 1.0f;
 float g_fenceGroundStrength = 1.0f;
+bool g_walls = true;         // outdoor walls get g_wallStrength (off = the game's own wall light, gain 1)
 float g_wallStrength = 2.0f; // outdoor walls: baked lamp light x this (1 = the game)
 bool g_roofs = true;
 float g_roofStrengthSetting = 0.6f;
 bool g_water = true;
 float g_waterStrengthSetting = 1.0f;
 float g_waterReflSetting = 1.0f;
+// Brightness controls (Lamps and Ground tabs). Ground / roads / lot lamps on lot grass apply live in the ground shaders
+// (LotLightBridge::SetGroundBrightness); street / lot lamps in the terrain light bake (BakeColourStub) need a terrain
+// rebuild, done once when the slider is let go; the moonlight scales the game's sun / moon colour at night.
+float g_groundBrightness = 1.0f;
+float g_roadBrightness = 1.0f;  // x the ground brightness
+float g_streetLampGain = 1.0f;  // street lamps on the ground (terrain bake)
+float g_lotLampGain = 1.0f;     // lot lamps on the ground (terrain bake + the lot's own light map)
+float g_moonlight = 1.0f;       // the moon's light at night
+bool g_lotTintOwn = false;      // lot lamps have their own colour
+float g_lotLampTint = 1.0f;     // their colour (0 = pink, 1 = warm white)
 bool g_allLotsHQ = false;
 bool g_lotPassNoTerrainMap = false;
 // Developer toggles (29/09, not yet tested in game; the public build never registers them: always off there):
@@ -338,6 +350,108 @@ __declspec(naked) void StreetLampColourStub() {
         movaps xmm0, xmmword ptr [esi+0xE0]
         ret
     }
+}
+
+// "Street lamps" / "Lot lamps" on the ground: the terrain bake (FUN_00c292b0) copies each lamp's colour into its shader
+// parameter at 0xC2950F ("movaps xmm0,[edi+0F0h]; movaps [esi+120h],xmm0", EDI = the light). The stub loads it times the
+// multiplier of the lamp's kind (a world street lamp: lot id +0xC0/+0xC4 = 0; else a lot lamp), so only the bake sees it:
+// the lamp object, its rig, the room solves and the lamp change tracking keep the real colour. EAX and the flags are dead
+// there (EAX is written at 0xC29523); .w is overwritten later (0xC29586). Both arrays: 16-byte aligned for mulps.
+alignas(16) float g_bakeStreetMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+alignas(16) float g_bakeLotMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+uintptr_t kBakeColourSite = 0; // 0x00C2950F
+const std::vector<BYTE> kBakeColourOrig = {0x0F, 0x28, 0x87, 0xF0, 0x00, 0x00, 0x00};
+bool g_bakeGainInstalled = false;
+float g_bakeGainSeen[2] = {1.0f, 1.0f}; // street / lot gains the multipliers hold
+float g_tintSeen[2] = {1.0f, 1.0f};     // street / lot lamp colours the stock lamps were last re-coloured with
+
+__declspec(naked) void BakeColourStub() {
+    __asm {
+        movaps xmm0, xmmword ptr [edi+0xF0]
+        mov eax, dword ptr [edi+0xC0]
+        or eax, dword ptr [edi+0xC4]
+        jnz lot
+        mulps xmm0, xmmword ptr [g_bakeStreetMul]
+        ret
+    lot:
+        mulps xmm0, xmmword ptr [g_bakeLotMul]
+        ret
+    }
+}
+
+// A menu slider is being dragged right now (then the values that cost a rebuild wait for its release). Safe from the
+// Present hook: false without an ImGui context or with the menu hidden (its frame count stops while it is hidden).
+bool MenuSliderHeld() { return ImGui::GetCurrentContext() && Overlay::IsVisible() && ApexUi::SliderDragging(); }
+
+void SetBakeGains(float street, float lot) {
+    for (int i = 0; i < 3; i++) {
+        g_bakeStreetMul[i] = street;
+        g_bakeLotMul[i] = lot;
+    }
+    g_bakeGainSeen[0] = street;
+    g_bakeGainSeen[1] = lot;
+}
+
+// "Moonlight": the game multiplies the sun / moon colour by the "Sunlight Scale" float every frame (FUN_00c11ad0,
+// "mov ecx,011D0918h; call getter; movss xmm0,[eax]" at 0x00C11B01, its only reader) before it hands it to the light
+// manager (+0x130 = ExteriorLightData, read by terrain, roads, walls, floors, roofs, objects, Sims and ponds). Written
+// as its original value x lerp(1, moonlight, night level): by day it is the game's. Plain data, no code patched.
+uintptr_t kSunlightScale = 0; // 0x011D0918
+float g_sunlightBase = -1.0f;  // its value when first seen (< 0 = not read yet / not usable)
+float g_moonWritten = -1.0f;
+float g_moonSeen = 1.0f;       // moonlight value the object rigs gathered with
+
+bool ReadFloat(uintptr_t at, float& v) {
+    __try {
+        v = *reinterpret_cast<const float*>(at);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool WriteFloat(uintptr_t at, float v) {
+    __try {
+        *reinterpret_cast<float*>(at) = v;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Every frame (render thread): the scale for the current night level. False when not available.
+bool ApplyMoonlight(float level) {
+    if (!kSunlightScale) return false;
+    if (g_sunlightBase < 0.0f) {
+        float v = 0.0f;
+        if (!ReadFloat(kSunlightScale, v) || !(v > 0.0f && v < 100.0f)) {
+            kSunlightScale = 0; // not the float we expect: leave it alone for this session
+            LOG_WARNING("[NightTerrainRelight] Moonlight: the sunlight scale is not a usable value; moonlight control off");
+            return false;
+        }
+        g_sunlightBase = v;
+        LOG_INFO(std::format("[NightTerrainRelight] Moonlight: sunlight scale {:.3f} at {:#x}", v, kSunlightScale));
+    }
+    // Someone else wrote it since (Sims3SettingsSetter's "Sunlight brightness" edits the same variable): that is the new
+    // base, so the moonlight scales the user's own choice and never stacks on itself
+    float now = 0.0f;
+    if (!ReadFloat(kSunlightScale, now)) return false;
+    if (g_moonWritten >= 0.0f && now != g_moonWritten && now > 0.0f && now < 100.0f) {
+        g_sunlightBase = now;
+        LOG_INFO(std::format("[NightTerrainRelight] Moonlight: sunlight scale changed elsewhere to {:.3f} (new base)", now));
+    }
+    const float want = g_sunlightBase * (1.0f + (g_moonlight - 1.0f) * level);
+    if (want == now) {
+        g_moonWritten = want;
+        return true;
+    }
+    if (!WriteFloat(kSunlightScale, want)) return false;
+    g_moonWritten = want;
+    return true;
+}
+
+void RestoreMoonlight() {
+    if (kSunlightScale && g_sunlightBase >= 0.0f && g_moonWritten >= 0.0f) WriteFloat(kSunlightScale, g_sunlightBase);
+    g_moonWritten = -1.0f;
 }
 
 // Queues room 0 of every loaded lot level, like picking up a lamp does. Returns rooms queued, -1 on failure.
@@ -1004,6 +1118,40 @@ void OnPresent() {
         NoteEdit(now, true, true, g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off", true);
     }
 
+    // Street / lot lamp brightness in the terrain bake and the lamp colours: once the slider is let go, one terrain rebuild
+    // (a switch: no snapshot compare) with the new values; the colours also re-solve the lots' outdoor light once.
+    const bool dragging = MenuSliderHeld();
+    if (!dragging && g_bakeGainInstalled && (g_streetLampGain != g_bakeGainSeen[0] || g_lotLampGain != g_bakeGainSeen[1])) {
+        SetBakeGains(g_streetLampGain, g_lotLampGain);
+        NoteEdit(now, true, true, "lamp brightness on the ground changed", true);
+    }
+    const float tintLot = g_lotTintOwn ? g_lotLampTint : g_lampTint;
+    if (!dragging && (g_lampTint != g_tintSeen[0] || tintLot != g_tintSeen[1])) {
+        g_tintSeen[0] = g_lampTint;
+        g_tintSeen[1] = tintLot;
+        ObjectLightBridge::SetLampTint(g_lampTint, tintLot);
+        std::vector<uintptr_t> lights;
+        if (LotLightBridge::EnumerateAllLights(lights) && ObjectLightBridge::RetintLamps(lights) > 0) {
+            LotLightBridge::RequestLampRefresh();
+            NoteEdit(now, true, true, "lamp colour changed", true);
+            g_relightLotsRequested = true;
+        }
+    }
+    // The stock lamps tracked for a live re-colour: freed lights are dropped every 30 s (RetintLamps keeps only the
+    // enumerated ones; with the colours unchanged it re-colours nothing)
+    static Clock::time_point lastPrune{};
+    if (now - lastPrune > std::chrono::seconds(30)) {
+        lastPrune = now;
+        std::vector<uintptr_t> lights;
+        if (LotLightBridge::EnumerateAllLights(lights)) ObjectLightBridge::RetintLamps(lights);
+    }
+    // Moonlight: every frame for the current night level; the object rigs gather it again once the slider is let go
+    ApplyMoonlight(s.level);
+    if (!dragging && g_moonlight != g_moonSeen) {
+        g_moonSeen = g_moonlight;
+        ObjectLightBridge::RequestRigRefresh();
+    }
+
     // Stuck countdown (v0.1.0 fallback): a light change armed only +0x38, which never rebuilds in play (only +0x3C does),
     // so a lamp change the tracking above did not count (e.g. on a lot still settling) would wait forever. Only when an
     // outdoor LOT lamp armed it (street lamps streaming in with lots also arm it, and the vanilla game never rebuilds for
@@ -1153,6 +1301,13 @@ void LoadAddresses() {
     kLotPassNullBindBytes = WithDword({0xA1}, static_cast<uint32_t>(Get(Id::LotPassTexGlobal)), {0x6A, 0x00, 0x6A, 0x00});
     kQualitySites[0] = Get(Id::QualitySite0);
     kQualitySites[1] = Get(Id::QualitySite1);
+    kBakeColourSite = Get(Id::BakeColourSite);
+    if (g_sunlightBase < 0.0f) { // once read, keep it (the restore needs it)
+        kSunlightScale = Get(Id::SunlightScale);
+        // Steam: its only reader must still be "mov ecx,011D0918h; call" at 0x00C11B01
+        static const BYTE kReader[] = {0xB9, 0x18, 0x09, 0x1D, 0x01, 0xE8};
+        if (kSunlightScale && GameAddr::IsFixed() && !MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(0x00C11B01), kReader, sizeof(kReader))) kSunlightScale = 0;
+    }
     ResolveCamera(); // lamp change rebuilds wait for the camera to be still
     ChunkRelight::Init(); // local terrain relight: WorldManager global and terrain link (optional)
     if constexpr (!kPublicBuild)
@@ -1222,7 +1377,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                     "Fences, railings, fence posts and stairs get the lamp light of the ground around them."));
         RegisterFloatSetting(&g_fenceGroundStrength, "forcaNasCercas", SettingWidget::Slider, 1.0f, 0.25f, 2.0f,
             S3SS_TR("Forca da luz do chao nas cercas, grades e escadas.", "How strongly fences, railings, stairs and the snow on them are lit."));
-        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 2.0f, 1.0f, 4.0f,
+        RegisterBoolSetting(&g_walls, "paredesComLuz", true,
+            S3SS_TR("As paredes externas recebem a luz das lampadas com a forca escolhida (desligado = como o jogo).",
+                    "Outside walls get lamp light at the chosen brightness (off = the game's own dim wall light)."));
+        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 2.0f, 0.25f, 4.0f,
             S3SS_TR("Multiplica a luz das lampadas nas paredes externas (1 = como o jogo). O jogo acende as paredes bem mais fraco que os objetos.",
                     "How strongly lamps light outside walls (1 = like the game, which lights walls much dimmer than objects)."));
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
@@ -1248,6 +1406,20 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.0f, 0.0f, 3.0f,
             S3SS_TR("Forca do reflexo da margem (arvores, casas, postes) na agua dos lagos.",
                     "Strength of the shore reflection (trees, houses, lamps) on ponds (needs Depth Blur)."));
+        RegisterFloatSetting(&g_groundBrightness, "brilhoNoChao", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            "How bright lamp light is on grass, lots and outdoor floors (1 = the default).");
+        RegisterFloatSetting(&g_roadBrightness, "brilhoNasRuas", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            "How bright lamp light is on roads and sidewalks, relative to the ground (1 = the same).");
+        RegisterFloatSetting(&g_streetLampGain, "forcaDosPostes", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            "How strongly street lamps light the ground (1 = the default; the ground light is rebuilt when it changes).");
+        RegisterFloatSetting(&g_lotLampGain, "forcaDasLampadasDoLote", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+            "How strongly outdoor lot lamps light the ground (1 = the default; the ground light is rebuilt when it changes).");
+        RegisterFloatSetting(&g_moonlight, "luar", SettingWidget::Slider, 1.0f, 0.0f, 2.0f,
+            "How strong the moonlight is at night (1 = the game; 0 = no moonlight, only lamps and the sky's glow).");
+        RegisterBoolSetting(&g_lotTintOwn, "corPropriaNoLote", false,
+            "Lot lamps get their own color (off = the same color as street lamps).");
+        RegisterFloatSetting(&g_lotLampTint, "corDasLampadasDoLote", SettingWidget::Slider, 1.0f, 0.0f, 1.0f,
+            "Color of stock lot lamps when they have their own: 0 = pink like the game, 1 = warm white.");
         RegisterBoolSetting(&g_autoDusk, "automaticoAoAnoitecer", true,
             S3SS_TR("Quando anoitece, manda o jogo refazer a luz do terreno com os postes acesos (o mesmo que acontece ao mover um poste no modo construcao).",
                     "At dusk, rebuild the terrain light with the lamps on."));
@@ -1386,6 +1558,17 @@ class NightTerrainRelightPatch : public ApexPatch {
         }
         installedLotPass = g_lotPassNoTerrainMap;
         installedLotLampCode = lotCodeOk;
+        // "Street lamps" / "Lot lamps" on the ground (optional: without it those two sliders do nothing and say so)
+        g_bakeGainInstalled = false;
+        SetBakeGains(g_streetLampGain, g_lotLampGain);
+        if (kBakeColourSite && Missing({Id::BakeColourSite}).empty() &&
+            MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kBakeColourSite), kBakeColourOrig.data(), kBakeColourOrig.size())) {
+            // call BakeColourStub; nop x2
+            const auto bakeBytes = CallPatch(kBakeColourSite, 0, {}, reinterpret_cast<void*>(&BakeColourStub), kBakeColourOrig.size());
+            g_bakeGainInstalled = MemPatch::WriteBytes(kBakeColourSite, bakeBytes, &patchedLocations, &kBakeColourOrig);
+            if (g_bakeGainInstalled) FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(kBakeColourSite), kBakeColourOrig.size());
+        }
+        if (!g_bakeGainInstalled) LOG_WARNING("[NightTerrainRelight] Terrain bake colour code differs or was not found: street / lot lamp brightness on the ground not available");
         g_lotLampsSeen = g_lotLamps; // installed with the current value: no "switch changed" rebuild for it
 
         // Chunk re-render notices for the smoothed maps (optional: without it the maps are found by hashing).
@@ -1441,9 +1624,11 @@ class NightTerrainRelightPatch : public ApexPatch {
             LotLightBridge::OnPresent();
             LightmapSmooth::SetEnabled(g_smoothMaps);
             LotLightBridge::SetSidewalkClear(g_sidewalkClear);
-            ObjectLightBridge::SetLampTint(g_lampTint);
+            LotLightBridge::SetGroundBrightness(g_groundBrightness, g_roadBrightness, g_lotLampGain);
+            // lamps created from now on take the new colour once the slider is let go (OnPresent re-colours the others)
+            if (!MenuSliderHeld()) ObjectLightBridge::SetLampTint(g_lampTint, g_lotTintOwn ? g_lotLampTint : g_lampTint);
             LotLightBridge::SetFenceGroundLight(g_fenceGround, g_fenceGroundStrength);
-            LotLightBridge::SetWallGain(g_wallStrength);
+            LotLightBridge::SetWallGain(g_walls ? g_wallStrength : 1.0f);
             LotLightBridge::SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength);
             LotLightBridge::SetObjectPixelLights(g_objPixelLights, g_objPixelLightStrength);
             LightmapSmooth::SetGpuPreferred(g_smoothMapsGpu);
@@ -1452,7 +1637,15 @@ class NightTerrainRelightPatch : public ApexPatch {
             return D3D9Hooks::HookAction::Continue;
         }, D3D9Hooks::Priority::Last);
 
-        ObjectLightBridge::SetLampTint(g_lampTint);
+        // The first install takes the saved colours; later ones leave g_tintSeen as it is, so a colour changed while Night
+        // Lights was off re-colours the lamps once it is on again
+        static bool tintInit = false;
+        if (!tintInit) {
+            tintInit = true;
+            g_tintSeen[0] = g_lampTint;
+            g_tintSeen[1] = g_lotTintOwn ? g_lotLampTint : g_lampTint;
+        }
+        ObjectLightBridge::SetLampTint(g_tintSeen[0], g_tintSeen[1]);
         ObjectLightBridge::InstallLampColour();
         LightmapSmooth::SetEnabled(g_smoothMaps);
         RenderCallbacks::Add(RenderCallbacks::preReset, LightmapSmooth::OnPreReset);
@@ -1477,6 +1670,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (!isEnabled) return true;
         lastError.clear();
         D3D9Hooks::UnregisterAll("NightTerrainRelight");
+        RestoreMoonlight();
         LightProbe::Shutdown();
         RenderCallbacks::Remove(RenderCallbacks::preReset, LightmapSmooth::OnPreReset);
         // A reinstall (render thread, Install follows at once in the same world) keeps the chunk maps, smoothed maps and
@@ -1491,6 +1685,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
         patchedLocations.clear();
         g_chunkHookInstalled = false;
+        g_bakeGainInstalled = false;
         // The chunk re-render call is the game's own again: a local relight in progress is dropped (the chunk in flight, if
         // any, is rendered by the game at its next update). Its lamps were never marked as baked: the change is decided
         // again (the diff against the snapshot still shows it). A paced sweep in progress is cut short: its snapshot was
@@ -1594,6 +1789,13 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_smoothMapsGpu = true;
         g_softLotEdges = true;
         g_lampTint = 1.0f;
+        g_lotTintOwn = false;
+        g_lotLampTint = 1.0f;
+        g_groundBrightness = 1.0f;
+        g_roadBrightness = 1.0f;
+        g_streetLampGain = 1.0f;
+        g_lotLampGain = 1.0f;
+        g_moonlight = 1.0f;
         g_objLamps = true;
         g_objStrength = 1.0f;
         g_objAll = true;
@@ -1602,6 +1804,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_objPixelLightStrength = 1.0f;
         g_fenceGround = true;
         g_fenceGroundStrength = 1.0f;
+        g_walls = true;
         g_wallStrength = 2.0f;
         g_roofs = true;
         g_roofStrengthSetting = 0.6f;
@@ -1632,19 +1835,74 @@ class NightTerrainRelightPatch : public ApexPatch {
 
     // Every row goes through ApexUi::SwitchRow / Slider with its label as the stable id (unique within its card).
 
+    // Light styles: every brightness of Night Lights at once (the moonlight and colors are not part of a style)
+    // each: ground, roads, street lamps, lot lamps, objects, pieces, fences, walls, roofs, water (the StyleValue order)
+    struct LightStyle {
+        float v[10];
+    };
+    static constexpr LightStyle kStyles[] = {
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f, 0.75f}}, // Soft
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f, 1.0f}},      // Natural (the defaults)
+        {{1.4f, 1.0f, 1.3f, 1.3f, 1.4f, 1.4f, 1.4f, 3.0f, 0.9f, 1.5f}},      // Bright
+    };
+    static float* StyleValue(int i) {
+        float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
+                            &g_objPixelLightStrength, &g_fenceGroundStrength, &g_wallStrength, &g_roofStrengthSetting, &g_waterStrengthSetting};
+        return v[i];
+    }
+    static int CurrentStyle() {
+        for (int s = 0; s < static_cast<int>(std::size(kStyles)); s++) {
+            const float* want = kStyles[s].v;
+            bool same = true;
+            for (int i = 0; i < 10 && same; i++) same = std::fabs(*StyleValue(i) - want[i]) < 0.005f;
+            if (same) return s;
+        }
+        return -1; // custom
+    }
+
     void DrawLampColor() {
         Edit([] {
-            ApexUi::SliderOptions o;
-            o.valueText = ""; // the end labels and the swatch say it
-            o.leftLabel = "Pink";
-            o.rightLabel = "Warm white";
-            o.tooltip = "Stock lamps only; colors you chose in Build mode stay";
-            o.defaultValue = 1.0f;
-            o.trackFrom = LampColourAt(0.0f);
-            o.trackTo = LampColourAt(1.0f);
-            o.swatch = LampColourAt(g_lampTint);
-            ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // lamps are tinted when a save loads
-            return ApexUi::Slider("Lamp color", &g_lampTint, 0.0f, 1.0f, o);
+            static const char* const kStyleNames[] = {"Soft", "Natural", "Bright"};
+            static const char* const kStyleTips[] = {"Dimmer lamp light everywhere", "The default look", "Stronger lamp light everywhere"};
+            ApexUi::GroupLabel("STYLE");
+            int style = CurrentStyle();
+            bool changed = false;
+            if (ApexUi::SegmentedRow("Light style", "Lamp brightness on the ground, objects, walls, roofs and ponds at once; fine-tune each in its tab", "##LightStyle", &style, kStyleNames,
+                                     static_cast<int>(std::size(kStyleNames)), kStyleTips, nullptr, 1) &&
+                style >= 0) {
+                const float* v = kStyles[style].v;
+                for (int i = 0; i < 10; i++) *StyleValue(i) = v[i];
+                changed = true;
+            }
+
+            const auto colorSlider = [](const char* label, float* v, const char* tooltip) {
+                ApexUi::SliderOptions o;
+                o.valueText = ""; // the end labels and the swatch say it
+                o.leftLabel = "Pink";
+                o.rightLabel = "Warm white";
+                o.tooltip = tooltip;
+                o.defaultValue = 1.0f;
+                o.trackFrom = LampColourAt(0.0f);
+                o.trackTo = LampColourAt(1.0f);
+                o.swatch = LampColourAt(*v);
+                return ApexUi::Slider(label, v, 0.0f, 1.0f, o);
+            };
+            ApexUi::GroupLabel("COLOR");
+            changed |= colorSlider("Lamp color", &g_lampTint,
+                                   g_lotTintOwn ? "Street lamps; colors you chose in Build mode stay" : "Stock lamps only; colors you chose in Build mode stay");
+            changed |= ApexUi::SwitchRow("Own color for lot lamps", &g_lotTintOwn, "Lamps on lots get a color of their own", false);
+            if (g_lotTintOwn) changed |= colorSlider("Lot lamp color", &g_lotLampTint, "Stock lamps on lots; colors you chose in Build mode stay");
+
+            ApexUi::GroupLabel("MOON");
+            ApexUi::SliderOptions m;
+            m.format = "%.0f%%";
+            m.displayScale = 100.0f;
+            m.tooltip = kSunlightScale ? "How much the moon lights the world at night; 100% is the game" : "Not available on this game version";
+            m.defaultValue = 1.0f;
+            ImGui::BeginDisabled(!kSunlightScale);
+            changed |= ApexUi::Slider("Moonlight", &g_moonlight, 0.0f, 2.0f, m);
+            ImGui::EndDisabled();
+            return changed;
         });
     }
 
@@ -1657,13 +1915,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             ApexUi::CardDivider();
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
-                // One switch for both keys (luzDoLoteNaGrama + automaticoAoAnoitecer), as before
-                bool lotLamps = g_lotLamps && g_autoDusk;
-                if (ApexUi::SwitchRow("Lot lamps light the street", &lotLamps, "Outdoor lot lamps also light the grass and street nearby", true)) {
-                    g_lotLamps = lotLamps;
-                    g_autoDusk = lotLamps;
-                    changed = true;
-                }
+                changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
                 return changed;
             });
             if (drawUpperFloorRow) drawUpperFloorRow();
@@ -1672,6 +1924,37 @@ class NightTerrainRelightPatch : public ApexPatch {
                 changed |= ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true);
                 return changed;
             });
+            Edit([] {
+                ApexUi::GroupLabel("BRIGHTNESS");
+                // The ground and road gains are applied in the draws of "Street lamps light lots"
+                if (!g_bridge) ApexUi::IconNote(ApexUi::IconId::Info, "Needs \"Street lamps light lots\"");
+                ImGui::BeginDisabled(!g_bridge);
+                bool changed = ApexUi::SliderPercent("Ground brightness", &g_groundBrightness, 0.25f, 3.0f, "Lamp light on grass, lots and patios; 100% is the default", 1.0f);
+                changed |= ApexUi::SliderPercent("Roads and sidewalks", &g_roadBrightness, 0.25f, 3.0f, "Compared with the ground around them; 100% is the same", 1.0f);
+                ImGui::EndDisabled();
+                // In the terrain light bake: the ground is rebuilt once the slider is let go
+                const char* bakeTip = g_bakeGainInstalled ? nullptr : "Not available on this game version";
+                ImGui::BeginDisabled(!g_bakeGainInstalled);
+                changed |= ApexUi::SliderPercent("Street lamp brightness", &g_streetLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "How strongly street lamps light the ground; 100% is the default", 1.0f);
+                changed |= ApexUi::SliderPercent("Lot lamp brightness", &g_lotLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "How strongly lamps on lots light the ground; 100% is the default", 1.0f);
+                ImGui::EndDisabled();
+                return changed;
+            });
+            // When the ground light is rebuilt (lamp changes are always followed; this is the rebuild at dusk)
+            if (ApexUi::BeginAdvanced("Updates##NightGround", "Updates")) {
+                Edit([] {
+                    bool changed = ApexUi::SwitchRow("Update at dusk", &g_autoDusk, "When night falls, the ground light is rebuilt with every lamp on", true);
+                    ImGui::BeginDisabled(!g_autoDusk);
+                    ApexUi::SliderOptions o;
+                    o.format = "%.1f s";
+                    o.tooltip = "Waits after dusk so every lamp has switched on first";
+                    o.defaultValue = 2.0f;
+                    changed |= ApexUi::Slider("Delay after dusk", &g_delaySec, 0.5f, 10.0f, o);
+                    ImGui::EndDisabled();
+                    return changed;
+                });
+                ApexUi::EndAdvanced();
+            }
         }
         ApexUi::EndCard();
         ImGui::PopID();
@@ -1732,7 +2015,9 @@ class NightTerrainRelightPatch : public ApexPatch {
             ApexUi::CardDivider();
             Edit([] {
                 ApexUi::GroupLabel("WALLS");
-                bool changed = ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 1.0f, 4.0f, "How bright lit walls get; 100% is the game's dim look", 2.0f);
+                bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
+                if (g_walls)
+                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "How bright lit walls get; 100% is the game's dim look", 2.0f);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
@@ -1840,6 +2125,10 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextWrapped("Objects: %s", ObjectLightBridge::Status().c_str());
         ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
         ImGui::TextWrapped("Walls: %s", LotLightBridge::WallStatus().c_str());
+        ImGui::TextWrapped("Ground brightness: %s", LotLightBridge::GroundBrightnessStatus().c_str());
+        ImGui::TextWrapped("Terrain bake: %s | moonlight: %s", g_bakeGainInstalled ? std::format("street lamps x{:.2f}, lot lamps x{:.2f}", g_bakeStreetMul[0], g_bakeLotMul[0]).c_str() : "not installed",
+                           g_sunlightBase < 0.0f ? (kSunlightScale ? "waiting for a world" : "not available")
+                                                 : std::format("sunlight scale {:.3f} (base {:.3f}, moonlight x{:.2f})", g_moonWritten, g_sunlightBase, g_moonlight).c_str());
         ImGui::TextWrapped("Roofs: %s", LotLightBridge::RoofStatus().c_str());
         ImGui::TextWrapped("Water: %s", LotLightBridge::WaterStatus().c_str());
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());

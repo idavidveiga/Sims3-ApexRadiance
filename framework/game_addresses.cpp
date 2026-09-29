@@ -181,6 +181,8 @@ constexpr Info kInfo[] = {
     {"ObjectTreeSearch", 0x00C5FA60},
     {"WorldManagerPtr", 0x011ECBC4},
     {"TerrainUpdateCall", 0x00C6D68C},
+    {"BakeColourSite", 0x00C2950F},
+    {"SunlightScale", 0x011D0918},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -387,6 +389,8 @@ const Entry kTable[] = {
     //      FUN_00c6cf80 ("lea ecx,[ebp+9Ch]; mov [global],ebp; call"), alternate: the clear in FUN_00c6b500; the terrain link ----
     {Id::WorldManagerPtr, K::Sig, W::Image, None, 0, {{"8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8", 8, M::Dword}, {"51 53 56 33 DB 8B F1 89 1D ?? ?? ?? ?? 8B 8E 6C 01 00 00", 9, M::Dword}}},
     {Id::TerrainUpdateCall, K::Sig, W::Text, None, 0, {{"8B 44 24 0C 50 8D 4C 24 14 51 8B 4E 58 E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00", 10, M::At}, {"51 8B 4E ?? E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00 75", 1, M::At}}},
+    {Id::BakeColourSite, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17 0F 28 47 10", 5, M::At}, {"0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17", 0, M::At}}},
+    {Id::SunlightScale, K::Sig, W::Image, None, 0, {{"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E 00 08 00 00", 1, M::Dword}, {"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E ?? ?? 00 00 8D 8E", 1, M::Dword}}},
 };
 // clang-format on
 #undef NOSIG

@@ -91,6 +91,50 @@ void Apply(std::vector<DWORD>& t, std::vector<Edit> edits) {
 
 bool IsReg(DWORD r, DWORD type, DWORD num) { return (r & 0x80000000u) && Type(r) == type && Num(r) == num; }
 size_t End(const Ins& x) { return x.at + 1 + x.len; }
+bool IsFlow(DWORD op) { return (op >= 0x19 && op <= 0x1E) || (op >= 0x26 && op <= 0x2D); }
+
+// Lamp brightness (Night Lights: ground, roads and sidewalks): the game's lamp scale applied to a light map value in rL.
+// The next instruction after ins[from] that reads rL.rgb, before rL.rgb is written again and before any flow control,
+// must be "mul rY.xyz, rL, cK.x" or "mad rY.xyz, rL, cK.x, rZ" (no saturate, no source modifier), and cK must be read by
+// no other instruction, never through relative addressing and not come from a def: then cK.x scales that light map term
+// only. Returns K, or -1.
+int LampScaleAfter(const std::vector<DWORD>& t, const std::vector<Ins>& ins, size_t from, DWORD L) {
+    int K = -1;
+    for (size_t j = from + 1; j < ins.size(); j++) {
+        const Ins& y = ins[j];
+        if (IsFlow(y.op)) return -1;
+        bool reads = false;
+        for (size_t k = 2; k <= y.len; k++) reads |= IsReg(t[y.at + k], kTemp, L) && Swz(t[y.at + k]) != kSwzW;
+        if (reads) {
+            if (!((y.op == kMul && y.len == 3) || (y.op == kMad && y.len == 4))) return -1;
+            const DWORD d = t[y.at + 1], a = t[y.at + 2], c = t[y.at + 3];
+            if (Type(d) != kTemp || WMask(d) != 0x7 || (d & 0x00100000u) || !IsReg(a, kTemp, L) || Swz(a) != kSwzXYZW || (a & 0x0F002000u) ||
+                Type(c) != kConst || Swz(c) != kSwzX || (c & 0x0F002000u))
+                return -1;
+            if (y.op == kMad && IsReg(t[y.at + 4], kTemp, L)) return -1; // the light map added again, unscaled
+            K = static_cast<int>(Num(c));
+            break;
+        }
+        if (y.len >= 1 && IsReg(t[y.at + 1], kTemp, L) && (WMask(t[y.at + 1]) & 0x7)) return -1;
+    }
+    if (K < 0) return -1;
+    int uses = 0;
+    for (const Ins& x : ins) {
+        if (x.op == kDcl || x.op == kDefI || x.op == kDefB) continue;
+        if (x.op == kDef) {
+            if (IsReg(t[x.at + 1], kConst, static_cast<DWORD>(K))) return -1;
+            continue;
+        }
+        for (size_t k = 1; k <= x.len; k++) {
+            const DWORD r = t[x.at + k];
+            if (!(r & 0x80000000u) || Type(r) != kConst) continue;
+            if (r & 0x2000) return -1; // relative addressing could reach cK
+            uses += Num(r) == static_cast<DWORD>(K) ? 1 : 0;
+        }
+    }
+    return uses == 1 ? K : -1;
+}
+
 
 } // namespace
 
@@ -163,6 +207,8 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
     out.lightSampler = Num(t[L.at + 3]);
     out.extraSampler = E;
     out.sidewalkConst = -1;
+    // the lamp scale after the max inserted below (c4.x in the 4 winter variants, c3.x in summer; each read once)
+    out.scaleConst = LampScaleAfter(t, ins, static_cast<size_t>(light), X);
 
     std::vector<Edit> edits;
     edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}});
@@ -197,6 +243,26 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
     return true;
 }
 
+// World terrain chunks (LightProbe-mundo PS_28CD3DB0: "texld_pp r0, v1, s8" ... "mul_pp r7.xyz, r0, c7.x"; winter
+// LightProbe-m05 PS_295B4ED0: "texld_pp r0, v1, s11" ... "mul_pp r0.xyz, r0, c7.x", with r0.w used in between).
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
+    if (t.empty() || (t[0] & 0xFFFF0000u) != 0xFFFF0000u || ((t[0] >> 8) & 0xFF) < 2) return -1;
+    const auto ins = Parse(t);
+    if (ins.empty()) return -1;
+    int fetch = -1, reads = 0;
+    for (size_t i = 0; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        if (x.op == kDcl) continue;
+        bool usesSampler = false;
+        for (size_t k = 1; k <= x.len; k++) usesSampler |= IsReg(t[x.at + k], kSampler, sampler);
+        if (!usesSampler) continue;
+        reads++;
+        if (x.op == kTexld && x.len == 3 && Type(t[x.at + 1]) == kTemp && (Type(t[x.at + 2]) == kInput || Type(t[x.at + 2]) == kTexture)) fetch = static_cast<int>(i);
+    }
+    if (reads != 1 || fetch < 0) return -1;
+    return LampScaleAfter(t, ins, static_cast<size_t>(fetch), Num(t[ins[fetch].at + 1]));
+}
+
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
@@ -219,6 +285,8 @@ bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
     const DWORD cA = static_cast<DWORD>(u.maxConst + 1);
     out.atlasSampler = E;
     out.atlasConst = cA;
+    // the game's lamp scale of max(map, atlas) (LightProbe-m08 PS_1B3938E8: "mul r0.xyz, r2, c2.x", c2 read once)
+    out.scaleConst = LampScaleAfter(t, ins, static_cast<size_t>(scale), B);
     t[v0Dcl] = (t[v0Dcl] & ~0x000F0000u) | 0x000F0000u; // v0.xy -> v0 (zw = world xz)
     std::vector<Edit> edits;
     edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}});
@@ -359,6 +427,8 @@ bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
     out.atlasSampler = E;
     out.atlasConst = cA;
     out.mapSampler = mapSampler;
+    // the game's lamp scale of max(map, atlas) (m69 PS_2FA6D640: "mul r0.xyz, r1, c3.x"; m71 PS_2A044CD0: "mul r4.xyz, r0, c2.x")
+    out.scaleConst = LampScaleAfter(t, ins, static_cast<size_t>(scale), B);
     std::vector<Edit> edits;
     DWORD V, swz;
     if (texcoord == 7) { // m69: a new input, world xz / 2 in .xy
@@ -441,6 +511,10 @@ bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
     const DWORD V = static_cast<DWORD>(maxIn + 1);
     out.atlasSampler = E;
     out.atlasConst = cA;
+    // K scales the map alone (read once, checked above); a def of cK would override what is set
+    out.scaleConst = static_cast<int>(K);
+    for (const Ins& x : all)
+        if (x.op == kDef && IsReg(t[x.at + 1], kConst, K)) out.scaleConst = -1;
     Apply(t, {{afterLastInDcl, {Op(kDcl, 2), 0x80000005u | (static_cast<DWORD>(texcoord) << 16) /* texcoordN */, Dst(kInput, V, 0x3)}},
               {u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
               {all[mad].at, {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzXYXY), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),

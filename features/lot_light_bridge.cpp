@@ -114,6 +114,7 @@ struct SamplerBind {
 // built on the CPU from VS c14/c15 and the lot matrix VS c8/c10); lot size W x D (tiles = metres) from room 0 of the
 // lot (+0xC0/+0xC4). c30 = (0, 1) turns it off (w = 1 everywhere): unmatched lot or option off.
 //   c28 = (dLx/du, dLx/dv, Lx0, W)   c29 = (dLz/du, dLz/dv, Lz0, D)   c30 = (1/band, bias, 0, 0)
+// c31.x = "Lot lamps" brightness on the lot's own light map (night-weighted; 1 = the game).
 const char* kReplacementHlsl = R"(
 float4 c0 : register(c0);
 float4 c1 : register(c1);
@@ -123,6 +124,7 @@ float4 c4 : register(c4);
 float4 cLotX : register(c28);
 float4 cLotZ : register(c29);
 float4 cEdge : register(c30);
+float4 cLotGain : register(c31);
 samplerCUBE sSky : register(s0);
 sampler2D sLot : register(s1);
 sampler2D sTerrain : register(s2);
@@ -150,7 +152,7 @@ float4 main(PSIn i) : COLOR0 {
     float2 e = min(lp, float2(cLotX.w, cLotZ.w) - lp);             // distance to the nearer edge on each axis
     float w = saturate(min(e.x, e.y) * cEdge.x + cEdge.y);
     w = w * w * (3 - 2 * w);
-    float3 lamps = lerp(terrain, max(tex2D(sLot, i.lotUv).rgb, terrain), w) * c3.x;
+    float3 lamps = lerp(terrain, max(tex2D(sLot, i.lotUv).rgb * cLotGain.x, terrain), w) * c3.x;
     float3 col = sun * c0.rgb + lamps;
     col = texCUBE(sSky, i.normal).rgb * c4.x + col;
     return float4(col * 0.5, 0);
@@ -230,6 +232,35 @@ IDirect3DPixelShader9* g_objectPs = nullptr;
 bool g_objectCompileTried = false;
 std::atomic<bool> g_objectFix{false};
 std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
 std::atomic<int> g_objectDrawn{0};
 bool g_compileTried = false;
 std::string g_status = "Off";
@@ -1384,6 +1415,7 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) 
         SamplerBind terrainMap(dev, 12, terrain);
         SetPs(dev, g_snowPs);
         if (atlas) SetVsConst(dev, 15, atlasMap, 1);
+        ConstGain lampGain(dev, 4, GroundGain()); // c4.x (read once) scales max(lot map, terrain) only
         draw();
         if (atlas) SetVsConst(dev, 15, v, 1);
         SetPs(dev, original);
@@ -1508,6 +1540,7 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
         if (smooth) SetTex(dev, p.road.lightSampler, smooth);
         if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, c, 1);
         SetPs(dev, p.ps);
+        ConstGain lampGain(dev, p.road.scaleConst, RoadGain()); // the road's lamp scale, after the max with the terrain
         draw();
         SetPs(dev, original);
         if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, oldC, 1);
@@ -1773,6 +1806,7 @@ template <typename DrawFn> bool DrawFloor(IDirect3DDevice9* dev, DrawFn draw) {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.floor.atlasConst, c, 1);
         SetPs(dev, p.ps);
+        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
@@ -1809,6 +1843,7 @@ template <typename DrawFn> bool DrawSnowFloor(IDirect3DDevice9* dev, DrawFn draw
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.floor.atlasConst, half, 1);
         SetPs(dev, p.ps);
+        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
@@ -1856,6 +1891,7 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
         SetPsConst(dev, p.floor.atlasConst, c, 1);
         SetVs(dev, fv.vs);
         SetPs(dev, p.ps);
+        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, originalPs);
         SetVs(dev, originalVs);
@@ -2014,6 +2050,21 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
     return sampler;
 }
 
+// "Ground brightness" on the world terrain chunks: the constant that scales the chunk light map in this pixel shader,
+// found by pattern (ShaderPatches::LightMapScaleConst: c7 in the captured summer and winter chunks, but other variants
+// read the map from other samplers), -1 when there is none that scales the map alone (that shader keeps the game's
+// brightness). Cached per shader (shaders are pinned); render thread only.
+std::unordered_map<IDirect3DPixelShader9*, std::pair<DWORD, int>> g_terrainLampConst; // PS -> (light map sampler, K)
+int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
+    auto it = g_terrainLampConst.find(ps);
+    if (it != g_terrainLampConst.end() && it->second.first == sampler) return it->second.second;
+    const int k = ShaderPatches::LightMapScaleConst(ShaderCode(ps), sampler);
+    g_terrainLampConst[ps] = {sampler, k};
+    LOG_INFO(std::format("[LotLightBridge] Ground brightness: terrain shader {:08X}, light map s{} -> {}", reinterpret_cast<uintptr_t>(ps), sampler,
+                         k >= 0 ? std::format("c{}.x", k) : std::string("no lamp-only scale found, left as the game")));
+    return k;
+}
+
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
     constexpr auto kSkip = D3D9Hooks::HookAction::Skip;
     constexpr auto kContinue = D3D9Hooks::HookAction::Continue;
@@ -2045,13 +2096,19 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
             return D3D9Hooks::HookAction::Continue;
         }
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
-        if (!smooth) return D3D9Hooks::HookAction::Continue;
+        // "Ground brightness": the chunk map's lamp scale times the gain, with or without the smoothed map
+        const float gain = GroundGain();
+        const int k = gain != 1.0f ? TerrainLampConst(g_curPs, s) : -1;
+        if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
-        dev->GetTexture(s, &old);
+        if (smooth) dev->GetTexture(s, &old);
         g_inOwnCall = true;
-        SetTex(dev, s, smooth);
-        draw();
-        SetTex(dev, s, old);
+        {
+            ConstGain lampGain(dev, k, gain);
+            if (smooth) SetTex(dev, s, smooth);
+            draw();
+            if (smooth) SetTex(dev, s, old);
+        }
         g_inOwnCall = false;
         if (old) old->Release();
         return D3D9Hooks::HookAction::Skip;
@@ -2100,8 +2157,9 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
         g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
                                               rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
                                 : std::string("mod draw: lot light pass | soft edges: ") + (g_softEdges.load() ? "NOT applied, lot rectangle not found" : "off (option)");
-    float savedEdge[12];
-    dev->GetPixelShaderConstantF(28, savedEdge, 3);
+    float savedEdge[16]; // c28..c31
+    dev->GetPixelShaderConstantF(28, savedEdge, 4);
+    const float lotGain[4] = {LotMapGain(), 0, 0, 0};
 
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
@@ -2111,9 +2169,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
         SetPs(dev, g_replacementPs);
         if (atlas) SetVsConst(dev, 14, atlasMap, 1);
         SetPsConst(dev, 28, edge, 3);
+        SetPsConst(dev, 31, lotGain, 1);
+        ConstGain lampGain(dev, 3, GroundGain()); // c3.x scales only the lamp term of kReplacementHlsl
         draw();
         if (atlas) SetVsConst(dev, 14, v, 1);
-        SetPsConst(dev, 28, savedEdge, 3);
+        SetPsConst(dev, 28, savedEdge, 4);
     }
     g_objDrawInfo.clear();
     SetPs(dev, original);
@@ -2449,6 +2509,17 @@ void OnWorldChanged() {
 
 void SetSoftLotEdges(bool on) { g_softEdges = on; }
 
+void SetGroundBrightness(float ground, float roads, float lotLamps) {
+    g_lotMapGain = lotLamps < 0.25f ? 0.25f : (lotLamps > 3.0f ? 3.0f : lotLamps);
+    g_groundGain = ground < 0.25f ? 0.25f : (ground > 3.0f ? 3.0f : ground);
+    g_roadGain = roads < 0.25f ? 0.25f : (roads > 3.0f ? 3.0f : roads);
+}
+
+std::string GroundBrightnessStatus() {
+    return std::format("ground x{:.2f}, roads x{:.2f}, lot lamps on lot grass x{:.2f} (now x{:.2f} / x{:.2f} at night level {:.2f}) | draws with the gain: {} | terrain shaders: {}", g_groundGain.load(),
+                       g_roadGain.load(), g_lotMapGain.load(), GroundGain(), RoadGain(), g_night.load(), g_groundGainDraws.load(), g_terrainLampConst.size());
+}
+
 std::string LotEdgeStatus() {
     if (!g_softEdges.load()) return "off";
     std::string s = std::format("on, band {:.1f} m | lots known: {} | lot passes feathered: {} | without a lot rectangle: {}", kEdgeBand, g_lotRects.size(),
@@ -2543,6 +2614,12 @@ const BakeSnapshot& CurrentBakeLamps() { return g_bakeSnap; }
 int LampEnumerations() { return g_lampEnumerations; }
 const std::vector<uint64_t>& LastUserChangeLots() { return g_lastUserLots; }
 void RequestLampRefresh() { g_lampRefreshNow = true; }
+
+bool EnumerateAllLights(std::vector<uintptr_t>& out) {
+    if (!EnumerateLights()) return false;
+    out = g_enumLights;
+    return true;
+}
 
 // Lamps of `lot` in a snapshot sorted by lot: [first, last)
 static std::pair<std::vector<BakeLamp>::const_iterator, std::vector<BakeLamp>::const_iterator> LotLamps(const BakeSnapshot& s, uint64_t lot) {
@@ -2771,6 +2848,7 @@ void Shutdown(bool keepChunkMaps) {
     g_compileTried = false;
     g_classCache.clear();
     g_worldMaxSampler.clear();
+    g_terrainLampConst.clear();
     for (auto*& m : g_magenta)
         if (m) {
             m->Release();

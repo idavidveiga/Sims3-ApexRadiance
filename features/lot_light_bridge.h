@@ -98,6 +98,12 @@ void SetObjectPixelLamps(bool on, float strength);
 // Soft lot edges: within 3 m of a lot edge the lot grass lamp term blends to the terrain term the world grass shows
 // outside (no step where a lamp stands near a lot edge). Default on; developer A/B toggle.
 void SetSoftLotEdges(bool on);
+// "Ground brightness" (0.25..3) on the lamp light of grass, lots and outdoor floors, and "Roads and sidewalks" (a factor
+// on top of it): the game's lamp scale of each light map times the gain, weighted by the night level. Live.
+void SetGroundBrightness(float ground, float roads, float lotLamps); // lotLamps: the lot's own light map on its grass
+std::string GroundBrightnessStatus();
+// Every light the game has (its light enumeration), render thread. False when the enumeration is not available.
+bool EnumerateAllLights(std::vector<uintptr_t>& out);
 std::string LotEdgeStatus();
 // A new world was loaded (render thread): forget the previous world's chunk light maps.
 void OnWorldChanged();

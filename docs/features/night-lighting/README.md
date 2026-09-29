@@ -56,11 +56,18 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | UI label | TOML key | Type | Default | Range | UI | Applied | Sub-doc |
 |---|---|---|---|---|---|---|---|
 | Street lamps light inside lots | `luzDoPosteNaGramaDoLote` | bool | true | | Main | live (`ApplyLive` -> `LotLightBridge::SetEnabled`) | [lot-light-pass](lot-light-pass.md) |
-| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main (also sets `automaticoAoAnoitecer` to the same value) | live since 28/09 (read at run time by the always-installed predicates; one rebuild at night) | [terrain-relight](terrain-relight.md) |
+| Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main (its own switch since 1.5.0; before, it also set `automaticoAoAnoitecer`) | live since 28/09 (read at run time by the always-installed predicates; one rebuild at night) | [terrain-relight](terrain-relight.md) |
 | Outdoor lights reach every story | `luzExternaEntreAndares` | bool | true | | Main | live (`LevelLightShare::Install/Uninstall`) | [level-light-share](level-light-share.md) |
 | Lamps light nearby objects | `postesNosObjetos` | bool | true | | Main | live (`ObjectLightBridge::Install/Uninstall`, `SetObjectShadowFix`) | [objects-and-rigs](objects-and-rigs.md), [foliage](foliage.md) |
 | Roofs receive lamp light | `telhadosComLuz` | bool | true | | Main | live (per frame) | [roofs](roofs.md) |
-| Lamp colour | `luzDasLampadasNatural` | float | 1.0 | 0..1 | Main | when a save loads | [lamp-colour](lamp-colour.md) |
+| Lamp colour (street lamps; also lot lamps unless they have their own) | `luzDasLampadasNatural` | float | 1.0 | 0..1 | Lamps | live since 1.5.0 (on slider release: stock lamps re-coloured, one terrain rebuild, lots re-solved; `ObjectLightBridge::RetintLamps`) | [lamp-colour](lamp-colour.md) |
+| Own color for lot lamps | `corPropriaNoLote` | bool | false | | Lamps | live (as the lamp colour) | [lamp-colour](lamp-colour.md) |
+| Lot lamp colour | `corDasLampadasDoLote` | float | 1.0 | 0..1 | Lamps (when the switch above is on) | live (as the lamp colour) | [lamp-colour](lamp-colour.md) |
+| Moonlight | `luar` | float | 1.0 | 0..2 | Lamps | live: the "Sunlight Scale" float 0x011D0918 = its value x lerp(1, luar, night level) every frame; object rigs regather on release | this file, "Brightness controls" |
+| Ground brightness | `brilhoNoChao` | float | 1.0 | 0.25..3 | Ground (needs the bridge) | live (lamp scale constant of the terrain chunk, lot pass c3, snowy lot pass c4, floors; night-weighted) | this file, "Brightness controls" |
+| Roads and sidewalks | `brilhoNasRuas` | float | 1.0 | 0.25..3 | Ground (needs the bridge) | live (x the ground brightness, the road lamp scale `RoadPatch.scaleConst`) | [roads](roads.md) |
+| Street lamps (on the ground) | `forcaDosPostes` | float | 1.0 | 0.25..3 | Ground | terrain rebuild on slider release (`BakeColourStub` at 0xC2950F) | this file, "Brightness controls" |
+| Lot lamps (on the ground) | `forcaDasLampadasDoLote` | float | 1.0 | 0.25..3 | Ground | bake: terrain rebuild on release; lot grass: live (lot pass c31.x on the lot map) | this file, "Brightness controls" |
 | Object light strength | `forcaNosObjetos` | float | 1.0 | 0.25..3 | Adv/Objects | live | [objects-and-rigs](objects-and-rigs.md) |
 | Include stairs, railings and columns | `lampadasEmTodosObjetos` | bool | true | | Adv/Objects | rigs created later (world load) | [objects-and-rigs](objects-and-rigs.md) |
 | Doors, windows and counters get the ground light | `objetosDeForaComLuzDoChao` | bool | true | | Adv/Objects (disabled unless bridge + smooth maps) | live (`RigTracker::Install/Uninstall`) | [objects-and-rigs](objects-and-rigs.md) |
@@ -68,13 +75,14 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | Object lamp light strength | `forcaLuzPorPixelNosObjetos` | float | 1.0 | 0.25..3 | Adv/Objects | live | [objects-and-rigs](objects-and-rigs.md) |
 | Fences, railings and stairs get the ground light | `cercasComLuzDoChao` | bool | true | | Adv/Objects (same gate) | live | [fences](fences.md), [snow](snow.md) |
 | Fence light strength | `forcaNasCercas` | float | 1.0 | 0.25..2 | Adv/Objects | live | [fences](fences.md), [snow](snow.md) |
-| Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | 1..4 (`SetWallGain` clamps 0.25..8) | Adv/Walls and roofs | live | [walls](walls.md) |
+| Lamps light walls | `paredesComLuz` | bool | true | | Buildings (off = wall gain 1, the game) | live | [walls](walls.md) |
+| Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | 0.25..4 (`SetWallGain` clamps 0.25..8) | Adv/Walls and roofs | live | [walls](walls.md) |
 | Roof light strength | `forcaNosTelhados` | float | 0.6 | 0.05..2 | Adv/Walls and roofs | live | [roofs](roofs.md) |
 | Smooth light on the ground | `mapaDeLuzSuavizado` | bool | true | | Adv/Ground and snow | live | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) |
 | Smooth the ground light maps on the GPU (A/B) | `mapaDeLuzSuavizadoNaGpu` | bool | true | | Dev only (registered in the dev build; public = always GPU when available) | live (next Present: switching drops the smoothed maps, the new path rebuilds them) | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) "GPU path" |
 | Trodden snow on sidewalks | `calcadaComNevePisada` | float | 0.5 | 0..1 | Adv/Ground and snow (needs bridge) | live | [roads](roads.md) |
-| Update automatically at dusk | `automaticoAoAnoitecer` | bool | true | | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
-| Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5..10 | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
+| Update automatically at dusk | `automaticoAoAnoitecer` | bool | true | | Ground > Updates (own switch since 1.5.0) | live | [terrain-relight](terrain-relight.md) |
+| Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5..10 | Ground > Updates | live | [terrain-relight](terrain-relight.md) |
 | Relight only around changed lamps | `relightLocal` | bool | true | | Adv/Dusk | live | [terrain-relight](terrain-relight.md) |
 | Street lamps count as lit in lot light solves | `postesAcesosNoCalculo` | bool | false | | Dev (experimental) | reinstall (0x6BE18C) | [terrain-relight](terrain-relight.md), [lot-light-pass](lot-light-pass.md) |
 | High lighting quality on every lot | `qualidadeAltaEmTodosOsLotes` | bool | false | | Dev (experimental) | reinstall; lots loaded afterwards | [lot-light-pass](lot-light-pass.md) |
@@ -219,6 +227,39 @@ bridge / object fix / roof fix / water fix / wall gain != 1 is on (the combined 
 | level_light_share.cpp | room-0 gather 0x6C5816/0x6C7094, cascade jcc 0x6C73B1, solve-point calls, light vfunc+0x4C of the 9 classes | [level-light-share](level-light-share.md) |
 | object_light_bridge.cpp | light-colour vfunc+0x10 of the light classes, rig brightness cap read 0x6B9418, rig ctor calls in `FUN_006f7880`, room gather thunk 0x6BBE70, lamp colour 0x6B0BDE + creation sites | [objects-and-rigs](objects-and-rigs.md), [lamp-colour](lamp-colour.md) |
 | rig_tracker.cpp | binder call 0x6F68C5, Detours on `FUN_006f6250` and `FUN_006cf920` | [objects-and-rigs](objects-and-rigs.md) |
+
+### Brightness controls (1.5.0, untested in game)
+
+- **Light style** (Lamps tab): Soft / Natural / Bright set ten brightness values at once (ground, roads, street lamps,
+  lot lamps, objects, pieces, fences, walls, roofs, water); "Natural" is the defaults; any other mix shows no style
+  selected. Moonlight and colours are not part of a style.
+- **Ground brightness / Roads and sidewalks** (live): `ConstGain` in lot_light_bridge.cpp multiplies, for one draw, the
+  game's lamp scale constant of a light map term: the terrain chunk PS (`TerrainLampConst` = `ShaderPatches::
+  LightMapScaleConst`, c7 in the captured chunks, -1 = that shader keeps the game's brightness), the lot pass c3.x
+  (kReplacementHlsl), the snowy lot pass c4.x, the floors' `FloorPatch.scaleConst` and the roads' `RoadPatch.scaleConst`
+  (x the road factor). Weighted by the night level (the lot maps also hold window light by day). Only while "Street lamps
+  light lots" is on (those draws are the bridge's). Ported from the combined build's HDR lamp gain.
+- **Street lamps / Lot lamps** (on the ground): `BakeColourStub` replaces `movaps xmm0,[edi+0F0h]` at 0xC2950F in the
+  terrain bake: the colour copied to the bake's shader parameter is multiplied by the gain of the lamp's kind (lot id 0 =
+  street lamp). The lamp objects, rigs, room solves and the lamp change tracking keep the real colour. A change applies
+  on slider release with one forced terrain rebuild (`NoteEdit` switch path). Lot lamps also scale the lot's own light
+  map on its grass (lot pass c31.x, live), because lot grass is max(lot map, terrain) and the bake alone could not dim
+  a lot's own lamps there. Objects, walls and roofs are not changed by these two (use their own sliders).
+- **Lamp colour live, own colour for lot lamps**: the colour thunks record every stock-pink light (pink + written
+  colour); on slider release `RetintLamps` rewrites the ones that still have the written colour through FUN_006bc3e0
+  (+0xF0 / +0xE0), then the rigs regather, one terrain rebuild and one lot re-solve (room 0). Street = class 0xB with
+  lot id 0 (creation: the class's constructor call site). Interiors re-solve when the game next solves them.
+- **Moonlight**: the "Sunlight Scale" float at 0x011D0918 (only reader FUN_00c11ad0 at 0x00C11B01, which multiplies
+  the sun / moon colour before SetSun: ExteriorLightData, read by 88 techniques incl. Sims) = its original value x
+  lerp(1, luar, night level), written every frame; restored on uninstall. Rigs copy the sun colour when they gather, so
+  they are dirtied on slider release. Things in moon shadow do not change: this is the moon, not the night ambient.
+- **Night darkness (not done)**: no single engine value. The ambient comes from the exterior diffuse probe cube and
+  terrainLightProbeMap, both built from the AmbientDome curves (sky +0x760 / +0x770, written every frame by
+  0x00C14860); whether the async probe capture follows a scaled dome is unverified (lightMgr+0xB0 state machine). A
+  post-process night filter would also dim lamp light. Measure with F7 captures first.
+- **Light range**: not done. Range +0x130 is a brightness weight on 1/d^2 (not a radius) read by the bake, room solve,
+  rigs and our kernels; the only consistent change is scaling +0x130 on the light objects and recomputing the rect
+  (vfunc+0x50), plus a full rebuild and all rooms re-solved. See the 29/09 research notes in this section's history.
 
 ## Files and functions
 

@@ -17,8 +17,13 @@ struct RoadPatch {
     DWORD lightSampler = 0;
     DWORD extraSampler = 0;
     int sidewalkConst = -1;
+    int scaleConst = -1; // N of the lamp scale cN.x after the inserted max, when no other instruction reads cN, else -1
 };
 bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
+
+// World terrain chunks: the constant cK whose .x scales the chunk light map read from `sampler` (read once, by no other
+// instruction), -1 when there is none that scales the map alone.
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler);
 
 // Snowy floor tiles: the vertex shader already outputs world xz in TEXCOORD0.zw. The pixel shader lights the floor
 // only with the lot light map ("texld rA, v2, s2" ... "mul rB.xyz, rC.w, rA"); add the world light atlas:
@@ -27,6 +32,7 @@ struct FloorPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
     DWORD mapSampler = 0; // PatchSnowFloor: the sampler of the room light map it found
+    int scaleConst = -1;  // K of the game's lamp scale cK.x applied to max(map, atlas), read by no other instruction; -1 unknown
 };
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
 // Snow lying on lot floor tiles (LightProbe-m69): the VS writes TEXCOORD7.xy = world xz / 2; the PS gets max(room map, atlas).
