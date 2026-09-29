@@ -84,7 +84,7 @@ The development build adds measuring and diagnostic tools. How every feature wor
 ## Credits
 
 - **Apex Radiance** by [@loinyx](https://github.com/loinyx).
-- Sims3SettingsSetter by sims3fiend: the mod whose design (a graphics hook with an in-game menu) Apex Radiance's framework is modeled on. The framework was rewritten from scratch.
+- Sims3SettingsSetter by sims3fiend
 - Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).
 - Third-party code: [Dear ImGui](https://github.com/ocornut/imgui) (MIT), [Microsoft Detours](https://github.com/microsoft/Detours) (MIT), [toml++](https://github.com/marzer/tomlplusplus) (MIT), [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al. (see `third_party/smaa/LICENSE.txt`), [Lucide](https://lucide.dev) icons (ISC, see `third_party/lucide/LICENSE`).
 
