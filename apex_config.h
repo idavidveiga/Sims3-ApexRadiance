@@ -33,6 +33,7 @@ struct UiSettings {
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool welcomeDone = false;  // the welcome tour was finished or skipped ([ui] welcome_done; missing = false, also for migrated configs)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
+    int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" / "en" / "pt" / "es")
 };
 
 std::string KeyChordText(const KeyChord& chord); // "Ctrl+Shift+F11"

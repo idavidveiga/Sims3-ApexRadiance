@@ -16,6 +16,7 @@
 #include "picture.h"
 #include "s3ss_detect.h"
 #include "shader_cache.h"
+#include "ui/i18n.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
 #include "imgui.h"
@@ -712,6 +713,17 @@ void DeveloperPage() {
             DevDebugViewsTab();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Language")) {
+            // Texts shown in the current language without a translation (i18n/*.cpp), and translations whose {} differ
+            ImGui::Text("Language: %s | texts shown without a translation: %zu", I18n::NativeName(I18n::Current()), I18n::MissingCount());
+            if (ImGui::Button("Clear##I18nMissing")) I18n::ClearMissing();
+            ImGui::SameLine();
+            if (ImGui::Button("Write the list to the log##I18nMissing")) LOG_INFO("[I18n] Texts without a translation:\n" + I18n::MissingList(4000));
+            static const std::string problems = I18n::PlaceholderProblems();
+            if (!problems.empty()) ImGui::TextColored(Col(VioletTheme::kWarning), "Translations with other {} placeholders than the English text:\n%s", problems.c_str());
+            ImGui::TextUnformatted(I18n::MissingList(200).c_str());
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
 }
@@ -810,6 +822,19 @@ void TextSizeRow() {
     ApexUi::EndControlRow();
 }
 
+// Menu language: Automatic (Windows' display language), English, Português, Español (each language in its own words)
+void LanguageRow() {
+    ApexConfig::UiSettings ui = ApexConfig::GetUi();
+    const std::string automatic = I18n::Trf("Automatic ({})", I18n::NativeName(I18n::SystemLanguage()));
+    const char* labels[] = {automatic.c_str(), I18n::NativeName(I18n::Lang::English), I18n::NativeName(I18n::Lang::Portuguese),
+                            I18n::NativeName(I18n::Lang::Spanish)};
+    int current = ui.language + 1; // -1 automatic -> 0
+    if (ApexUi::SegmentedRow("Language", "The language of this menu", "##Language", &current, labels, 4, nullptr, nullptr, 0)) {
+        ui.language = current - 1;
+        ApexConfig::SetUi(ui);
+    }
+}
+
 void StartTour() {
     g_tourActive = true;
     g_tourStep = 0;
@@ -862,8 +887,9 @@ void CreditLine(const char* text) {
 void MenuTab() {
     ImGui::PushID("Menu");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Settings, "Menu", "Menu key, text size and saving", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Settings, "Menu", "Language, menu key, text size and saving", nullptr, nullptr);
         ApexUi::CardDivider();
+        LanguageRow();
         MenuKeyRow();
         TextSizeRow();
         WelcomeRow();

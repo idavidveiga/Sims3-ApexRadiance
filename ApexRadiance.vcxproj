@@ -63,6 +63,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)framework;$(ProjectDir)features;$(ProjectDir)patches;$(ProjectDir)shaders;$(ApexVcpkgRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -148,6 +149,12 @@
     <ClCompile Include="ui\icons.cpp" />
     <ClCompile Include="ui\violet_theme.cpp" />
     <ClCompile Include="ui\widgets.cpp" />
+    <ClCompile Include="ui\i18n.cpp" />
+    <ClCompile Include="i18n\tr_widgets.cpp" />
+    <ClCompile Include="i18n\tr_menu.cpp" />
+    <ClCompile Include="i18n\tr_image.cpp" />
+    <ClCompile Include="i18n\tr_lighting.cpp" />
+    <ClCompile Include="i18n\tr_features.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="apex_config.h" />
@@ -213,6 +220,7 @@
     <ClInclude Include="ui\lucide_data.h" />
     <ClInclude Include="ui\violet_theme.h" />
     <ClInclude Include="ui\widgets.h" />
+    <ClInclude Include="ui\i18n.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\lightmap_smooth_ps.hlsl" />

@@ -1,6 +1,7 @@
 // Widgets of the Violet menu (see widgets.h).
 #include "widgets.h"
 #include "violet_theme.h"
+#include "i18n.h"
 #include "imgui_internal.h"
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,9 @@ namespace ApexUi {
 namespace {
 
 using VioletTheme::Col;
+
+// The text in the menu's language (i18n.h): every text a widget draws goes through these
+inline const char* T(const char* s) { return I18n::Tr(s); }
 
 constexpr unsigned kFrameBg = 0x26272D;      // the style's FrameBg (segmented track)
 constexpr unsigned kButtonBorder = 0x34353D; // secondary button border
@@ -160,7 +164,7 @@ void RowDescription(const char* text, float wrapX) {
     PushSized(nullptr, kSmallScale);
     ImGui::PushTextWrapPos(wrapX);
     ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
-    ImGui::TextWrapped("%s", text);
+    ImGui::TextWrapped("%s", T(text));
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
     ImGui::PopFont();
@@ -177,11 +181,11 @@ struct LabelInfo {
 // room for the decorations after it); one group. Returns the block's height.
 float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr) {
     const float top = ImGui::GetCursorScreenPos().y;
-    const char* end = VisibleEnd(label);
+    const std::string_view shown = I18n::TrLabel(label);
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * Unit());
     ImGui::PushTextWrapPos(labelWrapX >= 0.0f ? labelWrapX : wrapX);
-    ImGui::TextWrapped("%.*s", static_cast<int>(end - label), label);
+    ImGui::TextWrapped("%.*s", static_cast<int>(shown.size()), shown.data());
     ImGui::PopTextWrapPos();
     if (info) {
         info->right = ImGui::GetItemRectMax().x;
@@ -200,11 +204,10 @@ ImVec2 ToScreen(float localX, float localY) {
     return ImVec2(w->Pos.x - w->Scroll.x + localX, w->Pos.y - w->Scroll.y + localY);
 }
 
-// "<visible label><suffix>" as a change report
-void ReportLabel(const char* label, const char* suffix) {
-    std::string s(label, VisibleEnd(label));
-    s += suffix;
-    ReportChange(s.c_str());
+// A change report from an English format ("{} turned on") and the row's visible label, both translated
+void ReportLabel(const char* label, const char* format) {
+    const std::string shown(I18n::TrLabel(label));
+    ReportChange(I18n::Trf(format, shown).c_str());
 }
 
 // The breadcrumb link above a matching row in the search results (and a hairline between results)
@@ -246,6 +249,13 @@ bool RowVisible(const char* label, const char* description) {
     AppendLower(hay, label, VisibleEnd(label));
     hay.push_back(' ');
     AppendLower(hay, description);
+    if (I18n::Current() != I18n::Lang::English) { // the search finds a row by its English or its shown text
+        const std::string_view shown = I18n::TrLabel(label);
+        hay.push_back(' ');
+        AppendLower(hay, shown.data(), shown.data() + shown.size());
+        hay.push_back(' ');
+        AppendLower(hay, T(description));
+    }
     if (!WordsIn(g_filter.words, hay)) return false;
     FilterCrumb();
     return true;
@@ -312,6 +322,7 @@ bool RowDecorations(const RowDecor& d, const LabelInfo& li, ImVec2 rowMin, ImVec
 
 // Small, bold, muted, letter-spaced text (group labels), one item; indent = extra x before it
 void SpacedCaps(const char* text, float indent, float extraBelow) {
+    text = T(text);
     const float u = Unit();
     PushSized(VioletTheme::BoldFont(), kGroupScale);
     const float track = 0.9f * u;
@@ -407,7 +418,7 @@ void Tooltip(const char* text) {
     if (!text || !*text || !ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_ForTooltip)) return;
     if (!ImGui::BeginTooltip()) return;
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-    ImGui::TextUnformatted(text);
+    ImGui::TextUnformatted(T(text));
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
 }
@@ -418,7 +429,7 @@ void PageTitle(const char* title, const char* subtitle) {
     // The spacing below an item is the one in effect when it is submitted: tight under the title only
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     PushSized(VioletTheme::BoldFont(), kPageTitleScale);
-    ImGui::TextUnformatted(title);
+    ImGui::TextUnformatted(T(title));
     ImGui::PopFont();
     ImGui::PopStyleVar();
     if (subtitle && *subtitle) MutedText(subtitle);
@@ -428,14 +439,14 @@ void PageTitle(const char* title, const char* subtitle) {
 void MutedText(const char* text) {
     if (Hidden()) return;
     ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
-    ImGui::TextWrapped("%s", text);
+    ImGui::TextWrapped("%s", T(text));
     ImGui::PopStyleColor();
 }
 
 void SectionLabel(const char* text) {
     if (Hidden()) return;
     PushSized(VioletTheme::BoldFont(), 1.0f);
-    ImGui::TextUnformatted(text);
+    ImGui::TextUnformatted(T(text));
     ImGui::PopFont();
 }
 
@@ -447,6 +458,7 @@ void GroupLabel(const char* text) {
 
 void IconNote(IconId icon, const char* text, unsigned rgb) {
     if (Hidden()) return;
+    text = T(text);
     PadAfterRow();
     const float u = Unit();
     const float s = kIconSmall * u;
@@ -542,9 +554,9 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip, BoolDefault def,
     if (RowDecorations(d, li, rowMin, ImVec2(rowMin.x + width, rowMin.y + rowH))) {
         *v = def.value == 1;
         clicked = true;
-        ReportLabel(label, " reset");
+        ReportLabel(label, "{} reset");
     } else if (clicked) {
-        ReportLabel(label, *v ? " turned on" : " turned off");
+        ReportLabel(label, *v ? "{} turned on" : "{} turned off");
     }
     ImGui::PopID();
 
@@ -581,7 +593,7 @@ constexpr float kChipPadX = 6.0f; // units
 ImVec2 ChipSize(const char* text) {
     const float u = Unit();
     PushSized(nullptr, kGroupScale);
-    const ImVec2 ts = ImGui::CalcTextSize(text);
+    const ImVec2 ts = ImGui::CalcTextSize(T(text));
     const float h = ImGui::GetFontSize() + 4.0f * u;
     ImGui::PopFont();
     return ImVec2(ts.x + 2.0f * kChipPadX * u, h);
@@ -596,7 +608,7 @@ void ChipImpl(const char* text, unsigned rgb) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), U32(rgb, 0.14f), size.y * 0.5f);
     PushSized(nullptr, kGroupScale);
-    dl->AddText(ImVec2(p.x + kChipPadX * u, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), U32(rgb), text);
+    dl->AddText(ImVec2(p.x + kChipPadX * u, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), U32(rgb), T(text));
     ImGui::PopFont();
 }
 } // namespace
@@ -618,7 +630,7 @@ bool CostChipText(float ms, char* buf, int size) {
 ImVec2 PillSize(const char* text, bool withIcon) {
     const float u = Unit();
     PushSized(nullptr, kSmallScale);
-    float w = ImGui::CalcTextSize(text).x;
+    float w = ImGui::CalcTextSize(T(text)).x;
     if (withIcon) w += kIconSmall * u + kSpace1 * u;
     const float h = ImGui::GetFontSize() + 6.0f * u;
     ImGui::PopFont();
@@ -643,7 +655,7 @@ void Pill(const char* text, bool highlighted, IconId icon) {
         DrawIcon(dl, icon, ImVec2(x, p.y + (size.y - s) * 0.5f), s, textCol);
         x += s + kSpace1 * u;
     }
-    dl->AddText(ImVec2(x, y), textCol, text);
+    dl->AddText(ImVec2(x, y), textCol, T(text));
     ImGui::PopFont();
 }
 
@@ -672,7 +684,8 @@ bool IconButtonImpl(const char* id, IconId icon, const char* tooltip, bool activ
 
 float ButtonWidth(const char* label, bool withIcon, float minWidth) {
     const float u = Unit();
-    float w = 2.0f * kSpace3 * u + ImGui::CalcTextSize(label, VisibleEnd(label)).x;
+    const std::string_view shown = I18n::TrLabel(label);
+    float w = 2.0f * kSpace3 * u + ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
     if (withIcon) w += kIconSmall * u + 6.0f * u;
     return std::fmax(w, minWidth);
 }
@@ -683,7 +696,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
     PadAfterRow();
     const float u = Unit();
     const bool withIcon = icon != IconId::None;
-    const char* end = VisibleEnd(label);
+    const std::string_view shown = I18n::TrLabel(label);
     const ImVec2 size(ButtonWidth(label, withIcon, minWidth), ImGui::GetFrameHeight());
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushID(label);
@@ -709,7 +722,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         iconCol = U32(VioletTheme::kAccent);
     }
     const float is = kIconSmall * u, gap = 6.0f * u;
-    const ImVec2 ts = ImGui::CalcTextSize(label, end);
+    const ImVec2 ts = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size());
     const float contentW = ts.x + (withIcon ? is + gap : 0.0f);
     float x = p.x + (size.x - contentW) * 0.5f;
     const float cy = p.y + size.y * 0.5f;
@@ -717,7 +730,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         DrawIcon(dl, icon, ImVec2(x, cy - is * 0.5f), is, iconCol);
         x += is + gap;
     }
-    dl->AddText(ImVec2(x, cy - ts.y * 0.5f), textCol, label, end);
+    dl->AddText(ImVec2(x, cy - ts.y * 0.5f), textCol, shown.data(), shown.data() + shown.size());
     return clicked;
 }
 } // namespace
@@ -770,7 +783,7 @@ bool SidebarItem(IconId icon, const char* label, bool selected, bool collapsed) 
         DrawIcon(dl, icon, ImVec2(x, p.y + (size.y - s) * 0.5f), s, selected ? U32(VioletTheme::kAccent) : textCol);
         x += s + 10.0f * u;
     }
-    dl->AddText(ImVec2(x, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), textCol, label);
+    dl->AddText(ImVec2(x, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), textCol, T(label));
     return clicked;
 }
 
@@ -806,7 +819,7 @@ bool TabBar(const char* id, int* current, const char* const* labels, int count, 
     int lines = 1;
     float x = 0.0f;
     for (int i = 0; i < count; i++) {
-        widths[i] = ImGui::CalcTextSize(labels[i]).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
+        widths[i] = ImGui::CalcTextSize(T(labels[i])).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
         if (i > 0 && x + widths[i] <= avail + 0.5f) {
             sameLine[i] = true;
             x += widths[i];
@@ -842,7 +855,7 @@ bool TabBar(const char* id, int* current, const char* const* labels, int count, 
             DrawIcon(dl, icons[i], ImVec2(tx, ty + (ImGui::GetTextLineHeight() - is) * 0.5f), is, selected ? U32(VioletTheme::kAccent) : col);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, ty), col, labels[i]);
+        dl->AddText(ImVec2(tx, ty), col, T(labels[i]));
         if (selected) dl->AddRectFilled(ImVec2(a.x + 4.0f * u, b.y - 2.0f * u), ImVec2(b.x - 4.0f * u, b.y), U32(VioletTheme::kAccent), 1.0f * u);
     }
     ImGui::PopID();
@@ -862,7 +875,7 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
     std::vector<float> widths(static_cast<size_t>(count));
     float natural = 0.0f;
     for (int i = 0; i < count; i++) {
-        widths[i] = ImGui::CalcTextSize(labels[i]).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
+        widths[i] = ImGui::CalcTextSize(T(labels[i])).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
         natural += widths[i];
     }
     const bool vertical = !compact && count > 1 && natural > avail + 0.5f;
@@ -885,14 +898,14 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
         if (selected) dl->AddRectFilled(ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset), U32(VioletTheme::kAccentDark), rounding);
         else if (hovered) dl->AddRectFilled(ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset), U32(VioletTheme::kHoverBg), rounding);
         const ImU32 textCol = selected ? U32(VioletTheme::kAccentLight) : hovered ? U32(VioletTheme::kText) : U32(VioletTheme::kTextMuted);
-        const ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+        const ImVec2 ts = ImGui::CalcTextSize(T(labels[i]));
         const float contentW = ts.x + (hasIcon(i) ? is + iconGap : 0.0f);
         float tx = vertical ? a.x + padX : a.x + (b.x - a.x - contentW) * 0.5f;
         if (hasIcon(i)) {
             DrawIcon(dl, icons[i], ImVec2(tx, a.y + (b.y - a.y - is) * 0.5f), is, textCol);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, a.y + (b.y - a.y - ts.y) * 0.5f), textCol, labels[i]);
+        dl->AddText(ImVec2(tx, a.y + (b.y - a.y - ts.y) * 0.5f), textCol, T(labels[i]));
     };
 
     if (compact) {
@@ -953,9 +966,9 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
     if (RowDecorations(d, li, rowMin, ImVec2(rowMin.x + width, ToScreen(startX, bottom).y))) {
         *current = defaultIndex;
         changed = true;
-        ReportLabel(label, " reset");
+        ReportLabel(label, "{} reset");
     } else if (changed) {
-        ReportLabel(label, " changed");
+        ReportLabel(label, "{} changed");
     }
     ImGui::PopID();
     RowFinish(startX, bottom);
@@ -995,8 +1008,8 @@ bool BeginAdvanced(const char* id, const char* label) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImU32 col = U32(hovered ? VioletTheme::kAccentLight : VioletTheme::kAccent);
     DrawIcon(dl, open ? IconId::ChevronDown : IconId::ChevronRight, ImVec2(p.x, p.y + (lineH - is) * 0.5f), is, col);
-    const char* end = VisibleEnd(label);
-    dl->AddText(ImVec2(p.x + is + gap, p.y), col, label, end);
+    const std::string_view shown = I18n::TrLabel(label);
+    dl->AddText(ImVec2(p.x + is + gap, p.y), col, shown.data(), shown.data() + shown.size());
     return open;
 }
 
@@ -1029,7 +1042,7 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
 
     // The value (muted, right-aligned on the label's line; drawn, not an item) and its optional swatch
     char value[48];
-    if (o.valueText) std::snprintf(value, sizeof value, "%s", o.valueText);
+    if (o.valueText) std::snprintf(value, sizeof value, "%s", T(o.valueText));
     else std::snprintf(value, sizeof value, o.format ? o.format : "%.2f", *v * o.displayScale + o.displayOffset);
     const float valueW = ImGui::CalcTextSize(value).x;
     const float swatchS = o.swatch ? lineH * 0.7f : 0.0f;
@@ -1050,11 +1063,11 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
     ImGui::SetCursorPosX(textX);
     LabelInfo li;
     {
-        const char* end = VisibleEnd(label);
+        const std::string_view shown = I18n::TrLabel(label);
         ImGui::BeginGroup();
         ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
         ImGui::PushTextWrapPos(std::fmax(startX + width - valueW - swatchW - kSpace3 * u - DecorWidth(d), textX + 40.0f * u));
-        ImGui::TextWrapped("%.*s", static_cast<int>(end - label), label);
+        ImGui::TextWrapped("%.*s", static_cast<int>(shown.size()), shown.data());
         li.right = ImGui::GetItemRectMax().x;
         li.top = ImGui::GetItemRectMin().y;
         li.lineH = lineH;
@@ -1117,18 +1130,18 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
         ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
         ImGui::Dummy(ImVec2(width, fs));
         const ImU32 col = U32(VioletTheme::kTextMuted);
-        if (o.leftLabel) dl->AddText(ImVec2(a.x, b.y), col, o.leftLabel);
-        if (o.rightLabel) dl->AddText(ImVec2(b.x - ImGui::CalcTextSize(o.rightLabel).x, b.y), col, o.rightLabel);
+        if (o.leftLabel) dl->AddText(ImVec2(a.x, b.y), col, T(o.leftLabel));
+        if (o.rightLabel) dl->AddText(ImVec2(b.x - ImGui::CalcTextSize(T(o.rightLabel)).x, b.y), col, T(o.rightLabel));
         ImGui::PopFont();
     }
     const float bottom = LocalY(ImGui::GetItemRectMax().y);
-    if (g_lastSliderCommitted) ReportLabel(label, " changed");
+    if (g_lastSliderCommitted) ReportLabel(label, "{} changed");
     const ImVec2 rowMin = ToScreen(startX, top);
     if (RowDecorations(d, li, rowMin, ImVec2(rowMin.x + width, ToScreen(startX, bottom).y))) {
         *v = o.defaultValue;
         changed = true;
         g_lastSliderCommitted = true; // callers that save on release save now
-        ReportLabel(label, " reset");
+        ReportLabel(label, "{} reset");
     }
     RowFinish(startX, bottom);
     if (opaque) ImGui::PopStyleVar();
@@ -1245,12 +1258,12 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 1.0f * u);
     PushSized(VioletTheme::BoldFont(), kCardTitleScale);
-    ImGui::TextUnformatted(title);
+    ImGui::TextUnformatted(T(title));
     ImGui::PopFont();
     if (subtitle && *subtitle) {
         ImGui::PushTextWrapPos(std::fmax(startX + width - rightW, startX + iconBox + 60.0f * u));
         ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
-        ImGui::TextWrapped("%s", subtitle);
+        ImGui::TextWrapped("%s", T(subtitle));
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
     }
@@ -1291,7 +1304,7 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
         clicked = ToggleSwitch("##Enabled", toggle);
         ImGui::EndDisabled();
         Tooltip(tooltip);
-        if (clicked) ReportLabel(title, *toggle ? " turned on" : " turned off");
+        if (clicked) ReportLabel(title, *toggle ? "{} turned on" : "{} turned off");
     }
     // The next item starts below the whole header
     ImGui::SetCursorPos(ImVec2(startX, startY + rowH));
@@ -1324,11 +1337,11 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     // The name is a link to the feature's page
     const ImVec2 np = ImGui::GetCursorScreenPos();
-    const ImVec2 ns = ImGui::CalcTextSize(name);
+    const ImVec2 ns = ImGui::CalcTextSize(T(name));
     const bool clicked = ImGui::InvisibleButton("##Name", ns, ImGuiButtonFlags_EnableNav);
     const bool hovered = ImGui::IsItemHovered();
     const ImU32 nameCol = hovered ? U32(VioletTheme::kAccentLight) : U32(VioletTheme::kText);
-    dl->AddText(np, nameCol, name);
+    dl->AddText(np, nameCol, T(name));
     if (hovered) dl->AddLine(ImVec2(np.x, np.y + ns.y), ImVec2(np.x + ns.x, np.y + ns.y), nameCol, 1.0f);
     Tooltip(tooltip);
     if (nameClicked) *nameClicked = clicked;
@@ -1351,7 +1364,7 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
         toggled = ToggleSwitch("##On", on);
         ImGui::EndDisabled();
         Tooltip(tooltip);
-        if (toggled) ReportLabel(name, *on ? " turned on" : " turned off");
+        if (toggled) ReportLabel(name, *on ? "{} turned on" : "{} turned off");
     } else if (rightText) {
         ImGui::SetCursorPos(ImVec2(startX + width - pill.x, top + (rowH - pill.y) * 0.5f));
         Pill(rightText, false);
