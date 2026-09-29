@@ -43,12 +43,14 @@ jobs:
             bash .github/scripts/nexus-changelog.sh --changelog < notes.md # one line per change
             echo "APEX_EOF"
           } >> "$GITHUB_ENV"
-          # the file's description on the Nexus page: header, UPPER-CASE sections with the whole notes, how to install
-          {
-            echo "DESCRIPTION<<APEX_EOF"
-            bash .github/scripts/nexus-changelog.sh --description "${TAG#v}" < notes.md
-            echo "APEX_EOF"
-          } >> "$GITHUB_ENV"
+          # the file's description on the Nexus page (at most 255 characters): the notes' main headline, where the full
+          # list is, how to install; the headline is shortened when it would not fit
+          HEAD=$(grep -m1 '^## ' notes.md | sed -e 's/^## //' -e 's/[*`]//g' || true)
+          TAIL=" Full list: Changelogs tab. Install: copy ApexRadiance.asi into The Sims 3 > Game > Bin."
+          START="Apex Radiance ${TAG#v}: "
+          ROOM=$(( 255 - ${#START} - ${#TAIL} - 1 ))
+          [ ${#HEAD} -le $ROOM ] || HEAD="${HEAD:0:$((ROOM - 3))}..."
+          echo "DESCRIPTION=${START}${HEAD}.${TAIL}" >> "$GITHUB_ENV"
 
       - name: Zip
         run: |
@@ -71,8 +73,6 @@ jobs:
           echo "V3_MOD_ID=$MOD" >> "$GITHUB_ENV"
 
       - name: Upload to Nexus Mods
-        id: upload
-        continue-on-error: true # a description too long for Nexus: the next step retries with a short one
         uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
@@ -86,17 +86,3 @@ jobs:
           update_mod_version: true
           archive_existing_version: true
 
-      - name: Upload to Nexus Mods (short description)
-        if: ${{ steps.upload.outcome == 'failure' }}
-        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
-        with:
-          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
-          file_id: ${{ env.V3_FILE_ID }}
-          mod_id: ${{ env.V3_MOD_ID }}
-          filename: ApexRadiance-${{ env.VERSION }}.zip
-          version: ${{ env.VERSION }}
-          display_name: Apex Radiance ${{ env.VERSION }}
-          description: "Apex Radiance ${{ env.VERSION }}: lighting, visuals and performance for The Sims 3. The changes of this version are in the Changelogs tab. Install: close the game and copy ApexRadiance.asi into The Sims 3 > Game > Bin (needs an ASI loader)."
-          changelog: ${{ env.CHANGELOG }}
-          update_mod_version: true
-          archive_existing_version: true
