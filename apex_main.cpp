@@ -33,6 +33,8 @@
 #include <format>
 #include <string>
 
+#pragma comment(lib, "version.lib") // GetFileVersionInfoW (LogEnvironment)
+
 namespace {
 
 HMODULE g_module = nullptr;
@@ -73,6 +75,60 @@ DWORD WINAPI IdleNoticeThread(LPVOID) {
     return 0;
 }
 
+// "1.2.3.4" from a file's version resource (empty when it has none)
+std::string FileVersion(const std::wstring& path) {
+    DWORD handle = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &handle);
+    if (!size) return {};
+    std::string buf(size, '\0');
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT len = 0;
+    if (!GetFileVersionInfoW(path.c_str(), 0, size, buf.data()) || !VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&info), &len) || !info) return {};
+    return std::format("{}.{}.{}.{}", HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
+}
+
+// What a bug report needs about the player's setup: the ASI mods and the DLLs other mods put in Game\Bin (name, size,
+// date, version) and the game's own graphics options (Options.ini)
+void LogEnvironment() {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir = exe;
+    dir.resize(dir.find_last_of(L"\\/") + 1);
+    std::string mods;
+    for (const wchar_t* pattern : {L"*.asi", L"d3d9.dll", L"dxgi.dll", L"dinput8.dll", L"wininet.dll", L"version.dll", L"dsound.dll", L"winmm.dll", L"d3d11.dll", L"dxvk.conf", L"*.ini"}) {
+        WIN32_FIND_DATAW fd{};
+        const HANDLE h = FindFirstFileW((dir + pattern).c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            SYSTEMTIME st{};
+            FileTimeToSystemTime(&fd.ftLastWriteTime, &st);
+            const unsigned long long bytes = (static_cast<unsigned long long>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+            const std::string version = FileVersion(dir + fd.cFileName);
+            mods += std::format("\n    {} ({} bytes, {:04}-{:02}-{:02}{})", ApexUtil::ToUtf8(fd.cFileName), bytes, st.wYear, st.wMonth, st.wDay,
+                                version.empty() ? std::string() : ", version " + version);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    LOG_INFO("[Main] Game\\Bin mods and wrappers:" + (mods.empty() ? std::string(" none found") : mods));
+    // The game's graphics options (resolution, edge smoothing, quality levels ...)
+    const std::wstring options = ApexPaths::GameDocumentsDirectory() + L"Options.ini";
+    FILE* f = nullptr;
+    if (!ApexPaths::GameDocumentsDirectory().empty() && _wfopen_s(&f, options.c_str(), L"rb") == 0 && f) {
+        std::string text, line;
+        char buf[512];
+        while (fgets(buf, sizeof buf, f)) {
+            line = buf;
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+            if (!line.empty() && text.size() < 6000) text += "\n    " + line;
+        }
+        fclose(f);
+        LOG_INFO("[Main] Options.ini:" + text);
+    } else {
+        LOG_INFO("[Main] Options.ini not found in " + ApexUtil::ToUtf8(ApexPaths::GameDocumentsDirectory()));
+    }
+}
+
 // Waits until the game has presented a frame and a moment has passed (or the timeout). False when stopping.
 bool WaitForSettle() {
     const ULONGLONG start = GetTickCount64();
@@ -94,6 +150,7 @@ DWORD WINAPI InitThread(LPVOID) {
     LOG_INFO("[Main] Files: " + ApexUtil::ToUtf8(ApexPaths::ApexDirectory()));
     if (DetectGameVersion()) LOG_INFO(std::format("[Main] Game: {} [0x{:08X}]", GetGameVersionName(), g_exeTimestamp));
     else LOG_WARNING(std::format("[Main] Unknown game build [0x{:08X}]: game-code features start only where their code is found by signature", g_exeTimestamp));
+    LogEnvironment();
     // Apex's HLSL shaders (every quality and mode) compile now on a background thread, so the render thread never runs
     // D3DCompile: the features only create the shader objects from the bytecode (shader_cache.h).
     ShaderCache::Start();

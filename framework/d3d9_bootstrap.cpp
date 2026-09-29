@@ -171,8 +171,16 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateDevice(IDirect3D9* self, UINT adapter, D3
         hr = o_createDevice(self, adapter, type, focus, flags, pp, out);
     }
     if (SUCCEEDED(hr) && hal && out && *out) {
-        LOG_INFO(std::format("[D3D] Game device created: {}x{}, {}", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
-                             pp && pp->Windowed ? "windowed" : "exclusive fullscreen"));
+        LOG_INFO(std::format("[D3D] Game device created: {}x{}, {} (device {:#x}, back buffer format {}, multisample {}, flags {:#x})", pp ? pp->BackBufferWidth : 0,
+                             pp ? pp->BackBufferHeight : 0, pp && pp->Windowed ? "windowed" : "exclusive fullscreen", reinterpret_cast<uintptr_t>(*out),
+                             pp ? static_cast<int>(pp->BackBufferFormat) : 0, pp ? static_cast<int>(pp->MultiSampleType) : 0, flags));
+        // The graphics card and driver (bug reports: vendor-specific behaviour)
+        D3DADAPTER_IDENTIFIER9 id{};
+        if (SUCCEEDED(self->GetAdapterIdentifier(adapter, 0, &id))) {
+            const LARGE_INTEGER v = id.DriverVersion;
+            LOG_INFO(std::format("[D3D] Graphics card: {} (vendor {:#06x}, device {:#06x}), driver {} {}.{}.{}.{}", id.Description, id.VendorId, id.DeviceId, id.Driver,
+                                 HIWORD(v.HighPart), LOWORD(v.HighPart), HIWORD(v.LowPart), LOWORD(v.LowPart)));
+        }
         HookDevice(*out);
         const HWND w = pp && pp->hDeviceWindow ? pp->hDeviceWindow : focus;
         if (w) g_window.store(w);

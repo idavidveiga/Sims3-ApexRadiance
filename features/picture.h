@@ -112,6 +112,13 @@ class Picture {
     // why it last returned early (Skip in picture.cpp), what the resource creation failed on
     std::atomic<unsigned long long> m_enabledAt{0}, m_lastEndScene{0}, m_lastApplied{0}, m_lastSceneCopy{0};
     bool m_menusTintedLogged = false; // render thread
+    std::atomic<int> m_checkPasses{0};  // passes left whose state is read back (SetParams: the next 3)
+    std::string m_lastCheck;            // render thread: the last check's result (logged when it changes)
+    // Status line every minute while on (render thread): passes, passes with the scene copy, the device the frames end on
+    unsigned m_passes = 0, m_passesWithScene = 0;
+    unsigned long long m_lastStatus = 0;
+    const void* m_lastDevice = nullptr;
+    int m_deviceChanges = 0;
     std::atomic<int> m_skip{0};
     std::string m_resourceError; // guarded by m_mutex
     std::string m_loggedProblem;          // render thread

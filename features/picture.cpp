@@ -243,6 +243,7 @@ const ShaderCache::Id kPicturePsId = AddPictureShader();
 struct Gpu {
     bool ready = false, compileTried = false;
     UINT width = 0, height = 0;
+    D3DFORMAT format = D3DFMT_UNKNOWN; // the back buffer's (the status line)
     IDirect3DTexture9 *frameTex = nullptr, *sceneTex = nullptr;
     IDirect3DSurface9 *frameSurf = nullptr, *sceneSurf = nullptr;
     // the scene at 1/2, 1/4 and 1/8 size (each a 2x2 box of the previous): clarity's local average is the last one
@@ -272,6 +273,14 @@ template <typename T> void SafeRelease(T*& p) {
         p->Release();
         p = nullptr;
     }
+}
+
+// The settings in one line, for the log
+std::string ParamsText(const PictureParams& q) {
+    return std::format("on {}, exposure {:.2f}, contrast {:.2f}, midtones {:.2f}, shadows {:.2f}, highlights {:.2f}, blacks {:.2f}, temperature {:.2f}, tint {:.2f}, "
+                       "saturation {:.2f}, vibrance {:.2f}, deband {:.2f}, sharpen {:.2f}, clarity {:.2f}, vignette {:.2f}, compare {}",
+                       q.enabled, q.exposure, q.contrast, q.midtones, q.shadows, q.highlights, q.blacks, q.temperature, q.tint, q.saturation, q.vibrance, q.deband,
+                       q.sharpen, q.clarity, q.vignette, q.compare);
 }
 
 // Copies the back buffer as "the scene" (see the frame flow above).
@@ -454,6 +463,7 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
     bb->GetDesc(&bd);
     bb->Release();
     gpu.width = bd.Width;
+    gpu.format = bd.Format;
     gpu.height = bd.Height;
     HRESULT lastHr = S_OK;
     auto make = [&](UINT w, UINT h, IDirect3DTexture9** t, IDirect3DSurface9** s) {
@@ -508,6 +518,11 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     }
     RegisterHooks(dev);
     const unsigned long long now = GetTickCount64();
+    if (dev != m_lastDevice) { // the game has two devices (a tiny one first): which one the frames end on
+        if (m_lastDevice && m_deviceChanges++ < 10)
+            LOG_INFO(std::format("[Picture] Frames now end on device {:#x} (was {:#x})", reinterpret_cast<uintptr_t>(dev), reinterpret_cast<uintptr_t>(m_lastDevice)));
+        m_lastDevice = dev;
+    }
     if (m_resetDiag.exchange(false)) {
         m_appliedLogged = false;
         m_loggedProblem.clear();
@@ -538,6 +553,16 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     m_skip.store(kSkipNone);
     m_lastApplied.store(now);
     if (gpu.sceneCopied) m_lastSceneCopy.store(now);
+    m_passes++;
+    if (gpu.sceneCopied) m_passesWithScene++;
+    if (now - m_lastStatus >= 60000) {
+        if (m_lastStatus)
+            LOG_INFO(std::format("[Picture] Last minute: {} passes, {} with the scene copy; {}x{} format {} on device {:#x}; pass check: {}; settings: {}", m_passes,
+                                 m_passesWithScene, gpu.width, gpu.height, static_cast<int>(gpu.format), reinterpret_cast<uintptr_t>(dev),
+                                 m_lastCheck.empty() ? "not run yet" : m_lastCheck, ParamsText(q)));
+        m_lastStatus = now;
+        m_passes = m_passesWithScene = 0;
+    }
     {
         const bool tinted = MenusTinted();
         if (tinted != m_menusTintedLogged) {
@@ -654,8 +679,32 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {mix(4), mix(5), mixer ? 1.0f : 0.0f, 0},
         {std::clamp(q.vignette, 0.0f, 0.8f), std::clamp(q.vignetteSize, 0.0f, 0.95f), W / H, q.vignette > 0.001f ? 1.0f : 0.0f},
         {static_cast<float>(gpu.baseW), static_cast<float>(gpu.baseH), 1.0f / static_cast<float>(gpu.baseW), 1.0f / static_cast<float>(gpu.baseH)}};
-    dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
+    // the shader first, then its constants: a hook that looks at the bound shader to handle constants sees this one
     dev->SetPixelShader(gpu.ps);
+    dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
+    // After a settings change, read back what reached the device: another mod's hook could change the constants or the
+    // shader on the way (a slider that moves but changes nothing)
+    if (m_checkPasses.load(std::memory_order_relaxed) > 0) {
+        m_checkPasses.fetch_sub(1, std::memory_order_relaxed);
+        float back[kConsts * 4] = {};
+        IDirect3DPixelShader9* bound = nullptr;
+        const bool readOk = SUCCEEDED(dev->GetPixelShaderConstantF(0, back, kConsts));
+        dev->GetPixelShader(&bound);
+        std::string result;
+        if (bound != gpu.ps) result = std::format("another pixel shader is bound for the pass ({:#x} instead of Apex's {:#x})", reinterpret_cast<uintptr_t>(bound), reinterpret_cast<uintptr_t>(gpu.ps));
+        else if (!readOk) result = "the constants could not be read back";
+        else
+            for (UINT i = 0; i < kConsts * 4 && result.empty(); i++)
+                if (back[i] != (&c[0][0])[i])
+                    result = std::format("constant c{}.{} reached the device as {} instead of {} (another mod changed it)", i / 4, "xyzw"[i % 4], back[i], (&c[0][0])[i]);
+        SafeRelease(bound);
+        if (result.empty()) result = "ok";
+        if (result != m_lastCheck) {
+            m_lastCheck = result;
+            if (result == "ok") LOG_INFO("[Picture] Pass check: its shader and settings reached the device as set");
+            else LOG_WARNING("[Picture] Pass check: " + result);
+        }
+    }
     const float x1 = W - 0.5f, y1 = H - 0.5f;
     const QuadVertex v[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {x1, -0.5f, 0, 1, 1, 0}, {-0.5f, y1, 0, 1, 0, 1}, {x1, y1, 0, 1, 1, 1}};
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(QuadVertex));
@@ -696,6 +745,8 @@ void Picture::SetParams(const PictureParams& p, bool save) {
         switched = m_p.enabled != p.enabled;
         m_p = p;
     }
+    m_checkPasses.store(3, std::memory_order_relaxed);
+    if (save) LOG_INFO("[Picture] Settings saved: " + ParamsText(p));
     if (switched) {
         m_enabledAt.store(GetTickCount64());
         m_resetDiag.store(true);
