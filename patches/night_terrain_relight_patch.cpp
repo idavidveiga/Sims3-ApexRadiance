@@ -39,8 +39,10 @@
 #include "object_light_bridge.h"
 #include "level_light_share.h"
 #include "rig_tracker.h"
+#include "room_map_padding.h"
 #include "build_flavor.h"
 #include "night_lighting.h"
+#include "lot_lighting_motion.h"
 #include "imgui.h"
 #include "ui/widgets.h"
 #include "overlay.h"
@@ -178,6 +180,7 @@ float g_roadBrightness = 1.0f;  // x the ground brightness
 float g_streetLampGain = 1.0f;  // street lamps on the ground (terrain bake)
 float g_lotLampGain = 1.0f;     // lot lamps on the ground (terrain bake + the lot's own light map)
 float g_moonlight = 1.0f;       // the moon's light at night
+bool g_edgePad = true;          // pad the room light maps' edges (RoomMapPadding): no dark side on things along walls
 bool g_lotTintOwn = false;      // lot lamps have their own colour
 float g_lotLampTint = 1.0f;     // their colour (0 = pink, 1 = warm white)
 bool g_allLotsHQ = false;
@@ -241,7 +244,8 @@ std::string g_editReason = "lot lamps changed";
 std::string g_lastEditOutcome = "none";
 constexpr auto kEditQuiet = std::chrono::milliseconds(250);
 constexpr auto kEditMinInterval = std::chrono::seconds(3);
-constexpr auto kAutoMinInterval = std::chrono::seconds(30); // automatic lamp changes: after the last rebuild of any kind
+constexpr auto kAutoMinInterval = std::chrono::seconds(5);   // automatic lamp changes: after the last rebuild of any kind (was 30 s: lamps switched by Sims stayed on the ground too long; flickering lamps are "animated" and never rebuild)
+constexpr auto kAutoBusyInterval = std::chrono::seconds(30); // ... once two automatic rebuilds ran within the last minute
 constexpr auto kCameraStill = std::chrono::seconds(1);
 constexpr auto kGameRebuiltSlack = std::chrono::seconds(2); // a rebuild up to 2 s before a change was SEEN already had it
 constexpr auto kSnapshotWaitMax = std::chrono::seconds(2);
@@ -911,9 +915,16 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
     if (!CameraStill(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
     const bool fast = g_editForce || g_editUser;
     if (fast && now - g_lastEditKick < kEditMinInterval) return WaitEdit(EditWait::Interval, "rate-limited: at most one lamp rebuild every 3 s");
-    if (!fast && now - g_lastRebuildAt < kAutoMinInterval)
+    // Automatic changes (lamps switched by Sims): 5 s after the last rebuild for an occasional switch, 30 s once two
+    // automatic rebuilds ran within the last minute (lamps switching one by one, sensor lamps at dusk across lots: no
+    // ~240 ms rebuild every 5 s; review 29/09)
+    static std::vector<Clock::time_point> autoRebuilds;
+    std::erase_if(autoRebuilds, [&](const Clock::time_point& t) { return now - t > std::chrono::seconds(60); });
+    const auto autoInterval = autoRebuilds.size() >= 2 ? kAutoBusyInterval : kAutoMinInterval;
+    if (!fast && now - g_lastRebuildAt < autoInterval)
         return WaitEdit(EditWait::Rate, std::format("rate-limited: automatic changes rebuild at most once per {} s ({} s since the last rebuild; {})",
-                                                    kAutoMinInterval.count(), std::chrono::duration_cast<std::chrono::seconds>(now - g_lastRebuildAt).count(), diffText));
+                                                    autoInterval.count(), std::chrono::duration_cast<std::chrono::seconds>(now - g_lastRebuildAt).count(), diffText));
+    if (!fast) autoRebuilds.push_back(now);
     const std::string reason = g_editReason;
     const std::string kind = EditKind();
     const int sweepsBefore = g_sweepsStarted;
@@ -993,8 +1004,11 @@ void OnPresent() {
     // recorded: then 30 s after the world change.
     if (!g_live) {
         const char* signal = nullptr;
+        // With the bridge on, its terrain draws are the signal: a load screen longer than 30 s (29/09: 54 s) must not count
+        // as live, or the load rebuild runs during it at night level 0 (lamps off in the bake). 120 s covers a bridge that
+        // could not start.
         if (LotLightBridge::ChunkCount() > 0) signal = "world terrain drawn";
-        else if (now - g_worldAt >= kLiveFallback) signal = "30 s after the world change (no terrain draw seen)";
+        else if (now - g_worldAt >= (g_bridge ? kLiveFallback * 4 : kLiveFallback)) signal = "fallback after the world change (no terrain draw seen)";
         if (signal) {
             g_live = true;
             g_liveAt = now;
@@ -1099,6 +1113,13 @@ void OnPresent() {
             g_haveBaked = false;
         }
     }
+    // A lot lamp switched on or off anywhere (indoors too): the rooms get the game's own lighting budget for 3 s, so they
+    // relight at once even while the camera moves
+    static int lampSwitches = -1;
+    if (const int sw = LotLightBridge::LampSwitches(); sw != lampSwitches) {
+        if (lampSwitches >= 0) LotLightingMotion::Boost(3000);
+        lampSwitches = sw;
+    }
 
     // Outdoor lot lamps changed (see LotLightBridge::TrackLotLampEdits: only changes of lamps the bake takes, on lots
     // already loaded; user-driven = placed / moved / removed, automatic = switched, dimmed, recoloured): the game rebuilds
@@ -1116,6 +1137,17 @@ void OnPresent() {
     if (g_lotLamps != g_lotLampsSeen) {
         g_lotLampsSeen = g_lotLamps;
         NoteEdit(now, true, true, g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off", true);
+    }
+    // (after the lamp edit notice above: a change seen in this very enumeration stays a change) Lots that finished loading after the last rebuild (the active lot loads after the dusk rebuild when a save loads at
+    // night) join the snapshot with their lamps as they are, once settled and while no lamp change is pending, so a
+    // later switch on them is seen (before: "no change" until the next full rebuild; user report 29/09).
+    static int adoptEnum = -1;
+    if (g_haveBaked && !g_bakedDue && !g_editKickPending && LotLightBridge::LampEnumerations() != adoptEnum) {
+        adoptEnum = LotLightBridge::LampEnumerations();
+        if (const int n = LotLightBridge::AdoptNewLots(g_baked, LotLightBridge::CurrentBakeLamps()); n > 0) {
+            g_editDiffEnum = -1;
+            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Snapshot: {} lot(s) loaded after the last rebuild joined it", n));
+        }
     }
 
     // Street / lot lamp brightness in the terrain bake and the lamp colours: once the slider is let go, one terrain rebuild
@@ -1416,6 +1448,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             "How strongly outdoor lot lamps light the ground (1 = the default; the ground light is rebuilt when it changes).");
         RegisterFloatSetting(&g_moonlight, "luar", SettingWidget::Slider, 1.0f, 0.0f, 2.0f,
             "How strong the moonlight is at night (1 = the game; 0 = no moonlight, only lamps and the sky's glow).");
+        RegisterBoolSetting(&g_edgePad, "bordasDosMapasDeLuz", true,
+            "Stairs, curtains and furniture indoors get smooth light from the game's room light maps: no dark side along outer walls, no steps between neighbouring objects.");
         RegisterBoolSetting(&g_lotTintOwn, "corPropriaNoLote", false,
             "Lot lamps get their own color (off = the same color as street lamps).");
         RegisterFloatSetting(&g_lotLampTint, "corDasLampadasDoLote", SettingWidget::Slider, 1.0f, 0.0f, 1.0f,
@@ -1625,6 +1659,9 @@ class NightTerrainRelightPatch : public ApexPatch {
             LightmapSmooth::SetEnabled(g_smoothMaps);
             LotLightBridge::SetSidewalkClear(g_sidewalkClear);
             LotLightBridge::SetGroundBrightness(g_groundBrightness, g_roadBrightness, g_lotLampGain);
+            RoomMapPadding::SetEnabled(g_edgePad);
+            LotLightBridge::SetIndoorSmooth(g_edgePad);
+            RoomMapPadding::OnPresent();
             // lamps created from now on take the new colour once the slider is let go (OnPresent re-colours the others)
             if (!MenuSliderHeld()) ObjectLightBridge::SetLampTint(g_lampTint, g_lotTintOwn ? g_lotLampTint : g_lampTint);
             LotLightBridge::SetFenceGroundLight(g_fenceGround, g_fenceGroundStrength);
@@ -1791,6 +1828,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_lampTint = 1.0f;
         g_lotTintOwn = false;
         g_lotLampTint = 1.0f;
+        g_edgePad = true;
         g_groundBrightness = 1.0f;
         g_roadBrightness = 1.0f;
         g_streetLampGain = 1.0f;
@@ -2000,6 +2038,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                 if (g_fenceGround)
                     changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "100% matches the ground around them", 1.0f);
                 ImGui::EndDisabled();
+
+                ApexUi::GroupLabel("INDOORS");
+                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+                changed |= ApexUi::SwitchRow("Smooth indoor light", &g_edgePad, "Light changes smoothly on stairs, curtains and furniture; no dark sides", true);
                 return changed;
             });
         }
@@ -2126,6 +2168,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
         ImGui::TextWrapped("Walls: %s", LotLightBridge::WallStatus().c_str());
         ImGui::TextWrapped("Ground brightness: %s", LotLightBridge::GroundBrightnessStatus().c_str());
+        ImGui::TextWrapped("Room light map edges: %s", RoomMapPadding::Status().c_str());
+        ImGui::TextWrapped("Smooth indoor light: %s", LotLightBridge::IndoorSmoothStatus().c_str());
         ImGui::TextWrapped("Terrain bake: %s | moonlight: %s", g_bakeGainInstalled ? std::format("street lamps x{:.2f}, lot lamps x{:.2f}", g_bakeStreetMul[0], g_bakeLotMul[0]).c_str() : "not installed",
                            g_sunlightBase < 0.0f ? (kSunlightScale ? "waiting for a world" : "not available")
                                                  : std::format("sunlight scale {:.3f} (base {:.3f}, moonlight x{:.2f})", g_moonWritten, g_sunlightBase, g_moonlight).c_str());

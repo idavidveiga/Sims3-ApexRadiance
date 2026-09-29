@@ -110,6 +110,7 @@
     <ClCompile Include="features\light_probe.cpp" />
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
+    <ClCompile Include="features\room_map_padding.cpp" />
     <ClCompile Include="features\lot_lighting_motion.cpp" />
     <ClCompile Include="features\map_view.cpp" />
     <ClCompile Include="features\object_index.cpp" />
@@ -172,6 +173,7 @@
     <ClInclude Include="features\light_probe.h" />
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
+    <ClInclude Include="features\room_map_padding.h" />
     <ClInclude Include="features\lot_lighting_motion.h" />
     <ClInclude Include="features\map_view.h" />
     <ClInclude Include="features\object_index.h" />

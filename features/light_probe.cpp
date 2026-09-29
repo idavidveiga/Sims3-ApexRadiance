@@ -19,6 +19,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <d3dcommon.h>
@@ -46,9 +47,55 @@ struct DrawRec {
     DWORD rs[14] = {};
     ConstList psc, vsc;
     std::string bridge; // LotLightBridge::DescribeDraw
+    std::string instances; // instanced draws: the per-instance data (read while the draw is recorded)
     DWORD samples = 0;
     bool resolved = false;
 };
+
+// Instanced draw (stream 0 frequency = INDEXEDDATA | count): the vertex declaration's per-instance elements and the
+// instance stream contents (first 64 instances, up to 16 floats each), read with a read-only lock. Pieces of one
+// modular object drawn in one call differ only here (e.g. the stairs' per-piece value that brightens a piece).
+std::string ReadInstances(IDirect3DDevice9* dev) {
+    UINT f0 = 0;
+    if (FAILED(dev->GetStreamSourceFreq(0, &f0)) || !(f0 & D3DSTREAMSOURCE_INDEXEDDATA)) return {};
+    const UINT count = f0 & 0x3FFFFFFF;
+    std::string s = std::format("{} instancias", count);
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    if (SUCCEEDED(dev->GetVertexDeclaration(&decl)) && decl) {
+        D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1] = {};
+        UINT n = MAXD3DDECLLENGTH + 1;
+        if (SUCCEEDED(decl->GetDeclaration(el, &n)))
+            for (UINT i = 0; i < n && el[i].Stream != 0xFF; i++)
+                if (el[i].Stream != 0)
+                    s += std::format(" | stream {} +{} tipo {} uso {}{}", el[i].Stream, el[i].Offset, el[i].Type, el[i].Usage, el[i].UsageIndex);
+        decl->Release();
+    }
+    for (UINT stream = 1; stream < 8; stream++) {
+        UINT f = 0;
+        if (FAILED(dev->GetStreamSourceFreq(stream, &f)) || !(f & D3DSTREAMSOURCE_INSTANCEDATA)) continue;
+        IDirect3DVertexBuffer9* vb = nullptr;
+        UINT off = 0, stride = 0;
+        if (FAILED(dev->GetStreamSource(stream, &vb, &off, &stride)) || !vb) continue;
+        D3DVERTEXBUFFER_DESC d{};
+        vb->GetDesc(&d);
+        const UINT want = std::min<UINT>(count, 64) * stride;
+        const UINT bytes = std::min<UINT>(want, d.Size > off ? d.Size - off : 0);
+        void* p = nullptr;
+        if (stride >= 4 && bytes >= stride && SUCCEEDED(vb->Lock(off, bytes, &p, D3DLOCK_READONLY)) && p) {
+            s += std::format("\n      stream {} (stride {}, pool {}, usage {:#x}):", stream, stride, static_cast<int>(d.Pool), d.Usage);
+            const float* fl = static_cast<const float*>(p);
+            const UINT per = std::min<UINT>(stride / 4, 16);
+            for (UINT i = 0; (i + 1) * stride <= bytes; i++) {
+                s += std::format("\n        #{}:", i);
+                for (UINT k = 0; k < per; k++) s += std::format(" {:.5g}", fl[i * (stride / 4) + k]);
+            }
+            vb->Unlock();
+        } else
+            s += std::format("\n      stream {} (stride {}): not readable", stream, stride);
+        vb->Release();
+    }
+    return s;
+}
 
 const D3DRENDERSTATETYPE kRecordedStates[14] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ZFUNC, D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_DESTBLEND,
     D3DRS_BLENDOP, D3DRS_ALPHATESTENABLE, D3DRS_COLORWRITEENABLE, D3DRS_STENCILENABLE, D3DRS_CULLMODE, D3DRS_SRGBWRITEENABLE, D3DRS_DEPTHBIAS, D3DRS_SLOPESCALEDEPTHBIAS};
@@ -89,6 +136,53 @@ IDirect3DTexture9* g_blackTex = nullptr;
 IDirect3DTexture9* g_whiteTex = nullptr;
 
 std::filesystem::path OutDir() { return std::filesystem::path(ApexPaths::ApexDirectory()); }
+
+// Every capture gets its own folder LightProbe\Capture_NNN_HHMMSS (report, textures, shaders), so a capture never
+// overwrites the previous one; ApexRadiance_LightProbe.txt is a copy of the latest report. The newest kKeepCaptures
+// folders are kept (a render target dump can be 70+ MB): older Capture_* folders are removed.
+constexpr int kKeepCaptures = 20;
+std::filesystem::path g_capDir;   // the capture being written (empty: none yet)
+std::string g_capName;
+int g_capNumber = 0;              // last number used (0 = not scanned yet)
+
+std::filesystem::path CapDir() { return g_capDir.empty() ? OutDir() / "LightProbe" : g_capDir; }
+
+int CaptureNumberOf(const std::string& folder) {
+    if (!folder.starts_with("Capture_") || folder.size() < 11) return -1;
+    try {
+        return std::stoi(folder.substr(8, 3));
+    } catch (...) {
+        return -1;
+    }
+}
+
+void StartCaptureFolder() {
+    namespace fs = std::filesystem;
+    const fs::path root = OutDir() / "LightProbe";
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    std::vector<std::pair<int, fs::path>> existing;
+    for (const auto& e : fs::directory_iterator(root, ec))
+        if (e.is_directory(ec))
+            if (const int n = CaptureNumberOf(e.path().filename().string()); n >= 0) existing.emplace_back(n, e.path());
+    if (g_capNumber == 0)
+        for (const auto& [n, p] : existing) g_capNumber = std::max(g_capNumber, n);
+    g_capNumber = g_capNumber >= 999 ? 1 : g_capNumber + 1;
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    g_capName = std::format("Capture_{:03}_{:02}{:02}{:02}", g_capNumber, st.wHour, st.wMinute, st.wSecond);
+    g_capDir = root / g_capName;
+    fs::create_directories(g_capDir, ec);
+    // keep the newest kKeepCaptures - 1 old ones (by date, so the numbering can wrap)
+    std::sort(existing.begin(), existing.end(), [](const auto& a, const auto& b) {
+        std::error_code e1, e2;
+        return fs::last_write_time(a.second, e1) > fs::last_write_time(b.second, e2);
+    });
+    for (size_t i = kKeepCaptures - 1; i < existing.size(); i++) {
+        fs::remove_all(existing[i].second, ec);
+        LOG_INFO("[LightProbe] Removed an old capture: " + existing[i].second.filename().string());
+    }
+}
 
 const char* FmtName(D3DFORMAT f) {
     switch (static_cast<DWORD>(f)) {
@@ -298,6 +392,7 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
     const size_t pitch = dxt ? static_cast<size_t>(d.Width) * 4 : static_cast<size_t>(lr.Pitch);
     const UINT bpp = Bpp(fmt);
     std::vector<float> rgb(static_cast<size_t>(d.Width) * d.Height * 3);
+    std::vector<float> alpha(static_cast<size_t>(d.Width) * d.Height); // saved as a second (grey) image when it varies
     double sum[4] = {};
     float mx[4] = {-1e30f, -1e30f, -1e30f, -1e30f}, mn[4] = {1e30f, 1e30f, 1e30f, 1e30f};
     for (UINT y = 0; y < d.Height; y++) {
@@ -313,6 +408,7 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
             }
             float* o = &rgb[(static_cast<size_t>(y) * d.Width + x) * 3];
             o[0] = t[0]; o[1] = t[1]; o[2] = t[2];
+            alpha[static_cast<size_t>(y) * d.Width + x] = t[3];
         }
     }
     readable->UnlockRect();
@@ -326,10 +422,18 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
         auto q = [&](float v) { return static_cast<uint32_t>(std::clamp(v * scale, 0.f, 1.f) * 255.f + 0.5f); };
         bgra[i] = 0xFF000000u | (q(rgb[i * 3]) << 16) | (q(rgb[i * 3 + 1]) << 8) | q(rgb[i * 3 + 2]);
     }
-    std::filesystem::create_directories(OutDir() / "LightProbe");
+    std::filesystem::create_directories(CapDir());
     const std::string file = std::format("{}_{}x{}_{}.bmp", name, d.Width, d.Height, FmtStr(d.Format));
-    WriteBmp(OutDir() / "LightProbe" / file, d.Width, d.Height, bgra);
+    WriteBmp(CapDir() / file, d.Width, d.Height, bgra);
     fileOut = file;
+    if (mx[3] > mn[3]) { // the alpha channel carries data (e.g. room light maps): T<n>_..._alpha.bmp, grey = alpha
+        std::vector<uint32_t> grey(alpha.size());
+        for (size_t i = 0; i < grey.size(); i++) {
+            const uint32_t a = static_cast<uint32_t>(std::clamp(alpha[i], 0.f, 1.f) * 255.f + 0.5f);
+            grey[i] = 0xFF000000u | (a << 16) | (a << 8) | a;
+        }
+        WriteBmp(CapDir() / (file.substr(0, file.size() - 4) + "_alpha.bmp"), d.Width, d.Height, grey);
+    }
     const double n = static_cast<double>(d.Width) * d.Height;
     return std::format("salva {}; media RGBA=({:.3f} {:.3f} {:.3f} {:.3f}) min=({:.3f} {:.3f} {:.3f}) max=({:.3f} {:.3f} {:.3f} {:.3f}){}", file, sum[0] / n, sum[1] / n,
         sum[2] / n, sum[3] / n, mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], mx[3], scale < 1.0f ? std::format(" (imagem escalada por 1/{:.2f})", peak) : "");
@@ -402,6 +506,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, c
             for (int i = 0; i < kVsConsts; i++)
                 if (tmp[i][0] != 0 || tmp[i][1] != 0 || tmp[i][2] != 0 || tmp[i][3] != 0) r.vsc.push_back({i, {tmp[i][0], tmp[i][1], tmp[i][2], tmp[i][3]}});
             r.bridge = LotLightBridge::DescribeDraw();
+            if (std::strcmp(kind, "DIP") == 0) r.instances = ReadInstances(dev);
 
             IDirect3DQuery9* q = nullptr;
             if (r.index < static_cast<int>(g_queryPool.size())) q = g_queryPool[r.index];
@@ -525,9 +630,9 @@ template <typename S> std::string DumpShader(S* shader, const std::string& name)
     if (FAILED(shader->GetFunction(nullptr, &size)) || size == 0) return "GetFunction failed";
     std::vector<BYTE> code(size);
     if (FAILED(shader->GetFunction(code.data(), &size))) return "GetFunction failed";
-    std::filesystem::create_directories(OutDir() / "LightProbe");
+    std::filesystem::create_directories(CapDir());
     {
-        std::ofstream bin(OutDir() / "LightProbe" / (name + ".bin"), std::ios::binary);
+        std::ofstream bin(CapDir() / (name + ".bin"), std::ios::binary);
         bin.write(reinterpret_cast<const char*>(code.data()), size);
     }
     static HMODULE mod = LoadLibraryA("d3dcompiler_47.dll");
@@ -535,7 +640,7 @@ template <typename S> std::string DumpShader(S* shader, const std::string& name)
     if (!dis) return name + ".bin (no disassembler)";
     ID3DBlob* blob = nullptr;
     if (FAILED(dis(code.data(), size, 0, nullptr, &blob)) || !blob) return name + ".bin (disassembly failed)";
-    std::ofstream txt(OutDir() / "LightProbe" / (name + ".txt"));
+    std::ofstream txt(CapDir() / (name + ".txt"));
     txt.write(static_cast<const char*>(blob->GetBufferPointer()), static_cast<std::streamsize>(strnlen(static_cast<const char*>(blob->GetBufferPointer()), blob->GetBufferSize())));
     blob->Release();
     return name + ".txt";
@@ -576,7 +681,7 @@ bool ReadScreenPixel(IDirect3DDevice9* dev, float out[3]) {
 }
 
 // Two captures in a row (piece A, then piece B of a modular object): which constants of the object draw differ.
-void WriteComparison(std::ofstream& out, const Pick& a, const Pick& b) {
+void WriteComparison(std::ostream& out, const Pick& a, const Pick& b) {
     out << "== COMPARACAO COM A CAPTURA ANTERIOR (desenho do objeto em cada pixel) ==\n";
     auto line = [&](const char* name, const Pick& p) {
         out << std::format("{}: pixel ({}, {}) desenho #{} VS={:08X} PS={:08X} cor na tela {}\n   mod: {}\n", name, p.pixel.x, p.pixel.y, p.index, p.vs, p.ps,
@@ -628,10 +733,11 @@ void FinishCapture(IDirect3DDevice9* dev) {
     } while (pending && std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1500));
 
     ClearTextures();
+    StartCaptureFolder();
     std::map<IDirect3DBaseTexture9*, int> texIndex;
-    std::ofstream out(OutDir() / "ApexRadiance_LightProbe.txt", std::ios::trunc);
-    out << std::format("S3SS Light Probe | pixel ({}, {}) | tela {}x{} | desenhos na tela: {} | sem resposta: {}\n", g_pixel.x, g_pixel.y, g_bbWidth, g_bbHeight, g_draws.size(),
-        pending);
+    std::ostringstream out; // written to the capture folder and to ApexRadiance_LightProbe.txt (the latest) at the end
+    out << std::format("S3SS Light Probe | {} | pixel ({}, {}) | tela {}x{} | desenhos na tela: {} | sem resposta: {}\n", g_capName, g_pixel.x, g_pixel.y, g_bbWidth, g_bbHeight,
+        g_draws.size(), pending);
     out << "Estados: z/zwrite/zfunc/blend/src/dst/blendop/atest/cw/stencil/cull/srgb/depthbias/slopebias (bits de float)\n\n";
     int covering = 0, pickRank = -1;
     const DrawRec* pick = nullptr;
@@ -660,14 +766,15 @@ void FinishCapture(IDirect3DDevice9* dev) {
             out << std::format("   s{}: T{} {} filtro min/mag/mip={}/{}/{}\n", s, it->second, TexDesc(d.tex[s]), d.filt[s][0], d.filt[s][1], d.filt[s][2]);
         }
         out << "   mod: " << d.bridge << "\n";
+        if (!d.instances.empty()) out << "   " << d.instances << "\n";
         out << "   PS c0..c223 (zeros omitidos):";
         for (const auto& [i, v] : d.psc) out << std::format(" [{}]({:.9g} {:.9g} {:.9g} {:.9g})", i, v[0], v[1], v[2], v[3]);
         out << "\n   VS c0..c255 (zeros omitidos):";
         for (const auto& [i, v] : d.vsc) out << std::format(" [{}]({:.9g} {:.9g} {:.9g} {:.9g})", i, v[0], v[1], v[2], v[3]);
         out << "\n\n";
         // the object draw of this pixel, for the comparison with the next capture: the last one the mod lit, else the
-        // last one of a rig-lit object, else the last draw
-        const int rank = d.bridge.starts_with("OBJECT") ? 2 : d.bridge.find("object with rig") != std::string::npos ? 1 : 0;
+        // last one of a rig-lit object, else the last scene draw (a full-screen pass, 2 triangles, only if nothing else)
+        const int rank = d.bridge.starts_with("OBJECT") ? 3 : d.bridge.find("object with rig") != std::string::npos ? 2 : d.prims > 2 ? 1 : 0;
         if (!pick || rank >= pickRank) {
             pick = &d;
             pickRank = rank;
@@ -696,10 +803,14 @@ void FinishCapture(IDirect3DDevice9* dev) {
         g_textures[i].file = file;
         out << std::format("T{} {}: {}\n", i + 1, g_textures[i].desc, stats);
     }
-    out.close();
+    const std::string report = out.str();
+    for (const auto& path : {CapDir() / "LightProbe.txt", OutDir() / "ApexRadiance_LightProbe.txt"}) {
+        std::ofstream f(path, std::ios::trunc | std::ios::binary);
+        f.write(report.data(), static_cast<std::streamsize>(report.size()));
+    }
     ReleaseDraws();
-    g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved. See ApexRadiance_LightProbe.txt and the LightProbe folder.", covering, g_pixel.x, g_pixel.y,
-        g_textures.size());
+    g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved in LightProbe\\{} (also ApexRadiance_LightProbe.txt).", covering, g_pixel.x,
+        g_pixel.y, g_textures.size(), g_capName);
     LOG_INFO("[LightProbe] " + g_status);
 }
 
@@ -719,9 +830,14 @@ void OnPresent(IDirect3DDevice9* dev) {
         g_state = State::Capturing; // draws of the next frame are recorded
     }
 
-    const bool down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState(VK_F7) & 0x8000);
-    const bool pressed = down && !g_keyWasDown;
+    // F7 held now, or pressed and released since the last frame (bit 0: a quick press between two Presents, e.g. while
+    // the previous capture was still being written, was lost before)
+    const SHORT f7 = GetAsyncKeyState(VK_F7);
+    const bool mods = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000);
+    const bool down = mods && (f7 & 0x8000);
+    const bool pressed = mods && (((f7 & 0x8000) && !g_keyWasDown) || ((f7 & 0x0001) && !(f7 & 0x8000)));
     g_keyWasDown = down;
+    if (pressed && g_state != State::Idle) LOG_INFO("[LightProbe] Ctrl+Shift+F7 while a capture is still running: ignored");
     if (pressed && g_state == State::Idle) {
         IDirect3DSurface9* bb = nullptr;
         D3DSURFACE_DESC bd{};
@@ -746,6 +862,7 @@ void OnPresent(IDirect3DDevice9* dev) {
         RegisterHooks();
         g_state = State::Armed;
         g_status = std::format("Measuring pixel ({}, {})...", g_pixel.x, g_pixel.y);
+        LOG_INFO("[LightProbe] Capture requested: " + g_status);
     }
 }
 

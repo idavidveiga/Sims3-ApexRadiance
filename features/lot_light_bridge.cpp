@@ -25,6 +25,7 @@
 #include "floor_atlas_table.h"
 #include "shader_patches.h"
 #include "lightmap_smooth.h"
+#include "room_map_padding.h"
 #include "light_probe.h"
 #include "rig_tracker.h"
 #include "depth_share.h"
@@ -52,6 +53,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -221,12 +223,16 @@ bool g_inOwnCall = false;
 IDirect3DPixelShader9* g_curPs = nullptr;
 PsClass g_curClass = PsClass::Other;
 std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
-// Development build: the highest sampler each WorldCandidate pixel shader declares, and how often RecordWorldChunk took
-// the chunk light map from a sampler above it (a texture left bound by an earlier draw, which the shader never reads).
-// Evidence for scanning only the declared samplers, which would pick differently in exactly that case (not done: the
-// scan keeps all 15 samplers so the choice stays the same).
-std::unordered_map<IDirect3DPixelShader9*, int> g_worldMaxSampler;
-std::atomic<int> g_chunkAboveDeclared{0};
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
 IDirect3DPixelShader9* g_replacementPs = nullptr;
 IDirect3DPixelShader9* g_objectPs = nullptr;
 bool g_objectCompileTried = false;
@@ -269,6 +275,7 @@ struct ChunkTex {
     IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
 };
 std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
 std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
 
 std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
@@ -455,6 +462,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
     if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
         std::vector<BYTE> code(size);
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
             if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
             else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
             else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
@@ -476,13 +484,13 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                         c = PsClass::WorldCandidate;
                         break;
                     }
-                if constexpr (!kPublicBuild)
-                    if (c == PsClass::WorldCandidate) { // development build: the highest sampler it declares (RecordWorldChunk's check)
-                        int maxS = -1;
-                        for (size_t k = 0; k + 2 < n; k++)
-                            if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) maxS = std::max(maxS, static_cast<int>(t[k + 2] & 0x7FF));
-                        g_worldMaxSampler[ps] = maxS;
-                    }
+                if (c == PsClass::WorldCandidate) { // the samplers it declares: where RecordWorldChunk looks for the light map
+                    uint16_t mask = 0;
+                    for (size_t k = 0; k + 2 < n; k++)
+                        if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10 && (t[k + 2] & 0x7FF) < 16)
+                            mask |= static_cast<uint16_t>(1u << (t[k + 2] & 0x7FF));
+                    g_worldSamplers[ps] = mask;
+                }
             }
         }
     }
@@ -834,7 +842,59 @@ void AddDetail(std::string& d, int& n, const std::string& t) {
 // One pass over the enumeration g_enumLights (every 20 frames; before 2026-09-29 two passes, UpdateLampList and
 // TrackLotLampEdits): the lit outdoor lamps for SelectLamps (only when rebuildAll, as UpdateLampList did) and the tracked
 // lot lamps (g_lotLampCur, sorted by light, the first reading of a light kept, as std::map::emplace did).
+// Lamp switches on any lot, indoors too (lit flag or intensity of a lot lamp of type 3..6 changed between two
+// enumerations): the night patch gives the rooms the game's own lighting budget for a moment (LotLightingMotion::Boost),
+// so a room relights at once when a Sim switches its lamp, even while the camera moves.
+// Only real on / off toggles (lit flag 0x20) of alive lamps count; a lamp that toggled 3 times within 60 s (party, timed
+// or flickering lamps) is ignored from then on, so it cannot keep the boost on (review 29/09).
+struct LampSwitchState {
+    bool lit = false;
+    int toggles = 0;           // within the current 60 s window
+    Clock::time_point since{}; // start of that window
+};
+std::unordered_map<uintptr_t, LampSwitchState> g_lampSwitchPrev;
+std::atomic<int> g_lampSwitches{0};
+bool LampLit(uintptr_t L, bool& lit) {
+    __try {
+        if ((*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) == 0) return false; // not a lot lamp
+        const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
+        if (!(f & 0x01) || !IsPlainType(*reinterpret_cast<const int*>(L + 0xB0))) return false; // alive, lamp classes
+        lit = (f & 0x20) != 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void TrackLampSwitches() {
+    const auto now = Clock::now();
+    std::unordered_map<uintptr_t, LampSwitchState> cur;
+    cur.reserve(g_lampSwitchPrev.size() + 16);
+    bool switched = false;
+    for (uintptr_t L : g_enumLights) {
+        bool lit = false;
+        if (!LampLit(L, lit)) continue;
+        LampSwitchState s;
+        s.lit = lit;
+        s.since = now;
+        if (const auto it = g_lampSwitchPrev.find(L); it != g_lampSwitchPrev.end()) {
+            s = it->second;
+            if (now - s.since > std::chrono::seconds(60)) {
+                s.toggles = 0;
+                s.since = now;
+            }
+            if (s.lit != lit) {
+                s.lit = lit;
+                if (++s.toggles < 3) switched = true; // 3+ toggles in 60 s: animated, ignored
+            }
+        }
+        cur[L] = s;
+    }
+    g_lampSwitchPrev.swap(cur);
+    if (switched) g_lampSwitches.fetch_add(1, std::memory_order_relaxed);
+}
+
 void ReadEnumeratedLamps(bool rebuildAll) {
+    TrackLampSwitches();
     static std::vector<std::array<float, 8>> previous;
     if (rebuildAll) {
         previous.swap(g_allLamps);
@@ -1440,6 +1500,8 @@ struct PatchedPs {
     ShaderPatches::InstancedPatch inst;
     ShaderPatches::SnowCoverPatch snow;
     ShaderPatches::ObjectLampPatch obj;
+    ShaderPatches::IndoorBasisPatch indoor;
+    ShaderPatches::BasisSmoothPatch smooth;
     DWORD nightConst = 0;
 };
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
@@ -1767,6 +1829,95 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     return true;
 }
 
+// ---- Smooth indoor light ("Even light along walls"). Stairs and other instanced objects read the room's 4 directional
+// light maps (1 texel per metre) with the bilinear filter: their 1 m grid shows as bands, and against an outer wall one
+// side went dark (the maps' edges are padded by RoomMapPadding). DrawBasisSmooth reads them with a bicubic filter
+// instead (ShaderPatches::PatchBasisSmooth). Indoor objects lit by a rig (curtains, furniture: RigTracker mode 0) got
+// one light for the whole object, measured at its centre, so two identical neighbours differed a lot; DrawIndoorObject
+// gives them the same smooth directional maps per pixel (ShaderPatches::PatchIndoorBasis: the rig's diffuse lamps are
+// replaced, its specular kept, its per-object vertex lights zeroed), found from the room light map the draw binds. ----
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_basisSmoothPs;
+std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs; // per sampler holding the room light map
+std::atomic<bool> g_indoorSmooth{true};
+std::atomic<int> g_basisSmoothDrawn{0}, g_indoorDrawn{0};
+
+// (w, h, 1/w, 1/h) of a bound map, for the smooth reads' size constant; false when it is not a 2D texture
+bool MapSize(IDirect3DBaseTexture9* t, float out[4]) {
+    D3DSURFACE_DESC d{};
+    if (!t || t->GetType() != D3DRTYPE_TEXTURE || FAILED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d)) || !d.Width || !d.Height) return false;
+    out[0] = static_cast<float>(d.Width);
+    out[1] = static_cast<float>(d.Height);
+    out[2] = 1.0f / out[0];
+    out[3] = 1.0f / out[1];
+    return true;
+}
+
+template <typename DrawFn> bool DrawBasisSmooth(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_indoorSmooth.load(std::memory_order_relaxed)) return false;
+    PatchedPs& p = PatchedFor(dev, g_basisSmoothPs, "Indoor light (smooth)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchBasisSmooth(t, pp.smooth); });
+    if (!p.ps) return false;
+    float size[4], oldSize[4] = {};
+    IDirect3DBaseTexture9* map = nullptr;
+    const bool haveSize = SUCCEEDED(dev->GetTexture(p.smooth.sizeSampler, &map)) && MapSize(map, size);
+    if (map) map->Release();
+    if (!haveSize) return false;
+    dev->GetPixelShaderConstantF(p.smooth.sizeConst, oldSize, 1);
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    SetPsConst(dev, p.smooth.sizeConst, size, 1);
+    SetPs(dev, p.ps);
+    draw();
+    SetPs(dev, original);
+    SetPsConst(dev, p.smooth.sizeConst, oldSize, 1);
+    g_inOwnCall = false;
+    g_basisSmoothDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_indoorSmooth.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
+    IDirect3DTexture9* basis[4] = {};
+    int lmS = -1;
+    for (DWORD s = 0; s < 8 && lmS < 0; s++) {
+        IDirect3DBaseTexture9* t = nullptr;
+        if (FAILED(dev->GetTexture(s, &t)) || !t) continue;
+        if (t->GetType() == D3DRTYPE_TEXTURE && RoomMapPadding::BasisFor(static_cast<IDirect3DTexture9*>(t), basis)) lmS = static_cast<int>(s);
+        t->Release();
+    }
+    if (lmS < 0) return false; // no room light map with known directional maps (other lots, low lighting quality)
+    PatchedPs& p = PatchedFor(dev, g_indoorPs[lmS], "Indoor object (smooth room light)",
+                              [lmS](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchIndoorBasis(t, static_cast<DWORD>(lmS), pp.indoor); });
+    if (!p.ps) return false;
+    float size[4], oldSize[4] = {};
+    if (!MapSize(basis[0], size)) return false;
+    const int vl = g_curVsInfo->patched.vertexLight;
+    float oldVl[4][4] = {}, oldS[4] = {};
+    const float zero[4][4] = {}, strength[4] = {1.0f, 0, 0, 0};
+    dev->GetPixelShaderConstantF(p.indoor.strengthConst, oldS, 1);
+    dev->GetPixelShaderConstantF(p.indoor.sizeConst, oldSize, 1);
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        SamplerBind b0(dev, p.indoor.firstSampler, basis[0]), b1(dev, p.indoor.firstSampler + 1, basis[1]);
+        SamplerBind b2(dev, p.indoor.firstSampler + 2, basis[2]), b3(dev, p.indoor.firstSampler + 3, basis[3]);
+        SetPsConst(dev, p.indoor.strengthConst, strength, 1);
+        SetPsConst(dev, p.indoor.sizeConst, size, 1);
+        if (vl >= 0) {
+            dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
+            SetVsConst(dev, static_cast<UINT>(vl), &zero[0][0], 4);
+        }
+        SetPs(dev, p.ps);
+        draw();
+        SetPs(dev, original);
+        if (vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
+        SetPsConst(dev, p.indoor.strengthConst, oldS, 1);
+        SetPsConst(dev, p.indoor.sizeConst, oldSize, 1);
+    }
+    g_inOwnCall = false;
+    g_indoorDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 template <typename DrawFn> bool DrawSnowRelief(IDirect3DDevice9* dev, DrawFn draw) {
     return DrawSnowOnObject(dev, draw, g_snowReliefPs, "Snow with relief (stairs)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchSnowRelief(t, pp.snow); },
                             2.0f, g_snowReliefDrawn);
@@ -2017,15 +2168,30 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
     // 0x00618CD0; research\perf2\chunkrelight.md 1.3, 512 DXT calls = 128 textures x 4 mips). Which sampler holds it
     // depends on the shader variant (s8 with 4 paint layers, s7 with 3, ...). The normal map is also 256x256 but has 9
     // mips and format Q8W8V8U8, the paint layers are 1024x1024.
+    // Only the samplers this pixel shader declares: the game binds all of them for this draw, while the others may still
+    // hold textures of earlier draws (another chunk's map). Unknown shader (not classified yet): every sampler, as before.
+    const auto declared = g_worldSamplers.find(g_curPs);
+    const uint16_t mask = declared != g_worldSamplers.end() ? declared->second : 0xFFFE;
+    const std::pair<int, int> here = Key(c[3], c[11]);
     IDirect3DBaseTexture9* t = nullptr;
     DWORD sampler = 0;
     for (DWORD s = 15; s >= 1 && !t; s--) {
+        if (!(mask & (1u << s))) continue;
         IDirect3DBaseTexture9* cand = nullptr;
         if (FAILED(dev->GetTexture(s, &cand)) || !cand) continue;
         bool ok = cand->GetType() == D3DRTYPE_TEXTURE && cand->GetLevelCount() <= 5;
         if (ok) {
             D3DSURFACE_DESC d{};
             ok = SUCCEEDED(static_cast<IDirect3DTexture9*>(cand)->GetLevelDesc(0, &d)) && d.Width == 256 && d.Height == 256 && d.Format != D3DFMT_Q8W8V8U8;
+        }
+        // Already the map of another chunk (g_chunks holds a reference, so its address cannot belong to a new texture):
+        // a leftover, not this chunk's map
+        if (ok) {
+            const auto owner = g_chunkOfTexture.find(cand);
+            if (owner != g_chunkOfTexture.end() && owner->second != here) {
+                ok = false;
+                g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
+            }
         }
         if (ok) {
             t = cand;
@@ -2034,19 +2200,19 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
         else cand->Release();
     }
     if (!t) return 0;
-    key = Key(c[3], c[11]);
+    key = here;
     auto& slot = g_chunks[key];
     if (slot.tex != t) {
-        if (slot.tex) slot.tex->Release();
+        if (slot.tex) {
+            g_chunkOfTexture.erase(slot.tex);
+            slot.tex->Release();
+        }
         slot.tex = t; // keep the reference from GetTexture
+        g_chunkOfTexture[t] = key;
     } else
         t->Release();
     chunk = &slot;
     g_worldSeen.fetch_add(1, std::memory_order_relaxed);
-    if constexpr (!kPublicBuild) {
-        const auto it = g_worldMaxSampler.find(g_curPs);
-        if (it != g_worldMaxSampler.end() && static_cast<int>(sampler) > it->second) g_chunkAboveDeclared.fetch_add(1, std::memory_order_relaxed);
-    }
     return sampler;
 }
 
@@ -2068,6 +2234,9 @@ int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
     constexpr auto kSkip = D3D9Hooks::HookAction::Skip;
     constexpr auto kContinue = D3D9Hooks::HookAction::Continue;
+    if (g_curPsBasis) RoomMapPadding::NoteDraw(dev, g_curPs); // note the room light maps it binds (edge padding)
+    // (not for fences / snow relief / rig objects: those draws keep their own fixes)
+    if (g_curPsBasis && !g_curVsIsInstanced && !g_curVsIsSnowRelief && !g_curVsIsObject && DrawBasisSmooth(dev, draw)) return kSkip;
     if (g_curClass == PsClass::ObjectRig) return DrawObjectRig(dev, draw) ? kSkip : kContinue;
     if (g_curClass == PsClass::Roof) return DrawRoof(dev, draw) ? kSkip : kContinue;
     // The snowy roof pixel shader is also the one of snow on stair tops (same bytes, LightProbe-neve-escada); the vertex
@@ -2084,6 +2253,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? kSkip : kContinue;
     if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? kSkip : kContinue;
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
+    if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
     if (g_curClass == PsClass::WorldCandidate) {
@@ -2192,6 +2362,7 @@ void TrackPs(IDirect3DPixelShader9* ps, bool force = false) {
     if (ps == g_curPs && !force) return;
     g_curPs = ps;
     g_curClass = Classify(ps);
+    g_curPsBasis = ps && g_basisPs.count(ps);
 }
 
 void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
@@ -2391,6 +2562,7 @@ void ClearChunks() {
     for (auto& [k, v] : g_chunks)
         if (v.tex) v.tex->Release();
     g_chunks.clear();
+    g_chunkOfTexture.clear();
     LightmapSmooth::Clear();
 }
 
@@ -2497,6 +2669,8 @@ void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amo
 
 void OnWorldChanged() {
     ClearChunks();
+    RoomMapPadding::Clear();
+    g_lampSwitchPrev.clear();
     g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
     g_lotSeen.clear();
     g_quietLogAt.clear();
@@ -2508,6 +2682,12 @@ void OnWorldChanged() {
 }
 
 void SetSoftLotEdges(bool on) { g_softEdges = on; }
+
+void SetIndoorSmooth(bool on) { g_indoorSmooth = on; }
+
+std::string IndoorSmoothStatus() {
+    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {}", g_indoorSmooth.load() ? "on" : "off", g_basisSmoothDrawn.load(), g_indoorDrawn.load());
+}
 
 void SetGroundBrightness(float ground, float roads, float lotLamps) {
     g_lotMapGain = lotLamps < 0.25f ? 0.25f : (lotLamps > 3.0f ? 3.0f : lotLamps);
@@ -2602,6 +2782,7 @@ void OnPresent() {
 
 int LotLampEdits() { return g_lotLampEdits.load(std::memory_order_relaxed); }
 int LotLampUserEdits() { return g_lotLampUserEdits.load(std::memory_order_relaxed); }
+int LampSwitches() { return g_lampSwitches.load(std::memory_order_relaxed); }
 
 std::string LotLampStatus() {
     return std::format("changes counted: {} (user-driven: {}) | ignored (streaming, still loading, bulk): {} | not counted: outside the bake {}, below the threshold {}, "
@@ -2708,6 +2889,20 @@ std::vector<uint64_t> BakeDiff::Lots() const {
     return lots;
 }
 
+int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now) {
+    std::vector<uint64_t> add;
+    for (uint64_t lot : now.settledLots)
+        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) add.push_back(lot);
+    if (add.empty()) return 0;
+    for (uint64_t lot : add) {
+        const auto [first, last] = LotLamps(now, lot);
+        baked.lamps.insert(baked.lamps.end(), first, last);
+        baked.lots.insert(std::upper_bound(baked.lots.begin(), baked.lots.end(), lot), lot);
+    }
+    std::stable_sort(baked.lamps.begin(), baked.lamps.end(), [](const BakeLamp& a, const BakeLamp& b) { return a.lot < b.lot; });
+    return static_cast<int>(add.size());
+}
+
 std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint64_t>& lots) {
     std::vector<BakeLamp> out;
     for (uint64_t lot : lots) {
@@ -2757,7 +2952,7 @@ std::string RoofStatus() {
 std::string Status() {
     std::string s = std::format("{} | terrain chunks seen: {} | lot light fixed: {} draws (snow: {}, roads: {}, floors: {}, outdoor floors (summer): {}, snow on floors: {}, fences/stairs: {}, snow on objects: {}, snow with relief: {}, outdoor objects: {}) | without terrain texture: {}", g_status,
         g_chunks.size(), g_lotDrawn.load(), g_snowDrawn.load(), g_roadDrawn.load(), g_floorDrawn.load(), g_floorAtlasDrawn.load(), g_snowFloorDrawn.load(), g_fenceDrawn.load(), g_snowCoverDrawn.load(), g_snowReliefDrawn.load(), g_objLampDrawn.load(), g_lotMissing.load());
-    if constexpr (!kPublicBuild) s += std::format(" | chunk light map found above the declared samplers: {}", g_chunkAboveDeclared.load());
+    if constexpr (!kPublicBuild) s += std::format(" | leftover textures skipped when looking for chunk light maps: {}", g_chunkStraySkipped.load());
     return s;
 }
 
@@ -2811,11 +3006,15 @@ void Shutdown(bool keepChunkMaps) {
         g_snowPs = nullptr;
     }
     g_snowTried = false;
-    for (auto* cache : {&g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs}) {
+    for (auto* cache : {&g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();
     }
+    for (auto& [s, cache] : g_indoorPs)
+        for (auto& [k, p] : cache)
+            if (p.ps) p.ps->Release();
+    g_indoorPs.clear();
     for (auto& [k, info] : g_vsInfo) { // patched copies: foliage / objects, and the outdoor floors of summer
         if (info.patched.vs) info.patched.vs->Release();
         if (info.floor.vs) info.floor.vs->Release();
@@ -2847,7 +3046,10 @@ void Shutdown(bool keepChunkMaps) {
     g_roofFix = false;
     g_compileTried = false;
     g_classCache.clear();
-    g_worldMaxSampler.clear();
+    g_basisPs.clear();
+    g_curPsBasis = false;
+    RoomMapPadding::Clear();
+    g_worldSamplers.clear();
     g_terrainLampConst.clear();
     for (auto*& m : g_magenta)
         if (m) {

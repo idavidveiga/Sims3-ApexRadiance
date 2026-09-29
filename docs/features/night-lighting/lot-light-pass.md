@@ -175,16 +175,7 @@ smoothing. The world draw itself gets the smoothed map swapped into that sampler
 ([world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md)).
 
 Standalone, 2026-09-29 (not tested in game yet): `RecordWorldChunk` returns the `g_chunks` entry, so the world draw no
-longer looks the key up again. **Known edge case, kept as it is:** the scan also looks at samplers ABOVE the highest one
-the pixel shader declares, so a matching 256x256 texture left bound there by an earlier draw (the shader never reads it)
-would be taken as the chunk's light map, and the smoothed map would be swapped into that unused sampler (the draw then
-shows the game's map). Scanning only the declared samplers (the analysis' item P5) would be cheaper but would pick
-differently in exactly that case, so it was not done. The development build counts it instead: `Classify` records the
-highest declared sampler of every `WorldCandidate` shader, and the Developer status line "Street lamps in lots" ends
-with "chunk light map found above the declared samplers: N". If N stays 0 over several sessions (day, night, winter,
-several worlds), the declared-range scan is safe. A per-texture cache of the test was not added either: a released
-texture's address can be reused by another texture (a cube or volume texture, or one created below Apex's detours) that
-Apex never sees being created, and the cache would then answer for the wrong texture.
+longer looks the key up again. **Fixed 29/09 (after a player video):** the scan used to look at samplers ABOVE the ones the pixel shader declares, so a 256x256 map left bound there by an earlier draw (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the draw order, i.e. on the camera. The road, fence and lot grass fixes then used a map without the lamps and switched off and on together as the camera moved (and each flip re-smoothed the chunk). Now `Classify` records the samplers every `WorldCandidate` shader declares (both builds) and the scan looks only there; a texture that is already another chunk's registered map (`g_chunkOfTexture`; g_chunks holds a reference, so its address cannot be reused) is skipped too. The development build's "Street lamps in lots" line counts those skips ("leftover textures skipped when looking for chunk light maps").
 
 ### Per-channel (sampler) variants
 

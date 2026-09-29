@@ -115,6 +115,7 @@ uint64_t g_refTick = 0;
 bool g_haveRef = false;
 std::atomic_flag g_sampling; // clear (C++20 default)
 std::atomic<uint64_t> g_lastMoveTick{0};
+std::atomic<uint64_t> g_boostUntil{0}; // GetTickCount64 until which the game's own budget is kept (a lamp just switched)
 
 // Once-per-frame camera sample and frame counter (Present), while either part is on
 constexpr const char* kPresentHookName = "LotLightingMotion";
@@ -202,7 +203,9 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     const uint64_t now = GetTickCount64();
     SampleCamera(now);
     float out = game;
-    if (MovingAt(now) && game > 0.0f && game < kLeaveAloneMs) {
+    // a lamp just switched on or off: the rooms relight at the game's own pace for a moment, even while moving
+    const bool boosted = now < g_boostUntil.load(std::memory_order_relaxed);
+    if (!boosted && MovingAt(now) && game > 0.0f && game < kLeaveAloneMs) {
         const float scaled = game * (static_cast<float>(g_budgetMs.load(std::memory_order_relaxed)) / kPriorityMs);
         out = std::max(kMinMs, std::min(game, scaled));
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
@@ -473,6 +476,11 @@ void Stop() {
 bool Running() { return g_on.load(std::memory_order_acquire); }
 
 void SetBudgetMs(int ms) { g_budgetMs.store(std::clamp(ms, 1, 15)); }
+
+void Boost(unsigned ms) {
+    const uint64_t until = GetTickCount64() + ms;
+    if (until > g_boostUntil.load()) g_boostUntil.store(until);
+}
 int BudgetMs() { return g_budgetMs.load(); }
 
 bool CameraMoving() { return (Running() || WallAoRunning()) && MovingAt(GetTickCount64()); }

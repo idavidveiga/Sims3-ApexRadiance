@@ -171,6 +171,13 @@ const I18n::Entry kEntries[] = {
     {"Fence brightness", "Brilho das cercas", "Brillo de las cercas", "Luminosité des clôtures"},
     {"100% matches the ground around them", "100% iguala o chão em volta", "100% iguala el suelo alrededor", "100% correspond au sol autour"},
 
+    {"INDOORS", "DENTRO DE CASA", "INTERIORES", "INTÉRIEUR"},
+    {"Smooth indoor light", "Luz suave dentro de casa", "Luz suave en interiores", "Lumière douce à l'intérieur"},
+    {"Light changes smoothly on stairs, curtains and furniture; no dark sides",
+     "A luz muda de forma suave em escadas, cortinas e móveis; sem lados escuros",
+     "La luz cambia de forma suave en escaleras, cortinas y muebles; sin lados oscuros",
+     "La lumière varie en douceur sur les escaliers, rideaux et meubles ; sans côtés sombres"},
+
     // ---- Lighting > Buildings ----
     {"Buildings", "Edifícios", "Edificios", "Bâtiments"},
     {"Outside walls and roofs", "Paredes externas e telhados", "Paredes exteriores y techos", "Murs extérieurs et toits"},

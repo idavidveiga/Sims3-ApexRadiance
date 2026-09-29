@@ -114,4 +114,22 @@ struct ObjectLampPatch {
 };
 bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out);
 
+// Indoor room light: the 4 directional room light maps ("basis maps", 64x64) read with a smooth (bicubic) filter.
+// BasisSamplers: the samplers of a basis-reading pixel shader, by direction (+X, -X, +Z, -Z). PatchBasisSmooth: its 4
+// basis reads become bicubic reads. PatchIndoorBasis: an indoor rig-lit object shader whose diffuse lamp chain (c4..c7)
+// is replaced by the 4 basis maps (bound to firstSampler .. +3 in +X, -X, +Z, -Z order) weighted by its world normal,
+// times strengthConst.x; lmSampler = the sampler that holds the room light map (the basis uv is its uv).
+struct IndoorBasisPatch {
+    DWORD firstSampler = 0;
+    DWORD strengthConst = 0;
+    DWORD sizeConst = 0;   // set per draw: (w, h, 1/w, 1/h) of the basis maps
+};
+struct BasisSmoothPatch {
+    DWORD sizeConst = 0;   // set per draw: (w, h, 1/w, 1/h) of the basis maps
+    DWORD sizeSampler = 0; // a basis map sampler (to read that size)
+};
+bool BasisSamplers(const std::vector<DWORD>& t, int samplers[4]);
+bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out);
+bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out);
+
 } // namespace ShaderPatches

@@ -24,6 +24,9 @@ bool Running();
 // The priority lot's budget while the camera moves, in ms (1..15; 15 = the game's own)
 void SetBudgetMs(int ms);
 int BudgetMs();
+// For the next `ms` milliseconds every lot keeps the game's own lighting budget even while the camera moves (a lot lamp
+// was switched on or off: its rooms relight at once instead of over many frames). Any thread.
+void Boost(unsigned ms);
 
 // The camera moved in the last 300 ms (false when unknown or when both this feature and the wall shading gate are off)
 bool CameraMoving();

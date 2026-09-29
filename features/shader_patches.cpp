@@ -8,6 +8,8 @@
 #endif
 #include "shader_patches.h"
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -1327,4 +1329,302 @@ bool PatchSnowRelief(std::vector<DWORD>& t, SnowCoverPatch& out) {
     return true;
 }
 
+
+// ---- Smooth room light maps indoors (Night Lights "Even light along walls", 2026-09-29). The 4 directional room light
+// maps ("basis maps", 64x64 over the 64 m lot: 1 texel per metre) are read with the bilinear filter, so their 1 m grid
+// shows as bands and steps on stairs and furniture. A bicubic B-spline read (4 bilinear taps, GPU Gems 2 ch. 20) makes
+// the light change in smooth curves. Shared by both patches below; everything in xy (the map uv), 64 texels. ----
+namespace {
+constexpr DWORD kFrc = 0x13, kRcp = 0x06, kDp2add = 0x5A, kNrm = 0x24;
+DWORD Sw(int a, int b, int c, int d) { return static_cast<DWORD>(a | (b << 2) | (c << 4) | (d << 6)); }
+DWORD Neg(DWORD src) { return src | 0x01000000u; }
+
+// Temps used: T .. T+10. Leaves the 4 tap uvs in T+6 .. T+9 and the 4 tap weights in T+10 (x..w).
+// cS = (w, h, 1/w, 1/h) of the map (set per draw), cK = (1/6, 2/3, 0.5, 1), cH = (-0.5, 1.5, 1/64, 0). uv = input or
+// temp register (type, num), read as .xy.
+std::vector<DWORD> BicubicSetup(DWORD uvType, DWORD uvNum, DWORD cS, DWORD cK, DWORD cH, DWORD T) {
+    const DWORD P = T, F = T + 1, Q = T + 2, A = T + 3, B = T + 4, G = T + 5, W1 = T + 10; // W1 ends as the tap weights
+    const DWORD C0 = T + 6, C1 = T + 7, C2 = T + 8, C3 = T + 9;
+    const DWORD X = Sw(0, 0, 0, 0), Y = Sw(1, 1, 1, 1), Z = Sw(2, 2, 2, 2), W = Sw(3, 3, 3, 3);
+    return {
+        Op(kMad, 4), Dst(kTemp, P, 0x3), Src(uvType, uvNum), Src(kConst, cS, Sw(0, 1, 0, 1)), Src(kConst, cH, X), // p = uv*size - 0.5
+        Op(kFrc, 2), Dst(kTemp, F, 0x3), Src(kTemp, P),                                              // f
+        Op(kAdd, 3), Dst(kTemp, P, 0x3), Src(kTemp, P), Neg(Src(kTemp, F)),                          // i = p - f
+        Op(kMul, 3), Dst(kTemp, Q, 0x3), Src(kTemp, F), Src(kTemp, F),                               // Q.xy = f^2
+        Op(kMul, 3), Dst(kTemp, Q, 0xC), Src(kTemp, Q, Sw(0, 0, 0, 1)), Src(kTemp, F, Sw(0, 0, 0, 1)), // Q.zw = f^3
+        // w1 = 0.5 f^3 - f^2 + 2/3 (W1.xy)
+        Op(kMad, 4), Dst(kTemp, W1, 0x3), Src(kTemp, Q, Sw(2, 3, 2, 3)), Src(kConst, cK, Z), Neg(Src(kTemp, Q, Sw(0, 1, 0, 1))),
+        Op(kAdd, 3), Dst(kTemp, W1, 0x3), Src(kTemp, W1), Src(kConst, cK, Y),
+        // w0 = (1-f)^3 / 6 (B.xy)
+        Op(kAdd, 3), Dst(kTemp, A, 0x3), Neg(Src(kTemp, F)), Src(kConst, cK, W),
+        Op(kMul, 3), Dst(kTemp, B, 0x3), Src(kTemp, A), Src(kTemp, A),
+        Op(kMul, 3), Dst(kTemp, B, 0x3), Src(kTemp, B), Src(kTemp, A),
+        Op(kMul, 3), Dst(kTemp, B, 0x3), Src(kTemp, B), Src(kConst, cK, X),
+        // g0 = w0 + w1 (G.xy), g1 = 1 - g0 (G.zw)
+        Op(kAdd, 3), Dst(kTemp, G, 0x3), Src(kTemp, B), Src(kTemp, W1),
+        Op(kAdd, 3), Dst(kTemp, G, 0xC), Neg(Src(kTemp, G, Sw(0, 1, 0, 1))), Src(kConst, cK, W),
+        // 1/g (A.xyzw)
+        Op(kRcp, 2), Dst(kTemp, A, 0x1), Src(kTemp, G, X),
+        Op(kRcp, 2), Dst(kTemp, A, 0x2), Src(kTemp, G, Y),
+        Op(kRcp, 2), Dst(kTemp, A, 0x4), Src(kTemp, G, Z),
+        Op(kRcp, 2), Dst(kTemp, A, 0x8), Src(kTemp, G, W),
+        // offsets: B.xy = w1/g0, B.zw = w3/g1 with w3 = f^3/6
+        Op(kMul, 3), Dst(kTemp, B, 0x3), Src(kTemp, W1), Src(kTemp, A),
+        Op(kMul, 3), Dst(kTemp, B, 0xC), Src(kTemp, Q), Src(kConst, cK, X),
+        Op(kMul, 3), Dst(kTemp, B, 0xC), Src(kTemp, B), Src(kTemp, A),
+        // tap coordinates in texels: xy = i - 0.5 + w1/g0, zw = i + 1.5 + w3/g1; then / size
+        Op(kAdd, 3), Dst(kTemp, B, 0x3), Src(kTemp, B), Src(kTemp, P),
+        Op(kAdd, 3), Dst(kTemp, B, 0x3), Src(kTemp, B), Src(kConst, cH, X),
+        Op(kAdd, 3), Dst(kTemp, B, 0xC), Src(kTemp, B), Src(kTemp, P, Sw(0, 1, 0, 1)),
+        Op(kAdd, 3), Dst(kTemp, B, 0xC), Src(kTemp, B), Src(kConst, cH, Y),
+        Op(kMul, 3), Dst(kTemp, B, 0xF), Src(kTemp, B), Src(kConst, cS, Sw(2, 3, 2, 3)),
+        // the 4 tap uvs: (u0 v0) (u1 v0) (u0 v1) (u1 v1)
+        Op(kMov, 2), Dst(kTemp, C0, 0xF), Src(kTemp, B, Sw(0, 1, 0, 1)),
+        Op(kMov, 2), Dst(kTemp, C1, 0xF), Src(kTemp, B, Sw(2, 1, 2, 1)),
+        Op(kMov, 2), Dst(kTemp, C2, 0xF), Src(kTemp, B, Sw(0, 3, 0, 3)),
+        Op(kMov, 2), Dst(kTemp, C3, 0xF), Src(kTemp, B, Sw(2, 3, 2, 3)),
+        // weights: (g0x g0y, g1x g0y, g0x g1y, g1x g1y)
+        Op(kMul, 3), Dst(kTemp, W1, 0xF), Src(kTemp, G, Sw(0, 2, 0, 2)), Src(kTemp, G, Sw(1, 1, 3, 3)),
+    };
+}
+
+// dst.xyz = bicubic read of sampler S, averaged over the texels inside the house only: the maps are black with alpha 0
+// outside and alpha 1 inside (Light Probe captures of 29/09), so the filtered rgb / filtered alpha is the mean of the
+// inside texels under the filter; the edge no longer pulls towards black, without touching the game's textures.
+// (Taps in T+6..T+9, weights in T+10; T+2, T+3, T+4 as scratch; cH.z = the smallest alpha divided by.)
+std::vector<DWORD> BicubicTaps(DWORD S, DWORD dst, DWORD T, DWORD cH) {
+    const DWORD R = T + 2, Acc = T + 3, Inv = T + 4, Wt = T + 10;
+    std::vector<DWORD> v;
+    for (int k = 0; k < 4; k++) {
+        v.insert(v.end(), {Op(kTexld, 3), Dst(kTemp, R), Src(kTemp, T + 6 + static_cast<DWORD>(k)), Src(kSampler, S)});
+        if (k == 0) v.insert(v.end(), {Op(kMul, 3), Dst(kTemp, Acc), Src(kTemp, R), Src(kTemp, Wt, Sw(0, 0, 0, 0))});
+        else v.insert(v.end(), {Op(kMad, 4), Dst(kTemp, Acc), Src(kTemp, R), Src(kTemp, Wt, Sw(k, k, k, k)), Src(kTemp, Acc)});
+    }
+    v.insert(v.end(), {Op(kMax, 3), Dst(kTemp, Inv, 0x8), Src(kTemp, Acc, Sw(3, 3, 3, 3)), Src(kConst, cH, Sw(2, 2, 2, 2)),
+                       Op(kRcp, 2), Dst(kTemp, Inv, 0x8), Src(kTemp, Inv, Sw(3, 3, 3, 3)),
+                       Op(kMul, 3), Dst(kTemp, dst, 0x7), Src(kTemp, Acc), Src(kTemp, Inv, Sw(3, 3, 3, 3))});
+    return v;
+}
+
+// The 4 basis reads of a basis-reading pixel shader, from its dp2add weights (the def (0.8944, 0.4472, 0, -0.8944) =
+// cD): "dp2add rW.c, rN.xy|yz, cD.<swz>, cD.z", then "mul/mad rX.xyz, rT, rW.c, .." with rT from "texld rT, vU, sK".
+// dir 0 = +X, 1 = -X, 2 = +Z, 3 = -Z.
+struct BasisReads {
+    int sampler[4] = {-1, -1, -1, -1};
+    int texld[4] = {-1, -1, -1, -1};
+    int uvType = -1, uvNum = -1;
+};
+bool FindBasisReads(const std::vector<DWORD>& t, const std::vector<Ins>& ins, BasisReads& out) {
+    int cD = -1;
+    for (const Ins& x : ins)
+        if (x.op == kDef) {
+            float f[4];
+            std::memcpy(f, &t[x.at + 2], sizeof f);
+            if (std::fabs(f[0] - 0.8944f) < 1e-3f && std::fabs(f[1] - 0.4472f) < 1e-3f && f[2] == 0.0f && std::fabs(f[3] + 0.8944f) < 1e-3f)
+                cD = static_cast<int>(Num(t[x.at + 1]));
+        }
+    if (cD < 0) return false;
+    // Follow the direction weights through the shader: dirOf[temp][component] = the direction whose dp2add weight that
+    // component holds (copied by mov / mov_sat, dropped when overwritten by anything else). A mul / mad that multiplies a
+    // map read by such a weight (replicated component) gives that map's direction. Both forms seen in game: the plain one
+    // ("dp2add_sat r0.w, ..; mul r2.xyz, r2, r0.w") and the glossy one (4 dp2add into r1.xyzw, "mov_sat r1, r1", then the
+    // diffuse "mul r2.xyz, r1.y, r0"; its specular uses pow(weights), which are not followed).
+    int dirOf[32][4];
+    for (auto& r : dirOf)
+        for (int& c : r) c = -1;
+    auto writeMask = [&](const Ins& x) { return x.len >= 1 && Type(t[x.at + 1]) == kTemp && Num(t[x.at + 1]) < 32 ? WMask(t[x.at + 1]) : 0u; };
+    for (size_t i = 0; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        // a map read multiplied by a direction weight
+        if ((x.op == kMul && x.len == 3) || (x.op == kMad && x.len == 4)) {
+            for (int wArg = 2; wArg <= 3; wArg++) {
+                const DWORD w = t[x.at + static_cast<size_t>(wArg)];
+                if (Type(w) != kTemp || Num(w) >= 32 || (w & 0x0F000000u)) continue;
+                const DWORD sw = Swz(w);
+                const int c = static_cast<int>(sw & 3);
+                if (sw != static_cast<DWORD>(Sw(c, c, c, c)) || dirOf[Num(w)][c] < 0) continue;
+                const int dir = dirOf[Num(w)][c];
+                const DWORD mapReg = t[x.at + static_cast<size_t>(wArg == 2 ? 3 : 2)];
+                if (Type(mapReg) != kTemp) continue;
+                for (int k = static_cast<int>(i) - 1; k >= 0; k--) {
+                    const Ins& z = ins[static_cast<size_t>(k)];
+                    if (z.len >= 1 && IsReg(t[z.at + 1], kTemp, Num(mapReg)) && (WMask(t[z.at + 1]) & 0x7)) {
+                        if (z.op == kTexld && Type(t[z.at + 3]) == kSampler && Swz(t[z.at + 2]) == kSwzXYZW && out.texld[dir] < 0) {
+                            out.sampler[dir] = static_cast<int>(Num(t[z.at + 3]));
+                            out.texld[dir] = k;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        // then this instruction's own write
+        const DWORD m = writeMask(x);
+        if (!m) continue;
+        const DWORD D = Num(t[x.at + 1]);
+        if (x.op == kDp2add && x.len == 4 && IsReg(t[x.at + 3], kConst, static_cast<DWORD>(cD))) {
+            const DWORD n = t[x.at + 2], c = t[x.at + 3];
+            const int n0 = static_cast<int>(Swz(n) & 3), c0 = static_cast<int>(Swz(c) & 3), c1 = static_cast<int>((Swz(c) >> 2) & 3);
+            // normal pair (x,y) or (y,z) with constant pair (.x .y) = +X, (.w .y) = -X, (.y .x) = +Z, (.y .w) = -Z
+            int dir = -1;
+            if (n0 == 0 && c0 == 0 && c1 == 1) dir = 0;
+            else if (n0 == 0 && c0 == 3 && c1 == 1) dir = 1;
+            else if (n0 == 1 && c0 == 1 && c1 == 0) dir = 2;
+            else if (n0 == 1 && c0 == 1 && c1 == 3) dir = 3;
+            for (int k = 0; k < 4; k++)
+                if (m & (1u << k)) dirOf[D][k] = dir;
+        } else if (x.op == kMov && x.len == 2 && Type(t[x.at + 2]) == kTemp && Num(t[x.at + 2]) < 32 && !(t[x.at + 2] & 0x0F000000u)) {
+            const DWORD S = Num(t[x.at + 2]), sw = Swz(t[x.at + 2]);
+            int copy[4];
+            for (int k = 0; k < 4; k++) copy[k] = dirOf[S][(sw >> (2 * k)) & 3];
+            for (int k = 0; k < 4; k++)
+                if (m & (1u << k)) dirOf[D][k] = copy[k];
+        } else
+            for (int k = 0; k < 4; k++)
+                if (m & (1u << k)) dirOf[D][k] = -1;
+    }
+    for (int d = 0; d < 4; d++)
+        if (out.sampler[d] < 0) return false;
+    // four different maps, read at the same uv (the full register: the room light map is read at its .zw)
+    for (int d = 0; d < 4; d++) {
+        for (int e = d + 1; e < 4; e++)
+            if (out.sampler[d] == out.sampler[e]) return false;
+        const Ins& z = ins[static_cast<size_t>(out.texld[d])];
+        const int ut = static_cast<int>(Type(t[z.at + 2])), un = static_cast<int>(Num(t[z.at + 2]));
+        if (d == 0) {
+            out.uvType = ut;
+            out.uvNum = un;
+        } else if (out.uvType != ut || out.uvNum != un)
+            return false;
+    }
+    return true;
+}
+} // namespace
+
+bool BasisSamplers(const std::vector<DWORD>& t, int samplers[4]) {
+    const auto ins = Parse(t);
+    BasisReads r;
+    if (ins.empty() || !FindBasisReads(t, ins, r)) return false;
+    for (int d = 0; d < 4; d++) samplers[d] = r.sampler[d];
+    return true;
+}
+
+bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out) {
+    if (t.empty() || t[0] != 0xFFFF0300) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    BasisReads r;
+    if (!FindBasisReads(t, ins, r) || (r.uvType != static_cast<int>(kInput) && r.uvType != static_cast<int>(kTexture))) return false;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 12 >= 32 || u.maxConst + 3 >= 224) return false;
+    const DWORD T = static_cast<DWORD>(u.maxTemp + 1), cS = static_cast<DWORD>(u.maxConst + 1), cK = cS + 1, cH = cS + 2;
+    out.sizeConst = cS;
+    out.sizeSampler = static_cast<DWORD>(r.sampler[0]);
+    int first = r.texld[0];
+    for (int d = 1; d < 4; d++) first = std::min(first, r.texld[d]);
+    std::vector<Edit> edits;
+    edits.push_back({1, {Op(kDef, 5), Dst(kConst, cK), F(1.0f / 6.0f), F(2.0f / 3.0f), F(0.5f), F(1.0f),
+                         Op(kDef, 5), Dst(kConst, cH), F(-0.5f), F(1.5f), F(1.0f / 64.0f), F(0.0f)}});
+    edits.push_back({ins[static_cast<size_t>(first)].at, BicubicSetup(static_cast<DWORD>(r.uvType), static_cast<DWORD>(r.uvNum), cS, cK, cH, T)});
+    for (int d = 0; d < 4; d++) {
+        const Ins& x = ins[static_cast<size_t>(r.texld[d])];
+        edits.push_back({End(x), BicubicTaps(static_cast<DWORD>(r.sampler[d]), Num(t[x.at + 1]), T, cH)});
+    }
+    Apply(t, std::move(edits));
+    return true;
+}
+
+bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out) {
+    if (t.empty() || t[0] != 0xFFFF0300) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 14 >= 32 || u.maxConst + 5 >= 224 || u.maxSampler < 0 || u.maxSampler + 4 > 15 || !u.afterLastSamplerDcl) return false;
+    int nrm = -1, lm = -1;
+    for (size_t i = 0; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        if (nrm < 0 && x.op == kNrm && Type(t[x.at + 2]) == kInput) nrm = static_cast<int>(i);
+        if (lm < 0 && x.op == kTexld && IsReg(t[x.at + 3], kSampler, lmSampler) && (Type(t[x.at + 2]) == kInput || Type(t[x.at + 2]) == kTexture) && Swz(t[x.at + 2]) == kSwzXYZW) // its uv, as read (not .zw)
+            lm = static_cast<int>(i);
+    }
+    if (nrm < 0 || lm < 0) return false;
+    // the diffuse chain: 4 mul/mad into one dest reading c4..c7, multiplier written by a saturated mov (sat N.L)
+    int chainEnd = -1;
+    DWORD D = 0;
+    for (size_t i = 0; i + 3 < ins.size() && chainEnd < 0; i++) {
+        bool ok = true;
+        DWORD dst = 0, src = 0;
+        int seen = 0;
+        for (size_t k = 0; k < 4 && ok; k++) {
+            const Ins& y = ins[i + k];
+            if (!((y.op == kMul && y.len == 3) || (y.op == kMad && y.len == 4))) {
+                ok = false;
+                break;
+            }
+            const DWORD d = t[y.at + 1], a = t[y.at + 2], c = t[y.at + 3];
+            if (Type(d) != kTemp || (WMask(d) & 0x7) != 0x7 || Type(a) != kTemp || Type(c) != kConst || Num(c) < 4 || Num(c) > 7) {
+                ok = false;
+                break;
+            }
+            // the multiplier source is the same register; each mad adds the previous instruction's result (the game may
+            // move the accumulator to another register mid-chain: "mad r6 .. ; mad r2.xyz, r2.z, c6, r6")
+            if (k == 0) {
+                src = Num(a);
+            } else if (Num(a) != src || !IsReg(t[y.at + 4], kTemp, dst))
+                ok = false;
+            dst = Num(d);
+            seen |= 1 << (Num(c) - 4);
+        }
+        if (!ok || seen != 0xF) continue;
+        for (int k = static_cast<int>(i) - 1; k >= 0; k--) {
+            const Ins& z = ins[static_cast<size_t>(k)];
+            if (z.len >= 1 && IsReg(t[z.at + 1], kTemp, src)) {
+                if (z.op == kMov && (t[z.at + 1] & 0x00100000u)) {
+                    chainEnd = static_cast<int>(i + 3);
+                    D = dst;
+                }
+                break;
+            }
+        }
+    }
+    // the basis light is computed right after the nrm (the normal register is reused later, e.g. as the cube lookup)
+    // into registers above the shader's own; the chain's result is replaced by it
+    if (chainEnd < 0 || chainEnd <= nrm) return false;
+    const DWORD N = Num(t[ins[static_cast<size_t>(nrm)].at + 1]);
+    const DWORD uvT = Type(t[ins[static_cast<size_t>(lm)].at + 2]), uvN = Num(t[ins[static_cast<size_t>(lm)].at + 2]);
+    const DWORD T = static_cast<DWORD>(u.maxTemp + 1), Wn = T + 11, Acc = T + 12, Tmp = T + 13;
+    const DWORD cS = static_cast<DWORD>(u.maxConst + 1), cK = cS + 1, cD = cS + 2, cStr = cS + 3, cH = cS + 4;
+    out.sizeConst = cS;
+    const DWORD E = static_cast<DWORD>(u.maxSampler + 1);
+    out.firstSampler = E;
+    out.strengthConst = cStr;
+    std::vector<Edit> edits;
+    edits.push_back({1, {Op(kDef, 5), Dst(kConst, cH), F(-0.5f), F(1.5f), F(1.0f / 64.0f), F(0.0f),
+                         Op(kDef, 5), Dst(kConst, cK), F(1.0f / 6.0f), F(2.0f / 3.0f), F(0.5f), F(1.0f),
+                         Op(kDef, 5), Dst(kConst, cD), F(0.8944f), F(0.4472f), F(-0.8944f), F(0.0f)}});
+    std::vector<DWORD> dcl;
+    for (DWORD s = 0; s < 4; s++) dcl.insert(dcl.end(), {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E + s)});
+    edits.push_back({u.afterLastSamplerDcl, dcl});
+    std::vector<DWORD> body = BicubicSetup(uvT, uvN, cS, cK, cH, T);
+    // weights from the world normal: +X, -X, +Z, -Z, as the basis-reading shaders compute them
+    body.insert(body.end(), {
+        Op(kDp2add, 4), Dst(kTemp, Wn, 0x1, true), Src(kTemp, N, Sw(0, 1, 0, 1)), Src(kConst, cD, Sw(0, 1, 0, 1)), Src(kConst, cD, Sw(3, 3, 3, 3)),
+        Op(kDp2add, 4), Dst(kTemp, Wn, 0x2, true), Src(kTemp, N, Sw(0, 1, 0, 1)), Src(kConst, cD, Sw(2, 1, 2, 1)), Src(kConst, cD, Sw(3, 3, 3, 3)),
+        Op(kDp2add, 4), Dst(kTemp, Wn, 0x4, true), Src(kTemp, N, Sw(1, 2, 1, 2)), Src(kConst, cD, Sw(1, 0, 1, 0)), Src(kConst, cD, Sw(3, 3, 3, 3)),
+        Op(kDp2add, 4), Dst(kTemp, Wn, 0x8, true), Src(kTemp, N, Sw(1, 2, 1, 2)), Src(kConst, cD, Sw(1, 2, 1, 2)), Src(kConst, cD, Sw(3, 3, 3, 3)),
+    });
+    for (DWORD d = 0; d < 4; d++) {
+        const std::vector<DWORD> taps = BicubicTaps(E + d, Tmp, T, cH);
+        body.insert(body.end(), taps.begin(), taps.end());
+        if (d == 0) body.insert(body.end(), {Op(kMul, 3), Dst(kTemp, Acc, 0x7), Src(kTemp, Tmp), Src(kTemp, Wn, Sw(0, 0, 0, 0))});
+        else {
+            const int c = static_cast<int>(d);
+            body.insert(body.end(), {Op(kMad, 4), Dst(kTemp, Acc, 0x7), Src(kTemp, Tmp), Src(kTemp, Wn, Sw(c, c, c, c)), Src(kTemp, Acc)});
+        }
+    }
+    edits.push_back({End(ins[static_cast<size_t>(nrm)]), body});
+    edits.push_back({End(ins[static_cast<size_t>(chainEnd)]), {Op(kMul, 3), Dst(kTemp, D, 0x7), Src(kTemp, Acc), Src(kConst, cStr, Sw(0, 0, 0, 0))}});
+    Apply(t, std::move(edits));
+    return true;
+}
 } // namespace ShaderPatches

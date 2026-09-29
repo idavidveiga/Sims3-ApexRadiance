@@ -20,6 +20,8 @@ int LotLampEdits();
 // by more than 5 cm; the rest are automatic: switched on / off, dimmed, recoloured). The terrain relight rebuilds
 // user-driven changes fast and rate-limits automatic ones (terrain-relight.md "Lamp change decisions").
 int LotLampUserEdits();
+// Lamp switches (on / off, dimmed) of lot lamps anywhere, indoors too: counts enumerations that saw one
+int LampSwitches();
 std::string LotLampStatus(); // developer status of the lamp change tracking
 
 // Snapshot of the lot lamps the terrain bake can take, refreshed with every light enumeration (every 20 frames, render
@@ -71,6 +73,10 @@ std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint6
 // state in `lamps` (taken with LampsOfLots when the relight was decided), so the next DiffBake compares against it. The
 // lots' other lamps keep their baked state.
 void CoverLots(BakeSnapshot& baked, const std::vector<BakeChange>& changes, const std::vector<BakeLamp>& lamps);
+// Lots settled in `now` that `baked` does not have (they finished loading after the last rebuild) join it with their lamps as
+// they are now, so a later switch on them is compared with something (before, such a lot answered "no change" until the
+// next full rebuild: lamps switched off by Sims stayed lit on the ground). Returns how many lots joined.
+int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now);
 int LampEnumerations(); // light enumerations done (the snapshot changes only when this does)
 // Lots of the latest counted user-driven change (LotLampUserEdits went up with it)
 const std::vector<uint64_t>& LastUserChangeLots();
@@ -101,6 +107,10 @@ void SetSoftLotEdges(bool on);
 // "Ground brightness" (0.25..3) on the lamp light of grass, lots and outdoor floors, and "Roads and sidewalks" (a factor
 // on top of it): the game's lamp scale of each light map times the gain, weighted by the night level. Live.
 void SetGroundBrightness(float ground, float roads, float lotLamps); // lotLamps: the lot's own light map on its grass
+// "Even light along walls": stairs and indoor objects read the room light maps with a smooth filter (and indoor rig
+// objects get them per pixel instead of one light per object). Live.
+void SetIndoorSmooth(bool on);
+std::string IndoorSmoothStatus();
 std::string GroundBrightnessStatus();
 // Every light the game has (its light enumeration), render thread. False when the enumeration is not available.
 bool EnumerateAllLights(std::vector<uintptr_t>& out);
