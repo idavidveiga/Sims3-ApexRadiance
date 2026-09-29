@@ -3,8 +3,8 @@
 #
 # One-time setup (repository Settings > Secrets and variables > Actions):
 #   secret   NEXUSMODS_API_KEY  the Nexus API key (Nexus Mods > your account > API keys)
-#   variable NEXUS_FILE_ID      the id of the mod's main file (mod page > Files > "Advanced", or Manage Files > edit)
-#   variable NEXUS_MOD_ID       the mod's id (the number in its page URL), for the changelog and the mod version
+#   variable NEXUS_FILE_ID      the number of any version of the mod's main file (v1 API / Files tab "Advanced"; e.g. 590)
+#   variable NEXUS_MOD_ID       the number in the mod page URL (e.g. 247); both are turned into v3 ids at run time
 # Without them the job is skipped.
 name: Upload to Nexus Mods
 
@@ -45,12 +45,27 @@ jobs:
           cd dist
           zip -9 "../ApexRadiance-$VERSION.zip" ApexRadiance.asi
 
+      # The upload API (v3) names the mod and its file by their v3 ids, not by the numbers the site and the v1 API show
+      # (mod 247, file 590): look them up from those numbers
+      - name: Resolve the Nexus v3 ids
+        env:
+          NEXUS_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          GAME: ${{ vars.NEXUS_GAME || 'thesims3' }}
+        run: |
+          api() { curl -sS -f -H "apikey: $NEXUS_KEY" -H "User-Agent: loinyx/Sims3-ApexRadiance" "https://api.nexusmods.com/v3$1"; }
+          FILE=$(api "/games/$GAME/mod-file-versions/${{ vars.NEXUS_FILE_ID }}" | jq -r '.data.file.id // empty')
+          MOD=$(api "/games/$GAME/mods/${{ vars.NEXUS_MOD_ID }}" | jq -r '.data.id // empty')
+          if [ -z "$FILE" ]; then echo "::error::Could not find the v3 id of Nexus file ${{ vars.NEXUS_FILE_ID }}"; exit 1; fi
+          echo "Nexus v3 ids: file $FILE, mod ${MOD:-unknown}"
+          echo "V3_FILE_ID=$FILE" >> "$GITHUB_ENV"
+          echo "V3_MOD_ID=$MOD" >> "$GITHUB_ENV"
+
       - name: Upload to Nexus Mods
         uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
-          file_id: ${{ vars.NEXUS_FILE_ID }}
-          mod_id: ${{ vars.NEXUS_MOD_ID }}
+          file_id: ${{ env.V3_FILE_ID }}
+          mod_id: ${{ env.V3_MOD_ID }}
           filename: ApexRadiance-${{ env.VERSION }}.zip
           version: ${{ env.VERSION }}
           display_name: Apex Radiance ${{ env.VERSION }}
