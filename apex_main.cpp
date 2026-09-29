@@ -21,6 +21,7 @@
 #include "apex_version.h"
 #include "build_flavor.h"
 #include "conflict_guard.h"
+#include "crash_report.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
 #include "game_addresses.h"
@@ -129,6 +130,7 @@ DWORD WINAPI InitThread(LPVOID) {
         ApexGui::SetStartup(ApexGui::Startup::Running);
         LOG_INFO("[Main] Features started");
     }
+    CrashReport::Install(); // after the game's own start-up (it may set a filter too): ApexRadiance_Crash.txt on a crash
 
     // Pump: features' periodic work (deferred reinstalls, lamp scans scheduled off the render thread) and autosave.
     ULONGLONG lastGuardTick = 0;
@@ -139,6 +141,11 @@ DWORD WINAPI InitThread(LPVOID) {
         if (now - lastGuardTick >= 1000) {
             lastGuardTick = now;
             ConflictGuard::Tick(); // TODO(step 8): watchdog
+            CrashReport::Refresh();
+            std::string on;
+            for (const auto& p : PatchManager::Get().GetPatches())
+                if (p->IsEnabled()) on += (on.empty() ? "" : ", ") + p->GetName();
+            CrashReport::SetFeatureLine(on);
         }
     }
     return 0;
