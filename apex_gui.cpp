@@ -484,6 +484,10 @@ void PictureHeaderCard() {
         if (!problem.empty()) {
             ApexUi::Gap(ApexUi::kSpace2);
             ApexUi::IconNote(IconId::TriangleAlert, problem.c_str(), VioletTheme::kWarning);
+        } else if (Picture::Get().MenusTinted()) {
+            ApexUi::Gap(ApexUi::kSpace2);
+            ApexUi::IconNote(IconId::Info, "Color also tints the game's menus here, because the game draws its picture in a way Apex can't split; "
+                                           "turning off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics) usually fixes it");
         }
     }
     ApexUi::EndCard();

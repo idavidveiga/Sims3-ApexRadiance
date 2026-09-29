@@ -307,6 +307,10 @@ const I18n::Entry kEntries[] = {
     {"the game ends its frames on another render target", "o jogo termina os quadros em outro alvo de desenho", "el juego termina los fotogramas en otro destino de dibujo",
      "le jeu termine ses images sur une autre cible de rendu"},
     {"its resources could not be created", "não foi possível criar os recursos dela", "no se pudieron crear sus recursos", "ses ressources n'ont pas pu être créées"},
+    {"Color also tints the game's menus here, because the game draws its picture in a way Apex can't split; turning off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics) usually fixes it",
+     "A Cor também tinge os menus do jogo aqui, porque o jogo desenha a imagem de um jeito que o Apex não consegue separar; desligar a Suavização de Bordas do próprio jogo (Opções \xE2\x80\xBA Gráficos) costuma resolver",
+     "El Color también tiñe los menús del juego aquí, porque el juego dibuja la imagen de una forma que Apex no puede separar; desactivar el Suavizado de Bordes del propio juego (Opciones \xE2\x80\xBA Gráficos) suele solucionarlo",
+     "La Couleur teinte aussi les menus du jeu ici, car le jeu dessine l'image d'une façon qu'Apex ne peut pas séparer ; désactiver le Lissage des Bords du jeu (Options \xE2\x80\xBA Graphismes) règle généralement le problème"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 

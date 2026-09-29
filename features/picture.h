@@ -95,6 +95,9 @@ class Picture {
     // translated: in the menu's language (the Color card's note); else English (the log). The first time a reason shows
     // it is also logged ([Picture] On, but not applied ...).
     std::string Problem(bool translated);
+    // Picture runs, but for 2 s there was no copy of the scene before the game's UI (the game did not draw its scene straight
+    // into the back buffer, e.g. its own Edge Smoothing is on): the whole picture is filtered, the game's menus included
+    bool MenusTinted() const;
 
   private:
     Picture() = default;
@@ -107,7 +110,8 @@ class Picture {
     std::atomic<unsigned long long> m_holdUntil{0}; // GetTickCount64 until which the pass is skipped (hold to compare)
     // Diagnostics (Problem): when it was turned on, when the game's EndScene last reached it, when the pass last ran,
     // why it last returned early (Skip in picture.cpp), what the resource creation failed on
-    std::atomic<unsigned long long> m_enabledAt{0}, m_lastEndScene{0}, m_lastApplied{0};
+    std::atomic<unsigned long long> m_enabledAt{0}, m_lastEndScene{0}, m_lastApplied{0}, m_lastSceneCopy{0};
+    bool m_menusTintedLogged = false; // render thread
     std::atomic<int> m_skip{0};
     std::string m_resourceError; // guarded by m_mutex
     std::string m_loggedProblem;          // render thread

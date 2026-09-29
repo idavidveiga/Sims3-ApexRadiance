@@ -146,7 +146,8 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     float3 f = tex2Dlod(sFrame, float4(uv, 0, 0)).rgb;
     float3 s = tex2Dlod(sScene, float4(uv, 0, 0)).rgb;
     float3 d = abs(f - s);
-    float ui = cLook.y > 0.5 ? saturate(max(d.r, max(d.g, d.b)) * 64.0) : 1.0;
+    // no scene copy this frame (the game did not draw its scene into the back buffer): everything is filtered, UI included
+    float ui = cLook.y > 0.5 ? saturate(max(d.r, max(d.g, d.b)) * 64.0) : 0.0;
     float3 fs = (cDeband.w > 0.5 && ui < 0.5) ? Deband(uv, f) : f; // the scene only; the UI keeps its sharp edges
     // sharpening (scene only): the difference to the 4 neighbours added back, limited to their range (no halos)
     [branch] if (cDetail.x > 0.0 && ui < 0.5)
@@ -522,6 +523,16 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     gpu.frameReady = false;
     m_skip.store(kSkipNone);
     m_lastApplied.store(now);
+    if (gpu.sceneCopied) m_lastSceneCopy.store(now);
+    {
+        const bool tinted = MenusTinted();
+        if (tinted != m_menusTintedLogged) {
+            m_menusTintedLogged = tinted;
+            LOG_INFO(tinted ? "[Picture] No copy of the scene before the UI for 2 s (the game does not draw its scene straight into the back buffer; "
+                              "its own Edge Smoothing is the usual reason): the whole picture is filtered, the game's menus included"
+                            : "[Picture] The scene is copied before the UI again: the game's menus keep their colours");
+        }
+    }
     if (!m_appliedLogged) {
         m_appliedLogged = true;
         m_loggedProblem.clear();
@@ -680,6 +691,13 @@ void Picture::SetParams(const PictureParams& p, bool save) {
 }
 
 void Picture::HoldBypass() { m_holdUntil.store(GetTickCount64() + 150); }
+
+bool Picture::MenusTinted() const {
+    if (!GetParams().enabled) return false;
+    const unsigned long long now = GetTickCount64();
+    const unsigned long long since = std::max(m_enabledAt.load(), m_lastSceneCopy.load());
+    return now - m_lastApplied.load() < kProblemAfterMs && now - since >= kProblemAfterMs;
+}
 
 std::string Picture::Problem(bool translated) {
     if (!GetParams().enabled) return {};
