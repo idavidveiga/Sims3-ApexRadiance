@@ -180,8 +180,7 @@ profile?" with Delete / Cancel. "Open the Profiles folder" opens it in Explorer 
 another PC). Profile names are user data: shown untranslated (`SetNextRowUntranslated`). Files:
 `Documents\...\Apex Radiance\Profiles\<name>.toml`, written by `ApexConfig::SaveProfile` = `CaptureFeatureState(profile
 features only)` + `[meta]`: the same tables the main config saves for Night Lights (`NightTerrainRelight`), Every-Story
-Ground Light, Edge Smoothing, Depth Blur and the Performance page's features (`[patches.<Name>]` with `enabled`; not
-the suspended Spread New Objects Over Frames), Picture (`[qol.picture]`) and the
+Ground Light, Edge Smoothing, Depth Blur and the Performance page's features (`[patches.<Name>]` with `enabled`), Picture (`[qol.picture]`) and the
 window mode (`[display]`); developer tools stay out. Load = `ReadProfile` + `ApplyFeatureState` (live, marks unsaved
 changes, autosaves into ApexRadiance.toml) + the undo toast "Profile loaded". Names are sanitised
 (`SanitizeProfileName`: allowed characters only, no leading / double / trailing spaces, Windows device names refused);

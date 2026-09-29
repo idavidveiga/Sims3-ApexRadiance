@@ -342,6 +342,10 @@ const I18n::Entry kEntries[] = {
     {"Copy profile files from there to share them or to use them on another PC",
      "Copie os arquivos de perfil de lá para compartilhar ou usar em outro PC", "Copia los archivos de perfil desde ahí para compartirlos o usarlos en otro PC",
      "Copiez les fichiers de profil depuis ce dossier pour les partager ou les utiliser sur un autre PC"},
+    // Performance: Spread new objects over frames (back in 1.4.2)
+    {"Spread new objects over frames", "Espalhar objetos novos entre quadros", "Repartir objetos nuevos entre fotogramas", "Répartir les nouveaux objets sur plusieurs images"},
+    {"Fewer hitches when a lot streams in while the camera moves", "Menos travadas quando um lote carrega com a câmera em movimento",
+     "Menos tirones cuando un solar se carga con la cámara en movimiento", "Moins de saccades quand un terrain se charge pendant que la caméra bouge"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 

@@ -426,9 +426,9 @@ unsigned FeaturePart(const std::string& name) {
     if (name == "NightTerrainRelight" || name == "SplitLevelGroundLight") return kPartNightLights;
     if (name == "DepthBlur") return kPartDepthBlur;
     if (name == "EdgeSmoothing") return kPartEdgeSmoothing;
-    // Spread New Objects Over Frames is suspended (it cannot be turned on): not carried
     for (const char* p : {Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName, Performance::kLotLightingName,
-                          Performance::kWallShadingName, Performance::kFastTextureName, Performance::kFastCacheName, Performance::kObjectIndexName})
+                          Performance::kWallShadingName, Performance::kFastTextureName, Performance::kFastCacheName, Performance::kSceneBudgetName,
+                          Performance::kObjectIndexName})
         if (name == p) return kPartPerformance;
     return 0;
 }
