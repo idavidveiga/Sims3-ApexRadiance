@@ -34,6 +34,7 @@
 #include "light_probe.h"
 #include "lot_light_bridge.h"
 #include "lightmap_smooth.h"
+#include "terrain_chunk_relight.h"
 #include "render_callbacks.h"
 #include "object_light_bridge.h"
 #include "level_light_share.h"
@@ -112,13 +113,20 @@ bool ReadRenderedChunk(const BYTE* chunk, int& ix, int& iz) {
 }
 
 // __fastcall with two stack arguments = __thiscall(terrain, chunk, force) for the caller (ECX = terrain, callee pops 8).
+// Also the completion signal (and QPC timing) of the chunks the local terrain relight releases (ChunkRelight): this is
+// the game's one-chunk-per-update sweep branch they go through (chunk+0x54).
 void __fastcall ChunkRenderThunk(void* terrain, void* /*edx*/, BYTE* chunk, int force) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
     reinterpret_cast<ChunkRender_t>(kChunkRenderFn)(terrain, chunk, static_cast<char>(force));
+    QueryPerformanceCounter(&t1);
     int ix = 0, iz = 0;
-    if (ReadRenderedChunk(chunk, ix, iz)) {
+    const bool rendered = ReadRenderedChunk(chunk, ix, iz);
+    if (rendered) {
         g_chunkRenders.fetch_add(1, std::memory_order_relaxed);
         LightmapSmooth::NoteChunkRendered(ix, iz);
     }
+    ChunkRelight::OnChunkRendered(terrain, chunk, rendered, t1.QuadPart - t0.QuadPart);
 }
 
 // Lot room light solve: FUN_006be020 (street-lamp class contribution, vfunc+0x4C) reads the lamp's effective colour
@@ -162,6 +170,13 @@ float g_waterStrengthSetting = 1.0f;
 float g_waterReflSetting = 1.0f;
 bool g_allLotsHQ = false;
 bool g_lotPassNoTerrainMap = false;
+// Developer toggles (29/09, not yet tested in game; the public build never registers them: always off there):
+//  - relightNearbyChunks: a lamp change re-renders only the terrain chunks under the changed lamps, one at a time through
+//    the game's sweep branch (features/terrain_chunk_relight.cpp), instead of Apex's full rebuild;
+//  - relightPacedSweep: Apex's own dusk and lamp-change full rebuilds become a paced sweep of every chunk, nearest to the
+//    camera first (the world-load rebuild and the button stay full rebuilds).
+bool g_localRelight = false;
+bool g_pacedSweep = false;
 
 // FUN_00c7f750(chunk, lot, out) builds the per-chunk light/fog pass. For the LOT pass (lot=1, [ebp+0Ch]) it binds the
 // rebuilt terrain lightmap chunk+0xD8 when it exists; that texture has no street-lamp light inside lot footprints, so
@@ -218,7 +233,7 @@ constexpr auto kAutoMinInterval = std::chrono::seconds(30); // automatic lamp ch
 constexpr auto kCameraStill = std::chrono::seconds(1);
 constexpr auto kGameRebuiltSlack = std::chrono::seconds(2); // a rebuild up to 2 s before a change was SEEN already had it
 constexpr auto kSnapshotWaitMax = std::chrono::seconds(2);
-enum class EditWait { None, Snapshot, Camera, Interval, Rate };
+enum class EditWait { None, Snapshot, Camera, Interval, Rate, Relight, LampRate };
 EditWait g_editWait = EditWait::None;
 // Lamps the bake took at the last rebuild (the first light enumeration after it was consumed)
 LotLightBridge::BakeSnapshot g_baked;
@@ -232,6 +247,35 @@ int g_editDiffEnum = -1;
 std::vector<uint64_t> g_editUserLots; // lots of the user-driven changes of the pending batch
 // decisions (developer status)
 int g_decRebuiltUser = 0, g_decRebuiltAuto = 0, g_decSkipGame = 0, g_decSkipSame = 0, g_decCovered = 0, g_decDeferCamera = 0, g_decDeferRate = 0;
+
+// Local terrain relight (relightNearbyChunks; terrain-relight.md "Local terrain relight"). A lamp change queues the chunks
+// under the changed lamps' old and new rects (ChunkRelight); the batch remembers the lots it bakes and their lamps as they
+// were when it was decided, and when every chunk of it was re-rendered those replace the lots' lamps in g_baked
+// (LotLightBridge::CoverLots), exactly what a rebuild's snapshot would have done for them. While a batch is queued the
+// next lamp change waits for it (then it is compared with the updated snapshot). A consumed rebuild drops the batches
+// (its own snapshot covers everything).
+struct LocalBatch {
+    int id = 0;
+    std::vector<uint64_t> lots; // sorted, unique
+    std::vector<LotLightBridge::BakeLamp> lamps;
+    std::string what;
+};
+std::vector<LocalBatch> g_localBatches;
+// Automatic changes (switched, dimmed, recoloured) relight the same lamp at most once per 5 s (the full rebuild's 30 s
+// rule was sized for ~240 ms frames); user-driven changes are relit at once.
+struct RelitLamp {
+    uint64_t lot = 0;
+    int type = 0;
+    float pos[3] = {};
+    Clock::time_point at{};
+};
+std::vector<RelitLamp> g_relitLamps;
+constexpr auto kLocalAutoPerLamp = std::chrono::seconds(5);
+int g_decLocalUser = 0, g_decLocalAuto = 0, g_decLocalRefused = 0, g_localDone = 0, g_sweepsStarted = 0, g_sweepsDone = 0, g_localFailures = 0;
+std::string g_lastLocal = "none", g_lastLocalRefusal = "none";
+int g_sweepId = 0;
+std::string g_sweepReason;
+Clock::time_point g_sweepAt{};
 
 // Camera eye [[root]+camera]+eye, the read WorldManager::Update does (0x00C6D5BD..0x00C6D5C9 on Steam; offsets parsed from
 // the code: root getter "A1 imm32 C3", camera getter "8B 41 disp8 C3", "0F 28 40 disp8" after the getter's call;
@@ -539,9 +583,12 @@ std::string CameraText(Clock::time_point now) {
     return CameraStill(now) ? "still" : "moving";
 }
 
+bool g_editLocalRefused = false; // the local path refused the pending change: the full path takes it (until a new change)
+
 // A lamp change (or a switch) to decide on once nothing changed for kEditQuiet. user: fast path; force: no snapshot
 // compare (the switch changes what the bake takes, not the lamps); backdate: decide at the next frame.
 void NoteEdit(Clock::time_point now, bool user, bool force, const std::string& reason, bool backdate = false) {
+    g_editLocalRefused = false; // new information: the local path may take it now
     if (!g_editKickPending) {
         g_editFirstAt = now;
         g_editUser = false;
@@ -569,13 +616,129 @@ void WaitEdit(EditWait state, const std::string& text) {
     if (g_editWait == state) return;
     g_editWait = state;
     if (state == EditWait::Camera) g_decDeferCamera++;
-    if (state == EditWait::Rate || state == EditWait::Interval) g_decDeferRate++;
-    if (state == EditWait::Snapshot) return; // at most 2 s, not worth a line
+    if (state == EditWait::Rate || state == EditWait::Interval || state == EditWait::LampRate) g_decDeferRate++;
+    if (state == EditWait::Snapshot || state == EditWait::Relight) return; // at most a few seconds, not worth a line
     g_lastEditOutcome = std::format("{}: {}", g_editReason, text);
     if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
 }
 
 const char* EditKind() { return g_editForce ? "switch" : (g_editUser ? "user-driven" : "automatic"); }
+
+// ---- local terrain relight and paced sweep (relightNearbyChunks / relightPacedSweep) ----
+
+bool SameLamp(uint64_t lot, int type, const float* pos, const RelitLamp& r) {
+    if (lot != r.lot || type != r.type) return false;
+    const float dx = pos[0] - r.pos[0], dy = pos[1] - r.pos[1], dz = pos[2] - r.pos[2];
+    return dx * dx + dy * dy + dz * dz <= 0.05f * 0.05f;
+}
+
+// The lamps of the pending change for ChunkRelight: every counted difference with its old and / or new rect, and for a
+// user-driven change on a lot the last rebuild did not have (streamed in later, or its first lamp), every lamp of that
+// lot the bake takes now: none of them was ever baked.
+std::vector<ChunkRelight::Lamp> LocalLamps(const std::vector<uint64_t>& newLots) {
+    std::vector<ChunkRelight::Lamp> out;
+    for (const LotLightBridge::BakeChange& c : g_editDiff.changes) {
+        ChunkRelight::Lamp l;
+        l.x = c.pos[0]; // position +0x120 (x, y, z): the rect is x / z
+        l.z = c.pos[2];
+        if (c.hasOld) std::memcpy(l.rect[l.rects++], c.oldRect, sizeof c.oldRect);
+        if (c.hasNew) std::memcpy(l.rect[l.rects++], c.newRect, sizeof c.newRect);
+        if (l.rects > 0) out.push_back(l);
+    }
+    for (const LotLightBridge::BakeLamp& b : LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), newLots)) {
+        if (!LotLightBridge::BakeTakes(b, g_lotLamps)) continue;
+        ChunkRelight::Lamp l;
+        l.x = b.pos[0];
+        l.z = b.pos[2];
+        l.rects = 1;
+        std::memcpy(l.rect[0], b.rect, sizeof b.rect);
+        out.push_back(l);
+    }
+    return out;
+}
+
+// The pending change through the local relight. 1 = queued (FinishEdit called), 2 = waiting (WaitEdit called), 0 = not
+// possible (`why`): the caller takes the full path with its own limits.
+int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const std::string& diffText, std::string& why) {
+    const std::vector<ChunkRelight::Lamp> lamps = LocalLamps(newLots);
+    if (lamps.empty()) {
+        why = "no lamp rect to relight";
+        return 0;
+    }
+    const bool user = g_editUser;
+    std::erase_if(g_relitLamps, [now](const RelitLamp& r) { return now - r.at >= kLocalAutoPerLamp; });
+    if (!user) { // automatic: camera still, and at most once per 5 s per lamp (user-driven changes are relit at once)
+        if (!CameraStill(now)) {
+            WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
+            return 2;
+        }
+        for (const LotLightBridge::BakeChange& c : g_editDiff.changes)
+            for (const RelitLamp& r : g_relitLamps)
+                if (SameLamp(c.lot, c.type, c.pos, r)) {
+                    WaitEdit(EditWait::LampRate, std::format("rate-limited: a lamp of this change was relit locally less than {} s ago ({})", kLocalAutoPerLamp.count(), diffText));
+                    return 2;
+                }
+    }
+    std::string chunks;
+    const int id = ChunkRelight::QueueLocal(lamps, why, chunks);
+    if (!id) return 0;
+    LocalBatch b;
+    b.id = id;
+    b.lots = g_editDiff.Lots();
+    b.lots.insert(b.lots.end(), newLots.begin(), newLots.end());
+    std::sort(b.lots.begin(), b.lots.end());
+    b.lots.erase(std::unique(b.lots.begin(), b.lots.end()), b.lots.end());
+    b.lamps = LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), b.lots);
+    b.what = std::format("{} lamp{}, chunks {}", lamps.size(), lamps.size() == 1 ? "" : "s", chunks);
+    for (const LotLightBridge::BakeChange& c : g_editDiff.changes) {
+        RelitLamp r;
+        r.lot = c.lot;
+        r.type = c.type;
+        std::memcpy(r.pos, c.pos, sizeof r.pos);
+        r.at = now;
+        g_relitLamps.push_back(r);
+    }
+    // the "lights changed" fallback must not fire again for the same arms
+    g_lastStuckKick = now;
+    g_armsAtLastStuckKick = g_lotLampArms.load();
+    (user ? g_decLocalUser : g_decLocalAuto)++;
+    FinishEdit(std::format("{} ({}): relit locally ({}; {})", g_editReason, EditKind(), diffText, b.what));
+    g_localBatches.push_back(std::move(b));
+    return 1;
+}
+
+// A paced sweep started (relightPacedSweep): like a consumed rebuild, the lamps as they are now go into the snapshot (the
+// chunks are re-rendered over the next seconds, as the game's own sweep after a full rebuild is).
+void StartSweep(int id, const std::string& reason, const std::string& info, Clock::time_point now) {
+    g_sweepId = id;
+    g_sweepReason = reason;
+    g_sweepAt = now;
+    g_sweepsStarted++;
+    g_localBatches.clear(); // their chunks were dropped from the queue: the sweep bakes those lamps too
+    g_lastRebuildAt = now;
+    g_bakedDue = true;
+    g_bakedDueAt = now;
+    g_bakedDueEnum = LotLightBridge::LampEnumerations();
+    LotLightBridge::RequestLampRefresh();
+    LightmapSmooth::NoteKick(reason.c_str());
+    g_lastEvent = std::format("Terrain sweep started: {} ({})", reason, info);
+    LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
+}
+
+// Apex's own rebuild of every chunk (dusk; a lamp change the local path did not take; a switch): with relightPacedSweep a
+// paced sweep, one chunk at a time nearest to the camera first; otherwise (or when the sweep is not possible) the kick:
+// every chunk baked in one frame (~240 ms), then the game's own sweep.
+void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool dusk, Clock::time_point now) {
+    if (g_pacedSweep) {
+        float eye[3] = {};
+        const bool haveEye = g_camOk && ReadEye(eye);
+        const float eyeXZ[2] = {eye[0], eye[2]};
+        std::string why, info;
+        if (const int id = ChunkRelight::QueueSweep(haveEye ? eyeXZ : nullptr, why, info)) return StartSweep(id, reason, info, now);
+        if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Paced sweep not possible ({}): {}; full rebuild instead", reason, why));
+    }
+    Kick(cells, level, reason, dusk);
+}
 
 // The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).
 void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_point now) {
@@ -585,7 +748,11 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
         return FinishEdit(std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk"));
     if (!g_pendingReason.empty() && c38 > 0) return FinishEdit(std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason));
     if (g_bakedDue) return WaitEdit(EditWait::Snapshot, "waiting for the snapshot of the rebuild that just ran");
+    // a local relight or paced sweep in progress: its lamps go into the snapshot when it ends, then this change is
+    // compared with it (so the same lamps are never queued twice)
+    if (ChunkRelight::Busy()) return WaitEdit(EditWait::Relight, "waiting for the terrain relight in progress");
     std::string diffText = "no snapshot of the last rebuild: rebuilt to be safe";
+    std::vector<uint64_t> newLots; // user-driven changes on lots the last rebuild did not have (sorted, unique)
     if (g_editForce)
         diffText = "switch";
     else if (g_haveBaked) {
@@ -596,9 +763,11 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
         diffText = g_editDiff.Text();
         // DiffBake only looks at lots the last rebuild had: a lamp placed / moved / removed on a lot that streamed in
         // after it still rebuilds (Build mode on a lot visited later)
-        bool userLotNotBaked = false;
         for (uint64_t lot : g_editUserLots)
-            if (!std::binary_search(g_baked.lots.begin(), g_baked.lots.end(), lot)) userLotNotBaked = true;
+            if (!std::binary_search(g_baked.lots.begin(), g_baked.lots.end(), lot)) newLots.push_back(lot);
+        std::sort(newLots.begin(), newLots.end());
+        newLots.erase(std::unique(newLots.begin(), newLots.end()), newLots.end());
+        const bool userLotNotBaked = !newLots.empty();
         if (userLotNotBaked) diffText += "; a user-driven change on a lot the last rebuild did not have";
         if (!g_editDiff.Any() && !userLotNotBaked) {
             // the bake already has the lamps as they are: a rebuild ran after the change (the game's own, or any other),
@@ -609,6 +778,18 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
                                           rebuiltSince ? "the terrain was rebuilt after the change" : "no change the terrain bake uses", diffText));
         }
     }
+    // Local terrain relight: only the chunks under the changed lamps (not for switches, which change every lot lamp, nor
+    // without a snapshot to compare with). Refused (layout, more than 16 chunks, no rebuilt light map, ...): the full path
+    // below, with its own limits, until the next change comes in.
+    if (g_localRelight && g_haveBaked && !g_editForce && !g_editLocalRefused) {
+        std::string why;
+        if (TryLocal(now, newLots, diffText, why) != 0) return;
+        g_editLocalRefused = true;
+        g_decLocalRefused++;
+        g_lastLocalRefusal = why;
+        if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Lamp change: {}: local relight not possible ({}): full rebuild path", g_editReason, why));
+        diffText += "; local relight not possible: " + why;
+    }
     if (!CameraStill(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
     const bool fast = g_editForce || g_editUser;
     if (fast && now - g_lastEditKick < kEditMinInterval) return WaitEdit(EditWait::Interval, "rate-limited: at most one lamp rebuild every 3 s");
@@ -617,13 +798,14 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
                                                     kAutoMinInterval.count(), std::chrono::duration_cast<std::chrono::seconds>(now - g_lastRebuildAt).count(), diffText));
     const std::string reason = g_editReason;
     const std::string kind = EditKind();
-    Kick(cells, level, reason);
+    const int sweepsBefore = g_sweepsStarted;
+    RebuildAll(cells, level, reason, false, now);
     g_lastEditKick = now;
     // the "lights changed" fallback must not rebuild again for the same arms
     g_lastStuckKick = now;
     g_armsAtLastStuckKick = g_lotLampArms.load();
     (fast ? g_decRebuiltUser : g_decRebuiltAuto)++;
-    FinishEdit(std::format("{} ({}): rebuilt ({})", reason, kind, diffText));
+    FinishEdit(std::format("{} ({}): {} ({})", reason, kind, g_sweepsStarted != sweepsBefore ? "rebuilt by a paced sweep" : "rebuilt", diffText));
 }
 
 // Runs on the render thread, the same thread as the game's light update and terrain update.
@@ -661,6 +843,10 @@ void OnPresent() {
         g_bakedDue = false;
         g_baked = LotLightBridge::BakeSnapshot{};
         g_editDiffEnum = -1;
+        ChunkRelight::OnWorldChanged(); // the local relight waits for this world's first rebuild again
+        g_localBatches.clear();
+        g_relitLamps.clear();
+        g_sweepId = 0;
         LOG_INFO(std::format("[NightTerrainRelight] World loaded ({}): the terrain rebuild waits until the world is drawn and the night level is steady",
                              LevelText(s.level)));
         LotLightBridge::OnWorldChanged(); // drop the previous world's chunk maps, smoothed maps and atlas
@@ -712,6 +898,12 @@ void OnPresent() {
         g_pendingDusk = false;
         LOG_INFO("[NightTerrainRelight] " + g_lastEvent + (ours ? std::format(" {:.0f} ms after it was armed", MsSince(g_kickAt)) : std::string()));
         LightmapSmooth::OnTerrainRebuilt(); // every chunk map is re-rendered over the next frames
+        // Every chunk is re-rendered by this rebuild: a pending local relight or paced sweep is dropped (the snapshot
+        // taken below covers its lamps). The first rebuild of a world (the load rebuild) enables the local path.
+        const bool localPending = ChunkRelight::OnFullRebuild();
+        if (localPending && !kPublicBuild) LOG_INFO("[NightTerrainRelight] Pending local terrain relight / paced sweep dropped: this rebuild re-renders every chunk");
+        g_localBatches.clear();
+        g_sweepId = 0;
         // This rebuild bakes the lamps as they are now: a lamp change still waiting is taken by it (29/09: the game's own
         // rebuilds were followed within ~1 s by an Apex kick for the same change, two ~240 ms frames in a row), and the
         // snapshot of what it baked is taken from the light enumeration forced for this frame.
@@ -762,7 +954,7 @@ void OnPresent() {
     if (g_scheduled && now >= g_scheduledAt) {
         g_scheduled = false;
         if (night) {
-            Kick(s.cells, s.level, "dusk", true);
+            RebuildAll(s.cells, s.level, "dusk", true, now); // relightPacedSweep: a paced sweep instead of the full rebuild
             if (g_relightLots) { // fallback if the terrain rebuild does not happen
                 g_lotRelightPending = true;
                 g_lotRelightAt = now + std::chrono::seconds(6);
@@ -826,11 +1018,46 @@ void OnPresent() {
 
     if (g_editKickPending && now - g_editLastAt >= kEditQuiet) DecideEdit(s.cells, s.level, night, c38, now);
 
+    // Local terrain relight / paced sweep: completion of the chunk in flight, release of the next one (at most one per
+    // frame, a free frame in between, at most 8 per second). A finished local batch puts its lamps into the snapshot; a
+    // failure (a chunk never rendered, the terrain changed) falls back to the full rebuild, once (the local path stays
+    // off for this world).
+    {
+        ChunkRelight::FrameResult fr;
+        ChunkRelight::OnPresent(fr);
+        for (const ChunkRelight::Done& d : fr.done) {
+            if (d.sweep) {
+                if (d.id != g_sweepId) continue;
+                g_sweepId = 0;
+                g_sweepsDone++;
+                g_lastEvent = std::format("Terrain sweep done: {} ({}, {:.1f} s after it started)", g_sweepReason, d.text, MsSince(g_sweepAt) / 1000.0);
+                LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
+                continue;
+            }
+            const auto it = std::find_if(g_localBatches.begin(), g_localBatches.end(), [&d](const LocalBatch& b) { return b.id == d.id; });
+            if (it == g_localBatches.end()) continue;
+            if (g_haveBaked) LotLightBridge::CoverLots(g_baked, it->lots, it->lamps);
+            g_editDiffEnum = -1; // compare again with the updated snapshot
+            g_localDone++;
+            g_lastLocal = std::format("{}: {}", it->what, d.text);
+            if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Local relight done: " + g_lastLocal);
+            g_localBatches.erase(it);
+        }
+        if (fr.failed) {
+            g_localFailures++;
+            g_localBatches.clear();
+            g_sweepId = 0;
+            Kick(s.cells, s.level, "local terrain relight failed (" + fr.why + ")");
+        }
+    }
+
     // A rebuild is coming (load, dusk, user-driven lamp change, armed): the smoothed maps hold new smoothing jobs until it
     // happened (the game's maps are shown meanwhile), so no chunk is smoothed twice. Not for automatic lamp changes: they
-    // can wait up to 30 s and are often skipped.
+    // can wait up to 30 s and are often skipped. Nor for lamp changes the local relight will take (it re-renders only a
+    // few chunks, which are smoothed at once).
     const bool armed = !g_pendingReason.empty() && c38 >= 0 && now - g_kickAt < std::chrono::seconds(5);
-    const bool editSoon = g_editKickPending && (night || !g_autoDusk) && (g_editUser || g_editForce);
+    const bool localLikely = g_localRelight && g_haveBaked && !g_editForce && !g_editLocalRefused && ChunkRelight::LikelyAvailable();
+    const bool editSoon = g_editKickPending && (night || !g_autoDusk) && (g_editUser || g_editForce) && !localLikely;
     if (g_loadKickPending || (g_scheduled && night) || editSoon || armed) LightmapSmooth::ExpectRebuild(30);
 
     const bool relightNow = g_relightLotsRequested.exchange(false);
@@ -923,6 +1150,7 @@ void LoadAddresses() {
     kQualitySites[0] = Get(Id::QualitySite0);
     kQualitySites[1] = Get(Id::QualitySite1);
     ResolveCamera(); // lamp change rebuilds wait for the camera to be still
+    ChunkRelight::Init(); // local terrain relight: WorldManager global and terrain link (optional)
     if constexpr (!kPublicBuild)
         LOG_INFO(g_camOk ? std::format("[NightTerrainRelight] Camera eye for the lamp change rebuilds: [[{:#010x}]+{:#x}]+{:#x}", g_camRootGlobal, g_camOff, g_eyeOff)
                          : std::string("[NightTerrainRelight] Camera eye not found in the game's code: lamp change rebuilds do not wait for the camera"));
@@ -1037,6 +1265,14 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", false,
             S3SS_TR("Depois de refazer o terreno a noite, recalcula a luz de todos os lotes como quando um poste e movido no modo construcao.",
                     "Experimental: after the dusk terrain rebuild, re-solve the light of every lot."));
+        if constexpr (!kPublicBuild) { // developer only until tested in game (off by default; the public build keeps the full rebuilds)
+            RegisterBoolSetting(&g_localRelight, "relightNearbyChunks", false,
+                "Developer: a lamp change re-renders only the terrain chunks under the changed lamps, one per frame through the game's own "
+                "chunk sweep, instead of rebuilding every chunk at once (~240 ms). Falls back to the full rebuild when it cannot.");
+            RegisterBoolSetting(&g_pacedSweep, "relightPacedSweep", false,
+                "Developer: the dusk rebuild and lamp-change rebuilds re-render every terrain chunk one at a time, nearest to the camera "
+                "first, instead of all at once. The rebuild after loading a world stays a full rebuild.");
+        }
     }
 
     bool Install() override {
@@ -1160,6 +1396,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LOG_WARNING(chunkMissing.empty() ? std::format("[NightTerrainRelight] Terrain chunk re-render call differs at 0x{:X}: changed ground light maps are found by hashing only",
                                                            kChunkRenderCall)
                                              : "[NightTerrainRelight] Terrain chunk re-render call: " + chunkMissing + " (changed ground light maps are found by hashing only)");
+        ChunkRelight::SetHooked(g_chunkHookInstalled); // the local relight and the paced sweep need its completion signal
 
         // Installed again in the world it was removed from (the menu's on/off): no new-world handling (no clear, no load
         // rebuild), only one rebuild at night so lot lamps changed meanwhile reach the ground.
@@ -1250,6 +1487,17 @@ class NightTerrainRelightPatch : public ApexPatch {
         FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
         patchedLocations.clear();
         g_chunkHookInstalled = false;
+        // The chunk re-render call is the game's own again: a local relight in progress is dropped (the chunk in flight, if
+        // any, is rendered by the game at its next update). Its lamps were never marked as baked: the change is decided
+        // again (the diff against the snapshot still shows it). A paced sweep in progress is cut short: its snapshot was
+        // taken when it started, so the chunks it did not reach get a rebuild without the snapshot compare (a switch).
+        ChunkRelight::SetHooked(false);
+        const bool localPending = !g_localBatches.empty(), sweepPending = g_sweepId != 0;
+        ChunkRelight::Drop();
+        g_localBatches.clear();
+        g_sweepId = 0;
+        if (sweepPending) NoteEdit(Clock::now(), true, true, "paced terrain sweep interrupted", true);
+        else if (localPending) NoteEdit(Clock::now(), true, false, "local terrain relight interrupted", true);
         g_lotRelightPending = false;
         g_scheduled = false;
         // g_lastCells is kept: installing again in the same world is not a world load (no clear, no load rebuild). A
@@ -1362,6 +1610,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_allLotsHQ = false;
         g_lotPassNoTerrainMap = false;
         g_relightLots = false;
+        g_localRelight = false;
+        g_pacedSweep = false;
     }
 
     // ---- menu (see night_lighting.h): the Night Lights page draws these pieces card by card ----
@@ -1612,6 +1862,8 @@ class NightTerrainRelightPatch : public ApexPatch {
                                : g_editWait == EditWait::Rate ? "rate-limited (automatic: 30 s after the last rebuild)"
                                : g_editWait == EditWait::Interval ? "rate-limited (3 s between lamp rebuilds)"
                                : g_editWait == EditWait::Snapshot ? "waiting for the snapshot of the last rebuild"
+                               : g_editWait == EditWait::Relight  ? "waiting for the terrain relight in progress"
+                               : g_editWait == EditWait::LampRate ? "rate-limited (a lamp relit locally less than 5 s ago)"
                                                                    : "quiet time (250 ms)";
             const std::string snap = g_haveBaked ? std::format("{} lamps on {} lots, taken {:.0f} s ago", g_baked.lamps.size(), g_baked.lots.size(),
                                                                std::chrono::duration<double>(now - g_bakedAt).count())
@@ -1623,6 +1875,13 @@ class NightTerrainRelightPatch : public ApexPatch {
                                g_lastEditOutcome.c_str());
         }
         ImGui::Text("Chunk re-render notices: %d (%s)", g_chunkRenders.load(), g_chunkHookInstalled ? "hooked at 0xC8504C" : "not hooked: hashing only");
+        if (ImGui::Checkbox("Relight only nearby terrain (lamp changes re-render only the chunks under the changed lamps)", &g_localRelight)) NotifySettingChanged();
+        if (ImGui::Checkbox("Paced terrain sweep (dusk and lamp-change rebuilds re-render one chunk at a time, nearest first)", &g_pacedSweep)) NotifySettingChanged();
+        ImGui::TextWrapped("Local terrain relight: relit locally %d user-driven / %d automatic, done %d, refused %d (last: %s), failures %d | paced sweeps: %d started, %d done%s | "
+                           "last: %s",
+                           g_decLocalUser, g_decLocalAuto, g_localDone, g_decLocalRefused, g_lastLocalRefusal.c_str(), g_localFailures, g_sweepsStarted, g_sweepsDone,
+                           g_sweepId ? std::format(" (one running: {})", g_sweepReason).c_str() : "", g_lastLocal.c_str());
+        ImGui::TextWrapped("Terrain chunks: %s", ChunkRelight::Status().c_str());
         ImGui::TextWrapped("Lots: %s (times: %d, stories: %d)", g_lastLotRelight.c_str(), g_lotRelights.load(), g_roomsQueued.load());
         ImGui::Text("Street lamps counted as lit: %ld", static_cast<long>(g_forcedLampUses));
         ImGui::Text("Lot lamps: armed %d | on the ground %d | off %d", g_lotLampArms.load(), g_lotLampsBaked.load(), g_lotLampsSkippedOff.load());

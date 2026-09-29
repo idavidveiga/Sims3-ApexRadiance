@@ -176,6 +176,8 @@ constexpr Info kInfo[] = {
     {"SceneNodeSpatial", 0x006FAD70},
     {"ObjectTreeWalk", 0x00C60D30},
     {"ObjectTreeSearch", 0x00C5FA60},
+    {"WorldManagerPtr", 0x011ECBC4},
+    {"TerrainUpdateCall", 0x00C6D68C},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -374,6 +376,10 @@ const Entry kTable[] = {
     // ---- Object lookup index (docs/features/performance.md): the tree walk behind ObjectById ----
     {Id::ObjectTreeWalk, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 08 55 8B 6C 24 10 56 8B F1 8B CB 33 C0 0B CD 74 ?? 8B 96 A0 00 00 00 2B 96 9C 00 00 00 57 33 FF C1 FA 02", 0, M::At}, {"8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", 6, M::Call}}},
     {Id::ObjectTreeSearch, K::Sig, W::Text, None, 0, {{"53 55 56 8B 74 24 10 85 F6 0F 84 ?? ?? ?? ?? 8B 46 48 8B 5C 24 14 3B C3 8B 6C 24 18 75 ?? 8B 4E 4C 3B CD 74", 0, M::At}, {"8B 04 B8 51 55 53 50 E8 ?? ?? ?? ?? 83 C4 10 85 C0 75", 7, M::Call}}},
+    // ---- Local terrain relight (docs/features/night-lighting/terrain-relight.md): the WorldManager global from the store in
+    //      FUN_00c6cf80 ("lea ecx,[ebp+9Ch]; mov [global],ebp; call"), alternate: the clear in FUN_00c6b500; the terrain link ----
+    {Id::WorldManagerPtr, K::Sig, W::Image, None, 0, {{"8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8", 8, M::Dword}, {"51 53 56 33 DB 8B F1 89 1D ?? ?? ?? ?? 8B 8E 6C 01 00 00", 9, M::Dword}}},
+    {Id::TerrainUpdateCall, K::Sig, W::Text, None, 0, {{"8B 44 24 0C 50 8D 4C 24 14 51 8B 4E 58 E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00", 10, M::At}, {"51 8B 4E ?? E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00 75", 1, M::At}}},
 };
 // clang-format on
 #undef NOSIG

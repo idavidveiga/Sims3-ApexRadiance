@@ -120,6 +120,7 @@
     <ClCompile Include="features\rig_tracker.cpp" />
     <ClCompile Include="features\scene_budget.cpp" />
     <ClCompile Include="features\shader_patches.cpp" />
+    <ClCompile Include="features\terrain_chunk_relight.cpp" />
     <ClCompile Include="framework\apex_log.cpp" />
     <ClCompile Include="framework\apex_paths.cpp" />
     <ClCompile Include="framework\apex_util.cpp" />
@@ -174,6 +175,7 @@
     <ClInclude Include="features\rig_tracker.h" />
     <ClInclude Include="features\scene_budget.h" />
     <ClInclude Include="features\shader_patches.h" />
+    <ClInclude Include="features\terrain_chunk_relight.h" />
     <ClInclude Include="framework\apex_log.h" />
     <ClInclude Include="framework\apex_paths.h" />
     <ClInclude Include="framework\apex_util.h" />

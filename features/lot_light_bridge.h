@@ -29,6 +29,7 @@ struct BakeLamp {
     int type = 0;           // +0xB0: 3..6 lot lamp classes, 0xB street-lamp class
     float pos[3] = {};      // +0x120
     float light[3] = {};    // what the bake draws: base colour +0xF0 x intensity +0x10 x range +0x130 (the bake also x 0.2)
+    float rect[4] = {};     // light rect +0x134 {minX, minZ, maxX, maxZ}: the bake draws the lamp into the chunks it overlaps
     bool baked = false;     // the bake takes it now: lit, (types 3..6) enabled, and its light is not zero
     bool animated = false;  // switches / dims by itself (3+ automatic changes within 60 s): its changes never trigger
 };
@@ -42,13 +43,33 @@ const BakeSnapshot& CurrentBakeLamps();
 // streamed in later were never baked, and streaming never rebuilds). Lamps are matched by type and place (5 cm), not by
 // pointer. Light changes under 5 % per channel are noise; animated lamps are counted apart and never make Any() true.
 // plainLamps false: "Lot lamps light the street" is off, lamps of type 3..6 are not in the bake.
+// One counted difference (animated lamps are not listed): the rect the lamp had in the bake (old, when it was in it) and
+// the one it has now (new, when it is in it now). A moved lamp is a removal plus an addition. The terrain chunks under
+// the old and new rects are the only ones whose light map the change can alter (the local terrain relight).
+struct BakeChange {
+    uint64_t lot = 0;
+    int type = 0;
+    float pos[3] = {};       // now (additions, matches) or last baked (removals)
+    bool user = false;       // added / removed / moved (Build mode); else switched on / off or relit (automatic)
+    bool hasOld = false, hasNew = false;
+    float oldRect[4] = {}, newRect[4] = {};
+};
 struct BakeDiff {
     int added = 0, removed = 0, switchedOn = 0, switchedOff = 0, light = 0, lots = 0, animated = 0;
+    std::vector<BakeChange> changes; // every counted difference, lot by lot
     bool Any() const { return added + removed + switchedOn + switchedOff + light > 0; }
     bool Structural() const { return added + removed > 0; } // placed, deleted or moved (Build mode)
+    std::vector<uint64_t> Lots() const; // lots of `changes` (sorted, unique)
     std::string Text() const;
 };
 BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps);
+// The bake takes this lamp (in the snapshot's state); plainLamps false: "Lot lamps light the street" is off (types 3..6 out)
+bool BakeTakes(const BakeLamp& b, bool plainLamps);
+// The lamps of `lots` (sorted, unique) in a snapshot, sorted by lot
+std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint64_t>& lots);
+// A local terrain relight finished: the bake now has `lamps` (taken with LampsOfLots when it was decided) for `lots`.
+// Replaces those lots' lamps in `baked` and adds the lots to it, so the next DiffBake compares against them.
+void CoverLots(BakeSnapshot& baked, const std::vector<uint64_t>& lots, const std::vector<BakeLamp>& lamps);
 int LampEnumerations(); // light enumerations done (the snapshot changes only when this does)
 // Lots of the latest counted user-driven change (LotLampUserEdits went up with it)
 const std::vector<uint64_t>& LastUserChangeLots();
