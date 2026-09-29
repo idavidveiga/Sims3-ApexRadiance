@@ -346,6 +346,18 @@ const I18n::Entry kEntries[] = {
     {"Spread new objects over frames", "Espalhar objetos novos entre quadros", "Repartir objetos nuevos entre fotogramas", "Répartir les nouveaux objets sur plusieurs images"},
     {"Fewer hitches when a lot streams in while the camera moves", "Menos travadas quando um lote carrega com a câmera em movimento",
      "Menos tirones cuando un solar se carga con la cámara en movimiento", "Moins de saccades quand un terrain se charge pendant que la caméra bouge"},
+    // Settings > Menu: reset everything
+    {"Reset all settings", "Restaurar todas as configurações", "Restablecer todos los ajustes", "Réinitialiser tous les réglages"},
+    {"Reset all", "Restaurar tudo", "Restablecer todo", "Tout réinitialiser"},
+    {"Every feature and color setting back to its default; the window mode and the menu stay",
+     "Todas as funções e a cor voltam ao padrão; o modo da janela e o menu ficam como estão",
+     "Todas las funciones y el color vuelven a sus valores predeterminados; el modo de ventana y el menú no cambian",
+     "Toutes les fonctions et la couleur reviennent aux valeurs par défaut ; le mode de fenêtre et le menu restent inchangés"},
+    {"Put every feature back to its default? Undo can bring your settings back",
+     "Voltar todas as funções ao padrão? O Desfazer pode trazer suas configurações de volta",
+     "¿Volver todas las funciones a sus valores predeterminados? Deshacer puede recuperar tus ajustes",
+     "Remettre toutes les fonctions par défaut ? Annuler peut rétablir vos réglages"},
+    {"All settings reset", "Todas as configurações restauradas", "Todos los ajustes restablecidos", "Tous les réglages réinitialisés"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 

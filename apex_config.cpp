@@ -461,6 +461,21 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly) {
     Borderless::SaveToToml(out);
 }
 
+void DefaultFeatureState(toml::table& out) {
+    out = toml::table{};
+    toml::table patches;
+    for (const auto& p : PatchManager::Get().GetPatches()) {
+        toml::table t;
+        p->DefaultsToToml(t);
+        t.insert_or_assign("enabled", p->IsEnabledByDefault());
+        patches.insert_or_assign(p->GetName(), std::move(t));
+    }
+    out.insert_or_assign("patches", std::move(patches));
+    toml::table qol;
+    Picture::ParamsToToml(PictureParams{}, qol);
+    out.insert_or_assign("qol", std::move(qol));
+}
+
 void ApplyFeatureState(const toml::table& state) {
     bool any = false;
     if (const toml::table* patches = state["patches"].as_table()) {

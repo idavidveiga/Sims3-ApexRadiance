@@ -73,6 +73,9 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly = false);
 // settings and on / off through ApexPatch::ApplyTableLive, Picture through SetParams, the window mode through
 // Borderless::SetMode); sections the table does not have stay as they are. Marks unsaved changes and requests a save.
 void ApplyFeatureState(const toml::table& state);
+// Every feature at its defaults, as a CaptureFeatureState table: each setting's default and its default on / off, and
+// Color at its defaults. The window mode and the menu's own preferences (language, key, text size) are not included.
+void DefaultFeatureState(toml::table& out);
 
 // ---- profiles: Documents\...\Apex Radiance\Profiles\<name>.toml ----
 // Each file is CaptureFeatureState(profile features), limited to the parts chosen when it was saved, plus [meta] (the

@@ -97,7 +97,7 @@ Open it with **Ctrl+Shift+F11** (the key can be changed).
 - **Four languages:** English, Portuguese, Spanish and French ("Automatic" follows your Windows language).
 - **Search:** find any option by name, with or without accents.
 - **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
-- **Undo** after any change, **per-setting reset**, and a dot on everything changed from its default.
+- **Undo** after any change, **per-setting reset**, a dot on everything changed from its default, and **Reset all settings** (Settings > Menu) to start over.
 - Adjustable text size and a short welcome tour.
 - A Compatibility page with your game version and the other mods it detects.
 

@@ -855,6 +855,36 @@ std::string AutosaveHint() {
     return I18n::Trf("Saved to {}", path);
 }
 
+// Every feature back to its defaults (not the window mode nor the menu's preferences), after an inline confirmation;
+// the undo toast brings the previous settings back
+bool g_confirmResetAll = false;
+
+void ResetAllRow() {
+    const float resetW = ApexUi::ButtonWidth("Reset all", true), cancelW = ApexUi::ButtonWidth("Cancel##ResetAll", false);
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const char* description = g_confirmResetAll ? "Put every feature back to its default? Undo can bring your settings back"
+                                                : "Every feature and color setting back to its default; the window mode and the menu stay";
+    if (!ApexUi::BeginControlRow("Reset all settings", description, g_confirmResetAll ? resetW + gap + cancelW : resetW)) return;
+    if (!g_confirmResetAll) {
+        ImGui::BeginDisabled(Loading());
+        if (ApexUi::IconTextButton("Reset all", IconId::RotateCcw)) g_confirmResetAll = true;
+        ImGui::EndDisabled();
+    } else {
+        if (ApexUi::IconTextButton("Reset all", IconId::RotateCcw, nullptr, ButtonKind::Primary)) {
+            toml::table before, defaults;
+            ApexConfig::CaptureFeatureState(before);
+            ApexConfig::DefaultFeatureState(defaults);
+            ApexConfig::ApplyFeatureState(defaults);
+            LOG_INFO("[Menu] All settings reset to their defaults");
+            ShowToast(I18n::Tr("All settings reset"), std::move(before), "All settings reset");
+            g_confirmResetAll = false;
+        }
+        ImGui::SameLine();
+        if (ApexUi::TextButton("Cancel##ResetAll")) g_confirmResetAll = false;
+    }
+    ApexUi::EndControlRow();
+}
+
 void SaveRow() {
     if (!ApexUi::BeginControlRow("Save settings", "Changes also save by themselves after a second", ApexUi::ButtonWidth("Save now", true))) return;
     const std::string hint = AutosaveHint();
@@ -899,6 +929,7 @@ void MenuTab() {
         TextSizeRow();
         WelcomeRow();
         SaveRow();
+        ResetAllRow();
     }
     ApexUi::EndCard();
     ImGui::PopID();
