@@ -5,6 +5,7 @@
 #include "post_scene.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
+#include "render_callbacks.h"
 #include <algorithm>
 #include <mutex>
 #include <utility>
@@ -56,8 +57,17 @@ void OnGameDraw(IDirect3DDevice9* dev) {
     for (const auto& e : run) e.second(dev);
 }
 
+// A Reset replaces the back buffer and sets render target 0 to it without a SetRenderTarget call: both are read again at
+// the next frame boundary
+void OnPreReset(IDirect3DDevice9*) {
+    g_curRT0 = nullptr;
+    g_backBuffer = nullptr;
+    g_done = true;
+}
+
 void RegisterHooks() {
     using namespace D3D9Hooks;
+    RenderCallbacks::Add(RenderCallbacks::preReset, OnPreReset);
     RegisterPresent(kHookName, [](DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
         OnFrameBoundary(ctx.device);
         return HookAction::Continue;
@@ -102,6 +112,7 @@ void Remove(Effect fn) {
     if (g_effects.empty() && g_hooks) {
         g_hooks = false;
         D3D9Hooks::UnregisterAll(kHookName);
+        RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
     }
 }
 

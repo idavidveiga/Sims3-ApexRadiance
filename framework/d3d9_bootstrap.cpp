@@ -134,6 +134,8 @@ HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMET
         hr = o_reset(dev, pp);
     }
     if (SUCCEEDED(hr)) {
+        LOG_INFO(std::format("[D3D] Device reset: {}x{}, {}", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
+                             pp && pp->Windowed ? "windowed" : "exclusive fullscreen"));
         RenderCallbacks::Fire(RenderCallbacks::postReset, dev);
         Overlay::AfterReset();
         Borderless::OnDevice(g_window.load(), pp);

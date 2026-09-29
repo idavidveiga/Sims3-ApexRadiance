@@ -318,6 +318,12 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         gpu.backBuffer = s;
         s->Release();
     }
+    // after a device Reset (BeforeReset forgot it): render target 0 is the new back buffer, set by the Reset without any
+    // SetRenderTarget call the hook could see
+    if (!gpu.curRT0 && SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
+        gpu.curRT0 = s;
+        s->Release();
+    }
     gpu.frameReady = true;
     gpu.sceneDraws = 0;
     gpu.lastWasScene = false;
@@ -426,7 +432,15 @@ void Picture::ReleaseResources() {
     }
 }
 
-void Picture::BeforeReset() { ReleaseResources(); }
+// A Reset replaces the back buffer and sets render target 0 to it without a SetRenderTarget call: the remembered render
+// target must be read again (it was: Picture on from the start stayed on the loading screen's back buffer after the game's
+// Reset, never saw the scene on the back buffer, and changed nothing)
+void Picture::BeforeReset() {
+    ReleaseResources();
+    gpu.curRT0 = nullptr;
+    gpu.backBuffer = nullptr;
+    gpu.frameReady = false;
+}
 
 bool Picture::InitResources(IDirect3DDevice9* dev) {
     IDirect3DSurface9* bb = nullptr;
