@@ -48,7 +48,7 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 **System**
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
 - **Borderless window:** windowed or fullscreen, without a title bar.
-- **Menu:** search, profiles, undo, per-setting reset and a hold-to-compare view.
+- **Menu:** in English, Portuguese, Spanish or French; search, profiles (pick which parts to save and load), undo, per-setting reset and a hold-to-compare view.
 
 **Performance** (System > Performance; every option is experimental and has its own switch, so any that misbehaves can be turned off)
 
