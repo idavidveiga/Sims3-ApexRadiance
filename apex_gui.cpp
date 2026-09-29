@@ -548,12 +548,13 @@ void DisplayPage() {
 
 // A feature shown as one switch row inside a card (its description, which ends with the credit, on hover), with its
 // "Not available" / error notes under it. True while it is on (or in the search results, where its rows are searched).
-bool FeatureSwitchRow(const char* patchName, const char* label, const char* text) {
+bool FeatureSwitchRow(const char* patchName, const char* label, const char* text, bool experimental = false) {
     ApexPatch* patch = Find(patchName);
     if (!patch) return false;
     ImGui::PushID(patchName);
     bool on = patch->IsEnabled();
     ImGui::BeginDisabled(!Switchable(patch));
+    if (experimental) ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
     if (ApexUi::SwitchRow(label, &on, text, patch->IsEnabledByDefault())) SetPatch(patch, on);
     ImGui::EndDisabled();
     if (!ApexUi::FilterActive()) {
@@ -572,10 +573,10 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Performance", "Fewer stutters while you play", nullptr, nullptr);
         ApexUi::CardDivider();
-        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load"))
-            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has");
-        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes");
-        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
+        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load", true))
+            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has", true);
+        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes", true);
+        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves", true)) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());
             char value[16];
             std::snprintf(value, sizeof value, "%d ms", Performance::LotLightingBudgetMs());
@@ -587,15 +588,15 @@ void PerformanceCard() {
             o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
-        FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
-        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures")) {
+        FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop", true);
+        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures", true)) {
             bool cores = Performance::FastTextureSeveralCores();
             if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result", true))
                 Performance::SetFastTextureSeveralCores(cores);
         }
-        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches", true);
         // "Spread new objects over frames" (kSceneBudgetName) is suspended: SceneBudget::Start refuses it (crash risk)
-        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
+        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
