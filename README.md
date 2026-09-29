@@ -63,6 +63,7 @@ Off until you turn them on:
 - **Faster texture compression:** the game's texture encoder rewritten with the exact same output, split over several processor cores for large textures (a 2048×2048 texture: about 35 ms down to about 6 ms).
 - **Faster cache compression:** a faster compressor for what the game stores in its caches, in the game's own format.
 - **Faster object lookups:** less work when lot lights update and for scripts.
+- **Spread new objects over frames:** while the camera moves, new objects join the scene over a few frames instead of all at once (fewer hitches when a lot streams in).
 
 Apex Radiance's own shaders are compiled at startup on a background thread, never in the middle of play.
 
