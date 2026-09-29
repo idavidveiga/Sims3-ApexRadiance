@@ -33,7 +33,7 @@ jobs:
           for TAG in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,publishedAt --jq 'sort_by(.publishedAt) | .[].tagName'); do
             VERSION="${TAG#v}"
             if echo "$HAVE" | grep -qx "$VERSION"; then echo "skip $VERSION (already there)"; continue; fi
-            TEXT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | bash .github/scripts/nexus-changelog.sh)
+            TEXT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | bash .github/scripts/nexus-changelog.sh --changelog)
             [ -n "$TEXT" ] || { echo "skip $VERSION (no notes)"; continue; }
             jq -n --arg v "$VERSION" --arg c "$TEXT" '{version: $v, changelog: $c}' |
               api -X POST -H "Content-Type: application/json" --data @- "https://api.nexusmods.com/v3/mods/$V3_MOD/changelogs" > /dev/null

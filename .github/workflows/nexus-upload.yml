@@ -40,18 +40,13 @@ jobs:
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
           {
             echo "CHANGELOG<<APEX_EOF"
-            bash .github/scripts/nexus-changelog.sh < notes.md # plain lines for the Nexus changelog
+            bash .github/scripts/nexus-changelog.sh --changelog < notes.md # one line per change
             echo "APEX_EOF"
           } >> "$GITHUB_ENV"
-          # the file's description on the Nexus page: the whole notes of this version, then how to install
+          # the file's description on the Nexus page: header, UPPER-CASE sections with the whole notes, how to install
           {
             echo "DESCRIPTION<<APEX_EOF"
-            echo "Apex Radiance ${TAG#v}: lighting, visuals and performance for The Sims 3."
-            echo
-            echo "What's new in ${TAG#v}:"
-            bash .github/scripts/nexus-changelog.sh < notes.md
-            echo
-            echo "Install: close the game and copy ApexRadiance.asi into The Sims 3 > Game > Bin (needs an ASI loader). Your settings are kept."
+            bash .github/scripts/nexus-changelog.sh --description "${TAG#v}" < notes.md
             echo "APEX_EOF"
           } >> "$GITHUB_ENV"
 
