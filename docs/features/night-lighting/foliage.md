@@ -58,7 +58,7 @@ scales its per-instance colour `cN[a0.c]`. In the PS, lamp light and sun share t
 
 The 600-byte PS (`PsClass::ObjectRig`, exact id `kObjectRigPs`) computes `light = (t2 x shadow + sky x c1.w) x t1.z`: the
 lamp light (inside t2 with the sun) vanishes wherever the moon shadow falls (the side of a hedge or planter wall). It is
-replaced by `kObjectRigHlsl` (in `lot_light_bridge.cpp`, compiled as ps_2_0 with `d3dcompiler_47` `D3DCompile`), identical
+replaced by `kObjectRigHlsl` (in `lot_light_bridge.cpp`, compiled as ps_2_0 with `d3dcompiler_47` `D3DCompile`; since 2026-09-28 at start-up on a background thread, `framework/shader_cache.h`), identical
 except `shadow = lerp(shadow, 1, c3.x)`; `DrawObjectRig` sets PS `c3 = (night, 0, 0, 0)` for the draw and restores it. By
 day nothing changes. Checked first in `OnDrawInner` (before any VS class), only with `postesNosObjetos` on and night > 0.01.
 Precreated when the game creates that PS (`PrecreatePs`).

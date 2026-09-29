@@ -30,6 +30,7 @@
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "d3d9_hooks.h"
+#include "shader_cache.h"
 #include "build_flavor.h"
 #include "apex_paths.h"
 #include "apex_log.h"
@@ -139,6 +140,27 @@ float4 main(PSIn i) : COLOR0 {
     return float4(col, i.t1.w - tex.a);
 }
 )";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
 enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
 
@@ -377,28 +399,20 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
     return c;
 }
 
-// Compiles HLSL with d3dcompiler_47 and creates the pixel shader. Returns an error text, empty on success.
-std::string CompilePs(IDirect3DDevice9* dev, const char* hlsl, const char* target, IDirect3DPixelShader9** out) {
-    using D3DCompile_t = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-    static HMODULE mod = LoadLibraryA("d3dcompiler_47.dll");
-    static auto compile = mod ? reinterpret_cast<D3DCompile_t>(GetProcAddress(mod, "D3DCompile")) : nullptr;
-    if (!compile) return "d3dcompiler_47.dll not found";
-    ID3DBlob* code = nullptr;
-    ID3DBlob* errors = nullptr;
-    const HRESULT hr = compile(hlsl, std::strlen(hlsl), "lot_light_bridge", nullptr, nullptr, "main", target, 0, 0, &code, &errors);
-    if (FAILED(hr) || !code) {
-        std::string e = std::format("compile failed: {}", errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?");
-        if (errors) errors->Release();
-        return e;
+// Creates the pixel shader from its precompiled bytecode (shader_cache.h; compiled at start-up off the render thread).
+// Returns an error text, empty on success.
+std::string CompilePs(IDirect3DDevice9* dev, ShaderCache::Id id, IDirect3DPixelShader9** out) {
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, out, &msg)) {
+    case ShaderCache::Result::Ok:
+        return {};
+    case ShaderCache::Result::CompileFailed:
+        return std::format("compile failed: {}", msg.empty() ? std::string("?") : msg);
+    case ShaderCache::Result::CreateFailed:
+        break;
     }
-    if (errors) errors->Release();
-    std::string result;
-    if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), out))) {
-        *out = nullptr;
-        result = "could not create the shader";
-    }
-    code->Release();
-    return result;
+    *out = nullptr;
+    return "could not create the shader";
 }
 
 // ---- Roofs: the game's roof shader has no lamp light at all (sun/moon + sky only). ----
@@ -567,24 +581,40 @@ void UpdateLampList() {
     g_lampCount = static_cast<int>(g_allLamps.size());
 }
 
-// ---- Changes of outdoor lot lamps: edits (colour, brightness, on/off, position), additions and removals, e.g. in
-// Build mode. The terrain light has to be rebuilt for those; the game does it only when the lot is reloaded.
-// Lots streaming in and out must never look like edits (NOTAS 1c: a rebuild every ~30 s from streaming lamps), so a
-// change counts only when:
-//  - it matters to the terrain bake: a lamp of type 3..6 counts only if it is lit before or after (unlit ones are not
-//    baked, TerrainLightTest); other types on lots always;
+// ---- Changes of outdoor lot lamps (Build mode, lamps switching by themselves) and the snapshot of what the terrain
+// bake can take. The terrain light has to be rebuilt for changes of lamps IN the bake; the game does it only when the
+// lot is reloaded. What the bake draws per lamp (docs/engine/terrain-and-light-bake.md 4.2): every light accepted by the
+// visitor (street-lamp class, type 0xB; with Apex also outdoor lot lamps of type 3..6 that are enabled and lit,
+// TerrainLightTest) whose rect +0x134 overlaps the chunk, at its position (vfunc+0x24, +0x120), with colour +0xF0 and
+// weight range +0x130 x intensity +0x10 x 0.2. The fade +0x20 and the effective colour +0xE0 are NOT read by the bake.
+// So a change counts only when:
+//  - it changes the bake: the lamp enters or leaves it (lit flag, enabled flag, intensity to or from 0), moves by more
+//    than 5 cm, or its light (colour x intensity x range) changes by more than 5 % in a channel. Lamps the bake never
+//    takes (window lights 7/8, type 9, disabled or unlit lamps) never count. 29/09 (ApexRadiance_LOG + LightDiag): the
+//    repeated "7 edited" of lot 7D6F0019FAF78910 were its 7 DISABLED type-3 lamps (flags 0x35 / 0xB5), never baked;
+//  - automatic changes (on / off, dimming, recolouring) of a lamp that already changed 3 times within 60 s are ignored:
+//    the lamp is "animated" (motion or timer lights, colour-cycling lights) and its current state goes into the next
+//    rebuild made for any other reason;
 //  - its lot is settled: seen in every enumeration for at least 10 s, and no uncounted change on it for 5 s (a lot that
 //    is still loading keeps adding lamps and so never becomes settled while it trickles in);
 //  - at most 8 changes in the enumeration (more = lamps switching at dusk / dawn, or streaming in bulk);
 //  - removals: the lot is still there in the NEXT enumeration and lost no more lamps (a lot unloading lamp by lamp, or
 //    vanishing, is streaming out). The removal of a lot's last lamp is therefore never counted (the lot vanishes).
+// Lots streaming in and out must never look like edits (NOTAS 1c: a rebuild every ~30 s from streaming lamps).
+// Additions, removals and moves are "user-driven" (Build mode: in the 28-29/09 logs no lamp was ever added or removed
+// by itself); the rest is "automatic". The dev build logs what changed on each lamp.
 using Clock = std::chrono::steady_clock;
-using LampSig = std::array<uint32_t, 8>; // colour, intensity, lit, position (moving a lamp in build mode, 25/09)
 struct LotLampState {
-    LampSig sig{};
     uint64_t lot = 0;
-    bool lit = false;
-    bool plain = false; // type 3..6: baked only while lit
+    int type = 0;
+    BYTE flags = 0;
+    float col[3] = {}, inten = 0.0f, range = 0.0f, pos[3] = {};
+    bool plain = false; // type 3..6
+    bool baked = false; // InBake
+    // automatic changes of this lamp in the current 60 s window (carried from enumeration to enumeration)
+    int autoChanges = 0;
+    Clock::time_point autoWindow{};
+    bool animated = false;
 };
 struct LotSeen {
     Clock::time_point firstSeen{}, lastUncounted{};
@@ -592,29 +622,104 @@ struct LotSeen {
 };
 std::map<uintptr_t, LotLampState> g_lotLampSig;
 std::map<uint64_t, LotSeen> g_lotSeen;
-std::atomic<int> g_lotLampEdits{0};
+std::atomic<int> g_lotLampEdits{0}, g_lotLampUserEdits{0};
 int g_lotChangesCounted = 0, g_lotChangesIgnored = 0;
+int g_lampChangesOutside = 0, g_lampChangesNoise = 0, g_lampChangesAnimated = 0, g_lampsAnimated = 0;
 std::string g_lastLotChange = "none";
+std::map<uint64_t, Clock::time_point> g_quietLogAt; // dev log throttle of the changes that do not count, per lot
+LotLightBridge::BakeSnapshot g_bakeSnap;
+int g_lampEnumerations = 0;
+bool g_lampRefreshNow = false;
+std::vector<uint64_t> g_lastUserLots; // lots of the last counted user-driven changes
 
+constexpr float kMoveTol = 0.05f;   // metres
+constexpr float kLightRel = 0.05f;  // relative change of colour x intensity x range, per channel
+constexpr float kLightAbs = 0.05f;  // absolute floor (colour x intensity x range: typical lamps give 5..200)
+constexpr int kAnimatedChanges = 3; // automatic changes within kAnimatedWindow: the lamp is animated
+constexpr auto kAnimatedWindow = std::chrono::seconds(60);
+constexpr auto kQuietLogEvery = std::chrono::seconds(60);
+
+bool IsPlainType(int type) { return type >= 3 && type <= 6; }
+
+// Lot light of a type the bake can take (3..6 or the street-lamp class 0xB), alive, outdoors (room known, room 0)
 bool ReadLotLamp(uintptr_t L, LotLampState& out) {
     __try {
         const uint32_t lo = *reinterpret_cast<const uint32_t*>(L + 0xC0), hi = *reinterpret_cast<const uint32_t*>(L + 0xC4);
         if ((lo | hi) == 0) return false; // not a lot lamp
         const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
         if (!(f & 0x01) || !(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0) return false; // alive, outdoors
-        uint32_t* out8 = out.sig.data();
-        std::memcpy(out8, reinterpret_cast<const void*>(L + 0xF0), 12); // base colour
-        out8[3] = *reinterpret_cast<const uint32_t*>(L + 0x10);          // intensity
-        out8[4] = f & 0x20;                                               // lit
-        std::memcpy(out8 + 5, reinterpret_cast<const void*>(L + 0x120), 12); // position
         const int type = *reinterpret_cast<const int*>(L + 0xB0);
+        if (!IsPlainType(type) && type != 0xB) return false; // window lights and the other classes never reach the bake
+        std::memcpy(out.col, reinterpret_cast<const void*>(L + 0xF0), 12);  // base colour
+        out.inten = *reinterpret_cast<const float*>(L + 0x10);               // intensity (x)
+        out.range = *reinterpret_cast<const float*>(L + 0x130);              // range
+        std::memcpy(out.pos, reinterpret_cast<const void*>(L + 0x120), 12); // position
         out.lot = (static_cast<uint64_t>(hi) << 32) | lo;
-        out.lit = (f & 0x20) != 0;
-        out.plain = type >= 3 && type <= 6;
+        out.type = type;
+        out.flags = f;
+        out.plain = IsPlainType(type);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+float LampLight(const LotLampState& s, int c) { return s.col[c] * s.inten * s.range; }
+
+// The terrain bake takes this lamp now (see the block comment). Lot lamps 3..6: TerrainLightTest (enabled 0x40, lit
+// 0x20). Street-lamp class: the game's vfunc+0x20 test is assumed to need the lit flag too (unverified,
+// terrain-and-light-bake.md section 10; a save loaded by day keeps a lamps-off terrain light, which fits). A lamp whose
+// light is zero (intensity or range 0, black colour) draws nothing.
+bool InBake(const LotLampState& s) {
+    if (!(s.flags & 0x20)) return false;
+    if (s.plain && !(s.flags & 0x40)) return false;
+    const float w = s.inten * s.range;
+    if (!std::isfinite(w) || !(w > 1e-3f)) return false;
+    return std::max({s.col[0], s.col[1], s.col[2]}) > 1e-3f;
+}
+
+bool MovedApart(const float* a, const float* b) {
+    const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return !(dx * dx + dy * dy + dz * dz <= kMoveTol * kMoveTol); // NaN counts as moved
+}
+
+bool LightDiffers(const float* a, const float* b) {
+    for (int c = 0; c < 3; c++) {
+        const float tol = std::max(kLightAbs, kLightRel * std::max(std::fabs(a[c]), std::fabs(b[c])));
+        if (!(std::fabs(a[c] - b[c]) <= tol)) return true;
+    }
+    return false;
+}
+
+bool RawChanged(const LotLampState& a, const LotLampState& b) {
+    return a.flags != b.flags || a.type != b.type || std::memcmp(a.col, b.col, sizeof a.col) != 0 || std::memcmp(&a.inten, &b.inten, 4) != 0 ||
+           std::memcmp(&a.range, &b.range, 4) != 0 || std::memcmp(a.pos, b.pos, sizeof a.pos) != 0;
+}
+
+// Developer log: what changed on one lamp ("L1234ABCD type 3: lit 1->0, intensity 1.00->0.00 [leaves the bake]")
+std::string LampChangeText(uintptr_t L, const LotLampState& a, const LotLampState& b) {
+    std::string t = std::format("L{:08X} type {}:", L, b.type);
+    const BYTE df = a.flags ^ b.flags;
+    if (df & 0x20) t += std::format(" lit {}->{},", (a.flags & 0x20) ? 1 : 0, (b.flags & 0x20) ? 1 : 0);
+    if (df & 0x40) t += std::format(" enabled {}->{},", (a.flags & 0x40) ? 1 : 0, (b.flags & 0x40) ? 1 : 0);
+    if (df & ~0x60) t += std::format(" flags {:02X}->{:02X},", a.flags, b.flags);
+    if (std::memcmp(&a.inten, &b.inten, 4) != 0) t += std::format(" intensity {:.3f}->{:.3f},", a.inten, b.inten);
+    if (std::memcmp(a.col, b.col, sizeof a.col) != 0)
+        t += std::format(" colour ({:.2f} {:.2f} {:.2f})->({:.2f} {:.2f} {:.2f}),", a.col[0], a.col[1], a.col[2], b.col[0], b.col[1], b.col[2]);
+    if (std::memcmp(&a.range, &b.range, 4) != 0) t += std::format(" range {:.2f}->{:.2f},", a.range, b.range);
+    if (std::memcmp(a.pos, b.pos, sizeof a.pos) != 0) {
+        const float dx = b.pos[0] - a.pos[0], dy = b.pos[1] - a.pos[1], dz = b.pos[2] - a.pos[2];
+        t += std::format(" moved {:.3f} m,", std::sqrt(dx * dx + dy * dy + dz * dz));
+    }
+    if (t.back() == ',') t.pop_back();
+    if (a.baked != b.baked) t += b.baked ? " [enters the bake]" : " [leaves the bake]";
+    return t;
+}
+
+void AddDetail(std::string& d, int& n, const std::string& t) {
+    if (n < 6) d += (d.empty() ? "" : "; ") + t;
+    else if (n == 6) d += "; ...";
+    n++;
 }
 
 void TrackLotLampEdits() {
@@ -622,27 +727,94 @@ void TrackLotLampEdits() {
     std::map<uintptr_t, LotLampState> cur;
     for (uintptr_t L : g_enumLights) {
         LotLampState s;
-        if (ReadLotLamp(L, s)) cur.emplace(L, s);
+        if (ReadLotLamp(L, s)) {
+            s.baked = InBake(s);
+            cur.emplace(L, s);
+        }
     }
     std::map<uint64_t, int> lotsNow;
     for (const auto& [L, s] : cur) lotsNow[s.lot]++;
-    // per lot: relevant additions / edits / removals in this enumeration
-    struct Change { int added = 0, edited = 0, removed = 0; };
+    // per lot: counted additions / edits / removals in this enumeration, and (dev) what changed
+    struct Change {
+        int added = 0, edited = 0, moved = 0, removed = 0;
+        std::string detail;
+        int details = 0;
+    };
     std::map<uint64_t, Change> changes;
+    struct Quiet { // dev log: changes that do not count
+        std::string detail;
+        int details = 0;
+    };
+    std::map<uint64_t, Quiet> quiet;
     int total = 0;
-    for (const auto& [L, s] : cur) {
+    for (auto& [L, s] : cur) {
         auto it = g_lotLampSig.find(L);
         if (it == g_lotLampSig.end()) {
-            if (!s.plain || s.lit) { changes[s.lot].added++; total++; }
-        } else if (it->second.sig != s.sig && (!s.plain || s.lit || it->second.lit)) {
-            changes[s.lot].edited++;
+            if (s.baked) {
+                Change& c = changes[s.lot];
+                c.added++;
+                total++;
+                if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: added", L, s.type));
+            }
+            continue;
+        }
+        const LotLampState& p = it->second;
+        s.autoChanges = p.autoChanges;
+        s.autoWindow = p.autoWindow;
+        s.animated = p.animated;
+        if (!RawChanged(p, s)) continue;
+        const char* why = nullptr; // why a raw change does not count
+        bool counts = false, moved = false;
+        float pl[3], sl[3];
+        for (int c = 0; c < 3; c++) {
+            pl[c] = LampLight(p, c);
+            sl[c] = LampLight(s, c);
+        }
+        if (p.baked && s.baked && MovedApart(p.pos, s.pos)) {
+            counts = moved = true; // user-driven (Build mode)
+        } else if (p.baked != s.baked || (p.baked && s.baked && LightDiffers(pl, sl))) {
+            // automatic: switched on / off, dimmed, recoloured
+            if (now - s.autoWindow > kAnimatedWindow) {
+                s.autoWindow = now;
+                s.autoChanges = 0;
+            }
+            if (++s.autoChanges >= kAnimatedChanges && !s.animated) {
+                s.animated = true;
+                g_lampsAnimated++;
+                if constexpr (!kPublicBuild)
+                    LOG_INFO(std::format("[LotLightBridge] Lamp L{:08X} (type {}) on lot {:016X} switches or dims by itself ({} changes within {} s): its changes no longer "
+                                         "rebuild the terrain (the next rebuild takes its state)",
+                                         L, s.type, s.lot, s.autoChanges, kAnimatedWindow.count()));
+            }
+            if (s.animated) {
+                why = "animated";
+                g_lampChangesAnimated++;
+            } else
+                counts = true;
+        } else if (p.baked || s.baked) {
+            why = "below the threshold";
+            g_lampChangesNoise++;
+        } else {
+            why = "not in the bake";
+            g_lampChangesOutside++;
+        }
+        if (counts) {
+            Change& c = changes[s.lot];
+            c.edited++;
+            if (moved) c.moved++;
             total++;
+            if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, LampChangeText(L, p, s));
+        } else if constexpr (!kPublicBuild) {
+            Quiet& q = quiet[s.lot];
+            AddDetail(q.detail, q.details, LampChangeText(L, p, s) + " (" + why + ")");
         }
     }
-    for (const auto& [L, s] : g_lotLampSig)
-        if (!cur.count(L) && (!s.plain || s.lit)) {
-            changes[s.lot].removed++;
+    for (const auto& [L, p] : g_lotLampSig)
+        if (!cur.count(L) && p.baked) {
+            Change& c = changes[p.lot];
+            c.removed++;
             total++;
+            if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: removed", L, p.type));
         }
     g_lotLampSig.swap(cur);
 
@@ -653,8 +825,14 @@ void TrackLotLampEdits() {
         if (!lotsNow.count(it->first)) it = g_lotSeen.erase(it);
         else ++it;
     }
+    for (auto it = g_quietLogAt.begin(); it != g_quietLogAt.end();) {
+        if (!lotsNow.count(it->first)) it = g_quietLogAt.erase(it);
+        else ++it;
+    }
 
     int counted = 0, ignored = 0;
+    bool userDriven = false;
+    std::vector<uint64_t> userLots;
     std::string what;
     // removals seen last time: confirmed when the lot is still here and lost no more lamps
     for (auto& [lot, seen] : g_lotSeen) {
@@ -663,7 +841,9 @@ void TrackLotLampEdits() {
         if (c != changes.end() && c->second.removed > 0) continue; // still losing lamps: wait
         seen.removalPending = false;
         counted++;
-        what = std::format("lamp removed on lot {:016X}", lot);
+        userDriven = true;
+        userLots.push_back(lot);
+        what = std::format("lamp removed on lot {:016X} (user-driven)", lot);
     }
     const bool bulk = total > 8;
     for (const auto& [lot, c] : changes) {
@@ -683,13 +863,21 @@ void TrackLotLampEdits() {
         if (c.removed > 0) seen.removalPending = true; // confirmed at the next enumeration
         if (c.added > 0 || c.edited > 0) {
             counted++;
-            what = std::format("lot {:016X}: {} added, {} edited, {} removed", lot, c.added, c.edited, c.removed);
+            const bool user = c.added > 0 || c.moved > 0;
+            userDriven |= user;
+            if (user) userLots.push_back(lot);
+            what = std::format("lot {:016X}: {} added, {} edited ({} moved), {} removed ({})", lot, c.added, c.edited, c.moved, c.removed, user ? "user-driven" : "automatic");
+            if (!c.detail.empty()) what += ": " + c.detail;
         }
     }
     g_lotChangesIgnored += ignored;
     if (counted > 0) {
         g_lotChangesCounted += counted;
         g_lastLotChange = what;
+        if (userDriven) {
+            g_lastUserLots = std::move(userLots);
+            g_lotLampUserEdits.fetch_add(1, std::memory_order_relaxed);
+        }
         g_lotLampEdits.fetch_add(1, std::memory_order_relaxed);
         if constexpr (!kPublicBuild) LOG_INFO("[LotLightBridge] Lot lamp change: " + what);
     } else if (ignored > 0) {
@@ -697,6 +885,36 @@ void TrackLotLampEdits() {
             LOG_DEBUG(std::format("[LotLightBridge] Lot lamp changes ignored ({} lots; {}): streaming, lots still loading or lamps switching together", ignored,
                                   bulk ? "bulk" : "not settled"));
     }
+    if constexpr (!kPublicBuild) {
+        // what changed but does not rebuild (at most once a minute per lot): the diagnosis of lamps that keep changing
+        for (const auto& [lot, q] : quiet) {
+            auto& at = g_quietLogAt[lot];
+            if (at != Clock::time_point{} && now - at < kQuietLogEvery) continue;
+            at = now;
+            LOG_INFO(std::format("[LotLightBridge] Lamp changes that do not rebuild the terrain, lot {:016X}: {}", lot, q.detail));
+        }
+    }
+
+    // snapshot for the terrain relight: every tracked lamp (baked or not, so a lamp switched off still matches its
+    // baked self by position), sorted by lot; the lots and the settled lots
+    g_bakeSnap.lamps.clear();
+    g_bakeSnap.lots.clear();
+    g_bakeSnap.settledLots.clear();
+    for (const auto& [L, s] : g_lotLampSig) {
+        LotLightBridge::BakeLamp b;
+        b.lot = s.lot;
+        b.type = s.type;
+        std::memcpy(b.pos, s.pos, sizeof b.pos);
+        for (int c = 0; c < 3; c++) b.light[c] = LampLight(s, c);
+        b.baked = s.baked;
+        b.animated = s.animated;
+        g_bakeSnap.lamps.push_back(b);
+    }
+    std::stable_sort(g_bakeSnap.lamps.begin(), g_bakeSnap.lamps.end(), [](const LotLightBridge::BakeLamp& a, const LotLightBridge::BakeLamp& b) { return a.lot < b.lot; });
+    for (const auto& [lot, n] : lotsNow) g_bakeSnap.lots.push_back(lot); // std::map: already sorted
+    for (const auto& [lot, seen] : g_lotSeen)
+        if (now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5)) g_bakeSnap.settledLots.push_back(lot);
+    g_lampEnumerations++;
 }
 
 // Picks up to 16 lamps whose light can reach the roof piece at world position (x, z): chosen per draw from the roof
@@ -735,7 +953,7 @@ template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw);
 void EnsureReplacement(IDirect3DDevice9* dev) {
     if (g_replacementPs || g_compileTried) return;
     g_compileTried = true;
-    const std::string err = CompilePs(dev, kReplacementHlsl, "ps_3_0", &g_replacementPs);
+    const std::string err = CompilePs(dev, kReplacementPsId, &g_replacementPs);
     g_status = err.empty() ? "Active" : "Failed: " + err;
     LOG_INFO("[LotLightBridge] " + g_status);
 }
@@ -743,7 +961,7 @@ void EnsureReplacement(IDirect3DDevice9* dev) {
 void EnsureObjectReplacement(IDirect3DDevice9* dev) {
     if (g_objectPs || g_objectCompileTried) return;
     g_objectCompileTried = true;
-    const std::string err = CompilePs(dev, kObjectRigHlsl, "ps_2_0", &g_objectPs);
+    const std::string err = CompilePs(dev, kObjectRigPsId, &g_objectPs);
     LOG_INFO("[LotLightBridge] Object shadow fix: " + (err.empty() ? std::string("active") : err));
 }
 
@@ -753,7 +971,7 @@ template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw) {
     if (FAILED(dev->GetVertexShaderConstantF(8, world, 3))) return false; // c8..c10 = world matrix rows, .w = translation
     if (!g_roofPs && !g_roofCompileTried) {
         g_roofCompileTried = true;
-        const std::string err = CompilePs(dev, kRoofHlsl, "ps_3_0", &g_roofPs);
+        const std::string err = CompilePs(dev, kRoofPsId, &g_roofPs);
         LOG_INFO("[LotLightBridge] Roofs: " + (err.empty() ? std::string("active") : err));
     }
     if (!g_roofPs) return false;
@@ -787,7 +1005,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_waterFix.load(std::memory_order_relaxed) || !g_curVsIsLake) return false;
     if (!g_waterPs && !g_waterCompileTried) {
         g_waterCompileTried = true;
-        const std::string err = CompilePs(dev, kWaterLampsHlsl, "ps_3_0", &g_waterPs);
+        const std::string err = CompilePs(dev, kWaterPsId, &g_waterPs);
         LOG_INFO("[LotLightBridge] Water: " + (err.empty() ? std::string("active") : err));
     }
     if (!g_waterPs) return false;
@@ -1568,7 +1786,7 @@ template <typename DrawFn> bool DrawRoofSnow(IDirect3DDevice9* dev, DrawFn draw)
     if (!g_roofFix.load(std::memory_order_relaxed)) return false;
     if (!g_roofSnowPs && !g_roofSnowTried) {
         g_roofSnowTried = true;
-        const std::string err = CompilePs(dev, kRoofSnowLampsHlsl, "ps_3_0", &g_roofSnowPs);
+        const std::string err = CompilePs(dev, kRoofSnowPsId, &g_roofSnowPs);
         LOG_INFO("[LotLightBridge] Snowy roofs: " + (err.empty() ? std::string("active") : err));
     }
     if (!g_roofSnowPs) return false;
@@ -2098,6 +2316,9 @@ void OnWorldChanged() {
     ClearChunks();
     g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
     g_lotSeen.clear();
+    g_quietLogAt.clear();
+    g_bakeSnap = LotLightBridge::BakeSnapshot{};
+    g_lastUserLots.clear();
     g_lotRects.clear(); // soft lot edges: the next Present reads the new world's lots
     g_lotRectMiss = true;
     g_haveLastEdgeRect = false;
@@ -2171,18 +2392,82 @@ void OnPresent() {
             RefreshLotRects();
         }
     }
-    if (++g_lampFrame < 20) return;
+    if (++g_lampFrame < 20 && !g_lampRefreshNow) return;
     g_lampFrame = 0;
+    g_lampRefreshNow = false;
     if (g_roofFix.load() || g_waterFix.load() || g_objPixelLamps.load()) UpdateLampList(); // enumerates the lights
     else if (!EnumerateLights()) return;
     TrackLotLampEdits();
 }
 
 int LotLampEdits() { return g_lotLampEdits.load(std::memory_order_relaxed); }
+int LotLampUserEdits() { return g_lotLampUserEdits.load(std::memory_order_relaxed); }
 
 std::string LotLampStatus() {
-    return std::format("changes counted: {} | ignored (streaming, still loading, bulk): {} | lots tracked: {} | last: {}", g_lotChangesCounted, g_lotChangesIgnored,
-                       g_lotSeen.size(), g_lastLotChange);
+    return std::format("changes counted: {} (user-driven: {}) | ignored (streaming, still loading, bulk): {} | not counted: outside the bake {}, below the threshold {}, "
+                       "animated {} ({} lamps) | lots tracked: {} | last: {}",
+                       g_lotChangesCounted, g_lotLampUserEdits.load(), g_lotChangesIgnored, g_lampChangesOutside, g_lampChangesNoise, g_lampChangesAnimated,
+                       g_lampsAnimated, g_lotSeen.size(), g_lastLotChange);
+}
+
+const BakeSnapshot& CurrentBakeLamps() { return g_bakeSnap; }
+int LampEnumerations() { return g_lampEnumerations; }
+const std::vector<uint64_t>& LastUserChangeLots() { return g_lastUserLots; }
+void RequestLampRefresh() { g_lampRefreshNow = true; }
+
+// Lamps of `lot` in a snapshot sorted by lot: [first, last)
+static std::pair<std::vector<BakeLamp>::const_iterator, std::vector<BakeLamp>::const_iterator> LotLamps(const BakeSnapshot& s, uint64_t lot) {
+    const auto first = std::lower_bound(s.lamps.begin(), s.lamps.end(), lot, [](const BakeLamp& b, uint64_t v) { return b.lot < v; });
+    const auto last = std::upper_bound(first, s.lamps.end(), lot, [](uint64_t v, const BakeLamp& b) { return v < b.lot; });
+    return {first, last};
+}
+
+BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps) {
+    BakeDiff d;
+    auto inBake = [plainLamps](const BakeLamp& b) { return b.baked && (plainLamps || !IsPlainType(b.type)); };
+    for (uint64_t lot : now.settledLots) {
+        // a lot that streamed in after that bake was never in it: the game does not rebuild for streaming, nor does Apex
+        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) continue;
+        const auto [a0, a1] = LotLamps(baked, lot);
+        const auto [b0, b1] = LotLamps(now, lot);
+        const int before = d.added + d.removed + d.switchedOn + d.switchedOff + d.light;
+        std::vector<char> used(static_cast<size_t>(b1 - b0), 0);
+        for (auto a = a0; a != a1; ++a) {
+            // the same lamp: same type, within 5 cm (matched by place, not by pointer: a lot that streamed out and back in
+            // has new light objects for the same lamps)
+            auto m = b1;
+            for (auto b = b0; b != b1; ++b)
+                if (!used[static_cast<size_t>(b - b0)] && b->type == a->type && !MovedApart(a->pos, b->pos)) {
+                    m = b;
+                    break;
+                }
+            if (m == b1) {
+                if (inBake(*a)) d.removed++; // removed, or moved away
+                continue;
+            }
+            used[static_cast<size_t>(m - b0)] = 1;
+            const bool ia = inBake(*a), ib = inBake(*m);
+            if (ia != ib) {
+                if (m->animated) d.animated++;
+                else if (ib) d.switchedOn++;
+                else d.switchedOff++;
+            } else if (ia && LightDiffers(a->light, m->light)) {
+                if (m->animated) d.animated++;
+                else d.light++;
+            }
+        }
+        for (auto b = b0; b != b1; ++b)
+            if (!used[static_cast<size_t>(b - b0)] && inBake(*b)) d.added++; // placed, or moved here
+        if (d.added + d.removed + d.switchedOn + d.switchedOff + d.light != before) d.lots++;
+    }
+    return d;
+}
+
+std::string BakeDiff::Text() const {
+    if (!Any()) return animated ? std::format("no change (animated lamps ignored: {})", animated) : std::string("no change");
+    std::string t = std::format("{} lots: {} added, {} removed, {} switched on, {} switched off, {} relit", lots, added, removed, switchedOn, switchedOff, light);
+    if (animated) t += std::format(" (animated lamps ignored: {})", animated);
+    return t;
 }
 
 std::string RoofStatus() {

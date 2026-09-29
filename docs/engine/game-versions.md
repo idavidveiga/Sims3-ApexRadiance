@@ -67,7 +67,9 @@ shipping, so every signature logs enough to be refined from a user's `ApexRadian
      another entry), `LowestOf2` (twin functions, the lower one), `Deref(dep, off)` (the dword at another entry + off:
      globals from an instruction's operand, vtable slots), `Target(dep)` (the target of the CALL at another entry, the own
      signature as fallback), `CallersOf(dep, n)` (every CALL in `.text` to another entry: exactly n), `LightType(t)` (the
-     light factory's jump table -> the constructor of light type t -> the vtable it stores).
+     light factory's jump table -> the constructor of light type t -> the vtable it stores), `SlotsOf(dep, n)` (every
+     4-aligned dword equal to another entry in the read-only data sections, i.e. its vtable slots: exactly n; added
+     2026-09-28 for the Frame Profiler counters).
 4. Cross-checks (non-Steam: a failed check drops the ids concerned): the nine light vtables are distinct and share one
    position function (`+0x24`), the batch solve call is one of the three point-solve calls and calls the point solve, the
    story refresh calls follow the cascade test in order.
@@ -137,6 +139,10 @@ for uniqueness on Steam with `sigcheck.pl` (it must still resolve every id to th
 | Every-Story Ground Light (group `SplitLevel`) | GetLotIdGatherCall, GetLotId | "Not available on <version>: missing ..." |
 | S3SS Split-Level fix detection | GetLotId | treated as not active |
 | Light Diag (Ctrl+Shift+F8, development build) | RootGetter, EnumLights (light vtables 4/5 for the cone lines) | "not available"; the raw Steam globals are printed on Steam only |
+| Faster Game File Lookups (`ResourceLookupCache`, group `ResourceCache`) | ResFindProvider + 2 slots, ResRegisterDb + slot, ResRegisterDbDerived + slot, ResSetDbPriority + 2 slots, ResDbChanged + 2 slots, ShadowedDbVtable (and its three methods checked at run time, [../features/performance.md](../features/performance.md)) | "Not available on <version>: missing ..." / the read-only class check fails the install |
+| Lot Lighting While Moving (`LotLightingMotion`, group `LotLightingMotion`) | LotLightBudgetCall, LotLightBudget, CameraRootCall, CameraGetterCall, CameraRootGetter, CameraGetter (the root global, camera offset and eye offset are parsed from those bytes) | "Not available on <version>: missing ..." / "The camera position was not found" |
+| Faster Texture Compression (`FastTextureCompression`, group `FastTextureCompression`) | DxtEncode1, DxtEncode5 (the prologue `55 8B EC 83 E4 F0` is checked by `framework/entry_chain.cpp`); the first 16 textures of a session are compared with the game's own encoder on every build | "Not available on <version>: missing ..." / "the entry bytes ... changed"; a difference turns it off |
+| Faster Cache Compression (`FastCacheCompression`, group `FastCacheCompression`) | RefPackCompress + RefPackCompressSlot; RefPackDecompress optional (the checks then use Apex's copy of the decoder) | "Not available on <version>: missing ..." |
 
 Not part of this table: the map view probe (`features/map_view.cpp`) already finds its function at run time through the
 script binding name in `.rdata` and its `{function, name}` table, on any build; the Frame Profiler (development build
@@ -145,7 +151,9 @@ only) keeps its own fixed Steam targets; shader patches match game shaders by by
 ## 6. Signature table
 
 Checked on `S3SS-dev\re\TS3W.exe` (Steam 1.67.2) with `research\port169\sigcheck.pl`, which parses the table from
-`game_addresses.cpp` and runs the same rules: **all 101 ids resolve to the fixed Steam address**. "Matches" gives the
+`game_addresses.cpp` and runs the same rules: **all 101 ids resolve to the fixed Steam address** (116 of 116 since
+2026-09-28, with the 15 Frame Profiler ids at the end of the table below; 133 of 133 since 2026-09-29, with the 17
+performance ids after them; their alternates were also checked one by one: each matches once, at the same place). "Matches" gives the
 count of the primary / alternate signature on Steam (over `.text`, or over the range for `InRange`); `SetLightColour`
 has 2 / 6 matches that all call the same function (accepted: the value agrees). Offsets are from the match start; "call
 at +n" = the target of the CALL there, "dword at +n" = the value there.
@@ -216,6 +224,36 @@ at +n" = the target of the CALL there, "dword at +n" = the value there.
 | LightVtable3..11 | 0xFF42A0, FF4570, FF4350, FF4468, FF43A8, FF4408, FF44C0, FF4518, FF42F8 (types 3..11) | LightType(LightJumpTable, t) | - (case code "8B C8 E8 ctor" within 0x48 bytes, then the ctor's first `C7 06/07 <imm in image>` within 0x88 bytes) | all 9 ok |
 | LightColour3..11 | 0x6C02A0, 6C1BC0, 6C0690, 6C1320, 6C0AF0, 6C0FE0, 6C16D0, 6C1980, 6C02A0 | Deref(LightVtableN, 0x10) | - | all 9 ok |
 | LightEval3..11 | 0x6BDE90, 6BFFB0, 6BE1C0, 6BFA70, 6BEFD0, 6BF880, 6BFBA0, 6BFDC0, 6BE020 | Deref(LightVtableN, 0x4C) | - | all 9 ok |
+| ResFindProvider | 0x004AFFC0 | Sig | `51 53 55 56 57 8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5` +0<br>alt: `8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5 C7 44 24 10 00 00 00 00` +-5 | matches 1 / 1 |
+| ResFindProviderSlot0/1 | 0x00FB2DE0, 0x00FFE290 | SlotsOf(ResFindProvider, 2) | - | 2 (expects 2) |
+| RefPackCompress | 0x004EC200 | Sig | `8B 54 24 14 33 C0 F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56` +0<br>alt: `F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56 8B 74 24 10 85 F6` +-6 | matches 1 / 1 |
+| RefPackCompressSlot | 0x00FB901C | SlotsOf(RefPackCompress, 1) | - | 1 (expects 1) |
+| SceneDrainCall | 0x006EBC49 | Sig | `8B 4E 08 E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8` +3<br>alt: `E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8 ?? ?? ?? ?? 8B 4E 38 E8` +0 | matches 1 / 1 |
+| SceneDrain | 0x006E4130 | Target(SceneDrainCall) | `55 8B EC 83 E4 F0 83 EC 34 53 56 57 8B F9 8B 77 20 8B 5F 24 8D 47 20 3B F0` +0 | fallback sig: 1 match |
+| DxtEncode1 | 0x006152F0 | Sig | `55 8B EC 83 E4 F0 81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03` +0<br>alt: `81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03 83 E6 FC 03 F6` +-6 | matches 1 / 1 |
+| DxtEncode5 | 0x006154B0 | Sig | `55 8B EC 83 E4 F0 81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC` +0<br>alt: `81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC 03 D2 03 D2 53 8B 18` +-6 | matches 1 / 1 |
+| ObjectById | 0x00C62D40 | Sig | `8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01` +0<br>alt: `8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8` +0 | matches 1 / 1 |
+| RoomSolveCall | 0x00ADB9AD | Sig | `85 C9 74 10 51 8D 54 24 18 D9 1C 24 52 E8` +13<br>alt: `8B 0C 88 85 C9 74 ?? 51 8D 54 24 ?? D9 1C 24 52 E8` +16 | matches 1 / 1 |
+| RoomSolve | 0x006A8BA0 | Target(RoomSolveCall) | `56 8B F1 80 BE 80 02 00 00 00 57 75 05 E8 ?? ?? ?? ?? 83 BE 88 00 00 00` +0 | fallback sig: 1 match |
+| RemoteCallJob | 0x007D9840 | Sig | `83 7C 24 0C 04 56 57 75 6C 8B 7C 24 0C 33 F6 F6 47 20 01 74 4A` +0<br>alt: `F6 47 20 01 74 ?? 8B 35 ?? ?? ?? ?? 85 F6 74 ?? 8D 44 24 14 50 57 8B CE C7 44 24 1C 00 00 00 00 E8` +-15 | matches 1 / 1 |
+| RemoteMethodVtable | 0x010650C4 | Sig (image) | `89 50 10 8A 54 24 1C 88 48 19 C7 00 ?? ?? ?? ?? 88 50 18` dword at +12<br>alt: `8A 54 24 1C 88 48 19 C7 00 ?? ?? ?? ?? 88 50 18 8B 10` dword at +9 | matches 1 / 1 |
+| RemoteMethodVtable2 | 0x010650D8 | Sig (image) | `89 50 10 8A 54 24 1C 89 48 14 C7 00 ?? ?? ?? ?? 88 50 18` dword at +12<br>alt: `8A 54 24 1C 89 48 14 C7 00 ?? ?? ?? ?? 88 50 18 8B 10` dword at +9 | matches 1 / 1 |
+| ResRegisterDb | 0x004B2D00 | Sig | `83 EC 10 53 55 56 57 8B F9 8D 4F 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 80 7C 24 24 00 C6 44 24 13 00 0F 84` +0<br>alt: `8D 4F 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 80 7C 24 24 00 C6 44 24 13 00` +-9 | matches 1 / 1 |
+| ResRegisterDbSlot | 0x00FB2DD4 | SlotsOf(ResRegisterDb, 1) | - | 1 (expects 1) |
+| ResRegisterDbDerived | 0x00736A70 | Sig | `81 EC 14 02 00 00 80 BC 24 18 02 00 00 00 53 8B 9C 24 20 02 00 00 55 56 57 8B F9 75 ?? 85 DB 74` +0<br>alt: `80 BC 24 18 02 00 00 00 53 8B 9C 24 20 02 00 00 55 56 57 8B F9` +-6 | matches 1 / 1 |
+| ResRegisterDbDerivedSlot | 0x00FFE284 | SlotsOf(ResRegisterDbDerived, 1) | - | 1 (expects 1) |
+| ResSetDbPriority | 0x004B2EC0 | Sig | `83 EC 0C 55 56 8B E9 57 8D 4D 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 8B 75 30 8B 45 34 3B F0 8D 7D 30 0F 84` +0<br>alt: `8D 4D 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 8B 75 30 8B 45 34 3B F0 8D 7D 30` +-8 | matches 1 / 1 |
+| ResSetDbPrioritySlot0/1 | 0x00FB2DDC, 0x00FFE28C | SlotsOf(ResSetDbPriority, 2) | - | 2 (expects 2) |
+| ResDbChanged | 0x004B0960 | Sig | `51 53 8B D9 56 8D 73 48 68 ?? ?? ?? ?? 8B CE 89 74 24 0C E8 ?? ?? ?? ?? 8B 54 24 14 85 D2 0F 84 ?? ?? ?? ?? 83 7B 20 00` +0<br>alt: `8D 73 48 68 ?? ?? ?? ?? 8B CE 89 74 24 0C E8 ?? ?? ?? ?? 8B 54 24 14 85 D2 0F 84` +-5 | matches 1 / 1 |
+| ResDbChangedSlot0/1 | 0x00FB2DEC, 0x00FFE29C | SlotsOf(ResDbChanged, 2) | - | 2 (expects 2) |
+| ShadowedDbVtable | 0x00FFE078 | Sig (image) | `8D 86 C0 00 00 00 50 C7 06 ?? ?? ?? ?? C7 07 ?? ?? ?? ?? C7 46 0C ?? ?? ?? ?? 89 9E B8 00 00 00` dword at +15<br>alt: `C7 06 ?? ?? ?? ?? C7 07 ?? ?? ?? ?? C7 46 0C ?? ?? ?? ?? 89 9E B8 00 00 00 FF 15` dword at +8 | matches 1 / 1 |
+| LotLightBudgetCall | 0x00ADB95D | Sig | `8D 4C 24 10 E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ?? D9 54 24 0C 33 DB 85 ED 7E` +11<br>alt: `8B CE E8 ?? ?? ?? ?? D9 54 24 0C 33 DB 85 ED 7E ?? 57 8B 4E 28` +2 | matches 1 / 1 |
+| LotLightBudget | 0x00ADB120 | Target(LotLightBudgetCall) | `51 A1 ?? ?? ?? ?? 85 C0 56 8B F1 74 ?? 83 B8 ?? ?? 00 00 00 75 ?? D9 05 ?? ?? ?? ?? 5E 59 C3 8B 46 14` +0 | fallback sig: 1 match |
+| CameraRootCall | 0x00C6D5BD | Sig | `E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00` +0<br>alt: `8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00 0F 28 00` +-5 | matches 1 / 1 |
+| CameraGetterCall | 0x00C6D5C4 | Sig | the same two signatures, +7 / +2 | matches 1 / 1 |
+| CameraRootGetter | 0x006E8330 | Target(CameraRootCall) | - | Target(CameraRootCall) |
+| CameraGetter | 0x006E8400 | Target(CameraGetterCall) | - | Target(CameraGetterCall) |
+| RefPackDecompress | 0x004EB3B0 | Sig (CALL target) | `3B C2 77 14 8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00` call at +12<br>alt: `8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00` call at +8 (both inside the stream read 0x004EC010, not on the decoder's entry, which the official S3SS detours) | matches 1 / 1 (sigcheck.pl 2026-09-29: 134 of 134 ok) |
 
 The ids after the first one of a `Multi` / `CallersOf` entry take the following matches by address: ArmSiteRemoval
 0x6B60D3, ArmSiteRegister 0x6B6516, ArmSiteMoved 0x6B6618; QualitySite0 0xADB66B, QualitySite1 0xADB884; SetColourCall0..6

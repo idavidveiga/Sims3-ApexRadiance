@@ -4,7 +4,8 @@
 // Start-up:
 //  DllMain      process check, instance mutexes (a second copy, or an older S3SSApex.asi that loaded first, keeps this
 //               copy idle), Direct3DCreate9 export detour (d3d9_bootstrap.h), init thread.
-//  init thread  ApexRadiance_LOG.txt, game version, S3SS detection, features created, one-time migration (previous
+//  init thread  ApexRadiance_LOG.txt, game version, background precompile of Apex's HLSL shaders (shader_cache.h),
+//               S3SS detection, features created, one-time migration (previous
 //               S3SS\Apex\Apex.toml, else S3SS.toml), settings (menu, display, Picture, profiler); then waits until
 //               the game settled (first Present + 1 s, so official S3SS has loaded its own patches), checks for the
 //               old combined build and an older S3SSApex.asi, resolves the game-code addresses (game_addresses.h:
@@ -27,6 +28,7 @@
 #include "overlay.h"
 #include "patch_base.h"
 #include "s3ss_detect.h"
+#include "shader_cache.h"
 #include <format>
 #include <string>
 
@@ -91,6 +93,9 @@ DWORD WINAPI InitThread(LPVOID) {
     LOG_INFO("[Main] Files: " + ApexUtil::ToUtf8(ApexPaths::ApexDirectory()));
     if (DetectGameVersion()) LOG_INFO(std::format("[Main] Game: {} [0x{:08X}]", GetGameVersionName(), g_exeTimestamp));
     else LOG_WARNING(std::format("[Main] Unknown game build [0x{:08X}]: game-code features start only where their code is found by signature", g_exeTimestamp));
+    // Apex's HLSL shaders (every quality and mode) compile now on a background thread, so the render thread never runs
+    // D3DCompile: the features only create the shader objects from the bytecode (shader_cache.h).
+    ShaderCache::Start();
 
     S3SSDetect::Scan();
     ApexD3D::EnsureInstalled(); // only does something when the DllMain install could not happen
@@ -174,6 +179,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_DETACH:
         if (!reserved && g_thread) { // FreeLibrary (not process exit)
             SetEvent(g_stop);        // never waited for inside DllMain
+            ShaderCache::Shutdown(); // the precompile worker stops between two compiles
             FrameProfiler::Shutdown();
             PatchManager::Get().UninstallAll();
             ApexD3D::Shutdown();

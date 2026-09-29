@@ -2,6 +2,7 @@
 #include "apex_log.h"
 #include <detours/detours.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -138,6 +139,46 @@ bool RestoreAll(std::vector<PatchLocation>& undo) {
         undo.pop_back();
     }
     return ok;
+}
+
+bool WriteCodeSuspended(uintptr_t address, const BYTE* bytes, size_t count) {
+    if (!address || !bytes || count == 0 || count > 16) return false;
+    std::lock_guard<std::mutex> lock(g_writeLock); // taken before any thread is suspended (a suspended Apex thread may not hold it)
+    // Every other thread of the process, opened before anything is suspended
+    std::vector<HANDLE> threads;
+    threads.reserve(256);
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    const DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID)) threads.push_back(h);
+    }
+    CloseHandle(snap);
+    bool written = false;
+    for (int attempt = 0; attempt < 100 && !written; attempt++) {
+        // ---- other threads suspended: no allocation, no lock ----
+        for (HANDLE h : threads) SuspendThread(h);
+        bool busy = false;
+        for (HANDLE h : threads) {
+            CONTEXT ctx;
+            std::memset(&ctx, 0, sizeof ctx);
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(h, &ctx) && ctx.Eip > address && ctx.Eip < address + count) {
+                busy = true;
+                break;
+            }
+        }
+        if (!busy) written = ProtectedWrite(address, bytes, count);
+        for (HANDLE h : threads) ResumeThread(h);
+        // ---- resumed ----
+        if (!busy) break;
+        Sleep(1);
+    }
+    for (HANDLE h : threads) CloseHandle(h);
+    return written;
 }
 
 int32_t CalculateRelativeOffset(uintptr_t from, uintptr_t to, size_t length) {

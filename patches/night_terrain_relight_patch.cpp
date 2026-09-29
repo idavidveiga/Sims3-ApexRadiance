@@ -43,6 +43,7 @@
 #include "imgui.h"
 #include "ui/widgets.h"
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -194,15 +195,54 @@ int g_stuckFrames = 0;
 Clock::time_point g_lastStuckKick{};
 int g_armsAtLastStuckKick = 0;
 int g_lastLampEdits = 0;
-// Lamp changes (and the live "lot lamps on the ground" switch) are coalesced: a rebuild once nothing changed for 250 ms,
-// and at most one every 3 s while changes keep coming.
+int g_lastUserEdits = 0;
+// Lamp changes (and the live "lot lamps on the ground" switch) are coalesced: a decision once nothing changed for 250 ms.
+// 29/09 (terrain-relight.md "Lamp change decisions"; research\perf2\round3.md 5: each full rebuild is a ~240 ms frame):
+//  - user-driven changes (a lamp of the bake placed, moved, removed; the switches) rebuild fast, at most one every 3 s;
+//  - automatic changes (switched on / off, dimmed, recoloured; the stuck-countdown fallback) at most once per 30 s after
+//    the last rebuild of any kind;
+//  - both only if the lamps the bake takes differ from the snapshot of the last rebuild (LotLightBridge::DiffBake), so a
+//    rebuild the game made after the change (or any other rebuild) drops the kick, and the same state never rebuilds
+//    twice;
+//  - both wait until the camera has been still for 1 s.
 bool g_editKickPending = false;
-Clock::time_point g_editLastAt{};
+bool g_editUser = false;  // the pending change includes a user-driven one (fast path)
+bool g_editForce = false; // a switch changed what the bake takes: no snapshot compare
+Clock::time_point g_editFirstAt{}, g_editLastAt{};
 Clock::time_point g_lastEditKick{};
 std::string g_editReason = "lot lamps changed";
 std::string g_lastEditOutcome = "none";
 constexpr auto kEditQuiet = std::chrono::milliseconds(250);
 constexpr auto kEditMinInterval = std::chrono::seconds(3);
+constexpr auto kAutoMinInterval = std::chrono::seconds(30); // automatic lamp changes: after the last rebuild of any kind
+constexpr auto kCameraStill = std::chrono::seconds(1);
+constexpr auto kGameRebuiltSlack = std::chrono::seconds(2); // a rebuild up to 2 s before a change was SEEN already had it
+constexpr auto kSnapshotWaitMax = std::chrono::seconds(2);
+enum class EditWait { None, Snapshot, Camera, Interval, Rate };
+EditWait g_editWait = EditWait::None;
+// Lamps the bake took at the last rebuild (the first light enumeration after it was consumed)
+LotLightBridge::BakeSnapshot g_baked;
+bool g_haveBaked = false;
+bool g_bakedDue = false;
+int g_bakedDueEnum = 0;
+Clock::time_point g_bakedDueAt{}, g_bakedAt{};
+Clock::time_point g_lastRebuildAt{};
+LotLightBridge::BakeDiff g_editDiff;
+int g_editDiffEnum = -1;
+std::vector<uint64_t> g_editUserLots; // lots of the user-driven changes of the pending batch
+// decisions (developer status)
+int g_decRebuiltUser = 0, g_decRebuiltAuto = 0, g_decSkipGame = 0, g_decSkipSame = 0, g_decCovered = 0, g_decDeferCamera = 0, g_decDeferRate = 0;
+
+// Camera eye [[root]+camera]+eye, the read WorldManager::Update does (0x00C6D5BD..0x00C6D5C9 on Steam; offsets parsed from
+// the code: root getter "A1 imm32 C3", camera getter "8B 41 disp8 C3", "0F 28 40 disp8" after the getter's call;
+// docs/engine/camera-and-map-view.md). Sampled every Present; moving = the eye went more than 2 cm from where it was
+// when it last counted as moving (so a slow orbit or zoom adds up). Unknown (not found, unreadable) = still.
+uintptr_t g_camRootGlobal = 0;
+uint32_t g_camOff = 0, g_eyeOff = 0;
+bool g_camOk = false, g_camHave = false;
+float g_camRef[3] = {};
+Clock::time_point g_camMovedAt{};
+constexpr float kCameraMoveM = 0.02f;
 
 // Lot lighting quality: FUN_00adb5a0 and FUN_00adb850 pass (lot is active || Build mode) to FUN_006a5ef0. The default
 // "mov byte [esp+0Ch],0" becomes 1 so every lot is lit at the high quality the active lot uses.
@@ -430,6 +470,162 @@ void Kick(uintptr_t cells, float level, const std::string& reason, bool dusk = f
     LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
 }
 
+// ---- camera still (lamp change kicks wait for it) ----
+bool ReadCode(uintptr_t at, void* out, size_t n) {
+    if (!at) return false;
+    __try {
+        std::memcpy(out, reinterpret_cast<const void*>(at), n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void ResolveCamera() {
+    g_camOk = false;
+    g_camHave = false;
+    BYTE r[6] = {}, g[4] = {}, e[4] = {};
+    const uintptr_t call = GameAddr::Get(GameAddr::Id::CameraGetterCall);
+    if (!ReadCode(GameAddr::Get(GameAddr::Id::CameraRootGetter), r, sizeof r) || r[0] != 0xA1 || r[5] != 0xC3) return;
+    if (!ReadCode(GameAddr::Get(GameAddr::Id::CameraGetter), g, sizeof g) || g[0] != 0x8B || g[1] != 0x41 || g[3] != 0xC3) return;
+    if (!call || !ReadCode(call + 5, e, sizeof e) || e[0] != 0x0F || e[1] != 0x28 || e[2] != 0x40) return;
+    uint32_t root = 0;
+    std::memcpy(&root, r + 1, 4);
+    g_camRootGlobal = root;
+    g_camOff = g[2];
+    g_eyeOff = e[3];
+    g_camOk = root != 0;
+}
+
+bool ReadEye(float out[3]) {
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(g_camRootGlobal);
+        if (!root) return false;
+        const uintptr_t camera = *reinterpret_cast<const uintptr_t*>(root + g_camOff);
+        if (!camera) return false;
+        const float* p = reinterpret_cast<const float*>(camera + g_eyeOff);
+        out[0] = p[0];
+        out[1] = p[1];
+        out[2] = p[2];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+}
+
+void SampleCamera(Clock::time_point now) {
+    float e[3];
+    if (!g_camOk || !ReadEye(e)) {
+        g_camHave = false;
+        return;
+    }
+    if (!g_camHave) { // first sample (or readable again): the reference, not a move
+        std::memcpy(g_camRef, e, sizeof e);
+        g_camHave = true;
+        return;
+    }
+    const float dx = e[0] - g_camRef[0], dy = e[1] - g_camRef[1], dz = e[2] - g_camRef[2];
+    if (dx * dx + dy * dy + dz * dz > kCameraMoveM * kCameraMoveM) {
+        std::memcpy(g_camRef, e, sizeof e);
+        g_camMovedAt = now;
+    }
+}
+
+bool CameraStill(Clock::time_point now) { return !g_camOk || !g_camHave || now - g_camMovedAt >= kCameraStill; }
+
+std::string CameraText(Clock::time_point now) {
+    if (!g_camOk) return "not found (lamp rebuilds do not wait for it)";
+    if (!g_camHave) return "unreadable now (treated as still)";
+    return CameraStill(now) ? "still" : "moving";
+}
+
+// A lamp change (or a switch) to decide on once nothing changed for kEditQuiet. user: fast path; force: no snapshot
+// compare (the switch changes what the bake takes, not the lamps); backdate: decide at the next frame.
+void NoteEdit(Clock::time_point now, bool user, bool force, const std::string& reason, bool backdate = false) {
+    if (!g_editKickPending) {
+        g_editFirstAt = now;
+        g_editUser = false;
+        g_editForce = false;
+        g_editWait = EditWait::None;
+        g_editUserLots.clear();
+    }
+    g_editKickPending = true;
+    g_editLastAt = backdate ? now - kEditQuiet : now;
+    // the reason shown is the strongest one: switch > user-driven > automatic
+    if (force || (user && !g_editForce) || (!g_editUser && !g_editForce)) g_editReason = reason;
+    g_editUser |= user;
+    g_editForce |= force;
+}
+
+void FinishEdit(const std::string& outcome) {
+    g_editKickPending = false;
+    g_editWait = EditWait::None;
+    g_lastEditOutcome = outcome;
+    if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + outcome);
+}
+
+// Deferred: logged once per state (dev build), the change stays pending and is decided again every frame.
+void WaitEdit(EditWait state, const std::string& text) {
+    if (g_editWait == state) return;
+    g_editWait = state;
+    if (state == EditWait::Camera) g_decDeferCamera++;
+    if (state == EditWait::Rate || state == EditWait::Interval) g_decDeferRate++;
+    if (state == EditWait::Snapshot) return; // at most 2 s, not worth a line
+    g_lastEditOutcome = std::format("{}: {}", g_editReason, text);
+    if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
+}
+
+const char* EditKind() { return g_editForce ? "switch" : (g_editUser ? "user-driven" : "automatic"); }
+
+// The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).
+void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_point now) {
+    if (!night && g_autoDusk) // lamps are off by day and not in the bake; the dusk rebuild takes the change
+        return FinishEdit(std::format("{}: left to the dusk rebuild (day)", g_editReason));
+    if (g_loadKickPending || (g_scheduled && night))
+        return FinishEdit(std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk"));
+    if (!g_pendingReason.empty() && c38 > 0) return FinishEdit(std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason));
+    if (g_bakedDue) return WaitEdit(EditWait::Snapshot, "waiting for the snapshot of the rebuild that just ran");
+    std::string diffText = "no snapshot of the last rebuild: rebuilt to be safe";
+    if (g_editForce)
+        diffText = "switch";
+    else if (g_haveBaked) {
+        if (g_editDiffEnum != LotLightBridge::LampEnumerations()) {
+            g_editDiff = LotLightBridge::DiffBake(g_baked, LotLightBridge::CurrentBakeLamps(), g_lotLamps);
+            g_editDiffEnum = LotLightBridge::LampEnumerations();
+        }
+        diffText = g_editDiff.Text();
+        // DiffBake only looks at lots the last rebuild had: a lamp placed / moved / removed on a lot that streamed in
+        // after it still rebuilds (Build mode on a lot visited later)
+        bool userLotNotBaked = false;
+        for (uint64_t lot : g_editUserLots)
+            if (!std::binary_search(g_baked.lots.begin(), g_baked.lots.end(), lot)) userLotNotBaked = true;
+        if (userLotNotBaked) diffText += "; a user-driven change on a lot the last rebuild did not have";
+        if (!g_editDiff.Any() && !userLotNotBaked) {
+            // the bake already has the lamps as they are: a rebuild ran after the change (the game's own, or any other),
+            // or the change went back, or it was below what the bake shows
+            const bool rebuiltSince = g_lastRebuildAt != Clock::time_point{} && g_lastRebuildAt + kGameRebuiltSlack >= g_editFirstAt;
+            (rebuiltSince ? g_decSkipGame : g_decSkipSame)++;
+            return FinishEdit(std::format("{} ({}): skipped: {} ({})", g_editReason, EditKind(),
+                                          rebuiltSince ? "the terrain was rebuilt after the change" : "no change the terrain bake uses", diffText));
+        }
+    }
+    if (!CameraStill(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
+    const bool fast = g_editForce || g_editUser;
+    if (fast && now - g_lastEditKick < kEditMinInterval) return WaitEdit(EditWait::Interval, "rate-limited: at most one lamp rebuild every 3 s");
+    if (!fast && now - g_lastRebuildAt < kAutoMinInterval)
+        return WaitEdit(EditWait::Rate, std::format("rate-limited: automatic changes rebuild at most once per {} s ({} s since the last rebuild; {})",
+                                                    kAutoMinInterval.count(), std::chrono::duration_cast<std::chrono::seconds>(now - g_lastRebuildAt).count(), diffText));
+    const std::string reason = g_editReason;
+    const std::string kind = EditKind();
+    Kick(cells, level, reason);
+    g_lastEditKick = now;
+    // the "lights changed" fallback must not rebuild again for the same arms
+    g_lastStuckKick = now;
+    g_armsAtLastStuckKick = g_lotLampArms.load();
+    (fast ? g_decRebuiltUser : g_decRebuiltAuto)++;
+    FinishEdit(std::format("{} ({}): rebuilt ({})", reason, kind, diffText));
+}
+
 // Runs on the render thread, the same thread as the game's light update and terrain update.
 void OnPresent() {
     if constexpr (!kPublicBuild) LightDiag::OnPresent(); // Ctrl+Shift+F8: development build only
@@ -460,6 +656,11 @@ void OnPresent() {
         g_pendingReason.clear();
         g_pendingDusk = false;
         g_editKickPending = false;
+        g_editWait = EditWait::None;
+        g_haveBaked = false; // the new world's first rebuild (the load rebuild) takes the first snapshot
+        g_bakedDue = false;
+        g_baked = LotLightBridge::BakeSnapshot{};
+        g_editDiffEnum = -1;
         LOG_INFO(std::format("[NightTerrainRelight] World loaded ({}): the terrain rebuild waits until the world is drawn and the night level is steady",
                              LevelText(s.level)));
         LotLightBridge::OnWorldChanged(); // drop the previous world's chunk maps, smoothed maps and atlas
@@ -504,12 +705,26 @@ void OnPresent() {
         g_rebuilds.fetch_add(1);
         const bool duskRebuild = g_pendingDusk;
         const bool ours = !g_pendingReason.empty();
-        g_lastEvent = std::format("Terrain rebuilt ({}; {})", ours ? g_pendingReason : "by the game itself", LevelText(s.level));
+        const std::string rebuiltBy = ours ? g_pendingReason : std::string("by the game itself");
+        g_lastEvent = std::format("Terrain rebuilt ({}; {})", rebuiltBy, LevelText(s.level));
         if (ours) g_lastTiming = std::format("{}: armed -> rebuilt {:.0f} ms", g_pendingReason, MsSince(g_kickAt));
         g_pendingReason.clear();
         g_pendingDusk = false;
         LOG_INFO("[NightTerrainRelight] " + g_lastEvent + (ours ? std::format(" {:.0f} ms after it was armed", MsSince(g_kickAt)) : std::string()));
         LightmapSmooth::OnTerrainRebuilt(); // every chunk map is re-rendered over the next frames
+        // This rebuild bakes the lamps as they are now: a lamp change still waiting is taken by it (29/09: the game's own
+        // rebuilds were followed within ~1 s by an Apex kick for the same change, two ~240 ms frames in a row), and the
+        // snapshot of what it baked is taken from the light enumeration forced for this frame.
+        g_lastRebuildAt = now;
+        if (g_editKickPending) {
+            g_decCovered++;
+            FinishEdit(std::format("{} ({}): skipped: {}", g_editReason, EditKind(),
+                                   ours ? std::format("the {} rebuild just ran", rebuiltBy) : std::string("the game rebuilt the terrain itself")));
+        }
+        g_bakedDue = true;
+        g_bakedDueAt = now;
+        g_bakedDueEnum = LotLightBridge::LampEnumerations();
+        LotLightBridge::RequestLampRefresh();
         // Relight lots ONLY after the dusk rebuild. Relighting re-registers lot lamps, which re-arms the countdown; doing it
         // after every rebuild made a loop that kept invalidating the (slow, high quality) lot solves.
         if (night && g_relightLots && duskRebuild) {
@@ -558,54 +773,65 @@ void OnPresent() {
     // Outdoor lot lamps changed (edited, added or removed, e.g. in Build mode, on lots that were already loaded; see
     // LotLightBridge::TrackLotLampEdits): the game rebuilds their light on the ground only when the lot is reloaded. And
     // the "lot lamps light the street" switch applies live (the bake reads it at run time): one rebuild.
+    // The snapshot of the lamps the last rebuild baked: the light enumeration forced in the frame the rebuild was consumed
+    // (LotLightBridge::RequestLampRefresh). If no enumeration comes (light enumeration unavailable), no snapshot: lamp
+    // changes are then decided without the compare (rate limits and camera only).
+    SampleCamera(now);
+    if (g_bakedDue) {
+        if (LotLightBridge::LampEnumerations() != g_bakedDueEnum) {
+            g_bakedDue = false;
+            g_baked = LotLightBridge::CurrentBakeLamps();
+            g_haveBaked = true;
+            g_bakedAt = now;
+            g_editDiffEnum = -1;
+        } else if (now - g_bakedDueAt > kSnapshotWaitMax) {
+            g_bakedDue = false;
+            g_haveBaked = false;
+        }
+    }
+
+    // Outdoor lot lamps changed (see LotLightBridge::TrackLotLampEdits: only changes of lamps the bake takes, on lots
+    // already loaded; user-driven = placed / moved / removed, automatic = switched, dimmed, recoloured): the game rebuilds
+    // their light on the ground only when the lot is reloaded. And the "lot lamps light the street" switch applies live
+    // (the bake reads it at run time): one rebuild. Decided by DecideEdit once quiet (see the variables above).
     if (const int edits = LotLightBridge::LotLampEdits(); edits != g_lastLampEdits) {
+        const int user = LotLightBridge::LotLampUserEdits();
+        const bool userDriven = user != g_lastUserEdits;
         g_lastLampEdits = edits;
-        g_editKickPending = true;
-        g_editLastAt = now;
-        g_editReason = "lot lamps changed";
+        g_lastUserEdits = user;
+        NoteEdit(now, userDriven, false, userDriven ? "lot lamps placed, moved or removed" : "lot lamps switched, dimmed or recoloured");
+        if (userDriven)
+            for (uint64_t lot : LotLightBridge::LastUserChangeLots()) g_editUserLots.push_back(lot);
     }
     if (g_lotLamps != g_lotLampsSeen) {
         g_lotLampsSeen = g_lotLamps;
-        g_editKickPending = true;
-        g_editLastAt = now - kEditQuiet;
-        g_editReason = g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off";
-    }
-    if (g_editKickPending && now - g_editLastAt >= kEditQuiet && now - g_lastEditKick >= kEditMinInterval) {
-        g_editKickPending = false;
-        if (!night && g_autoDusk) // lamps are off by day and not in the bake; the dusk rebuild takes the change
-            g_lastEditOutcome = std::format("{}: left to the dusk rebuild (day)", g_editReason);
-        else if (g_loadKickPending || (g_scheduled && night))
-            g_lastEditOutcome = std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk");
-        else if (!g_pendingReason.empty() && c38 > 0)
-            g_lastEditOutcome = std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason);
-        else {
-            Kick(s.cells, s.level, g_editReason);
-            g_lastEditKick = now;
-            // the "lights changed" fallback below must not rebuild again for the same arms
-            g_lastStuckKick = now;
-            g_armsAtLastStuckKick = g_lotLampArms.load();
-            g_lastEditOutcome = std::format("{}: rebuilt", g_editReason);
-        }
-        if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
+        NoteEdit(now, true, true, g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off", true);
     }
 
-    // A light change armed only +0x38: the full rebuild also needs +0x3C (TerrainData expand), so it would wait forever.
+    // Stuck countdown (v0.1.0 fallback): a light change armed only +0x38, which never rebuilds in play (only +0x3C does),
+    // so a lamp change the tracking above did not count (e.g. on a lot still settling) would wait forever. Only when an
+    // outdoor LOT lamp armed it (street lamps streaming in with lots also arm it, and the vanilla game never rebuilds for
+    // those), looked at most every 15 s, and since 29/09 it is an AUTOMATIC lamp change like the others: rebuilt only if
+    // the bake's lamps differ from the last rebuild's snapshot (so the same state never rebuilds twice: the old session's
+    // 15 s cadence of ~240 ms frames), at most once per 30 s, with the camera still.
     if (night && c38 == 0 && c3C <= 0) {
-        // Only when an outdoor LOT lamp armed it (street lamps streaming in with lots also arm it, and the vanilla game
-        // never rebuilds for those), and at most every 15 s (was 60: a newly placed lamp took up to a minute to light the ground): each full rebuild is a small hitch.
         const int arms = g_lotLampArms.load();
         if (++g_stuckFrames >= 120 && arms != g_armsAtLastStuckKick && now - g_lastStuckKick > std::chrono::seconds(15)) {
             g_lastStuckKick = now;
             g_armsAtLastStuckKick = arms;
-            Kick(s.cells, s.level, "lights changed");
+            NoteEdit(now, false, false, "lights changed (stuck countdown)", true);
         }
     } else
         g_stuckFrames = 0;
 
-    // A rebuild is coming (load, dusk, lamp change, armed): the smoothed maps hold new smoothing jobs until it happened
-    // (the game's maps are shown meanwhile), so no chunk is smoothed twice.
+    if (g_editKickPending && now - g_editLastAt >= kEditQuiet) DecideEdit(s.cells, s.level, night, c38, now);
+
+    // A rebuild is coming (load, dusk, user-driven lamp change, armed): the smoothed maps hold new smoothing jobs until it
+    // happened (the game's maps are shown meanwhile), so no chunk is smoothed twice. Not for automatic lamp changes: they
+    // can wait up to 30 s and are often skipped.
     const bool armed = !g_pendingReason.empty() && c38 >= 0 && now - g_kickAt < std::chrono::seconds(5);
-    if (g_loadKickPending || (g_scheduled && night) || (g_editKickPending && (night || !g_autoDusk)) || armed) LightmapSmooth::ExpectRebuild(30);
+    const bool editSoon = g_editKickPending && (night || !g_autoDusk) && (g_editUser || g_editForce);
+    if (g_loadKickPending || (g_scheduled && night) || editSoon || armed) LightmapSmooth::ExpectRebuild(30);
 
     const bool relightNow = g_relightLotsRequested.exchange(false);
     if (relightNow || (g_lotRelightPending && now >= g_lotRelightAt)) {
@@ -696,6 +922,10 @@ void LoadAddresses() {
     kLotPassNullBindBytes = WithDword({0xA1}, static_cast<uint32_t>(Get(Id::LotPassTexGlobal)), {0x6A, 0x00, 0x6A, 0x00});
     kQualitySites[0] = Get(Id::QualitySite0);
     kQualitySites[1] = Get(Id::QualitySite1);
+    ResolveCamera(); // lamp change rebuilds wait for the camera to be still
+    if constexpr (!kPublicBuild)
+        LOG_INFO(g_camOk ? std::format("[NightTerrainRelight] Camera eye for the lamp change rebuilds: [[{:#010x}]+{:#x}]+{:#x}", g_camRootGlobal, g_camOff, g_eyeOff)
+                         : std::string("[NightTerrainRelight] Camera eye not found in the game's code: lamp change rebuilds do not wait for the camera"));
 }
 
 // "Not available on <version>: missing ..." when one of ids was not found on this build, else empty
@@ -934,8 +1164,14 @@ class NightTerrainRelightPatch : public ApexPatch {
         // Installed again in the world it was removed from (the menu's on/off): no new-world handling (no clear, no load
         // rebuild), only one rebuild at night so lot lamps changed meanwhile reach the ground.
         if (g_lastCells != 0 && !reinstalling) {
+            // a switch (fast path, no snapshot compare: lamps changed while the patch was off were not tracked)
             g_editKickPending = true;
-            g_editLastAt = Clock::now() - kEditQuiet;
+            g_editFirstAt = Clock::now();
+            g_editLastAt = g_editFirstAt - kEditQuiet;
+            g_editUser = true;
+            g_editForce = true;
+            g_editWait = EditWait::None;
+            g_editUserLots.clear();
             g_editReason = "Night Lights turned on";
         }
 
@@ -1362,7 +1598,24 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::Text("Terrain: armed %d | rebuilt %d | last: %s", g_kicks.load(), g_rebuilds.load(), g_lastTiming.c_str());
         ImGui::TextWrapped("World load: %s | night level crossings: up %d, down %d", g_loadKickPending ? (g_live ? "live, waiting for a steady night level" : "waiting for the world to be drawn") : g_loadInfo.c_str(),
                            g_crossUp, g_crossDown);
-        ImGui::TextWrapped("Lamp changes: %s | %s%s", LotLightBridge::LotLampStatus().c_str(), g_lastEditOutcome.c_str(), g_editKickPending ? " | rebuild pending" : "");
+        ImGui::TextWrapped("Lamp changes: %s", LotLightBridge::LotLampStatus().c_str());
+        {
+            const auto now = Clock::now();
+            const char* wait = !g_editKickPending ? "none"
+                               : g_editWait == EditWait::Camera ? "waiting for the camera to stop"
+                               : g_editWait == EditWait::Rate ? "rate-limited (automatic: 30 s after the last rebuild)"
+                               : g_editWait == EditWait::Interval ? "rate-limited (3 s between lamp rebuilds)"
+                               : g_editWait == EditWait::Snapshot ? "waiting for the snapshot of the last rebuild"
+                                                                   : "quiet time (250 ms)";
+            const std::string snap = g_haveBaked ? std::format("{} lamps on {} lots, taken {:.0f} s ago", g_baked.lamps.size(), g_baked.lots.size(),
+                                                               std::chrono::duration<double>(now - g_bakedAt).count())
+                                                 : std::string(g_bakedDue ? "being taken" : "none yet");
+            ImGui::TextWrapped("Lamp change decisions: rebuilt %d user-driven / %d automatic | skipped: terrain rebuilt after the change %d, covered by a rebuild %d, no bake "
+                               "change %d | deferred: camera %d, rate-limited %d | pending: %s | camera: %s | last rebuild's lamps: %s | last: %s",
+                               g_decRebuiltUser, g_decRebuiltAuto, g_decSkipGame, g_decCovered, g_decSkipSame, g_decDeferCamera, g_decDeferRate,
+                               g_editKickPending ? std::format("{} ({}), {}", g_editReason, EditKind(), wait).c_str() : "none", CameraText(now).c_str(), snap.c_str(),
+                               g_lastEditOutcome.c_str());
+        }
         ImGui::Text("Chunk re-render notices: %d (%s)", g_chunkRenders.load(), g_chunkHookInstalled ? "hooked at 0xC8504C" : "not hooked: hashing only");
         ImGui::TextWrapped("Lots: %s (times: %d, stories: %d)", g_lastLotRelight.c_str(), g_lotRelights.load(), g_roomsQueued.load());
         ImGui::Text("Street lamps counted as lit: %ld", static_cast<long>(g_forcedLampUses));

@@ -2,7 +2,8 @@
 
 > **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) as described. v0.1.0's `water_lamps_ps.hlsl` has no
 > `params.z` factor (the HDR line was added later), so no port issue there; the pass PS is compiled at the first lake draw
-> (no `PrecreatePs`).
+> (no `PrecreatePs`). Since 2026-09-28 it is compiled at start-up on a background thread and only created at the first
+> lake draw (`framework/shader_cache.h`, [architecture 4.6](../../architecture.md#shader-precompile)); not tested in game yet.
 
 > The game's pond/lake water gets no lamp light and reflects only a fixed sky cube, so at night ponds are dark and dead.
 > Night Lighting draws a second pass on the same water geometry right after the game's water: glints and glow of nearby

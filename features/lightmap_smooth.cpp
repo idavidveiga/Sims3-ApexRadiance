@@ -34,6 +34,7 @@
 #include "build_flavor.h"
 #include "d3d9_extra_hooks.h"
 #include "lightmap_smooth_hlsl.h"
+#include "shader_cache.h"
 #include <windows.h>
 #include <d3dcompiler.h>
 #include <algorithm>
@@ -939,6 +940,24 @@ constexpr float kDefaultChunkMs = 0.5f;  // cost estimate until the timestamp qu
 enum class GpuState { Unknown, Ready, Failed };
 enum PsId { PsGather, PsHBlur, PsVBlur, PsHUpYA, PsHUpChroma, PsVUp, PsDown, PsCopy, PsCount };
 constexpr const char* kPsEntries[PsCount] = {"GatherPS", "HBlurPS", "VBlurPS", "HUpYAPS", "HUpChromaPS", "VUpPS", "DownPS", "CopyPS"};
+constexpr const char* kPsTags[PsCount] = {"LightmapSmooth GatherPS", "LightmapSmooth HBlurPS", "LightmapSmooth VBlurPS", "LightmapSmooth HUpYAPS",
+                                          "LightmapSmooth HUpChromaPS", "LightmapSmooth VUpPS", "LightmapSmooth DownPS", "LightmapSmooth CopyPS"};
+
+// Compiled at start-up on a background thread (framework/shader_cache.h); InitGpu only creates the shader objects.
+ShaderCache::Id AddSmoothShader(int i) {
+    ShaderCache::Desc d;
+    d.tag = kPsTags[i];
+    d.source = kLightmapSmoothHlsl;
+    d.sourceName = "lightmap_smooth_ps.hlsl";
+    d.entry = kPsEntries[i];
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 0;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kPsIds[PsCount] = {AddSmoothShader(0), AddSmoothShader(1), AddSmoothShader(2), AddSmoothShader(3),
+                                         AddSmoothShader(4), AddSmoothShader(5), AddSmoothShader(6), AddSmoothShader(7)};
+static_assert(PsCount == 8, "kPsIds lists every PsId");
 
 bool g_gpuPreferred = true;               // developer setting (A/B); render thread
 bool g_gpuActive = false;                 // the path in use (switching clears everything, see ResolveMode)
@@ -1094,18 +1113,11 @@ bool InitGpu(IDirect3DDevice9* dev) {
     else return fail("no float render-target texture format");
     for (int i = 0; i < PsCount; i++) {
         if (g_ps[i]) continue;
-        ID3DBlob* code = nullptr;
-        ID3DBlob* errors = nullptr;
-        const HRESULT hr = D3DCompile(kLightmapSmoothHlsl, std::strlen(kLightmapSmoothHlsl), "lightmap_smooth_ps.hlsl", nullptr, nullptr, kPsEntries[i], "ps_3_0",
-                                      D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+        // precompiled at start-up (shader_cache.h): only the shader object is created here
         std::string msg;
-        if (FAILED(hr) || !code) msg = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "unknown error";
-        else if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &g_ps[i]))) {
-            g_ps[i] = nullptr;
-            msg = "CreatePixelShader failed";
-        }
-        if (errors) errors->Release();
-        if (code) code->Release();
+        const ShaderCache::Result res = ShaderCache::CreatePixelShader(dev, kPsIds[i], &g_ps[i], &msg);
+        if (res == ShaderCache::Result::CreateFailed) msg = "CreatePixelShader failed";
+        if (res != ShaderCache::Result::Ok && msg.empty()) msg = "unknown error";
         if (!msg.empty()) {
             LOG_ERROR(std::format("[LightmapSmooth] Shader {} failed: {}", kPsEntries[i], msg));
             return fail(std::string("shader ") + kPsEntries[i] + " did not compile");

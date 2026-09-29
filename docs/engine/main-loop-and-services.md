@@ -292,6 +292,7 @@ naming them record where the combined build touched the engine.
 | 0x007D9840, 0x010650C4 | Frame Profiler | intended job keys for remote calls (the globals holding them are never set in the combined code; see the profiler doc) |
 | 0x00D819AA -> 0x00E4A050 | Script GC Scheduler (`patches/gc_scheduler_patch.cpp`, redirects the CALL); Chunky "Disable GC_try_to_collect" (S3SS, NOPs it); Profiler (times the entry, identifies the simulation thread) | see [mono-gc](mono-gc.md) |
 | D3D9 Present inside 0x00611680 on the main thread | every Apex post effect, Night Lighting frame-boundary logic, Profiler | frame boundary = registry Present hook |
+| 0x004AFFC0 FindProvider (slots 0x00FB2DE0 / 0x00FFE290), 0x004B2D00 / 0x00736A70 RegisterDatabase, 0x004B2EC0 SetDatabasePriority, 0x004B0960 DatabaseChanged (their +0x34 / +0x3C / +0x4C slots) | Faster Game File Lookups (`features/resource_cache.cpp`); Profiler (FindProvider counter) | vtable-slot layers (`framework/slot_chain.h`); the package list, the database classes and the file watcher are described in [../features/performance.md](../features/performance.md) |
 | Background idle 0x005887A0 / NoInactiveIdle | none (explains 10 ms "Unattributed" background frames) | |
 | Renderer +0x8D, sleep at 0x00EC9FBA | none directly; explains ~30 ms frames while inactive (profiler "Frame limiter" row) | |
 

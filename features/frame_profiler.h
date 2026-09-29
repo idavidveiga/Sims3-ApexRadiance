@@ -10,6 +10,10 @@
 // Optional statistical sampling (Advanced): a sampler thread records where the render / simulation thread is (EIP, TS3W
 // call sites on its stack) ~2000 times a second, so each hitch also shows which code its untimed time was spent in.
 //
+// Counters (research\perf2\plan.md section 8): resource lookups (FindProvider), scene pending nodes, RefPack compression,
+// DXT encoding, object lookups by ID and lot room solves, each with calls / ms per thread bucket, the longest call and an
+// extra count; every hitch also names its dominant cause. Two measurement presets set the recommended options.
+//
 // Off (the default) = nothing is hooked: no detours, no registry hooks, no thread. See frame_profiler.cpp for the
 // verified addresses, the timing rules (exclusive / inclusive, thread buckets) and the known limitations.
 #include <cstdint>

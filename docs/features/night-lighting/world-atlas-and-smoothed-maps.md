@@ -58,7 +58,10 @@ options for the atlas consumers).
 Goal: the smoothed map of the game's current map on screen in the same frame the game's map changes, the same look as
 the CPU path (within about 1/255 per channel), no CPU readback/decode, no upload, no worker thread. Code:
 `lightmap_smooth.cpp` section "GPU path"; shaders: `shaders/lightmap_smooth_ps.hlsl` (the mod compiles the identical copy
-in `shaders/lightmap_smooth_hlsl.h` at run time with `D3DCompile`, ps_3_0, O3: keep the two identical).
+in `shaders/lightmap_smooth_hlsl.h` at run time with `D3DCompile`, ps_3_0, O3: keep the two identical). Since
+2026-09-28 (standalone) the eight entry points are compiled at start-up on a background thread
+(`framework/shader_cache.h`, [architecture 4.6](../../architecture.md#shader-precompile)); `InitGpu` only creates the
+shader objects from that bytecode. Not tested in game yet.
 
 **Passes per chunk** (`BuildOne`; one `DrawPrimitiveUP` quad each, `D3DFVF_XYZRHW | D3DFVF_TEX1` with ps_3_0 as in Depth
 Blur; every fetch a point sample at a texel centre with `tex2Dlod`, level 0; samplers POINT / POINT / mip NONE, CLAMP,
@@ -202,8 +205,9 @@ neighbours).
 ### Rebuild sweep (driven by the terrain relight)
 
 `NightTerrainRelight` calls `NoteKick(reason)` when it arms a rebuild (timing, 60 boosted frames), `ExpectRebuild(30)`
-every frame while a rebuild is coming (load waiting for the world, dusk delay, lamp change debounce, kick armed and not
-consumed: no new jobs, the game's maps are shown) and `OnTerrainRebuilt()` in the frame the game consumes it: every chunk
+every frame while a rebuild is coming (load waiting for the world, dusk delay, the debounce of a user-driven lamp change
+or switch, kick armed and not consumed: no new jobs, the game's maps are shown; since 29/09 not for automatic lamp
+changes, which may wait 30 s and are often skipped, see [terrain-relight.md](terrain-relight.md) "Lamp change decisions") and `OnTerrainRebuilt()` in the frame the game consumes it: every chunk
 becomes `awaiting` (except those already re-rendered in that frame), 300 boosted frames. A consumed rebuild re-renders one
 chunk per frame, so smoothing a chunk before its own re-render would be wasted: jobs wait per chunk until it changed (or
 was reported re-rendered). The sweep ends when no chunk is awaiting or after 300 frames; the developer log then prints

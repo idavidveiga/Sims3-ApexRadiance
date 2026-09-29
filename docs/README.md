@@ -67,6 +67,7 @@ stay, as an SDR-only module.
 | [features/edge-smoothing.md](features/edge-smoothing.md) | Edge Smoothing: SMAA 1x and FXAA |
 | [features/depth-blur.md](features/depth-blur.md) | Depth Blur (off in map view) |
 | [features/frame-profiler.md](features/frame-profiler.md) | Frame Profiler (dev build only): sampling, per-service and per-hook timing, hitches |
+| [features/performance.md](features/performance.md) | Performance: Faster Game File Lookups (`ResourceLookupCache`, the FindProvider cache and the package list / database classes behind it), Lot Lighting While Moving (`LotLightingMotion`, the lot lighting budget 0xADB120), Faster Texture Compression (`FastTextureCompression`, the CPU DXT1 / DXT5 encoders 0x6152F0 / 0x6154B0 reverse-engineered and rewritten bit-identically) and Faster Cache Compression (`FastCacheCompression`, the RefPack stream write 0x4EC200, compressor and decompressor); the shared vtable-slot and entry chains with the profiler; offline tests `tools/dxt_test`, `tools/refpack_test` |
 | [changes-since-0.1.0.md](changes-since-0.1.0.md) | Lighting changes after v0.1.0 and the re-add order (fences first) |
 
 ### Developer tools (dev build only)

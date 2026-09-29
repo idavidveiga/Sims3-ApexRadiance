@@ -31,6 +31,7 @@
 #include "d3d9_extra_hooks.h"
 #include "post_scene.h"
 #include "map_view.h"
+#include "shader_cache.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
@@ -249,6 +250,27 @@ float4 CompositePS(float2 uv : TEXCOORD0) : COLOR0
 }
 )HLSL";
 
+// Every variant is compiled at start-up on a background thread (framework/shader_cache.h); the render thread only
+// creates the shader objects from the bytecode. Priority 0 = the default quality (High) and the fixed passes.
+ShaderCache::Id AddShader(const char* tag, const char* entry, int priority, const char* taps = nullptr) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = kShaderSource;
+    d.sourceName = "depth_blur.hlsl";
+    d.entry = entry;
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    if (taps) d.macros.emplace_back("TAPS", taps);
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kFocusPsId = AddShader("DepthBlur FocusPS", "FocusPS", 0);
+const ShaderCache::Id kPrepPsId = AddShader("DepthBlur PrepPS", "PrepPS", 0);
+const ShaderCache::Id kCompositePsId = AddShader("DepthBlur CompositePS", "CompositePS", 0);
+const ShaderCache::Id kBlurPsId[4] = {AddShader("DepthBlur BlurPS (Low, TAPS 4)", "BlurPS", 1, "4"), AddShader("DepthBlur BlurPS (Medium, TAPS 6)", "BlurPS", 1, "6"),
+                                      AddShader("DepthBlur BlurPS (High, TAPS 8)", "BlurPS", 0, "8"), AddShader("DepthBlur BlurPS (Ultra, TAPS 12)", "BlurPS", 1, "12")};
+static_assert(kQualityTaps[0] == 4 && kQualityTaps[1] == 6 && kQualityTaps[2] == 8 && kQualityTaps[3] == 12, "kBlurPsId lists the TAPS of kQualityTaps");
+
 struct Params {
     bool autoFocus = true;   // Auto (follows what the camera looks at) or Fixed (the original start/range curve)
     float amount = 0.5f;     // max blur radius = amount x 1% of the screen height
@@ -394,46 +416,41 @@ void ReleaseShaders() {
     }
 }
 
-IDirect3DPixelShader9* CompileShader(IDirect3DDevice9* dev, const char* entry, const D3D_SHADER_MACRO* macros = nullptr) {
-    ID3DBlob* code = nullptr;
-    ID3DBlob* errors = nullptr;
-    HRESULT hr = D3DCompile(kShaderSource, std::strlen(kShaderSource), "depth_blur.hlsl", macros, nullptr, entry, "ps_3_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-    if (FAILED(hr) || !code) {
-        std::string msg = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "unknown error";
+// Creates one pass from its precompiled bytecode (shader_cache.h: compiled at start-up, off the render thread)
+IDirect3DPixelShader9* CreateShader(IDirect3DDevice9* dev, ShaderCache::Id id, const char* entry) {
+    IDirect3DPixelShader9* ps = nullptr;
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, &ps, &msg)) {
+    case ShaderCache::Result::Ok:
+        return ps;
+    case ShaderCache::Result::CompileFailed:
         LOG_ERROR(std::format("[DepthBlur] Shader {} failed to compile: {}", entry, msg));
-        if (errors) errors->Release();
-        if (code) code->Release();
+        return nullptr;
+    case ShaderCache::Result::CreateFailed:
+        LOG_ERROR(std::format("[DepthBlur] CreatePixelShader({}) failed", entry));
         return nullptr;
     }
-    if (errors) errors->Release();
-    IDirect3DPixelShader9* ps = nullptr;
-    if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &ps))) {
-        LOG_ERROR(std::format("[DepthBlur] CreatePixelShader({}) failed", entry));
-        ps = nullptr;
-    }
-    code->Release();
-    return ps;
+    return nullptr;
 }
 
-// The gather of one quality (TAPS per side), compiled on first use
+// The gather of one quality (TAPS per side), created on first use from the precompiled bytecode
 IDirect3DPixelShader9* BlurShader(IDirect3DDevice9* dev, int q) {
     q = q < 0 ? 0 : (q > 3 ? 3 : q);
     if (g.psBlur[q] || g.blurTried[q]) return g.psBlur[q];
     g.blurTried[q] = true;
-    const D3D_SHADER_MACRO macros[] = {{"TAPS", kQualityTapsText[q]}, {nullptr, nullptr}};
-    g.psBlur[q] = CompileShader(dev, "BlurPS", macros);
+    g.psBlur[q] = CreateShader(dev, kBlurPsId[q], "BlurPS");
     if (!g.psBlur[q]) g.status = "ERROR: the blur shaders did not compile (see ApexRadiance_LOG.txt)";
     return g.psBlur[q];
 }
 
-// The fixed passes (compiled once; also after an Uninstall released them while another effect kept the depth swap)
+// The fixed passes (created once; also after an Uninstall released them while another effect kept the depth swap)
 bool EnsureShaders(IDirect3DDevice9* dev) {
     const bool fixedOk = g.psFocus && g.psPrep && g.psComposite;
     if (!fixedOk && g.fixedTried) return false; // failed once: logged, not retried every frame
     g.fixedTried = true;
-    if (!g.psFocus) g.psFocus = CompileShader(dev, "FocusPS");
-    if (!g.psPrep) g.psPrep = CompileShader(dev, "PrepPS");
-    if (!g.psComposite) g.psComposite = CompileShader(dev, "CompositePS");
+    if (!g.psFocus) g.psFocus = CreateShader(dev, kFocusPsId, "FocusPS");
+    if (!g.psPrep) g.psPrep = CreateShader(dev, kPrepPsId, "PrepPS");
+    if (!g.psComposite) g.psComposite = CreateShader(dev, kCompositePsId, "CompositePS");
     return g.psFocus && g.psPrep && g.psComposite && BlurShader(dev, g.p.quality);
 }
 

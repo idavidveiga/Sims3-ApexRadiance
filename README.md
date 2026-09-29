@@ -85,6 +85,7 @@ The development build adds measuring and diagnostic tools. How every feature wor
 
 - **Apex Radiance** by [@loinyx](https://github.com/loinyx).
 - Sims3SettingsSetter by sims3fiend
+- Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from [Arro](https://arro-now.tumblr.com/)'s Split-Level Lighting Fix.
 - Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).
 - Third-party code: [Dear ImGui](https://github.com/ocornut/imgui) (MIT), [Microsoft Detours](https://github.com/microsoft/Detours) (MIT), [toml++](https://github.com/marzer/tomlplusplus) (MIT), [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al. (see `third_party/smaa/LICENSE.txt`), [Lucide](https://lucide.dev) icons (ISC, see `third_party/lucide/LICENSE`).
 

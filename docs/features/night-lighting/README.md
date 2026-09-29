@@ -180,7 +180,10 @@ bridge / object fix / roof fix / water fix / wall gain != 1 is on (the combined 
   creates go through `OwnCreatePs/OwnCreateVs` (thread-local `t_ownCreate`) so the create hooks do not classify them.
 - **Pre-creation** (`PrecreatePs/PrecreateVs`): when the game creates one of the exact-match shaders (lot pass, snow
   lot pass, object rig, roof, snowy roof, lake) the replacement is compiled then (usually during loading), so DXVK does
-  not compile it in the frame the object first appears. Foliage VS copies are pooled (`g_vsPool`, max 64). Pattern
+  not compile it in the frame the object first appears. (Combined build. The standalone, 2026-09-28, instead compiles
+  the five HLSL replacements of `lot_light_bridge.cpp` and the eight world-light smoothing shaders of
+  `lightmap_smooth.cpp` at start-up on a background thread, `framework/shader_cache.h`, see
+  [architecture 4.6](../../architecture.md#shader-precompile); the draw hooks only create the objects from the bytecode.) Foliage VS copies are pooled (`g_vsPool`, max 64). Pattern
   patches (roads, floors, fences, objects...) stay lazy (made at first draw), because which patch applies depends on
   the VS it is drawn with.
 - **Robustness** (review 25/09): hooks catch C++ exceptions (`HookFailed` switches everything off until restart, log

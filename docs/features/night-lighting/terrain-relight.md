@@ -21,10 +21,10 @@
 > |---|---|---|
 > | World load | On a new cells pointer: log `World loaded (...)`, clear chunk maps. The rebuild is armed only when the world is **live** (the lot light bridge recorded a world terrain chunk draw after the change, `LotLightBridge::ChunkCount() > 0`; fallback 30 s after the change when no draw is recorded, e.g. "Street lamps light lots" off), 1 s after that, and once the night level moved less than 0.02 for 1 s (at most 20 s after live). At night the reason is "world load (night: also the dusk rebuild)": a dusk rising edge while the load rebuild waits is merged (log `Dusk during the world load: merged into the load rebuild`) and a waiting dusk kick is cancelled: **one** rebuild | `OnPresent`, `g_live`, `g_levelRef` |
 > | Dusk | Night level crosses 0.99 upwards, `automaticoAoAnoitecer`: kick after `atrasoSegundos` (unchanged) | |
-> | Lot lamp changes | `LotLightBridge::TrackLotLampEdits` (every 20 frames) compares the lamp SET: edits, additions, removals, with the streaming rules of [lot-light-pass.md](lot-light-pass.md) "Lot lamp change tracking". Rebuild once nothing changed for 250 ms and at least 3 s after the previous lamp rebuild; only at night (by day lamps are unlit and not baked: left to the dusk rebuild) unless `automaticoAoAnoitecer` is off; merged into a pending load / dusk / armed rebuild | `g_editKickPending`, `kEditQuiet`, `kEditMinInterval` |
+> | Lot lamp changes | `LotLightBridge::TrackLotLampEdits` (every 20 frames) compares the lamp SET: only lamps the bake takes, only changes the bake shows, with the streaming rules of [lot-light-pass.md](lot-light-pass.md) "Lot lamp change tracking". Decided once nothing changed for 250 ms; only at night (by day lamps are unlit and not baked: left to the dusk rebuild) unless `automaticoAoAnoitecer` is off; merged into a pending load / dusk / armed rebuild. **29/09:** user-driven changes (placed / moved / removed) at most one rebuild every 3 s, automatic ones (switched, dimmed, recoloured) at most once per 30 s after the last rebuild; both skipped when the bake's lamps equal the last rebuild's snapshot (a rebuild after the change, the game's own included, drops the kick) and deferred while the camera moves: "Lamp change decisions" below | `g_editKickPending`, `NoteEdit`, `DecideEdit`, `kEditQuiet`, `kEditMinInterval`, `kAutoMinInterval` |
 > | "Lot lamps light the street" switch | `luzDoLoteNaGrama` is read at run time by `TerrainLightTest` / `ArmTest`, whose patches are now installed whatever the option (with it off they answer exactly like the game). Toggling it goes through the lamp-change rule above (one rebuild at night). A reinstall is only needed if its code bytes could not be installed | `g_lotLampsSeen`, `installedLotLampCode` |
 > | Night Lights turned on again in the same world | No new-world handling; one lamp-change rebuild at night ("Night Lights turned on") | `Install` |
-> | Stuck countdown | v0.1.0 fallback kept: night, c38 == 0, c3C <= 0 for 120 frames, arms changed, at most every 15 s. A lamp-change rebuild updates its bookkeeping so it does not fire again for the same arms | |
+> | Stuck countdown | v0.1.0 fallback kept as a trigger: night, c38 == 0, c3C <= 0 for 120 frames, arms changed, looked at most every 15 s. **29/09:** it no longer kicks by itself: it queues an automatic lamp change (reason "lights changed (stuck countdown)"), so it rebuilds only if the bake's lamps differ from the last rebuild's snapshot, at most once per 30 s, camera still. The same state can never rebuild twice (the old session's 15 s cadence of ~240 ms frames). A lamp-change rebuild updates its bookkeeping so it does not fire again for the same arms | `g_stuckFrames`, `g_armsAtLastStuckKick` |
 > | Button | "Rebuild terrain light now" | |
 >
 > Apex's kick writes **3** (`kArmFrames`, was 50) to cells+0x38/+0x3C; the game's own arm sites still write 50. Every Apex
@@ -43,11 +43,88 @@
 > after the world change | night level crossings", "Lamp changes: counted / ignored / lots tracked / last", "Chunk
 > re-render notices".
 >
+> ### Lamp change decisions (29/09, not yet tested in game)
+>
+> **Why.** research\perf2\round3.md section 5: the worst stutters (~240 ms: terrain update ~172 ms + DXT encode ~56 ms
+> in one frame) are full terrain rebuilds; in the 29/09 00:37 session 5 of 8 were armed by Apex ("lot lamps changed" /
+> "lights changed"), two of them about 1 s after a rebuild the game made itself; the older session froze every 15 s
+> (the stuck-countdown fallback). The same lots reported "4 edited" / "7 edited" again and again with nobody building.
+> Diagnosis from `ApexRadiance_LOG.txt` + `ApexRadiance_LightDiag.txt` (same world, 28/09 19:53):
+> - lot 7D6F0019FAF78910 ("7 edited") has exactly 7 outdoor type-3 lamps, all **disabled** (flags 0x35 / 0xB5, no 0x40):
+>   `TerrainLightTest` never bakes them, yet the old tracking counted them (it did not check 0x40);
+> - lot 6C11001B182E9ED0 ("3 edited"): 3 type-11 lamps (flags 0xB5, disabled) and 3 type-5 (no 0x04, not tracked);
+> - lot 4522001BE6BBCA40 ("4 edited") and 6C11001BA7277E30 ("2 edited"): lit (0x20), enabled lamps of types 3..5 with
+>   **intensity 0.00** next to others at 1.00: lamps whose intensity the game switches (0 = off in the bake: the bake
+>   weight is range x intensity x 0.2) - inferred, the new per-lamp log line says which field moves;
+> - lot 6C11001B18CA1000 ("7 edited"): magenta / blue lamps (colour (1, 0, 1), (0, 0, 1)) and type-9 lights: likely
+>   colour-cycling lights (inferred);
+> - the old signature compared the raw bits of colour, intensity, lit flag and position, so any flicker counted.
+>
+> **What the bake uses** ([../../engine/terrain-and-light-bake.md](../../engine/terrain-and-light-bake.md) 4.2): lights
+> accepted by the visitor (street-lamp class type 0xB; lot lamps 3..6 outdoors, enabled, lit through
+> `TerrainLightTest`), their rect +0x134 (from position and range), position (vfunc+0x24), colour +0xF0 and the weight
+> range +0x130 x intensity +0x10 x 0.2. Not the fade +0x20, not the effective colour +0xE0. So the tracking and the
+> snapshot compare "light" = colour x intensity x range per channel, the position, and whether the lamp is in the bake
+> (lit, enabled for 3..6, light not zero). Whether the street-lamp class test (vfunc+0x20) needs the lit flag is
+> unverified; it is assumed (a save loaded by day keeps a lamps-off terrain light).
+>
+> **Rules** (`NoteEdit` / `DecideEdit` in the patch, `TrackLotLampEdits` / `DiffBake` in `lot_light_bridge.cpp`):
+> 1. Only bake changes count (lot-light-pass.md "Lot lamp change tracking"): a lamp of the bake added / removed / moved
+>    more than 5 cm ("user-driven"), a lamp entering or leaving the bake, or its light changing by more than 5 % per
+>    channel ("automatic"). A lamp with 3 automatic changes within 60 s is **animated**: its changes never trigger, its
+>    state goes into the next rebuild made for another reason (log line "switches or dims by itself").
+> 2. **Snapshot of the last rebuild.** Whenever a rebuild is consumed (Apex's or the game's), the bridge enumerates the
+>    lights in that same frame (`RequestLampRefresh`) and the next frame stores the snapshot `g_baked`. A pending change
+>    is then compared with `DiffBake(g_baked, current)`: only on lots settled now that were in that snapshot (lots that
+>    streamed in later were never baked, and streaming never rebuilds), lamps matched by type and place (5 cm) rather
+>    than pointer. No difference -> **skipped** ("the terrain was rebuilt after the change" when a rebuild ran at most
+>    2 s before the change was seen, else "no change the terrain bake uses"). A user-driven change on a lot the snapshot
+>    did not have still rebuilds. No snapshot (light enumeration unavailable): decided without the compare.
+> 3. A rebuild consumed while a change waits takes it: the change is dropped ("the game rebuilt the terrain itself" /
+>    "the <reason> rebuild just ran").
+> 4. **Camera still.** No lamp-change kick while the camera eye moved within the last 1 s (eye `[[root]+0x24]+0x60`,
+>    offsets parsed from the code like `LotLightingMotion`; moving = more than 2 cm from the last reference, so slow
+>    orbits add up; eye unknown = still). The change stays pending ("deferred: camera moving").
+> 5. **Rate limits.** User-driven changes and the switches: at most one rebuild every 3 s (~0.5-1 s latency otherwise).
+>    Automatic changes and the stuck-countdown fallback: at most once per 30 s after the last rebuild of any kind
+>    ("rate-limited"); the change stays pending and is re-checked (it is dropped if the lamps go back meanwhile).
+> 6. "Lot lamps light the street" and "Night Lights turned on" are switches: fast path, no compare.
+>
+> Developer log (dev build), one line per decision: `Lamp change: <reason> (<user-driven|automatic|switch>): rebuilt
+> (<diff>)` | `skipped: the terrain was rebuilt after the change` | `skipped: the game rebuilt the terrain itself` |
+> `skipped: no change the terrain bake uses` | `deferred: camera moving` | `rate-limited: ...` (deferrals once per
+> state); plus the bridge's `Lot lamp change: lot X: A added, E edited (M moved), R removed (user-driven|automatic):
+> L... type T: lit 1->0, intensity 1.000->0.000 [leaves the bake]; ...` and, at most once a minute per lot, `Lamp changes
+> that do not rebuild the terrain, lot X: ... (not in the bake | below the threshold | animated)`. Developer status line
+> "Lamp change decisions: rebuilt U user-driven / A automatic | skipped: ... | deferred: camera C, rate-limited R |
+> pending: ... | camera: still/moving | last rebuild's lamps: N lamps on K lots, taken S s ago | last: ...".
+>
+> **Expected effect** (estimate from the 29/09 log): the "7 edited" / "3 edited" lots (disabled lamps) stop counting;
+> flickering lamps become animated after 3 changes; the rest rebuilds at most once per 30 s and never twice for the same
+> lamps, never right after a game rebuild, never while the camera moves. From about 20 Apex rebuilds in 20 minutes of
+> night play to a few.
+>
+> **Risks / limits.** An automatic change that matters (a lamp switched on by a timer) can take up to 30 s (+ camera
+> still) to reach the ground; an animated lamp's ground light follows it only at other rebuilds; a Build-mode recolour
+> takes the automatic path (30 s); the first lamp placed on a lot that had no lamp of these types is not seen (its lot
+> looks like one streaming in; before 29/09 the stuck fallback caught it within 15 s): it reaches the ground at the next
+> rebuild (another change on a known lot, dusk, the button). Whether the game rebuilds by itself after Build-mode lamp
+> edits (the "by the game itself" rebuilds of the log) is not known.
+>
+> **Local relight (goal evaluated 29/09, not implemented).** Setting `chunk+0x55` only on the chunks whose bake rect
+> overlaps the changed lamps' rects is the game's own path restricted (section "Localized relight mechanics"; the +0x55
+> branch rebuilds every flagged chunk in the same call, so the cost scales with the number of flagged chunks). It needs
+> the WorldManager global, terrain +0x58, the chunk vector +0xB0/+0xB4 and the bake cell grid, none of which has a
+> `GameAddr` id in the standalone yet (`framework/game_addresses.*`), and the post-0.1.0 reconciliation that used it had
+> 12-60 ms hitches ([../../changes-since-0.1.0.md](../../changes-since-0.1.0.md) 2.1). Revisit after this change is
+> tested, behind a dev toggle.
+>
 > Expected latency (estimates; the game re-renders one chunk per frame after a consumed rebuild, in its own chunk order):
 > save load: rebuild armed ~1-2 s after the world is first drawn (was 5 s after the cells change, often inside the
 > loading screen, then a second dusk rebuild 2 s + 50 frames later); dusk: `atrasoSegundos` + 3 frames; Build-mode lamp
-> add / edit / remove at night: up to 20 frames (enumeration) + 250 ms + 3 frames (+ 20 frames more for a removal, which
-> is confirmed at the next enumeration), then the chunk's turn in the sweep (up to ~1 frame per world chunk); menu toggle
+> add / move / remove at night: up to 20 frames (enumeration) + 250 ms + 3 frames (+ 20 frames more for a removal, which
+> is confirmed at the next enumeration; since 29/09 + until the camera has been still for 1 s; a switch / dim / recolour:
+> up to 30 s after the last rebuild), then the chunk's turn in the sweep (up to ~1 frame per world chunk); menu toggle
 > of "Lot lamps light the street" at night: ~250 ms + 3 frames (was 2 s debounce + reinstall + a full new-world cycle).
 
 > The game-code half of Night Lighting, in `patches/night_terrain_relight_patch.cpp`. It makes outdoor **lot** lamps
@@ -210,7 +287,8 @@ function is compiled in and falls back to direct flags).
 | patches/night_terrain_relight_patch.cpp | `TerrainLightTest`, `ArmTest`, `BakeLevelTest`, `BakeLevelStub`, `IsOutdoorLotLamp`, `OriginalWorldLightTest` | predicates |
 | | `Install` / `Uninstall` / `Update` / `ReinstallNow` / `DeferredReinstall`, `CallPatch` | patching lifecycle |
 | | `OnPresent`, `ReadLightState`, `ReadCounters`, `ArmCounters`, `Kick` | dusk and rebuilds |
-| | `Bakeable`, `CollectLamp`, `CollectCurrent`, `MarkAllCovered`, `DiffBaked`, `Moved`, `ValueChanged`, `Reconcile`, `Settle` | reconciliation |
+| | `Bakeable`, `CollectLamp`, `CollectCurrent`, `MarkAllCovered`, `DiffBaked`, `Moved`, `ValueChanged`, `Reconcile`, `Settle` | reconciliation (combined build only) |
+| | `NoteEdit`, `DecideEdit`, `FinishEdit`, `WaitEdit`, `EditKind`; `ResolveCamera`, `ReadEye`, `SampleCamera`, `CameraStill`; `g_baked` / `g_bakedDue` | standalone lamp change decisions (29/09) |
 | | `QueueAllLotOutdoorRooms` | lot relight |
 | lot_light_bridge.cpp | `EnumerateLights`, `ReadOutdoorLotLamp`, `RefreshOutdoorLotLamps`, `ForEachOutdoorLotLamp` | lamp list |
 | patches/smooth_streaming_patch.cpp | `SmoothStreamingRelightTerrainRects`, `RelightRectsImpl`, `ReadCellGrid`, `ChunkBakeRect` | local relight |
@@ -318,3 +396,8 @@ None: this part only changes game code and triggers. Its output (chunk light map
   added to find where they are lost. Needs an in-game check with the counters (not done at the freeze).
 - Story gate and reconciliation not yet confirmed by the user in game.
 - Resolve the BL / night-condition discrepancy above.
+- 29/09 lamp change decisions (standalone): check in game with the dev log which field the repeatedly "edited" lamps
+  change (`Lot lamp change: ...` / `Lamp changes that do not rebuild the terrain`), that the Hitches file shows no
+  ~240 ms terrain frame right after a "Terrain rebuilt (by the game itself)", and that a Build-mode lamp placed / moved
+  on the home lot at night still lights the grass within about 1 s once the camera stops. Then decide on the local
+  relight (needs `GameAddr` ids for the terrain chunk list and the bake cell grid).

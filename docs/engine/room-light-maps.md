@@ -80,8 +80,8 @@ street-lamp light" and "fenced yard without street lamps" bugs all live here.
 | `0x01158DA8` | Street-lamp factor 3.3333 (`405554CA`) | full.asm `006BE1A1`; dwords.txt |
 | `0x011D11A0` | Type-5 (ShadedLamp) cone scale s (runtime 5) | light_diag `PixelLampDiag`; F8 16:09 |
 | `0x00ADB5A0`, `0x00ADB850` | Pass `(lot is active || Build mode)` as the quality flag to `0x006A5EF0`; the `mov byte [esp+0Ch],0` sites are `0x00ADB66B`, `0x00ADB884` | night_terrain_relight `kQualitySites`, bytes `C6 44 24 0C 00` |
-| `0x00ADB120` | Lot lighting time budget per frame (5 / 10 / 15 / 30 ms) | smooth_streaming note 5 |
-| `0x00AE4CB0 → 0x00ADB8F0 → 0x006A8BA0 → 0x006A88B0 → 0x006A3F80 → 0x006A3C90` | Budgeted room solve during normal lot loading; `0x006A3C90` returns when the budget is spent while room+0x164 is set and resumes from room+0xEC | smooth_streaming note 5 |
+| `0x00ADB120` | Lot lighting time budget per frame (5 / 10 / 15 / 30 ms; 1000 in tool mode); only caller the CALL at `0x00ADB95D` | smooth_streaming note 5; Lot Lighting While Moving scales it while the camera moves ([../features/performance.md](../features/performance.md)) |
+| `0x00AE4CB0 → 0x00ADB8F0 → 0x006A8BA0 → 0x006A88B0 → 0x006A3F80 → 0x006A3C90` | Budgeted room solve during normal lot loading; `0x00ADB8F0` calls `0x006A8BA0` once per level object of the lot (deque at manager+0x24..0x40) with one shared stopwatch and stops when elapsed > budget; `0x006A3C90` returns when the budget is spent while room+0x164 is set and resumes from room+0xEC (state machine, 9 = done) | smooth_streaming note 5; verified 2026-09-29 ([../features/performance.md](../features/performance.md)) |
 | `0x00ADBAD0 → 0x006A80E0 → 0x006A3EC0` | Synchronous solve (while room+0xF0 == 3, 60000 ms budget) used only by the lot impostor builder | smooth_streaming note 3 |
 | `0x006ADD60` | Night-level setter (lightMgr+0xF0) | night_terrain_relight header |
 | `0x006AC560` | `IsNight`: lightMgr+0xF0 > 0.99 and byte `[0x011D08C0] == 0` | full.asm |

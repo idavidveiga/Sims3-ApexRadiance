@@ -58,7 +58,7 @@ Related pages:
 | 0x00AEA6AC / 0xAEA6D0 / 0xAEA6E9 | The three budget movs: 20 / 35 (priority lot) / 2000 (tool mode) ms | Smooth Streaming |
 | 0x006FDC80 | "Priority lot" test thiscall(sceneObjMgr, lo, hi), RET 8: lot id == SceneObjectManager+0x10D0 or +0x10E0 | Smooth Streaming |
 | 0x006FDE10 | SceneObjectManager getter `mov eax,[0x011D1CF8]; ret` | bytes checked |
-| 0x00ADB120 | Lot lighting budget (ECX = lot lighting manager, ST0): 5 ms; 10 while loading (+0x4F); 15/30 for priority lots; 1000 in tool mode | Smooth Streaming |
+| 0x00ADB120 | Lot lighting budget (ECX = lot lighting manager, ST0): 5 ms; 10 while loading (+0x4F); 15/30 for priority lots; 1000 in tool mode. Only caller: the CALL at 0x00ADB95D in 0x00ADB8F0 | Smooth Streaming; Lot Lighting While Moving redirects that CALL ([../features/performance.md](../features/performance.md)) |
 | 0x00AE4CB0 → 0x00ADB8F0 → 0x006A8BA0 | Budgeted per-frame room lighting of a lot (`FUN_00ADB8F0` only caller 0xAE4D2A) | profiler, Smooth Streaming note 5 |
 | 0x00ADBAD0 → 0x006A80E0 → 0x006A3EC0 | Synchronous room light solve (while room+0xF0 == 3, 60000 ms budget), used by the impostor builder | Smooth Streaming note 3 |
 | 0x00AD9E30 | Lot LOD switch ("World/LotImpostor/LODOverrideHook"): calls 0xAEB3F0 (two renderer updates + 0xADBAD0). Caller 0xADAEBC | profiler, `fnstrings.tsv` |
@@ -267,6 +267,8 @@ LSO's install log lines, as seen on 28/09:
 | WorldManager+0x3A0, camera chain 0x11D1860+0x24+0x60, WorldManager ctor store 0xC67883 | Script GC Scheduler (removed, see [../removed-features.md](../removed-features.md#script-gc-scheduler)) |
 | 0xC6C290, 0xAC20E0, 0xAEB2E0, call 0xAEB306, 0xAD9E30, 0xADBAD0, 0x6A80E0, 0xADB8F0, call 0xC6D68F, 0xABFAC0 (optional), 0xAD97E0, 0x4DB850/8E0, 0x4EC010 | [Frame Profiler](../features/frame-profiler.md) (timing only) |
 | 0x73E060 | `map_view.cpp` (Depth Blur off in map view), LSO |
+| CALL 0xADB95D (-> 0xADB120), camera eye read 0xC6D5BD (0x6E8330 / 0x6E8400, +0x60) | Lot Lighting While Moving ([../features/performance.md](../features/performance.md)): the budget is scaled while the camera moves |
+| 0x4AFFC0 FindProvider and the resource manager's list methods (0x4B2D00, 0x736A70, 0x4B2EC0, 0x4B0960) | Faster Game File Lookups ([../features/performance.md](../features/performance.md)) |
 
 ## Open questions
 - The meaning of the "priority" lots (SceneObjectManager+0x10D0/+0x10E0).

@@ -43,3 +43,6 @@ patches/call_trace_patch.cpp
 patches/lot_edge_lighting_patch.cpp
 patches/light_diag_patch.cpp
 trace_targets.h
+
+# Harness build output
+*.obj

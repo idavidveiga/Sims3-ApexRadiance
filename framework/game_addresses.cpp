@@ -124,6 +124,39 @@ constexpr Info kInfo[] = {
     {"InstanceFlush", 0x006CF920},
     {"GetLotIdGatherCall", 0x006B635D},
     {"GetLotId", 0x006BC020},
+    {"ResFindProvider", 0x004AFFC0},
+    {"ResFindProviderSlot0", 0x00FB2DE0},
+    {"ResFindProviderSlot1", 0x00FFE290},
+    {"RefPackCompress", 0x004EC200},
+    {"RefPackCompressSlot", 0x00FB901C},
+    {"SceneDrainCall", 0x006EBC49},
+    {"SceneDrain", 0x006E4130},
+    {"DxtEncode1", 0x006152F0},
+    {"DxtEncode5", 0x006154B0},
+    {"ObjectById", 0x00C62D40},
+    {"RoomSolveCall", 0x00ADB9AD},
+    {"RoomSolve", 0x006A8BA0},
+    {"RemoteCallJob", 0x007D9840},
+    {"RemoteMethodVtable", 0x010650C4},
+    {"RemoteMethodVtable2", 0x010650D8},
+    {"ResRegisterDb", 0x004B2D00},
+    {"ResRegisterDbSlot", 0x00FB2DD4},
+    {"ResRegisterDbDerived", 0x00736A70},
+    {"ResRegisterDbDerivedSlot", 0x00FFE284},
+    {"ResSetDbPriority", 0x004B2EC0},
+    {"ResSetDbPrioritySlot0", 0x00FB2DDC},
+    {"ResSetDbPrioritySlot1", 0x00FFE28C},
+    {"ResDbChanged", 0x004B0960},
+    {"ResDbChangedSlot0", 0x00FB2DEC},
+    {"ResDbChangedSlot1", 0x00FFE29C},
+    {"ShadowedDbVtable", 0x00FFE078},
+    {"LotLightBudgetCall", 0x00ADB95D},
+    {"LotLightBudget", 0x00ADB120},
+    {"CameraRootCall", 0x00C6D5BD},
+    {"CameraGetterCall", 0x00C6D5C4},
+    {"CameraRootGetter", 0x006E8330},
+    {"CameraGetter", 0x006E8400},
+    {"RefPackDecompress", 0x004EB3B0},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -140,6 +173,7 @@ enum class K : uint8_t {
     Target,    // the target of the CALL at Get(dep); the signatures are a fallback when dep is missing
     CallersOf, // every CALL in .text that lands on Get(dep): exactly `arg` of them, ids from `id` on, by address
     LightType, // the vtable the light factory's constructor for type `arg` stores (dep = the factory's jump table)
+    SlotsOf,   // every 4-aligned dword equal to Get(dep) in the read-only data sections (vtable slots): exactly `arg`, ids from `id` on, by address
 };
 enum class M : uint8_t {
     At,    // address = match + offset
@@ -263,6 +297,40 @@ const Entry kTable[] = {
     // ---- Every-Story Ground Light ----
     {Id::GetLotIdGatherCall, K::Sig, W::Text, None, 0, {{"FF D0 84 C0 74 ?? 8B CE E8 ?? ?? ?? ?? 0B C2 75 ?? 8B 45 04", 8, M::At}, {"8B CE E8 ?? ?? ?? ?? 0B C2 75 ?? 8B 45 04", 2, M::At}}},
     {Id::GetLotId, K::Target, W::Text, Id::GetLotIdGatherCall, 0, {{"8B 81 C0 00 00 00 8B 91 C4 00 00 00 C3", 0, M::At}, NOSIG}},
+    // ---- Frame Profiler counters (the profiler is development build only) ----
+    {Id::ResFindProvider, K::Sig, W::Text, None, 0, {{"51 53 55 56 57 8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5", 0, M::At}, {"8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5 C7 44 24 10 00 00 00 00", -5, M::At}}},
+    {Id::ResFindProviderSlot0, K::SlotsOf, W::Image, Id::ResFindProvider, 2, {NOSIG, NOSIG}},
+    {Id::RefPackCompress, K::Sig, W::Text, None, 0, {{"8B 54 24 14 33 C0 F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56", 0, M::At}, {"F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56 8B 74 24 10 85 F6", -6, M::At}}},
+    {Id::RefPackCompressSlot, K::SlotsOf, W::Image, Id::RefPackCompress, 1, {NOSIG, NOSIG}},
+    {Id::SceneDrainCall, K::Sig, W::Text, None, 0, {{"8B 4E 08 E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8", 3, M::At}, {"E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8 ?? ?? ?? ?? 8B 4E 38 E8", 0, M::At}}},
+    {Id::SceneDrain, K::Target, W::Text, Id::SceneDrainCall, 0, {{"55 8B EC 83 E4 F0 83 EC 34 53 56 57 8B F9 8B 77 20 8B 5F 24 8D 47 20 3B F0", 0, M::At}, NOSIG}},
+    {Id::DxtEncode1, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03", 0, M::At}, {"81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03 83 E6 FC 03 F6", -6, M::At}}},
+    {Id::DxtEncode5, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC", 0, M::At}, {"81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC 03 D2 03 D2 53 8B 18", -6, M::At}}},
+    {Id::ObjectById, K::Sig, W::Text, None, 0, {{"8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", 0, M::At}, {"8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8", 0, M::At}}},
+    {Id::RoomSolveCall, K::Sig, W::Text, None, 0, {{"85 C9 74 10 51 8D 54 24 18 D9 1C 24 52 E8", 13, M::At}, {"8B 0C 88 85 C9 74 ?? 51 8D 54 24 ?? D9 1C 24 52 E8", 16, M::At}}},
+    {Id::RoomSolve, K::Target, W::Text, Id::RoomSolveCall, 0, {{"56 8B F1 80 BE 80 02 00 00 00 57 75 05 E8 ?? ?? ?? ?? 83 BE 88 00 00 00", 0, M::At}, NOSIG}},
+    {Id::RemoteCallJob, K::Sig, W::Text, None, 0, {{"83 7C 24 0C 04 56 57 75 6C 8B 7C 24 0C 33 F6 F6 47 20 01 74 4A", 0, M::At}, {"F6 47 20 01 74 ?? 8B 35 ?? ?? ?? ?? 85 F6 74 ?? 8D 44 24 14 50 57 8B CE C7 44 24 1C 00 00 00 00 E8", -15, M::At}}},
+    {Id::RemoteMethodVtable, K::Sig, W::Image, None, 0, {{"89 50 10 8A 54 24 1C 88 48 19 C7 00 ?? ?? ?? ?? 88 50 18", 12, M::Dword}, {"8A 54 24 1C 88 48 19 C7 00 ?? ?? ?? ?? 88 50 18 8B 10", 9, M::Dword}}},
+    {Id::RemoteMethodVtable2, K::Sig, W::Image, None, 0, {{"89 50 10 8A 54 24 1C 89 48 14 C7 00 ?? ?? ?? ?? 88 50 18", 12, M::Dword}, {"8A 54 24 1C 89 48 14 C7 00 ?? ?? ?? ?? 88 50 18 8B 10", 9, M::Dword}}},
+    // ---- Resource lookup cache (docs/features/performance.md) ----
+    {Id::ResRegisterDb, K::Sig, W::Text, None, 0, {{"83 EC 10 53 55 56 57 8B F9 8D 4F 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 80 7C 24 24 00 C6 44 24 13 00 0F 84", 0, M::At}, {"8D 4F 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 80 7C 24 24 00 C6 44 24 13 00", -9, M::At}}},
+    {Id::ResRegisterDbSlot, K::SlotsOf, W::Image, Id::ResRegisterDb, 1, {NOSIG, NOSIG}},
+    {Id::ResRegisterDbDerived, K::Sig, W::Text, None, 0, {{"81 EC 14 02 00 00 80 BC 24 18 02 00 00 00 53 8B 9C 24 20 02 00 00 55 56 57 8B F9 75 ?? 85 DB 74", 0, M::At}, {"80 BC 24 18 02 00 00 00 53 8B 9C 24 20 02 00 00 55 56 57 8B F9", -6, M::At}}},
+    {Id::ResRegisterDbDerivedSlot, K::SlotsOf, W::Image, Id::ResRegisterDbDerived, 1, {NOSIG, NOSIG}},
+    {Id::ResSetDbPriority, K::Sig, W::Text, None, 0, {{"83 EC 0C 55 56 8B E9 57 8D 4D 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 8B 75 30 8B 45 34 3B F0 8D 7D 30 0F 84", 0, M::At}, {"8D 4D 48 68 ?? ?? ?? ?? 89 4C 24 18 E8 ?? ?? ?? ?? 8B 75 30 8B 45 34 3B F0 8D 7D 30", -8, M::At}}},
+    {Id::ResSetDbPrioritySlot0, K::SlotsOf, W::Image, Id::ResSetDbPriority, 2, {NOSIG, NOSIG}},
+    {Id::ResDbChanged, K::Sig, W::Text, None, 0, {{"51 53 8B D9 56 8D 73 48 68 ?? ?? ?? ?? 8B CE 89 74 24 0C E8 ?? ?? ?? ?? 8B 54 24 14 85 D2 0F 84 ?? ?? ?? ?? 83 7B 20 00", 0, M::At}, {"8D 73 48 68 ?? ?? ?? ?? 8B CE 89 74 24 0C E8 ?? ?? ?? ?? 8B 54 24 14 85 D2 0F 84", -5, M::At}}},
+    {Id::ResDbChangedSlot0, K::SlotsOf, W::Image, Id::ResDbChanged, 2, {NOSIG, NOSIG}},
+    {Id::ShadowedDbVtable, K::Sig, W::Image, None, 0, {{"8D 86 C0 00 00 00 50 C7 06 ?? ?? ?? ?? C7 07 ?? ?? ?? ?? C7 46 0C ?? ?? ?? ?? 89 9E B8 00 00 00", 15, M::Dword}, {"C7 06 ?? ?? ?? ?? C7 07 ?? ?? ?? ?? C7 46 0C ?? ?? ?? ?? 89 9E B8 00 00 00 FF 15", 8, M::Dword}}},
+    // ---- Lot lighting while moving (docs/features/performance.md) ----
+    {Id::LotLightBudgetCall, K::Sig, W::Text, None, 0, {{"8D 4C 24 10 E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ?? D9 54 24 0C 33 DB 85 ED 7E", 11, M::At}, {"8B CE E8 ?? ?? ?? ?? D9 54 24 0C 33 DB 85 ED 7E ?? 57 8B 4E 28", 2, M::At}}},
+    {Id::LotLightBudget, K::Target, W::Text, Id::LotLightBudgetCall, 0, {{"51 A1 ?? ?? ?? ?? 85 C0 56 8B F1 74 ?? 83 B8 ?? ?? 00 00 00 75 ?? D9 05 ?? ?? ?? ?? 5E 59 C3 8B 46 14", 0, M::At}, NOSIG}},
+    {Id::CameraRootCall, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00", 0, M::At}, {"8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00 0F 28 00", -5, M::At}}},
+    {Id::CameraGetterCall, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00", 7, M::At}, {"8B C8 E8 ?? ?? ?? ?? 0F 28 40 ?? 8B C8 0F 29 44 24 ?? E8 ?? ?? ?? ?? 83 7E 58 00 0F 28 00", 2, M::At}}},
+    {Id::CameraRootGetter, K::Target, W::Text, Id::CameraRootCall, 0, {NOSIG, NOSIG}},
+    {Id::CameraGetter, K::Target, W::Text, Id::CameraGetterCall, 0, {NOSIG, NOSIG}},
+    // ---- Faster cache compression (docs/features/performance.md) ----
+    {Id::RefPackDecompress, K::Sig, W::Text, None, 0, {{"3B C2 77 14 8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 12, M::Call}, {"8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 8, M::Call}}},
 };
 // clang-format on
 #undef NOSIG
@@ -275,6 +343,12 @@ struct Group {
 const Group kGroups[] = {
     {"NightLights", {Id::RootGetter, Id::RootPtr, Id::QueueRoom, Id::TerrainVisitorSite, Id::ArmSiteRemoval, Id::ArmSiteRegister, Id::ArmSiteMoved}},
     {"SplitLevel", {Id::GetLotIdGatherCall, Id::GetLotId}},
+    {"ResourceCache", {Id::ResFindProvider, Id::ResFindProviderSlot0, Id::ResFindProviderSlot1, Id::ResRegisterDb, Id::ResRegisterDbSlot, Id::ResRegisterDbDerived,
+                       Id::ResRegisterDbDerivedSlot, Id::ResSetDbPriority, Id::ResSetDbPrioritySlot0, Id::ResSetDbPrioritySlot1, Id::ResDbChanged, Id::ResDbChangedSlot0,
+                       Id::ResDbChangedSlot1, Id::ShadowedDbVtable}},
+    {"LotLightingMotion", {Id::LotLightBudgetCall, Id::LotLightBudget, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
+    {"FastTextureCompression", {Id::DxtEncode1, Id::DxtEncode5}},
+    {"FastCacheCompression", {Id::RefPackCompress, Id::RefPackCompressSlot}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -291,6 +365,7 @@ struct Range {
 };
 Range g_text, g_image;
 std::vector<Range> g_readable; // readable parts of .text (normally the whole section)
+std::vector<Range> g_rodata;   // readable parts of the read-only data sections (.rdata, .rsrc): vtables (K::SlotsOf)
 
 size_t Index(Id id) { return static_cast<size_t>(id); }
 
@@ -510,6 +585,48 @@ size_t CallersOf(uintptr_t target, std::vector<uintptr_t>& sites) {
     return found;
 }
 
+// 4-aligned dwords equal to value in [from, to). SEH only.
+size_t ScanDwords(uintptr_t from, uintptr_t to, uint32_t value, uintptr_t* out, size_t maxOut, size_t found) {
+    __try {
+        for (uintptr_t p = (from + 3) & ~static_cast<uintptr_t>(3); p + 4 <= to; p += 4) {
+            if (*reinterpret_cast<const uint32_t*>(p) != value) continue;
+            if (found < maxOut) out[found] = p;
+            found++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return found;
+}
+
+// Every vtable slot (read-only data) holding target (address order; up to 64 recorded, the count is exact)
+size_t SlotsOf(uintptr_t target, std::vector<uintptr_t>& slots) {
+    constexpr size_t kMax = 64;
+    uintptr_t buf[kMax];
+    size_t found = 0;
+    for (const Range& r : g_rodata) found = ScanDwords(r.begin, r.end, static_cast<uint32_t>(target), buf, kMax, found);
+    slots.assign(buf, buf + (found < kMax ? found : kMax));
+    return found;
+}
+
+void ResolveSlotsOf(const Entry& e) {
+    const uintptr_t target = g_found[Index(e.dep)];
+    if (!target) {
+        LOG_INFO(std::format("[Addr] {}: skipped ({} not found)", Name(e.id), Name(e.dep)));
+        return;
+    }
+    std::vector<uintptr_t> slots;
+    const size_t count = SlotsOf(target, slots);
+    std::string at;
+    for (size_t i = 0; i < slots.size() && i < 12; i++) at += std::format("{}{:#010x}", i ? ", " : "", slots[i]);
+    const bool ok = count == static_cast<size_t>(e.arg) && slots.size() == count;
+    bool steamOk = ok;
+    for (int i = 0; ok && i < e.arg; i++) steamOk = steamOk && slots[i] == kInfo[Index(e.id) + i].steam;
+    LOG_INFO(std::format("[Addr] {}..{}: {} vtable slot(s) holding {} at {} (expects {}; Steam {:#010x}..){}", Name(e.id), e.arg - 1, count, Name(e.dep), at, e.arg,
+                         kInfo[Index(e.id)].steam, IsFixedBuild() && ok ? (steamOk ? " ok" : " DIFFERS: the fixed addresses are kept") : ""));
+    if (!ok) return;
+    for (int i = 0; i < e.arg; i++) g_found[Index(e.id) + i] = slots[i];
+}
+
 void ResolveCallersOf(const Entry& e) {
     const uintptr_t target = g_found[Index(e.dep)];
     if (!target) {
@@ -623,6 +740,9 @@ void ResolveEntry(const Entry& e) {
     case K::CallersOf:
         ResolveCallersOf(e);
         break;
+    case K::SlotsOf:
+        ResolveSlotsOf(e);
+        break;
     case K::LightType: {
         const uintptr_t v = dep ? LightVtableOfType(dep, e.arg) : 0;
         g_found[i] = InWhere(e.where, v) ? v : 0;
@@ -677,6 +797,13 @@ void FindSections() {
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
     g_image = {base, base + nt->OptionalHeader.SizeOfImage};
     const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    std::vector<Range> rodataSections; // initialised data, readable, neither writable nor executable (.rdata, .rsrc)
+    for (WORD k = 0; k < nt->FileHeader.NumberOfSections; k++, sec++) {
+        const DWORD ch = sec->Characteristics;
+        if ((ch & IMAGE_SCN_CNT_INITIALIZED_DATA) && (ch & IMAGE_SCN_MEM_READ) && !(ch & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE)))
+            rodataSections.push_back({base + sec->VirtualAddress, base + sec->VirtualAddress + sec->Misc.VirtualSize});
+    }
+    sec = IMAGE_FIRST_SECTION(nt);
     for (WORD k = 0; k < nt->FileHeader.NumberOfSections; k++, sec++) {
         const bool named = std::strncmp(reinterpret_cast<const char*>(sec->Name), ".text", IMAGE_SIZEOF_SHORT_NAME) == 0;
         if (named || (!g_text.begin && (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE))) {
@@ -685,22 +812,27 @@ void FindSections() {
         }
     }
     // readable parts (a section can hold guard or no-access pages)
-    g_readable.clear();
-    uintptr_t at = g_text.begin;
-    while (at < g_text.end) {
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (!VirtualQuery(reinterpret_cast<LPCVOID>(at), &mbi, sizeof mbi)) break;
-        uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-        if (regionEnd > g_text.end) regionEnd = g_text.end;
-        const DWORD prot = mbi.Protect & 0xFF;
-        const bool readable = mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_GUARD) && prot != PAGE_NOACCESS && prot != 0;
-        if (readable) {
-            if (!g_readable.empty() && g_readable.back().end == at) g_readable.back().end = regionEnd;
-            else g_readable.push_back({at, regionEnd});
+    auto readableParts = [](const Range& section, std::vector<Range>& out) {
+        uintptr_t at = section.begin;
+        while (at < section.end) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(at), &mbi, sizeof mbi)) break;
+            uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+            if (regionEnd > section.end) regionEnd = section.end;
+            const DWORD prot = mbi.Protect & 0xFF;
+            const bool readable = mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_GUARD) && prot != PAGE_NOACCESS && prot != 0;
+            if (readable) {
+                if (!out.empty() && out.back().end == at) out.back().end = regionEnd;
+                else out.push_back({at, regionEnd});
+            }
+            if (regionEnd <= at) break;
+            at = regionEnd;
         }
-        if (regionEnd <= at) break;
-        at = regionEnd;
-    }
+    };
+    g_readable.clear();
+    readableParts(g_text, g_readable);
+    g_rodata.clear();
+    for (const Range& r : rodataSections) readableParts(r, g_rodata);
 }
 
 // "push ebp; mov ebp,esp" count in .text: thousands in plain code, ~0 while it is still encrypted
@@ -731,6 +863,8 @@ const char* Name(Id id) {
 }
 
 bool Resolved() { return IsFixedBuild() || g_resolved.load(std::memory_order_acquire); }
+
+bool Scanned() { return g_resolved.load(std::memory_order_acquire); }
 
 bool Have(std::initializer_list<Id> ids, std::string* missing) {
     bool all = true;

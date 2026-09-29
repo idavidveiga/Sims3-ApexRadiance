@@ -64,7 +64,11 @@ for SMAA", "ERROR: SMAA did not compile (see S3SS_LOG.txt)", "ERROR: the shader 
 | 3 Ultra | 0.05 | 32 | 16 | 25 |
 
 Each preset is a separate compile of the three entry points (macros per preset, `SmaaShaders`), compiled on first use
-and cached for the session.
+and cached for the session. **Standalone, 2026-09-28:** all 12 SMAA variants and the 3 FXAA qualities are compiled at
+start-up on a background thread (`framework/shader_cache.h`, [architecture 4.6](../architecture.md#shader-precompile);
+`kSmaaPsId`, `kFxaaPsId`); `SmaaShaders` / `ShaderFor` only create the shader objects from the kept bytecode, so the
+first SMAA frame (the blending-weight pass was the slowest compile) and a quality change no longer compile on the render
+thread. Same compile inputs and macros as before. Not tested in game yet.
 
 ### FXAA quality levels (`kQualities`, macros `STEPS` / `STEP_SIZES`)
 

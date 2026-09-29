@@ -113,6 +113,45 @@
 //   0x006EBB70 / 0x006E8810 / 0x009DE140 / 0x00EC6C30 / 0x005943F0 / 0x00AD97E0: timed (see kCats).
 // The functions many threads call (the loops, ExecuteJob, WaitForJob, Mutex, Semaphore, file I/O) are not attached with
 // Detours but by hand with all other threads suspended and checked (see AttachSafe).
+// Mutex::Lock is timed only with the Advanced option "Time the Mutex::Lock hook" (off by default since 2026-09-28): the
+// resource lookup below calls it ~580 times per scan, so its two clock reads distorted exactly the path being measured.
+//
+// ---- Counters (anti-stutter plan, research\perf2\plan.md section 8; addresses in framework/game_addresses.h) ----
+// Six categories timed on every thread they run on, each with per-frame calls / inclusive ms per thread bucket, the
+// longest single call (render thread / other threads) and an extra count. Verified in engine_map\full.asm (Steam 1.67.2):
+//   0x004AFFC0 ResourceMgr::FindProvider  thiscall(key*, cookie*), ret 8; push ecx/ebx/ebp/esi/edi, key = [esp+18h],
+//              cookie out = [esp+20h] after the pushes; returns the provider (0 = not found). No direct CALL: only virtual,
+//              through slot +0x40 of the base vtable 0x00FB2DA0 and of the derived one 0x00FFE250 (0x00FB2DE0 / 0x00FFE290),
+//              and the wrapper 0x004AFDA0 (slot +0x44). Hooked by swapping both slots (one aligned 4-byte store each, no code
+//              byte changes). Extra: packages probed = index of the returned provider in [this+0x30, this+0x34) (8-byte
+//              entries) + 1, or all of them on a miss; misses.
+//   0x006E4130 scene pending-node drain    thiscall(), ret; splices the list [this+0x20] out, zeroes [this+0x18] and adds
+//              1 per node processed (0x006E41EF), so [this+0x18] read right after the call = nodes processed. Timed at Scene::BeginFrame's CALL 0x006EBC49 only (the other 5
+//              callers are not per-frame). Extra: nodes.
+//   0x004EC200 RefPack stream write        thiscall(src, size, dst, capacity, flags), ret 0x14 (uses [ecx+4] = allocator;
+//              the plan's "stdcall" was wrong). dst == 0 with flags & 1 = size bound only (no work, not timed). Else
+//              FUN_004EC0A0 -> FUN_004EB750 (<= 16 KB) or FUN_004EBB90; returns the compressed size. Only referenced by the
+//              stream vtable slot 0x00FB901C; FUN_004EC0A0 / 004EBB90 / 004EB750 have no other callers. Hooked through that
+//              slot as the outer layer of framework/slot_chain.h (site RefPackCompress; the fast compressor of
+//              features/fast_refpack.h is the inner layer when on). Extra: bytes in (size), bytes out (return value).
+//   0x006152F0 / 0x006154B0 DXT1 / DXT5 encoders  cdecl(dst*, src*) (callers "add esp,8"); dst = {ptr, width +4, height
+//              +8, pitch +0xC}. 8 + 7 direct callers on several threads: since 2026-09-29 hooked at the entry through
+//              framework/entry_chain.h (the prologue 55 8B EC 83 E4 F0 moved to a trampoline, a JMP written with all other
+//              threads suspended), the profiler being the outer layer and the fast encoder (features/fast_dxt.h) the inner
+//              one. Extra: pixels (width x height).
+//   0x00C62D40 object lookup by ID         thiscall(idLo, idHi, flag), ret 0xC; ecx passed on to FUN_00C60D30. 233 call
+//              sites (script natives on the simulation thread, lot lighting, camera): hand-made hook, safeLen 8
+//              (8B 44 24 0C 8B 54 24 08).
+//   0x006A8BA0 lot room solve              thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return.
+//              Its only caller is the lot lighting update FUN_00ADB8F0 (render thread): timed at that CALL, 0x00ADB9AD.
+//              ecx = one level object of the lot (the deque at manager+0x24..0x40), so calls = lot levels updated (not rooms).
+//   The FindProvider slots are shared with the resource lookup cache through framework/slot_chain.h (the profiler is the
+//   outer layer whichever installs first); Hook_FindProvider calls SlotChain::Next and adds "from cache" (kXCacheHits).
+// No branch in .text lands inside any replaced prologue or CALL (checked in full.asm). S3SS and the other installed ASIs
+// touch none of these sites (plan section 6). They are attached only once the game-address scan has run
+// (GameAddr::Scanned, first Present + 1 s), on every build, so the scan's self-check never sees these hooks; the two CALLs
+// are written with every other thread suspended (WriteCallSuspended), the lot lighting update being also reachable from
+// the lot impostor builder path.
 //
 // ---- Sampling (Advanced, off by default) ----
 // For the time no timed function covers ("Unattributed"): a sampler thread pauses the render and/or simulation thread
@@ -135,8 +174,14 @@
 #endif
 #include "frame_profiler.h"
 #include "d3d9_hooks.h"
+#include "game_addresses.h"
 #include "post_scene.h"
 #include "memory_patch.h"
+#include "shader_cache.h"
+#include "slot_chain.h"
+#include "entry_chain.h"
+#include "resource_cache.h"
+#include "lot_lighting_motion.h"
 #include "apex_config.h"
 #include "apex_paths.h"
 #include "apex_log.h"
@@ -156,6 +201,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -201,9 +247,24 @@ enum Cat : int {
     kFileRead,
     kFileFlush,
     kRefPackRead,
+    // counters (research\perf2\plan.md section 8): timed on every thread, with per-bucket calls, longest call and an extra count
+    kResLookup,
+    kScenePending,
+    kRefPackCompress,
+    kDxtEncode,
+    kObjectLookup,
+    kLotRoomSolve,
     kCatCount
 };
 constexpr int kFirstGameCat = kLotLodScoring;
+constexpr int kFirstCounterCat = kResLookup;
+constexpr int kNC = kCatCount - kFirstCounterCat; // number of counters
+inline bool IsCounterCat(int c) { return c >= kFirstCounterCat && c < kCatCount; }
+
+// Extra counts of the counters (per thread, like the times)
+// kXCacheHits: resource lookups answered by the resource lookup cache (features/resource_cache.h), whose FindProvider
+// layer sits inside the profiler's (framework/slot_chain.h); their kXPackages count is the packages the cache asked.
+enum Extra : int { kXPackages, kXMisses, kXNodes, kXBytesIn, kXBytesOut, kXPixels, kXCacheHits, kExtraCount };
 
 struct CatInfo {
     const char* name;
@@ -241,6 +302,18 @@ const CatInfo kCats[kCatCount] = {
     {"File read", "FileStream::Read (FUN_004DB850, ReadFile) on the render thread."},
     {"File flush", "FileStream::Flush (FUN_004DB8E0, FlushFileBuffers) on the render thread."},
     {"RefPack read", "RefPack stream read + decompression (FUN_004EC010) on the render thread."},
+    {"Resource lookup", "ResourceMgr::FindProvider (FUN_004AFFC0, through its two vtable slots): which package holds a resource key. It asks every registered package "
+                        "in turn (two critical sections and a hash probe each; about 290 packages with the user's mods). Materials, async-load finalize jobs, CAS "
+                        "and lot loading go through it. All threads."},
+    {"Scene pending nodes", "FUN_006E4130 called by Scene::BeginFrame (CALL 0x006EBC49): processes every scene node queued since the last frame, with no budget "
+                            "(materials resolving their textures, models). Nodes counted."},
+    {"RefPack compress", "RefPack stream write (FUN_004EC200, stream vtable slot 0x00FB901C): compresses a resource written into the in-memory caches (sim and object "
+                         "compositors, world caches); above 16 KB FUN_004EBB90, which allocates and clears a 256 KB table per call. Bytes in / out counted. All threads."},
+    {"DXT encode", "CPU DXT1 / DXT5 encoders (FUN_006152F0 / FUN_006154B0): terrain bakes, compositor output, captures. Pixels counted. All threads."},
+    {"Object lookup by ID", "FUN_00C62D40: finds an object by its 64-bit ID with a recursive walk of the whole object tree (no index). Script natives (simulation "
+                            "thread), lot lighting, camera. All threads."},
+    {"Lot room solve", "FUN_006A8BA0 called by the lot lighting update (CALL 0x00ADB9AD): relights the dirty rooms of one level of a lot within the per-frame "
+                       "budget of FUN_00ADB120 (scaled down while the camera moves when Lot Lighting While Moving is on). Calls = lot levels updated."},
 };
 
 // ---- settings ----
@@ -254,6 +327,7 @@ std::atomic<bool> g_regTimingActive{false}; // option && enabled, read by the re
 std::atomic<bool> g_sampleRender{false};    // statistical sampler: render thread
 std::atomic<bool> g_sampleSim{false};       // statistical sampler: simulation thread
 std::atomic<int> g_sampleHz{2000};
+std::atomic<bool> g_timeMutex{false};       // Advanced "Time the Mutex::Lock hook" (off: the lookup path is measured undistorted)
 bool g_objectBuildWanted = false;           // session only (see the header comment)
 bool g_stateHooksActive = false;            // the state-call counters are registered
 
@@ -337,6 +411,7 @@ struct alignas(64) ThreadSlot {
     std::atomic<uint64_t> excl[kCatCount]{};
     std::atomic<uint64_t> incl[kCatCount]{};
     std::atomic<uint32_t> calls[kCatCount]{};
+    std::atomic<uint64_t> extra[kExtraCount]{}; // counters' extra counts (packages probed, nodes, bytes, pixels...)
     // owner only
     Frame stack[kMaxDepth]{};
     int depth = 0;
@@ -639,9 +714,12 @@ std::string JobName(uint32_t key) {
 }
 
 // Remote calls run as jobs whose function is FUN_007D9840(handle, RemoteCall*, phase); it calls the object's vtable +0x10.
-// PostRemoteMethodCall objects (vtable 0x010650C4, built at 0x00ABEA0A) keep the native method at +0x10.
-uint32_t g_remoteCallJobFn = 0;  // 0 = not verified (non-Steam): jobs are keyed by their function only
+// PostRemoteMethodCall objects (vtable 0x010650C4, built at 0x00ABEA0A; and 0x010650D8, built at 0x00ABEA93, whose method
+// takes one byte instead of two) keep the native method at +0x10; their vtable +0x10 (0x00ABD3C0 / 0x00ABD3E0) calls it.
+// Set by ResolveRemoteCallKeysLocked from the game-address table (render thread, at attach); 0 = jobs keyed by function.
+uint32_t g_remoteCallJobFn = 0;
 uint32_t g_remoteMethodVtable = 0;
+uint32_t g_remoteMethodVtable2 = 0;
 
 // No C++ objects (SEH): the job's function, or for remote calls the method they will run
 uint32_t JobKey(const uint8_t* job) {
@@ -651,7 +729,8 @@ uint32_t JobKey(const uint8_t* job) {
             const uint8_t* rc = *reinterpret_cast<const uint8_t* const*>(job + 0x14);
             if (rc) {
                 const uint32_t vt = *reinterpret_cast<const uint32_t*>(rc);
-                const uint32_t method = vt == g_remoteMethodVtable ? *reinterpret_cast<const uint32_t*>(rc + 0x10) : *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(vt) + 0x10);
+                const bool posted = vt && (vt == g_remoteMethodVtable || vt == g_remoteMethodVtable2);
+                const uint32_t method = posted ? *reinterpret_cast<const uint32_t*>(rc + 0x10) : *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(vt) + 0x10);
                 if (method) return method | kRemoteCallBit;
             }
         }
@@ -669,6 +748,62 @@ void RecordBlocked(int cat, uint32_t kind, uint64_t dt, uint32_t site) {
     Add32(s->calls[cat], 1);
     if (s->depth > 0) s->stack[s->depth - 1].child += dt;
     g_fWait.Add(site, dt, dt, 1, kind);
+}
+
+// ---- counters: the longest call per frame (any thread may write: atomic max; the render thread takes it at the frame
+// boundary), the extra counts (owner-written per thread slot, like the times) ----
+std::atomic<uint64_t> g_cMax[2][kNC]; // ticks: [0] render thread, [1] other threads
+
+void NoteMax(int cat, uint64_t ticks) {
+    std::atomic<uint64_t>& m = g_cMax[IsRenderThread() ? 0 : 1][cat - kFirstCounterCat];
+    uint64_t cur = m.load(std::memory_order_relaxed);
+    while (ticks > cur && !m.compare_exchange_weak(cur, ticks, std::memory_order_relaxed)) {}
+}
+
+inline void AddX(ThreadSlot* s, int x, uint64_t v) {
+    Add64(s->extra[x], v);
+}
+
+// One timed call of a counter category (any thread). Identity = this object's stack address, as Scope.
+struct CounterScope {
+    ThreadSlot* s;
+    int idx;
+    int cat;
+    bool timed = false; // End() booked the call: s is valid and the extra counts may be added
+    explicit CounterScope(int c) : s(GetSlot()), idx(s ? Push(s, c, this, 0) : -1), cat(c) {}
+    void End() {
+        if (idx < 0) return;
+        uint64_t incl = 0;
+        Pop(s, idx, this, Now(), 0, 0, &incl);
+        idx = -1;
+        timed = true;
+        NoteMax(cat, incl);
+    }
+    ~CounterScope() { End(); }
+    CounterScope(const CounterScope&) = delete;
+    CounterScope& operator=(const CounterScope&) = delete;
+};
+
+// FindProvider walks the vector [mgr+0x30, mgr+0x34) of 8-byte {provider, cookie} entries until one says yes: packages
+// probed = the index of the provider it returned + 1, or all of them on a miss. Read without the manager's lock (a
+// statistic; the list changes only when packages are registered), SEH-guarded, no C++ objects.
+uint32_t PackagesProbed(const uint8_t* mgr, uint32_t provider) {
+    __try {
+        const uint32_t* b = *reinterpret_cast<const uint32_t* const*>(mgr + 0x30);
+        const uint32_t* e = *reinterpret_cast<const uint32_t* const*>(mgr + 0x34);
+        if (!b || e < b || e - b > 2 * 65536) return 0;
+        const uint32_t n = static_cast<uint32_t>((e - b) / 2);
+        if (!provider) return n;
+        for (uint32_t i = 0; i < n; i++)
+            if (b[2 * i] == provider) return i + 1;
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+uint32_t ReadU32Safe(const void* p, uint32_t offset) {
+    __try {
+        return p ? *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(p) + offset) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
 // ---- timed game functions ----
@@ -701,6 +836,14 @@ enum TargetId : int {
     T_AppState,
     T_ClockTick,
     T_ImpostorPump,
+    // counters (addresses from framework/game_addresses.h)
+    T_ResLookup,
+    T_SceneDrain,
+    T_RefPackCompress,
+    T_DxtEncode1,
+    T_DxtEncode5,
+    T_ObjectById,
+    T_RoomSolve,
     kTargetCount
 };
 
@@ -711,7 +854,9 @@ using FnThis1 = uint64_t(__fastcall*)(void*, void*, uint32_t);
 using FnThis2 = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t);
 using FnThis3 = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t);
 using FnThis4 = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t);
+using FnThis5 = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 using FnCdecl1 = uint64_t(__cdecl*)(uint32_t);
+using FnCdecl2 = uint64_t(__cdecl*)(uint32_t, uint32_t);
 
 template <int T, typename Fn> inline Fn Orig() {
     return reinterpret_cast<Fn>(g_orig[T]);
@@ -967,6 +1112,86 @@ uint64_t __fastcall Hook_ImpostorPump(void* self, void* edx, uint32_t job) {
     return Orig<T_ImpostorPump, FnThis1>()(self, edx, job);
 }
 
+// ---- counters (see the header comment for the verified signatures) ----
+
+// ResourceMgr::FindProvider(key*, cookie*): reached through the two vtable slots only. The profiler is the outer layer of
+// the slots (framework/slot_chain.h): it calls the next layer (the resource lookup cache when it is on) or the game's
+// function, so it times every call whichever of the two installed first.
+uint64_t __fastcall Hook_FindProvider(void* self, void* edx, uint32_t key, uint32_t cookieOut) {
+    const FnThis2 next = reinterpret_cast<FnThis2>(SlotChain::Next(SlotChain::Site::FindProvider, SlotChain::Layer::FrameProfiler));
+    CounterScope sc(kResLookup);
+    const uint64_t r = next(self, edx, key, cookieOut);
+    sc.End();
+    const ResourceCache::LookupNote note = ResourceCache::TakeLookupNote(); // read on every call: it is cleared per lookup
+    if (sc.timed) {
+        const uint32_t provider = static_cast<uint32_t>(r);
+        if (note.seen && note.hit) {
+            AddX(sc.s, kXCacheHits, 1);
+            AddX(sc.s, kXPackages, note.probes); // the packages the cache asked
+        } else {
+            AddX(sc.s, kXPackages, PackagesProbed(static_cast<const uint8_t*>(self), provider));
+        }
+        if (!provider) AddX(sc.s, kXMisses, 1);
+    }
+    return r;
+}
+
+// Scene pending-node drain, from Scene::BeginFrame's CALL (render thread): [this+0x18] = nodes processed afterwards
+uint64_t __fastcall Hook_SceneDrain(void* self, void* edx) {
+    CounterScope sc(kScenePending);
+    const uint64_t r = Orig<T_SceneDrain, FnThis0>()(self, edx);
+    sc.End();
+    if (sc.timed) AddX(sc.s, kXNodes, ReadU32Safe(self, 0x18));
+    return r;
+}
+
+// RefPack stream write(src, size, dst, capacity, flags): a size-bound query (no destination, flags & 1) does no work.
+// Outer layer of the slot chain (framework/slot_chain.h): the next layer is the fast compressor when it is on
+// (features/fast_refpack.h), else the game's function, so the counter times whichever compresses.
+uint64_t __fastcall Hook_RefPackCompress(void* self, void* edx, uint32_t src, uint32_t size, uint32_t dst, uint32_t capacity, uint32_t flags) {
+    const FnThis5 next = reinterpret_cast<FnThis5>(SlotChain::Next(SlotChain::Site::RefPackCompress, SlotChain::Layer::FrameProfiler));
+    if (!dst && (flags & 1)) return next(self, edx, src, size, dst, capacity, flags);
+    CounterScope sc(kRefPackCompress);
+    const uint64_t r = next(self, edx, src, size, dst, capacity, flags);
+    sc.End();
+    if (sc.timed) {
+        AddX(sc.s, kXBytesIn, size);
+        AddX(sc.s, kXBytesOut, static_cast<uint32_t>(r)); // the compressed size (header included)
+    }
+    return r;
+}
+
+// DXT1 / DXT5 encoders, cdecl(dst*, src*): dst = {pixels, width, height, pitch}. Outer layer of the entry chain
+// (framework/entry_chain.h): the next layer is the fast encoder when it is on (features/fast_dxt.h), else the game's code.
+uint64_t DxtEncode(int target, uint32_t dst, uint32_t src) {
+    const uint64_t pixels = static_cast<uint64_t>(ReadU32Safe(reinterpret_cast<const void*>(static_cast<uintptr_t>(dst)), 4)) *
+                            ReadU32Safe(reinterpret_cast<const void*>(static_cast<uintptr_t>(dst)), 8);
+    const EntryChain::Site site = target == T_DxtEncode5 ? EntryChain::Site::DxtEncode5 : EntryChain::Site::DxtEncode1;
+    CounterScope sc(kDxtEncode);
+    const uint64_t r = reinterpret_cast<FnCdecl2>(EntryChain::Next(site, EntryChain::Layer::FrameProfiler))(dst, src);
+    sc.End();
+    if (sc.timed) AddX(sc.s, kXPixels, pixels);
+    return r;
+}
+uint64_t __cdecl Hook_DxtEncode1(uint32_t dst, uint32_t src) {
+    return DxtEncode(T_DxtEncode1, dst, src);
+}
+uint64_t __cdecl Hook_DxtEncode5(uint32_t dst, uint32_t src) {
+    return DxtEncode(T_DxtEncode5, dst, src);
+}
+
+// Object lookup by ID (idLo, idHi, flag): any thread, bucketed render / simulation / other
+uint64_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32_t idHi, uint32_t flag) {
+    CounterScope sc(kObjectLookup);
+    return Orig<T_ObjectById, FnThis3>()(self, edx, idLo, idHi, flag);
+}
+
+// One room of the lot lighting update (timer*, float budget as raw bits), from its only CALL
+uint64_t __fastcall Hook_RoomSolve(void* self, void* edx, uint32_t timer, uint32_t budget) {
+    CounterScope sc(kLotRoomSolve);
+    return Orig<T_RoomSolve, FnThis2>()(self, edx, timer, budget);
+}
+
 struct TargetInfo {
     const char* name;
     uintptr_t steam;     // Steam 1.67.2: where the pattern starts (the function entry, or the context of a CALL)
@@ -978,7 +1203,16 @@ struct TargetInfo {
     bool optional;
     int safeLen = 0;     // > 0: patched by hand with this many relocation-free prologue bytes while all other threads are
                          // suspended and checked (functions called from many threads); 0: Detours / call site
+    // Targets whose address comes from the game-address table (framework/game_addresses.h: fixed on Steam 1.67.2,
+    // signature elsewhere). The pattern is then checked at that address (the entry, or the CALL for call-site targets,
+    // callOffset 0) and `steam` is only shown while the table is not resolved yet.
+    GameAddr::Id addrId = GameAddr::Id::Count;   // Count = none (pattern at `steam` / unique scan, as above)
+    GameAddr::Id calleeId = GameAddr::Id::Count; // call-site targets: the function the CALL must reach
+    GameAddr::Id slotId = GameAddr::Id::Count;   // vtable-slot targets: the first of `slots` consecutive slot ids
+    int slots = 0;                               // > 0: hooked by swapping these vtable slots (the function is only called through them)
 };
+constexpr GameAddr::Id kNoAddr = GameAddr::Id::Count;
+constexpr int kMaxTargetSlots = 2;
 
 // Call-site targets: FUN_00AEA680 and FUN_00C845C0 are detoured by Smooth Streaming, which checks their entry bytes before
 // it installs. Their per-frame CALL is redirected instead (tracked 5-byte write, restored byte for byte): Smooth Streaming
@@ -1049,11 +1283,27 @@ const TargetInfo kTargets[kTargetCount] = {
         reinterpret_cast<void*>(&Hook_ClockTick), "render (main loop)", false},
     {"Lot impostor pump (FUN_00AD97E0)", 0x00AD97E0, "83 EC 08 80 79 25 00 0F 84 ?? ?? ?? ?? 53 55 56 8B 35 ?? ?? ?? ?? 57 6A 00 68 ?? ?? ?? ?? 8B CE", -1, 0,
         reinterpret_cast<void*>(&Hook_ImpostorPump), "render", false},
+    // Counters (research\perf2\plan.md section 8). Patterns = the bytes checked at the game-address table's address.
+    {"Resource lookup (FUN_004AFFC0, 2 vtable slots)", 0x004AFFC0, "51 53 55 56 57 8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5", -1, 0,
+        reinterpret_cast<void*>(&Hook_FindProvider), "any", false, 0, GameAddr::Id::ResFindProvider, kNoAddr, GameAddr::Id::ResFindProviderSlot0, 2},
+    {"Scene pending nodes (CALL at 0x006EBC49)", 0x006EBC49, "E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8", 0, 0x006E4130,
+        reinterpret_cast<void*>(&Hook_SceneDrain), "render (Scene::BeginFrame)", false, 0, GameAddr::Id::SceneDrainCall, GameAddr::Id::SceneDrain},
+    {"RefPack compress (FUN_004EC200, vtable slot)", 0x004EC200, "8B 54 24 14 33 C0 F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56", -1, 0,
+        reinterpret_cast<void*>(&Hook_RefPackCompress), "any", false, 0, GameAddr::Id::RefPackCompress, kNoAddr, GameAddr::Id::RefPackCompressSlot, 1},
+    // The two DXT entries go through framework/entry_chain.h (AttachTarget / DetachTarget); safeLen 6 is informational
+    {"DXT1 encode (FUN_006152F0, entry chain)", 0x006152F0, "55 8B EC 83 E4 F0 81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03", -1, 0,
+        reinterpret_cast<void*>(&Hook_DxtEncode1), "any", false, 6, GameAddr::Id::DxtEncode1},
+    {"DXT5 encode (FUN_006154B0, entry chain)", 0x006154B0, "55 8B EC 83 E4 F0 81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC", -1, 0,
+        reinterpret_cast<void*>(&Hook_DxtEncode5), "any", false, 6, GameAddr::Id::DxtEncode5},
+    {"Object lookup by ID (FUN_00C62D40)", 0x00C62D40, "8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", -1,
+        0, reinterpret_cast<void*>(&Hook_ObjectById), "any (render / simulation)", false, 8, GameAddr::Id::ObjectById},
+    {"Lot room solve (CALL at 0x00ADB9AD)", 0x00ADB9AD, "E8 ?? ?? ?? ?? EB 02 DD D8 8D 4C 24 14 E8", 0, 0x006A8BA0,
+        reinterpret_cast<void*>(&Hook_RoomSolve), "render (lot lighting update)", false, 0, GameAddr::Id::RoomSolveCall, GameAddr::Id::RoomSolve},
 };
 const int kTargetCat[kTargetCount] = {kRenderFrame, kEndScene, kLotLodScoring, kLotDetailRequest, kLotRendererUpdate, kLotLoadStages,
     kLotViewSwitch, kLotLightingInit, kRoomLighting, kLotLightingUpdate, kTerrainUpdate, kScriptGC, kLotObjectBuild,
     kService, kService, kJob, kJobWait, kMutexWait, kSemWait, kFileRead, kFileFlush, kRefPackRead, kSceneBeginFrame, kSceneEndFrame, kSceneCapture, kAppState,
-    kClockTick, kImpostorPump};
+    kClockTick, kImpostorPump, kResLookup, kScenePending, kRefPackCompress, kDxtEncode, kDxtEncode, kObjectLookup, kLotRoomSolve};
 
 struct TargetState {
     uintptr_t addr = 0; // the function entry, or the CALL instruction for call-site targets
@@ -1062,6 +1312,8 @@ struct TargetState {
     uintptr_t scanned = 0; // non-Steam builds: where the unique scan found the pattern (scanned once)
     uint8_t orig8[8] = {};   // safeLen targets: the original first 8 bytes
     uint8_t* tramp = nullptr; // safeLen targets: copied prologue + JMP back (kept for the process lifetime)
+    uintptr_t slotAddr[kMaxTargetSlots] = {}; // vtable-slot targets: the slots swapped to the hook
+    bool waitingAddr = false; // the game-address table was not resolved yet: attached at a later frame boundary
     std::string how;
     std::string status = "Off";
 };
@@ -1069,6 +1321,7 @@ TargetState g_targets[kTargetCount]; // guarded by g_ctrlMutex
 std::mutex g_ctrlMutex;
 std::string g_summary; // guarded by g_ctrlMutex
 std::atomic<bool> g_attachPending{false}; // attach at the next frame boundary (render thread)
+std::atomic<bool> g_waitAddr{false};      // some targets wait for GameAddr::Resolve (profiler on at start-up; see OnPresentStart)
 
 struct TextSection {
     uintptr_t begin = 0;
@@ -1144,6 +1397,41 @@ void ResolveTarget(int i) {
     TargetState& st = g_targets[i];
     const TargetInfo& ti = kTargets[i];
     st.addr = 0;
+    st.waitingAddr = false;
+    if (ti.addrId != kNoAddr) { // address from the game-address table, bytes checked here
+        if (!GameAddr::Scanned()) {
+            st.status = "Waiting for the game-address scan (attached at a frame boundary once it is done)";
+            st.waitingAddr = true;
+            g_waitAddr.store(true);
+            return;
+        }
+        const uintptr_t a = GameAddr::Get(ti.addrId);
+        if (!a) {
+            st.status = std::format("Skipped: {} not found on {} (game_addresses.cpp)", GameAddr::Name(ti.addrId), GetGameVersionName());
+            return;
+        }
+        // The DXT encoders' entries are shared with the fast encoder through framework/entry_chain.h, which checks the
+        // prologue itself (the entry may already hold its JMP)
+        const bool entryChained = i == T_DxtEncode1 || i == T_DxtEncode5;
+        if (!entryChained && !MatchAt(a, ti.pattern)) {
+            st.status = std::format("Skipped: bytes at {:#010x} do not match (detoured or patched by another module?)", a);
+            return;
+        }
+        st.how = entryChained ? (GameAddr::IsFixed() ? "Steam 1.67.2 address, entry checked by the entry chain" : "game-address signature, entry checked by the entry chain")
+                              : (GameAddr::IsFixed() ? "Steam 1.67.2 address, bytes checked" : "game-address signature, bytes checked");
+        if (ti.callOffset < 0) {
+            st.addr = a;
+            return;
+        }
+        const uintptr_t call = a + static_cast<uintptr_t>(ti.callOffset);
+        const uintptr_t callee = GameAddr::Get(ti.calleeId);
+        if (*reinterpret_cast<const uint8_t*>(call) != 0xE8 || !callee || CallTarget(call) != callee) {
+            st.status = std::format("Skipped: the CALL at {:#010x} does not reach {} ({:#010x}; redirected by another module?)", call, GameAddr::Name(ti.calleeId), callee);
+            return;
+        }
+        st.addr = call;
+        return;
+    }
     uintptr_t start = 0;
     if (g_gameVersion == GameVersion::Steam) {
         if (!MatchAt(ti.steam, ti.pattern)) {
@@ -1182,6 +1470,8 @@ void ResolveTarget(int i) {
     st.addr = call;
 }
 
+bool WriteCallSuspended(uintptr_t call, const uint8_t bytes[5]); // hand-made hooks section
+
 // Call-site targets: CALL rel32 -> the hook, which calls the original callee through g_orig
 bool AttachCallSite(int i) {
     TargetState& st = g_targets[i];
@@ -1194,6 +1484,18 @@ bool AttachCallSite(int i) {
     std::memcpy(&bytes[1], &rel, 4);
     g_orig[i] = reinterpret_cast<void*>(callee); // set before the CALL can reach the hook
     st.patched.clear();
+    if (kTargets[i].addrId != kNoAddr) {
+        // counters: their CALLs may also run on a lot impostor builder thread, so the 5 bytes are written with every other
+        // thread suspended and none executing inside them (the original bytes are kept in orig8 for the detach)
+        std::memcpy(st.orig8, orig.data(), 5);
+        if (!WriteCallSuspended(call, bytes.data())) {
+            st.status = std::format("Skipped: could not patch the CALL at {:#010x} (a thread kept executing it, or the write failed)", call);
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed at the CALL {:#010x} -> {:#010x} ({}; written with all threads checked)", call, callee, st.how);
+        return true;
+    }
     if (!MemPatch::WriteBytes(call, bytes, &st.patched, &orig)) {
         MemPatch::RestoreAll(st.patched);
         st.status = std::format("Skipped: could not patch the CALL at {:#010x}", call);
@@ -1262,6 +1564,42 @@ std::vector<HANDLE> OpenOtherThreads() {
     }
     CloseHandle(snap);
     return out;
+}
+
+// Writes the 5 bytes of a CALL with every other thread suspended and none executing inside them; while they are suspended
+// only GetThreadContext, VirtualProtect, the copy and FlushInstructionCache run (no heap, no lock). As AttachSafe.
+bool WriteCallSuspended(uintptr_t call, const uint8_t bytes[5]) {
+    std::vector<HANDLE> threads = OpenOtherThreads();
+    bool written = false;
+    for (int attempt = 0; attempt < 100 && !written; attempt++) {
+        // ---- other threads suspended ----
+        for (HANDLE h : threads) SuspendThread(h);
+        bool busy = false;
+        for (HANDLE h : threads) {
+            CONTEXT ctx;
+            std::memset(&ctx, 0, sizeof ctx);
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(h, &ctx) && ctx.Eip > call && ctx.Eip < call + 5) {
+                busy = true;
+                break;
+            }
+        }
+        if (!busy) {
+            DWORD old = 0;
+            if (VirtualProtect(reinterpret_cast<void*>(call), 5, PAGE_EXECUTE_READWRITE, &old)) {
+                std::memcpy(reinterpret_cast<void*>(call), bytes, 5);
+                VirtualProtect(reinterpret_cast<void*>(call), 5, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(call), 5);
+                written = true;
+            }
+        }
+        for (HANDLE h : threads) ResumeThread(h);
+        // ---- resumed ----
+        if (!busy) break;
+        Sleep(1);
+    }
+    for (HANDLE h : threads) CloseHandle(h);
+    return written;
 }
 
 bool AttachSafe(int i) {
@@ -1337,13 +1675,124 @@ void DetachSafe(int i) {
     st.status = "Off";
 }
 
+// ---- vtable-slot targets (functions reached only through vtables: FindProvider, the RefPack stream write) ----
+// No code byte changes: each slot (4-byte aligned, read-only data) is swapped with one interlocked compare-exchange while
+// its page is writable, so a thread reading the slot sees either the old or the new pointer. Nothing else to protect: the
+// hook calls the original function through g_orig, which stays valid after the slot is put back.
+bool SwapSlot(uintptr_t slot, uintptr_t expect, uintptr_t value) {
+    if (slot & 3) return false;
+    DWORD old = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(slot), 4, PAGE_READWRITE, &old)) return false;
+    const long prev = _InterlockedCompareExchange(reinterpret_cast<volatile long*>(slot), static_cast<long>(value), static_cast<long>(expect));
+    VirtualProtect(reinterpret_cast<void*>(slot), 4, old, &old);
+    return static_cast<uintptr_t>(static_cast<unsigned long>(prev)) == expect;
+}
+
+bool AttachSlots(int i) {
+    TargetState& st = g_targets[i];
+    const TargetInfo& ti = kTargets[i];
+    if (i == T_ResLookup) {
+        // Shared with the resource lookup cache: the profiler is the outer layer of the slot chain, whichever installs first
+        std::string error;
+        g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls SlotChain::Next
+        if (!SlotChain::Install(SlotChain::Site::FindProvider, SlotChain::Layer::FrameProfiler, ti.hook, &error)) {
+            st.status = "Skipped: " + error;
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed through 2 vtable slots, outer layer of the slot chain ({}{})", st.how,
+                                SlotChain::Installed(SlotChain::Site::FindProvider, SlotChain::Layer::ResourceCache) ? "; the resource lookup cache is inside" : "");
+        return true;
+    }
+    if (i == T_RefPackCompress) {
+        // Shared with the fast RefPack compressor the same way (features/fast_refpack.h)
+        std::string error;
+        g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls SlotChain::Next
+        if (!SlotChain::Install(SlotChain::Site::RefPackCompress, SlotChain::Layer::FrameProfiler, ti.hook, &error)) {
+            st.status = "Skipped: " + error;
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed through the vtable slot, outer layer of the slot chain ({}{})", st.how,
+                                SlotChain::Installed(SlotChain::Site::RefPackCompress, SlotChain::Layer::FastCompress) ? "; the fast compressor is inside" : "");
+        return true;
+    }
+    const uintptr_t hook = reinterpret_cast<uintptr_t>(ti.hook);
+    uintptr_t slot[kMaxTargetSlots] = {};
+    const int n = std::min(ti.slots, kMaxTargetSlots);
+    for (int k = 0; k < n; k++) {
+        slot[k] = GameAddr::Get(static_cast<GameAddr::Id>(static_cast<int>(ti.slotId) + k));
+        uint32_t v = 0;
+        if (!slot[k] || !MemPatch::ReadBytes(slot[k], &v, 4)) {
+            st.status = std::format("Skipped: vtable slot {} not found ({})", k, GameAddr::Name(static_cast<GameAddr::Id>(static_cast<int>(ti.slotId) + k)));
+            return false;
+        }
+        if (v != st.addr) {
+            st.status = std::format("Skipped: the vtable slot {:#010x} holds {:#010x}, expected {:#010x} (replaced by another module?)", slot[k], v, st.addr);
+            return false;
+        }
+    }
+    g_orig[i] = reinterpret_cast<void*>(st.addr); // before any slot can reach the hook
+    int done = 0;
+    while (done < n && SwapSlot(slot[done], st.addr, hook)) done++;
+    if (done < n) {
+        for (int k = 0; k < done; k++) SwapSlot(slot[k], hook, st.addr);
+        st.status = std::format("Skipped: could not write the vtable slot {:#010x}", slot[done]);
+        return false;
+    }
+    for (int k = 0; k < n; k++) st.slotAddr[k] = slot[k];
+    st.attached = true;
+    st.status = std::format("Timed through {} vtable slot{} ({})", n, n == 1 ? "" : "s", st.how);
+    return true;
+}
+
+void DetachSlots(int i) {
+    TargetState& st = g_targets[i];
+    if (i == T_ResLookup) {
+        SlotChain::Remove(SlotChain::Site::FindProvider, SlotChain::Layer::FrameProfiler); // the cache's layer, if any, stays
+        st.attached = false;
+        st.status = "Off";
+        return;
+    }
+    if (i == T_RefPackCompress) {
+        SlotChain::Remove(SlotChain::Site::RefPackCompress, SlotChain::Layer::FrameProfiler); // the fast compressor's layer, if any, stays
+        st.attached = false;
+        st.status = "Off";
+        return;
+    }
+    const uintptr_t hook = reinterpret_cast<uintptr_t>(kTargets[i].hook);
+    bool foreign = false;
+    for (uintptr_t& slot : st.slotAddr) {
+        if (!slot) continue;
+        if (!SwapSlot(slot, hook, st.addr)) foreign = true; // changed by someone else after us: left as it is (it may still forward to the hook)
+        slot = 0;
+    }
+    st.attached = false;
+    st.status = foreign ? "Off (a vtable slot was changed by another module after the profiler; left as it is)" : "Off";
+}
+
 bool AttachTarget(int i) {
     TargetState& st = g_targets[i];
     const TargetInfo& ti = kTargets[i];
     if (st.attached) return true;
     ResolveTarget(i);
     if (!st.addr) return false;
+    if (ti.slots > 0) return AttachSlots(i);
     if (ti.callOffset >= 0) return AttachCallSite(i);
+    if (i == T_DxtEncode1 || i == T_DxtEncode5) {
+        // Entries shared with the fast DXT encoder (features/fast_dxt.h): the profiler is the outer layer of the entry chain
+        const EntryChain::Site site = i == T_DxtEncode5 ? EntryChain::Site::DxtEncode5 : EntryChain::Site::DxtEncode1;
+        std::string error;
+        g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls EntryChain::Next
+        if (!EntryChain::Install(site, EntryChain::Layer::FrameProfiler, ti.hook, &error)) {
+            st.status = "Skipped: " + error;
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed at the entry, outer layer of the entry chain ({}; JMP written with all threads checked{})", st.how,
+                                EntryChain::Installed(site, EntryChain::Layer::FastDxt) ? "; the fast encoder is inside" : "");
+        return true;
+    }
     if (ti.safeLen > 0) {
         if (!MatchAt(st.addr, ti.pattern)) {
             st.status = std::format("Skipped: entry bytes at {:#010x} changed", st.addr);
@@ -1382,6 +1831,20 @@ bool AttachTarget(int i) {
 void DetachTarget(int i) {
     TargetState& st = g_targets[i];
     if (!st.attached) return;
+    if (kTargets[i].slots > 0) {
+        DetachSlots(i);
+        return;
+    }
+    if (i == T_DxtEncode1 || i == T_DxtEncode5) {
+        const EntryChain::Site site = i == T_DxtEncode5 ? EntryChain::Site::DxtEncode5 : EntryChain::Site::DxtEncode1;
+        if (!EntryChain::Remove(site, EntryChain::Layer::FrameProfiler)) { // the fast encoder's layer, if any, stays
+            st.status = "Restore failed: still timed";
+            return;
+        }
+        st.attached = false;
+        st.status = "Off";
+        return;
+    }
     if (kTargets[i].safeLen > 0) {
         DetachSafe(i);
         return;
@@ -1392,6 +1855,16 @@ void DetachTarget(int i) {
             st.patched.clear();
             st.attached = false;
             st.status = "Off (the CALL was changed by another module after the profiler; left as it is)";
+            return;
+        }
+        if (kTargets[i].addrId != kNoAddr) { // counters: restored as they were written (all threads checked)
+            if (!WriteCallSuspended(st.addr, st.orig8)) {
+                st.status = "Restore failed: still timed";
+                LOG_ERROR(std::format("[FrameProfiler] Could not restore the CALL of {}", kTargets[i].name));
+                return;
+            }
+            st.attached = false;
+            st.status = "Off";
             return;
         }
         if (!MemPatch::RestoreAll(st.patched)) {
@@ -1459,6 +1932,23 @@ struct HitchDetail {
     uint32_t readBytes = 0; // FileStream::Read on the render thread
 };
 
+// ---- counters of one frame interval (thread buckets: 0 render, 1 simulation, 2 other) ----
+struct CounterFrame {
+    float incl[3][kNC] = {};              // ms, inclusive (outermost calls), per bucket
+    uint32_t calls[3][kNC] = {};
+    float maxMs[2][kNC] = {};             // longest single call: [0] render thread, [1] other threads
+    uint64_t extra[3][kExtraCount] = {};  // Extra, per bucket
+};
+
+bool CounterActive(const CounterFrame& f, int k) {
+    return f.calls[0][k] || f.calls[1][k] || f.calls[2][k];
+}
+
+// Dominant cause of a hitch: the largest single item on the render thread, exactly as research\perf2\tools\dom.pl picks it
+// (render self categories except "Services (self)" / "Jobs (self)", each service's self time, each job's self time,
+// Unattributed).
+enum DomKind : uint8_t { kDomNone, kDomCategory, kDomService, kDomJob, kDomUnattributed };
+
 // ---- per-frame record (also the hitch record) ----
 struct HitchRecord {
     uint64_t frame = 0;
@@ -1480,6 +1970,13 @@ struct HitchRecord {
     bool stateCounted = false;
     HitchSamples samples; // filled for hitches while the sampler runs
     HitchDetail detail;   // filled for hitches
+    CounterFrame counters;
+    // hitches: the dominant cause and the counter with the largest render-thread self time
+    uint8_t domKind = kDomNone;
+    uint32_t domKey = 0; // category, service update function or job key
+    uint32_t domAux = 0; // service vtable
+    float domMs = 0;
+    int8_t topCounter = -1; // counter index (0..kNC-1), -1 none
 };
 
 // ---- render-thread statistics ----
@@ -1506,11 +2003,17 @@ struct Stats {
     uint64_t bucketCalls[3][kCatCount] = {};
     double unattributed = 0;
     uint64_t lotsPromoted = 0, lotsDemoted = 0;
+    // counters since Clear
+    double cIncl[3][kNC] = {};
+    uint64_t cCalls[3][kNC] = {};
+    uint64_t cExtra[3][kExtraCount] = {};
+    double cMax[2][kNC] = {};
 };
 
 Stats g_stats;
 float g_graph[kGraphFrames] = {};
 int g_graphPos = 0, g_graphCount = 0;
+CounterFrame g_cLive[kLiveFrames] = {}; // the counters of the last frames (same positions as g_live)
 LiveSample g_live[kLiveFrames] = {};
 int g_livePos = 0, g_liveCount = 0;
 float g_medianRing[kMedianWindow] = {};
@@ -1527,6 +2030,7 @@ struct Seen {
     uint64_t excl[kCatCount];
     uint64_t incl[kCatCount];
     uint32_t calls[kCatCount];
+    uint64_t extra[kExtraCount];
 };
 Seen g_seen[kMaxSlots] = {};
 
@@ -2115,9 +2619,10 @@ void SnapshotThreads(HitchRecord* r) {
             const uint32_t k = s.calls[c].load(std::memory_order_relaxed);
             if (r) {
                 const float em = static_cast<float>(static_cast<double>(e - seen.excl[c]) * g_msPerTick);
+                const float im = static_cast<float>(static_cast<double>(n - seen.incl[c]) * g_msPerTick);
                 if (bucket == 0) {
                     r->render[c] += em;
-                    r->renderIncl[c] += static_cast<float>(static_cast<double>(n - seen.incl[c]) * g_msPerTick);
+                    r->renderIncl[c] += im;
                 } else if (bucket == 1) {
                     r->sim[c] += em;
                 } else {
@@ -2125,10 +2630,19 @@ void SnapshotThreads(HitchRecord* r) {
                 }
                 r->calls[c] += k - seen.calls[c];
                 g_frameBucketCalls[bucket][c] += k - seen.calls[c];
+                if (IsCounterCat(c)) {
+                    r->counters.incl[bucket][c - kFirstCounterCat] += im;
+                    r->counters.calls[bucket][c - kFirstCounterCat] += k - seen.calls[c];
+                }
             }
             seen.excl[c] = e;
             seen.incl[c] = n;
             seen.calls[c] = k;
+        }
+        for (int x = 0; x < kExtraCount; x++) {
+            const uint64_t v = s.extra[x].load(std::memory_order_relaxed);
+            if (r) r->counters.extra[bucket][x] += v - seen.extra[x];
+            seen.extra[x] = v;
         }
     }
 }
@@ -2178,6 +2692,34 @@ void RollRegistryWindow(uint64_t now) {
     g_regWindowStart = now;
 }
 
+// Hitch frames: the dominant cause (as dom.pl: largest render self category except the service / job loops' own
+// "Services (self)" / "Jobs (self)", each service and job of the frame by self time, Unattributed) and the counter with the
+// largest render-thread self time
+void ComputeDominant(HitchRecord& r) {
+    float best = 0.0f;
+    auto consider = [&](float ms, uint8_t kind, uint32_t key, uint32_t aux) {
+        if (ms > best) {
+            best = ms;
+            r.domKind = kind;
+            r.domKey = key;
+            r.domAux = aux;
+        }
+    };
+    for (int c = 0; c < kCatCount; c++)
+        if (c != kService && c != kJob) consider(r.render[c], kDomCategory, static_cast<uint32_t>(c), 0);
+    for (int i = 0; i < kTopSvc && r.detail.svcCalls[i]; i++) consider(r.detail.svcSelfMs[i], kDomService, r.detail.svcKey[i], r.detail.svcVt[i]);
+    for (int i = 0; i < kTopJobs && r.detail.jobCalls[i]; i++) consider(r.detail.jobSelfMs[i], kDomJob, r.detail.jobKey[i], 0);
+    consider(r.unattributedMs, kDomUnattributed, 0, 0);
+    r.domMs = best;
+    float top = 0.05f;
+    r.topCounter = -1;
+    for (int k = 0; k < kNC; k++)
+        if (r.render[kFirstCounterCat + k] >= top) {
+            top = r.render[kFirstCounterCat + k];
+            r.topCounter = static_cast<int8_t>(k);
+        }
+}
+
 void UpdateStats(const HitchRecord& r, bool hitch) {
     Stats& s = g_stats;
     s.frames++;
@@ -2192,6 +2734,16 @@ void UpdateStats(const HitchRecord& r, bool hitch) {
     s.unattributed += r.unattributedMs;
     s.lotsPromoted += r.lotsPromoted;
     s.lotsDemoted += r.lotsDemoted;
+    for (int b = 0; b < 3; b++) {
+        for (int k = 0; k < kNC; k++) {
+            s.cIncl[b][k] += r.counters.incl[b][k];
+            s.cCalls[b][k] += r.counters.calls[b][k];
+        }
+        for (int x = 0; x < kExtraCount; x++) s.cExtra[b][x] += r.counters.extra[b][x];
+    }
+    for (int b = 0; b < 2; b++)
+        for (int k = 0; k < kNC; k++) s.cMax[b][k] = std::max(s.cMax[b][k], static_cast<double>(r.counters.maxMs[b][k]));
+    g_cLive[g_livePos] = r.counters; // g_livePos advances below, with g_live
     if (r.camera == 1) s.framesMoving++;
     if (r.camera == 0) s.framesStill++;
     if (hitch) {
@@ -2224,6 +2776,8 @@ void FrameBoundary(uint64_t now) {
         g_regFrames = 0;
         g_medianCount = g_medianPos = 0; // warm-up again: the first frames include attaching the hooks
         ClearFrameTables();
+        for (auto& row : g_cMax)
+            for (auto& m : row) m.store(0, std::memory_order_relaxed);
         return;
     }
     if ((g_frameIndex & 127) == 0) RefineClock();
@@ -2236,6 +2790,8 @@ void FrameBoundary(uint64_t now) {
     r.frame = ++g_frameIndex;
     r.tSec = static_cast<double>(now - g_enableTicks) * g_msPerTick / 1000.0;
     SnapshotThreads(&r);
+    for (int b = 0; b < 2; b++)
+        for (int k = 0; k < kNC; k++) r.counters.maxMs[b][k] = static_cast<float>(static_cast<double>(g_cMax[b][k].exchange(0, std::memory_order_relaxed)) * g_msPerTick);
 
     r.gameDraws = g_d3d.gameDraws;
     r.endFrameDraws = g_d3d.endFrameDraws;
@@ -2274,6 +2830,7 @@ void FrameBoundary(uint64_t now) {
     g_medianCount = std::min(g_medianCount + 1, kMedianWindow);
     ConsumeSamples(intervalStart, now, hitch, &r.samples);
     ConsumeFrameTables(hitch, &r.detail);
+    if (hitch) ComputeDominant(r);
 
     UpdateStats(r, hitch);
     if (hitch) {
@@ -2288,6 +2845,7 @@ void FrameBoundary(uint64_t now) {
 
 // ---- registry hooks ----
 void AttachAllLocked();
+void AttachWaitingLocked();
 
 void OnPresentStart(D3D9Hooks::DeviceContext& ctx) {
     const uint64_t now = Now();
@@ -2307,6 +2865,11 @@ void OnPresentStart(D3D9Hooks::DeviceContext& ctx) {
             AttachAllLocked();
             g_attachPending.store(false);
         }
+    } else if (g_waitAddr.load(std::memory_order_relaxed) && GameAddr::Scanned()) {
+        // profiler on from the start: the counters wait for the game-address scan (init thread, first Present + 1 s) on
+        // every build, so the scan never sees their hooks (and on non-Steam builds their addresses come from it)
+        std::unique_lock<std::mutex> lk(g_ctrlMutex, std::try_to_lock);
+        if (lk.owns_lock() && g_enabled.load()) AttachWaitingLocked();
     }
 }
 
@@ -2598,6 +3161,67 @@ std::string SamplingReport() {
     return s;
 }
 
+// ---- counters and dominant cause as text (hitch blocks, report, UI). Formats read by research\perf2\tools\*.pl:
+//   "   counters (calls x ms incl. on the render / simulation / other threads): <Name> <n> x <ms>[ (max <ms>)] / <n> x <ms> /
+//    <n> x <ms>[ (max <ms>)][, extras]; <Name> ..."   (max: longest single call, render thread / simulation + other threads)
+//   "   dominant: <key> <ms> ms (<p>% of the frame) | top counter: <Name> <ms> ms self (<ms> ms incl.)" or "... | top counter: none"
+//   with <key> as dom.pl names it: a category name, "svc:<service>", "job:<job name>" or "Unattributed".
+std::string DomName(const HitchRecord& h) {
+    switch (h.domKind) {
+    case kDomCategory:
+        return kCats[h.domKey].name;
+    case kDomService:
+        return "svc:" + ServiceName(h.domKey, h.domAux);
+    case kDomJob:
+        return "job:" + JobName(h.domKey);
+    case kDomUnattributed:
+        return "Unattributed";
+    default:
+        return "none";
+    }
+}
+
+std::string DominantText(const HitchRecord& h) {
+    std::string s = std::format("dominant: {} {:.2f} ms ({:.0f}% of the frame) | top counter: ", DomName(h), h.domMs, h.frameMs > 0.0f ? 100.0 * h.domMs / h.frameMs : 0.0);
+    if (h.topCounter < 0) return s + "none";
+    const int c = kFirstCounterCat + h.topCounter;
+    return s + std::format("{} {:.2f} ms self ({:.2f} ms incl.)", kCats[c].name, h.render[c], h.renderIncl[c]);
+}
+
+// The extra counts of counter k over all threads, as text (", packages per lookup 245.3, misses 40", ...)
+std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t calls, int k) {
+    auto sum = [&](int x) { return extra[0][x] + extra[1][x] + extra[2][x]; };
+    switch (kFirstCounterCat + k) {
+    case kResLookup: {
+        std::string t = std::format(", packages per lookup {:.1f}, misses {}", calls ? static_cast<double>(sum(kXPackages)) / static_cast<double>(calls) : 0.0, sum(kXMisses));
+        if (sum(kXCacheHits)) t += std::format(", from cache {}", sum(kXCacheHits)); // resource lookup cache on (",": agg.pl splits counters on "; ")
+        return t;
+    }
+    case kScenePending:
+        return std::format(", nodes {}", sum(kXNodes));
+    case kRefPackCompress:
+        return std::format(", in {:.1f} KB, out {:.1f} KB", static_cast<double>(sum(kXBytesIn)) / 1024.0, static_cast<double>(sum(kXBytesOut)) / 1024.0);
+    case kDxtEncode:
+        return std::format(", pixels {:.2f} M", static_cast<double>(sum(kXPixels)) / 1e6);
+    default:
+        return "";
+    }
+}
+
+std::string FormatCounters(const CounterFrame& f, const float* renderIncl) {
+    std::string s;
+    for (int k = 0; k < kNC; k++) {
+        if (!CounterActive(f, k)) continue;
+        s += std::format("{}{} {} x {:.2f}", s.empty() ? "" : "; ", kCats[kFirstCounterCat + k].name, f.calls[0][k], f.incl[0][k]);
+        if (f.calls[0][k]) s += std::format(" (max {:.2f})", f.maxMs[0][k]);
+        s += std::format(" / {} x {:.2f} / {} x {:.2f}", f.calls[1][k], f.incl[1][k], f.calls[2][k], f.incl[2][k]);
+        if (f.calls[1][k] || f.calls[2][k]) s += std::format(" (max {:.2f})", f.maxMs[1][k]);
+        s += CounterExtraText(f.extra, static_cast<uint64_t>(f.calls[0][k]) + f.calls[1][k] + f.calls[2][k], k);
+        if (kFirstCounterCat + k == kLotRoomSolve && renderIncl) s += std::format(", lot lighting update {:.2f} ms incl.", renderIncl[kLotLightingUpdate]);
+    }
+    return s;
+}
+
 std::string FormatHitch(const HitchRecord& h) {
     std::string s = std::format("#{} t={:.1f}s  frame {:.2f} ms (median {:.2f}, threshold {:.2f})  cpu {:.2f}  present {:.2f}  limiter {:.2f}  mod D3D {:.2f}  camera {}{}\n", h.frame, h.tSec,
         h.frameMs, h.medianMs, h.thresholdMs, h.cpuMs, h.presentMs, h.limiterMs, h.modMs, CameraText(h.camera), h.foreground ? "" : "  (window in background)");
@@ -2616,6 +3240,8 @@ std::string FormatHitch(const HitchRecord& h) {
         h.createTex, h.createRT, h.createVS, h.createPS);
     if (h.stateCounted) s += std::format("; SetTexture {}, Set*Shader {}, shader constants {}, SetRenderTarget {}", h.setTexture, h.setShader, h.shaderConst, h.setRT);
     s += std::format("\n   lots promoted {}, demoted {}\n", h.lotsPromoted, h.lotsDemoted);
+    if (const std::string c = FormatCounters(h.counters, h.renderIncl); !c.empty()) s += "   counters (calls x ms incl. on the render / simulation / other threads): " + c + "\n";
+    if (h.domKind != kDomNone) s += "   " + DominantText(h) + "\n";
     s += FormatHitchDetail(h.detail);
     s += FormatHitchSamples(h.samples);
     return s;
@@ -2715,24 +3341,91 @@ void StartWriter() {
     g_writerRunning.store(true);
 }
 
+// The target is left off by an option (not counted in the summary)
+bool OffByOption(int i) {
+    return (kTargets[i].optional && !g_objectBuildWanted) || (i == T_MutexLock && !g_timeMutex.load());
+}
+const char* OffByOptionText(int i) {
+    return i == T_MutexLock ? "Off (option: Advanced > Time the Mutex::Lock hook)" : "Off (optional: Advanced > Time lot object building)";
+}
+
+// Caller holds g_ctrlMutex. "Timing N of M game functions" (+ waiting ones), logged when it changes.
+void UpdateSummaryLocked() {
+    int timed = 0, total = 0, waiting = 0;
+    for (int i = 0; i < kTargetCount; i++) {
+        if (OffByOption(i) && !g_targets[i].attached) continue;
+        total++;
+        if (g_targets[i].attached) timed++;
+        if (g_targets[i].waitingAddr) waiting++;
+    }
+    std::string s = std::format("Timing {} of {} game functions", timed, total);
+    if (waiting) s += std::format(" ({} waiting for the game-address scan)", waiting);
+    if (s != g_summary) {
+        g_summary = s;
+        LOG_INFO("[FrameProfiler] " + g_summary);
+    }
+}
+
+// Remote-call jobs keyed by the method they run (the known bug of the combined build: these were never set). Caller holds
+// g_ctrlMutex, render thread (JobKey reads them on the render thread only).
+void ResolveRemoteCallKeysLocked() {
+    if (g_remoteCallJobFn || !GameAddr::Scanned()) return;
+    const uintptr_t fn = GameAddr::Get(GameAddr::Id::RemoteCallJob);
+    // entry: cmp dword [esp+0Ch],4 (phase 4 = run); push esi; push edi; jne
+    if (!fn || !MatchAt(fn, "83 7C 24 0C 04 56 57 75")) {
+        LOG_WARNING("[FrameProfiler] Remote-call job function not found: remote calls are listed as their job function");
+        return;
+    }
+    g_remoteMethodVtable = static_cast<uint32_t>(GameAddr::Get(GameAddr::Id::RemoteMethodVtable));
+    g_remoteMethodVtable2 = static_cast<uint32_t>(GameAddr::Get(GameAddr::Id::RemoteMethodVtable2));
+    g_remoteCallJobFn = static_cast<uint32_t>(fn);
+}
+
 // Caller holds g_ctrlMutex. Runs on the render thread at the first frame boundary after enabling.
 void AttachAllLocked() {
-    int timed = 0, total = 0;
+    ResolveRemoteCallKeysLocked();
     for (int i = 0; i < kTargetCount; i++) {
-        if (kTargets[i].optional && !g_objectBuildWanted) {
-            g_targets[i].status = "Off (optional: Advanced > Time lot object building)";
+        if (OffByOption(i)) {
+            g_targets[i].status = OffByOptionText(i);
             continue;
         }
-        total++;
-        if (AttachTarget(i)) timed++;
-        else LOG_WARNING(std::format("[FrameProfiler] {}: {}", kTargets[i].name, g_targets[i].status));
+        if (!AttachTarget(i) && !g_targets[i].waitingAddr) LOG_WARNING(std::format("[FrameProfiler] {}: {}", kTargets[i].name, g_targets[i].status));
     }
-    g_summary = std::format("Timing {} of {} game functions", timed, total);
-    LOG_INFO("[FrameProfiler] " + g_summary);
+    UpdateSummaryLocked();
     if (g_writerRunning.load()) {
         std::lock_guard<std::mutex> lk(g_pendingMutex);
         g_pendingText += "Timed functions:\n" + HookStatusText();
     }
+}
+
+// Caller holds g_ctrlMutex; render thread, frame boundary: the targets that waited for GameAddr::Resolve
+void AttachWaitingLocked() {
+    g_waitAddr.store(false);
+    ResolveRemoteCallKeysLocked();
+    bool any = false;
+    for (int i = 0; i < kTargetCount; i++) {
+        if (!g_targets[i].waitingAddr || OffByOption(i)) continue;
+        any = true;
+        if (!AttachTarget(i) && !g_targets[i].waitingAddr) LOG_WARNING(std::format("[FrameProfiler] {}: {}", kTargets[i].name, g_targets[i].status));
+    }
+    if (!any) return;
+    UpdateSummaryLocked();
+    if (g_writerRunning.load()) {
+        std::lock_guard<std::mutex> lk(g_pendingMutex);
+        g_pendingText += "Timed functions (after the game-address scan):\n" + HookStatusText();
+    }
+}
+
+// Caller holds g_ctrlMutex: the Mutex::Lock option changed while the profiler may be on
+void ApplyMutexOptionLocked() {
+    if (!g_enabled.load() || g_attachPending.load()) return; // attached (or not) with the others at the next frame boundary
+    if (g_timeMutex.load()) {
+        if (!AttachTarget(T_MutexLock)) LOG_WARNING(std::format("[FrameProfiler] {}: {}", kTargets[T_MutexLock].name, g_targets[T_MutexLock].status));
+    } else {
+        DetachTarget(T_MutexLock);
+        if (!g_targets[T_MutexLock].attached && g_targets[T_MutexLock].status == "Off") g_targets[T_MutexLock].status = OffByOptionText(T_MutexLock);
+    }
+    UpdateSummaryLocked();
 }
 
 // Caller holds g_ctrlMutex
@@ -2844,6 +3537,109 @@ std::string LimiterText() {
     return "modified by another patch";
 }
 
+// Dominant causes over the hitch ring (window in foreground), as dom.pl aggregates them: per camera state and frame-time
+// bucket, the share of hitches each dominant item accounts for and its average ms; then the top counters. One line each.
+std::vector<std::string> DominantSummaryLines() {
+    struct Agg {
+        int n = 0;
+        double ms = 0;
+    };
+    static const char* const kBins[4] = {"< 16 ms", "16-25 ms", "25-50 ms", ">= 50 ms"};
+    std::map<std::string, Agg> dom[3][4]; // camera: 0 moving, 1 still, 2 unknown
+    std::map<std::string, Agg> top[3];
+    int n[3][4] = {}, nCam[3] = {};
+    const int first = (g_hitchPos - g_hitchCount + kHitchRing) % kHitchRing;
+    for (int k = 0; k < g_hitchCount; k++) {
+        const HitchRecord& h = g_hitches[(first + k) % kHitchRing];
+        if (!h.foreground || h.domKind == kDomNone) continue;
+        const int cam = h.camera == 1 ? 0 : (h.camera == 0 ? 1 : 2);
+        const int bin = h.frameMs < 16.0f ? 0 : (h.frameMs < 25.0f ? 1 : (h.frameMs < 50.0f ? 2 : 3));
+        Agg& d = dom[cam][bin][DomName(h)];
+        d.n++;
+        d.ms += h.domMs;
+        n[cam][bin]++;
+        nCam[cam]++;
+        Agg& t = top[cam][h.topCounter >= 0 ? kCats[kFirstCounterCat + h.topCounter].name : "none"];
+        t.n++;
+        t.ms += h.topCounter >= 0 ? h.render[kFirstCounterCat + h.topCounter] : 0.0f;
+    }
+    static const char* const kCam[3] = {"camera moving", "camera still", "camera n/a"};
+    auto sorted = [](const std::map<std::string, Agg>& m) {
+        std::vector<std::pair<std::string, Agg>> v(m.begin(), m.end());
+        std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second.n > b.second.n; });
+        return v;
+    };
+    std::vector<std::string> lines;
+    for (int cam = 0; cam < 3; cam++) {
+        if (!nCam[cam]) continue;
+        for (int bin = 0; bin < 4; bin++) {
+            if (!n[cam][bin]) continue;
+            std::string line = std::format("{}, {} (N={}):", kCam[cam], kBins[bin], n[cam][bin]);
+            int shown = 0;
+            for (const auto& [name, a] : sorted(dom[cam][bin])) {
+                if (shown++ == 6) break;
+                line += std::format("{} {} {:.0f}% (avg {:.1f} ms)", shown > 1 ? ";" : "", name, 100.0 * a.n / n[cam][bin], a.ms / a.n);
+            }
+            lines.push_back(line);
+        }
+        std::string line = std::format("{}, top counter (largest render self time of the six counters, N={}):", kCam[cam], nCam[cam]);
+        int shown = 0;
+        for (const auto& [name, a] : sorted(top[cam])) {
+            line += std::format("{} {} {:.0f}%", shown++ ? ";" : "", name, 100.0 * a.n / nCam[cam]);
+            if (name != "none") line += std::format(" (avg {:.2f} ms)", a.ms / a.n);
+        }
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+// Counters since Clear (all frames) and per hitch (the hitch ring), for the report
+std::string CounterReport() {
+    const Stats& st = g_stats;
+    bool any = false;
+    for (int k = 0; k < kNC && !any; k++) any = st.cCalls[0][k] || st.cCalls[1][k] || st.cCalls[2][k];
+    if (!any) return "";
+    const double frames = static_cast<double>(std::max<uint64_t>(1, st.frames));
+    std::string s = "Counters since Clear (calls x ms inclusive; longest single call): render thread | simulation thread | other threads | render thread per frame | extras\n";
+    for (int k = 0; k < kNC; k++) {
+        const uint64_t calls = st.cCalls[0][k] + st.cCalls[1][k] + st.cCalls[2][k];
+        if (!calls) continue;
+        s += std::format("   {:<22} {:>9} x {:>9.1f} (max {:>6.2f}) | {:>9} x {:>8.1f} | {:>9} x {:>8.1f} (max {:>6.2f}) | {:>8.2f} x {:>6.3f} ms{}\n", kCats[kFirstCounterCat + k].name,
+                         st.cCalls[0][k], st.cIncl[0][k], st.cMax[0][k], st.cCalls[1][k], st.cIncl[1][k], st.cCalls[2][k], st.cIncl[2][k], st.cMax[1][k],
+                         static_cast<double>(st.cCalls[0][k]) / frames, st.cIncl[0][k] / frames, CounterExtraText(st.cExtra, calls, k));
+    }
+    // per hitch (the ring)
+    int count = 0;
+    double incl[3][kNC] = {}, calls[3][kNC] = {}, self[kNC] = {};
+    uint64_t extra[3][kExtraCount] = {};
+    for (int j = 0; j < g_hitchCount; j++) {
+        const HitchRecord& h = g_hitches[j];
+        count++;
+        for (int b = 0; b < 3; b++) {
+            for (int k = 0; k < kNC; k++) {
+                incl[b][k] += h.counters.incl[b][k];
+                calls[b][k] += h.counters.calls[b][k];
+            }
+            for (int x = 0; x < kExtraCount; x++) extra[b][x] += h.counters.extra[b][x];
+        }
+        for (int k = 0; k < kNC; k++) self[k] += h.render[kFirstCounterCat + k];
+    }
+    if (count) {
+        s += std::format("Counters per hitch (last {} hitches): render calls x ms incl. (self) | simulation | other | extras per hitch\n", count);
+        for (int k = 0; k < kNC; k++) {
+            const double c = calls[0][k] + calls[1][k] + calls[2][k];
+            if (c <= 0.0) continue;
+            uint64_t perHitch[3][kExtraCount];
+            for (int b = 0; b < 3; b++)
+                for (int x = 0; x < kExtraCount; x++) perHitch[b][x] = extra[b][x] / static_cast<uint64_t>(count);
+            s += std::format("   {:<22} {:>8.1f} x {:>7.2f} ({:>6.2f}) | {:>8.1f} x {:>7.2f} | {:>8.1f} x {:>7.2f}{}\n", kCats[kFirstCounterCat + k].name, calls[0][k] / count,
+                             incl[0][k] / count, self[k] / count, calls[1][k] / count, incl[1][k] / count, calls[2][k] / count, incl[2][k] / count,
+                             CounterExtraText(perHitch, static_cast<uint64_t>(c / count + 0.5), k));
+        }
+    }
+    return s;
+}
+
 std::string BuildReport() {
     const LiveSample a = AverageLive();
     std::string s = std::format("\n==== Frame profiler report {} ====\n", NowString());
@@ -2868,6 +3664,10 @@ std::string BuildReport() {
             s += std::format("   {:<24} {:>12.1f} {:>12.1f} {:>12.1f} {:>10}\n", kCats[c].name, g_stats.render[c], g_stats.sim[c], g_stats.other[c], calls);
     }
     s += std::format("   {:<24} {:>12.1f}\n", "Unattributed (render)", g_stats.unattributed);
+    s += CounterReport();
+    s += "Apex shaders: " + ShaderCache::StatusText() + "\n";
+    s += "Resource lookup cache: " + ResourceCache::StatusText() + "\n";
+    s += "Lot lighting while moving: " + LotLightingMotion::StatusText() + "\n";
     const HitchAggregate h = AggregateHitches();
     if (h.count) {
         s += std::format("Last {} hitches: average frame {:.2f} ms (median before them {:.2f}), camera moving in {}, still in {}; per hitch (self ms): category | render | other threads | worst\n",
@@ -2876,6 +3676,11 @@ std::string BuildReport() {
             if (h.render[c] + h.others[c] > 0.0)
                 s += std::format("   {:<24} {:>8.2f} {:>8.2f} {:>8.2f}\n", kCats[c].name, h.render[c] / h.count, h.others[c] / h.count, h.worst[c]);
         s += std::format("   {:<24} {:>8.2f}\n", "Unattributed (render)", h.unattributed / h.count);
+        const std::vector<std::string> dom = DominantSummaryLines();
+        if (!dom.empty()) {
+            s += "Dominant cause of the last hitches (window in foreground; as research\\perf2\\tools\\dom.pl): % of the hitches of each bucket (average ms of that item)\n";
+            for (const std::string& line : dom) s += "   " + line + "\n";
+        }
         s += "Hitches (oldest first):\n";
         const int first = (g_hitchPos - g_hitchCount + kHitchRing) % kHitchRing;
         for (int k = 0; k < g_hitchCount; k++) s += FormatHitch(g_hitches[(first + k) % kHitchRing]);
@@ -2927,6 +3732,146 @@ void Clear() {
 // ---- UI ----
 void Hint(const char* text) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text);
+}
+
+// Measurement presets for the 60-second protocol (research\perf2\plan.md section 9.2). Both: hitch = 2.0 x median, floor 8 ms,
+// state calls counted, the file written, per-hook registry timing and lot object building off, Mutex::Lock not timed.
+// Timing run (A): no sampling. Sampling run (B): the render and simulation threads sampled at 2000 Hz. Turns the profiler on.
+void ApplyPreset(bool sampling) {
+    g_mult.store(2.0f);
+    g_floorMs.store(8.0f);
+    g_writeFile.store(true);
+    g_sampleRender.store(sampling);
+    g_sampleSim.store(sampling);
+    g_sampleHz.store(2000);
+    g_regTiming.store(false);
+    g_regTimingActive.store(false);
+    const bool stateChanged = !g_countState.exchange(true);
+    {
+        std::lock_guard<std::mutex> lk(g_ctrlMutex);
+        g_timeMutex.store(false);
+        ApplyMutexOptionLocked();
+        if (g_objectBuildWanted) {
+            g_objectBuildWanted = false;
+            if (g_enabled.load() && !g_attachPending.load()) {
+                DetachTarget(T_LotObjectBuild);
+                UpdateSummaryLocked();
+            }
+        }
+        if (stateChanged && g_enabled.load()) {
+            D3D9Hooks::UnregisterAll(kHookName);
+            RegisterD3DHooks();
+        }
+    }
+    if (!g_enabled.load()) FrameProfiler::SetEnabled(true);
+    {
+        std::lock_guard<std::mutex> lk(g_ctrlMutex);
+        UpdateSamplerLocked();
+    }
+    ApexConfig::RequestSave();
+    LOG_INFO(std::format("[FrameProfiler] Measurement preset: {} run (hitch 2.0 x median, floor 8 ms, state calls counted, file on, Mutex::Lock not timed, sampling {})",
+                         sampling ? "sampling" : "timing", sampling ? "render + simulation threads at 2000 Hz" : "off"));
+}
+
+// Averages of the counters over the last frames (g_cLive)
+struct CounterAvg {
+    double incl[3][kNC] = {}, calls[3][kNC] = {};
+    double extra[3][kExtraCount] = {};
+    int frames = 0;
+};
+
+CounterAvg AverageCounters() {
+    CounterAvg a;
+    a.frames = g_liveCount;
+    if (!g_liveCount) return a;
+    for (int i = 0; i < g_liveCount; i++) {
+        const CounterFrame& f = g_cLive[i];
+        for (int b = 0; b < 3; b++) {
+            for (int k = 0; k < kNC; k++) {
+                a.incl[b][k] += f.incl[b][k];
+                a.calls[b][k] += f.calls[b][k];
+            }
+            for (int x = 0; x < kExtraCount; x++) a.extra[b][x] += static_cast<double>(f.extra[b][x]);
+        }
+    }
+    const double n = static_cast<double>(g_liveCount);
+    for (int b = 0; b < 3; b++) {
+        for (int k = 0; k < kNC; k++) {
+            a.incl[b][k] /= n;
+            a.calls[b][k] /= n;
+        }
+        for (int x = 0; x < kExtraCount; x++) a.extra[b][x] /= n;
+    }
+    return a;
+}
+
+// Extra counts per frame (averages), for the UI
+std::string CounterExtraPerFrame(const CounterAvg& a, int k) {
+    auto sum = [&](int x) { return a.extra[0][x] + a.extra[1][x] + a.extra[2][x]; };
+    const double calls = a.calls[0][k] + a.calls[1][k] + a.calls[2][k];
+    switch (kFirstCounterCat + k) {
+    case kResLookup:
+        return std::format("{:.0f} packages per lookup, {:.1f} misses, {:.0f}% from cache", calls > 0 ? sum(kXPackages) / calls : 0.0, sum(kXMisses),
+                           calls > 0 ? 100.0 * sum(kXCacheHits) / calls : 0.0);
+    case kScenePending:
+        return std::format("{:.1f} nodes", sum(kXNodes));
+    case kRefPackCompress:
+        return std::format("{:.1f} -> {:.1f} KB", sum(kXBytesIn) / 1024.0, sum(kXBytesOut) / 1024.0);
+    case kDxtEncode:
+        return std::format("{:.3f} Mpx", sum(kXPixels) / 1e6);
+    case kLotRoomSolve:
+        return std::format("{:.2f} lot levels", calls);
+    default:
+        return "";
+    }
+}
+
+void RenderCounters() {
+    if (!ImGui::TreeNodeEx("Counters", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    const CounterAvg a = AverageCounters();
+    int hitches = 0;
+    double perHitch[kNC] = {}, perHitchSelf[kNC] = {};
+    for (int j = 0; j < g_hitchCount; j++) {
+        hitches++;
+        for (int k = 0; k < kNC; k++) {
+            perHitch[k] += g_hitches[j].counters.incl[0][k];
+            perHitchSelf[k] += g_hitches[j].render[kFirstCounterCat + k];
+        }
+    }
+    if (ImGui::BeginTable("##FpCounters", 7, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("Counter");
+        ImGui::TableSetupColumn("Render / frame");
+        ImGui::TableSetupColumn("Simulation / frame");
+        ImGui::TableSetupColumn("Other / frame");
+        ImGui::TableSetupColumn("Per hitch (render)");
+        ImGui::TableSetupColumn("Longest call");
+        ImGui::TableSetupColumn("Per frame");
+        ImGui::TableHeadersRow();
+        for (int k = 0; k < kNC; k++) {
+            const int c = kFirstCounterCat + k;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(kCats[c].name);
+            Hint(kCats[c].hint);
+            for (int b = 0; b < 3; b++) {
+                ImGui::TableNextColumn();
+                ImGui::Text("%.1f x %.3f ms", a.calls[b][k], a.incl[b][k]);
+            }
+            ImGui::TableNextColumn();
+            if (hitches) ImGui::Text("%.2f ms (self %.2f)", perHitch[k] / hitches, perHitchSelf[k] / hitches);
+            else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f / %.2f ms", g_stats.cMax[0][k], g_stats.cMax[1][k]);
+            Hint("Longest single call since Clear: render thread / other threads.");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(CounterExtraPerFrame(a, k).c_str());
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Calls x ms (inclusive) per frame, averages of the last %d frames; per hitch = the last %d hitches.", a.frames, hitches);
+    if (g_timeMutex.load())
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Mutex::Lock is timed: the Resource lookup times include its overhead (Advanced).");
+    ImGui::TreePop();
 }
 
 void RenderLive() {
@@ -3010,6 +3955,14 @@ void RenderHitches() {
             }
             ImGui::TextDisabled("Per hitch, self time. Created per hitch: %.1f textures, %.1f shaders; %.2f lots promoted", static_cast<double>(h.createTex) / h.count,
                 static_cast<double>(h.createShaders) / h.count, static_cast<double>(h.promoted) / h.count);
+            if (ImGui::TreeNode("Dominant causes")) {
+                ImGui::TextDisabled("Largest single item of each hitch (render self category, service, job or Unattributed), by camera state and frame time;\n"
+                                    "window in foreground only. Written into every hitch of ApexRadiance_Hitches.txt as \"dominant:\".");
+                const std::vector<std::string> lines = DominantSummaryLines();
+                if (lines.empty()) ImGui::TextDisabled("No hitch with the window in foreground yet.");
+                for (const std::string& line : lines) ImGui::TextWrapped("%s", line.c_str());
+                ImGui::TreePop();
+            }
         }
         ImGui::TreePop();
     }
@@ -3034,6 +3987,7 @@ void RenderHitches() {
             for (int j = 0; j < 3; j++)
                 if (top[j] >= 0) line += std::format("  {} {:.1f}", kCats[top[j]].name, all[top[j]]);
             line += std::format("  Unattributed {:.1f}", r.unattributedMs);
+            if (r.domKind != kDomNone) line += "  | " + DomName(r);
             ImGui::TextUnformatted(line.c_str());
         }
         ImGui::TreePop();
@@ -3244,11 +4198,23 @@ void RenderAdvanced() {
         if (g_enabled.load() && !g_attachPending.load()) {
             if (objects) AttachTarget(T_LotObjectBuild);
             else DetachTarget(T_LotObjectBuild);
+            UpdateSummaryLocked();
         }
     }
     Hint("Also time Lot::UpdateObjectSceneNode (every object's scene node when a lot gets detailed).\n"
          "While on, Lot Streaming Optimizations cannot re-install (changing its settings turns its object throttle off),\n"
          "so leave its settings alone during the measurement. Not saved.");
+    bool mutexTimed = g_timeMutex.load();
+    if (ImGui::Checkbox("Time the Mutex::Lock hook", &mutexTimed)) {
+        std::lock_guard<std::mutex> lk(g_ctrlMutex);
+        g_timeMutex.store(mutexTimed);
+        ApplyMutexOptionLocked();
+        save = true;
+    }
+    Hint("Hook EA::Thread::Mutex::Lock (FUN_004E16F0) on every thread and book the render-thread calls that blocked more than\n"
+         "0.1 ms (\"Mutex wait\"). Off by default: every call pays two clock reads, and the resource lookup takes the lock about\n"
+         "580 times per scan, so this hook inflates exactly what the Resource lookup counter measures (and its samples).\n"
+         "Turn it on only to look for lock contention.");
     bool reg = g_regTiming.load();
     if (ImGui::Checkbox("Per-hook registry timing", &reg)) {
         g_regTiming.store(reg);
@@ -3363,10 +4329,14 @@ void SetEnabled(bool on) {
     } else {
         g_enabled.store(false);
         g_attachPending.store(false);
+        g_waitAddr.store(false);
         g_regTimingActive.store(false);
         UpdateSamplerLocked(); // stops it: g_enabled is false
         D3D9Hooks::UnregisterAll(kHookName);
-        for (int i = 0; i < kTargetCount; i++) DetachTarget(i);
+        for (int i = 0; i < kTargetCount; i++) {
+            DetachTarget(i);
+            g_targets[i].waitingAddr = false;
+        }
         StopWriter();
         g_summary = "Off";
         LOG_INFO("[FrameProfiler] Off");
@@ -3400,12 +4370,26 @@ void RenderUI(bool showEnable) {
         if (ImGui::Button("Save report now")) SaveReport();
         Hint("Append a full report (percentiles, totals, the last hitches, hook status) to ApexRadiance_Hitches.txt.");
     }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Measurement preset:");
+    ImGui::SameLine();
+    if (ImGui::Button("Timing run##FpPreset")) ApplyPreset(false);
+    Hint("Recommended settings for the 60-second measurement, run type A (research\\perf2\\plan.md section 9):\n"
+         "hitch multiplier 2.0, floor 8 ms, count state calls on, write the file on, sampling off, Mutex::Lock not timed,\n"
+         "per-hook registry timing and lot object building off. Turns the profiler on.\n"
+         "Then press Clear right before the run and Save report now right after it.");
+    ImGui::SameLine();
+    if (ImGui::Button("Sampling run##FpPreset")) ApplyPreset(true);
+    Hint("Recommended settings for the attribution run, run type B: the same as the timing run, plus sampling of the\n"
+         "render and simulation threads at 2000 Hz. Turns the profiler on.\n"
+         "Then press Clear right before the run and Save report now right after it.");
     if (!g_stats.frames) {
         ImGui::TextDisabled("%s", on ? "Waiting for frames..." : "Off: nothing is hooked.");
     } else {
         if (!on) ImGui::TextDisabled("Off: showing the data collected so far.");
         RenderLive();
         RenderHitches();
+        RenderCounters();
     }
     RenderAdvanced();
 }
@@ -3420,11 +4404,13 @@ void SaveToToml(toml::table& qolTable) {
     t.insert("sample_render", g_sampleRender.load());
     t.insert("sample_simulation", g_sampleSim.load());
     t.insert("sample_hz", static_cast<int64_t>(g_sampleHz.load()));
+    t.insert("time_mutex_lock", g_timeMutex.load());
     qolTable.insert("frame_profiler", std::move(t));
 }
 
 void LoadFromToml(const toml::table& qolTable) {
     bool enabled = false;
+    bool mutexChanged = false;
     if (auto node = qolTable["frame_profiler"].as_table()) {
         const auto& t = *node;
         g_mult.store(std::clamp(static_cast<float>(t["hitch_multiplier"].value_or(2.0)), 1.2f, 5.0f));
@@ -3434,6 +4420,8 @@ void LoadFromToml(const toml::table& qolTable) {
         g_sampleRender.store(t["sample_render"].value_or(false));
         g_sampleSim.store(t["sample_simulation"].value_or(false));
         g_sampleHz.store(std::clamp(static_cast<int>(t["sample_hz"].value_or(int64_t{2000})), 250, 4000));
+        const bool mutexTimed = t["time_mutex_lock"].value_or(false);
+        mutexChanged = mutexTimed != g_timeMutex.exchange(mutexTimed);
         enabled = t["enabled"].value_or(false);
         if (state != g_countState.load()) {
             g_countState.store(state);
@@ -3445,8 +4433,9 @@ void LoadFromToml(const toml::table& qolTable) {
         }
     }
     SetEnabled(enabled);
-    std::lock_guard<std::mutex> lk(g_ctrlMutex); // sampling options may have changed while the profiler stays on
+    std::lock_guard<std::mutex> lk(g_ctrlMutex); // sampling / Mutex::Lock options may have changed while the profiler stays on
     UpdateSamplerLocked();
+    if (mutexChanged) ApplyMutexOptionLocked();
 }
 
 bool RegistryHookTimingActive() {

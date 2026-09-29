@@ -1,7 +1,9 @@
 # Roofs and roof snow
 
 > **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) exactly as described (`roof_ps.hlsl` is byte-identical);
-> v0.1.0 has no HDR gain on `c52.x` and compiles the replacements at the first draw (no `PrecreatePs`).
+> v0.1.0 has no HDR gain on `c52.x` and compiles the replacements at the first draw (no `PrecreatePs`). Since 2026-09-28
+> both replacements are compiled at start-up on a background thread and only created at the first draw
+> (`framework/shader_cache.h`, [architecture 4.6](../../architecture.md#shader-precompile)); not tested in game yet.
 
 > The game's roof shader has no lamp term at all (sun/moon + sky only), so roofs stay black next to a lit wall at night.
 > Night Lighting replaces the summer roof pixel shader with an HLSL copy that adds the 16 most relevant outdoor lamps (and

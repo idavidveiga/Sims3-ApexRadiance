@@ -464,6 +464,58 @@ This is one shared trigger for effects that work on the finished 3D scene, befor
   - A multisampled back buffer means the game's Edge Smoothing (MSAA) is on. The swap then refuses, with the status "turn
     it off in Options > Graphics".
 
+### 4.6 Shader precompile (`framework/shader_cache.*`, standalone, 2026-09-28)
+<a id="shader-precompile"></a>
+Apex's own HLSL pixel shaders are never compiled on the render thread. Written 2026-09-28, not compiled or tested in
+game yet (anti-stutter plan `research\perf2\plan.md`, items 7 and C5: `d3dcompiler_47.dll` was 8.5% of the samples of
+"Render frame" hitches, one-time hitches of 10-100+ ms at the first lamp / roof / water / SMAA / Depth Blur frame).
+- **Registration:** each feature adds every variant it can use (all qualities and modes) with `ShaderCache::Add`, from
+  namespace-scope initialisers in its own .cpp (so the list is complete before the init thread runs). A `Desc` keeps the
+  exact `D3DCompile` inputs the feature used before (source, source name, entry, target, flags, macros), so the bytecode
+  is the same; `priority` 0 = the feature's default quality / mode, compiled first.
+- **Compile:** `ShaderCache::Start()` (init thread, right after the log opens, before the device exists) starts one
+  worker thread (below-normal priority) that runs `D3DCompile` for every variant and keeps the bytecode for the session
+  (the source string is freed after its compile). Log: `[ShaderCache] Precompiling N Apex shaders on a background
+  thread`, then `[ShaderCache] Precompiled N Apex shaders in X ms on a background thread (F failed; slowest: ...)`; a
+  failure logs `[ShaderCache] <tag> did not compile: <message>` (the feature logs its own error text at first use too).
+- **Use:** where a feature called `D3DCompile` + `CreatePixelShader`, it now calls `ShaderCache::CreatePixelShader(dev,
+  id, &ps, &msg)`: the render thread only creates the D3D9 object from the bytecode (at the feature's first use, as
+  before). If the worker has not reached that variant yet, it becomes the worker's next job and the caller waits
+  (logged as a warning `waited for the precompile`, counted; the worker is raised to normal priority); with no worker
+  left (thread creation failed, or FreeLibrary) the variant is compiled on the calling thread as a last resort (logged).
+- **Device Reset / release:** D3D9 shader objects survive `Reset`; the features that release them (Uninstall, Shutdown,
+  `ReleaseShaders`) recreate them from the kept bytecode, never compiling again.
+- **Status:** `ShaderCache::StatusText()`: Developer > Profiler tab (under the Frame Profiler card) and the profiler
+  report (`Apex shaders: ...`).
+- **Registered variants (36):** Night Lighting (`lot_light_bridge.cpp`, entry `main`, flags 0 as before): lot light pass
+  (ps_3_0), object rig moon-shadow fix (ps_2_0), roofs, lake water, snowy roofs (ps_3_0); world light smoothing
+  (`lightmap_smooth.cpp`): GatherPS, HBlurPS, VBlurPS, HUpYAPS, HUpChromaPS, VUpPS, DownPS, CopyPS; Depth Blur: FocusPS,
+  PrepPS, CompositePS, BlurPS x 4 qualities (TAPS 4 / 6 / 8 / 12); Edge Smoothing: FXAA x 3 qualities, SMAA x 4 presets
+  x 3 passes (edge detection, blending weights, neighbourhood blending); Picture: PicturePS. All with
+  `D3DCOMPILE_OPTIMIZATION_LEVEL3` except the Night Lighting ones (flags 0).
+- **Not affected:** the game-shader copies patched in bytecode (`shader_patches.cpp`: roads, floors, snow, fences,
+  foliage and object vertex shaders, ...) are created with `CreatePixelShader` / `CreateVertexShader` at their first
+  draw from the game's own bytecode (no HLSL, no `D3DCompile`); they depend on which game shader is drawn, so they stay
+  lazy. `light_probe.cpp` uses `D3DDisassemble` (developer tool, on demand).
+
+### 4.7 Layered vtable-slot hooks and suspended code writes (standalone, 2026-09-29)
+- `framework/slot_chain.{h,cpp}` (`SlotChain`): several Apex modules may wrap one game function that is reached only
+  through vtable slots. Each wrapper is a layer with a fixed position (0 = Frame Profiler, outer; 1 = Resource cache);
+  the slots hold the outermost installed layer's hook and every hook calls `SlotChain::Next(site, layer)`. Install /
+  Remove swap the slots (interlocked compare-exchange, expected value checked) or re-point the outer layer's next
+  pointer; a removed hook keeps its next pointer. Sites: FindProvider (profiler + cache) and the resource manager's
+  RegisterDatabase (base and derived), SetDatabasePriority and DatabaseChanged (cache only); RefPackCompress (the RefPack
+  stream write slot 0x00FB901C: profiler + the fast compressor, layer 2 `FastCompress`). See
+  [features/performance.md](features/performance.md).
+- `framework/entry_chain.{h,cpp}` (`EntryChain`, 2026-09-29): the same layering for functions reached by direct CALLs from
+  several threads. The entry's relocation-free prologue is copied to a trampoline (+ JMP back) and a 5-byte JMP to the
+  outermost layer's hook is written with `MemPatch::WriteCodeSuspended`; each hook calls `EntryChain::Next(site, layer)`
+  (the next inner layer or the trampoline); removing the last layer writes the original bytes back. Sites: the CPU DXT1 /
+  DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder).
+- `MemPatch::WriteCodeSuspended(address, bytes, n)`: writes up to 16 code bytes with every other thread suspended and none
+  stopped inside them (retried for ~100 ms), for CALL rewrites that several threads may run (Lot Lighting While Moving's
+  CALL at 0x00ADB95D). The Frame Profiler keeps its own copy (`WriteCallSuspended`).
+
 ---
 
 ## 5. Patch system and settings

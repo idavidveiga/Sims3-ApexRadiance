@@ -1,5 +1,6 @@
 #pragma once
-// Game-code addresses used by Night Lights (and its parts) and Every-Story Ground Light, for every game build.
+// Game-code addresses used by Night Lights (and its parts), Every-Story Ground Light, the Performance features
+// (resource lookup cache, lot lighting while moving) and the Frame Profiler's counters, for every game build.
 //
 // Steam 1.67.2 (TS3W.exe 0x52DEC247): the fixed addresses the features were written for (each feature still checks the
 // bytes it patches, exactly as before). Any other build (EA app 1.69.47 TS3.exe 0x6707155C, 1.69.43, retail, unknown):
@@ -84,6 +85,46 @@ enum class Id : uint16_t {
     // ---- Every-Story Ground Light ----
     GetLotIdGatherCall, // call GetLotID in the outdoor-room light gather
     GetLotId,           // BaseLight::GetLotID FUN_006bc020
+    // ---- Frame Profiler counters (the profiler is development build only; the addresses resolve in both builds). The
+    //      first three are also the resource lookup cache's (features/resource_cache.h, both builds). ----
+    ResFindProvider,      // ResourceMgr::FindProvider FUN_004affc0 thiscall(key*, cookie*), ret 8 (only called through vtables)
+    ResFindProviderSlot0, // the vtable slots holding it (+0x40 of the base 0x00FB2DA0 and derived 0x00FFE250 vtables), by address
+    ResFindProviderSlot1,
+    RefPackCompress,      // RefPack stream write FUN_004ec200 thiscall(src, size, dst, capacity, flags), ret 0x14
+    RefPackCompressSlot,  // its slot in the stream vtable 0x00FB9018 (+4)
+    SceneDrainCall,       // call FUN_006e4130 in Scene::BeginFrame FUN_006ebb70
+    SceneDrain,           // FUN_006e4130 thiscall(): drains the scene's pending-node list
+    DxtEncode1,           // FUN_006152f0 cdecl(dst*, src*): CPU DXT1 encoder
+    DxtEncode5,           // FUN_006154b0 cdecl(dst*, src*): CPU DXT5 encoder
+    ObjectById,           // FUN_00c62d40 thiscall(idLo, idHi, flag), ret 0xC: object lookup by ID (linear tree walk)
+    RoomSolveCall,        // call FUN_006a8ba0 in the lot lighting update FUN_00adb8f0 (its only caller)
+    RoomSolve,            // FUN_006a8ba0 thiscall(timer*, float budget), ret 8: one room of the budgeted lot relight
+    RemoteCallJob,        // FUN_007d9840 cdecl(handle, RemoteCall*, phase): the job function of remote calls
+    RemoteMethodVtable,   // PostRemoteMethodCall object vtable, method(obj, byte, byte) (stored at 0x00ABEA0A; method at object +0x10)
+    RemoteMethodVtable2,  // the same with method(obj, byte) (stored at 0x00ABEA93; method at object +0x10)
+    // ---- Resource lookup cache (features/resource_cache.h; group "ResourceCache", with ResFindProvider and its slots) ----
+    ResRegisterDb,            // ResourceMgr::RegisterDatabase FUN_004b2d00 thiscall(bool add, db*, int priority), ret 0xC (base class)
+    ResRegisterDbSlot,        // its only reference: slot +0x34 of the base vtable 0x00FB2DA0
+    ResRegisterDbDerived,     // ResourceSystem's override FUN_00736a70 (same arguments; calls FUN_004b2d00 directly)
+    ResRegisterDbDerivedSlot, // its only reference: slot +0x34 of the derived vtable 0x00FFE250
+    ResSetDbPriority,         // ResourceMgr::SetDatabasePriority FUN_004b2ec0 thiscall(db*, int priority), ret 8 (re-sorts the list)
+    ResSetDbPrioritySlot0,    // slots +0x3C of both vtables, by address
+    ResSetDbPrioritySlot1,
+    ResDbChanged,             // ResourceMgr::DatabaseChanged FUN_004b0960 thiscall(db*, keyVector*), ret 8 (the engine's "keys of db changed")
+    ResDbChangedSlot0,        // slots +0x4C of both vtables, by address
+    ResDbChangedSlot1,
+    ShadowedDbVtable,         // vtable 0x00FFE078 of the read-only package class that closes idle files (ctor FUN_007342f0)
+    // ---- Lot lighting while moving (features/lot_lighting_motion.cpp; group "LotLightingMotion") ----
+    LotLightBudgetCall,       // call FUN_00adb120 in the lot lighting update FUN_00adb8f0 (its only caller)
+    LotLightBudget,           // FUN_00adb120 thiscall(lot lighting manager), ret, result in ST0: this lot's budget in ms
+    CameraRootCall,           // call FUN_006e8330 (app root getter) in WorldManager::Update, right before the camera getter call
+    CameraGetterCall,         // call FUN_006e8400 (root -> camera); the next instruction reads the camera eye (movaps xmm0,[eax+60h])
+    CameraRootGetter,         // FUN_006e8330: mov eax,[root]; ret
+    CameraGetter,             // FUN_006e8400: mov eax,[ecx+24h]; ret
+    // ---- Faster texture / cache compression (features/fast_dxt.cpp, fast_refpack.cpp; groups "FastTextureCompression" =
+    //      DxtEncode1 + DxtEncode5, "FastCacheCompression" = RefPackCompress + its slot) ----
+    RefPackDecompress,        // FUN_004eb3b0 cdecl(dst, capacity, src, srcSize): the only RefPack decoder, found through its CALL in the
+                              // stream read FUN_004ec010 (the official S3SS detours its entry; Apex only calls it, to check its own streams)
     Count
 };
 
@@ -92,6 +133,9 @@ enum class Id : uint16_t {
 // build whose .text still looks encrypted it waits up to 15 s. Safe to call once; later calls do nothing.
 void Resolve();
 bool Resolved();
+// True once Resolve has run, on every build (on Steam 1.67.2 the fixed addresses are usable before: see Resolved). The
+// Frame Profiler waits for it before hooking its counters, so the signature self-check never sees its own hooks.
+bool Scanned();
 
 // True on Steam 1.67.2: every address is the fixed one and the features keep their exact byte checks.
 bool IsFixed();
@@ -105,7 +149,8 @@ bool Have(std::initializer_list<Id> ids, std::string* missing = nullptr);
 // "Not available on <version>: missing <names>"
 std::string NotAvailable(const std::string& missing);
 
-// Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel"
+// Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
+// "LotLightingMotion"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1

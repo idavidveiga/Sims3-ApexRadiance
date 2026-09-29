@@ -44,7 +44,12 @@ the bound PS classifies as `PsClass::LotLight` (exact `kLotLightPs` = 568 bytes,
 
 1. `EnsureReplacement` compiles `kReplacementHlsl` once (d3dcompiler_47 `D3DCompile`, target ps_3_0) into
    `g_replacementPs`; status becomes "Active" or "Failed: <error>" (log `[LotLightBridge] Active`). It is also
-   pre-compiled when the game creates the 568-byte shader (`PrecreatePs`).
+   pre-compiled when the game creates the 568-byte shader (`PrecreatePs`, combined build).
+   **Standalone, 2026-09-28:** the five replacement shaders of `lot_light_bridge.cpp` (this lot pass, the object-rig
+   moon-shadow fix ps_2_0, roofs, lake water, snowy roofs) are compiled at start-up on a background thread
+   (`framework/shader_cache.h`, [architecture 4.6](../../architecture.md#shader-precompile); same source, entry `main`,
+   flags 0). `CompilePs` now only creates the shader object from that bytecode at the first draw that needs it, so the
+   first lot pass / lamp / roof / water no longer runs `D3DCompile` on the render thread. Not tested in game yet.
 2. Reads VS c14..c15 (`GetVertexShaderConstantF(14, v, 2)`). Requires c14.xy == 1/256 (tolerance 1e-5), otherwise
    the game draws.
 3. Terrain source:
@@ -193,25 +198,48 @@ return nullptr while the smoothed map is older than the game's current map, so t
 cell holds a plain 2x copy of the current map until the smoothed one replaces it. The lot pass therefore never reads a
 stale or black terrain term after a rebuild or while the atlas grows.
 
-### Lot lamp change tracking (`TrackLotLampEdits`, 28/09)
+### Lot lamp change tracking (`TrackLotLampEdits`, 28/09; bake-relevance rules 29/09)
 
-Lives here (it uses the bridge's light enumeration, every 20 frames in `LotLightBridge::OnPresent`) and drives the
-lamp-change rebuild of [terrain-relight.md](terrain-relight.md). For every lot light (lot id +0xC0/+0xC4 != 0, alive,
-room known, room 0) it keeps a signature (base colour +0xF0, intensity +0x10, lit bit, position +0x120), the lot id, the
-lit bit and whether its type +0xB0 is 3..6. It compares the whole SET with the previous enumeration:
-- edited (same pointer, other signature), added (new pointer), removed (pointer gone);
-- relevant to the bake only: type 3..6 lamps must be lit before or after (unlit ones are not baked); other types always;
+Lives here (it uses the bridge's light enumeration, every 20 frames in `LotLightBridge::OnPresent`, or at once after a
+consumed terrain rebuild via `RequestLampRefresh`) and drives the lamp-change rebuild of
+[terrain-relight.md](terrain-relight.md) ("Lamp change decisions"). It tracks every lot light of a type the terrain bake
+can take (lot id +0xC0/+0xC4 != 0, type +0xB0 in 3..6 or 0xB, alive 0x01, room known 0x04, room 0) with its raw fields:
+flags +0x100, base colour +0xF0, intensity +0x10, range +0x130, position +0x120. A lamp is **in the bake** when it is lit
+(0x20), for types 3..6 also enabled (0x40, as `TerrainLightTest`), and its light is not zero (range x intensity > 0,
+colour not black); the street-lamp class is assumed to need the lit flag too (unverified). Its **light** is colour x
+intensity x range per channel (the bake draws colour with weight range x intensity x 0.2). It compares the whole SET with
+the previous enumeration:
+- added (new pointer, in the bake), removed (pointer gone, was in the bake), moved (both in the bake, more than 5 cm):
+  **user-driven**;
+- entered or left the bake (lit / enabled flag, intensity to or from 0), or light changed by more than 5 % in a channel
+  (floor 0.05): **automatic**; a lamp with 3 automatic changes within 60 s becomes **animated** (log `Lamp L... on lot
+  ... switches or dims by itself`) and its automatic changes no longer count;
+- anything else is not counted: lamps outside the bake (disabled, unlit, window lights 7/8 and type 9 are not even
+  tracked), changes below the threshold (counters "outside the bake", "below the threshold", "animated");
 - per lot: counted only if the lot is **settled**: present in every enumeration for 10 s and without an uncounted change
   for 5 s. An uncounted change restarts the 5 s, so a lot that is still loading (lamps trickling in) never counts;
-- more than 8 relevant changes in one enumeration = bulk (lamps switching together at dusk / dawn, or streaming): none
+- more than 8 counted changes in one enumeration = bulk (lamps switching together at dusk / dawn, or streaming): none
   counted, their lots restart the 5 s;
 - removals are confirmed at the next enumeration: the lot must still be there and have lost no further lamp. A lot that
-  vanishes (streaming out) cancels them; so the removal of a lot's only lamp is never counted (the stuck-countdown
-  fallback of the terrain relight can still catch it at night, at most every 15 s).
-Counted changes increment `LotLampEdits()` (log in the dev build: `[LotLightBridge] Lot lamp change: lot <id>: A added, E
-edited, R removed` or `lamp removed on lot <id>`); `LotLampStatus()` feeds the Developer line "Lamp changes". A world
-change clears the tracking. v0.1.0 compared only lamps that existed in both enumerations, so additions and removals
-waited for the 15 s stuck-countdown fallback.
+  vanishes (streaming out) cancels them; so the removal of a lot's only lamp is never counted. Since 29/09 the
+  stuck-countdown fallback no longer catches it either (it only rebuilds for differences on lots of the last rebuild
+  that still have lamps): it reaches the ground at the next rebuild.
+Counted changes increment `LotLampEdits()`, and `LotLampUserEdits()` when one of them is user-driven (with its lots in
+`LastUserChangeLots()`). Dev log: `[LotLightBridge] Lot lamp change: lot <id>: A added, E edited (M moved), R removed
+(user-driven|automatic): L<ptr> type T: lit 1->0, enabled 1->0, intensity 1.000->0.000, colour (..)->(..), range a->b,
+moved d m [enters|leaves the bake]; ...` (up to 6 lamps) or `lamp removed on lot <id> (user-driven)`; and at most once a
+minute per lot `Lamp changes that do not rebuild the terrain, lot <id>: <same detail> (not in the bake | below the
+threshold | animated)`. This is the diagnosis of lamps that keep changing: read which field moves.
+
+After each enumeration the bridge keeps `CurrentBakeLamps()`: every tracked lamp (lot, type, position, light, in the
+bake, animated), sorted by lot, plus the lots and the settled lots. The terrain relight stores the one of the enumeration
+right after each consumed rebuild and compares with `DiffBake(baked, now, plainLamps)`: only lots settled now that were
+in `baked`, lamps matched by type and place (5 cm, not by pointer: a lot streamed out and back in has new light objects),
+counts added / removed / switched on / switched off / relit, animated lamps apart. `LotLampStatus()` feeds the Developer
+line "Lamp changes". A world change clears the tracking and the snapshot. v0.1.0 compared only lamps that existed in both
+enumerations, so additions and removals waited for the 15 s stuck-countdown fallback. 29/09 evidence for the rules: the
+repeated "7 edited" of lot 7D6F0019FAF78910 were its 7 disabled type-3 lamps (flags 0x35 / 0xB5), never baked (see
+terrain-relight.md "Lamp change decisions").
 
 ### Snow variant
 
@@ -228,7 +256,7 @@ replaced, see [snow.md](snow.md) section "Snowy lot ground".
 | | `RecordWorldChunk`, `g_chunks`, `Key`, `ChunkTexture` | chunk light map registry (key = chunk centre) |
 | | `ClassifyPsCode` | `LotLight` / `WorldCandidate` classes |
 | | `LotLightBridge::SetEnabled`, `Status`, `OnWorldChanged` (`ClearChunks`), `Shutdown(keepChunkMaps)`, `ChunkCount` | lifecycle |
-| | `ReadLotLamp`, `TrackLotLampEdits`, `LotLampEdits`, `LotLampStatus` | lot lamp change tracking |
+| | `ReadLotLamp`, `InBake`, `LampChangeText`, `TrackLotLampEdits`, `LotLampEdits`, `LotLampUserEdits`, `LastUserChangeLots`, `LotLampStatus`; `CurrentBakeLamps`, `LampEnumerations`, `RequestLampRefresh`, `DiffBake` (29/09) | lot lamp change tracking and the bake snapshot |
 | | `LotRect`, `ReadLotRects` (SEH walk), `RefreshLotRects`, `FindLotRect`, `LotEdgeConstants`, `g_softEdges`, `kEdgeBand`; `LotLightBridge::SetSoftLotEdges`, `LotEdgeStatus` | soft lot edges |
 | shader_ids.h | `kLotLightPs` {568, 0xFDAD274B} | exact gate |
 | lightmap_smooth.cpp | `LightmapSmooth::Atlas`, `Find`, `Get` | terrain light source |

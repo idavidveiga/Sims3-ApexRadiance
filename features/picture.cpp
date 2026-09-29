@@ -21,6 +21,7 @@
 #include "apex_log.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
+#include "shader_cache.h"
 #include "imgui.h"
 #include "ui/widgets.h"
 #include <d3dcompiler.h>
@@ -219,6 +220,20 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
 }
 )HLSL";
 
+// Compiled at start-up on a background thread (framework/shader_cache.h); InitResources only creates the shader object.
+ShaderCache::Id AddPictureShader() {
+    ShaderCache::Desc d;
+    d.tag = "Picture PicturePS";
+    d.source = kShaderSource;
+    d.sourceName = "picture.hlsl";
+    d.entry = "PicturePS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 0;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kPicturePsId = AddPictureShader();
+
 struct Gpu {
     bool ready = false, compileTried = false;
     UINT width = 0, height = 0;
@@ -331,17 +346,12 @@ void RegisterHooks(IDirect3DDevice9* dev) {
     }, kDrawPriority);
 }
 
+// The shader object from the precompiled bytecode (shader_cache.h)
 IDirect3DPixelShader9* CompileShader(IDirect3DDevice9* dev) {
-    ID3DBlob *code = nullptr, *errors = nullptr;
-    const HRESULT hr = D3DCompile(kShaderSource, std::strlen(kShaderSource), "picture.hlsl", nullptr, nullptr, "PicturePS", "ps_3_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
     IDirect3DPixelShader9* ps = nullptr;
-    if (FAILED(hr) || !code) {
-        LOG_ERROR(std::string("[Picture] Shader failed to compile: ") + (errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?"));
-    } else if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &ps))) {
-        ps = nullptr;
-    }
-    if (errors) errors->Release();
-    if (code) code->Release();
+    std::string msg;
+    if (ShaderCache::CreatePixelShader(dev, kPicturePsId, &ps, &msg) == ShaderCache::Result::CompileFailed)
+        LOG_ERROR("[Picture] Shader failed to compile: " + msg);
     return ps;
 }
 

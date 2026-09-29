@@ -12,8 +12,10 @@
 #include "game_version.h"
 #include "night_lighting.h"
 #include "patch_base.h"
+#include "performance.h"
 #include "picture.h"
 #include "s3ss_detect.h"
+#include "shader_cache.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
 #include "imgui.h"
@@ -48,7 +50,7 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageDepthBlur, PageDisplay, PageDeveloper, PageSettings };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings };
 enum WaterSnowTab : int { WaterTab, SnowTab };
 enum DisplayTab : int { DisplayWindow, DisplayAntiAliasing };
@@ -324,6 +326,8 @@ void OverviewPage() {
                             &nameClicked);
         if (nameClicked) Go(PageDisplay, &g_displayTab, DisplayWindow);
         OverviewPatchRow("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean, smooth edges on the world", PageDisplay, &g_displayTab, DisplayAntiAliasing);
+        OverviewPatchRow(Performance::kResourceCacheName, IconId::Gauge, "Faster File Lookups", "Fewer small stutters when things load", PagePerformance);
+        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -540,6 +544,59 @@ void DisplayPage() {
     else BorderlessCard();
 }
 
+// ---- System > Performance ----
+
+// A feature shown as one switch row inside a card (its description, which ends with the credit, on hover), with its
+// "Not available" / error notes under it. True while it is on (or in the search results, where its rows are searched).
+bool FeatureSwitchRow(const char* patchName, const char* label, const char* text) {
+    ApexPatch* patch = Find(patchName);
+    if (!patch) return false;
+    ImGui::PushID(patchName);
+    bool on = patch->IsEnabled();
+    ImGui::BeginDisabled(!Switchable(patch));
+    if (ApexUi::SwitchRow(label, &on, text, patch->IsEnabledByDefault())) SetPatch(patch, on);
+    ImGui::EndDisabled();
+    if (!ApexUi::FilterActive()) {
+        ApexUi::Tooltip(Description(patch));
+        if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote(patch);
+        else if (Loading()) CardNote("Starting\xE2\x80\xA6");
+        CardError(patch->GetLastError());
+    }
+    ImGui::PopID();
+    return patch->IsEnabled() || ApexUi::FilterActive();
+}
+
+// One card for the performance features (patches/performance.h): the switches and the lot lighting time
+void PerformanceCard() {
+    ImGui::PushID("Performance");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Gauge, "Performance", "Fewer stutters while you play", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load");
+        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
+            float ms = static_cast<float>(Performance::LotLightingBudgetMs());
+            char value[16];
+            std::snprintf(value, sizeof value, "%d ms", Performance::LotLightingBudgetMs());
+            ApexUi::SliderOptions o;
+            o.tooltip = "The current lot's time per frame while moving; 3 ms is the default";
+            o.valueText = value;
+            o.leftLabel = "Smoother";
+            o.rightLabel = "Lights sooner";
+            o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
+            if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
+        }
+        FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures");
+        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void PerformancePage() {
+    ApexUi::PageTitle("Performance", "Fewer stutters while you play");
+    PerformanceCard();
+}
+
 // ---- System > Developer (development build) ----
 
 // A developer card: header, then body() (or "Off" while the feature is off)
@@ -578,6 +635,27 @@ void DevProfilerTab() {
     }
     ApexUi::EndCard();
     ImGui::PopID();
+    // Background precompile of Apex's own HLSL shaders (shader_cache.h): done, how long, any render-thread wait
+    ImGui::TextDisabled("Apex shaders: %s", ShaderCache::StatusText().c_str());
+    // Performance features: cache counters and checks, lot lighting budget state (docs/features/performance.md)
+    ApexPatch* cache = Find(Performance::kResourceCacheName);
+    ApexPatch* lots = Find(Performance::kLotLightingName);
+    ApexPatch* tex = Find(Performance::kFastTextureName);
+    ApexPatch* pack = Find(Performance::kFastCacheName);
+    const bool anyPerf = (cache && cache->IsEnabled()) || (lots && lots->IsEnabled()) || (tex && tex->IsEnabled()) || (pack && pack->IsEnabled());
+    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup cache, lot lighting while moving, texture and cache compression", anyPerf, [cache, lots, tex, pack] {
+        if (cache && cache->IsEnabled()) cache->RenderDeveloperUI();
+        else ImGui::TextDisabled("Resource lookup cache: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (lots && lots->IsEnabled()) lots->RenderDeveloperUI();
+        else ImGui::TextDisabled("Lot lighting while moving: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (tex && tex->IsEnabled()) tex->RenderDeveloperUI();
+        else ImGui::TextDisabled("Faster texture compression: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (pack && pack->IsEnabled()) pack->RenderDeveloperUI();
+        else ImGui::TextDisabled("Faster cache compression: off");
+    });
 }
 
 void DevDebugViewsTab() {
@@ -931,12 +1009,12 @@ void AboutTab() {
         ApexUi::CardHeader(IconId::Info, APEX_PRODUCT_NAME " " APEX_PRODUCT_TAGLINE, kVersionLine, nullptr, nullptr);
         ApexUi::CardDivider();
         ApexUi::GroupLabel("CREDITS");
-        CreditLine("Sims3SettingsSetter by sims3fiend: the mod whose design (a graphics hook with an in-game menu) " APEX_PRODUCT_NAME
-                   "'s framework is modeled on, rewritten from scratch.");
+        CreditLine("Sims3SettingsSetter by sims3fiend: " APEX_PRODUCT_NAME " began as a fork of it, and its framework is still based on its "
+                   "design. Huge thanks to sims3fiend! I recommend using both.");
         CreditLine("Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).");
         CreditLine("Third-party code: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA by Jorge Jimenez et al. (MIT-style, "
                    "see third_party/smaa/LICENSE.txt), Lucide icons (ISC, see third_party/lucide/LICENSE).");
-        CreditLine("Every-Story Ground Light uses a technique first shared by Arro.");
+        CreditLine("Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from Arro's Split-Level Lighting Fix.");
         CreditLine(APEX_PRODUCT_NAME " by @loinyx.");
     }
     ApexUi::EndCard();
@@ -983,6 +1061,7 @@ const SearchPart* SearchParts(int& count) {
         {"Depth Blur", PageDepthBlur, nullptr, 0, DepthBlurContent},
         {"Display \xE2\x80\xBA Window", PageDisplay, &g_displayTab, DisplayWindow, BorderlessCard},
         {"Display \xE2\x80\xBA Anti-aliasing", PageDisplay, &g_displayTab, DisplayAntiAliasing, AntiAliasingContent},
+        {"Performance", PagePerformance, nullptr, 0, PerformanceCard},
         {"Settings \xE2\x80\xBA Menu", PageSettings, &g_settingsTab, SettingsMenu, MenuTab},
     };
     count = IM_COUNTOF(kParts);
@@ -1239,6 +1318,7 @@ void Sidebar(bool collapsed) {
         {PageColor, IconId::Palette, "Color", "IMAGE"},
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageDisplay, IconId::Monitor, "Display", "SYSTEM"},
+        {PagePerformance, IconId::Gauge, "Performance", nullptr},
         {PageDeveloper, IconId::Wrench, "Developer", nullptr},
         {PageSettings, IconId::Settings, "Settings", nullptr},
     };
@@ -1285,6 +1365,7 @@ void DrawPage() {
     case PageColor: ColorPage(); break;
     case PageDepthBlur: DepthBlurPage(); break;
     case PageDisplay: DisplayPage(); break;
+    case PagePerformance: PerformancePage(); break;
     case PageDeveloper:
         if constexpr (!kPublicBuild) {
             ApexUi::SetChangeReporting(false); // developer switches are not part of the undoable state

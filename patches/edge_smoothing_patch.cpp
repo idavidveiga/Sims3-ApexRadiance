@@ -19,6 +19,7 @@
 #include "d3d9_hooks.h"
 #include "render_callbacks.h"
 #include "post_scene.h"
+#include "shader_cache.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
@@ -200,6 +201,49 @@ struct SmaaPreset {
 };
 constexpr SmaaPreset kSmaaPresets[4] = {{0.15f, "4", nullptr}, {0.1f, "8", nullptr}, {0.1f, "16", "8"}, {0.05f, "32", "16"}};
 
+// ---- every variant compiled at start-up on a background thread (framework/shader_cache.h) ----
+// The render thread only creates the shader objects from the kept bytecode (first use, and after ReleaseShaders).
+// Priority 0 = the default FXAA quality (Balanced) and SMAA preset (High).
+ShaderCache::Id AddFxaa(int q, const char* tag) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = kShaderSource;
+    d.sourceName = "edge_smoothing.hlsl";
+    d.entry = "FxaaPS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.macros = {{"STEPS", kQualities[q].steps}, {"STEP_SIZES", kQualities[q].sizes}};
+    d.priority = q == 1 ? 0 : 1;
+    return ShaderCache::Add(std::move(d));
+}
+ShaderCache::Id AddSmaa(int q, int pass, const char* tag) {
+    static const char* const kEntries[3] = {"SmaaEdgePS", "SmaaWeightPS", "SmaaBlendPS"};
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = std::string(kSmaaPrefix) + reinterpret_cast<const char*>(kSmaaHlsl) + kSmaaSuffix;
+    d.sourceName = "SMAA.hlsl";
+    d.entry = kEntries[pass];
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.macros.emplace_back("SMAA_MAX_SEARCH_STEPS", kSmaaPresets[q].steps);
+    if (kSmaaPresets[q].stepsDiag) {
+        d.macros.emplace_back("SMAA_MAX_SEARCH_STEPS_DIAG", kSmaaPresets[q].stepsDiag);
+        d.macros.emplace_back("SMAA_CORNER_ROUNDING", "25");
+    } else {
+        d.macros.emplace_back("SMAA_DISABLE_DIAG_DETECTION", "1");
+        d.macros.emplace_back("SMAA_DISABLE_CORNER_DETECTION", "1");
+    }
+    d.priority = q == 2 ? 0 : 1;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kFxaaPsId[3] = {AddFxaa(0, "EdgeSmoothing FXAA (Fast)"), AddFxaa(1, "EdgeSmoothing FXAA (Balanced)"), AddFxaa(2, "EdgeSmoothing FXAA (High)")};
+const ShaderCache::Id kSmaaPsId[4][3] = {
+    {AddSmaa(0, 0, "EdgeSmoothing SMAA edges (Low)"), AddSmaa(0, 1, "EdgeSmoothing SMAA weights (Low)"), AddSmaa(0, 2, "EdgeSmoothing SMAA blend (Low)")},
+    {AddSmaa(1, 0, "EdgeSmoothing SMAA edges (Medium)"), AddSmaa(1, 1, "EdgeSmoothing SMAA weights (Medium)"), AddSmaa(1, 2, "EdgeSmoothing SMAA blend (Medium)")},
+    {AddSmaa(2, 0, "EdgeSmoothing SMAA edges (High)"), AddSmaa(2, 1, "EdgeSmoothing SMAA weights (High)"), AddSmaa(2, 2, "EdgeSmoothing SMAA blend (High)")},
+    {AddSmaa(3, 0, "EdgeSmoothing SMAA edges (Ultra)"), AddSmaa(3, 1, "EdgeSmoothing SMAA weights (Ultra)"), AddSmaa(3, 2, "EdgeSmoothing SMAA blend (Ultra)")},
+};
+
 struct Params {
     int method = 1;           // 0 FXAA, 1 SMAA
     int quality = 1;          // FXAA: 0 fast, 1 balanced, 2 high
@@ -274,35 +318,25 @@ void ReleaseShaders() {
     }
 }
 
-// The three SMAA passes of one preset (compiled on first use)
+// The three SMAA passes of one preset (created on first use from the precompiled bytecode)
 bool SmaaShaders(IDirect3DDevice9* dev, int q) {
     q = std::clamp(q, 0, 3);
     if (g.smaaTried[q]) return g.smaaPs[q][0] && g.smaaPs[q][1] && g.smaaPs[q][2];
     g.smaaTried[q] = true;
-    const std::string source = std::string(kSmaaPrefix) + reinterpret_cast<const char*>(kSmaaHlsl) + kSmaaSuffix;
-    std::vector<D3D_SHADER_MACRO> macros = {{"SMAA_MAX_SEARCH_STEPS", kSmaaPresets[q].steps}};
-    if (kSmaaPresets[q].stepsDiag) {
-        macros.push_back({"SMAA_MAX_SEARCH_STEPS_DIAG", kSmaaPresets[q].stepsDiag});
-        macros.push_back({"SMAA_CORNER_ROUNDING", "25"});
-    } else {
-        macros.push_back({"SMAA_DISABLE_DIAG_DETECTION", "1"});
-        macros.push_back({"SMAA_DISABLE_CORNER_DETECTION", "1"});
-    }
-    macros.push_back({nullptr, nullptr});
     const char* entries[3] = {"SmaaEdgePS", "SmaaWeightPS", "SmaaBlendPS"};
     for (int i = 0; i < 3; i++) {
-        ID3DBlob *code = nullptr, *errors = nullptr;
-        const HRESULT hr = D3DCompile(source.data(), source.size(), "SMAA.hlsl", macros.data(), nullptr, entries[i], "ps_3_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-        if (FAILED(hr) || !code) {
-            const std::string msg = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "unknown error";
+        std::string msg;
+        switch (ShaderCache::CreatePixelShader(dev, kSmaaPsId[q][i], &g.smaaPs[q][i], &msg)) {
+        case ShaderCache::Result::Ok:
+            break;
+        case ShaderCache::Result::CompileFailed:
             LOG_ERROR(std::format("[EdgeSmoothing] SMAA {} (preset {}) failed to compile: {}", entries[i], q, msg));
             g.status = "ERROR: SMAA did not compile (see ApexRadiance_LOG.txt)";
-        } else if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &g.smaaPs[q][i]))) {
-            g.smaaPs[q][i] = nullptr;
+            break;
+        case ShaderCache::Result::CreateFailed:
             LOG_ERROR(std::format("[EdgeSmoothing] CreatePixelShader({}) failed", entries[i]));
+            break;
         }
-        if (errors) errors->Release();
-        if (code) code->Release();
     }
     return g.smaaPs[q][0] && g.smaaPs[q][1] && g.smaaPs[q][2];
 }
@@ -326,20 +360,18 @@ IDirect3DPixelShader9* ShaderFor(IDirect3DDevice9* dev, int q) {
     q = q < 0 ? 0 : q > 2 ? 2 : q;
     if (g.ps[q] || g.compileTried[q]) return g.ps[q];
     g.compileTried[q] = true;
-    const D3D_SHADER_MACRO macros[] = {{"STEPS", kQualities[q].steps}, {"STEP_SIZES", kQualities[q].sizes}, {nullptr, nullptr}};
-    ID3DBlob *code = nullptr, *errors = nullptr;
-    const HRESULT hr = D3DCompile(kShaderSource, std::strlen(kShaderSource), "edge_smoothing.hlsl", macros, nullptr, "FxaaPS", "ps_3_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
-                                  &code, &errors);
-    if (FAILED(hr) || !code) {
-        const std::string msg = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "unknown error";
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, kFxaaPsId[q], &g.ps[q], &msg)) { // precompiled at start-up (shader_cache.h)
+    case ShaderCache::Result::Ok:
+        break;
+    case ShaderCache::Result::CompileFailed:
         LOG_ERROR(std::format("[EdgeSmoothing] Shader (quality {}) failed to compile: {}", q, msg));
         g.status = "ERROR: the shader did not compile (see ApexRadiance_LOG.txt)";
-    } else if (FAILED(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &g.ps[q]))) {
-        g.ps[q] = nullptr;
+        break;
+    case ShaderCache::Result::CreateFailed:
         LOG_ERROR("[EdgeSmoothing] CreatePixelShader failed");
+        break;
     }
-    if (errors) errors->Release();
-    if (code) code->Release();
     return g.ps[q];
 }
 

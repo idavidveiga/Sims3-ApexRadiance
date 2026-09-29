@@ -28,6 +28,11 @@ bool WriteDWORD(uintptr_t address, DWORD value, std::vector<PatchLocation>* undo
 // Puts back every recorded write, newest first. On success the list is cleared; on failure it keeps what could not be
 // restored.
 bool RestoreAll(std::vector<PatchLocation>& undo);
+// Writes `count` (1..16) bytes of code while every other thread of the process is suspended and none of them is stopped
+// inside (address, address + count) (retried for up to about 100 ms). For rewriting a CALL that several threads may run:
+// no thread can fetch half of it. Nothing is allocated and no lock is taken while the threads are suspended. False when
+// the write did not happen (nothing changed).
+bool WriteCodeSuspended(uintptr_t address, const BYTE* bytes, size_t count);
 
 // rel32 of a JMP/CALL at `from` (instruction of `length` bytes) that lands on `to`.
 int32_t CalculateRelativeOffset(uintptr_t from, uintptr_t to, size_t length = 5);

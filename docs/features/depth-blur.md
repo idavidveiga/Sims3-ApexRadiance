@@ -87,6 +87,10 @@ target format; map view state and fade; "Show blur amount"; Far plane.
 - Shaders `FocusPS`, `PrepPS`, `CompositePS` and `BlurPS` for the current quality (`TAPS` macro), ps_3_0,
   `D3DCOMPILE_OPTIMIZATION_LEVEL3`, "depth_blur.hlsl". Failure -> "ERROR: the blur shaders did not compile (see
   ApexRadiance_LOG.txt)"; not retried every frame (`fixedTried` / `blurTried`).
+  **Precompiled (standalone, 2026-09-28):** the three fixed passes and all four `BlurPS` qualities are compiled at
+  start-up on a background thread (`framework/shader_cache.h`, see [architecture 4.6](../architecture.md#shader-precompile));
+  `EnsureShaders` / `BlurShader` only create the objects from that bytecode (`CreateShader`), also after `Uninstall`
+  released them and when the quality changes. Same compile inputs, so the same bytecode. Not tested in game yet.
 - 4 sets of timestamp queries (disjoint, begin, end, freq), as Edge Smoothing.
 - Substitution on, `ready = true`, INTZ bound. Log: `[DepthBlur] Resources ready (WxH, INTZ depth swapped in, blur
   targets A16B16G16R16F, focus target R32F)`.

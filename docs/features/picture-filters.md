@@ -133,6 +133,10 @@ current member value for every missing key, so a partial table keeps defaults fo
 | `ps` | - | ps_3_0 compiled at runtime with `D3DCompile` (`D3DCOMPILE_OPTIMIZATION_LEVEL3`, entry `HdrPS`) | - | the pass |
 | timestamp queries x4 sets | - | `TIMESTAMPDISJOINT`, `TIMESTAMP` x2, `TIMESTAMPFREQ` | - | GPU cost, smoothed `ms = 0.9 ms + 0.1 v` |
 
+**Standalone (`features/picture.cpp`, 2026-09-28):** `PicturePS` ("picture.hlsl", ps_3_0, O3) is compiled at start-up on
+a background thread (`framework/shader_cache.h`, [architecture 4.6](../architecture.md#shader-precompile));
+`InitResources` only creates the shader object from that bytecode. Not tested in game yet.
+
 All targets are `D3DPOOL_DEFAULT` render-target textures: released in `HdrOutput::BeforeReset` (`ReleaseResources`,
 called from `HookedReset` before the original Reset) and recreated lazily at the next pass. The compiled shader is kept
 across Resets (`compileTried` stays true; a compile failure is permanent until restart and logs "[HDR] Shader failed to

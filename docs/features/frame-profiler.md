@@ -9,7 +9,14 @@
 > present in both build flavours (the UI is not gated by `kPublicBuild`). **In the standalone it is DEV BUILD ONLY**
 > (decision 2026-09-28): compile it, its UI and the registry per-hook timing out of the public build. Off by default;
 > when off nothing is hooked.
-> Source: `frame_profiler.cpp` (~3500 lines), `frame_profiler.h`, instrumentation in `d3d9_hook_registry.cpp`.
+> Source: `frame_profiler.cpp` (~4400 lines), `frame_profiler.h`, instrumentation in `d3d9_hook_registry.cpp`.
+>
+> **Standalone additions (2026-09-28, anti-stutter plan `research\perf2\plan.md` section 8; written, not compiled or
+> tested in game yet):** six **counters** (resource lookups, scene pending nodes, RefPack compression, DXT encoding,
+> object lookups by ID, lot room solves; see [Counters](#counters-2026-09-28)), a **dominant cause** per hitch (the
+> `dominant:` line, same rule as `research\perf2\tools\dom.pl`), the option **"Time the Mutex::Lock hook"** (default
+> off), two **measurement presets** (timing run / sampling run, plan section 9.2), and the remote-call job keys fixed.
+> The output file is `ApexRadiance_Hitches.txt` in `Documents\Electronic Arts\The Sims 3\Apex Radiance\`.
 
 See also: [engine main loop and services](../engine/main-loop-and-services.md) (the addresses this tool times and the
 thread model), [removed features](../removed-features.md) (Service Frame Budget, Smooth Streaming and Script GC
@@ -45,9 +52,17 @@ sliders save on `IsItemDeactivatedAfterEdit`.
 | Sampling rate (Advanced > Sampling) | `sample_hz` | int | 2000 | 250 .. 4000 Hz | per sampled thread |
 | Time lot object building (this session) (Advanced) | not saved | bool | false | | attaches / detaches `Lot::UpdateObjectSceneNode` 0x00ABFAC0 live |
 | Per-hook registry timing (Advanced) | not saved | bool | false | | needs the registry instrumentation (present for DIP / DP only) |
+| Time the Mutex::Lock hook (Advanced) | `time_mutex_lock` | bool | **false** | | standalone, 2026-09-28: attaches / detaches the hand-made hook on `Mutex::Lock` 0x004E16F0 live; off = "Mutex wait" stays empty. The resource lookup takes that lock ~580 times per full scan, so the hook's two clock reads per call inflated exactly the lookup path (plan caveat 1b) |
 
 Buttons (shown while on or once data exists): **Clear** (forgets frames, hitches, session tables; the file keeps what
 was written) and **Save report now** (appends a full report, see "Output file").
+
+**Measurement preset** buttons (always shown; standalone, 2026-09-28), for the 60-second protocol of plan section 9:
+- **Timing run** (run type A): hitch multiplier 2.0, floor 8 ms, count state calls on, write the file on, sampling off,
+  Mutex::Lock not timed, per-hook registry timing and lot object building off; turns the profiler on.
+- **Sampling run** (run type B): the same plus sampling of the render and simulation threads at 2000 Hz.
+Both save the settings and log `[FrameProfiler] Measurement preset: ...`. They do not press Clear: the protocol presses
+Clear right before the run and Save report now right after it.
 
 ## How it works
 
@@ -124,6 +139,18 @@ callee cleanup, ECX/EDX passed through, EDX:EAX preserved, float args passed as 
 | 25 | App state | 0x00EC6C30 | thiscall(0) | Detours | App state update | render |
 | 26 | Game clock tick | 0x005943F0 | thiscall(0) | Detours | Game clock tick | render |
 | 27 | Lot impostor pump | 0x00AD97E0 | thiscall(job), ret 4 | Detours | Lot impostor pump | render (see Open items) |
+| 28 | Resource lookup | 0x004AFFC0 | thiscall(2), ret 8 | vtable slots 0x00FB2DE0 / 0x00FFE290 | Resource lookup (counter) | any |
+| 29 | Scene pending nodes | CALL 0x006EBC49 -> 0x006E4130 | thiscall(0) | call site, all threads checked | Scene pending nodes (counter) | render (Scene::BeginFrame) |
+| 30 | RefPack compress | 0x004EC200 | thiscall(5), ret 0x14 | vtable slot 0x00FB901C, outer layer of `SlotChain` (site RefPackCompress; the fast compressor is layer 2) | RefPack compress (counter) | any |
+| 31 | DXT1 encode | 0x006152F0 | cdecl(2) | entry JMP, outer layer of `EntryChain` (the fast DXT encoder is layer 1) | DXT encode (counter) | any |
+| 32 | DXT5 encode | 0x006154B0 | cdecl(2) | entry JMP, outer layer of `EntryChain` | DXT encode (counter) | any |
+| 33 | Object lookup by ID | 0x00C62D40 | thiscall(3), ret 0xC | hand-made, safeLen 8 | Object lookup by ID (counter) | any (render / simulation) |
+| 34 | Lot room solve | CALL 0x00ADB9AD -> 0x006A8BA0 | thiscall(2), ret 8 | call site, all threads checked | Lot room solve (counter) | render (lot lighting update) |
+
+Targets 28-34 (standalone, 2026-09-28) take their addresses from `framework/game_addresses.h` (`TargetInfo::addrId`,
+`calleeId`, `slotId` / `slots`); see [Counters](#counters-2026-09-28). Target 17 (Mutex::Lock) is attached only with the
+option "Time the Mutex::Lock hook". With the defaults the log reads `[FrameProfiler] Timing 33 of 33 game functions`
+(35 targets; lot object building and Mutex::Lock off by option are not counted).
 
 Full byte patterns are in `kTargets` (they are the ground truth; the header comment of `frame_profiler.cpp` lists the
 first bytes, callers and the per-target reasoning). The header states every pattern was checked against
@@ -200,6 +227,66 @@ detoured by Frame Budget (Detours patches code, not vtables) keep their names.
   booked by `RecordBlocked` as a leaf under the running timed call, keyed by the caller's return address; a semaphore
   wait directly inside WaitForJob is not double counted.
 - File read / flush / RefPack read: render thread only (other threads pass straight through); bytes read are summed.
+- Remote-call job keys (standalone, 2026-09-28): the bug above is fixed. `ResolveRemoteCallKeysLocked` (at attach, render
+  thread) takes `RemoteCallJob` 0x007D9840 (entry bytes `83 7C 24 0C 04 56 57 75` checked), `RemoteMethodVtable`
+  0x010650C4 and `RemoteMethodVtable2` 0x010650D8 from the game-address table. The second vtable (stored at 0x00ABEA93,
+  a method with one byte argument; its vtable +0x10 = 0x00ABD3E0 calls `[obj+0x10]` too) was not known before. Remote
+  calls now print as `remote call -> XXXXXXXX` (the method, e.g. 0x00AC1130 AddLotObjectsToScene) instead of
+  `job 007D9840`; the perl tools accept both.
+
+### Counters (2026-09-28)
+
+Anti-stutter plan section 8 (`research\perf2\plan.md`). Six categories at the end of `kCats` (`kFirstCounterCat` =
+`kResLookup`, `kNC` = 6), timed on every thread they run on with the same attribution machinery (self / inclusive, thread
+buckets). For each: per frame, calls and inclusive ms per bucket (render / simulation / other), the longest single call
+(render thread / other threads; `g_cMax`, atomic max, taken at the frame boundary), and an extra count (per-thread
+`ThreadSlot::extra[]`, snapshotted as deltas like the times). Addresses come from the game-address table
+(`framework/game_addresses.h`, ids `ResFindProvider` .. `RoomSolve`: fixed on Steam 1.67.2, signature elsewhere; all
+checked with `research\port169\sigcheck.pl`: 116 of 116 ok); the profiler checks the bytes at that address before
+hooking. Conventions verified in `research\engine_map\full.asm`:
+
+| Counter (category) | Function | Convention (verified) | Attach | Extra count |
+|---|---|---|---|---|
+| Resource lookup | `ResourceMgr::FindProvider` 0x004AFFC0 | thiscall(key*, cookie*), ret 8 (5 pushes; key `[esp+18h]`, cookie out `[esp+20h]` after them); returns the provider or 0; the cookie is the provider's priority (the list's second dword, [performance.md](performance.md)) | **vtable slots**: 0x00FB2DE0 (base vtable 0x00FB2DA0 +0x40) and 0x00FFE290 (derived 0x00FFE250 +0x40), the only references (no direct CALL; slot +0x44 0x004AFDA0 calls through +0x40). Since 2026-09-29 through `framework/slot_chain.h`: the profiler is the **outer layer**, the resource lookup cache (when on) the inner one, whichever installs first; the hook calls `SlotChain::Next` | packages probed (index of the returned provider in `[this+0x30, this+0x34)`, 8-byte entries, + 1; all of them on a miss; for an answer from the cache: the packages the cache asked, from `ResourceCache::TakeLookupNote`), misses, **from cache** (`kXCacheHits`, answers from the resource lookup cache) |
+| Scene pending nodes | 0x006E4130 (pending-node drain) | thiscall(), ret; zeroes `[this+0x18]` and adds 1 per node (0x006E41EF) | **call site** 0x006EBC49 in `Scene::BeginFrame` (the other 5 callers are not per frame), written with every other thread suspended | nodes = `[this+0x18]` read after the call |
+| RefPack compress | RefPack stream write 0x004EC200 | **thiscall**(src, size, dst, capacity, flags), ret 0x14 (uses `[ecx+4]`, the allocator; the plan said stdcall); returns the compressed size. `dst == 0 && flags & 1` = size bound only, passed through untimed; `dst == 0` otherwise = a counting run (compresses without writing, timed) | **vtable slot** 0x00FB901C (stream vtable 0x00FB9018 +4), its only reference; FUN_004EC0A0 / 004EBB90 / 004EB750 have no other caller. Since 2026-09-29 through `framework/slot_chain.h` (site RefPackCompress): the profiler is the outer layer, Faster Cache Compression (`features/fast_refpack.h`) the inner one; the hook calls `SlotChain::Next` | bytes in (size), bytes out (return value) |
+| DXT encode | DXT1 0x006152F0, DXT5 0x006154B0 | cdecl(dst*, src*) (callers `add esp,8`); dst = {pixels, width +4, height +8, pitch +0xC}; src = {pixels, pitch +0xC, format +0x10}; both return eax = width & ~3 | 8 + 7 callers on several threads. Since 2026-09-29 through `framework/entry_chain.h`: the prologue `55 8B EC 83 E4 F0` moves to a trampoline and a 5-byte JMP to the outermost layer is written with every other thread suspended (`MemPatch::WriteCodeSuspended`); the profiler is layer 0, Faster Texture Compression (`features/fast_dxt.h`) layer 1; `DxtEncode` calls `EntryChain::Next`. (Before: a hand-made hook, safeLen 6.) | pixels (width x height) |
+| Object lookup by ID | 0x00C62D40 | thiscall(idLo, idHi, flag), ret 0xC (ecx passed on to 0x00C60D30) | **hand-made** (233 callers: script natives on the simulation thread, lot lighting, camera), safeLen 8 (`8B 44 24 0C 8B 54 24 08`) | - (calls per bucket = render vs simulation) |
+| Lot room solve | 0x006A8BA0 | thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return; ecx = one **level object** of the lot (the deque at manager+0x24..0x40) | **call site** 0x00ADB9AD in the lot lighting update 0x00ADB8F0 (its only caller), written with every other thread suspended | calls = **lot levels updated** (corrected 2026-09-29; it said "rooms relit"); the hitch line adds the lot lighting update's inclusive ms. With Lot Lighting While Moving on, the budget argument is the scaled one ([performance.md](performance.md)) |
+
+- No branch in `.text` lands inside a replaced prologue or CALL (checked in full.asm). S3SS and the other installed ASIs
+  touch none of these sites (plan section 6). All the entries are 8-byte aligned (hand-made hooks need it).
+- The two counter call sites are written by `WriteCallSuspended` (all other threads suspended, none executing inside the
+  5 bytes; the same method as `AttachSafe`), because the lot lighting update is also reached from the lot impostor
+  builder path. The older call-site targets keep the plain tracked write.
+- Vtable-slot targets: `AttachSlots` requires every slot to hold the function (else "replaced by another module?") and
+  swaps them with `_InterlockedCompareExchange` while the page is `PAGE_READWRITE`; `DetachSlots` puts back only a slot
+  that still holds the hook. Exception (2026-09-29): the Resource lookup target (`T_ResLookup`) goes through
+  `SlotChain::Install / Remove` (Site FindProvider, Layer FrameProfiler), because the resource lookup cache wraps the
+  same slots; its Hooks-table status says "outer layer of the slot chain" (+ "; the resource lookup cache is inside").
+  `g_orig[T_ResLookup]` is only displayed; `Hook_FindProvider` calls `SlotChain::Next`, and reads
+  `ResourceCache::TakeLookupNote()` after every call (it is cleared per call). The RefPack compress target
+  (`T_RefPackCompress`) does the same on site RefPackCompress ("; the fast compressor is inside").
+- Entry-chain targets (2026-09-29): the DXT1 / DXT5 encoders (`T_DxtEncode1/5`) attach through
+  `EntryChain::Install / Remove` (Layer FrameProfiler) in `AttachTarget` / `DetachTarget`, before the `safeLen` branch
+  (their `safeLen` 6 is only informational now). `ResolveTarget` skips its pattern check for them (the entry may hold
+  the fast encoder's JMP; the chain checks the prologue itself). Hooks-table status: "Timed at the entry, outer layer of
+  the entry chain (...; JMP written with all threads checked[; the fast encoder is inside])".
+- Profiler on at start (any build): the table is scanned after the first Present + 1 s (`GameAddr::Scanned()`), so these
+  targets show "Waiting for the game-address scan" and are attached at the first frame boundary after it
+  (`AttachWaitingLocked`; the remote-call keys too). Waiting on Steam as well keeps the scan's self-check from seeing the
+  profiler's own hooks (hooked entries and swapped slots would log as "DIFFERS"). When the scan never runs (the old
+  combined build is loaded: Apex idles) they stay waiting.
+- Nesting: the lookups mostly run inside the pending-node drain (materials), jobs (async-load finalize 0x007297C0) and
+  services (CAS); object lookups inside room solves. Self times therefore move from those parents to the counters; the
+  dominant cause (below) is computed on self times, so it names the counter when the counter is the real cost.
+- Overhead: two clock reads + a TLS read per call; the lookup adds the probe count (a scan of up to ~290 8-byte entries on
+  a hit, ~0.1-0.3 us against a ~50 us lookup; read without the manager's lock, SEH-guarded, a statistic).
+
+**Dominant cause** (`ComputeDominant`, hitch frames): the largest single item on the render thread, exactly as
+`dom.pl` picks it: every render self category except "Services (self)" / "Jobs (self)", each service's self time and each
+job's self time of the frame (the per-hitch top lists), and Unattributed. Also the **top counter**: the counter with the
+largest render-thread self time (>= 0.05 ms), or none.
 
 ### D3D9 counters and mod hook time
 - `OnDrawStart` (DIP / DP start hook): counts DIP / DP; a draw while `open[kEndScene] > 0` is an "end-of-frame draw"
@@ -282,6 +369,34 @@ every 1000 ms or on `SetEvent(g_wake)`; nothing is written or flushed on the ren
    200 hitches, keyed session tables (services / jobs / waits: ms per hitch vs per other frame), sim-loop services, and
    the sampling tables. With the profiler off the report is written by a detached one-shot thread.
 
+Standalone additions (2026-09-28) to every hitch block, after the `lots promoted` line (existing lines unchanged, so
+`agg.pl`, `dom.pl`, `cond2.pl` and `smp.pl` still read older and newer files alike):
+```
+   counters (calls x ms incl. on the render / simulation / other threads): Resource lookup 812 x 9.12 (max 0.31) / 12 x 0.20 / 400 x 3.10 (max 1.20), packages per lookup 245.3, misses 40; Scene pending nodes 1 x 14.13 (max 14.13) / 0 x 0.00 / 0 x 0.00, nodes 120; Lot room solve 3 x 12.10 (max 5.20) / 0 x 0.00 / 0 x 0.00, lot lighting update 12.40 ms incl.
+   dominant: Scene pending nodes 5.01 ms (21% of the frame) | top counter: Resource lookup 9.12 ms self (9.12 ms incl.)
+```
+(illustrative values). Only counters with calls in the frame are listed, `; ` between them; `(max ..)` = longest single
+call, after the render group and after the other-threads group (simulation + other). Extras: RefPack compress
+`, in X KB, out Y KB`; DXT encode `, pixels X M`; Resource lookup `, from cache N` after `misses` when the resource
+lookup cache answered any call of the frame (2026-09-29; a comma, so `agg.pl`, which splits counters on "; ", is
+unaffected). The dominant key is written as `dom.pl` names it: a category name,
+`svc:<service>`, `job:<job name>` (`job:job 007297C0`, `job:remote call -> 00AC1130`) or `Unattributed`; `top counter:
+none` when no counter reached 0.05 ms of render self time.
+
+The report adds "Counters since Clear" (per bucket calls x ms, longest calls, render-thread per-frame averages, extras),
+"Counters per hitch" (the hitch ring), "Apex shaders: ..." (the shader precompile status, see
+[architecture](../architecture.md#shader-precompile)), "Resource lookup cache: ..." and "Lot lighting while moving: ..."
+(the two performance features' status lines, [performance.md](performance.md)) and "Dominant cause of the last hitches" (per camera state and
+frame-time bucket < 16 / 16-25 / 25-50 / >= 50 ms: share and average ms of each dominant item, then the top-counter
+distribution; window in foreground only, like `dom.pl`).
+
+Analysis tools (`research\perf2\tools\`, updated 2026-09-28): `dom.pl [--since "YYYY-MM-DD HH:MM"] [--computed] FILE`
+uses the `dominant:` line when present (else computes it the old way; `--computed` forces that), prints the top-counter
+distribution per bucket, and reads remote-call job names; the default `--since` (13:14 of 28/09) keeps every Apex Radiance
+session. `agg.pl` also prints per-hitch counter averages (`C:`) and dominant shares (`D:`). `cond2.pl` accepts
+`dom:<dominant key>` and `job:remote call -> X`. Checked on the combined build's 51 MB `S3SS_Hitches.txt`: the same
+numbers as plan section 2.1 (dom.pl) and 2.2 (cond2.pl `Scene::BeginFrame 8`: 772 hitches).
+
 `GcCallSiteText` inspects 0x00D819AA (Steam, after `MatchAt(0x00D819A0, "68 ?? ?? ?? ?? A3")`; non-Steam
 `ScanUnique("68 ?? ?? ?? ?? A3 ?? ?? ?? ?? ?? ?? ?? ?? ?? A1 ?? ?? ?? ?? 83 C4 04 3B 05") + 10`): `90` = removed by
 Chunky Patch "Disable GC_try_to_collect", `E8` to 0x00E4A050 = direct, `E8` elsewhere = redirected (e.g. Script GC
@@ -296,9 +411,14 @@ Scheduler; still timed because the redirected code calls the detoured entry). `L
   moving share and hitch rate moving vs still.
 - "Last hitches" (default open): table Category | Render ms | Other threads ms | Worst ms | Calls (per hitch averages
   over the ring, categories above 0.005 ms/hitch, sorted), Unattributed row, textures / shaders created per hitch, lots
-  promoted per hitch. "Recent hitches": last 25, one line each with the top 3 categories.
-- **Advanced** (tree node): multiplier, floor, count state calls, write file, time lot object building, per-hook registry
-  timing; "Services, jobs and waits" (four tree nodes: services render thread with self column, jobs, waits, services
+  promoted per hitch; sub-node "Dominant causes" (the report's summary, standalone). "Recent hitches": last 25, one line
+  each with the top 3 categories and (standalone) the dominant cause.
+- "Counters" (standalone, default open): Counter | Render / frame | Simulation / frame | Other / frame (calls x ms incl.,
+  averages of the last 60 frames) | Per hitch (render, incl. and self) | Longest call (since Clear, render / other) | Per
+  frame (packages per lookup, misses and % from cache, nodes, KB in -> out, Mpx, lot levels). A warning line while Mutex::Lock is timed.
+- Measurement preset buttons (see Settings).
+- **Advanced** (tree node): multiplier, floor, count state calls, write file, time lot object building, time the
+  Mutex::Lock hook (standalone), per-hook registry timing; "Services, jobs and waits" (four tree nodes: services render thread with self column, jobs, waits, services
   on other threads); "Sampling" (checkboxes, rate slider, measured rate, us paused per sample, estimated % of a sampled
   thread, dropped, thread ids, per-thread class shares and three tables); "Hooks" table (Function | Address |
   Calls R / S / O | Status), GC call site, frame limiter, clock, the not-measurable list, file written / dropped counts;
@@ -320,6 +440,10 @@ Scheduler; still timed because the redirected code calls the detoured entry). `L
 | | `OnPresentStart`, `OnDrawStart`, `EndDispatch`, `RegisterD3DHooks` | registry hooks |
 | | `StartWriter`, `StopWriter`, `WriterMain`, `FormatHitch`, `BuildReport`, `SaveReport`, `KeyedReport`, `SamplingReport` | output |
 | | `RenderLive`, `RenderHitches`, `RenderKeyed`, `RenderSampling`, `RenderAdvanced` | UI |
+| | `CounterScope`, `NoteMax`, `AddX`, `PackagesProbed`, `Hook_FindProvider`, `Hook_SceneDrain`, `Hook_RefPackCompress`, `DxtEncode` / `Hook_DxtEncode1` / `Hook_DxtEncode5`, `Hook_ObjectById`, `Hook_RoomSolve` | counters (standalone) |
+| | `AttachSlots`, `DetachSlots`, `SwapSlot`, `WriteCallSuspended`, `AttachWaitingLocked`, `UpdateSummaryLocked`, `ApplyMutexOptionLocked`, `ResolveRemoteCallKeysLocked` | attach (standalone) |
+| | `CounterFrame`, `ComputeDominant`, `DomName`, `DominantText`, `FormatCounters`, `CounterExtraText`, `CounterReport`, `DominantSummaryLines`, `RenderCounters`, `ApplyPreset` | counters output / UI (standalone) |
+| `framework/game_addresses.*` | ids `ResFindProvider` .. `RemoteMethodVtable2`, kind `K::SlotsOf` | the counters' addresses (standalone) |
 | `d3d9_hook_registry.cpp` | `Internal::ExecuteDrawIndexedPrimitiveHooks`, `ExecuteDrawPrimitiveHooks` | per-hook-name timing |
 | `config/config_store.cpp` | `SaveAll`, `LoadAll` | `[qol.frame_profiler]` |
 | `gui.cpp` | Apex tab, "Performance" | collapsing header |
@@ -347,6 +471,13 @@ All addresses Steam 1.67.2 (`TS3W.exe`, image base 0x00400000, no ASLR). Pattern
 | 0x006EBB70, 0x006E8810, 0x009DE140, 0x00EC6C30, 0x005943F0, 0x00AD97E0 | main-loop steps | see [main loop](../engine/main-loop-and-services.md) |
 | lot +0xC1 / +0xC9 | detailed-view flag / bulldozing flag (promotion counter condition) | header comment; code in `Hook_LotDetailRequest` |
 | WorldManager +0x3A0 | camera point stored by 0x00C6C290 | header comment; `gc_scheduler_patch.cpp` (movaps at 0x00C6C2B3) |
+| 0x004AFFC0; slots 0x00FB2DE0, 0x00FFE290 | ResourceMgr::FindProvider and its two vtable slots | `GameAddr` `ResFindProvider` (Sig), `ResFindProviderSlot0/1` (`K::SlotsOf`: every aligned dword equal to it in the read-only data sections, exactly 2); full.asm, datarefs.tsv |
+| 0x004EC200; slot 0x00FB901C | RefPack stream write | `RefPackCompress`, `RefPackCompressSlot` (SlotsOf, exactly 1) |
+| 0x006EBC49 -> 0x006E4130 | BeginFrame's CALL of the pending-node drain | `SceneDrainCall` (Sig), `SceneDrain` (Target, fallback Sig) |
+| 0x006152F0 / 0x006154B0 | DXT1 / DXT5 encoders | `DxtEncode1`, `DxtEncode5` (Sig) |
+| 0x00C62D40 | object lookup by ID | `ObjectById` (Sig) |
+| 0x00ADB9AD -> 0x006A8BA0 | lot lighting update's CALL of the room solve | `RoomSolveCall` (Sig), `RoomSolve` (Target, fallback Sig) |
+| 0x007D9840, 0x010650C4, 0x010650D8 | remote-call job function, PostRemoteMethodCall vtables (stored at 0x00ABEA0A / 0x00ABEA93) | `RemoteCallJob` (Sig), `RemoteMethodVtable`, `RemoteMethodVtable2` (Sig, dword) |
 
 Runtime verification: status strings in Advanced > Hooks and the "Timed functions:" block of each session in
 `S3SS_Hitches.txt` ("Timed (pattern matches at the Steam 1.67.2 address[; hand-made hook, all threads checked])",
@@ -409,6 +540,11 @@ None.
 - Camera "moving" needs 0x00C6C290 to run or PostScene to be active.
 - The writer drops hitches when more than 256 are queued within a writer period.
 - File grows without bound (the user's file reached 51 MB over 11 sessions).
+- Counters (standalone): "packages per lookup" reads the provider list without the manager's lock (a statistic); the
+  two DXT encoders share one category (the Hooks table shows the same calls on both rows); the scene pending nodes and
+  the room solves are counted only from their per-frame CALLs (BeginFrame, lot lighting update); the longest call of
+  the other threads mixes simulation and other threads. Not added from plan section 8: the async-load request counter
+  (slot 0x00FFD3BC) and cache-eviction counting.
 
 Overhead when on (from the code and header): per timed call two `RDTSC` + a few stores; per draw two registry hooks
 (a few ns each); per Mutex/Semaphore call two clock reads; per frame one `SnapshotThreads` over used slots x 31
@@ -420,7 +556,15 @@ hooks (mod)" 10.3 s total = ~0.2 ms/frame (all modules, profiler included), "D3D
 - **Do not detour entries that other modules verify** (0x006A3EC0, 0x00AEA680, 0x00C845C0, 0x00ABFAC0, 0x00AC1130,
   0x00C6D570): they refuse to install or silently disable features. Use call sites or callers.
 - **Do not use Detours for functions many threads call**: only the calling thread is updated, and suspending threads
-  then allocating (DetourUpdateThread / commit) can deadlock on the heap lock. Use `AttachSafe`.
+  then allocating (DetourUpdateThread / commit) can deadlock on the heap lock. Use `AttachSafe` (or, for a function
+  reached only through vtables, swap the slots: `AttachSlots`). This is why the 2026-09-28 counters do not use Detours /
+  `DetourBatch` for FindProvider, the RefPack write, the DXT encoders or the object lookup.
+- **Do not hook a site another Apex module also wraps outside its chain**: FindProvider and the RefPack write go
+  through `SlotChain`, the DXT encoders through `EntryChain` (the fast compressor / encoder of
+  [performance.md](performance.md) are the inner layers). A direct slot swap or entry write would cut the other layer
+  out (or be refused by its expected-value check).
+- **The Mutex::Lock hook distorts the resource lookup** (plan caveat 1b: ~580 lock calls per full scan, two clock reads
+  each, and they show up in the samples as this ASI). Keep "Time the Mutex::Lock hook" off for lookup measurements.
 - **Attach on the render thread at a frame boundary**, never from the UI click directly (call-site writes would race
   the render thread; startup patches must install first). `SetEnabled` holds `g_ctrlMutex` while it may wait for the
   registry mutex, hence `try_lock` in `OnPresentStart`.
@@ -443,7 +587,11 @@ hooks (mod)" 10.3 s total = ~0.2 ms/frame (all modules, profiler included), "D3D
 
 1. Apex tab > Performance > Frame Profiler > Enable. Status line changes from "Waiting for frames..." to the live line.
    S3SS_LOG.txt: `[FrameProfiler] On`, then `[FrameProfiler] Timing 27 of 27 game functions` (28 targets, the
-   optional one excluded). Any skipped target is logged as a warning with its reason.
+   optional one excluded). Any skipped target is logged as a warning with its reason. Standalone (2026-09-28):
+   `ApexRadiance_LOG.txt`, `Timing 33 of 33 game functions` with the defaults (35 targets; Mutex::Lock and lot object
+   building off by option), 34 of 34 with "Time the Mutex::Lock hook" on. With the profiler on from start-up the first
+   line is `Timing 26 of 33 game functions (7 waiting for the game-address scan)`, then 33 of 33 about a second later.
+   For the plan's 60-second protocol use the Measurement preset buttons, then Clear right before the run.
 2. Advanced > Hooks: every row "Timed (...)"; Calls R / S / O increase; "GC call site" and "Frame limiter" lines show
    which patches are active.
 3. Walk or pan the camera across the neighbourhood; hitches appear under "Last hitches". Save report now, then read
@@ -476,7 +624,10 @@ ms, 6.86% hitches):
   `0x009D96D0` (0x01051C78), `0x00687C80` (0x00FF0070); simulation loop `0x00EC5340` (0x010F3D00, 16 s self in 13:19),
   `0x007F1530` (0x0101E758, 11 s), `0x00869000` (0x01029060, 3 s), `0x0076B1A0` (0x01007B74, Scripting service,
   2.4 s). Name them in `kServiceNames` once identified.
-- Set `g_remoteCallJobFn` / `g_remoteMethodVtable` (never assigned today) so remote calls are keyed by method.
+- ~~Set `g_remoteCallJobFn` / `g_remoteMethodVtable` so remote calls are keyed by method~~: done in the standalone
+  (2026-09-28, both PostRemoteMethodCall vtables), not yet seen in game.
+- Counters (2026-09-28): verify in game that `Timing 33 of 33` is logged, every counter row fills in, and the Hooks table
+  shows "Timed through 2 vtable slots" / "Timed at the CALL ... written with all threads checked" / "hand-made hook".
 - Instrument Present / Set* executors for per-hook timing if needed.
 - Standalone: rename output file (`ApexRadiance_Hitches.txt`), add "owned by S3SS" in the Hooks table, treat S3SS's module as
   its own sampler class (PLANO-SEPARACAO.md).
