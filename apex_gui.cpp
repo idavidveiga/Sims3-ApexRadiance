@@ -479,6 +479,12 @@ void PictureHeaderCard() {
             p.compare = compare;
             Picture::Get().SetParams(p, switched);
         }
+        // On but not being applied (and why): also written to the log
+        const std::string problem = Picture::Get().Problem(true);
+        if (!problem.empty()) {
+            ApexUi::Gap(ApexUi::kSpace2);
+            ApexUi::IconNote(IconId::TriangleAlert, problem.c_str(), VioletTheme::kWarning);
+        }
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -1756,7 +1762,9 @@ void MainWindow() {
 
     // The last change of the frame becomes the undo toast (with the state from before the click)
     std::string change, changeEnglish;
-    if (ApexUi::TakeChange(change, &changeEnglish) && g_haveClickSnapshot) {
+    const bool changed = ApexUi::TakeChange(change, &changeEnglish);
+    if (changed) LOG_INFO("[Menu] Changed: " + changeEnglish); // with the Undo lines, the log shows what the player did
+    if (changed && g_haveClickSnapshot) {
         ShowToast(change, g_clickSnapshot, changeEnglish);
         g_haveClickSnapshot = false; // the next change takes a new snapshot at its own click
     }

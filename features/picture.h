@@ -91,6 +91,10 @@ class Picture {
     void RenderUI(int tab);
     // Developer page > Debug views: the 8-bit / dither note and the GPU cost
     void RenderDeveloperUI();
+    // Picture is on but has not been applied for 2 s: why (empty when it runs, is off, or was just turned on).
+    // translated: in the menu's language (the Color card's note); else English (the log). The first time a reason shows
+    // it is also logged ([Picture] On, but not applied ...).
+    std::string Problem(bool translated);
 
   private:
     Picture() = default;
@@ -101,4 +105,12 @@ class Picture {
     PictureParams m_p;
     float m_gpuMs = -1.0f;
     std::atomic<unsigned long long> m_holdUntil{0}; // GetTickCount64 until which the pass is skipped (hold to compare)
+    // Diagnostics (Problem): when it was turned on, when the game's EndScene last reached it, when the pass last ran,
+    // why it last returned early (Skip in picture.cpp), what the resource creation failed on
+    std::atomic<unsigned long long> m_enabledAt{0}, m_lastEndScene{0}, m_lastApplied{0};
+    std::atomic<int> m_skip{0};
+    std::string m_resourceError; // guarded by m_mutex
+    std::string m_loggedProblem;          // render thread
+    bool m_appliedLogged = false;         // render thread
+    std::atomic<bool> m_resetDiag{false}; // turned on or off (any thread): the render thread starts the diagnostics over
 };

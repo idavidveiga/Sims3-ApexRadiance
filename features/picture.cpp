@@ -23,6 +23,7 @@
 #include "depth_share.h"
 #include "shader_cache.h"
 #include "imgui.h"
+#include "ui/i18n.h"
 #include "ui/widgets.h"
 #include <d3dcompiler.h>
 #include <toml++/toml.hpp>
@@ -38,6 +39,10 @@
 namespace {
 
 constexpr const char* kHookName = "Picture";
+
+// Why the pass last returned early (Picture::Problem)
+enum Skip : int { kSkipNone, kSkipNoFrame, kSkipNoBackBuffer, kSkipNotBackBuffer, kSkipResources };
+constexpr unsigned long long kProblemAfterMs = 2000; // on, but not applied for this long: a problem
 // After PostScene (Priority::First = 0), before Early (25) and every feature that may skip a draw (Normal = 50).
 constexpr auto kDrawPriority = static_cast<D3D9Hooks::Priority>(10);
 constexpr int kMinSceneDraws = 20; // depth-tested back buffer draws before the UI can start (as PostScene)
@@ -424,14 +429,21 @@ void Picture::BeforeReset() { ReleaseResources(); }
 
 bool Picture::InitResources(IDirect3DDevice9* dev) {
     IDirect3DSurface9* bb = nullptr;
-    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return false;
+    auto fail = [this](const std::string& why) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_resourceError = why;
+        return false;
+    };
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return fail("the back buffer could not be read");
     D3DSURFACE_DESC bd{};
     bb->GetDesc(&bd);
     bb->Release();
     gpu.width = bd.Width;
     gpu.height = bd.Height;
+    HRESULT lastHr = S_OK;
     auto make = [&](UINT w, UINT h, IDirect3DTexture9** t, IDirect3DSurface9** s) {
-        return SUCCEEDED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, bd.Format, D3DPOOL_DEFAULT, t, nullptr)) && *t && SUCCEEDED((*t)->GetSurfaceLevel(0, s)) && *s;
+        lastHr = dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, bd.Format, D3DPOOL_DEFAULT, t, nullptr);
+        return SUCCEEDED(lastHr) && *t && SUCCEEDED((*t)->GetSurfaceLevel(0, s)) && *s;
     };
     bool ok = make(bd.Width, bd.Height, &gpu.frameTex, &gpu.frameSurf) && make(bd.Width, bd.Height, &gpu.sceneTex, &gpu.sceneSurf);
     UINT cw = bd.Width, ch = bd.Height;
@@ -442,7 +454,8 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
     }
     if (!ok) {
         ReleaseResources();
-        return false;
+        return fail(std::format("its {}x{} render targets in the back buffer's format {} could not be created (0x{:08X})", bd.Width, bd.Height, static_cast<int>(bd.Format),
+                                static_cast<unsigned>(lastHr)));
     }
     gpu.baseW = cw;
     gpu.baseH = ch;
@@ -452,7 +465,7 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
     }
     if (!gpu.ps) {
         ReleaseResources();
-        return false;
+        return fail("its shader could not be created");
     }
     for (int i = 0; i < Gpu::kQ; i++) {
         dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &gpu.qDisjoint[i]);
@@ -479,18 +492,41 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         return;
     }
     RegisterHooks(dev);
-    if (!gpu.frameReady) return; // once per frame (the game may end more than one scene)
-    if (GetTickCount64() < m_holdUntil.load()) return; // hold to compare: the original picture (the cost keeps its last value)
+    const unsigned long long now = GetTickCount64();
+    if (m_resetDiag.exchange(false)) {
+        m_appliedLogged = false;
+        m_loggedProblem.clear();
+    }
+    // frames resuming after a pause (loading screens, start-up): the 2 s count starts again
+    if (now - m_lastEndScene.load() >= kProblemAfterMs) m_enabledAt.store(now);
+    m_lastEndScene.store(now);
+    Problem(false); // logs a new reason once
+    if (!gpu.frameReady) { // once per frame (the game may end more than one scene)
+        m_skip.store(kSkipNoFrame);
+        return;
+    }
+    if (now < m_holdUntil.load()) return; // hold to compare: the original picture (the cost keeps its last value)
     IDirect3DSurface9 *bb = nullptr, *rt = nullptr;
-    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) {
+        m_skip.store(kSkipNoBackBuffer);
+        return;
+    }
     dev->GetRenderTarget(0, &rt);
     const bool onBackBuffer = rt == bb;
     SafeRelease(rt);
     if (!onBackBuffer || (!gpu.ready && !InitResources(dev))) {
+        m_skip.store(onBackBuffer ? kSkipResources : kSkipNotBackBuffer);
         bb->Release();
         return;
     }
     gpu.frameReady = false;
+    m_skip.store(kSkipNone);
+    m_lastApplied.store(now);
+    if (!m_appliedLogged) {
+        m_appliedLogged = true;
+        m_loggedProblem.clear();
+        LOG_INFO(std::format("[Picture] Applied to the game's picture ({}x{})", gpu.width, gpu.height));
+    }
 
     ReadTimings(m_gpuMs);
     const int qi = gpu.qNext;
@@ -629,14 +665,55 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
 // ---- settings ----
 
 void Picture::SetParams(const PictureParams& p, bool save) {
+    bool switched;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        switched = m_p.enabled != p.enabled;
         m_p = p;
+    }
+    if (switched) {
+        m_enabledAt.store(GetTickCount64());
+        m_resetDiag.store(true);
+        LOG_INFO(p.enabled ? "[Picture] On" : "[Picture] Off");
     }
     if (save) ApexConfig::RequestSave();
 }
 
 void Picture::HoldBypass() { m_holdUntil.store(GetTickCount64() + 150); }
+
+std::string Picture::Problem(bool translated) {
+    if (!GetParams().enabled) return {};
+    const unsigned long long now = GetTickCount64();
+    const unsigned long long since = std::max(m_enabledAt.load(), m_lastApplied.load());
+    if (now - since < kProblemAfterMs || now < m_holdUntil.load() + kProblemAfterMs) return {};
+    auto tr = [translated](const char* s) -> std::string { return translated ? I18n::Tr(s) : s; };
+    std::string why;
+    if (now - m_lastEndScene.load() >= kProblemAfterMs) why = tr("the end of the game's frames does not reach it (EndScene)");
+    else switch (m_skip.load()) {
+        case kSkipNoFrame: why = tr("the frame boundary does not reach it (another mod may have taken over Present)"); break;
+        case kSkipNoBackBuffer: why = tr("the game's back buffer could not be read"); break;
+        case kSkipNotBackBuffer: why = tr("the game ends its frames on another render target"); break;
+        case kSkipResources: {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            why = m_resourceError.empty() ? tr("its resources could not be created") : m_resourceError; // technical detail: English
+            break;
+        }
+        default: return {};
+    }
+    if (!translated) {
+        if (why != m_loggedProblem) {
+            m_loggedProblem = why;
+            LOG_WARNING("[Picture] On, but not applied for 2 s: " + why);
+        }
+        return why;
+    }
+    if (m_resetDiag.exchange(false)) {
+        m_appliedLogged = false;
+        m_loggedProblem.clear();
+    }
+    Problem(false); // the log gets it in English too
+    return I18n::Trf("Color is on but is not being applied: {}", why);
+}
 
 const char* const* Picture::Keys(size_t& count) {
     count = std::size(kKeys);

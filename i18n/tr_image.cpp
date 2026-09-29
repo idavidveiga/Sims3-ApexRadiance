@@ -293,6 +293,20 @@ const I18n::Entry kEntries[] = {
     {"Back to the default focus, blur and look", "Volta ao foco, desfoque e visual padrão", "Vuelve al enfoque, desenfoque y aspecto predeterminados",
      "Retour à la mise au point, au flou et au rendu par défaut"},
     {"Depth Blur reset", "Desfoque de Profundidade restaurado", "Desenfoque de Profundidad restablecido", "Flou de Profondeur réinitialisé"},
+    // Color: why it is on but not applied (Picture::Problem)
+    {"Color is on but is not being applied: {}", "A Cor está ligada, mas não está sendo aplicada: {}", "El Color está activado, pero no se está aplicando: {}",
+     "La Couleur est activée, mais n'est pas appliquée : {}"},
+    {"the end of the game's frames does not reach it (EndScene)", "o fim dos quadros do jogo não chega até ela (EndScene)",
+     "el final de los fotogramas del juego no le llega (EndScene)", "la fin des images du jeu ne lui parvient pas (EndScene)"},
+    {"the frame boundary does not reach it (another mod may have taken over Present)",
+     "a troca de quadro não chega até ela (outro mod pode ter assumido o Present)",
+     "el cambio de fotograma no le llega (otro mod puede haber tomado el Present)",
+     "le changement d'image ne lui parvient pas (un autre mod a peut-être pris le Present)"},
+    {"the game's back buffer could not be read", "não foi possível ler a imagem final do jogo", "no se pudo leer la imagen final del juego",
+     "l'image finale du jeu n'a pas pu être lue"},
+    {"the game ends its frames on another render target", "o jogo termina os quadros em outro alvo de desenho", "el juego termina los fotogramas en otro destino de dibujo",
+     "le jeu termine ses images sur une autre cible de rendu"},
+    {"its resources could not be created", "não foi possível criar os recursos dela", "no se pudieron crear sus recursos", "ses ressources n'ont pas pu être créées"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 
