@@ -228,6 +228,20 @@ void Start() {
     StartLocked(r);
 }
 
+namespace {
+// The bytecode the device actually holds for a shader equals `code` (another mod's CreatePixelShader hook can hand back a
+// different shader: a shader replacer keyed on the bytecode's hash or on the creation order)
+bool SameFunction(IDirect3DPixelShader9* ps, const std::vector<DWORD>& code, UINT* heldBytes) {
+    UINT size = 0;
+    *heldBytes = 0;
+    if (FAILED(ps->GetFunction(nullptr, &size)) || size == 0) return true; // cannot tell: trust it
+    *heldBytes = size;
+    if (size != code.size() * sizeof(DWORD)) return false;
+    std::vector<DWORD> held(size / sizeof(DWORD));
+    return SUCCEEDED(ps->GetFunction(held.data(), &size)) && std::memcmp(held.data(), code.data(), size) == 0;
+}
+} // namespace
+
 Result CreatePixelShader(IDirect3DDevice9* dev, Id id, IDirect3DPixelShader9** out, std::string* compileError) {
     *out = nullptr;
     const Job* j = Ready(id);
@@ -238,6 +252,32 @@ Result CreatePixelShader(IDirect3DDevice9* dev, Id id, IDirect3DPixelShader9** o
     if (!dev || FAILED(dev->CreatePixelShader(j->code.data(), out)) || !*out) {
         *out = nullptr;
         return Result::CreateFailed;
+    }
+    UINT held = 0;
+    if (!SameFunction(*out, j->code, &held)) {
+        // Replaced on the way: try once more with the same program plus a comment token after the version token (the
+        // device ignores comments; a replacer matching the bytecode no longer recognises it)
+        LOG_WARNING(std::format("[ShaderCache] {}: the device returned another pixel shader than Apex's ({} bytes instead of {}): another mod replaced it; "
+                                "retrying with a marked copy",
+                                j->d.tag, held, j->code.size() * sizeof(DWORD)));
+        std::vector<DWORD> marked;
+        marked.reserve(j->code.size() + 2);
+        marked.push_back(j->code[0]);             // ps_3_0 version token
+        marked.push_back(0x0000FFFE | (1u << 16)); // comment token, 1 DWORD long
+        marked.push_back(0x58455041);              // "APEX"
+        marked.insert(marked.end(), j->code.begin() + 1, j->code.end());
+        IDirect3DPixelShader9* again = nullptr;
+        if (SUCCEEDED(dev->CreatePixelShader(marked.data(), &again)) && again) {
+            UINT heldAgain = 0;
+            if (SameFunction(again, marked, &heldAgain)) {
+                (*out)->Release();
+                *out = again;
+                LOG_INFO(std::format("[ShaderCache] {}: the marked copy is Apex's own shader", j->d.tag));
+            } else {
+                again->Release();
+                LOG_WARNING(std::format("[ShaderCache] {}: replaced again ({} bytes); the effect may look wrong until that mod is removed", j->d.tag, heldAgain));
+            }
+        }
     }
     return Result::Ok;
 }
