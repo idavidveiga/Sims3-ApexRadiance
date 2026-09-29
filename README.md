@@ -48,6 +48,7 @@ A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps 
 **System**
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
 - **Borderless window:** windowed or fullscreen, without a title bar.
+- **Performance (experimental):** fewer stutters while you play: faster game file lookups, lot lighting and wall shading spread out while the camera moves, and faster texture and cache compression. Each one can be turned off on its own.
 - **Menu:** search, profiles, undo, per-setting reset and a hold-to-compare view.
 
 ## Requirements
@@ -63,6 +64,8 @@ A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps 
 3. Start the game and press **Ctrl+Shift+F11** to open the menu.
 
 Settings are saved in `Documents\Electronic Arts\The Sims 3\Apex Radiance\ApexRadiance.toml`.
+
+If the game crashes, Apex Radiance writes `ApexRadiance_Crash.txt` in that same folder: please attach it when you report the problem.
 
 If you used the older combined build (Sims3SettingsSetter with Apex inside) or `S3SSApex.asi`, delete it from `Game\Bin` and keep the official `Sims3SettingsSetter.asi`. Apex Radiance copies your old settings on its first start.
 
