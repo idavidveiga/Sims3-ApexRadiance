@@ -37,20 +37,43 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 
 ## Features
 
-**World**
-- **Night Lights:** lamps light the ground, lots, streets, outdoor objects, fences, walls and roofs, with smooth warm light and no hard edge at lot borders. Lamps on upper floors light the yard too.
-- **Water & Snow:** lamps glow and sparkle on ponds, ponds mirror the trees and houses along their shore, and walked-on sidewalks show through the snow.
+### Night Lights
 
-**Image**
-- **Color:** brightness, contrast, saturation, warmth, sharpness, smooth gradients, film-style tones, a color mixer and a vignette. Menus and text keep their normal look.
-- **Depth Blur:** softly blurs the distant background, like a camera focused on what's near. It turns off by itself in map view.
+In the base game lamps glow but barely light anything around them. Apex Radiance rebuilds night lighting so they really light their surroundings:
 
-**System**
+- **Ground, lots and streets:** smooth, warm pools of light on grass, sidewalks, roads and lot floors, with no hard edge where a lot ends.
+- **Objects, fences, walls and roofs:** outdoor objects, fences, stairs, house walls and roofs pick up the light of nearby lamps.
+- **Every-Story Ground Light:** lamps on upper floors, balconies and terraces light the ground below too.
+- **Lamp color and brightness:** tune how warm and how strong lamp light looks.
+- **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have.
+
+### Water & Snow
+
+- Lamps glow and sparkle on ponds and lakes.
+- Ponds mirror the trees and houses along their shore.
+- Walked-on sidewalks show through the snow.
+
+### Color
+
+A full picture editor for the 3D world; menus and text keep their normal look.
+
+- Brightness, contrast, saturation, warmth and sharpness.
+- Smooth gradients (less banding in skies and shadows).
+- Film-style tones, a six-color mixer and a vignette.
+- A before/after switch and a hold-to-compare button.
+
+### Depth Blur
+
+Softly blurs the distant background, like a camera focused on what's near. The focus follows what you're looking at, the effect turns itself off in map view, and its quality is adjustable.
+
+### Display
+
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
 - **Borderless window:** windowed or fullscreen, without a title bar.
-- **Menu:** in English, Portuguese, Spanish or French; search, profiles (pick which parts to save and load), undo, per-setting reset and a hold-to-compare view.
 
-**Performance** (System > Performance; every option is experimental and has its own switch, so any that misbehaves can be turned off)
+### Performance (experimental)
+
+Apex Radiance goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. Every option has its own switch (System > Performance), so any that misbehaves can be turned off.
 
 On from the start:
 - **Lot lighting while the camera moves:** instead of spending up to 15 ms of one frame on lot lighting, the work is spread over several frames while you pan or zoom (about 80% fewer lighting stutters while moving, in testing). When the camera stops, the game's normal budget comes back.
@@ -67,9 +90,20 @@ Off until you turn them on:
 
 Apex Radiance's own shaders are compiled at startup on a background thread, never in the middle of play.
 
+### The menu
+
+Open it with **Ctrl+Shift+F11** (the key can be changed).
+
+- **Four languages:** English, Portuguese, Spanish and French ("Automatic" follows your Windows language).
+- **Search:** find any option by name, with or without accents.
+- **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
+- **Undo** after any change, **per-setting reset**, and a dot on everything changed from its default.
+- Adjustable text size and a short welcome tour.
+- A Compatibility page with your game version and the other mods it detects.
+
 ## Requirements
 
-- The Sims 3, Steam version 1.67.2 (`TS3W.exe`). Night Lights and Every-Story Ground Light patch this exact version; other versions show those features as unavailable.
+- The Sims 3, Steam version 1.67.2 (`TS3W.exe`). The EA App version 1.69 (`TS3.exe`) is supported too (experimental); on other versions, features whose game code is not found show as unavailable.
 - An ASI loader in `Game\Bin`, for example [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
 - Recommended: the official Sims3SettingsSetter for its frame rate limiter and stutter fixes.
 
@@ -85,9 +119,11 @@ If the game crashes, Apex Radiance writes `ApexRadiance_Crash.txt` in that same 
 
 If you used the older combined build (Sims3SettingsSetter with Apex inside) or `S3SSApex.asi`, delete it from `Game\Bin` and keep the official `Sims3SettingsSetter.asi`. Apex Radiance copies your old settings on its first start.
 
-## Working with Sims3SettingsSetter
+## Compatibility
 
-Both mods can be installed together. When they both offer the same thing, Apex Radiance steps aside: the borderless window and the ground lighting on upper floors are left to Sims3SettingsSetter when it has its own version turned on.
+- **Sims3SettingsSetter:** both mods can be installed together, and I recommend using both. When they both offer the same thing, Apex Radiance steps aside: the borderless window and the ground lighting on upper floors are left to Sims3SettingsSetter when it has its own version turned on.
+- **Sims 3 Performance Patch:** compatible. The two mods work on different parts of the game (it speeds up loading and saves memory; Apex Radiance targets in-game stutters) and do not patch the same game code.
+- Works with DXVK.
 
 ## Building
 

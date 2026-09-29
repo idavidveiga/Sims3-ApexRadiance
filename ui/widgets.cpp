@@ -39,15 +39,40 @@ struct FilterState {
     int drawn = 0;
 };
 FilterState g_filter;
-bool g_inControlRow = false;
-bool g_nextRaw = false; // SetNextRowUntranslated: the next row's label is shown as it is
-bool g_rowRaw = false;  // the current row's label is shown as it is // between BeginControlRow (visible) and EndControlRow: its buttons are part of the row
+bool g_inControlRow = false; // between BeginControlRow (visible) and EndControlRow: its buttons are part of the row
+bool g_nextRaw = false;      // SetNextRowUntranslated: the next row's label is shown as it is
+bool g_rowRaw = false;       // the current row's label is shown as it is
 
 char LowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
 
+// The search compares texts folded: lower case and without accents ("Ç" and "ç" find "c", "é" finds "e"), for the
+// Latin-1 letters Portuguese, Spanish and French use (UTF-8 C3 80..C3 BF) and "œ"; other characters stay as they are.
+const char* FoldLatin1(unsigned char second) {
+    static const char* const kFold[64] = {
+        "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",  // C0..CF
+        "d", "n", "o", "o", "o", "o", "o", nullptr, "o", "u", "u", "u", "u", "y", "th", "ss", // D0..DF
+        "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",  // E0..EF
+        "d", "n", "o", "o", "o", "o", "o", nullptr, "o", "u", "u", "u", "u", "y", "th", "y",  // F0..FF
+    };
+    return second >= 0x80 && second <= 0xBF ? kFold[second - 0x80] : nullptr;
+}
+
 void AppendLower(std::string& out, const char* s, const char* end = nullptr) {
     if (!s) return;
-    for (const char* c = s; end ? c < end : *c; ++c) out.push_back(LowerAscii(*c));
+    for (const char* c = s; end ? c < end : *c; ++c) {
+        const unsigned char b = static_cast<unsigned char>(*c);
+        const bool second = end ? c + 1 < end : c[1] != '\0';
+        if (second) {
+            const unsigned char n = static_cast<unsigned char>(c[1]);
+            const char* folded = b == 0xC3 ? FoldLatin1(n) : (b == 0xC5 && (n == 0x92 || n == 0x93)) ? "oe" : nullptr;
+            if (folded) {
+                out += folded;
+                ++c;
+                continue;
+            }
+        }
+        out.push_back(LowerAscii(*c));
+    }
 }
 
 void SplitWords(const char* query, std::vector<std::string>& out) {
@@ -59,7 +84,11 @@ void SplitWords(const char* query, std::vector<std::string>& out) {
             word.clear();
             if (*c == '\0') break;
         } else {
-            word.push_back(LowerAscii(*c));
+            // one UTF-8 character at a time, folded like the texts searched
+            const char* next = c + 1;
+            while ((static_cast<unsigned char>(*next) & 0xC0) == 0x80) ++next;
+            AppendLower(word, c, next);
+            c = next - 1;
         }
     }
 }
