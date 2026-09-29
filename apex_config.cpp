@@ -324,7 +324,7 @@ void LoadSettings() {
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // missing (first start, migrated configs): the tour shows
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
-        u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : -1;
+        u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
         I18n::SetChoice(u.language);
         std::lock_guard<std::mutex> lock(g_uiLock);
         g_ui = u;
@@ -362,8 +362,8 @@ bool Save(std::string* error) {
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
-        static constexpr const char* kLanguageKeys[] = {"en", "pt", "es"};
-        ui.insert("language", u.language >= 0 && u.language < 3 ? kLanguageKeys[u.language] : "auto");
+        static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
+        ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
         root.insert_or_assign("ui", std::move(ui));
 
         Borderless::SaveToToml(root);

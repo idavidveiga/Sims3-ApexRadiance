@@ -140,7 +140,7 @@ void CardNote(const char* text) { ApexUi::IconNote(IconId::Info, text); }
 
 void CardError(const std::string& error) {
     if (error.empty()) return;
-    ApexUi::IconNote(IconId::TriangleAlert, ("Error: " + error).c_str(), VioletTheme::kError);
+    ApexUi::IconNote(IconId::TriangleAlert, I18n::Trf("Error: {}", error).c_str(), VioletTheme::kError);
 }
 
 void NotAvailableNote(const ApexPatch* patch) { CardNote(patch->UnavailableReason().c_str()); }
@@ -189,7 +189,7 @@ void TurnOnButton(ApexPatch* patch, const char* label, IconId icon, const char* 
     ImGui::BeginDisabled(!Switchable(patch));
     if (ApexUi::IconTextButton(label, icon, nullptr, ButtonKind::Primary)) {
         SetPatch(patch, true);
-        ApexUi::ReportChange(changeText);
+        ApexUi::ReportChange(I18n::Tr(changeText)); // the undo toast shows it as given
     }
     ImGui::EndDisabled();
 }
@@ -204,9 +204,7 @@ bool NightLightsReady(const char* what) {
         NotAvailableNote(ntr);
         return false;
     }
-    char note[160];
-    std::snprintf(note, sizeof note, "Turn on Night Lights to adjust %s", what);
-    CardNote(note);
+    CardNote(I18n::Trf("Turn on Night Lights to adjust {}", I18n::Tr(what)).c_str());
     TurnOnButton(ntr, "Turn on Night Lights", IconId::MoonStar, "Night Lights turned on");
     return false;
 }
@@ -264,7 +262,8 @@ void RecommendS3SSCard() {
         DownloadS3SSButton();
         ImGui::SameLine(0.0f, ApexUi::kSpace4 * ApexUi::Unit());
         ImGui::AlignTextToFramePadding();
-        if (ImGui::TextLink("Don't show again")) {
+        const std::string dontShow = std::string(I18n::Tr("Don't show again")) + "###DontShowS3SS"; // the id stays English
+        if (ImGui::TextLink(dontShow.c_str())) {
             ApexConfig::UiSettings ui = ApexConfig::GetUi();
             ui.recommendS3SS = false; // [ui] recommend_s3ss; Settings > Compatibility keeps the link
             ApexConfig::SetUi(ui);
@@ -501,9 +500,8 @@ void ColorPage() {
 
 // Depth Blur and Edge Smoothing both need the game's own (multisampled) Edge Smoothing off
 void GameEdgeSmoothingNote(const char* forWhat) {
-    char note[160];
-    std::snprintf(note, sizeof note, "For %s, turn off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics)", forWhat);
-    ApexUi::IconNote(IconId::Info, note);
+    const std::string note = I18n::Trf("For {}, turn off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics)", I18n::Tr(forWhat));
+    ApexUi::IconNote(IconId::Info, note.c_str());
     ApexUi::Gap(ApexUi::kSpace1);
 }
 
@@ -746,10 +744,10 @@ void MenuKeyRow() {
         ApexUi::EndControlRow();
         return;
     }
-    constexpr const char* kPrompt = "Press a key (Esc cancels)";
-    if (ApexUi::BeginControlRow(kLabel, kText, ImGui::CalcTextSize(kPrompt).x)) {
+    const char* prompt = I18n::Tr("Press a key (Esc cancels)");
+    if (ApexUi::BeginControlRow(kLabel, kText, ImGui::CalcTextSize(prompt).x)) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(Col(VioletTheme::kWarning), "%s", kPrompt);
+        ImGui::TextColored(Col(VioletTheme::kWarning), "%s", prompt);
         ApexUi::EndControlRow();
     }
     if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
@@ -822,14 +820,14 @@ void TextSizeRow() {
     ApexUi::EndControlRow();
 }
 
-// Menu language: Automatic (Windows' display language), English, Português, Español (each language in its own words)
+// Menu language: Automatic (Windows' display language), English, Português, Español, Français (each in its own words)
 void LanguageRow() {
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
     const std::string automatic = I18n::Trf("Automatic ({})", I18n::NativeName(I18n::SystemLanguage()));
     const char* labels[] = {automatic.c_str(), I18n::NativeName(I18n::Lang::English), I18n::NativeName(I18n::Lang::Portuguese),
-                            I18n::NativeName(I18n::Lang::Spanish)};
+                            I18n::NativeName(I18n::Lang::Spanish), I18n::NativeName(I18n::Lang::French)};
     int current = ui.language + 1; // -1 automatic -> 0
-    if (ApexUi::SegmentedRow("Language", "The language of this menu", "##Language", &current, labels, 4, nullptr, nullptr, 0)) {
+    if (ApexUi::SegmentedRow("Language", "The language of this menu", "##Language", &current, labels, 5, nullptr, nullptr, 0)) {
         ui.language = current - 1;
         ApexConfig::SetUi(ui);
     }
@@ -847,19 +845,22 @@ void WelcomeRow() {
     ApexUi::EndControlRow();
 }
 
-const std::string& AutosaveHint() {
-    static const std::string hint = "Saved to " + ApexUtil::ToUtf8(ApexPaths::ConfigFile());
-    return hint;
+// "Saved to <file>" in the current language (the path is found once)
+std::string AutosaveHint() {
+    static const std::string path = ApexUtil::ToUtf8(ApexPaths::ConfigFile());
+    return I18n::Trf("Saved to {}", path);
 }
 
 void SaveRow() {
     if (!ApexUi::BeginControlRow("Save settings", "Changes also save by themselves after a second", ApexUi::ButtonWidth("Save now", true))) return;
-    if (ApexUi::IconTextButton("Save now", IconId::Save, AutosaveHint().c_str())) ApexConfig::Save();
+    const std::string hint = AutosaveHint();
+    if (ApexUi::IconTextButton("Save now", IconId::Save, hint.c_str())) ApexConfig::Save();
     ApexUi::EndControlRow();
 }
 
-// A status row: label on the left, the value (muted, after an optional small icon) on the right
-void InfoRow(const char* label, const std::string& value, IconId icon = IconId::None, unsigned iconRgb = VioletTheme::kTextMuted) {
+// A status row: label on the left, the value (muted, after an optional small icon; translated) on the right
+void InfoRow(const char* label, const std::string& english, IconId icon = IconId::None, unsigned iconRgb = VioletTheme::kTextMuted) {
+    const std::string value(I18n::Tr(std::string_view(english)));
     const float u = ApexUi::Unit();
     const float is = ApexUi::kIconSmall * u, ig = 6.0f * u;
     const bool withIcon = icon != IconId::None;
@@ -927,10 +928,10 @@ void ProfileMessage(const std::string& text, bool error) {
 void SaveProfileNow(const std::string& name) {
     std::string err;
     if (ApexConfig::SaveProfile(name, &err)) {
-        ProfileMessage("Saved \"" + name + "\"", false);
+        ProfileMessage(I18n::Trf("Saved \"{}\"", name), false);
         g_profiles.name[0] = '\0';
     } else {
-        ProfileMessage("Could not save \"" + name + "\": " + err, true);
+        ProfileMessage(I18n::Trf("Could not save \"{}\": {}", name, err), true);
     }
     g_profiles.confirmReplace.clear();
     g_profiles.listDirty = true;
@@ -940,15 +941,15 @@ void LoadProfileNow(const std::string& name) {
     toml::table state;
     std::string err;
     if (!ApexConfig::ReadProfile(name, state, &err)) {
-        ProfileMessage("Could not load \"" + name + "\": " + err, true);
+        ProfileMessage(I18n::Trf("Could not load \"{}\": {}", name, err), true);
         return;
     }
     toml::table before;
     ApexConfig::CaptureFeatureState(before);
     ApexConfig::ApplyFeatureState(state);
     LOG_INFO("[Menu] Profile loaded: " + name);
-    ProfileMessage("Loaded \"" + name + "\"", false);
-    ShowToast("Profile loaded", std::move(before));
+    ProfileMessage(I18n::Trf("Loaded \"{}\"", name), false);
+    ShowToast(I18n::Tr("Profile loaded"), std::move(before));
 }
 
 void ProfilesTab() {
@@ -967,7 +968,7 @@ void ProfilesTab() {
         const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
         const float gap = ImGui::GetStyle().ItemSpacing.x;
         ImGui::SetNextItemWidth(std::fmax(ImGui::GetContentRegionAvail().x - saveW - gap, 80.0f * u));
-        const bool enter = ImGui::InputTextWithHint("##ProfileName", "Profile name", s.name, sizeof s.name,
+        const bool enter = ImGui::InputTextWithHint("##ProfileName", I18n::Tr("Profile name"), s.name, sizeof s.name,
                                                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, ProfileNameFilter);
         ImGui::SameLine();
         const std::string clean = ApexConfig::SanitizeProfileName(s.name);
@@ -979,7 +980,7 @@ void ProfilesTab() {
             else SaveProfileNow(clean);
         }
         if (!s.confirmReplace.empty()) {
-            const std::string q = "\"" + s.confirmReplace + "\" already exists; replace it?";
+            const std::string q = I18n::Trf("\"{}\" already exists; replace it?", s.confirmReplace);
             ApexUi::IconNote(IconId::TriangleAlert, q.c_str(), VioletTheme::kWarning);
             ApexUi::Gap(ApexUi::kSpace1);
             if (ApexUi::TextButton("Replace##Profile", nullptr, ButtonKind::Primary)) SaveProfileNow(s.confirmReplace);
@@ -1003,8 +1004,8 @@ void ProfilesTab() {
                 if (confirming) {
                     if (ApexUi::IconTextButton("Delete##Confirm", IconId::Trash2, "Deletes the profile file", ButtonKind::Primary)) {
                         std::string err;
-                        if (ApexConfig::DeleteProfile(name, &err)) ProfileMessage("Deleted \"" + name + "\"", false);
-                        else ProfileMessage("Could not delete \"" + name + "\": " + err, true);
+                        if (ApexConfig::DeleteProfile(name, &err)) ProfileMessage(I18n::Trf("Deleted \"{}\"", name), false);
+                        else ProfileMessage(I18n::Trf("Could not delete \"{}\": {}", name, err), true);
                         s.confirmDelete.clear();
                         s.listDirty = true;
                     }
@@ -1046,7 +1047,7 @@ void CompatibilityTab() {
         }
         if (ApexUi::BeginAdvanced("Details##Compatibility", "Details")) {
             ApexUi::MutedText(("Sims3SettingsSetter: " + S3SSDetect::Summary()).c_str());
-            ApexUi::MutedText(("Settings: " + ApexConfig::MigrationNote()).c_str());
+            ApexUi::MutedText(I18n::Trf("Settings: {}", ApexConfig::MigrationNote()).c_str());
             ApexUi::EndAdvanced();
         }
     }
@@ -1057,9 +1058,9 @@ void CompatibilityTab() {
 void AboutTab() {
     ImGui::PushID("About");
     if (ApexUi::BeginCard("##Card")) {
-        constexpr const char* kVersionLine = kPublicBuild ? "Version " APEX_VERSION_STRING " \xC2\xB7 Public build"
-                                                          : "Version " APEX_VERSION_STRING " \xC2\xB7 Development build, with developer tools";
-        ApexUi::CardHeader(IconId::Info, APEX_PRODUCT_NAME " " APEX_PRODUCT_TAGLINE, kVersionLine, nullptr, nullptr);
+        const std::string versionLine = kPublicBuild ? I18n::Trf("Version {} \xC2\xB7 Public build", APEX_VERSION_STRING)
+                                                     : "Version " APEX_VERSION_STRING " \xC2\xB7 Development build, with developer tools";
+        ApexUi::CardHeader(IconId::Info, APEX_PRODUCT_NAME " " APEX_PRODUCT_TAGLINE, versionLine.c_str(), nullptr, nullptr);
         ApexUi::CardDivider();
         ApexUi::GroupLabel("CREDITS");
         CreditLine("Sims3SettingsSetter by sims3fiend: " APEX_PRODUCT_NAME " began as a fork of it, and its framework is still based on its "
@@ -1091,7 +1092,8 @@ void SettingsPage() {
 // mode (ApexUi::BeginFilter): only its matching rows, each under the part's breadcrumb, which opens that page and tab.
 
 struct SearchPart {
-    const char* crumb;
+    const char* crumbPage; // the breadcrumb, "Page › Tab" (English keys, shown translated)
+    const char* crumbTab;  // nullptr = the page alone
     int page;
     int* tab; // nullptr = a page without tabs
     int tabIndex;
@@ -1100,22 +1102,22 @@ struct SearchPart {
 
 const SearchPart* SearchParts(int& count) {
     static const SearchPart kParts[] = {
-        {"Lighting \xE2\x80\xBA Lamps", PageLighting, &g_lightingTab, LightingLamps, LampsTabContent},
-        {"Lighting \xE2\x80\xBA Ground", PageLighting, &g_lightingTab, LightingGround, GroundTabContent},
-        {"Lighting \xE2\x80\xBA Objects", PageLighting, &g_lightingTab, LightingObjects, ObjectsTabContent},
-        {"Lighting \xE2\x80\xBA Buildings", PageLighting, &g_lightingTab, LightingBuildings, BuildingsTabContent},
-        {"Water & Snow \xE2\x80\xBA Water", PageWaterSnow, &g_waterSnowTab, WaterTab, WaterTabContent},
-        {"Water & Snow \xE2\x80\xBA Snow", PageWaterSnow, &g_waterSnowTab, SnowTab, SnowTabContent},
-        {"Color", PageColor, nullptr, 0, PictureHeaderCard},
-        {"Color \xE2\x80\xBA Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
-        {"Color \xE2\x80\xBA Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},
-        {"Color \xE2\x80\xBA Color", PageColor, &g_colorTab, Picture::TabColor, [] { PictureRows(Picture::TabColor); }},
-        {"Color \xE2\x80\xBA Detail", PageColor, &g_colorTab, Picture::TabDetail, [] { PictureRows(Picture::TabDetail); }},
-        {"Depth Blur", PageDepthBlur, nullptr, 0, DepthBlurContent},
-        {"Display \xE2\x80\xBA Window", PageDisplay, &g_displayTab, DisplayWindow, BorderlessCard},
-        {"Display \xE2\x80\xBA Anti-aliasing", PageDisplay, &g_displayTab, DisplayAntiAliasing, AntiAliasingContent},
-        {"Performance", PagePerformance, nullptr, 0, PerformanceCard},
-        {"Settings \xE2\x80\xBA Menu", PageSettings, &g_settingsTab, SettingsMenu, MenuTab},
+        {"Lighting", "Lamps", PageLighting, &g_lightingTab, LightingLamps, LampsTabContent},
+        {"Lighting", "Ground", PageLighting, &g_lightingTab, LightingGround, GroundTabContent},
+        {"Lighting", "Objects", PageLighting, &g_lightingTab, LightingObjects, ObjectsTabContent},
+        {"Lighting", "Buildings", PageLighting, &g_lightingTab, LightingBuildings, BuildingsTabContent},
+        {"Water & Snow", "Water", PageWaterSnow, &g_waterSnowTab, WaterTab, WaterTabContent},
+        {"Water & Snow", "Snow", PageWaterSnow, &g_waterSnowTab, SnowTab, SnowTabContent},
+        {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
+        {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
+        {"Color", "Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},
+        {"Color", "Color", PageColor, &g_colorTab, Picture::TabColor, [] { PictureRows(Picture::TabColor); }},
+        {"Color", "Detail", PageColor, &g_colorTab, Picture::TabDetail, [] { PictureRows(Picture::TabDetail); }},
+        {"Depth Blur", nullptr, PageDepthBlur, nullptr, 0, DepthBlurContent},
+        {"Display", "Window", PageDisplay, &g_displayTab, DisplayWindow, BorderlessCard},
+        {"Display", "Anti-aliasing", PageDisplay, &g_displayTab, DisplayAntiAliasing, AntiAliasingContent},
+        {"Performance", nullptr, PagePerformance, nullptr, 0, PerformanceCard},
+        {"Settings", "Menu", PageSettings, &g_settingsTab, SettingsMenu, MenuTab},
     };
     count = IM_COUNTOF(kParts);
     return kParts;
@@ -1131,13 +1133,15 @@ void SearchResults() {
         ApexUi::BeginFilter(g_search);
         for (int i = 0; i < count; i++) {
             ImGui::PushID(i);
-            ApexUi::SetFilterCrumb(parts[i].crumb, i);
+            std::string crumb = I18n::Tr(parts[i].crumbPage);
+            if (parts[i].crumbTab) crumb += std::string(" \xE2\x80\xBA ") + I18n::Tr(parts[i].crumbTab);
+            ApexUi::SetFilterCrumb(crumb.c_str(), i);
             parts[i].draw();
             ImGui::PopID();
         }
         drawn = ApexUi::EndFilter(&clicked);
         if (drawn == 0) {
-            const std::string none = std::string("No settings match \"") + g_search + "\"";
+            const std::string none = I18n::Trf("No settings match \"{}\"", static_cast<const char*>(g_search));
             ApexUi::MutedText(none.c_str());
         }
         if (clicked >= 0 && clicked < count) {
@@ -1176,9 +1180,8 @@ void TourPanel() {
             for (int i = 0; i < kSteps; i++)
                 dl->AddCircleFilled(ImVec2(p.x + r + static_cast<float>(i) * step, p.y + lineH * 0.5f), r,
                                     ImGui::GetColorU32(Col(i == g_tourStep ? VioletTheme::kAccent : VioletTheme::kToggleOff)));
-            char text[48];
-            std::snprintf(text, sizeof text, "Welcome \xC2\xB7 step %d of %d", g_tourStep + 1, kSteps);
-            dl->AddText(ImVec2(p.x + static_cast<float>(kSteps) * step + ApexUi::kSpace2 * u, p.y), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), text);
+            const std::string text = I18n::Trf("Welcome \xC2\xB7 step {} of {}", g_tourStep + 1, kSteps);
+            dl->AddText(ImVec2(p.x + static_cast<float>(kSteps) * step + ApexUi::kSpace2 * u, p.y), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), text.c_str());
             ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, lineH));
             ApexUi::Gap(ApexUi::kSpace1);
         }
@@ -1212,7 +1215,8 @@ void TourPanel() {
         const float startX = ImGui::GetCursorPosX(), avail = ImGui::GetContentRegionAvail().x;
         const float y = ImGui::GetCursorPosY();
         ImGui::AlignTextToFramePadding();
-        if (!last && ImGui::TextLink("Skip##Tour")) FinishTour();
+        const std::string skip = std::string(I18n::Tr("Skip")) + "###SkipTour"; // the id stays English
+        if (!last && ImGui::TextLink(skip.c_str())) FinishTour();
         ImGui::SetCursorPos(ImVec2(startX + std::fmax(0.0f, avail - backW - nextW), y));
         if (g_tourStep > 0) {
             if (ApexUi::TextButton("Back##Tour")) {
@@ -1247,7 +1251,8 @@ void SearchBox(float x, float y, float width) {
         ImGui::SetKeyboardFocusHere();
         g_focusSearch = false;
     }
-    ImGui::InputTextWithHint("##Search", "Search settings", g_search, sizeof g_search, ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_AutoSelectAll);
+    const char* placeholder = I18n::Tr("Search settings");
+    ImGui::InputTextWithHint("##Search", placeholder, g_search, sizeof g_search, ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_AutoSelectAll);
     const bool active = ImGui::IsItemActive();
     ImGui::PopStyleVar(2);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1258,7 +1263,7 @@ void SearchBox(float x, float y, float width) {
         const char* hint = "Ctrl+F";
         const ImVec2 ts = ImGui::CalcTextSize(hint);
         const float hx = p.x + width - ts.x - 10.0f * u;
-        if (hx > p.x + 8.0f * u + is + 6.0f * u + ImGui::CalcTextSize("Search settings").x + 8.0f * u) // only when it fits after the placeholder
+        if (hx > p.x + 8.0f * u + is + 6.0f * u + ImGui::CalcTextSize(placeholder).x + 8.0f * u) // only when it fits after the placeholder
             dl->AddText(ImVec2(hx, p.y + (h - ts.y) * 0.5f), muted, hint);
         ImGui::PopFont();
     }
@@ -1296,7 +1301,7 @@ bool Header() {
     ImGui::TextUnformatted(APEX_PRODUCT_NAME);
     ImGui::PopFont();
     ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
-    ImGui::TextUnformatted(APEX_PRODUCT_TAGLINE);
+    ImGui::TextUnformatted(I18n::Tr(APEX_PRODUCT_TAGLINE));
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     ImGui::EndGroup();
@@ -1333,9 +1338,7 @@ bool Header() {
     if (showDay) {
         ImGui::SetCursorPos(ImVec2(dayX, startY + (tile - daySize.y) * 0.5f));
         ApexUi::Pill(dayText, night, night ? IconId::Moon : IconId::Sun);
-        char tip[96];
-        std::snprintf(tip, sizeof tip, "How dark the game thinks it is: %.2f (0 is day, 1 is night)", level);
-        ApexUi::Tooltip(tip);
+        ApexUi::Tooltip(I18n::Trf("How dark the game thinks it is: {:.2f} (0 is day, 1 is night)", level).c_str());
     }
     if (showPerf) {
         ImGui::SetCursorPos(ImVec2(perfX, startY + (tile - perfSize.y) * 0.5f));
@@ -1349,7 +1352,7 @@ bool Header() {
     }
     bool keepOpen = true;
     ImGui::SetCursorPos(ImVec2(closeX, startY + (tile - button) * 0.5f));
-    const std::string closeTip = "Close (Esc); " + ApexConfig::KeyChordText(ApexConfig::GetUi().toggle) + " opens it again";
+    const std::string closeTip = I18n::Trf("Close (Esc); {} opens it again", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle));
     if (ApexUi::IconButton("##Close", IconId::X, closeTip.c_str(), false, 26.0f)) keepOpen = false;
     // The next item starts below the tile
     ImGui::SetCursorPos(ImVec2(startX, startY + tile));
@@ -1404,7 +1407,7 @@ void Sidebar(bool collapsed) {
             const float textY = footerY + (bs * u - ImGui::GetTextLineHeight()) * 0.5f;
             ImGui::SetCursorPos(ImVec2(ApexUi::kSpace1 * u + bs * u + ApexUi::kSpace1 * u, textY));
             ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
-            ImGui::TextUnformatted("Version " APEX_VERSION_STRING);
+            ImGui::TextUnformatted(I18n::Trf("Version {}", APEX_VERSION_STRING).c_str());
             ImGui::PopStyleColor();
             ImGui::PopFont();
         }
@@ -1454,12 +1457,12 @@ void StatusBar(float height) {
     const ImU32 muted = ImGui::GetColorU32(Col(VioletTheme::kTextMuted));
 
     const bool saving = ApexConfig::SavePending();
-    const char* left = saving ? "Saving\xE2\x80\xA6" : "All changes saved";
+    const char* left = I18n::Tr(saving ? "Saving\xE2\x80\xA6" : "All changes saved");
     const float leftW = is + ig + ImGui::CalcTextSize(left).x;
     const bool s3ss = S3SSDetect::Scan().s3ssLoaded;
-    const char* middle = s3ss ? "Sims3SettingsSetter detected" : "Sims3SettingsSetter not installed";
+    const char* middle = I18n::Tr(s3ss ? "Sims3SettingsSetter detected" : "Sims3SettingsSetter not installed");
     const float middleW = is + ig + ImGui::CalcTextSize(middle).x;
-    const char* right = "Hold Alt to peek";
+    const char* right = I18n::Tr("Hold Alt to peek");
     const float rightW = ImGui::CalcTextSize(right).x;
     const float spacing = ApexUi::kSpace4 * u;
     const bool showRight = leftW + spacing + rightW <= w;
@@ -1492,7 +1495,7 @@ void DrawToast(float bottomY) {
     const float fade = elapsed < 0.15 ? static_cast<float>(elapsed / 0.15) : elapsed > kToastSeconds - 0.6 ? static_cast<float>((kToastSeconds - elapsed) / 0.6) : 1.0f;
     const float padX = ApexUi::kSpace3 * u, padY = ApexUi::kSpace2 * u, gap = ApexUi::kSpace4 * u;
     const float is = ApexUi::kIconSmall * u;
-    const char* undoText = "Undo";
+    const char* undoText = I18n::Tr("Undo");
     const ImVec2 textSize = ImGui::CalcTextSize(g_toast.text.c_str());
     const float undoW = is + 5.0f * u + ImGui::CalcTextSize(undoText).x;
     const float lineH = ImGui::GetTextLineHeight();
@@ -1663,16 +1666,16 @@ void Banner() {
     if (ImGui::Begin("##ApexBanner", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
         if (refused) {
-            ImGui::TextColored(Col(VioletTheme::kError), APEX_PRODUCT_NAME " is off");
-            ImGui::TextUnformatted("An old combined build (Sims3SettingsSetter with Apex inside) is also installed:");
+            ImGui::TextColored(Col(VioletTheme::kError), "%s", I18n::Tr(APEX_PRODUCT_NAME " is off"));
+            ImGui::TextUnformatted(I18n::Tr("An old combined build (Sims3SettingsSetter with Apex inside) is also installed:"));
             ImGui::TextUnformatted(detail.c_str());
-            ImGui::TextUnformatted("Delete that file from Game\\Bin, keep the official Sims3SettingsSetter.asi, then restart the game.");
+            ImGui::TextUnformatted(I18n::Tr("Delete that file from Game\\Bin, keep the official Sims3SettingsSetter.asi, then restart the game."));
         }
         if (g_oldStandalone.load()) {
             if (refused) ImGui::Separator();
-            ImGui::TextColored(Col(VioletTheme::kWarning), "An older %s is also installed. Delete it from Game\\Bin.", oldModule.c_str());
-            ImGui::TextUnformatted("It's the previous version of " APEX_PRODUCT_NAME " and stays idle for now. Keep ApexRadiance.asi and the official "
-                                   "Sims3SettingsSetter.asi.");
+            ImGui::TextColored(Col(VioletTheme::kWarning), "%s", I18n::Trf("An older {} is also installed. Delete it from Game\\Bin.", oldModule).c_str());
+            ImGui::TextUnformatted(I18n::Tr("It's the previous version of " APEX_PRODUCT_NAME " and stays idle for now. Keep ApexRadiance.asi and the official "
+                                            "Sims3SettingsSetter.asi."));
         }
     }
     ImGui::End();
@@ -1694,7 +1697,7 @@ void Hint() {
     const unsigned long long now = GetTickCount64(), until = g_hintUntil.load();
     const float left = static_cast<float>(until > now ? until - now : 0) / 1000.0f;
     const float fade = std::fmin(1.0f, left / 0.8f); // fades out over the last 0.8 s
-    const std::string text = APEX_PRODUCT_NAME " is ready \xC2\xB7 press " + ApexConfig::KeyChordText(ApexConfig::GetUi().toggle);
+    const std::string text = I18n::Trf(APEX_PRODUCT_NAME " is ready \xC2\xB7 press {}", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle));
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float u = ApexUi::Unit();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - 20.0f * u, vp->Pos.y + 20.0f * u), ImGuiCond_Always, ImVec2(1.0f, 0.0f));

@@ -250,6 +250,18 @@ and presses buttons; a slider is adjusted with the arrows after Space / Enter. E
 being edited and the menu key is not being chosen): clears the search, else closes the
 menu. Ctrl+F: the search field.
 
+## Languages
+
+English, Portuguese (Brazil), Spanish and French (Settings > Menu > Language; "Automatic" follows Windows' display
+language; saved as `[ui] language = "auto" / "en" / "pt" / "es" / "fr"`). `ui/i18n.h`: the English text is the key,
+translations are in `i18n/tr_widgets.cpp` (texts the widgets write themselves), `tr_menu.cpp` (apex_gui.cpp),
+`tr_image.cpp` (Color, Edge Smoothing, Depth Blur, Borderless), `tr_lighting.cpp` (Night Lights, Water & Snow) and
+`tr_features.cpp` (performance features, framework notices). Every widget translates what it draws; ImGui IDs stay the
+English label, so switching languages keeps the menu's state. The search matches both the English and the shown text.
+A text without a translation shows in English; the development build lists them in Developer > Language (also
+translations whose `{}` placeholders differ from the English). How to add texts: `i18n/TRANSLATING.md`. Logs and the
+Developer page stay English.
+
 ## Copy guidelines
 - American English, friendly and plain, for players: say what the player will **see**, not how it works. No jargon
   outside the Developer page (no "per-pixel", "lightmap", "shader", "depth", "bridge", "rig", "story").

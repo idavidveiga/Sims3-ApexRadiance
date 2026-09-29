@@ -20,6 +20,7 @@
 #include "night_lighting.h"
 #include "s3ss_detect.h"
 #include "game_addresses.h"
+#include "ui/i18n.h"
 #include <atomic>
 #include <cstring>
 #include <format>
@@ -120,8 +121,8 @@ class SplitLevelGroundLightPatch : public ApexPatch {
 
     void RenderCustomUI() override {
         SAFE_IMGUI_BEGIN();
-        if (providedByS3SS_) ImGui::TextDisabled("Already handled by Sims3SettingsSetter (its Split-Level Lighting Fix is on)");
-        else ImGui::TextDisabled("Lamps on every floor light the ground outside the lot, with no hard edge at the lot border");
+        if (providedByS3SS_) ImGui::TextDisabled("%s", I18n::Tr("Already handled by Sims3SettingsSetter (its Split-Level Lighting Fix is on)"));
+        else ImGui::TextDisabled("%s", I18n::Tr("Lamps on every floor light the ground outside the lot, with no hard edge at the lot border"));
     }
 
   private:

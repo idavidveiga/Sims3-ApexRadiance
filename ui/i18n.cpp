@@ -44,7 +44,7 @@ void Build() {
 }
 
 const char* Pick(const Entry* e, Lang lang) {
-    const char* s = lang == Lang::Portuguese ? e->pt : (lang == Lang::Spanish ? e->es : e->en);
+    const char* s = lang == Lang::Portuguese ? e->pt : lang == Lang::Spanish ? e->es : lang == Lang::French ? e->fr : e->en;
     return s && *s ? s : nullptr;
 }
 
@@ -109,6 +109,7 @@ Lang SystemLanguage() {
     switch (PRIMARYLANGID(GetUserDefaultUILanguage())) {
     case LANG_PORTUGUESE: return Lang::Portuguese;
     case LANG_SPANISH: return Lang::Spanish;
+    case LANG_FRENCH: return Lang::French;
     default: return Lang::English;
     }
 }
@@ -117,6 +118,7 @@ const char* NativeName(Lang lang) {
     switch (lang) {
     case Lang::Portuguese: return "Português";
     case Lang::Spanish: return "Español";
+    case Lang::French: return "Français";
     default: return "English";
     }
 }
@@ -173,13 +175,29 @@ std::string PlaceholderProblems() {
             const Entry& e = t.entries[i];
             if (!e.en) continue;
             const std::vector<std::string> en = Placeholders(e.en);
-            for (const char* tr : {e.pt, e.es})
+            for (const char* tr : {e.pt, e.es, e.fr})
                 if (tr && *tr && Placeholders(tr) != en) {
                     s += e.en;
                     s += " -> ";
                     s += tr;
                     s += '\n';
                 }
+        }
+    return s;
+}
+
+std::string TableProblems() {
+    auto same = [](const char* a, const char* b) { return std::strcmp(a ? a : "", b ? b : "") == 0; };
+    std::string s;
+    std::unordered_map<std::string_view, const Entry*> seen;
+    for (const Registered& t : Tables())
+        for (size_t i = 0; i < t.count; i++) {
+            const Entry& e = t.entries[i];
+            if (!e.en) continue;
+            if (!e.pt || !*e.pt || !e.es || !*e.es || !e.fr || !*e.fr) s += std::string("missing a language: ") + e.en + '\n';
+            const auto [it, added] = seen.emplace(e.en, &e);
+            if (!added && !(same(it->second->pt, e.pt) && same(it->second->es, e.es) && same(it->second->fr, e.fr)))
+                s += std::string("two different translations: ") + e.en + '\n';
         }
     return s;
 }

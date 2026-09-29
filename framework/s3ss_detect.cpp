@@ -5,6 +5,7 @@
 #include "apex_util.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
+#include "ui/i18n.h"
 #include <psapi.h>
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -226,9 +227,17 @@ bool S3SSOverlayDisabled() {
     return (*root)["qol"]["ui"]["disable_overlay"].value_or(false);
 }
 
+// The menu's line (Settings > Compatibility > Details): SummaryLocked's text in the menu language (the log keeps the
+// English one)
 std::string Summary() {
     std::lock_guard<std::mutex> lock(g_lock);
-    return SummaryLocked();
+    const Info& i = g_info;
+    if (!i.scanned) return I18n::Tr("not scanned yet");
+    std::string s = i.s3ssLoaded ? I18n::Trf("official Sims3SettingsSetter loaded ({})", ApexUtil::ToUtf8(i.s3ssModule))
+                                 : std::string(I18n::Tr("official Sims3SettingsSetter not loaded"));
+    if (i.oldCombinedBuild) s += I18n::Trf("; OLD COMBINED BUILD loaded ({}): " APEX_PRODUCT_NAME "'s features stay off", ApexUtil::ToUtf8(i.combinedModule));
+    if (i.oldStandalone) s += I18n::Trf("; an older {} is also installed (idle): delete it from Game\\Bin", ApexUtil::ToUtf8(i.oldStandaloneModule));
+    return s;
 }
 
 std::string SummaryLocked() {

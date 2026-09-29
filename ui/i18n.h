@@ -1,5 +1,5 @@
 #pragma once
-// Menu language (docs/ui.md "Languages"): English, Portuguese (Brazil) and Spanish.
+// Menu language (docs/ui.md "Languages"): English, Portuguese (Brazil), Spanish and French.
 //
 // The English text is the key: code keeps writing English literals, and the text is translated where it is shown. The
 // Violet widgets (ui/widgets.h) translate every label, description, tooltip, note, button, tab, chip and title they
@@ -15,15 +15,15 @@
 
 namespace I18n {
 
-enum class Lang : int { English, Portuguese, Spanish, Count };
+enum class Lang : int { English, Portuguese, Spanish, French, Count };
 
 // The saved choice: -1 = automatic (Windows' display language), else a Lang
 int Choice();
 void SetChoice(int choice); // takes effect at once; the caller saves it (ApexConfig::UiSettings::language)
 Lang Current();
-// The Windows display language as a Lang (English when it is none of the three)
+// The Windows display language as a Lang (English when it is none of the others)
 Lang SystemLanguage();
-// "English", "Português", "Español" (each in its own language)
+// "English", "Português", "Español", "Français" (each in its own language)
 const char* NativeName(Lang lang);
 
 // One translated text: the English key and its translations (nullptr or "" = not translated yet, English is shown)
@@ -31,6 +31,7 @@ struct Entry {
     const char* en;
     const char* pt;
     const char* es;
+    const char* fr;
 };
 // A static object in each i18n/*.cpp registers its table (before DllMain's code runs)
 struct Table {
@@ -63,5 +64,7 @@ std::string MissingList(size_t max); // one per line
 void ClearMissing();
 // Entries whose translation has other {} placeholders than the English text (checked once; development build)
 std::string PlaceholderProblems();
+// The same English text in two tables with different translations, and entries missing a language (one per line)
+std::string TableProblems();
 
 } // namespace I18n

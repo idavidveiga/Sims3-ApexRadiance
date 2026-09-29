@@ -67,7 +67,7 @@ Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI 
 1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
    them without asking.
 2. Back up the installed `C:\Games\Hydra\The Sims 3\Game\Bin\ApexRadiance.asi` (the first time: the old
-   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 58; 56 = resource_cache.cpp before the convert index fix; 57 = installed asi + crash report before it; 55 = installed asi before SceneNodeBudget was suspended; 54 = installed v1.8.0 asi before the crash reporter; 53 = installed asi before v1.8.0; 52 = sources before the v1.8.0 review fixes; 50 = sources before the v1.7.0 review fixes; 51 = installed asi before v1.7.0; 23 = source before the menu UX features; 42 = source before the compression features; 46 = source before the round 3 performance features; 47 = conflicted sources before the v1.5.0 merge of perf-c6-c8).
+   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 60; 59 = sources before the performance translation; 58 = sources before the lighting translation; 56 = resource_cache.cpp before the convert index fix; 57 = installed asi + crash report before it; 55 = installed asi before SceneNodeBudget was suspended; 54 = installed v1.8.0 asi before the crash reporter; 53 = installed asi before v1.8.0; 52 = sources before the v1.8.0 review fixes; 50 = sources before the v1.7.0 review fixes; 51 = installed asi before v1.7.0; 23 = source before the menu UX features; 42 = source before the compression features; 46 = source before the round 3 performance features; 47 = conflicted sources before the v1.5.0 merge of perf-c6-c8).
 3. Copy the dev `Release\ApexRadiance.asi` into `Game\Bin\`. Exactly one copy of the mod in `Bin`: **delete the old
    `S3SSApex.asi`** (previous standalone and combined-build name). The official `Sims3SettingsSetter.asi` stays beside
    it. A leftover `S3SSApex.asi` is detected: if it loaded first Apex Radiance idles (log error only), otherwise the old
@@ -87,11 +87,14 @@ Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI 
 - **No guessing.** Study before implementing. What works: F7 GPU probe, F8 diag, read the real shader and its
   constants, patch by pattern, test offline over all captured shaders, adversarial review. Mark unverified facts as
   unverified.
-- **English-only** UI, tooltips, status and log text in both builds. **The user chats in Portuguese; reply in
-  Portuguese.**
+- **English is the source language** of UI, tooltips and status text; logs, the Developer page and file names stay
+  English only. Since 1.5.0 the menu is translated into Portuguese (Brazil), Spanish and French (Settings > Menu >
+  Language; automatic = Windows' language): write new texts in English and add their translations to the tables in
+  `i18n/tr_*.cpp` (how: `i18n/TRANSLATING.md`; the widgets translate what they draw, raw ImGui text and run-time text
+  need `I18n::Tr` / `Trf`). **The user chats in Portuguese; reply in Portuguese.**
 - **Credits:** "Credits: @loinyx" only at the end of each feature description shown on hover; no visible credit lines
   outside the menu's Settings > Credits section, which lists sims3fiend (Sims3SettingsSetter, the model for the
-  rewritten framework), the single line "Every-Story Ground Light uses a technique first shared by Arro." (the only public mention: never name Arro or the Split-Level fix in feature descriptions, README or promo text), FXAA and third-party code (ImGui, Detours, toml++, SMAA, Lucide icons ISC). The framework was rewritten, so
+  rewritten framework), the line "Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from Arro's Split-Level Lighting Fix." (user-approved 2026-09-29; also in the README credits with a link to arro-now.tumblr.com; never in feature descriptions or promo text, and never implying the whole mod is based on it), FXAA and third-party code (ImGui, Detours, toml++, SMAA, Lucide icons ISC). The framework was rewritten, so
   there are no carried sims3fiend file headers. Sims3SettingsSetter is named only in compatibility notices, detection,
   the S3SS recommendation card, Credits and the S3SS.toml migration.
 - **Name:** visible text says "Apex Radiance" via `APEX_PRODUCT_NAME`; never "S3SS Apex" / "Apex Edition" again.

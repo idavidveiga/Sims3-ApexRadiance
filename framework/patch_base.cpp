@@ -1,5 +1,6 @@
 #include "patch_base.h"
 #include "game_addresses.h"
+#include "ui/i18n.h"
 #include <algorithm>
 #include <cfloat>
 #include <format>
@@ -185,10 +186,24 @@ bool ApexPatch::IsCompatibleWithCurrentVersion() const {
     return metadata_->gameCodeGroup && GameAddr::GroupAvailable(metadata_->gameCodeGroup);
 }
 
-std::string ApexPatch::UnavailableReason() const {
+namespace {
+// The game-code names a feature's group lacks ("" without a group or before the game code was scanned)
+std::string MissingGameCode(const FeatureInfo* meta) {
     std::string missing;
-    if (metadata_ && metadata_->gameCodeGroup && GameAddr::Resolved()) GameAddr::GroupAvailable(metadata_->gameCodeGroup, &missing);
-    return GameAddr::NotAvailable(missing);
+    if (meta && meta->gameCodeGroup && GameAddr::Resolved()) GameAddr::GroupAvailable(meta->gameCodeGroup, &missing);
+    return missing;
+}
+
+// UnavailableReason in English, for Fail (the log and lastError stay English)
+std::string UnavailableReasonEnglish(const ApexPatch& patch) { return GameAddr::NotAvailable(MissingGameCode(patch.GetMetadata())); }
+} // namespace
+
+// The menu's note: GameAddr::NotAvailable's text in the menu language
+std::string ApexPatch::UnavailableReason() const {
+    const std::string missing = MissingGameCode(metadata_.get());
+    const char* version = g_gameVersion == GameVersion::Unknown ? I18n::Tr("an unknown game version") : GetGameVersionName();
+    if (!GameAddr::Resolved()) return I18n::Trf("Not available on {} (game code not scanned yet)", version);
+    return missing.empty() ? I18n::Trf("Not available on {}", version) : I18n::Trf("Not available on {}: missing {}", version, missing);
 }
 
 bool ApexPatch::Fail(const std::string& message) {
@@ -258,7 +273,7 @@ void ApexPatch::ApplyTableLive(const toml::table& table) {
     const auto enabled = table["enabled"].value<bool>();
     if (!enabled || *enabled == isEnabled.load()) return;
     if (*enabled && !IsCompatibleWithCurrentVersion()) {
-        Fail(UnavailableReason());
+        Fail(UnavailableReasonEnglish(*this));
         return;
     }
     if (*enabled ? Install() : Uninstall()) PatchManager::Get().SetUnsavedChanges(true);
@@ -270,7 +285,7 @@ bool ApexPatch::LoadFromToml(const toml::table& table) {
     if (!enabled) return true;
     enabledFromConfig_ = true;
     if (*enabled == isEnabled.load()) return true;
-    if (*enabled && !IsCompatibleWithCurrentVersion()) return Fail(UnavailableReason());
+    if (*enabled && !IsCompatibleWithCurrentVersion()) return Fail(UnavailableReasonEnglish(*this));
     return *enabled ? Install() : Uninstall();
 }
 
