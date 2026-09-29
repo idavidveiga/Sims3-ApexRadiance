@@ -126,7 +126,10 @@
 > the camera / rate checks, a lamp change (not a switch, and only with a snapshot) goes to `TryLocal`:
 > 1. Lamps: `DiffBake` now returns every counted difference (`BakeDiff::changes`) with the rect the lamp had in the bake
 >    (old) and the one it has now (new): light `+0x134` {minX, minZ, maxX, maxZ}, stored in `BakeLamp::rect` by the lamp
->    tracking. For a user-driven change on a lot the last rebuild did not have, every lamp of that lot the bake takes now.
+>    tracking. A user-driven change on a lot the last rebuild did not have is refused (full path): its lamps may have
+>    been baked by LOD transitions since, but their old places are unknown, so a removed or moved lamp would leave its
+>    old light. A rect that does not hold its lamp's place (+-1 m) is refused too (the rect updaters 0x006BDE66 /
+>    0x006BE816 / 0x006BE8AB are not verified to run in the call that moves the lamp).
 > 2. Pacing: user-driven changes (placed, moved, removed) are queued at once (no camera wait, no 3 s interval).
 >    Automatic changes wait for the camera to be still and relight the same lamp at most once per **5 s**
 >    (`kLocalAutoPerLamp`, instead of 30 s after any rebuild).
@@ -144,18 +147,23 @@
 >    only when the previous one finished, never in the frame right after a chunk rendered (a free frame in between), at
 >    most 8 releases in any 1 s, never while any chunk has `+0x55` or `+0x56` (a full rebuild in progress), never while
 >    the gates are closed. Gates mirrored from `0x00C7E7A0`: live and TerrainData (terrain+0x64) `+0x1D == 0` → closed;
->    `[WM+0x54] ? [[WM+0x54]+8] : 0` (= `0x00C61040`) != 0 and TerrainData `+0x20 == 0` → closed. (A chunk flagged while
+>    `[WM+0x54] ? [[WM+0x54]+8] : 0` (= `0x00C61040`) != 0 and TerrainData `+0x20 == 0` → closed; byte
+>    `[[TerrainData+0x0C]+0x6C] != 0` → closed (the sweep branch itself is skipped at `0x00C85011`, value read at
+>    `0x00C8471A..0x00C8473A`; meaning unknown, probably an edit or tool state). (A chunk flagged while
 >    closed would stall the game's whole per-chunk loop: `0x00C7E7A0` returns without clearing `+0x54` and the branch
 >    still sets "work done".)
 > 6. Completion: the thunk sees the chunk rendered (`+0x54` back to 0 after the call) and passes its QPC time; or
 >    `OnPresent` finds `+0x54 == 0` (rendered by another game path, e.g. `0x00C83060` during a LOD change: counted "by
 >    another game path", no time). **Timeout**: still set after 120 frames during which no other chunk had `+0x54`,
->    `+0x55`, `+0x56` or `+0x50` pending (or 1200 frames in all) → `+0x54` put back to 0 if Apex set it and no rebuild is
->    in progress, queue dropped, local path **off for this world**, one full rebuild (reason "local terrain relight
->    failed (...)"). The same for "the terrain changed under the queue" or a chunk that changed while queued.
+>    `+0x55`, `+0x56` or `+0x50` pending and the gates were open (or 1200 frames in all) → `+0x54` put back to 0 if Apex
+>    set it and no rebuild is in progress, queue dropped, one full rebuild (reason "local terrain relight failed
+>    (...)"). Frames count Presents, not terrain updates (a stretch without terrain updates is not excluded), so the
+>    first timeout in a world keeps the local path; the second turns it **off for this world**. "The terrain changed
+>    under the queue" or a chunk that changed while queued turn it off at once.
 > 7. Bookkeeping: while a batch is queued the next lamp change waits ("waiting for the terrain relight in progress").
->    When every chunk of a batch rendered, the lots it covers get the lamps they had when it was decided in `g_baked`
->    (`LotLightBridge::CoverLots`), so the next compare starts from there. A consumed rebuild (Apex's or the game's)
+>    When every chunk of a batch rendered, each changed lamp takes in `g_baked` the state it had when the batch was
+>    decided (`LotLightBridge::CoverLots`); the lots' other lamps keep their baked state, so small changes that were not
+>    relit still add up to a relight. A consumed rebuild (Apex's or the game's)
 >    drops the queue (its snapshot covers everything); a world change resets it; an uninstall / reinstall drops it and
 >    decides the change again.
 > 8. The smoothed maps are not held (`ExpectRebuild`) for a change the local path is likely to take: the few re-rendered

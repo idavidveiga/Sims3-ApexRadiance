@@ -2640,17 +2640,27 @@ std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint6
     return out; // lots ascending, each lot's lamps in snapshot order: sorted by lot
 }
 
-void CoverLots(BakeSnapshot& baked, const std::vector<uint64_t>& lots, const std::vector<BakeLamp>& lamps) {
-    if (lots.empty()) return;
-    std::vector<BakeLamp> merged;
-    merged.reserve(baked.lamps.size() + lamps.size());
-    for (const BakeLamp& b : baked.lamps)
-        if (!std::binary_search(lots.begin(), lots.end(), b.lot)) merged.push_back(b);
-    merged.insert(merged.end(), lamps.begin(), lamps.end());
+void CoverLots(BakeSnapshot& baked, const std::vector<BakeChange>& changes, const std::vector<BakeLamp>& lamps) {
+    if (changes.empty()) return;
+    // only the changed lamps: the others keep their baked state, so small changes that were not relit still add up
+    std::vector<BakeLamp> merged = baked.lamps;
+    std::vector<char> taken(lamps.size(), 0);
+    for (const BakeChange& c : changes) {
+        const bool addition = c.user && !c.hasOld, removal = c.user && !c.hasNew;
+        if (!addition) { // the lamp as baked (a removal, a switch or a relight)
+            const auto it = std::find_if(merged.begin(), merged.end(), [&c](const BakeLamp& b) { return b.lot == c.lot && b.type == c.type && !MovedApart(b.pos, c.pos); });
+            if (it != merged.end()) merged.erase(it);
+        }
+        if (!removal) // the lamp as it was when the relight was decided
+            for (size_t i = 0; i < lamps.size(); i++)
+                if (!taken[i] && lamps[i].lot == c.lot && lamps[i].type == c.type && !MovedApart(lamps[i].pos, c.pos)) {
+                    taken[i] = 1;
+                    merged.push_back(lamps[i]);
+                    break;
+                }
+    }
     std::stable_sort(merged.begin(), merged.end(), [](const BakeLamp& a, const BakeLamp& b) { return a.lot < b.lot; });
     baked.lamps.swap(merged);
-    for (uint64_t lot : lots)
-        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) baked.lots.insert(std::upper_bound(baked.lots.begin(), baked.lots.end(), lot), lot);
 }
 
 std::string BakeDiff::Text() const {

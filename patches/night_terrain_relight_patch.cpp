@@ -249,15 +249,15 @@ std::vector<uint64_t> g_editUserLots; // lots of the user-driven changes of the 
 int g_decRebuiltUser = 0, g_decRebuiltAuto = 0, g_decSkipGame = 0, g_decSkipSame = 0, g_decCovered = 0, g_decDeferCamera = 0, g_decDeferRate = 0;
 
 // Local terrain relight (relightNearbyChunks; terrain-relight.md "Local terrain relight"). A lamp change queues the chunks
-// under the changed lamps' old and new rects (ChunkRelight); the batch remembers the lots it bakes and their lamps as they
-// were when it was decided, and when every chunk of it was re-rendered those replace the lots' lamps in g_baked
-// (LotLightBridge::CoverLots), exactly what a rebuild's snapshot would have done for them. While a batch is queued the
-// next lamp change waits for it (then it is compared with the updated snapshot). A consumed rebuild drops the batches
-// (its own snapshot covers everything).
+// under the changed lamps' old and new rects (ChunkRelight); the batch remembers its changes and the lamps of their lots
+// as they were when it was decided, and when every chunk of it was re-rendered the changed lamps take that state in
+// g_baked (LotLightBridge::CoverLots). Changes on a lot the last rebuild did not have always take the full path. While a
+// batch is queued the next lamp change waits for it (then it is compared with the updated snapshot). A consumed rebuild
+// drops the batches (its own snapshot covers everything).
 struct LocalBatch {
     int id = 0;
-    std::vector<uint64_t> lots; // sorted, unique
-    std::vector<LotLightBridge::BakeLamp> lamps;
+    std::vector<LotLightBridge::BakeChange> changes;
+    std::vector<LotLightBridge::BakeLamp> lamps; // the lamps of the changes' lots when it was decided
     std::string what;
 };
 std::vector<LocalBatch> g_localBatches;
@@ -632,35 +632,42 @@ bool SameLamp(uint64_t lot, int type, const float* pos, const RelitLamp& r) {
     return dx * dx + dy * dy + dz * dz <= 0.05f * 0.05f;
 }
 
-// The lamps of the pending change for ChunkRelight: every counted difference with its old and / or new rect, and for a
-// user-driven change on a lot the last rebuild did not have (streamed in later, or its first lamp), every lamp of that
-// lot the bake takes now: none of them was ever baked.
-std::vector<ChunkRelight::Lamp> LocalLamps(const std::vector<uint64_t>& newLots) {
-    std::vector<ChunkRelight::Lamp> out;
+// The lamps of the pending change for ChunkRelight: every counted difference with its old and / or new rect. False when a
+// rect does not hold its lamp's place (+-1 m): the light rect +0x134 is written by separate updaters (0x006BDE66,
+// 0x006BE816, 0x006BE8AB), not verified to run in the call that moves the lamp, so a stale one is refused.
+bool LocalLamps(std::vector<ChunkRelight::Lamp>& out) {
+    constexpr float kSlack = 1.0f;
+    auto holds = [](const float* r, const float* pos) {
+        return pos[0] >= r[0] - kSlack && pos[0] <= r[2] + kSlack && pos[2] >= r[1] - kSlack && pos[2] <= r[3] + kSlack;
+    };
     for (const LotLightBridge::BakeChange& c : g_editDiff.changes) {
         ChunkRelight::Lamp l;
         l.x = c.pos[0]; // position +0x120 (x, y, z): the rect is x / z
         l.z = c.pos[2];
         if (c.hasOld) std::memcpy(l.rect[l.rects++], c.oldRect, sizeof c.oldRect);
         if (c.hasNew) std::memcpy(l.rect[l.rects++], c.newRect, sizeof c.newRect);
+        for (int k = 0; k < l.rects; k++)
+            if (!holds(l.rect[k], c.pos)) return false;
         if (l.rects > 0) out.push_back(l);
     }
-    for (const LotLightBridge::BakeLamp& b : LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), newLots)) {
-        if (!LotLightBridge::BakeTakes(b, g_lotLamps)) continue;
-        ChunkRelight::Lamp l;
-        l.x = b.pos[0];
-        l.z = b.pos[2];
-        l.rects = 1;
-        std::memcpy(l.rect[0], b.rect, sizeof b.rect);
-        out.push_back(l);
-    }
-    return out;
+    return true;
 }
 
 // The pending change through the local relight. 1 = queued (FinishEdit called), 2 = waiting (WaitEdit called), 0 = not
 // possible (`why`): the caller takes the full path with its own limits.
 int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const std::string& diffText, std::string& why) {
-    const std::vector<ChunkRelight::Lamp> lamps = LocalLamps(newLots);
+    // A lot the last rebuild did not have: its lamps may have been baked since (LOD transitions re-bake chunks with every
+    // registered lamp, chunkrelight.md 1.4), but their old places are unknown, so a removed or moved lamp would leave its
+    // old light on the ground.
+    if (!newLots.empty()) {
+        why = "a change on a lot the last rebuild did not have";
+        return 0;
+    }
+    std::vector<ChunkRelight::Lamp> lamps;
+    if (!LocalLamps(lamps)) {
+        why = "a lamp's light rect does not hold its place yet";
+        return 0;
+    }
     if (lamps.empty()) {
         why = "no lamp rect to relight";
         return 0;
@@ -684,11 +691,8 @@ int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const 
     if (!id) return 0;
     LocalBatch b;
     b.id = id;
-    b.lots = g_editDiff.Lots();
-    b.lots.insert(b.lots.end(), newLots.begin(), newLots.end());
-    std::sort(b.lots.begin(), b.lots.end());
-    b.lots.erase(std::unique(b.lots.begin(), b.lots.end()), b.lots.end());
-    b.lamps = LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), b.lots);
+    b.changes = g_editDiff.changes;
+    b.lamps = LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), g_editDiff.Lots());
     b.what = std::format("{} lamp{}, chunks {}", lamps.size(), lamps.size() == 1 ? "" : "s", chunks);
     for (const LotLightBridge::BakeChange& c : g_editDiff.changes) {
         RelitLamp r;
@@ -1036,7 +1040,7 @@ void OnPresent() {
             }
             const auto it = std::find_if(g_localBatches.begin(), g_localBatches.end(), [&d](const LocalBatch& b) { return b.id == d.id; });
             if (it == g_localBatches.end()) continue;
-            if (g_haveBaked) LotLightBridge::CoverLots(g_baked, it->lots, it->lamps);
+            if (g_haveBaked) LotLightBridge::CoverLots(g_baked, it->changes, it->lamps);
             g_editDiffEnum = -1; // compare again with the updated snapshot
             g_localDone++;
             g_lastLocal = std::format("{}: {}", it->what, d.text);

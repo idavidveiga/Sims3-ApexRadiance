@@ -13,7 +13,11 @@
 //    and TerrainData (terrain+0x64)+0x1D == 0, or when 0x00C61040(WorldManager) (= [WM+0x54] ? [[WM+0x54]+8] : 0) != 0
 //    and TerrainData+0x20 == 0. The sweep branch sets "work done" anyway, so such a chunk would stall every later chunk's
 //    work, the game's own included: both gates are mirrored before a chunk is released, and a chunk that is still not
-//    rendered after the timeout gets its +0x54 back to 0.
+//    rendered after the timeout gets its +0x54 back to 0. The sweep branch itself is skipped (0x00C85011) while
+//    byte [[TerrainData+0x0C]+0x6C] != 0 (read at 0x00C8471A..0x00C8473A; 0x0089F6C0 = mov eax,[ecx+0Ch]): mirrored too.
+//  - A chunk whose LOD is not ready (0x00C84FF4 / 0x00C85003) takes the synchronous rebuild branch whatever +0x55 says: a
+//    released chunk can then be rebuilt and rendered there, counted as "another game path". The +0x55 branch comes after
+//    the "work done" test (0x00C84FDC), so it covers every flagged chunk only up to the first chunk that did work.
 //  - Its render writes the light map +0xD8 in place (created only when null): a managed 256x256 DXT5 with 4 mips.
 //  - Chunk layout (creation 0x00C815E0): nx = terrain+0xC0, nz = +0xC4, cell = +0xC8 = 256; slot = (z0/256)*nx + x0/256
 //    (dense row-major vector); corner +0x04/+0x08, size +0x14/+0x18, centre +0x0C/+0x10 = corner + size/2, rect
@@ -94,6 +98,7 @@ uint32_t g_frame = 0, g_lastDoneFrame = 0;
 std::deque<Clock::time_point> g_releases;
 int g_nextId = 1;
 bool g_rebuiltThisWorld = false, g_offThisWorld = false;
+int g_timeoutsThisWorld = 0; // in-flight timeouts in this world (the second one turns the local path off)
 std::string g_offWhy;
 
 // ---- developer status ----
@@ -242,13 +247,16 @@ bool BakeRectRaw(uintptr_t terrain, uint32_t cx, uint32_t cz, float out[4]) {
     }
 }
 
-// 0 when 0x00C7E7A0 would render the chunk (and clear +0x54) rather than return early with +0x54 still set
+// 0 when the sweep branch would run and 0x00C7E7A0 would render the chunk (and clear +0x54) rather than skip it or return
+// early with +0x54 still set
 int GatesRaw(const View& v) {
     __try {
         if (v.live != 0 && (!v.td || *reinterpret_cast<const uint8_t*>(v.td + 0x1D) == 0)) return 1;
         const uintptr_t sub = *reinterpret_cast<const uintptr_t*>(v.wm + 0x54); // 0x00C61040
         const uint32_t c = sub ? *reinterpret_cast<const uint32_t*>(sub + 8) : 0;
         if (c != 0 && v.td && *reinterpret_cast<const uint8_t*>(v.td + 0x20) == 0) return 2;
+        const uintptr_t tool = v.td ? *reinterpret_cast<const uintptr_t*>(v.td + 0x0C) : 0; // 0x00C8471A: the sweep branch is skipped
+        if (tool && *reinterpret_cast<const uint8_t*>(tool + 0x6C) != 0) return 4;
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 3;
@@ -413,14 +421,18 @@ void FlushDone(FrameResult& out) {
     }
 }
 
-void Fail(FrameResult& out, const std::string& why) {
+// keepOn: only this batch falls back to a full rebuild (a first timeout in the world)
+void Fail(FrameResult& out, const std::string& why, bool keepOn = false) {
     ClearQueue();
-    g_offThisWorld = true;
-    g_offWhy = why;
+    if (!keepOn) {
+        g_offThisWorld = true;
+        g_offWhy = why;
+    }
     g_statFailed++;
     out.failed = true;
     out.why = why;
-    LOG_WARNING("[ChunkRelight] " + why + ": queue dropped, local terrain relight off for this world (full rebuilds instead)");
+    LOG_WARNING("[ChunkRelight] " + why + (keepOn ? ": queue dropped, one full rebuild instead (a second time turns the local relight off for this world)"
+                                                  : ": queue dropped, local terrain relight off for this world (full rebuilds instead)"));
 }
 
 } // namespace
@@ -462,6 +474,7 @@ void OnWorldChanged() {
     g_rebuiltThisWorld = false;
     g_offThisWorld = false;
     g_offWhy.clear();
+    g_timeoutsThisWorld = 0;
     g_seenTerrain.store(0, std::memory_order_release);
     g_releases.clear();
 }
@@ -624,13 +637,17 @@ void OnPresent(FrameResult& out) {
         if (done) FinishFlight(viaThunk);
         else {
             g_flightFrames++;
-            if (p.f55 == 0 && p.f56 == 0 && p.other54 == 0 && p.f50 == 0) g_flightIdle++; // nothing else ahead of it
+            // nothing else ahead of it, and nothing that makes the game skip it on purpose
+            if (p.f55 == 0 && p.f56 == 0 && p.other54 == 0 && p.f50 == 0 && GatesRaw(v) == 0) g_flightIdle++;
             if (g_flightIdle > kIdleTimeout || g_flightFrames > kHardTimeout) {
                 const Entry f = g_flight;
                 // never leave a flag the game will not clear: the sweep branch would stall every later chunk
                 if (g_flightSetByUs && p.f55 == 0 && p.f56 == 0) WriteFlag54(f.chunk, 0);
+                // Frames count Presents, not terrain updates: a first timeout in a world may be a stretch without terrain
+                // updates, so it falls back to one full rebuild and keeps the local path; a second one turns it off.
                 return Fail(out, std::format("the chunk at ({},{}) was not re-rendered within {} frames ({} with nothing else pending)", f.ix, f.iz, g_flightFrames,
-                                             g_flightIdle));
+                                             g_flightIdle),
+                            ++g_timeoutsThisWorld < 2);
             }
         }
     }

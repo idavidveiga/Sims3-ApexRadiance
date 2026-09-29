@@ -67,9 +67,10 @@ BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plain
 bool BakeTakes(const BakeLamp& b, bool plainLamps);
 // The lamps of `lots` (sorted, unique) in a snapshot, sorted by lot
 std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint64_t>& lots);
-// A local terrain relight finished: the bake now has `lamps` (taken with LampsOfLots when it was decided) for `lots`.
-// Replaces those lots' lamps in `baked` and adds the lots to it, so the next DiffBake compares against them.
-void CoverLots(BakeSnapshot& baked, const std::vector<uint64_t>& lots, const std::vector<BakeLamp>& lamps);
+// A local terrain relight of `changes` finished (lots already in `baked`): each changed lamp in `baked` is replaced by its
+// state in `lamps` (taken with LampsOfLots when the relight was decided), so the next DiffBake compares against it. The
+// lots' other lamps keep their baked state.
+void CoverLots(BakeSnapshot& baked, const std::vector<BakeChange>& changes, const std::vector<BakeLamp>& lamps);
 int LampEnumerations(); // light enumerations done (the snapshot changes only when this does)
 // Lots of the latest counted user-driven change (LotLampUserEdits went up with it)
 const std::vector<uint64_t>& LastUserChangeLots();
