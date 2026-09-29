@@ -26,6 +26,10 @@ int BudgetMs();
 
 // The camera moved in the last 300 ms (false when unknown or when the feature is off)
 bool CameraMoving();
+// Samples the camera eye now and returns whether it moved in the last 300 ms, whether or not this feature is on (the
+// camera offsets are parsed from the game's code on the first call; false while they are unknown). Any thread; called
+// once per frame by the scene node budget (features/scene_budget.h), which keeps CameraMoving() current too.
+bool SampleCameraMoving();
 
 std::string StatusText();
 // Development build: status lines

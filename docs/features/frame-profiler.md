@@ -140,11 +140,11 @@ callee cleanup, ECX/EDX passed through, EDX:EAX preserved, float args passed as 
 | 26 | Game clock tick | 0x005943F0 | thiscall(0) | Detours | Game clock tick | render |
 | 27 | Lot impostor pump | 0x00AD97E0 | thiscall(job), ret 4 | Detours | Lot impostor pump | render (see Open items) |
 | 28 | Resource lookup | 0x004AFFC0 | thiscall(2), ret 8 | vtable slots 0x00FB2DE0 / 0x00FFE290 | Resource lookup (counter) | any |
-| 29 | Scene pending nodes | CALL 0x006EBC49 -> 0x006E4130 | thiscall(0) | call site, all threads checked | Scene pending nodes (counter) | render (Scene::BeginFrame) |
+| 29 | Scene pending nodes | CALL 0x006EBC49 -> 0x006E4130 | thiscall(0) | CALL rewrite, outer layer of `CallChain` (the scene node budget is layer 1) | Scene pending nodes (counter) | render (Scene::BeginFrame) |
 | 30 | RefPack compress | 0x004EC200 | thiscall(5), ret 0x14 | vtable slot 0x00FB901C, outer layer of `SlotChain` (site RefPackCompress; the fast compressor is layer 2) | RefPack compress (counter) | any |
 | 31 | DXT1 encode | 0x006152F0 | cdecl(2) | entry JMP, outer layer of `EntryChain` (the fast DXT encoder is layer 1) | DXT encode (counter) | any |
 | 32 | DXT5 encode | 0x006154B0 | cdecl(2) | entry JMP, outer layer of `EntryChain` | DXT encode (counter) | any |
-| 33 | Object lookup by ID | 0x00C62D40 | thiscall(3), ret 0xC | hand-made, safeLen 8 | Object lookup by ID (counter) | any (render / simulation) |
+| 33 | Object lookup by ID | 0x00C62D40 | thiscall(3), ret 0xC | entry JMP, outer layer of `EntryChain` (the object lookup index is layer 2) | Object lookup by ID (counter) | any (render / simulation) |
 | 34 | Lot room solve | CALL 0x00ADB9AD -> 0x006A8BA0 | thiscall(2), ret 8 | call site, all threads checked | Lot room solve (counter) | render (lot lighting update) |
 
 Targets 28-34 (standalone, 2026-09-28) take their addresses from `framework/game_addresses.h` (`TargetInfo::addrId`,
@@ -248,17 +248,18 @@ hooking. Conventions verified in `research\engine_map\full.asm`:
 | Counter (category) | Function | Convention (verified) | Attach | Extra count |
 |---|---|---|---|---|
 | Resource lookup | `ResourceMgr::FindProvider` 0x004AFFC0 | thiscall(key*, cookie*), ret 8 (5 pushes; key `[esp+18h]`, cookie out `[esp+20h]` after them); returns the provider or 0; the cookie is the provider's priority (the list's second dword, [performance.md](performance.md)) | **vtable slots**: 0x00FB2DE0 (base vtable 0x00FB2DA0 +0x40) and 0x00FFE290 (derived 0x00FFE250 +0x40), the only references (no direct CALL; slot +0x44 0x004AFDA0 calls through +0x40). Since 2026-09-29 through `framework/slot_chain.h`: the profiler is the **outer layer**, the resource lookup cache (when on) the inner one, whichever installs first; the hook calls `SlotChain::Next` | packages probed (index of the returned provider in `[this+0x30, this+0x34)`, 8-byte entries, + 1; all of them on a miss; for an answer from the cache: the packages the cache asked, from `ResourceCache::TakeLookupNote`), misses, **from cache** (`kXCacheHits`, answers from the resource lookup cache) |
-| Scene pending nodes | 0x006E4130 (pending-node drain) | thiscall(), ret; zeroes `[this+0x18]` and adds 1 per node (0x006E41EF) | **call site** 0x006EBC49 in `Scene::BeginFrame` (the other 5 callers are not per frame), written with every other thread suspended | nodes = `[this+0x18]` read after the call |
+| Scene pending nodes | 0x006E4130 (pending-node drain) | thiscall(), ret; zeroes `[this+0x18]` and adds 1 per node (0x006E41EF) | **call site** 0x006EBC49 in `Scene::BeginFrame` (the other 5 callers are not per frame). Since 2026-09-29 through `framework/call_chain.h` (site SceneDrain): the profiler is layer 0 (outer), Spread New Objects Over Frames (`features/scene_budget.h`) layer 1; the CALL is written with every other thread suspended; the hook calls `CallChain::Next` | nodes = `[this+0x18]` read after the call (with the budget on: the nodes processed this frame); **deferred** (`kXDeferred`, from `SceneBudget::TakeDrainNote`: nodes the budget left queued) |
 | RefPack compress | RefPack stream write 0x004EC200 | **thiscall**(src, size, dst, capacity, flags), ret 0x14 (uses `[ecx+4]`, the allocator; the plan said stdcall); returns the compressed size. `dst == 0 && flags & 1` = size bound only, passed through untimed; `dst == 0` otherwise = a counting run (compresses without writing, timed) | **vtable slot** 0x00FB901C (stream vtable 0x00FB9018 +4), its only reference; FUN_004EC0A0 / 004EBB90 / 004EB750 have no other caller. Since 2026-09-29 through `framework/slot_chain.h` (site RefPackCompress): the profiler is the outer layer, Faster Cache Compression (`features/fast_refpack.h`) the inner one; the hook calls `SlotChain::Next` | bytes in (size), bytes out (return value) |
 | DXT encode | DXT1 0x006152F0, DXT5 0x006154B0 | cdecl(dst*, src*) (callers `add esp,8`); dst = {pixels, width +4, height +8, pitch +0xC}; src = {pixels, pitch +0xC, format +0x10}; both return eax = width & ~3 | 8 + 7 callers on several threads. Since 2026-09-29 through `framework/entry_chain.h`: the prologue `55 8B EC 83 E4 F0` moves to a trampoline and a 5-byte JMP to the outermost layer is written with every other thread suspended (`MemPatch::WriteCodeSuspended`); the profiler is layer 0, Faster Texture Compression (`features/fast_dxt.h`) layer 1; `DxtEncode` calls `EntryChain::Next`. (Before: a hand-made hook, safeLen 6.) | pixels (width x height) |
-| Object lookup by ID | 0x00C62D40 | thiscall(idLo, idHi, flag), ret 0xC (ecx passed on to 0x00C60D30) | **hand-made** (233 callers: script natives on the simulation thread, lot lighting, camera), safeLen 8 (`8B 44 24 0C 8B 54 24 08`) | - (calls per bucket = render vs simulation) |
+| Object lookup by ID | 0x00C62D40 | thiscall(idLo, idHi, int* visited), ret 0xC (ecx passed on to 0x00C60D30; every caller passes visited = 0, [performance.md](performance.md)) | 233 callers: script natives on the simulation thread, lot lighting, camera. Since 2026-09-29 through `framework/entry_chain.h` (site ObjectById: the 8-byte prologue `8B 44 24 0C 8B 54 24 08` moves to a trampoline, a 5-byte JMP written with every other thread suspended); the profiler is layer 0, Faster Object Lookups (`features/object_index.h`) layer 2; the hook calls `EntryChain::Next`. (Before: a hand-made hook, safeLen 8.) | **from index** (`kXIndexHits`, from `ObjectIndex::TakeLookupNote`: answers from the object lookup index); calls per bucket = render vs simulation |
 | Lot room solve | 0x006A8BA0 | thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return; ecx = one **level object** of the lot (the deque at manager+0x24..0x40) | **call site** 0x00ADB9AD in the lot lighting update 0x00ADB8F0 (its only caller), written with every other thread suspended | calls = **lot levels updated** (corrected 2026-09-29; it said "rooms relit"); the hitch line adds the lot lighting update's inclusive ms. With Lot Lighting While Moving on, the budget argument is the scaled one ([performance.md](performance.md)) |
 
 - No branch in `.text` lands inside a replaced prologue or CALL (checked in full.asm). S3SS and the other installed ASIs
   touch none of these sites (plan section 6). All the entries are 8-byte aligned (hand-made hooks need it).
-- The two counter call sites are written by `WriteCallSuspended` (all other threads suspended, none executing inside the
-  5 bytes; the same method as `AttachSafe`), because the lot lighting update is also reached from the lot impostor
-  builder path. The older call-site targets keep the plain tracked write.
+- The two counter call sites are written with all other threads suspended, none executing inside the 5 bytes: the room
+  solve CALL by `WriteCallSuspended` (the same method as `AttachSafe`), because the lot lighting update is also reached
+  from the lot impostor builder path; the scene drain CALL (since 2026-09-29) by `CallChain` (`MemPatch::WriteCodeSuspended`).
+  The older call-site targets keep the plain tracked write.
 - Vtable-slot targets: `AttachSlots` requires every slot to hold the function (else "replaced by another module?") and
   swaps them with `_InterlockedCompareExchange` while the page is `PAGE_READWRITE`; `DetachSlots` puts back only a slot
   that still holds the hook. Exception (2026-09-29): the Resource lookup target (`T_ResLookup`) goes through
@@ -267,11 +268,21 @@ hooking. Conventions verified in `research\engine_map\full.asm`:
   `g_orig[T_ResLookup]` is only displayed; `Hook_FindProvider` calls `SlotChain::Next`, and reads
   `ResourceCache::TakeLookupNote()` after every call (it is cleared per call). The RefPack compress target
   (`T_RefPackCompress`) does the same on site RefPackCompress ("; the fast compressor is inside").
-- Entry-chain targets (2026-09-29): the DXT1 / DXT5 encoders (`T_DxtEncode1/5`) attach through
-  `EntryChain::Install / Remove` (Layer FrameProfiler) in `AttachTarget` / `DetachTarget`, before the `safeLen` branch
-  (their `safeLen` 6 is only informational now). `ResolveTarget` skips its pattern check for them (the entry may hold
-  the fast encoder's JMP; the chain checks the prologue itself). Hooks-table status: "Timed at the entry, outer layer of
-  the entry chain (...; JMP written with all threads checked[; the fast encoder is inside])".
+- Entry-chain targets (2026-09-29): the DXT1 / DXT5 encoders (`T_DxtEncode1/5`) and the object lookup (`T_ObjectById`)
+  attach through `EntryChain::Install / Remove` (Layer FrameProfiler) in `AttachTarget` / `DetachTarget`, before the
+  `safeLen` branch (their `safeLen` 6 / 8 is only informational now). `ResolveTarget` skips its pattern check for them
+  (the entry may hold the fast encoder's / the object index's JMP; the chain checks the prologue itself). Hooks-table
+  status: "Timed at the entry, outer layer of the entry chain (...; JMP written with all threads checked[; the fast
+  encoder is inside | ; the object lookup index is inside])". `Hook_ObjectById` reads `ObjectIndex::TakeLookupNote()`
+  after every call (cleared per call).
+- Call-chain target (2026-09-29): the scene pending nodes CALL (`T_SceneDrain`) attaches through
+  `CallChain::Install / Remove` (Site SceneDrain, Layer FrameProfiler) in `AttachTarget` / `DetachTarget`, before the
+  call-site branch; `ResolveTarget` checks only that an E8 is there (the CALL may already reach the scene node budget's
+  hook; the chain checks the target itself). Status: "Timed at the CALL ..., outer layer of the call chain (...[; the
+  scene node budget is inside])". `Hook_SceneDrain` reads `SceneBudget::TakeDrainNote()` after every call.
+- Hitch lines and the report: "Scene pending nodes ..., nodes N[, deferred D]" and "Object lookup by ID ...[, from index
+  H]" (the added parts only when non-zero, after a ",", so `agg.pl` still splits counters on "; "); the per-frame
+  Counters table shows "x nodes, y deferred" and "z% from index".
 - Profiler on at start (any build): the table is scanned after the first Present + 1 s (`GameAddr::Scanned()`), so these
   targets show "Waiting for the game-address scan" and are attached at the first frame boundary after it
   (`AttachWaitingLocked`; the remote-call keys too). Waiting on Steam as well keeps the scan's self-check from seeing the
@@ -475,7 +486,7 @@ All addresses Steam 1.67.2 (`TS3W.exe`, image base 0x00400000, no ASLR). Pattern
 | 0x004EC200; slot 0x00FB901C | RefPack stream write | `RefPackCompress`, `RefPackCompressSlot` (SlotsOf, exactly 1) |
 | 0x006EBC49 -> 0x006E4130 | BeginFrame's CALL of the pending-node drain | `SceneDrainCall` (Sig), `SceneDrain` (Target, fallback Sig) |
 | 0x006152F0 / 0x006154B0 | DXT1 / DXT5 encoders | `DxtEncode1`, `DxtEncode5` (Sig) |
-| 0x00C62D40 | object lookup by ID | `ObjectById` (Sig) |
+| 0x00C62D40 | object lookup by ID | `ObjectById` (Sig); its walk / search 0x00C60D30 / 0x00C5FA60 = `ObjectTreeWalk` / `ObjectTreeSearch` (used by the object lookup index) |
 | 0x00ADB9AD -> 0x006A8BA0 | lot lighting update's CALL of the room solve | `RoomSolveCall` (Sig), `RoomSolve` (Target, fallback Sig) |
 | 0x007D9840, 0x010650C4, 0x010650D8 | remote-call job function, PostRemoteMethodCall vtables (stored at 0x00ABEA0A / 0x00ABEA93) | `RemoteCallJob` (Sig), `RemoteMethodVtable`, `RemoteMethodVtable2` (Sig, dword) |
 
@@ -560,9 +571,10 @@ hooks (mod)" 10.3 s total = ~0.2 ms/frame (all modules, profiler included), "D3D
   reached only through vtables, swap the slots: `AttachSlots`). This is why the 2026-09-28 counters do not use Detours /
   `DetourBatch` for FindProvider, the RefPack write, the DXT encoders or the object lookup.
 - **Do not hook a site another Apex module also wraps outside its chain**: FindProvider and the RefPack write go
-  through `SlotChain`, the DXT encoders through `EntryChain` (the fast compressor / encoder of
-  [performance.md](performance.md) are the inner layers). A direct slot swap or entry write would cut the other layer
-  out (or be refused by its expected-value check).
+  through `SlotChain`, the DXT encoders and the object lookup through `EntryChain`, the scene drain CALL through
+  `CallChain` (the cache, the fast compressor / encoder, the object lookup index and the scene node budget of
+  [performance.md](performance.md) are the inner layers). A direct slot swap, entry or CALL write would cut the other
+  layer out (or be refused by its expected-value check).
 - **The Mutex::Lock hook distorts the resource lookup** (plan caveat 1b: ~580 lock calls per full scan, two clock reads
   each, and they show up in the samples as this ASI). Keep "Time the Mutex::Lock hook" off for lookup measurements.
 - **Attach on the render thread at a frame boundary**, never from the UI click directly (call-site writes would race

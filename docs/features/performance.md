@@ -1,6 +1,6 @@
-# Performance: Faster Game File Lookups, Lot Lighting While Moving, Faster Texture / Cache Compression
+# Performance: Faster Game File Lookups, Lot Lighting While Moving, Faster Texture / Cache Compression, Spread New Objects, Faster Object Lookups
 
-> Four anti-stutter features from the perf round 2 plan (`research\perf2\plan.md`, candidates C1, C7, C9 and C4), written
+> Six anti-stutter features from the perf round 2 plan (`research\perf2\plan.md`, candidates C1, C7, C9, C4, C6 and C8), written
 > on 2026-09-29 from the game's disassembly and Apex's own framework (no Sims3SettingsSetter code). Both builds (public
 > and development). Menu: SYSTEM > **Performance** (one card), plus two Overview rows; developer lines under Developer >
 > Profiler > "Performance".
@@ -17,6 +17,12 @@
 > - **Faster Cache Compression** (`[patches.FastCacheCompression]`, experimental, **off by default**): the RefPack stream
 >   write answered by a fast compressor in the game's stream format; the game decompresses it unchanged (C4, section
 >   below).
+> - **Spread New Objects Over Frames** (`[patches.SceneNodeBudget]`, experimental, **off by default**, added later on
+>   2026-09-29): while the camera moves, Scene::BeginFrame's pending-node drain handles at most 512 nodes / 2 ms per
+>   frame and the rest the next frames (C6, section below).
+> - **Faster Object Lookups** (`[patches.ObjectLookupIndex]`, experimental, **off by default**, added later on
+>   2026-09-29): the object-by-ID lookup (a walk of the whole world object tree) answered from a validated index of
+>   where the game's walk found each object (C8, section below).
 >
 > Status: implemented, **not yet compiled or tested in game** (the user compiles). Everything below marked VERIFIED was
 > read in `research\engine_map\full.asm` / `S3SS-dev\re\TS3W.exe`; INFERRED = deduction, not confirmed at run time.
@@ -51,6 +57,8 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | "Lot lighting time while moving" (shown while the switch is on) / "The current lot's time per frame while moving; 3 ms is the default" | `[patches.LotLightingMotion] budgetWhileMovingMs` | int | **3** | 1-15 | ms; end labels "Smoother" / "Lights sooner"; 15 = the game's own. Applied live (the hook reads it every call; `Update` clears the reinstall request). Never rename the key. |
 | "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **false** | - | Experimental until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. No Overview row. |
 | "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
+| "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **false** | - | Experimental (C6). No Overview row; the tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
+| "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **false** | - | Experimental (C8). No Overview row. |
 
 Development build only (not saved): Developer > Profiler > "Performance" card: the cache's counters, "Check 1 answer in
 N against the game" (default 64, 0 = never), "Check every answer for 10 s", the last difference; the lot lighting call,
@@ -59,7 +67,14 @@ blocks (flat-luma, solid, encoded by the game's function), time, "checked textur
 features, "Check 1 texture in N against the game" (default 8), "Check every texture for 30 s", the last difference;
 cache compression: streams, MB in / out, time, counting runs, writes after a counting run, did not fit, temporary
 contexts, checks (game's decoder), the comparison with the game's compressor, "Check 1 stream in N by decompressing"
-(default 1), "Also run the game's compressor on 1 stream in N" (default 0), "Search depth" (default 32).
+(default 1), "Also run the game's compressor on 1 stream in N" (default 0), "Search depth" (default 32); scene node
+budget: drain call, drains (game's while still / game's after a too-long wait / with a budget), nodes processed with a
+budget, frames that left nodes, node-frames waiting, largest backlog, the last budgeted drain (done, left, ms), sliders
+"Nodes per frame while moving" (default 512), "ms per frame while moving" (default 2.0), "Longest wait (ms)" (default
+500); object lookups: lookups, from the index, game walks (not found), too old, path changed, passed through, stored /
+not stored, entries, table restarts, container / object classes recognised, per-second rates and "saved about X ms",
+average walk vs answer, "Check 1 answer in N against the game" (default 64), "Check every answer for 10 s", checks
+(equal / different / inconclusive), the last difference.
 
 Both features take part in undo (the menu's state capture covers every `[patches.*]` table) but not in Profiles (only
 the look features are profile features).
@@ -407,6 +422,145 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   allocation or 256 KB clear, and a bounded search instead of the whole chain: 5-20x faster on repetitive data (where
   the hitches are), a few percent larger streams (the caches are size-capped, so slightly earlier evictions).
 
+## How it works: Spread New Objects Over Frames (C6)
+
+Purpose (MEASURED, plan section 2.1): Scene::BeginFrame is the dominant cause of 31% of the 25-50 ms camera-moving
+hitches and 26% of the 50 ms+ ones; the pending-node drain once processed 2224 nodes in 2.84 ms in one frame (usually
+few). Inside it most of the time is the per-node update (materials resolving textures, i.e. C1's lookups).
+
+### The game side (Steam 1.67.2; VERIFIED in `research\engine_map\full.asm` unless marked)
+
+- **Pending holder** = `[scene+8]`, constructor 0x006E4530: `+0x18` counter (nodes processed by the last drain), `+0x20`
+  / `+0x24` the sentinel {next, prev} of a circular intrusive list, `+0x2C` (through the node's owner) the spatial tree.
+- **Scene node** (base constructor 0x006FD710, vtable 0x00FF9D00, refcounted: vfunc +0 AddRef 0x005044C0, +4 Release
+  0x00692720): `+0x18` / `+0x1C` its pending link {next, prev}, **0 = not queued**; `+0x30` its owner (the holder).
+- **Queueing:** 0x006FAC70 MarkDirty: `if (link.next == 0) { link = self-loop; 0x006E42E0(owner, node); }` and the same
+  inline test in 0x006FCA20 (children), 0x006FCB10 (LOD band change), 0x006FD9F0 (SetOwner). 0x006E42E0 is a plain
+  push_back at the tail (`link.prev = tail; link.next = sentinel; ...`). Scene AddNode (0x006E6xxx, the insert at
+  0x006E64EF) AddRefs the node and queues it (a new node's link is the constructor's self-loop, so it is queued without
+  the test). There is no lock anywhere on this list: all users run on the render thread (INFERRED from the absence of
+  any lock in the drain, the queue and the removal).
+- **Removal:** 0x006E4984 (scene RemoveNode): `if (link.next) { unlink from whatever list holds it; self-loop }`, then
+  0x006FB490 (out of the spatial tree), SetOwner(0) (vfunc +0x1C), Release (vfunc +4). So **a queued node is always held
+  by its scene and never freed while linked**; the node destructor 0x006FD930 does not touch the link (it relies on
+  this).
+- **The drain 0x006E4130**, thiscall(holder), ret, 0xD1 bytes: splices the whole list into a sentinel on its own stack
+  and empties the holder's list (0x006E413E..0x006E4192); `[this+0x18] = 0`; then, **newest first**, while the local
+  list is not empty: `l = local.prev`; unlink it; `l->prev = l->next = 0`; `node = l - 0x18`; `node->vfunc+0x48()` (the
+  base class's is `ret`); `b = 0x006FB4B0(node, &aligned32)` (world AABB: two `movaps` into the buffer); `0x006FAD70(node,
+  b)` (= `owner+0x2C -> 0x00705B70(node, b)`: moves the node to the spatial cell containing it, or out of the tree when
+  outside the world); `[this+0x18] += 1`. Nodes queued during the loop go to the holder's (now empty) list: the next
+  drain handles them.
+- **Callers:** 0x006EBC49 Scene::BeginFrame (every frame), 0x006DF9B5, 0x006EDBC7 (a scene query that drains first so
+  its answer is current), 0x006EF07D, 0x006F226B (a render-to-texture path, when asked), 0x006F3CF1. 0x0071A540 runs a
+  queued node's vfunc +0x48 itself when it needs it (without dequeuing it).
+
+### Is deferring safe?
+
+Yes, with the design below (arguments from the verified code; the INFERRED parts are marked and are what the in-game
+test must confirm):
+- **No lifetime hazard:** a queued node is referenced by its scene and unlinked by RemoveNode before its Release; the
+  deferred nodes stay in the holder's own list (not in any Apex structure), so RemoveNode unlinks them as always and no
+  pointer to them is kept by Apex. The list is well-formed at every point (the splice back is O(1)).
+- **No lost node:** every node taken off the list is processed in the same iteration; the rest stay queued; every later
+  drain (the game's own included) processes them; a node waiting longer than `maxDeferMs` (500 ms) makes the next
+  BeginFrame run the game's full drain, and the camera stopping does too.
+- **Consumers:** the game already renders with nodes queued (anything queued after BeginFrame waits until the next
+  frame), and the consumers that need a current tree drain it themselves (their five CALLs are untouched and process
+  what was deferred). INFERRED: that no consumer assumes "the list is empty right after BeginFrame" (none was found: the
+  counter `[this+0x18]` is only written by the drain).
+- **What a deferred node looks like** (INFERRED): a new node is not in the spatial tree yet (not drawn until processed:
+  "pop-in" of a frame or a few); a moved node keeps its old cell (it can be culled at its old place for those frames).
+  Order: the processed part keeps the game's order (newest first); the rest is processed first the next frame.
+
+### The copy with a budget (`features/scene_budget.cpp`)
+
+- `Hook_SceneDrain` is layer 1 of `framework/call_chain.h` on the CALL 0x006EBC49 (the Frame Profiler's "Scene pending
+  nodes" counter is layer 0). Start compares the **whole drain** (0xD1 bytes, only the two CALL rel32s wildcarded) with
+  the Steam code, checks that its two CALLs sit at +0xAE / +0xB6 and reach `SceneNodeBounds` / `SceneNodeSpatial`, and
+  refuses otherwise.
+- Per BeginFrame (render thread): samples the camera eye (`LotLightingMotion::SampleCameraMoving`, the same eye read and
+  300 ms rule as Lot Lighting While Moving, usable whether that feature is on or not). Camera still, or a node waited
+  `maxDeferMs` -> the game's drain (everything). Moving -> `BudgetedDrain`: the game's loop instruction for instruction
+  (same splice, same unlink order, same calls, same counter) plus a stop test before each node: at least 8 nodes, then
+  stop at `nodesPerFrame` (512) nodes or `msPerFrame` (2.0 ms, QPC). The nodes not reached are spliced back at the
+  **front** of the holder's list, in order, before anything queued during the loop.
+- The Frame Profiler reads `[this+0x18]` (nodes processed this frame) and `SceneBudget::TakeDrainNote()` ("deferred" =
+  nodes left).
+- Stop: the layer is removed; while threads may still be inside it, the hook runs the game's drain (`g_on` false).
+
+## How it works: Faster Object Lookups (C8)
+
+Purpose (MEASURED, plan section 2.2): `0x00C5FA60` is 13.6% of the samples of lot-lighting-dominated hitches (the hot
+leaf), with `0x00C62D55` / `0x00C60D76` 16% on the stack; the lookup has 233 direct callers including the script natives
+(simulation thread).
+
+### The game side (Steam 1.67.2; VERIFIED)
+
+- **0x00C62D40** ObjectById, thiscall(mgr, idLo, idHi, `int* visited`), ret 0xC: `r = 0x00C60D30(...)`; returns `r` only
+  if `r->vfunc+0x40() == 1`. The third argument is a visit counter (not a flag): every one of the 233 callers passes 0
+  (207 `push 0`; the other 26 push a register that is 0 on that path: `xor reg,reg` earlier in the function, or, at
+  0x0086F162 / 0x00C89B03, a register just tested for zero; checked site by site 2026-09-29); a non-zero one is passed to
+  the game untouched anyway.
+- **0x00C60D30** walk, thiscall(mgr, idLo, idHi, visited), ret 0xC: id 0 -> 0; for each root of the vector
+  `[mgr+0x9C, mgr+0xA0)` (size re-read every step): `0x00C5FA60(root, ...)`, first non-zero wins. `mgr` =
+  `[0x011ECBC4]` (WorldManager) at most sites.
+- **0x00C5FA60** search, cdecl(node, idLo, idHi, visited): node 0 -> 0; **id at +0x48 / +0x4C == key -> node** (any
+  type); `++*visited` if given; if `vfunc+0x40() == 2`: for i < `vfunc+0x58()` (re-read): `search(vfunc+0x4C(&i))`, first
+  non-zero wins. So the answer is the first node in depth-first order (roots in order, a node before its children,
+  children in index order) whose id is the key, if it is of type 1.
+- **The tree's classes:** the tree base constructor 0x00C71980 has exactly two callers, so every node is one of:
+  - **Layer** (type 2, "Lot/ObjMgr - Layer", vtable 0x010641B0, ctor 0x00AA9370, 0xB8 bytes): children = a vector of
+    node pointers at `+0xA0 / +0xA4` (+0x40 = 0x00B742C0 `mov eax,2; ret`; +0x58 = 0x00AA93C0 `(end - begin) >> 2`;
+    +0x4C = 0x00AA9190 `i < count ? begin[i] : 0`). Its mutators are reached **only through its vtable** (no direct
+    CALL, calls.tsv / datarefs.tsv): +0x44 AddChild 0x00AAA080 (child+0x10 = layer, AddRef, push_back; a child with a
+    parent is removed from it first, a parentless one from the WorldManager roots 0x00C65A20), +0x50 RemoveChildById
+    0x00AA9830, +0x54 RemoveChild 0x00AA9780 (erase, child+0x10 = 0, Release), +0x5C RemoveAll 0x00AA9920, +0x14 Clear
+    0x00AA9430 (also the destructor 0x00AA9500), +0x60 SetId 0x00AA9020.
+  - **Lot** (type 1, "Lot/ObjMgr - Lot", vtable 0x01065268, ctor 0x00AC19F0, 0x4C0 bytes): +0x40 = 0x00619EF0 `mov
+    eax,1; ret`, +0x60 SetId 0x00AB3300. So "object lookup by ID" is in practice **the lot lookup by lot id**.
+  - Both are created with `new` by the WorldManager factories (0x00C64420 CreateObject(type 1 / 2), 0x00C64630,
+    0x00C65030, 0x00C65E00, 0x00C66310) and two script / load paths (0x00792CD0, 0x00D41630); no derived class.
+- **Ids** are written only by the base SetId 0x00C6DDF0 (called by the two SetId overrides) and zeroed by the base
+  constructor (the only `[+0x48]` / `[+0x4C]` pair writes in the lot (0x00AA0000-0x00AD0000) and WorldManager
+  (0x00C5F000-0x00C73000) code ranges).
+- **The roots vector** `mgr+0x9C..+0xA4` is written by eight non-virtual WorldManager methods (0x00C65A20, 0x00C65CF0,
+  0x00C65E00, 0x00C66260, 0x00C66310, 0x00C66AB0, 0x00C6CF80, the constructor 0x00C671E0); Layers also load their
+  children in 0x00AAA190. **So not all mutators can be hooked through vtables**; hooking eight direct-called methods by
+  their entries (and proving there is no other writer) was judged not verifiable enough.
+- Threads: render (lot lighting 0x00AD7620, camera 0x0096EAE0) and simulation (script natives 0x00784F50..0x00797A60).
+  The walk takes no lock.
+
+### The index (`features/object_index.cpp`): a validated cache, no mutator hooks
+
+- **Key** (mgr, idLo, idHi) -> **path**: depth d (1..6), for each level k the node pointer, its vtable and its index
+  (level 0 in the roots, level k in level k-1's children). 4096 entries x 84 bytes (344 KB, `VirtualAlloc` once, never
+  freed), open addressing (32 probes), a table stamp for "empty everything"; SRW lock shared for lookups, exclusive for
+  stores, **never held while game code runs**.
+- **Store** (after the game's walk returned r != 0): the parent chain r, `[r+0x10]`, ... (AddChild's parent pointer, used
+  only as a hint), the root index and each child index found by searching the vectors, each class checked by the bytes
+  of its vtable functions (containers: +0x40 returns 2 and +0x4C / +0x58 are byte for byte the vector accessors above;
+  the object: +0x40 returns 1), then validated once like a hit. Only found objects are stored (misses always walk).
+- **Hit** (`Validate`): from mgr's live roots down: `idx[k] < size` and `vector[idx[k]] == ptr[k]`, the vtable of
+  `ptr[k]` unchanged, the containers' ids != key (else the walk would stop there and the lookup return 0), the object's
+  id == key; the entry younger than 2 s. That is what the game's walk reads to reach the node, so the walk reaches and
+  returns it **unless an earlier node in walk order has the same id** (the residual assumption, INFERRED: lot ids are
+  unique; two lots or a lot and a layer with one id would make the game's own answer order-dependent). Reads start from
+  `mgr` and follow only pointers taken from vectors in use now, so only live objects are read (SEH-guarded against a
+  race with a mutator on another thread; the game's walk has the same race unguarded).
+- **Any failure** (path changed, class changed, id changed, a fault): the game's walk runs, its answer is stored again,
+  and the **whole table restarts** (a structural change was seen; every other answer is proven again by a walk).
+- **Checks (both builds):** the first 64 answers of each session and then 1 in 64 (dev slider; "every answer for 10 s")
+  also run the game's walk; equal = counted; different with the path no longer valid = inconclusive; different with the
+  path still valid = `[ObjectIndex] Verification mismatch: ...` (manager, id, the path, both answers), the feature turns
+  itself off for the session and the game's answer is returned. Every checked lookup returns the game's answer.
+- Hook: layer 2 `ObjectIndex` of `framework/entry_chain.h` on 0x00C62D40 (8-byte prologue to a trampoline); the Frame
+  Profiler's "Object lookup" counter is layer 0 and adds "from index". Start compares the three bodies (lookup from byte
+  8, walk, search; rel32s wildcarded) with the Steam code and checks the three CALLs (lookup +0x10 -> walk, walk +0x41 ->
+  search, search +0x68 -> itself).
+- Cost per answer (INFERRED): an SRW shared acquire, a hash probe, an 84-byte copy, about 4 + 5 x depth loads (depth 2-3
+  for a lot); against a walk with 2-3 virtual calls per node over every lot and layer of the world.
+
 ## Files and functions
 
 | File | Symbols | Role |
@@ -418,18 +572,22 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 | `features/refpack_codec.{h,cpp}` | `Compress` (fast), `Decompress` (0x004EB3B0 translated), `GameCompress` / `GameCore` (0x004EC0A0 + 0x004EB750 / 0x004EBB90 translated), `ParamsFor`, `SizeBound`, `Context` | the RefPack format, pure (also built by `tools/refpack_test`) |
 | `features/fast_refpack.{h,cpp}` | `Start`, `Stop`, `Tick`, `Hook_StreamWrite`, the context pool, the per-thread counting-run pairing, `Check`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `tools/dxt_test/dxt_test.cpp`, `tools/refpack_test/refpack_test.cpp` | offline tests (console only, no files written) | build and run lines in their headers and below |
-| `patches/performance_patches.cpp`, `patches/performance.h` | `ResourceLookupCachePatch`, `LotLightingMotionPatch`, `FastTextureCompressionPatch`, `FastCacheCompressionPatch`, `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` / `*Status` | the ApexPatch features, their registration and the menu's accessors |
+| `features/scene_budget.{h,cpp}` | `Start`, `Stop`, `Hook_SceneDrain`, `BudgetedDrain`, `MatchAt` (the drain body check), `TakeDrainNote`, `Set*` (dev tuning), `GetStats`, `StatusText`, `RenderDeveloperUI` | Spread New Objects Over Frames (C6) |
+| `features/object_index.{h,cpp}` | `Start`, `Stop`, `Hook_ObjectById`, `Find` / `Store` (table), `Build` / `BuildRaw` (path of a found object), `Validate` / `ValidateRaw` (a hit), `ShapeOf` (class shapes), `CheckThisOne` / `RecordMismatch` (verification), `TakeLookupNote`, `GetStats`, `StatusText`, `RenderDeveloperUI` | Faster Object Lookups (C8) |
+| `features/lot_lighting_motion.{h,cpp}` | `SampleCameraMoving`, `EnsureCamera` (added for C6) | the camera eye sampler, shared |
+| `patches/performance_patches.cpp`, `patches/performance.h` | `ResourceLookupCachePatch`, `LotLightingMotionPatch`, `FastTextureCompressionPatch`, `FastCacheCompressionPatch`, `SceneNodeBudgetPatch`, `ObjectLookupIndexPatch`, `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` / `*Status` | the ApexPatch features, their registration and the menu's accessors |
 | `framework/slot_chain.{h,cpp}` | `SlotChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction`; sites incl. `RefPackCompress`, layer `FastCompress` | layered vtable-slot hooks (profiler + cache, profiler + fast compressor) |
-| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, layers `FrameProfiler`, `FastDxt` | layered entry hooks (trampoline + JMP written with all threads suspended) |
+| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, `ObjectById`, layers `FrameProfiler`, `FastDxt`, `ObjectIndex` | layered entry hooks (trampoline + JMP written with all threads suspended) |
+| `framework/call_chain.{h,cpp}` | `CallChain::Install` / `Remove` / `Next` / `Installed` / `CallAddress` / `GameFunction`; site `SceneDrain`, layers `FrameProfiler`, `SceneBudget` | layered hooks on one CALL instruction (rel32 written with all threads suspended) |
 | `framework/memory_patch.{h,cpp}` | `MemPatch::WriteCodeSuspended` | code write with every other thread suspended |
-| `framework/game_addresses.{h,cpp}` | ids `ResRegisterDb` .. `CameraGetter`, `RefPackDecompress`, groups `ResourceCache`, `LotLightingMotion`, `FastTextureCompression`, `FastCacheCompression` | addresses (fixed on Steam, signatures elsewhere) |
-| `features/frame_profiler.cpp` | `Hook_FindProvider` (SlotChain::Next, `kXCacheHits`), `Hook_RefPackCompress` (SlotChain::Next), `DxtEncode` (EntryChain::Next), `AttachSlots` / `DetachSlots` (`T_ResLookup`, `T_RefPackCompress`), `AttachTarget` / `DetachTarget` (`T_DxtEncode1/5`), report lines | profiler side |
+| `framework/game_addresses.{h,cpp}` | ids `ResRegisterDb` .. `CameraGetter`, `RefPackDecompress`, `SceneBoundsCall` .. `SceneNodeSpatial`, `ObjectTreeWalk`, `ObjectTreeSearch`, groups `ResourceCache`, `LotLightingMotion`, `FastTextureCompression`, `FastCacheCompression`, `SceneNodeBudget`, `ObjectIndex` | addresses (fixed on Steam, signatures elsewhere) |
+| `features/frame_profiler.cpp` | `Hook_FindProvider` (SlotChain::Next, `kXCacheHits`), `Hook_RefPackCompress` (SlotChain::Next), `DxtEncode` (EntryChain::Next), `Hook_SceneDrain` (CallChain::Next, `kXDeferred`), `Hook_ObjectById` (EntryChain::Next, `kXIndexHits`), `AttachSlots` / `DetachSlots` (`T_ResLookup`, `T_RefPackCompress`), `AttachTarget` / `DetachTarget` (`T_DxtEncode1/5`, `T_ObjectById`, `T_SceneDrain`), report lines | profiler side |
 | `apex_gui.cpp` | `PerformancePage`, `PerformanceCard`, `FeatureSwitchRow`, Overview rows, Developer > Profiler "Performance" card, search part "Performance" | menu |
 
 ## Game addresses and patterns
 
 Resolved through `framework/game_addresses.cpp` (fixed on Steam 1.67.2; masked signatures on other builds; all checked
-with `research\port169\sigcheck.pl`: 133 of 133 ok, and each alternate matches once at the same place). Full table in
+with `research\port169\sigcheck.pl`: 140 of 140 ok on 2026-09-29, and each alternate matches once at the same place). Full table in
 [../engine/game-versions.md](../engine/game-versions.md) section 6.
 
 | Id | Steam | Kind |
@@ -446,12 +604,21 @@ with `research\port169\sigcheck.pl`: 133 of 133 ok, and each alternate matches o
 | DxtEncode1 / DxtEncode5 | 0x006152F0 / 0x006154B0 | Sig (entry) |
 | RefPackCompress / RefPackCompressSlot | 0x004EC200 / 0x00FB901C | Sig / SlotsOf(1) |
 | RefPackDecompress | 0x004EB3B0 | Sig: the CALL in the stream read 0x004EC010 (not the entry, which S3SS detours); optional |
+| SceneDrainCall / SceneDrain | 0x006EBC49 / 0x006E4130 | Sig / Target (fallback Sig) (existing profiler ids) |
+| SceneBoundsCall / SceneNodeBounds | 0x006E41DE / 0x006FB4B0 | InRange(SceneDrain, 0xD1) / Target (fallback Sig) |
+| SceneSpatialCall / SceneNodeSpatial | 0x006E41E6 / 0x006FAD70 | InRange(SceneDrain, 0xD1) / Target (fallback Sig) |
+| ObjectById | 0x00C62D40 | Sig (existing profiler id) |
+| ObjectTreeWalk / ObjectTreeSearch | 0x00C60D30 / 0x00C5FA60 | Sig (alternates: the CALLs inside the lookup / the walk) |
 
 Run-time checks on every build (not signatures): the read-only class's OpenRecord / base OpenRecord / DeleteRecord bytes
 (`CheckReadOnlyClass`); the budget CALL's target and the `D9` / `DD` after it; the getters' shapes (`A1 imm32 C3`,
 `8B 41 disp8 C3`) and the eye read `0F 28 40 disp8`; the DXT entries' prologue `55 8B EC 83 E4 F0` (or the entry
 chain's own JMP); the RefPack slot holding the write (or the slot chain's outer hook); the first textures / streams of
-each session compared with the game.
+each session compared with the game; the whole scene drain body (0xD1 bytes) and its two CALLs; the object lookup,
+walk and search bodies and their three CALLs; the object lookup's prologue `8B 44 24 0C 8B 54 24 08` (or the entry
+chain's JMP); the scene drain CALL reaching 0x006E4130 (or the call chain's hook); the tree classes' vtable functions
+(bytes) before a path is stored; the first 64 object lookups answered from the index of each session compared with the
+game's walk.
 
 ## Interactions
 
@@ -485,6 +652,20 @@ each session compared with the game.
   reads streams); the fast compressor's streams use the same format and are checked in game through whatever decoder
   is installed (the game's or S3SS's). Nothing in S3SS touches the compressor, the stream vtable or the DXT encoders
   (plan section 6, literal scan of the ASIs).
+- **Frame Profiler and C6 / C8:** "Scene pending nodes" is layer 0 of the call chain on 0x006EBC49 and "Object lookup by
+  ID" layer 0 of the entry chain on 0x00C62D40; with the features on the counters time the budgeted drain / the index
+  (the hitch lines add ", deferred N" and ", from index N"). With the profiler's scene counter, `[this+0x18]` = the
+  nodes processed this frame (fewer while the budget defers). Either order of install works.
+- **Official Sims3SettingsSetter and C6 / C8:** its source (read only) patches none of 0x006EBC49, 0x006E4130,
+  0x006FB4B0, 0x006FAD70, 0x00C62D40, 0x00C60D30, 0x00C5FA60 or the Layer / Lot vtables (its 0x00C63015 is a JZ byte in
+  the lot visibility metric, a different function). Its Lot Streaming "object streaming throttle" detours
+  AddLotObjectsToScene 0x00AC1130 and spreads object additions over frames itself; both can be on: it limits how many
+  objects are created per frame, C6 how many queued scene nodes are placed per frame.
+- **Lot Lighting While Moving and C6:** both use the same camera eye sampler (`LotLightingMotion::SampleCameraMoving`,
+  the eye read parsed once from WorldManager::Update's code); C6 samples it once per frame whether or not Lot Lighting
+  While Moving is on.
+- **Lot lighting and C8:** the lot lighting code is the main render-thread caller of the lookup (0x00AD7620); with the
+  index its "Object lookup" time should drop, and so "Lot room solve" per level.
 
 ## Pitfalls and risks
 
@@ -531,7 +712,27 @@ each session compared with the game.
 - **Unloading (C4):** after switching the feature off the vtable layer stays up to 2 s; `FreeLibrary` of the ASI in that
   window would leave the slot pointing into unloaded code (ASI loaders never unload; noted for completeness).
 - **Do not** swap the RefPack slot or hook the DXT entries outside `SlotChain` / `EntryChain` (the profiler and the fast
-  paths would lose each other).
+  paths would lose each other). The same for the scene drain CALL (`CallChain`) and the object lookup entry
+  (`EntryChain`).
+- **Pop-in while moving (C6, by design, INFERRED look):** a node placed later is not drawn (new) or culled at its old cell
+  (moved) for the frames it waits. At the defaults (512 nodes / 2 ms, at most 500 ms wait) a lot that streams in with
+  ~2000 nodes takes a few frames. If moving Sims or objects flicker at the edge of the screen while panning, lower the
+  wait or raise the per-frame limits (Developer card) and report it.
+- **Do not change the drain copy's order or the splice (C6):** the copy must stay the game's loop (newest first, unlink
+  before the calls, the local sentinel re-read after every node because game code may unlink other nodes, the rest put
+  back at the front). Do not keep node pointers outside the game's list: only the list keeps a node alive.
+- **Unproven consumer assumption (C6, INFERRED):** nothing was found that expects the pending list to be empty right
+  after BeginFrame; if a crash or a missing object appears only with the feature on, turn it off and send the log.
+- **Duplicate ids (C8, the residual assumption):** the index answers the remembered object as long as its path is valid;
+  if a second node with the same id appeared earlier in the walk order (a lot re-created while the old one is still in
+  the tree, or a Layer with a lot's id), the game's walk would answer the other one. Lot ids are unique by design
+  (INFERRED); the first 64 + 1 in 64 checks would catch it ("Verification mismatch").
+- **Table restarts (C8):** every path that stops validating restarts the whole table (conservative). If the Developer
+  line shows restarts every few seconds while playing (lots added / removed often), the gain shrinks; a per-entry
+  invalidation would then be worth it (open item).
+- **Do not replace the validation with hooks on the Layer mutators alone (C8):** the WorldManager roots have eight
+  direct-called writers and Layers load their children in 0x00AAA190; a hook-maintained index would miss those.
+- **Do not free the object index table or move its SRW lock** (threads may still be inside the hook after Stop).
 
 ## Testing in game
 
@@ -594,6 +795,37 @@ Faster Cache Compression (development build):
    it must load normally (the streams are standard RefPack).
 5. After several clean sessions: flip `enabledByDefault` to true.
 
+Spread New Objects Over Frames (development build, Developer > Profiler > Performance):
+1. Turn it on. Log: `[CallChain] Scene::BeginFrame pending-node drain (CALL 0x006ebc49 -> 0x006e4130): layer 1 installed`
+   and `[SceneBudget] On: ... at most 512 nodes / 2.0 ms per frame, longest wait 500 ms`. With the Frame Profiler on
+   (either order): its Hooks table says "outer layer of the call chain ...; the scene node budget is inside".
+2. Camera still: "drains ... game's (camera still)" grows, "with a budget" does not.
+3. Pan quickly over a neighborhood while lots stream in, travel, load a save and pan at once: "with a budget" grows,
+   "frames left nodes" > 0 when a lot streams in, "largest backlog" in the hundreds / thousands, "game's (a node waited
+   too long)" rare. Look for: objects appearing a frame late (expected, subtle), objects flickering or missing after the
+   camera stops (NOT expected: turn the feature off and report), any crash (turn it off, send the log).
+4. Frame Profiler, the same camera test with the feature off and on: the "Scene pending nodes" per-hitch ms should drop in
+   the 25-50 ms moving hitches; the hitch lines show ", deferred N".
+5. Build / Buy: place, move and delete objects while panning; Edit Town; CAS and back: everything placed, nothing left
+   invisible. Try the Developer sliders (e.g. 64 nodes, 0.5 ms) to make deferral obvious, then back to the defaults.
+6. After several clean sessions: flip `enabledByDefault` to true.
+
+Faster Object Lookups (development build):
+1. Turn it on. Log: `[EntryChain] object lookup by ID (0x00c62d40): layer 2 installed ...` and `[ObjectIndex] On: object
+   lookup 0x00c62d40 (walk 0x00c60d30, search 0x00c5fa60) answered from a validated index of 4096 entries; checks: the
+   first 64 answers, then 1 in 64`.
+2. Load a save and play (lot lighting at night, Sims going to community lots, travel, Edit Town: add / move / delete a
+   lot, buy a lot, save and load). Expect "Checks: N equal, 0 different", "classes recognised: 1 container, 1 object",
+   "from the index" above ~90% of the lookups after warm-up, "path changed" small and "table restarts" rare.
+3. "Check every answer for 10 s" during a lot change in Edit Town and while panning at night: still 0 different
+   (inconclusive is fine: the tree changed during a check).
+4. Frame Profiler (either order): "Object lookup by ID" per-frame ms drops, the hitch lines show ", from index N"; in
+   lot-lighting-dominated hitches the lookup share should fall. Its Hooks table: "outer layer of the entry chain ...; the
+   object lookup index is inside".
+5. Any `[ObjectIndex] Verification mismatch` line: keep it off and send the line (it has the id, the path and both
+   answers).
+6. After several clean sessions: flip `enabledByDefault` to true.
+
 ## Open items
 
 - Negative caching (the game's misses retry with a transformed key, `0x007D8110`): not done; misses were 0 in the
@@ -613,3 +845,14 @@ Faster Cache Compression (development build):
   pick them from `tools/refpack_test`'s sweep and the dev comparison (size vs time).
 - Cache compression: the package writer compresses each resource twice (counting run, then the write); caching the
   counted stream per thread and copying it on the write would halve its cost (needs the buffer ownership rules checked).
+- Scene node budget (C6): the per-frame limits (512 nodes / 2 ms / 500 ms) are chosen without data; pick them from the
+  profiler's "Scene pending nodes, nodes N, deferred D" in the moving hitches. Which node classes are expensive in
+  vfunc +0x48 (plan section 10, question 3) is still open: if one node dominates (a whole lot's model), a node budget
+  cannot split it.
+- Scene node budget (C6): the three developer sliders are not saved; if the defaults need changing for everyone, move
+  them to registered settings under an "Advanced" section.
+- Object lookup index (C8): a per-entry invalidation (instead of the whole-table restart) if the Developer line shows
+  frequent restarts; misses (not found) are never cached (the game's walk runs every time): count them first.
+- Object lookup index (C8): the Layer mutators (AddChild / RemoveChild* / RemoveAll / Clear / SetId) could be hooked
+  through their vtable slots as an extra "something changed" signal, and the eight WorldManager root writers through
+  their entries; not done (the validation already covers removals; only an earlier duplicate id is not covered).

@@ -587,6 +587,8 @@ void PerformanceCard() {
         }
         FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures");
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
+        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -642,8 +644,12 @@ void DevProfilerTab() {
     ApexPatch* lots = Find(Performance::kLotLightingName);
     ApexPatch* tex = Find(Performance::kFastTextureName);
     ApexPatch* pack = Find(Performance::kFastCacheName);
-    const bool anyPerf = (cache && cache->IsEnabled()) || (lots && lots->IsEnabled()) || (tex && tex->IsEnabled()) || (pack && pack->IsEnabled());
-    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup cache, lot lighting while moving, texture and cache compression", anyPerf, [cache, lots, tex, pack] {
+    ApexPatch* nodes = Find(Performance::kSceneBudgetName);
+    ApexPatch* objs = Find(Performance::kObjectIndexName);
+    const bool anyPerf = (cache && cache->IsEnabled()) || (lots && lots->IsEnabled()) || (tex && tex->IsEnabled()) || (pack && pack->IsEnabled()) ||
+                         (nodes && nodes->IsEnabled()) || (objs && objs->IsEnabled());
+    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup cache, lot lighting while moving, compression, scene nodes, object lookups", anyPerf,
+            [cache, lots, tex, pack, nodes, objs] {
         if (cache && cache->IsEnabled()) cache->RenderDeveloperUI();
         else ImGui::TextDisabled("Resource lookup cache: off");
         ApexUi::Gap(ApexUi::kSpace2);
@@ -655,6 +661,12 @@ void DevProfilerTab() {
         ApexUi::Gap(ApexUi::kSpace2);
         if (pack && pack->IsEnabled()) pack->RenderDeveloperUI();
         else ImGui::TextDisabled("Faster cache compression: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (nodes && nodes->IsEnabled()) nodes->RenderDeveloperUI();
+        else ImGui::TextDisabled("Spread new objects over frames: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (objs && objs->IsEnabled()) objs->RenderDeveloperUI();
+        else ImGui::TextDisabled("Faster object lookups: off");
     });
 }
 

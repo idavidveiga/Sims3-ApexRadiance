@@ -157,6 +157,12 @@ constexpr Info kInfo[] = {
     {"CameraRootGetter", 0x006E8330},
     {"CameraGetter", 0x006E8400},
     {"RefPackDecompress", 0x004EB3B0},
+    {"SceneBoundsCall", 0x006E41DE},
+    {"SceneNodeBounds", 0x006FB4B0},
+    {"SceneSpatialCall", 0x006E41E6},
+    {"SceneNodeSpatial", 0x006FAD70},
+    {"ObjectTreeWalk", 0x00C60D30},
+    {"ObjectTreeSearch", 0x00C5FA60},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -331,6 +337,14 @@ const Entry kTable[] = {
     {Id::CameraGetter, K::Target, W::Text, Id::CameraGetterCall, 0, {NOSIG, NOSIG}},
     // ---- Faster cache compression (docs/features/performance.md) ----
     {Id::RefPackDecompress, K::Sig, W::Text, None, 0, {{"3B C2 77 14 8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 12, M::Call}, {"8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 8, M::Call}}},
+    // ---- Scene node budget (docs/features/performance.md): the two per-node calls inside the drain 0x006E4130 ----
+    {Id::SceneBoundsCall, K::InRange, W::Text, Id::SceneDrain, 0xD1, {{"8D 44 24 20 50 8B CE E8 ?? ?? ?? ?? 50 8B CE E8", 7, M::At}, {"50 8B CE E8 ?? ?? ?? ?? 50 8B CE E8", 3, M::At}}},
+    {Id::SceneNodeBounds, K::Target, W::Text, Id::SceneBoundsCall, 0, {{"55 8B EC 83 E4 F0 81 EC 8C 00 00 00 56 8B F1 8A 46 40 F6 D0 A8 01 75 ?? 8B 46 30 85 C0 74 ?? 83 78 2C 00 74", 0, M::At}, NOSIG}},
+    {Id::SceneSpatialCall, K::InRange, W::Text, Id::SceneDrain, 0xD1, {{"50 8B CE E8 ?? ?? ?? ?? 8B 4C 24 1C 01 5F 18", 3, M::At}, {"E8 ?? ?? ?? ?? 8B 4C 24 1C 01 5F 18", 0, M::At}}},
+    {Id::SceneNodeSpatial, K::Target, W::Text, Id::SceneSpatialCall, 0, {{"8B 41 30 85 C0 74 14 8B 40 2C 85 C0 74 0D 8B 54 24 04 52 51 8B C8 E8 ?? ?? ?? ?? C2 04 00", 0, M::At}, NOSIG}},
+    // ---- Object lookup index (docs/features/performance.md): the tree walk behind ObjectById ----
+    {Id::ObjectTreeWalk, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 08 55 8B 6C 24 10 56 8B F1 8B CB 33 C0 0B CD 74 ?? 8B 96 A0 00 00 00 2B 96 9C 00 00 00 57 33 FF C1 FA 02", 0, M::At}, {"8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", 6, M::Call}}},
+    {Id::ObjectTreeSearch, K::Sig, W::Text, None, 0, {{"53 55 56 8B 74 24 10 85 F6 0F 84 ?? ?? ?? ?? 8B 46 48 8B 5C 24 14 3B C3 8B 6C 24 18 75 ?? 8B 4E 4C 3B CD 74", 0, M::At}, {"8B 04 B8 51 55 53 50 E8 ?? ?? ?? ?? 83 C4 10 85 C0 75", 7, M::Call}}},
 };
 // clang-format on
 #undef NOSIG
@@ -349,6 +363,9 @@ const Group kGroups[] = {
     {"LotLightingMotion", {Id::LotLightBudgetCall, Id::LotLightBudget, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"FastTextureCompression", {Id::DxtEncode1, Id::DxtEncode5}},
     {"FastCacheCompression", {Id::RefPackCompress, Id::RefPackCompressSlot}},
+    {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::CameraRootCall,
+                         Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
+    {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -15,8 +15,10 @@ light the ground; part of Night Lighting), Reflections, Picture filters (SDR), E
 (SMAA/FXAA), Depth Blur, Borderless window, Performance (Faster Game File Lookups `ResourceLookupCache`, off by default
 until tested; Lot Lighting While Moving `LotLightingMotion`; Faster Texture Compression `FastTextureCompression`, a
 bit-identical rewrite of the game's CPU DXT encoders, and Faster Cache Compression `FastCacheCompression`, a faster
-RefPack compressor in the game's format, both off by default until tested; offline tests in `tools\dxt_test` and
-`tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
+RefPack compressor in the game's format, both off by default until tested; Spread New Objects Over Frames
+`SceneNodeBudget`, a budgeted copy of the scene's pending-node drain while the camera moves, and Faster Object Lookups
+`ObjectLookupIndex`, a validated index for the object/lot lookup by ID, both experimental and off by default; offline
+tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
 Ctrl+Shift+F7, Light Diag Ctrl+Shift+F8, Frame Capture Ctrl+Shift+F9, Lot Map Probe, census). Menu: Violet UI
 (sidebar plus feature cards), hotkey Ctrl+Shift+F11. Smooth Streaming, Script GC Scheduler and Service Frame Budget
 were removed (see below).
@@ -125,7 +127,8 @@ and needs the user's explicit OK.
 - `docs/ui.md`: the Violet menu (pages, widgets, startup banners).
 - `docs/features/performance.md`: the resource lookup cache (FindProvider, package list, database classes), the lot
   lighting budget while moving, the DXT encoders (0x006152F0 / 0x006154B0, reverse-engineered step by step) and the
-  RefPack stream (compressor, decompressor, callers); `framework/slot_chain.h` shares vtable slots and
-  `framework/entry_chain.h` function entries with the Frame Profiler.
+  RefPack stream (compressor, decompressor, callers), the scene pending-node drain (0x006E4130) and the object tree
+  walk behind the lookup by ID (0x00C62D40); `framework/slot_chain.h` shares vtable slots, `framework/entry_chain.h`
+  function entries and `framework/call_chain.h` CALL instructions with the Frame Profiler.
 - `docs/removed-features.md`: HDR, Native HDR, AO, Smooth Streaming, Script GC Scheduler, Service Frame Budget
   (revival notes).

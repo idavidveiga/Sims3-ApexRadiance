@@ -7,6 +7,10 @@
 //                        (features/fast_dxt.h). Off by default until checked in game.
 //   FastCacheCompression the RefPack stream write answered by a faster compressor with the same stream format
 //                        (features/fast_refpack.h). Off by default until checked in game.
+//   SceneNodeBudget      while the camera moves, Scene::BeginFrame's pending-node drain processes at most N nodes / T ms
+//                        per frame, the rest the next frames (features/scene_budget.h). Experimental, off by default.
+//   ObjectLookupIndex    the object-by-ID lookup answered from a validated index of the paths the game's walk found
+//                        (features/object_index.h). Experimental, off by default.
 // All are drawn by the menu's Performance page (apex_gui.cpp, PerformanceCard); their developer lines go to Developer >
 // Profiler.
 //
@@ -20,6 +24,8 @@
 #include "lot_lighting_motion.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
+#include "scene_budget.h"
+#include "object_index.h"
 #include <algorithm>
 #include <atomic>
 #include <format>
@@ -160,6 +166,56 @@ class FastCacheCompressionPatch : public ApexPatch {
     void RenderDeveloperUI() override { FastRefPack::RenderDeveloperUI(); }
 };
 
+class SceneNodeBudgetPatch : public ApexPatch {
+  public:
+    SceneNodeBudgetPatch() : ApexPatch(Performance::kSceneBudgetName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!SceneBudget::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        SceneBudget::Stop(); // the hook runs the game's drain from then on, even if the CALL could not be put back
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { SceneBudget::RenderDeveloperUI(); }
+};
+
+class ObjectLookupIndexPatch : public ApexPatch {
+  public:
+    ObjectLookupIndexPatch() : ApexPatch(Performance::kObjectIndexName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!ObjectIndex::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        ObjectIndex::Stop(); // the layer passes every call to the game from then on, even if the entry could not be put back
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { ObjectIndex::RenderDeveloperUI(); }
+};
+
 } // namespace
 
 int Performance::LotLightingBudgetMs() {
@@ -175,6 +231,8 @@ std::string Performance::ResourceCacheStatus() { return ResourceCache::StatusTex
 std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusText(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText(); }
+std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
+std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
 
 APEX_REGISTER_FEATURE(ResourceLookupCachePatch,
                       {.displayName = "Faster Game File Lookups",
@@ -229,3 +287,32 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                                             "The first 16 streams of each session are decompressed with the game's decoder and compared with the source; a difference "
                                             "turns the feature off."},
                        .gameCodeGroup = "FastCacheCompression"});
+
+APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
+                      {.displayName = "Spread New Objects Over Frames",
+                       .description = "While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
+                                      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
+                                      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"Scene::BeginFrame's call of the pending-node drain (0x6EBC49 -> 0x6E4130) goes through Apex: while the camera eye moved in "
+                                            "the last 300 ms, an exact copy of the game's loop stops after 512 nodes or 2 ms; the rest stays queued in the game's own "
+                                            "list and goes first next frame.",
+                                            "Camera still, or a node waited 500 ms: the game's own drain runs. The other five callers of the drain are untouched."},
+                       .gameCodeGroup = "SceneNodeBudget"});
+
+APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
+                      {.displayName = "Faster Object Lookups",
+                       .description = "Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time. "
+                                      "Fewer stutters when lot lights update and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The lookup by ID (0xC62D40, a depth-first walk of the world's object tree) answers from a table of the paths the game's walk "
+                                            "found; every answer re-reads its path in the live tree (indices, classes, the ID) and walks again on any difference.",
+                                            "The first 64 answers of each session and then 1 in 64 are checked against the game's walk; a difference turns the feature "
+                                            "off."},
+                       .gameCodeGroup = "ObjectIndex"});

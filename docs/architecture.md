@@ -511,7 +511,13 @@ game yet (anti-stutter plan `research\perf2\plan.md`, items 7 and C5: `d3dcompil
   several threads. The entry's relocation-free prologue is copied to a trampoline (+ JMP back) and a 5-byte JMP to the
   outermost layer's hook is written with `MemPatch::WriteCodeSuspended`; each hook calls `EntryChain::Next(site, layer)`
   (the next inner layer or the trampoline); removing the last layer writes the original bytes back. Sites: the CPU DXT1 /
-  DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder).
+  DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder); the object lookup by ID
+  0x00C62D40 (8-byte prologue; layer 0 Frame Profiler, layer 2 `ObjectIndex` = Faster Object Lookups).
+- `framework/call_chain.{h,cpp}` (`CallChain`, 2026-09-29): the same layering on one CALL instruction (E8 rel32): the CALL
+  targets the outermost layer's hook, written with `MemPatch::WriteCodeSuspended`; each hook calls
+  `CallChain::Next(site, layer)` (the next inner layer or the original callee); removing the last layer writes the
+  original CALL back. Site: Scene::BeginFrame's CALL 0x006EBC49 of the pending-node drain 0x006E4130 (layer 0 Frame
+  Profiler "Scene pending nodes", layer 1 `SceneBudget` = Spread New Objects Over Frames).
 - `MemPatch::WriteCodeSuspended(address, bytes, n)`: writes up to 16 code bytes with every other thread suspended and none
   stopped inside them (retried for ~100 ms), for CALL rewrites that several threads may run (Lot Lighting While Moving's
   CALL at 0x00ADB95D). The Frame Profiler keeps its own copy (`WriteCallSuspended`).

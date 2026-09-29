@@ -1,8 +1,9 @@
 #pragma once
 // The Performance page's features (patches/performance_patches.cpp): "ResourceLookupCache" (features/resource_cache.h),
-// "LotLightingMotion" (features/lot_lighting_motion.h), "FastTextureCompression" (features/fast_dxt.h) and
-// "FastCacheCompression" (features/fast_refpack.h). The menu draws their rows (apex_gui.cpp, PerformanceCard); these
-// functions give it the one setting that is not a switch. docs/features/performance.md.
+// "LotLightingMotion" (features/lot_lighting_motion.h), "FastTextureCompression" (features/fast_dxt.h),
+// "FastCacheCompression" (features/fast_refpack.h), "SceneNodeBudget" (features/scene_budget.h) and "ObjectLookupIndex"
+// (features/object_index.h). The menu draws their rows (apex_gui.cpp, PerformanceCard); these functions give it the one
+// setting that is not a switch. docs/features/performance.md.
 #include <string>
 
 namespace Performance {
@@ -11,6 +12,8 @@ inline constexpr const char* kResourceCacheName = "ResourceLookupCache";
 inline constexpr const char* kLotLightingName = "LotLightingMotion";
 inline constexpr const char* kFastTextureName = "FastTextureCompression";
 inline constexpr const char* kFastCacheName = "FastCacheCompression";
+inline constexpr const char* kSceneBudgetName = "SceneNodeBudget";
+inline constexpr const char* kObjectIndexName = "ObjectLookupIndex";
 inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered default of budgetWhileMovingMs
 
 // "Lot lighting time while moving" (ms, 1..15): the saved setting; Set saves it and applies it at once
@@ -22,5 +25,7 @@ std::string ResourceCacheStatus();
 std::string LotLightingStatus();
 std::string FastTextureStatus();
 std::string FastCacheStatus();
+std::string SceneBudgetStatus();
+std::string ObjectIndexStatus();
 
 } // namespace Performance

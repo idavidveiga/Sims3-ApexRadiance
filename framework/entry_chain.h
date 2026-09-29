@@ -14,7 +14,8 @@
 //   - Before the first write the entry must hold the expected prologue; later, the JMP Apex wrote. Anything else
 //     (another module hooked it) makes Install fail and is never overwritten by Remove.
 // Used by the Frame Profiler (dev build, the outer layer) and the fast DXT encoder (features/fast_dxt.h) on the game's
-// CPU DXT1 / DXT5 encoders. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
+// CPU DXT1 / DXT5 encoders, and by the Frame Profiler and the object lookup index (features/object_index.h) on the
+// object-by-ID lookup. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -24,9 +25,11 @@ namespace EntryChain {
 enum class Site : int {
     DxtEncode1, // 0x006152F0 cdecl(Dst*, Src*), prologue 55 8B EC 83 E4 F0 (push ebp; mov ebp,esp; and esp,-16)
     DxtEncode5, // 0x006154B0, same prologue
+    ObjectById, // 0x00C62D40 thiscall(idLo, idHi, int* visited), ret 0xC; prologue 8B 44 24 0C 8B 54 24 08 (two movs, 8 bytes)
     Count
 };
-enum class Layer : int { FrameProfiler, FastDxt, Count }; // lower = outer
+// lower = outer. FastDxt: the DXT sites only; ObjectIndex: the ObjectById site only.
+enum class Layer : int { FrameProfiler, FastDxt, ObjectIndex, Count };
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

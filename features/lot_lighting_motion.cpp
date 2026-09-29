@@ -68,6 +68,8 @@ std::atomic<int> g_budgetMs{3};
 // Camera eye: [[g_rootGlobal] + g_camOff] + g_eyeOff
 uintptr_t g_rootGlobal = 0;
 uint32_t g_camOff = 0, g_eyeOff = 0;
+std::atomic<bool> g_camReady{false}; // the three above are set before this turns true (release); never changed afterwards
+std::mutex g_camInit;                // the first parse (Start or SampleCameraMoving)
 float g_lastEye[3] = {}; // written under g_sampling
 bool g_haveEye = false;
 std::atomic_flag g_sampling; // clear (C++20 default)
@@ -78,6 +80,7 @@ std::atomic<uint32_t> c_calls{0}, c_scaled{0}, c_eyeFails{0};
 std::atomic<uint32_t> g_lastGame{0}, g_lastOut{0}; // float bits
 
 bool ReadEye(float out[3]) {
+    if (!g_camReady.load(std::memory_order_acquire)) return false;
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(g_rootGlobal);
         if (!root) return false;
@@ -157,6 +160,27 @@ bool ParseEyeRead(uintptr_t call, uint32_t& off) {
     return true;
 }
 
+// The camera eye's location, parsed from the game's code once (Start, or the first SampleCameraMoving)
+std::atomic<bool> g_camFailed{false};
+bool EnsureCamera() {
+    if (g_camReady.load(std::memory_order_acquire)) return true;
+    if (g_camFailed.load(std::memory_order_relaxed) || !GameAddr::Resolved()) return false;
+    std::lock_guard<std::mutex> lock(g_camInit);
+    if (g_camReady.load(std::memory_order_acquire)) return true;
+    uintptr_t root = 0;
+    uint32_t camOff = 0, eyeOff = 0;
+    if (!ParseRootGetter(GameAddr::Get(GameAddr::Id::CameraRootGetter), root) || !ParseCameraGetter(GameAddr::Get(GameAddr::Id::CameraGetter), camOff) ||
+        !ParseEyeRead(GameAddr::Get(GameAddr::Id::CameraGetterCall), eyeOff)) {
+        g_camFailed.store(true);
+        return false;
+    }
+    g_rootGlobal = root;
+    g_camOff = camOff;
+    g_eyeOff = eyeOff;
+    g_camReady.store(true, std::memory_order_release);
+    return true;
+}
+
 uintptr_t CallTargetOf(const uint8_t call[5], uintptr_t at) {
     int32_t rel;
     std::memcpy(&rel, call + 1, 4);
@@ -178,23 +202,14 @@ bool Start(std::string* error) {
     if (!GameAddr::GroupAvailable("LotLightingMotion", &missing)) return fail(GameAddr::NotAvailable(missing));
     const uintptr_t call = GameAddr::Get(GameAddr::Id::LotLightBudgetCall);
     const uintptr_t budget = GameAddr::Get(GameAddr::Id::LotLightBudget);
-    // Camera eye, from the code that reads it
-    uintptr_t root = 0;
-    uint32_t camOff = 0, eyeOff = 0;
-    if (!ParseRootGetter(GameAddr::Get(GameAddr::Id::CameraRootGetter), root) || !ParseCameraGetter(GameAddr::Get(GameAddr::Id::CameraGetter), camOff) ||
-        !ParseEyeRead(GameAddr::Get(GameAddr::Id::CameraGetterCall), eyeOff))
-        return fail("The camera position was not found in the game's code");
+    // Camera eye, from the code that reads it (shared with SampleCameraMoving)
+    if (!EnsureCamera()) return fail("The camera position was not found in the game's code");
     // The CALL must still reach the budget function, and its result must be read from ST0 (fst / fstp right after it)
     uint8_t cur[6] = {};
     if (!MemPatch::ReadBytes(call, cur, sizeof cur) || cur[0] != 0xE8 || CallTargetOf(cur, call) != budget)
         return fail(std::format("The lot lighting budget call at {:#010x} was changed by another module", call));
     if (cur[5] != 0xD9 && cur[5] != 0xDD) return fail(std::format("Unexpected code after the lot lighting budget call at {:#010x}", call));
     g_budgetFn = budget;
-    g_rootGlobal = root;
-    g_camOff = camOff;
-    g_eyeOff = eyeOff;
-    g_haveEye = false;
-    g_lastMoveTick.store(0);
     std::memcpy(g_origCall, cur, 5);
     uint8_t bytes[5] = {0xE8};
     const int32_t rel = MemPatch::CalculateRelativeOffset(call, reinterpret_cast<uintptr_t>(&Hook_LotLightBudget));
@@ -208,7 +223,7 @@ bool Start(std::string* error) {
     g_started = true;
     LOG_INFO(std::format("[LotLightingMotion] On: the call at {:#010x} to the lot lighting budget {:#010x} goes through Apex; camera eye [[{:#010x}]+{:#x}]+{:#x}; "
                          "budget while moving {} ms for the current lot",
-                         call, budget, root, camOff, eyeOff, g_budgetMs.load()));
+                         call, budget, g_rootGlobal, g_camOff, g_eyeOff, g_budgetMs.load()));
     return true;
 }
 
@@ -235,6 +250,13 @@ void SetBudgetMs(int ms) { g_budgetMs.store(std::clamp(ms, 1, 15)); }
 int BudgetMs() { return g_budgetMs.load(); }
 
 bool CameraMoving() { return Running() && MovingAt(GetTickCount64()); }
+
+bool SampleCameraMoving() {
+    if (!EnsureCamera()) return false;
+    const uint64_t now = GetTickCount64();
+    SampleCamera(now);
+    return MovingAt(now);
+}
 
 std::string StatusText() {
     if (!Running()) return "Off";
