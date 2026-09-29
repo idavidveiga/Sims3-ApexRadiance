@@ -19,6 +19,7 @@
 #include "apex_version.h"
 #include "night_lighting.h"
 #include "s3ss_detect.h"
+#include "game_addresses.h"
 #include <atomic>
 #include <cstring>
 #include <format>
@@ -27,7 +28,8 @@ namespace {
 
 std::atomic<bool> g_providedByS3SS{false}; // for the menu (NightLighting::SplitLevelProvidedByS3SS)
 
-constexpr uintptr_t kGetLotId = 0x006BC020;
+// Addresses: the fixed Steam 1.67.2 ones, or found by signature on other builds (game_addresses.h); set by Install.
+uintptr_t kGetLotId = 0; // 0x006BC020 on Steam
 // mov eax,[ecx+0C0h]; mov edx,[ecx+0C4h]; ret  (TS3W.exe 1.67.2 Steam)
 const std::vector<BYTE> kVanilla = {0x8B, 0x81, 0xC0, 0x00, 0x00, 0x00, 0x8B, 0x91, 0xC4, 0x00, 0x00, 0x00, 0xC3};
 // xor eax,eax; xor edx,edx; ret
@@ -38,8 +40,16 @@ const std::vector<BYTE> kReturnZero = {0x33, 0xC0, 0x33, 0xD2, 0xC3};
 // in its lot's room light maps (the game already lists lot lamps twice), making the lot map ~1.5x the terrain stamp: a
 // straight light step at the lot edge (research\borda2). The call is sent to a copy of the original body, so only the
 // terrain bake (0x00C294D0) sees lot id 0.
-constexpr uintptr_t kGatherCall = 0x006B635D;
-const std::vector<BYTE> kGatherContext = {0x8B, 0xCE, 0xE8, 0xBE, 0x5C, 0x00, 0x00, 0x0B, 0xC2, 0x75, 0x23}; // from 0x006B635B
+uintptr_t kGatherCall = 0; // 0x006B635D on Steam
+// From kGatherCall - 2: mov ecx,esi; call GetLotID; or eax,edx; jnz +23h (Steam: 8B CE E8 BE 5C 00 00 0B C2 75 23)
+std::vector<BYTE> GatherContext() {
+    const int32_t rel = MemPatch::CalculateRelativeOffset(kGatherCall, kGetLotId);
+    std::vector<BYTE> b = {0x8B, 0xCE, 0xE8, 0, 0, 0, 0, 0x0B, 0xC2, 0x75, 0x23};
+    std::memcpy(b.data() + 3, &rel, sizeof rel);
+    BYTE jnz = 0; // other builds: the jnz distance is not checked (the signature matched the rest)
+    if (!GameAddr::IsFixed() && MemPatch::ReadBytes(kGatherCall + 8, &jnz, 1)) b[10] = jnz;
+    return b;
+}
 
 // The original GetLotID body (thiscall, lot id in EDX:EAX)
 __declspec(naked) void VanillaGetLotId() {
@@ -60,10 +70,14 @@ class SplitLevelGroundLightPatch : public ApexPatch {
         if (isEnabled) return true;
         lastError.clear();
         providedByS3SS_ = false;
-        if (g_gameVersion != GameVersion::Steam) return Fail("Needs the Steam version 1.67.2 of the game");
+        std::string missing;
+        if (!GameAddr::Have({GameAddr::Id::GetLotIdGatherCall, GameAddr::Id::GetLotId}, &missing)) return Fail(GameAddr::NotAvailable(missing));
+        kGetLotId = GameAddr::Get(GameAddr::Id::GetLotId);
+        kGatherCall = GameAddr::Get(GameAddr::Id::GetLotIdGatherCall);
+        const std::vector<BYTE> kGatherContext = GatherContext();
         // The room gather keeps the real lot id, also when S3SS zeroes GetLotID (its fix has the same triple count)
         if (!MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kGatherCall - 2), kGatherContext.data(), kGatherContext.size()))
-            return Fail("The outdoor-room light gather differs at 0x6B635D (different game version or another mod)");
+            return Fail(std::format("The outdoor-room light gather differs at 0x{:X} (different game version or another mod)", kGatherCall));
         std::vector<BYTE> call = {0xE8, 0, 0, 0, 0};
         const int32_t rel = MemPatch::CalculateRelativeOffset(kGatherCall, reinterpret_cast<uintptr_t>(&VanillaGetLotId));
         std::memcpy(call.data() + 1, &rel, sizeof rel);
@@ -74,18 +88,20 @@ class SplitLevelGroundLightPatch : public ApexPatch {
             providedByS3SS_ = true;
             g_providedByS3SS = true;
             isEnabled = true;
-            LOG_INFO("[SplitLevelGroundLight] Provided by Sims3SettingsSetter (its Split-Level Lighting Fix is on); Apex only keeps the real lot id "
-                     "in the outdoor-room gather (0x6B635D)");
+            LOG_INFO(std::format("[SplitLevelGroundLight] Provided by Sims3SettingsSetter (its Split-Level Lighting Fix is on); Apex only keeps the real lot id "
+                                 "in the outdoor-room gather (0x{:X})",
+                                 kGatherCall));
             return true;
         }
         const std::vector<BYTE> expected(kVanilla.begin(), kVanilla.begin() + static_cast<std::ptrdiff_t>(kReturnZero.size()));
         if (!MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kGetLotId), kVanilla.data(), kVanilla.size()) ||
             !MemPatch::WriteBytes(kGetLotId, kReturnZero, &written_, &expected)) {
             MemPatch::RestoreAll(written_); // the gather call written above
-            return Fail("GetLotID differs at 0x6BC020 (different game version or another mod)");
+            return Fail(std::format("GetLotID differs at 0x{:X} (different game version or another mod)", kGetLotId));
         }
         isEnabled = true;
-        LOG_INFO("[SplitLevelGroundLight] Installed at 0x6BC020 (lot lamps light the ground of every story; the outdoor-room gather at 0x6B635D keeps the real lot id)");
+        LOG_INFO(std::format("[SplitLevelGroundLight] Installed at 0x{:X} (lot lamps light the ground of every story; the outdoor-room gather at 0x{:X} keeps the real lot id)",
+                             kGetLotId, kGatherCall));
         return true;
     }
 
@@ -124,4 +140,5 @@ APEX_REGISTER_FEATURE(SplitLevelGroundLightPatch, {.displayName = "Every-Story G
                                             .supportedVersions = VERSION_STEAM,
                                             .technicalDetails = {"GetLotID (0x6BC020) returns 0 for the terrain bake (0xC294D0); the outdoor-room light gather's call (0x6B635D) goes to a copy of the original body, so lot lamps are not listed a third time in their lot's room maps.",
                                                                  "Original bytes checked before writing; restored on uninstall only when Apex wrote them.",
-                                                                 "Skipped when official S3SS's Split-Level Lighting Fix is already on."}});
+                                                                 "Skipped when official S3SS's Split-Level Lighting Fix is already on."},
+                                            .gameCodeGroup = "SplitLevel"});

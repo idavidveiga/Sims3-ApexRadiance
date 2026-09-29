@@ -140,18 +140,14 @@ void CardError(const std::string& error) {
     ApexUi::IconNote(IconId::TriangleAlert, ("Error: " + error).c_str(), VioletTheme::kError);
 }
 
-void NotAvailableNote() {
-    char note[128];
-    std::snprintf(note, sizeof note, "Not available on %s", GetGameVersionName());
-    CardNote(note);
-}
+void NotAvailableNote(const ApexPatch* patch) { CardNote(patch->UnavailableReason().c_str()); }
 
 // Whether StateNotes draws anything
 bool HasStateNotes(const ApexPatch* patch) { return !patch->IsCompatibleWithCurrentVersion() || Loading() || !patch->GetLastError().empty(); }
 
 // "Not available on <version>", "Starting…" and the red error of a feature
 void StateNotes(const ApexPatch* patch) {
-    if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote();
+    if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote(patch);
     else if (Loading()) CardNote("Starting\xE2\x80\xA6");
     CardError(patch->GetLastError());
 }
@@ -202,7 +198,7 @@ bool NightLightsReady(const char* what) {
     if (!ntr) return false;
     if (ntr->IsEnabled() || ApexUi::FilterActive()) return true;
     if (!ntr->IsCompatibleWithCurrentVersion()) {
-        NotAvailableNote();
+        NotAvailableNote(ntr);
         return false;
     }
     char note[160];
@@ -354,7 +350,7 @@ void UpperFloorRow() {
         ImGui::BeginDisabled(!Switchable(patch));
         if (ApexUi::SwitchRow(kLabel, &on, kText, patch->IsEnabledByDefault())) SetPatch(patch, on);
         ImGui::EndDisabled();
-        if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote();
+        if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote(patch);
         CardError(patch->GetLastError());
     }
     ImGui::PopID();

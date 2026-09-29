@@ -116,6 +116,7 @@
     <ClCompile Include="framework\d3d9_bootstrap.cpp" />
     <ClCompile Include="framework\d3d9_extra_hooks.cpp" />
     <ClCompile Include="framework\d3d9_hooks.cpp" />
+    <ClCompile Include="framework\game_addresses.cpp" />
     <ClCompile Include="framework\game_version.cpp" />
     <ClCompile Include="framework\hook_chain.cpp" />
     <ClCompile Include="framework\memory_patch.cpp" />
@@ -157,6 +158,7 @@
     <ClInclude Include="framework\d3d9_bootstrap.h" />
     <ClInclude Include="framework\d3d9_extra_hooks.h" />
     <ClInclude Include="framework\d3d9_hooks.h" />
+    <ClInclude Include="framework\game_addresses.h" />
     <ClInclude Include="framework\game_version.h" />
     <ClInclude Include="framework\hook_chain.h" />
     <ClInclude Include="framework\memory_patch.h" />

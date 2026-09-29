@@ -33,6 +33,9 @@ struct FeatureInfo {
     bool enabledByDefault = false;
     GameVersionMask supportedVersions = VERSION_ALL;
     std::vector<std::string> technicalDetails;
+    // Game-code features: on a build outside supportedVersions the feature is still available when this group of
+    // addresses was found by signature (game_addresses.h GroupAvailable), e.g. "NightLights"
+    const char* gameCodeGroup = nullptr;
 };
 
 // One option of a feature: a value owned by the feature, its default, how it is drawn and its TOML key.
@@ -89,6 +92,8 @@ class ApexPatch {
     const FeatureInfo* GetMetadata() const { return metadata_.get(); }
     void SetMetadata(const FeatureInfo& meta);
     bool IsCompatibleWithCurrentVersion() const;
+    // Why the feature cannot run on this build ("Not available on <version>[: missing <addresses>]")
+    std::string UnavailableReason() const;
     bool IsEnabledByDefault() const { return metadata_ && metadata_->enabledByDefault; }
     bool EnabledStateFromConfig() const { return enabledFromConfig_; }
     // TOML keys of the registered settings (config migration keeps only these)

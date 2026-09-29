@@ -26,6 +26,7 @@
 #include "patch_base.h"
 #include "apex_version.h"
 #include "memory_patch.h"
+#include "game_addresses.h"
 #include "apex_log.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
@@ -55,11 +56,12 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// ---- addresses (Steam 1.67.2.024037), all validated byte for byte before use ----
-constexpr uintptr_t kRootGetter = 0x006E97B0; // A1 <imm32 = &root> 85 C0 75 01 C3 8B 80 C0 01 00 00
+// ---- addresses: Steam 1.67.2.024037 (in the comments) or found by signature on other builds (game_addresses.h); set by
+// LoadAddresses (Install), all validated byte for byte before use ----
+uintptr_t kRootGetter = 0; // 0x006E97B0: A1 <imm32 = &root> 85 C0 75 01 C3 8B 80 C0 01 00 00
 constexpr BYTE kRootGetterBytes[] = {0xA1, 0, 0, 0, 0, 0x85, 0xC0, 0x75, 0x01, 0xC3, 0x8B, 0x80, 0xC0, 0x01, 0x00, 0x00};
 
-constexpr uintptr_t kVisitorSite = 0x00C29626; // inside the "Terrain/Lights" collector visitor (0xC29620)
+uintptr_t kVisitorSite = 0; // 0x00C29626: inside the "Terrain/Lights" collector visitor (0xC29620)
 const std::vector<BYTE> kVisitorOrig = {0x8B, 0x07, 0x8B, 0x50, 0x20, 0x8B, 0xF1, 0x8B, 0xCF, 0xFF, 0xD2};
 // mov eax,[edi]; mov edx,[eax+20h]; mov esi,ecx; mov ecx,edi; call edx      (followed by test al,al; jz)
 
@@ -67,10 +69,10 @@ struct ArmSite {
     uintptr_t addr;
     const char* name;
 };
-constexpr ArmSite kArmSites[] = {
-    {0x006B6516, "light registration (0x6B64B0)"},
-    {0x006B60D3, "light removal (0x6B6090)"},
-    {0x006B6618, "light moved/toggled (0x6B6590)"},
+ArmSite kArmSites[] = {
+    {0, "light registration (0x6B64B0)"},   // 0x006B6516
+    {0, "light removal (0x6B6090)"},        // 0x006B60D3
+    {0, "light moved/toggled (0x6B6590)"}, // 0x006B6618
 };
 const std::vector<BYTE> kArmOrig = {0x8B, 0x17, 0x8B, 0x42, 0x20, 0x8B, 0xCF, 0xFF, 0xD0};
 // mov edx,[edi]; mov eax,[edx+20h]; mov ecx,edi; call eax      (followed by test al,al; jz; mov [esi+38h],32h)
@@ -88,11 +90,11 @@ constexpr int kArmFrames = 3;
 // (the other callers 0xC8088E / 0xC8307E are left alone) tells the smoothed maps exactly which chunk map the game just
 // re-rendered: chunk+0x0C / +0x10 = chunk x / z in world units, >> 8 = grid index (docs/engine/terrain-and-light-bake.md
 // 3.3), the same index as the smoothed maps' key (centre = 256 i + 128).
-constexpr uintptr_t kChunkRenderCall = 0x00C8504C;
-constexpr uintptr_t kChunkRenderContextAt = 0x00C85047;
-const BYTE kChunkRenderContext[] = {0x6A, 0x00, 0x56, 0x8B, 0xCF, 0xE8, 0x4F, 0x97, 0xFF, 0xFF, 0xC6, 0x44, 0x24, 0x0C, 0x01};
-const std::vector<BYTE> kChunkRenderOrig = {0xE8, 0x4F, 0x97, 0xFF, 0xFF};
-constexpr uintptr_t kChunkRenderFn = 0x00C7E7A0;
+uintptr_t kChunkRenderCall = 0;      // 0x00C8504C
+uintptr_t kChunkRenderContextAt = 0; // 0x00C85047 (kChunkRenderCall - 5)
+std::vector<BYTE> kChunkRenderContext; // 6A 00 56 8B CF E8 <rel32 to kChunkRenderFn> C6 44 24 0C 01 (Steam: rel32 4F 97 FF FF)
+std::vector<BYTE> kChunkRenderOrig;    // E8 <rel32>
+uintptr_t kChunkRenderFn = 0;        // 0x00C7E7A0
 using ChunkRender_t = void(__thiscall*)(void* terrain, void* chunk, char force);
 std::atomic<int> g_chunkRenders{0};
 bool g_chunkHookInstalled = false;
@@ -122,13 +124,13 @@ void __fastcall ChunkRenderThunk(void* terrain, void* /*edx*/, BYTE* chunk, int 
 // +0xE0, which is zero while the lamp is off. Lot grass samples ONLY the lot's room-0 LightMap, so a lot solved by day
 // never gets the street lamps. We replace "movaps xmm0,[esi+0E0h]" with a call that uses colour(+0xF0) x
 // intensity(+0x10) for street lamps (type 0xB, raw lot id 0) that are off.
-constexpr uintptr_t kLampColourSite = 0x006BE18C;
+uintptr_t kLampColourSite = 0; // 0x006BE18C
 const std::vector<BYTE> kLampColourOrig = {0x0F, 0x28, 0x86, 0xE0, 0x00, 0x00, 0x00};
 
 // Room queue used when a lamp changes (Build-mode pick-up path): FUN_006c7160 thiscall(treeLevel, roomId), ret 4.
 // The light update tree then invalidates the room on all levels, re-gathers world lights and re-solves it.
-constexpr uintptr_t kQueueRoom = 0x006C7160;
-constexpr BYTE kQueueRoomBytes[] = {0x83, 0xEC, 0x2C, 0x53, 0x55, 0x56, 0x33, 0xDB, 0x8B, 0xF1};
+uintptr_t kQueueRoom = 0; // 0x006C7160
+constexpr BYTE kQueueRoomBytes[] = {0x83, 0xEC, 0x2C, 0x53, 0x55, 0x56, 0x33, 0xDB, 0x8B, 0xF1}; // Steam's prologue (checked on Steam)
 using QueueRoom_t = void(__thiscall*)(void* treeLevel, int roomId);
 
 // ---- settings ----
@@ -164,11 +166,12 @@ bool g_lotPassNoTerrainMap = false;
 // rebuilt terrain lightmap chunk+0xD8 when it exists; that texture has no street-lamp light inside lot footprints, so
 // after any full terrain rebuild lot grass loses street lamps. Before a rebuild the lot pass binds nothing and lot grass
 // uses the lot LightMap (which has them). We keep the lot pass on "nothing" (0xC7F8B7) and leave the world pass alone.
-constexpr uintptr_t kLotPassSite = 0x00C7F87D;
+uintptr_t kLotPassSite = 0; // 0x00C7F87D
 const std::vector<BYTE> kLotPassOrig = {0x8B, 0x87, 0xD8, 0x00, 0x00, 0x00, 0x85, 0xC0};
-const BYTE kLotPassContext[] = {0xF3, 0x0F, 0x10, 0x05, 0x38, 0xA5, 0x07, 0x01, 0xF3, 0x0F, 0x11, 0x44, 0x24, 0x18, 0x74, 0x13};
-constexpr uintptr_t kLotPassNullBind = 0x00C7F8B7;
-const BYTE kLotPassNullBindBytes[] = {0xA1, 0x80, 0xCE, 0x1E, 0x01, 0x6A, 0x00, 0x6A, 0x00};
+std::vector<BYTE> kLotPassContext; // F3 0F 10 05 <kLotPassConst> F3 0F 11 44 24 18 74 13 (Steam: 38 A5 07 01)
+uintptr_t kLotPassConst = 0;       // 0x0107A538: the float the pass stores at [esp+18h]
+uintptr_t kLotPassNullBind = 0;    // 0x00C7F8B7
+std::vector<BYTE> kLotPassNullBindBytes; // A1 <texture global> 6A 00 6A 00 (Steam: 80 CE 1E 01 = 0x011ECE80)
 std::atomic<int> g_lotPassRedirects{0};
 
 __declspec(naked) void LotPassStub() {
@@ -179,10 +182,11 @@ __declspec(naked) void LotPassStub() {
         test eax, eax
         ret
     lot:
-        movss xmm0, dword ptr ds:[0x0107A538]
+        mov eax, kLotPassConst // address of the float (0x0107A538 on Steam)
+        movss xmm0, dword ptr [eax]
         movss dword ptr [esp+0x1C], xmm0
         add esp, 4
-        mov eax, 0x00C7F8B7
+        mov eax, kLotPassNullBind // 0x00C7F8B7 on Steam
         jmp eax
     }
 }
@@ -202,7 +206,7 @@ constexpr auto kEditMinInterval = std::chrono::seconds(3);
 
 // Lot lighting quality: FUN_00adb5a0 and FUN_00adb850 pass (lot is active || Build mode) to FUN_006a5ef0. The default
 // "mov byte [esp+0Ch],0" becomes 1 so every lot is lit at the high quality the active lot uses.
-constexpr uintptr_t kQualitySites[] = {0x00ADB66B, 0x00ADB884};
+uintptr_t kQualitySites[2] = {}; // 0x00ADB66B, 0x00ADB884
 const std::vector<BYTE> kQualityOrig = {0xC6, 0x44, 0x24, 0x0C, 0x00};
 const std::vector<BYTE> kQualityNew = {0xC6, 0x44, 0x24, 0x0C, 0x01};
 float g_delaySec = 2.0f;
@@ -491,6 +495,7 @@ void OnPresent() {
             g_liveAt = now;
             g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
             if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
+            GameAddr::CheckWorldStructs(); // builds other than Steam 1.67.2: once, logs whether the assumed struct offsets hold
         }
     }
 
@@ -660,6 +665,45 @@ std::vector<BYTE> CallPatch(uintptr_t site, size_t prefixLen, const std::vector<
     return b;
 }
 
+std::vector<BYTE> WithDword(std::vector<BYTE> head, uint32_t v, const std::vector<BYTE>& tail) {
+    for (int i = 0; i < 4; i++) head.push_back(static_cast<BYTE>(v >> (8 * i)));
+    head.insert(head.end(), tail.begin(), tail.end());
+    return head;
+}
+
+// The addresses above from GameAddr (Steam: the fixed values in the comments; other builds: 0 where not found) and the
+// expected bytes that embed an address (on Steam the very bytes the checks always had).
+void LoadAddresses() {
+    using GameAddr::Get;
+    using GameAddr::Id;
+    kRootGetter = Get(Id::RootGetter);
+    kVisitorSite = Get(Id::TerrainVisitorSite);
+    kArmSites[0].addr = Get(Id::ArmSiteRegister);
+    kArmSites[1].addr = Get(Id::ArmSiteRemoval);
+    kArmSites[2].addr = Get(Id::ArmSiteMoved);
+    kChunkRenderCall = Get(Id::ChunkRenderCall);
+    kChunkRenderFn = Get(Id::ChunkRenderFn);
+    kChunkRenderContextAt = kChunkRenderCall ? kChunkRenderCall - 5 : 0;
+    const uint32_t chunkRel = static_cast<uint32_t>(MemPatch::CalculateRelativeOffset(kChunkRenderCall, kChunkRenderFn));
+    kChunkRenderContext = WithDword({0x6A, 0x00, 0x56, 0x8B, 0xCF, 0xE8}, chunkRel, {0xC6, 0x44, 0x24, 0x0C, 0x01});
+    kChunkRenderOrig = WithDword({0xE8}, chunkRel, {});
+    kLampColourSite = Get(Id::LampColourSite);
+    kQueueRoom = Get(Id::QueueRoom);
+    kLotPassSite = Get(Id::LotPassSite);
+    kLotPassConst = Get(Id::LotPassConst);
+    kLotPassNullBind = Get(Id::LotPassNullBind);
+    kLotPassContext = WithDword({0xF3, 0x0F, 0x10, 0x05}, static_cast<uint32_t>(kLotPassConst), {0xF3, 0x0F, 0x11, 0x44, 0x24, 0x18, 0x74, 0x13});
+    kLotPassNullBindBytes = WithDword({0xA1}, static_cast<uint32_t>(Get(Id::LotPassTexGlobal)), {0x6A, 0x00, 0x6A, 0x00});
+    kQualitySites[0] = Get(Id::QualitySite0);
+    kQualitySites[1] = Get(Id::QualitySite1);
+}
+
+// "Not available on <version>: missing ..." when one of ids was not found on this build, else empty
+std::string Missing(std::initializer_list<GameAddr::Id> ids) {
+    std::string missing;
+    return GameAddr::Have(ids, &missing) ? std::string() : GameAddr::NotAvailable(missing);
+}
+
 } // namespace
 
 // Reinstalling after a setting change must happen on the render thread: Uninstall releases textures, shaders and maps
@@ -769,22 +813,26 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (isEnabled) return true;
         lastError.clear();
         LOG_INFO("[NightTerrainRelight] Installing...");
+        using GameAddr::Id;
+        LoadAddresses();
+        if (const std::string missing = Missing({Id::RootGetter, Id::RootPtr, Id::QueueRoom}); !missing.empty()) return Fail(missing);
 
         BYTE getter[sizeof(kRootGetterBytes)];
         std::memcpy(getter, reinterpret_cast<const void*>(kRootGetter), sizeof(getter));
         std::memcpy(getter + 1, kRootGetterBytes + 1, 4); // imm32 is the pointer we want, do not compare it
-        if (std::memcmp(getter, kRootGetterBytes, sizeof(getter)) != 0) return Fail(S3SS_TR("Funcao do gerenciador de luz nao confere em 0x6E97B0 (versao do jogo diferente?)",
-                                                                                          "Light manager code differs at 0x6E97B0 (different game version?)"));
+        if (std::memcmp(getter, kRootGetterBytes, sizeof(getter)) != 0)
+            return Fail(std::format("Light manager code differs at 0x{:X} (different game version?)", kRootGetter));
         g_rootPtrAddr = *reinterpret_cast<const uint32_t*>(kRootGetter + 1);
         if (!LightDiag::Init()) LOG_WARNING("[NightTerrainRelight] Light diagnostics not available on this game version");
 
         // The lot-lamp predicates read luzDoLoteNaGrama (g_lotLamps) at run time and, with it off, answer exactly like
         // the game's own test (OriginalWorldLightTest first). So they are installed whatever the option says and the
         // option applies live (no reinstall); only when the code differs is the option required to be off.
-        bool lotCodeOk = MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kVisitorSite), kVisitorOrig.data(), kVisitorOrig.size());
+        const std::string lotMissing = Missing({Id::TerrainVisitorSite, Id::ArmSiteRegister, Id::ArmSiteRemoval, Id::ArmSiteMoved});
+        if (!lotMissing.empty() && g_lotLamps) return Fail(lotMissing);
+        bool lotCodeOk = lotMissing.empty() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kVisitorSite), kVisitorOrig.data(), kVisitorOrig.size());
         if (!lotCodeOk && g_lotLamps)
-            return Fail(S3SS_TR("Coleta de luzes do terreno nao confere em 0xC29626 (versao do jogo diferente ou outro mod?)",
-                                "Terrain light gathering differs at 0xC29626 (different game version or another mod?)"));
+            return Fail(std::format("Terrain light gathering differs at 0x{:X} (different game version or another mod?)", kVisitorSite));
         for (const auto& s : kArmSites)
             if (lotCodeOk && !MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(s.addr), kArmOrig.data(), kArmOrig.size())) {
                 if (g_lotLamps) return Fail(std::format(S3SS_TR("Teste de luz nao confere em {:#x}: {}", "Light test differs at {:#x}: {}"), s.addr, s.name));
@@ -808,16 +856,19 @@ class NightTerrainRelightPatch : public ApexPatch {
             }
             FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
         }
-        if (std::memcmp(reinterpret_cast<const void*>(kQueueRoom), kQueueRoomBytes, sizeof(kQueueRoomBytes)) != 0) {
+        // Steam: its exact prologue; other builds: the signature (the same bytes, or the target of a call to it) found it
+        if (GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kQueueRoom), kQueueRoomBytes, sizeof(kQueueRoomBytes)) != 0) {
             MemPatch::RestoreAll(patchedLocations);
-            return Fail(S3SS_TR("Fila de comodos nao confere em 0x6C7160 (versao do jogo diferente?)",
-                                "Room queue code differs at 0x6C7160 (different game version?)"));
+            return Fail(std::format("Room queue code differs at 0x{:X} (different game version?)", kQueueRoom));
         }
         if (g_streetLampsLit) {
+            if (const std::string missing = Missing({Id::LampColourSite}); !missing.empty()) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(missing);
+            }
             if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kLampColourSite), kLampColourOrig.data(), kLampColourOrig.size())) {
                 MemPatch::RestoreAll(patchedLocations);
-                return Fail(S3SS_TR("Calculo de luz do poste nao confere em 0x6BE18C (versao do jogo diferente ou outro mod?)",
-                                    "Street lamp light code differs at 0x6BE18C (different game version or another mod?)"));
+                return Fail(std::format("Street lamp light code differs at 0x{:X} (different game version or another mod?)", kLampColourSite));
             }
             // call StreetLampColourStub; nop x2
             const auto lampBytes = CallPatch(kLampColourSite, 0, {}, reinterpret_cast<void*>(&StreetLampColourStub), kLampColourOrig.size());
@@ -829,6 +880,10 @@ class NightTerrainRelightPatch : public ApexPatch {
         }
         installedStreetLamps = g_streetLampsLit;
         if (g_allLotsHQ) {
+            if (const std::string missing = Missing({Id::QualitySite0, Id::QualitySite1}); !missing.empty()) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(missing);
+            }
             for (uintptr_t site : kQualitySites)
                 if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(site), kQualityOrig.data(), kQualityOrig.size())) {
                     MemPatch::RestoreAll(patchedLocations);
@@ -842,11 +897,15 @@ class NightTerrainRelightPatch : public ApexPatch {
         }
         installedAllLotsHQ = g_allLotsHQ;
         if (g_lotPassNoTerrainMap) {
-            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kLotPassSite), kLotPassOrig.data(), kLotPassOrig.size()) ||
-                std::memcmp(reinterpret_cast<const void*>(kLotPassSite + 8), kLotPassContext, sizeof(kLotPassContext)) != 0 ||
-                std::memcmp(reinterpret_cast<const void*>(kLotPassNullBind), kLotPassNullBindBytes, sizeof(kLotPassNullBindBytes)) != 0) {
+            if (const std::string missing = Missing({Id::LotPassSite, Id::LotPassConst, Id::LotPassTexGlobal, Id::LotPassNullBind}); !missing.empty()) {
                 MemPatch::RestoreAll(patchedLocations);
-                return Fail(S3SS_TR("Passada de luz do terreno nao confere em 0xC7F87D", "Terrain light pass differs at 0xC7F87D"));
+                return Fail(missing);
+            }
+            if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kLotPassSite), kLotPassOrig.data(), kLotPassOrig.size()) ||
+                std::memcmp(reinterpret_cast<const void*>(kLotPassSite + 8), kLotPassContext.data(), kLotPassContext.size()) != 0 ||
+                std::memcmp(reinterpret_cast<const void*>(kLotPassNullBind), kLotPassNullBindBytes.data(), kLotPassNullBindBytes.size()) != 0) {
+                MemPatch::RestoreAll(patchedLocations);
+                return Fail(std::format("Terrain light pass differs at 0x{:X}", kLotPassSite));
             }
             const auto lotPassBytes = CallPatch(kLotPassSite, 0, {}, reinterpret_cast<void*>(&LotPassStub), kLotPassOrig.size());
             if (!MemPatch::WriteBytes(kLotPassSite, lotPassBytes, &patchedLocations, &kLotPassOrig)) {
@@ -861,13 +920,16 @@ class NightTerrainRelightPatch : public ApexPatch {
 
         // Chunk re-render notices for the smoothed maps (optional: without it the maps are found by hashing).
         g_chunkHookInstalled = false;
-        if (MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kChunkRenderContextAt), kChunkRenderContext, sizeof(kChunkRenderContext))) {
+        const std::string chunkMissing = Missing({Id::ChunkRenderCall, Id::ChunkRenderFn});
+        if (chunkMissing.empty() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kChunkRenderContextAt), kChunkRenderContext.data(), kChunkRenderContext.size())) {
             const auto callBytes = CallPatch(kChunkRenderCall, 0, {}, reinterpret_cast<void*>(&ChunkRenderThunk), kChunkRenderOrig.size());
             g_chunkHookInstalled = MemPatch::WriteBytes(kChunkRenderCall, callBytes, &patchedLocations, &kChunkRenderOrig);
             if (g_chunkHookInstalled) FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(kChunkRenderCall), 5);
         }
         if (!g_chunkHookInstalled)
-            LOG_WARNING("[NightTerrainRelight] Terrain chunk re-render call differs at 0xC8504C: changed ground light maps are found by hashing only");
+            LOG_WARNING(chunkMissing.empty() ? std::format("[NightTerrainRelight] Terrain chunk re-render call differs at 0x{:X}: changed ground light maps are found by hashing only",
+                                                           kChunkRenderCall)
+                                             : "[NightTerrainRelight] Terrain chunk re-render call: " + chunkMissing + " (changed ground light maps are found by hashing only)");
 
         // Installed again in the world it was removed from (the menu's on/off): no new-world handling (no clear, no load
         // rebuild), only one rebuild at night so lot lamps changed meanwhile reach the ground.
@@ -1340,7 +1402,8 @@ APEX_REGISTER_FEATURE(NightTerrainRelightPatch, {.displayName = "Night Lights",
                                              .category = "Graphics",
                                              .experimental = true,
                                              .supportedVersions = VERSION_STEAM,
-                                             .technicalDetails = NightRemakeDetails()})
+                                             .technicalDetails = NightRemakeDetails(),
+                                             .gameCodeGroup = "NightLights"})
 
 bool NightLighting::MenuNightLevel(float& level) {
     const float v = g_menuLevel.load();

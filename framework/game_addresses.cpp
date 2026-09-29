@@ -1,0 +1,884 @@
+#include "game_addresses.h"
+#include "apex_log.h"
+#include "game_version.h"
+#include <windows.h>
+#include <atomic>
+#include <cstring>
+#include <format>
+#include <iterator>
+#include <string>
+#include <vector>
+
+// See game_addresses.h and docs/engine/game-versions.md. The signature table below is also read by the offline checker
+// (research\port169\sigcheck.pl): keep one entry per line in the same shape.
+
+namespace GameAddr {
+namespace {
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Names and the fixed Steam 1.67.2 addresses (same order as Id)
+// ---------------------------------------------------------------------------------------------------------------------
+struct Info {
+    const char* name;
+    uint32_t steam;
+};
+constexpr Info kInfo[] = {
+    {"RootGetter", 0x006E97B0},
+    {"RootPtr", 0x011D1860},
+    {"QueueRoom", 0x006C7160},
+    {"TerrainVisitorSite", 0x00C29626},
+    {"ArmSiteRemoval", 0x006B60D3},
+    {"ArmSiteRegister", 0x006B6516},
+    {"ArmSiteMoved", 0x006B6618},
+    {"EnumLights", 0x006ACF70},
+    {"ChunkRenderCall", 0x00C8504C},
+    {"ChunkRenderFn", 0x00C7E7A0},
+    {"LampColourSite", 0x006BE18C},
+    {"LotPassSite", 0x00C7F87D},
+    {"LotPassConst", 0x0107A538},
+    {"LotPassTexGlobal", 0x011ECE80},
+    {"LotPassNullBind", 0x00C7F8B7},
+    {"QualitySite0", 0x00ADB66B},
+    {"QualitySite1", 0x00ADB884},
+    {"LightJumpTable", 0x006AC7A0},
+    {"LightVtable3", 0x00FF42A0},
+    {"LightVtable4", 0x00FF4570},
+    {"LightVtable5", 0x00FF4350},
+    {"LightVtable6", 0x00FF4468},
+    {"LightVtable7", 0x00FF43A8},
+    {"LightVtable8", 0x00FF4408},
+    {"LightVtable9", 0x00FF44C0},
+    {"LightVtable10", 0x00FF4518},
+    {"LightVtable11", 0x00FF42F8},
+    {"LightColour3", 0x006C02A0},
+    {"LightColour4", 0x006C1BC0},
+    {"LightColour5", 0x006C0690},
+    {"LightColour6", 0x006C1320},
+    {"LightColour7", 0x006C0AF0},
+    {"LightColour8", 0x006C0FE0},
+    {"LightColour9", 0x006C16D0},
+    {"LightColour10", 0x006C1980},
+    {"LightColour11", 0x006C02A0},
+    {"LightEval3", 0x006BDE90},
+    {"LightEval4", 0x006BFFB0},
+    {"LightEval5", 0x006BE1C0},
+    {"LightEval6", 0x006BFA70},
+    {"LightEval7", 0x006BEFD0},
+    {"LightEval8", 0x006BF880},
+    {"LightEval9", 0x006BFBA0},
+    {"LightEval10", 0x006BFDC0},
+    {"LightEval11", 0x006BE020},
+    {"LightPos", 0x009691E0},
+    {"CapOperandSite", 0x006B9418},
+    {"CapGlobal", 0x011D0BA8},
+    {"RigGatherReturn", 0x006BB2B3},
+    {"LumaWeights", 0x011D1140},
+    {"DirtyAllRigs", 0x006B58F0},
+    {"RigCtor", 0x006BB8F0},
+    {"RigVtable", 0x00FF4218},
+    {"RigCtorCall0", 0x006F7905},
+    {"RigCtorCall1", 0x006F795C},
+    {"RigCtorCall2", 0x006F799D},
+    {"RoomGatherCall", 0x006BBE70},
+    {"RoomGather", 0x006BB2F0},
+    {"CellGather", 0x006B5AF0},
+    {"RigUpdate", 0x006BBF90},
+    {"SetLightColour", 0x006BDA90},
+    {"SetColourCall0", 0x006C047D},
+    {"SetColourCall1", 0x006C051D},
+    {"SetColourCall2", 0x006C05C1},
+    {"SetColourCall3", 0x006C1251},
+    {"SetColourCall4", 0x006C15D1},
+    {"SetColourCall5", 0x006C1891},
+    {"SetColourCall6", 0x006C1B11},
+    {"ScriptSetColourCall", 0x006B0BDE},
+    {"ScriptSetColour", 0x006BC3E0},
+    {"AddWorldLights", 0x006C6AB0},
+    {"AddWorldLightsCall0", 0x006C5816},
+    {"AddWorldLightsCall1", 0x006C7094},
+    {"LevelGather", 0x006C6990},
+    {"LevelGatherCall0", 0x006C6B08},
+    {"LevelGatherCall1", 0x006C6B2D},
+    {"CascadeTest", 0x006C73AA},
+    {"RoomByIdCall", 0x006C73F0},
+    {"RoomById", 0x006A6550},
+    {"InvalidateCall", 0x006C73FF},
+    {"InvalidateRoom", 0x0069EED0},
+    {"SetInsertCall", 0x006C741B},
+    {"SetInsert", 0x00B7AAD0},
+    {"SolvePoint", 0x0069FD60},
+    {"SolvePointCall0", 0x006A1187},
+    {"SolvePointCall1", 0x006A126F},
+    {"SolvePointCall2", 0x006A3336},
+    {"BatchSolveCall", 0x006A3336},
+    {"LightEvalReturn", 0x0069FE19},
+    {"WallTestCall", 0x0069FE93},
+    {"WallTest", 0x0069FC40},
+    {"BatchSamples", 0x01158AC8},
+    {"WallCullBatchFn", 0x006A30B0},
+    {"WallCullCall", 0x006A311F},
+    {"WallCull", 0x0069DFF0},
+    {"ModelDraw", 0x006F6250},
+    {"BinderCall", 0x006F68C5},
+    {"Binder", 0x006B8B30},
+    {"InstanceFlush", 0x006CF920},
+    {"GetLotIdGatherCall", 0x006B635D},
+    {"GetLotId", 0x006BC020},
+};
+static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Signature table
+// ---------------------------------------------------------------------------------------------------------------------
+enum class K : uint8_t {
+    Sig,       // one address from the signature (exactly one match, or every match gives the same value)
+    Multi,     // exactly `arg` matches, the ids from `id` on get them by address
+    InRange,   // the signature searched only in [Get(dep), Get(dep) + arg); exactly one match there
+    LowestOf2, // exactly two matches (twin functions): the lower one
+    CallIn,    // after the signature match, the CALL within `arg` bytes that lands on Get(dep)
+    Deref,     // the dword at Get(dep) + arg (no signature)
+    Target,    // the target of the CALL at Get(dep); the signatures are a fallback when dep is missing
+    CallersOf, // every CALL in .text that lands on Get(dep): exactly `arg` of them, ids from `id` on, by address
+    LightType, // the vtable the light factory's constructor for type `arg` stores (dep = the factory's jump table)
+};
+enum class M : uint8_t {
+    At,    // address = match + offset
+    Call,  // match + offset is a CALL rel32: address = its target
+    Dword, // address = the dword at match + offset (a global, a vtable, a table)
+};
+enum class W : uint8_t { Text, Image }; // where the address must lie: the game's .text, or anywhere in its image
+
+struct Sig {
+    const char* pattern;
+    int offset;
+    M mode;
+};
+struct Entry {
+    Id id;
+    K kind;
+    W where;
+    Id dep;
+    int arg;
+    Sig sig[2]; // primary, alternate (tried when the primary is not unique); pattern nullptr = none
+};
+
+constexpr Id None = Id::Count;
+#define NOSIG {nullptr, 0, M::At}
+
+// clang-format off
+// Order: every dependency before its users.
+const Entry kTable[] = {
+    // ---- Night Lights core ----
+    {Id::RootGetter, K::Sig, W::Text, None, 0, {{"A1 ?? ?? ?? ?? 85 C0 75 01 C3 8B 80 C0 01 00 00 C3", 0, M::At}, {"C7 44 24 ?? ?? ?? ?? ?? E8 ?? ?? ?? ?? 3B C7 74 0C 8D 4C 24 ?? 51 8B C8 E8", 8, M::Call}}},
+    {Id::RootPtr, K::Deref, W::Image, Id::RootGetter, 1, {NOSIG, NOSIG}},
+    {Id::QueueRoom, K::Sig, W::Text, None, 0, {{"83 EC 2C 53 55 56 33 DB 8B F1 88 5C 24 0C 8B 44 24 0C", 0, M::At}, {"89 3E E8 ?? ?? ?? ?? 53 8B CF E8 ?? ?? ?? ?? 50 8B CE E8", 2, M::Call}}},
+    {Id::TerrainVisitorSite, K::Sig, W::Text, None, 0, {{"56 57 8B 7C 24 0C 8B 07 8B 50 20 8B F1 8B CF FF D2 84 C0 74 ?? 8B 46 08 3B 46 0C", 6, M::At}, {"8B 07 8B 50 20 8B F1 8B CF FF D2 84 C0 74 ?? 8B 46 08 3B 46 0C 8D 4E 04", 0, M::At}}},
+    {Id::ArmSiteRemoval, K::Multi, W::Text, None, 3, {{"8B 17 8B 42 20 8B CF FF D0 84 C0 74 ?? C7 46 38 32 00 00 00", 0, M::At}, {"80 7E 40 00 74 08 57 8B CE E8 ?? ?? ?? ?? 8B 17 8B 42 20 8B CF FF D0 84 C0 74", 14, M::At}}},
+    {Id::EnumLights, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 3B C7 74 0C 8D 4C 24 ?? 51 8B C8 E8 ?? ?? ?? ?? 8B 46 1C", 16, M::Call}, {"E8 ?? ?? ?? ?? 8B 4C 24 04 51 68 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? C2 04 00", 0, M::At}}},
+    {Id::ChunkRenderCall, K::Sig, W::Text, None, 0, {{"80 7E 54 00 74 ?? 6A 00 56 8B CF E8 ?? ?? ?? ?? C6 44 24 0C 01", 11, M::At}, {"6A 00 56 8B CF E8 ?? ?? ?? ?? C6 44 24 0C 01 EB", 5, M::At}}},
+    {Id::ChunkRenderFn, K::Target, W::Text, Id::ChunkRenderCall, 0, {NOSIG, NOSIG}},
+    // ---- light classes ----
+    {Id::LightJumpTable, K::Sig, W::Text, None, 0, {{"8B B1 04 01 00 00 33 C0 85 F6 0F 84 ?? ?? ?? ?? 8B 4C 24 08 83 C1 FD 83 F9 08 0F 87 ?? ?? ?? ?? FF 24 8D", 35, M::Dword}, {"85 F6 0F 84 ?? ?? ?? ?? 8B 4C 24 08 83 C1 FD 83 F9 08 0F 87 ?? ?? ?? ?? FF 24 8D", 27, M::Dword}}},
+    {Id::LightVtable3, K::LightType, W::Image, Id::LightJumpTable, 3, {NOSIG, NOSIG}},
+    {Id::LightVtable4, K::LightType, W::Image, Id::LightJumpTable, 4, {NOSIG, NOSIG}},
+    {Id::LightVtable5, K::LightType, W::Image, Id::LightJumpTable, 5, {NOSIG, NOSIG}},
+    {Id::LightVtable6, K::LightType, W::Image, Id::LightJumpTable, 6, {NOSIG, NOSIG}},
+    {Id::LightVtable7, K::LightType, W::Image, Id::LightJumpTable, 7, {NOSIG, NOSIG}},
+    {Id::LightVtable8, K::LightType, W::Image, Id::LightJumpTable, 8, {NOSIG, NOSIG}},
+    {Id::LightVtable9, K::LightType, W::Image, Id::LightJumpTable, 9, {NOSIG, NOSIG}},
+    {Id::LightVtable10, K::LightType, W::Image, Id::LightJumpTable, 10, {NOSIG, NOSIG}},
+    {Id::LightVtable11, K::LightType, W::Image, Id::LightJumpTable, 11, {NOSIG, NOSIG}},
+    {Id::LightColour3, K::Deref, W::Text, Id::LightVtable3, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour4, K::Deref, W::Text, Id::LightVtable4, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour5, K::Deref, W::Text, Id::LightVtable5, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour6, K::Deref, W::Text, Id::LightVtable6, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour7, K::Deref, W::Text, Id::LightVtable7, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour8, K::Deref, W::Text, Id::LightVtable8, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour9, K::Deref, W::Text, Id::LightVtable9, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour10, K::Deref, W::Text, Id::LightVtable10, 0x10, {NOSIG, NOSIG}},
+    {Id::LightColour11, K::Deref, W::Text, Id::LightVtable11, 0x10, {NOSIG, NOSIG}},
+    {Id::LightEval3, K::Deref, W::Text, Id::LightVtable3, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval4, K::Deref, W::Text, Id::LightVtable4, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval5, K::Deref, W::Text, Id::LightVtable5, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval6, K::Deref, W::Text, Id::LightVtable6, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval7, K::Deref, W::Text, Id::LightVtable7, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval8, K::Deref, W::Text, Id::LightVtable8, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval9, K::Deref, W::Text, Id::LightVtable9, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval10, K::Deref, W::Text, Id::LightVtable10, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightEval11, K::Deref, W::Text, Id::LightVtable11, 0x4C, {NOSIG, NOSIG}},
+    {Id::LightPos, K::Deref, W::Text, Id::LightVtable3, 0x24, {NOSIG, NOSIG}},
+    // ---- Night Lights developer options ----
+    {Id::LampColourSite, K::InRange, W::Text, Id::LightEval11, 0x300, {{"0F 28 86 E0 00 00 00 8B 55 10", 0, M::At}, {"0F 28 86 E0 00 00 00", 0, M::At}}},
+    {Id::LotPassSite, K::Sig, W::Text, None, 0, {{"8B 7D 08 8B 87 D8 00 00 00 85 C0 F3 0F 10 05 ?? ?? ?? ?? F3 0F 11 44 24 18 74 13", 3, M::At}, {"8B 87 D8 00 00 00 85 C0 F3 0F 10 05 ?? ?? ?? ?? F3 0F 11 44 24 ?? 74", 0, M::At}}},
+    {Id::LotPassConst, K::Deref, W::Image, Id::LotPassSite, 0x0C, {NOSIG, NOSIG}},
+    {Id::LotPassTexGlobal, K::Deref, W::Image, Id::LotPassSite, 0x1A, {NOSIG, NOSIG}},
+    {Id::LotPassNullBind, K::InRange, W::Text, Id::LotPassSite, 0x80, {{"80 78 1D 00 75 ?? A1 ?? ?? ?? ?? 6A 00 6A 00 50", 6, M::At}, {"A1 ?? ?? ?? ?? 6A 00 6A 00 50 8B CE E8", 0, M::At}}},
+    {Id::QualitySite0, K::Multi, W::Text, None, 2, {{"75 0B 80 ?? 4D 00 C6 44 24 0C 00 74 05 C6 44 24 0C 01", 6, M::At}, {"4D 00 C6 44 24 0C 00 74 05 C6 44 24 0C 01", 2, M::At}}},
+    // ---- object light bridge ----
+    {Id::CapOperandSite, K::Sig, W::Text, None, 0, {{"0F 5F F0 0F 28 00 0F 5F F0 B9 ?? ?? ?? ?? 0F 29 74 24 30 E8", 9, M::At}, {"B9 ?? ?? ?? ?? 0F 29 74 24 30 E8 ?? ?? ?? ?? D9 00", 0, M::At}}},
+    {Id::CapGlobal, K::Deref, W::Image, Id::CapOperandSite, 1, {NOSIG, NOSIG}},
+    {Id::RigGatherReturn, K::Sig, W::Text, None, 0, {{"8B 17 8B 52 10 8D 44 24 10 50 8D 8E 40 01 00 00 51 8B CF FF D2 83 7E 08 00 74", 21, M::At}, {"8D 8E 40 01 00 00 51 8B CF FF D2 83 7E 08 00", 11, M::At}}},
+    {Id::LumaWeights, K::Sig, W::Image, None, 0, {{"0F 29 4E 10 0F 28 05 ?? ?? ?? ?? 0F 28 4E 10", 7, M::Dword}, {"0F 29 71 10 0F 28 05 ?? ?? ?? ??", 7, M::Dword}}},
+    {Id::DirtyAllRigs, K::Sig, W::Text, None, 0, {{"83 EC 10 55 8B E9 33 C9 33 C0 39 4D 30 89 44 24 0C 76", 0, M::At}, {"55 8B E9 33 C9 33 C0 39 4D 30", -3, M::At}}},
+    {Id::RigCtor, K::Sig, W::Text, None, 0, {{"56 8B F1 57 C7 06 ?? ?? ?? ?? 33 C0 8D 4E 04 87 01 8A 54 24 0C 8A 86 24 02 00 00", 0, M::At}, {"C7 06 ?? ?? ?? ?? 33 C0 8D 4E 04 87 01 8A 54 24 0C 8A 86 24 02 00 00", -4, M::At}}},
+    {Id::RigVtable, K::InRange, W::Image, Id::RigCtor, 0x80, {{"C7 06 ?? ?? ?? ?? C7 46 08 00 00 00 00 C7 46 0C 00 00 00 00", 2, M::Dword}, {"24 E7 0A D0 8B CE C7 06 ?? ?? ?? ??", 8, M::Dword}}},
+    {Id::RigCtorCall0, K::CallIn, W::Text, Id::RigCtor, 0x18, {{"6A 01 56 8B C8 81 E2 01 FF FF FF 52 E8", 0, M::At}, {"9C 02 00 00 C0 ?? 04 6A 01 56", 0, M::At}}},
+    {Id::RigCtorCall1, K::CallIn, W::Text, Id::RigCtor, 0x18, {{"6A 02 56 81 E1 01 FF FF FF 51 8B C8 E8", 0, M::At}, {"9C 02 00 00 C0 ?? 04 6A 02 56", 0, M::At}}},
+    {Id::RigCtorCall2, K::CallIn, W::Text, Id::RigCtor, 0x18, {{"6A 00 56 81 E1 01 FF FF FF 51 8B C8 E8", 0, M::At}, {"9C 02 00 00 C0 ?? 04 6A 00 56", 0, M::At}}},
+    {Id::RoomGatherCall, K::Sig, W::Text, None, 0, {{"8D 97 C8 00 00 00 52 8D 47 30 50 8B CE E8 ?? ?? ?? ?? 8B CE E8", 13, M::At}, {"8D 47 30 50 8B CE E8 ?? ?? ?? ?? 8B CE E8", 6, M::At}}},
+    {Id::RoomGather, K::Target, W::Text, Id::RoomGatherCall, 0, {NOSIG, NOSIG}},
+    {Id::CellGather, K::Sig, W::Text, None, 0, {{"F6 86 24 02 00 00 10 74 ?? 8B 88 04 01 00 00 56 E8 ?? ?? ?? ?? 8B 0D", 16, M::Call}, {"83 EC 1C 8B 54 24 20 53 55 56 57 8B F1 8D 44 24 1C 50 8D 4C 24 28", 0, M::At}}},
+    {Id::RigUpdate, K::Sig, W::Text, None, 0, {{"80 A1 24 02 00 00 F7 83 B9 EC 01 00 00 00 74 06 83 79 08 00 74 ?? 83 B9 D4 01 00 00 02", 0, M::At}, {"80 A1 24 02 00 00 F7 83 B9 EC 01 00 00 00", 0, M::At}}},
+    {Id::SetLightColour, K::Sig, W::Text, None, 0, {{"74 ?? 8D 4F 10 51 8B CE E8 ?? ?? ?? ?? D9 47 1C", 8, M::Call}, {"8D 4F 10 51 8B CE E8 ?? ?? ?? ?? D9 47 1C", 6, M::Call}}},
+    {Id::SetColourCall0, K::CallersOf, W::Text, Id::SetLightColour, 7, {NOSIG, NOSIG}},
+    {Id::ScriptSetColourCall, K::Sig, W::Text, None, 0, {{"8B 0E 8D 44 24 10 50 0F 29 44 24 14 E8 ?? ?? ?? ?? 83 C6 04", 12, M::At}, {"50 0F 29 44 24 14 E8 ?? ?? ?? ?? 83 C6 04", 6, M::At}}},
+    {Id::ScriptSetColour, K::Target, W::Text, Id::ScriptSetColourCall, 0, {{"55 8B EC 83 E4 F0 8B 45 08 0F 28 00 0F 29 81 F0 00 00 00 F6 81 00 01 00 00 20", 0, M::At}, NOSIG}},
+    // ---- light between stories ----
+    {Id::AddWorldLights, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 83 EC 34 53 56 33 DB F6 05 ?? ?? ?? ?? 01 57 8B F9 75", 0, M::At}, {"83 EC 34 53 56 33 DB F6 05 ?? ?? ?? ?? 01 57 8B F9", -6, M::At}}},
+    {Id::AddWorldLightsCall0, K::CallersOf, W::Text, Id::AddWorldLights, 2, {NOSIG, NOSIG}},
+    {Id::LevelGather, K::InRange, W::Text, Id::AddWorldLights, 0x100, {{"6A 01 56 8B CF E8 ?? ?? ?? ?? 39 5E 0C", 5, M::Call}, {"53 56 8D 88 A0 06 00 00 E8", 8, M::Call}}},
+    {Id::LevelGatherCall0, K::CallersOf, W::Text, Id::LevelGather, 2, {NOSIG, NOSIG}},
+    {Id::CascadeTest, K::Sig, W::Text, None, 0, {{"39 86 A0 01 00 00 0F 85 ?? ?? ?? ?? 33 ED 83 FD FC 8B C5 7D 07 B8 FC FF FF FF EB 0A 83 FD 08 7C 05 B8 07 00 00 00", 0, M::At}, {"39 86 A0 01 00 00 0F 85 ?? ?? ?? ?? 33 ED 83 FD FC", 0, M::At}}},
+    {Id::RoomByIdCall, K::InRange, W::Text, Id::CascadeTest, 0x100, {{"74 ?? 6A 00 E8 ?? ?? ?? ?? 85 C0 74 ?? 6A 00 6A 01 8B C8 E8", 4, M::At}, {"6A 00 E8 ?? ?? ?? ?? 85 C0 74", 2, M::At}}},
+    {Id::RoomById, K::Target, W::Text, Id::RoomByIdCall, 0, {NOSIG, NOSIG}},
+    {Id::InvalidateCall, K::InRange, W::Text, Id::RoomByIdCall, 0x20, {{"6A 00 6A 01 8B C8 E8", 6, M::At}, {"8B C8 E8", 2, M::At}}},
+    {Id::InvalidateRoom, K::Target, W::Text, Id::InvalidateCall, 0, {NOSIG, NOSIG}},
+    {Id::SetInsertCall, K::InRange, W::Text, Id::CascadeTest, 0x100, {{"C6 44 24 10 00 8B 54 24 10 52 8D 44 24 18 50 8D 4C 24 34 51 8D 4F 28 E8", 23, M::At}, {"51 8D 4F 28 E8", 4, M::At}}},
+    {Id::SetInsert, K::Target, W::Text, Id::SetInsertCall, 0, {NOSIG, NOSIG}},
+    {Id::SolvePoint, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 83 EC 74 0F 57 C0 8B 45 08 53 8B D9 8B 8B CC 00 00 00 2B 8B C8 00 00 00", 0, M::At}, {"8D 54 24 30 52 8B CB E8 ?? ?? ?? ?? 80 7B 18 00 0F 57 C9 0F 85", 7, M::Call}}},
+    {Id::SolvePointCall0, K::CallersOf, W::Text, Id::SolvePoint, 3, {NOSIG, NOSIG}},
+    {Id::BatchSolveCall, K::Sig, W::Text, None, 0, {{"8D 54 24 30 52 8B CB E8 ?? ?? ?? ?? 80 7B 18 00 0F 57 C9 0F 85", 7, M::At}, {"E8 ?? ?? ?? ?? 80 7B 18 00 0F 57 C9 0F 85", 0, M::At}}},
+    {Id::LightEvalReturn, K::InRange, W::Text, Id::SolvePoint, 0x300, {{"8B 3E 50 52 8B 57 4C 8B CE FF D2 0F 28 4C 24 40", 11, M::At}, {"8B 57 4C 8B CE FF D2", 7, M::At}}},
+    {Id::WallTestCall, K::InRange, W::Text, Id::SolvePoint, 0x300, {{"8B CB E8 ?? ?? ?? ?? 84 C0 74 ?? 8B 45 14 80 78 01 00", 2, M::At}, {"E8 ?? ?? ?? ?? 84 C0 74 ?? 8B 45 14 80 78 01 00", 0, M::At}}},
+    {Id::WallTest, K::Target, W::Text, Id::WallTestCall, 0, {NOSIG, NOSIG}},
+    {Id::BatchSamples, K::Sig, W::Image, None, 0, {{"8D 46 44 50 68 ?? ?? ?? ?? E8", 5, M::Dword}, {"8D 46 30 50 83 C6 44 56 68 ?? ?? ?? ??", 9, M::Dword}}},
+    {Id::WallCullBatchFn, K::LowestOf2, W::Text, None, 0, {{"55 8B EC 83 E4 F0 83 EC 24 53 56 8B F1 8B 9E CC 00 00 00 2B 9E C8 00 00 00 57 8B 7D 0C", 0, M::At}, {"8B 9E CC 00 00 00 2B 9E C8 00 00 00 57 8B 7D 0C 8B CF 89 74 24 1C C1 FB 02", -13, M::At}}},
+    {Id::WallCullCall, K::InRange, W::Text, Id::WallCullBatchFn, 0x90, {{"56 83 C1 30 E8", 4, M::At}, {"83 C1 30 E8", 3, M::At}}},
+    {Id::WallCull, K::Target, W::Text, Id::WallCullCall, 0, {NOSIG, NOSIG}},
+    // ---- rig tracker ----
+    {Id::ModelDraw, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 94 01 00 00 53 8B D9 F7 43 40 00 10 00 00 56 57 0F 85", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? ?? 00 00 53 8B D9 F7 43 40 00 10 00 00 56 57 0F 85", 0, M::At}}},
+    {Id::BinderCall, K::InRange, W::Text, Id::ModelDraw, 0x1000, {{"0F 95 44 24 16 8B CF E8 ?? ?? ?? ?? 6A 00 E8", 7, M::At}, {"3A C1 0F 95 44 24 ?? 8B CF E8", 9, M::At}}},
+    {Id::Binder, K::Target, W::Text, Id::BinderCall, 0, {NOSIG, NOSIG}},
+    {Id::InstanceFlush, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC A4 0B 00 00 53 56 8B F1 80 7E 4C 01 57 89 74 24 10 0F 84", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? ?? 00 00 53 56 8B F1 80 7E 4C 01 57 89 74 24 10 0F 84", 0, M::At}}},
+    // ---- Every-Story Ground Light ----
+    {Id::GetLotIdGatherCall, K::Sig, W::Text, None, 0, {{"FF D0 84 C0 74 ?? 8B CE E8 ?? ?? ?? ?? 0B C2 75 ?? 8B 45 04", 8, M::At}, {"8B CE E8 ?? ?? ?? ?? 0B C2 75 ?? 8B 45 04", 2, M::At}}},
+    {Id::GetLotId, K::Target, W::Text, Id::GetLotIdGatherCall, 0, {{"8B 81 C0 00 00 00 8B 91 C4 00 00 00 C3", 0, M::At}, NOSIG}},
+};
+// clang-format on
+#undef NOSIG
+
+// Feature groups: the addresses a feature needs before it can be switched on (its optional parts check their own ids).
+struct Group {
+    const char* name;
+    std::vector<Id> ids;
+};
+const Group kGroups[] = {
+    {"NightLights", {Id::RootGetter, Id::RootPtr, Id::QueueRoom, Id::TerrainVisitorSite, Id::ArmSiteRemoval, Id::ArmSiteRegister, Id::ArmSiteMoved}},
+    {"SplitLevel", {Id::GetLotIdGatherCall, Id::GetLotId}},
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------------------------------------------------
+uintptr_t g_found[static_cast<size_t>(Id::Count)] = {}; // what the signatures gave (every build)
+uintptr_t g_final[static_cast<size_t>(Id::Count)] = {}; // what Get returns on non-Steam builds
+std::atomic<bool> g_resolved{false};
+bool g_resolveRan = false;
+
+struct Range {
+    uintptr_t begin = 0, end = 0;
+    bool Has(uintptr_t a, size_t n = 1) const { return a >= begin && a + n <= end && a + n >= a; }
+};
+Range g_text, g_image;
+std::vector<Range> g_readable; // readable parts of .text (normally the whole section)
+
+size_t Index(Id id) { return static_cast<size_t>(id); }
+
+// ---- guarded memory access (SEH only, no C++ objects inside __try) ----
+bool SafeRead(uintptr_t a, void* out, size_t n) {
+    __try {
+        std::memcpy(out, reinterpret_cast<const void*>(a), n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool ReadU32(uintptr_t a, uint32_t& v) { return SafeRead(a, &v, 4); }
+
+// Call target of an E8 rel32 at a, or 0
+uintptr_t CallTargetAt(uintptr_t a) {
+    uint8_t b[5];
+    if (!g_text.Has(a, 5) || !SafeRead(a, b, 5) || b[0] != 0xE8) return 0;
+    int32_t rel;
+    std::memcpy(&rel, b + 1, 4);
+    return a + 5 + static_cast<intptr_t>(rel);
+}
+
+// ---- patterns ----
+struct Pattern {
+    std::vector<uint8_t> bytes, mask;
+    size_t anchor = 0; // first fixed byte (the one memchr looks for)
+};
+
+int Hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool ParsePattern(const char* s, Pattern& p) {
+    p = {};
+    for (const char* c = s; c && *c;) {
+        if (*c == ' ') {
+            ++c;
+            continue;
+        }
+        if (*c == '?') {
+            p.bytes.push_back(0);
+            p.mask.push_back(0);
+            ++c;
+            if (*c == '?') ++c;
+            continue;
+        }
+        const int hi = Hex(c[0]), lo = c[1] ? Hex(c[1]) : -1;
+        if (hi < 0 || lo < 0) return false;
+        p.bytes.push_back(static_cast<uint8_t>(hi * 16 + lo));
+        p.mask.push_back(1);
+        c += 2;
+    }
+    size_t a = 0;
+    while (a < p.mask.size() && !p.mask[a]) a++;
+    if (a == p.mask.size()) return false; // wildcards only
+    p.anchor = a;
+    return true;
+}
+
+// Match starts in [from, to) inside one readable range that ends at `limit` (a match may run past `to`, never past
+// `limit`). Appends to out[found..maxOut) and returns the new total count (which can exceed maxOut). SEH only.
+size_t ScanRaw(uintptr_t from, uintptr_t to, uintptr_t limit, const uint8_t* bytes, const uint8_t* mask, size_t n, size_t anchor, uintptr_t* out, size_t maxOut,
+               size_t found) {
+    __try {
+        const uint8_t first = bytes[anchor];
+        const uintptr_t searchEnd = to + anchor < limit ? to + anchor : limit;
+        uintptr_t p = from + anchor;
+        while (p < searchEnd) {
+            const void* hit = std::memchr(reinterpret_cast<const void*>(p), first, searchEnd - p);
+            if (!hit) break;
+            const uintptr_t start = reinterpret_cast<uintptr_t>(hit) - anchor;
+            if (start >= to || start + n > limit) break;
+            const uint8_t* at = reinterpret_cast<const uint8_t*>(start);
+            size_t k = 0;
+            while (k < n && (!mask[k] || at[k] == bytes[k])) k++;
+            if (k == n) {
+                if (found < maxOut) out[found] = start;
+                found++;
+            }
+            p = reinterpret_cast<uintptr_t>(hit) + 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return found;
+}
+
+// Every match in [from, to) of .text: the count is exact, the first 64 are recorded (address order)
+size_t FindAll(const Pattern& pat, uintptr_t from, uintptr_t to, std::vector<uintptr_t>& out) {
+    constexpr size_t kMax = 64;
+    uintptr_t buf[kMax];
+    size_t found = 0;
+    for (const Range& r : g_readable) {
+        const uintptr_t b = r.begin > from ? r.begin : from, e = r.end < to ? r.end : to;
+        if (b >= e) continue;
+        found = ScanRaw(b, e, r.end, pat.bytes.data(), pat.mask.data(), pat.bytes.size(), pat.anchor, buf, kMax, found);
+    }
+    out.assign(buf, buf + (found < kMax ? found : kMax));
+    return found;
+}
+
+// CALL rel32 sites in [from, to) landing on target (a CALL may not run past `limit`). SEH only.
+size_t ScanCalls(uintptr_t from, uintptr_t to, uintptr_t limit, uintptr_t target, uintptr_t* out, size_t maxOut, size_t found) {
+    __try {
+        for (uintptr_t p = from; p < to && p + 5 <= limit; p++) {
+            if (*reinterpret_cast<const uint8_t*>(p) != 0xE8) continue;
+            const int32_t rel = *reinterpret_cast<const int32_t*>(p + 1);
+            if (p + 5 + static_cast<intptr_t>(rel) != target) continue;
+            if (found < maxOut) out[found] = p;
+            found++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return found;
+}
+
+std::string Hex16(uintptr_t at) {
+    uint8_t b[16];
+    const uintptr_t from = at >= 4 ? at - 4 : at;
+    if (!SafeRead(from, b, sizeof b)) return "(unreadable)";
+    std::string s;
+    for (int i = 0; i < 16; i++) s += std::format("{}{:02X}", from + i == at ? " | " : (i ? " " : ""), b[i]);
+    return s;
+}
+
+bool IsFixedBuild() { return g_gameVersion == GameVersion::Steam; }
+
+// ---- logging of one attempt ----
+void LogMatches(const char* name, const char* which, size_t count, const std::vector<uintptr_t>& hits, uintptr_t result, Id id) {
+    std::string at;
+    for (size_t i = 0; i < hits.size() && i < 8; i++) at += std::format("{}{:#010x}", i ? ", " : "", hits[i]);
+    if (hits.size() > 8) at += ", ...";
+    const uint32_t steam = kInfo[Index(id)].steam;
+    const bool steamOk = !IsFixedBuild() || result == steam;
+    LOG_INFO(std::format("[Addr] {}{}: {} match{}{}{} -> {} (Steam {:#010x}){}", name, which, count, count == 1 ? "" : "es", count ? " at " : "", at,
+                         result ? std::format("{:#010x}", result) : std::string("not found"), steam, IsFixedBuild() ? (steamOk ? " ok" : " DIFFERS: the fixed address is kept") : ""));
+    // 16 bytes around each match (4 before, the match start after "|"): non-Steam builds, or a Steam self-check that failed
+    if (!IsFixedBuild() || !steamOk)
+        for (size_t i = 0; i < hits.size() && i < 3; i++) LOG_INFO(std::format("[Addr]   {:#010x}: {}", hits[i], Hex16(hits[i])));
+}
+
+// Value a signature gives for one match
+uintptr_t Apply(const Sig& s, uintptr_t match) {
+    const uintptr_t a = match + static_cast<intptr_t>(s.offset);
+    switch (s.mode) {
+    case M::At:
+        return a;
+    case M::Call:
+        return CallTargetAt(a);
+    case M::Dword: {
+        uint32_t v = 0;
+        return ReadU32(a, v) ? v : 0;
+    }
+    }
+    return 0;
+}
+
+bool InWhere(W w, uintptr_t a) { return a && (w == W::Text ? g_text.Has(a) : g_image.Has(a)); }
+
+// One signature over [from, to): the address when it matches once (or every match agrees on the value), else 0
+uintptr_t TrySig(const Entry& e, int which, uintptr_t from, uintptr_t to) {
+    const Sig& s = e.sig[which];
+    if (!s.pattern) return 0;
+    const char* tag = which == 0 ? "" : " (alternate)";
+    Pattern pat;
+    if (!ParsePattern(s.pattern, pat)) {
+        LOG_ERROR(std::format("[Addr] {}{}: bad pattern", Name(e.id), tag));
+        return 0;
+    }
+    std::vector<uintptr_t> hits;
+    const size_t count = FindAll(pat, from, to, hits);
+    uintptr_t result = 0;
+    if (count == 1) result = Apply(s, hits[0]);
+    else if (count > 1 && count == hits.size() && s.mode != M::At) { // every match must give the same value
+        result = Apply(s, hits[0]);
+        for (uintptr_t h : hits)
+            if (Apply(s, h) != result) result = 0;
+    }
+    if (e.kind == K::LowestOf2) result = count == 2 ? Apply(s, hits[0] < hits[1] ? hits[0] : hits[1]) : 0;
+    if (!InWhere(e.where, result)) result = 0;
+    LogMatches(Name(e.id), tag, count, hits, result, e.id);
+    return result;
+}
+
+// Multi: exactly arg matches; false when the count differs
+bool TryMulti(const Entry& e, int which) {
+    const Sig& s = e.sig[which];
+    if (!s.pattern) return false;
+    Pattern pat;
+    if (!ParsePattern(s.pattern, pat)) return false;
+    std::vector<uintptr_t> hits;
+    const size_t count = FindAll(pat, g_text.begin, g_text.end, hits);
+    const bool ok = count == static_cast<size_t>(e.arg) && hits.size() == count;
+    if (ok) {
+        for (size_t i = 0; i < count; i++) {
+            const uintptr_t a = Apply(s, hits[i]); // hits are in address order
+            g_found[Index(e.id) + i] = InWhere(e.where, a) ? a : 0;
+        }
+    }
+    LogMatches(Name(e.id), which ? " (alternate)" : "", count, hits, ok ? g_found[Index(e.id)] : 0, e.id);
+    if (!ok) LOG_INFO(std::format("[Addr]   {} expects exactly {} matches", Name(e.id), e.arg));
+    for (int i = 1; ok && i < e.arg; i++)
+        LOG_INFO(std::format("[Addr] {}: {:#010x} (Steam {:#010x})", Name(static_cast<Id>(Index(e.id) + i)), g_found[Index(e.id) + i], kInfo[Index(e.id) + i].steam));
+    return ok;
+}
+
+// Every CALL in .text landing on target (address order; up to 64 recorded, the count is exact)
+size_t CallersOf(uintptr_t target, std::vector<uintptr_t>& sites) {
+    constexpr size_t kMax = 64;
+    uintptr_t buf[kMax];
+    size_t found = 0;
+    for (const Range& r : g_readable) found = ScanCalls(r.begin, r.end, r.end, target, buf, kMax, found);
+    sites.assign(buf, buf + (found < kMax ? found : kMax));
+    return found;
+}
+
+void ResolveCallersOf(const Entry& e) {
+    const uintptr_t target = g_found[Index(e.dep)];
+    if (!target) {
+        LOG_INFO(std::format("[Addr] {}: skipped ({} not found)", Name(e.id), Name(e.dep)));
+        return;
+    }
+    std::vector<uintptr_t> sites;
+    const size_t count = CallersOf(target, sites);
+    std::string at;
+    for (size_t i = 0; i < sites.size() && i < 12; i++) at += std::format("{}{:#010x}", i ? ", " : "", sites[i]);
+    const bool ok = count == static_cast<size_t>(e.arg) && sites.size() == count;
+    LOG_INFO(std::format("[Addr] {}..{}: {} call(s) of {} at {} (expects {}; Steam {:#010x}..){}", Name(e.id), e.arg - 1, count, Name(e.dep), at, e.arg, kInfo[Index(e.id)].steam,
+                         IsFixedBuild() && ok ? (sites[0] == kInfo[Index(e.id)].steam ? " ok" : " DIFFERS: the fixed addresses are kept") : ""));
+    if (!ok) return;
+    for (int i = 0; i < e.arg; i++) g_found[Index(e.id) + i] = sites[i];
+}
+
+
+// Light factory: jump table [type - 3] -> case code "mov ecx,eax; call ctor" -> the ctor's first "mov [esi|edi], vtable"
+uintptr_t LightVtableOfType(uintptr_t table, int type) {
+    uint32_t caseCode = 0;
+    if (!ReadU32(table + 4 * static_cast<uintptr_t>(type - 3), caseCode) || !g_text.Has(caseCode, 0x48)) return 0;
+    uint8_t c[0x48];
+    if (!SafeRead(caseCode, c, sizeof c)) return 0;
+    uintptr_t ctor = 0;
+    for (int i = 0; i + 7 <= static_cast<int>(sizeof c); i++)
+        if (c[i] == 0x8B && c[i + 1] == 0xC8 && c[i + 2] == 0xE8) {
+            ctor = CallTargetAt(caseCode + i + 2);
+            break;
+        }
+    if (!ctor || !g_text.Has(ctor, 0x88)) return 0;
+    uint8_t f[0x88];
+    if (!SafeRead(ctor, f, sizeof f)) return 0;
+    for (int i = 0; i + 6 <= static_cast<int>(sizeof f); i++)
+        if (f[i] == 0xC7 && (f[i + 1] == 0x06 || f[i + 1] == 0x07)) {
+            uint32_t v;
+            std::memcpy(&v, f + i + 2, 4);
+            if (g_image.Has(v, 0x50) && !g_text.Has(v)) return v;
+        }
+    return 0;
+}
+
+void ResolveEntry(const Entry& e) {
+    const size_t i = Index(e.id);
+    const bool hasDep = e.dep != None;
+    const uintptr_t dep = hasDep ? g_found[Index(e.dep)] : 0;
+    const char* name = Name(e.id);
+    switch (e.kind) {
+    case K::Sig:
+    case K::LowestOf2: {
+        uintptr_t a = TrySig(e, 0, g_text.begin, g_text.end);
+        if (!a && e.sig[1].pattern) a = TrySig(e, 1, g_text.begin, g_text.end);
+        g_found[i] = a;
+        break;
+    }
+    case K::Multi:
+        if (!TryMulti(e, 0) && e.sig[1].pattern) TryMulti(e, 1);
+        break;
+    case K::InRange: {
+        if (!dep) {
+            LOG_INFO(std::format("[Addr] {}: skipped ({} not found)", name, Name(e.dep)));
+            break;
+        }
+        const uintptr_t to = dep + static_cast<uintptr_t>(e.arg) < g_text.end ? dep + static_cast<uintptr_t>(e.arg) : g_text.end;
+        uintptr_t a = TrySig(e, 0, dep, to);
+        if (!a && e.sig[1].pattern) a = TrySig(e, 1, dep, to);
+        g_found[i] = a;
+        break;
+    }
+    case K::CallIn: {
+        if (!dep) {
+            LOG_INFO(std::format("[Addr] {}: skipped ({} not found)", name, Name(e.dep)));
+            break;
+        }
+        for (int w = 0; w < 2 && !g_found[i]; w++) {
+            const Sig& s = e.sig[w];
+            if (!s.pattern) continue;
+            Pattern pat;
+            if (!ParsePattern(s.pattern, pat)) continue;
+            std::vector<uintptr_t> hits;
+            const size_t count = FindAll(pat, g_text.begin, g_text.end, hits);
+            uintptr_t a = 0;
+            if (count == 1)
+                for (int k = 0; k + 5 <= e.arg && !a; k++)
+                    if (CallTargetAt(hits[0] + s.offset + k) == dep) a = hits[0] + s.offset + k;
+            LogMatches(name, w ? " (alternate)" : "", count, hits, a, e.id);
+            g_found[i] = a;
+        }
+        break;
+    }
+    case K::Deref: {
+        uint32_t v = 0;
+        g_found[i] = dep && ReadU32(dep + static_cast<uintptr_t>(e.arg), v) && InWhere(e.where, v) ? v : 0;
+        LOG_INFO(std::format("[Addr] {}: {} from {} + {:#x} (Steam {:#010x}){}", name, g_found[i] ? std::format("{:#010x}", g_found[i]) : std::string("not found"), Name(e.dep), e.arg,
+                             kInfo[i].steam, IsFixedBuild() ? (g_found[i] == kInfo[i].steam ? " ok" : " DIFFERS: the fixed address is kept") : ""));
+        break;
+    }
+    case K::Target: {
+        uintptr_t a = dep ? CallTargetAt(dep) : 0;
+        if (!InWhere(e.where, a)) a = 0;
+        if (a || !e.sig[0].pattern)
+            LOG_INFO(std::format("[Addr] {}: {} = target of {} (Steam {:#010x}){}", name, a ? std::format("{:#010x}", a) : std::string("not found"), Name(e.dep), kInfo[i].steam,
+                                 IsFixedBuild() ? (a == kInfo[i].steam ? " ok" : " DIFFERS: the fixed address is kept") : ""));
+        if (!a && e.sig[0].pattern) { // fallback: its own signature
+            a = TrySig(e, 0, g_text.begin, g_text.end);
+            if (!a && e.sig[1].pattern) a = TrySig(e, 1, g_text.begin, g_text.end);
+        }
+        g_found[i] = a;
+        break;
+    }
+    case K::CallersOf:
+        ResolveCallersOf(e);
+        break;
+    case K::LightType: {
+        const uintptr_t v = dep ? LightVtableOfType(dep, e.arg) : 0;
+        g_found[i] = InWhere(e.where, v) ? v : 0;
+        LOG_INFO(std::format("[Addr] {}: {} from the light factory, type {} (Steam {:#010x}){}", name, g_found[i] ? std::format("{:#010x}", g_found[i]) : std::string("not found"), e.arg,
+                             kInfo[i].steam, IsFixedBuild() ? (g_found[i] == kInfo[i].steam ? " ok" : " DIFFERS: the fixed address is kept") : ""));
+        break;
+    }
+    }
+}
+
+// Cross-checks between entries (non-Steam: a failed check clears the ids concerned)
+void CrossChecks() {
+    auto clear = [](std::initializer_list<Id> ids, const char* why) {
+        std::string names;
+        for (Id id : ids) {
+            names += (names.empty() ? "" : ", ") + std::string(Name(id));
+            g_found[Index(id)] = 0;
+        }
+        LOG_WARNING(std::format("[Addr] {}: {} dropped", why, names));
+    };
+    // The nine light vtables: distinct, and the same position function in all of them
+    bool classesOk = true;
+    for (int a = 0; a < 9; a++)
+        for (int b = a + 1; b < 9; b++) {
+            const uintptr_t va = g_found[Index(Id::LightVtable3) + a], vb = g_found[Index(Id::LightVtable3) + b];
+            if (va && va == vb) classesOk = false;
+        }
+    for (int t = 0; t < 9; t++) {
+        uint32_t pos = 0;
+        const uintptr_t vt = g_found[Index(Id::LightVtable3) + t];
+        if (vt && (!ReadU32(vt + 0x24, pos) || pos != g_found[Index(Id::LightPos)])) classesOk = false;
+    }
+    if (!classesOk) {
+        for (int t = 0; t < 9; t++) g_found[Index(Id::LightVtable3) + t] = g_found[Index(Id::LightColour3) + t] = g_found[Index(Id::LightEval3) + t] = 0;
+        clear({Id::LightPos, Id::LampColourSite}, "Light classes are not nine distinct vtables with one position function");
+    }
+    // Calls that must lie inside the function they were searched from, and the batch solve among the solve calls
+    const uintptr_t batch = g_found[Index(Id::BatchSolveCall)];
+    bool batchListed = false;
+    for (int k = 0; k < 3; k++) batchListed |= batch && g_found[Index(Id::SolvePointCall0) + k] == batch;
+    if (batch && g_found[Index(Id::SolvePointCall0)] && !batchListed) clear({Id::BatchSolveCall}, "The batch solve call is not one of the three solve calls");
+    if (g_found[Index(Id::BatchSolveCall)] && CallTargetAt(g_found[Index(Id::BatchSolveCall)]) != g_found[Index(Id::SolvePoint)])
+        clear({Id::BatchSolveCall}, "The batch solve call does not call the point solve");
+    // The cascade's three calls lie after its test, in order
+    const uintptr_t c = g_found[Index(Id::CascadeTest)], r = g_found[Index(Id::RoomByIdCall)], v = g_found[Index(Id::InvalidateCall)], s = g_found[Index(Id::SetInsertCall)];
+    if (c && r && v && s && !(c < r && r < v && v < s)) clear({Id::RoomByIdCall, Id::InvalidateCall, Id::SetInsertCall}, "The story refresh calls are out of order");
+}
+
+void FindSections() {
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    g_image = {base, base + nt->OptionalHeader.SizeOfImage};
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD k = 0; k < nt->FileHeader.NumberOfSections; k++, sec++) {
+        const bool named = std::strncmp(reinterpret_cast<const char*>(sec->Name), ".text", IMAGE_SIZEOF_SHORT_NAME) == 0;
+        if (named || (!g_text.begin && (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE))) {
+            g_text = {base + sec->VirtualAddress, base + sec->VirtualAddress + sec->Misc.VirtualSize};
+            if (named) break;
+        }
+    }
+    // readable parts (a section can hold guard or no-access pages)
+    g_readable.clear();
+    uintptr_t at = g_text.begin;
+    while (at < g_text.end) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<LPCVOID>(at), &mbi, sizeof mbi)) break;
+        uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (regionEnd > g_text.end) regionEnd = g_text.end;
+        const DWORD prot = mbi.Protect & 0xFF;
+        const bool readable = mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_GUARD) && prot != PAGE_NOACCESS && prot != 0;
+        if (readable) {
+            if (!g_readable.empty() && g_readable.back().end == at) g_readable.back().end = regionEnd;
+            else g_readable.push_back({at, regionEnd});
+        }
+        if (regionEnd <= at) break;
+        at = regionEnd;
+    }
+}
+
+// "push ebp; mov ebp,esp" count in .text: thousands in plain code, ~0 while it is still encrypted
+size_t PrologueCount() {
+    Pattern p;
+    ParsePattern("55 8B EC", p);
+    std::vector<uintptr_t> hits;
+    return FindAll(p, g_text.begin, g_text.end, hits);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Public
+// ---------------------------------------------------------------------------------------------------------------------
+bool IsFixed() { return IsFixedBuild(); }
+
+uintptr_t Get(Id id) {
+    const size_t i = Index(id);
+    if (i >= Index(Id::Count)) return 0;
+    if (IsFixedBuild()) return kInfo[i].steam;
+    return g_resolved.load(std::memory_order_acquire) ? g_final[i] : 0;
+}
+
+const char* Name(Id id) {
+    const size_t i = Index(id);
+    return i < Index(Id::Count) ? kInfo[i].name : "?";
+}
+
+bool Resolved() { return IsFixedBuild() || g_resolved.load(std::memory_order_acquire); }
+
+bool Have(std::initializer_list<Id> ids, std::string* missing) {
+    bool all = true;
+    for (Id id : ids) {
+        if (Get(id)) continue;
+        all = false;
+        if (missing) *missing += (missing->empty() ? "" : ", ") + std::string(Name(id));
+    }
+    return all;
+}
+
+std::string NotAvailable(const std::string& missing) {
+    std::string s = std::string("Not available on ") + GetGameVersionName();
+    if (!Resolved()) return s + " (game code not scanned yet)";
+    return missing.empty() ? s : s + ": missing " + missing;
+}
+
+bool GroupAvailable(const char* group, std::string* missing) {
+    if (!group) return false;
+    for (const Group& g : kGroups) {
+        if (std::strcmp(g.name, group) != 0) continue;
+        if (!Resolved()) {
+            if (missing) *missing = "game code not scanned yet";
+            return false;
+        }
+        bool all = true;
+        for (Id id : g.ids)
+            if (!Get(id)) {
+                all = false;
+                if (missing) *missing += (missing->empty() ? "" : ", ") + std::string(Name(id));
+            }
+        return all;
+    }
+    return false;
+}
+
+int LightTypeOfVtable(uintptr_t vtable) {
+    if (!vtable) return -1;
+    for (int t = 0; t < 9; t++)
+        if (Get(static_cast<Id>(Index(Id::LightVtable3) + t)) == vtable) return t + 3;
+    return -1;
+}
+
+void Resolve() {
+    if (g_resolveRan) return;
+    g_resolveRan = true;
+    FindSections();
+    if (!g_text.begin || g_readable.empty()) {
+        LOG_ERROR("[Addr] The game's code section was not found: game-code features stay off");
+        g_resolved.store(true, std::memory_order_release);
+        return;
+    }
+    const auto started = GetTickCount64();
+    // EA app build: .text is decrypted in memory by the activation stub at start-up. By the first Present it long has
+    // been; if it still looks encrypted, wait a little.
+    size_t prologues = PrologueCount();
+    for (int tries = 0; !IsFixedBuild() && prologues < 1000 && tries < 15; tries++) {
+        LOG_WARNING(std::format("[Addr] The game's code looks encrypted still ({} \"push ebp; mov ebp,esp\"): waiting 1 s", prologues));
+        Sleep(1000);
+        prologues = PrologueCount();
+    }
+    LOG_INFO(std::format("[Addr] Scanning the game's code for {}: .text {:#010x}..{:#010x} ({} readable range(s), {} \"push ebp; mov ebp,esp\")", GetGameVersionName(), g_text.begin,
+                         g_text.end, g_readable.size(), prologues));
+    if (IsFixedBuild()) LOG_INFO("[Addr] Steam 1.67.2: the fixed addresses are used; the signatures below are only a self-check");
+    for (const Entry& e : kTable) ResolveEntry(e);
+    CrossChecks();
+    int found = 0, differs = 0;
+    for (size_t i = 0; i < Index(Id::Count); i++) {
+        g_final[i] = g_found[i];
+        if (g_found[i]) found++;
+        if (IsFixedBuild() && g_found[i] != kInfo[i].steam) differs++;
+    }
+    g_resolved.store(true, std::memory_order_release);
+    std::string groups;
+    for (const Group& g : kGroups) {
+        std::string missing;
+        const bool ok = GroupAvailable(g.name, &missing);
+        groups += std::format(" | {}: {}", g.name, ok ? "available" : "missing " + missing);
+    }
+    LOG_INFO(std::format("[Addr] {} of {} addresses found in {} ms{}{}", found, Index(Id::Count), GetTickCount64() - started,
+                         IsFixedBuild() ? std::format(" ({} differ from the fixed Steam addresses)", differs) : std::string(), groups));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Struct offset sanity check (non-Steam builds, once, first world)
+// ---------------------------------------------------------------------------------------------------------------------
+namespace {
+std::vector<uintptr_t> g_checkLights;
+void __fastcall CheckVisit(void*, void*, uintptr_t light) {
+    if (g_checkLights.size() < 50000) g_checkLights.push_back(light);
+}
+void* g_checkVtbl[1] = {reinterpret_cast<void*>(&CheckVisit)};
+struct CheckVisitor {
+    void** vtbl;
+} g_checkVisitor{g_checkVtbl};
+
+bool CallEnum(uintptr_t fn) {
+    __try {
+        reinterpret_cast<void(__stdcall*)(void*)>(fn)(&g_checkVisitor);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool g_worldChecked = false;
+} // namespace
+
+void CheckWorldStructs() {
+    if (IsFixedBuild() || g_worldChecked) return;
+    g_worldChecked = true;
+    const uintptr_t rootPtr = Get(Id::RootPtr);
+    uint32_t root = 0, mgr = 0, cells = 0, tree = 0, buckets = 0;
+    float level = -1.0f;
+    int c38 = 0, c3C = 0;
+    const bool chain = rootPtr && ReadU32(rootPtr, root) && root && ReadU32(root + 0x1C0, mgr) && mgr && SafeRead(mgr + 0xF0, &level, 4) && ReadU32(mgr + 0x104, cells) &&
+                       ReadU32(mgr + 0xD4, tree) && cells && SafeRead(cells + 0x38, &c38, 4) && SafeRead(cells + 0x3C, &c3C, 4);
+    if (tree) ReadU32(tree + 0x5C, buckets);
+    const bool plausible = chain && level >= 0.0f && level <= 1.01f && c38 >= -1 && c38 < 100000 && c3C >= -1 && c3C < 100000 && buckets < (1u << 20);
+    LOG_INFO(std::format("[Addr] Struct check ({}): light manager {:#010x} (root+0x1C0), night level {:.2f} (+0xF0), cells {:#010x} (+0x104) countdowns {} / {} (+0x38/+0x3C), "
+                         "light tree {:#010x} (+0xD4) buckets {} (+0x5C): {}",
+                         GetGameVersionName(), mgr, level, cells, c38, c3C, tree, buckets, plausible ? "plausible" : "NOT plausible (offsets may differ on this build)"));
+    // Lights: vtable -> type from the factory; the type field (+0xB0) must agree
+    const uintptr_t en = Get(Id::EnumLights);
+    if (!en) return;
+    g_checkLights.clear();
+    if (!CallEnum(en)) {
+        LOG_WARNING("[Addr] Struct check: the light enumeration faulted");
+        return;
+    }
+    int agree = 0, disagree = 0, unknown = 0, alive = 0;
+    for (uintptr_t L : g_checkLights) {
+        uint32_t vt = 0;
+        int type = -1;
+        uint8_t flags = 0;
+        if (!ReadU32(L, vt) || !SafeRead(L + 0xB0, &type, 4) || !SafeRead(L + 0x100, &flags, 1)) {
+            unknown++;
+            continue;
+        }
+        const int t = LightTypeOfVtable(vt);
+        if (t < 0) unknown++;
+        else if (t == type) agree++;
+        else disagree++;
+        if (flags & 1) alive++;
+    }
+    LOG_INFO(std::format("[Addr] Struct check: {} lights; vtable type = type field (+0xB0) for {}, differs for {}, unknown vtable {}; alive flag (+0x100 bit 0) on {}{}",
+                         g_checkLights.size(), agree, disagree, unknown, alive, disagree || (unknown && !agree) ? " -- light offsets may differ on this build" : ""));
+    g_checkLights.clear();
+    g_checkLights.shrink_to_fit();
+}
+
+} // namespace GameAddr

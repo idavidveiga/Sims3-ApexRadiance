@@ -45,8 +45,8 @@ Instance AcquireInstanceMutex();
 bool S3SSPatchEnabled(const char* patchName);
 bool S3SSBorderlessConfigured();
 bool S3SSOverlayDisabled();
-// S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020, Steam) no longer holds
-// its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.
+// S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
+// elsewhere: game_addresses.h) no longer holds its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.
 // Call it before Apex writes its own patch there (the byte test cannot tell the two apart).
 bool SplitLevelFixActive();
 

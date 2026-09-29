@@ -1,4 +1,5 @@
 #include "patch_base.h"
+#include "game_addresses.h"
 #include <algorithm>
 #include <cfloat>
 #include <format>
@@ -179,7 +180,16 @@ ApexPatch::~ApexPatch() = default;
 
 void ApexPatch::SetMetadata(const FeatureInfo& meta) { metadata_ = std::make_unique<FeatureInfo>(meta); }
 
-bool ApexPatch::IsCompatibleWithCurrentVersion() const { return !metadata_ || IsVersionSupported(metadata_->supportedVersions); }
+bool ApexPatch::IsCompatibleWithCurrentVersion() const {
+    if (!metadata_ || IsVersionSupported(metadata_->supportedVersions)) return true;
+    return metadata_->gameCodeGroup && GameAddr::GroupAvailable(metadata_->gameCodeGroup);
+}
+
+std::string ApexPatch::UnavailableReason() const {
+    std::string missing;
+    if (metadata_ && metadata_->gameCodeGroup && GameAddr::Resolved()) GameAddr::GroupAvailable(metadata_->gameCodeGroup, &missing);
+    return GameAddr::NotAvailable(missing);
+}
 
 bool ApexPatch::Fail(const std::string& message) {
     lastError = message;
@@ -248,7 +258,7 @@ void ApexPatch::ApplyTableLive(const toml::table& table) {
     const auto enabled = table["enabled"].value<bool>();
     if (!enabled || *enabled == isEnabled.load()) return;
     if (*enabled && !IsCompatibleWithCurrentVersion()) {
-        Fail(std::string("Not supported on ") + GetGameVersionName());
+        Fail(UnavailableReason());
         return;
     }
     if (*enabled ? Install() : Uninstall()) PatchManager::Get().SetUnsavedChanges(true);
@@ -260,7 +270,7 @@ bool ApexPatch::LoadFromToml(const toml::table& table) {
     if (!enabled) return true;
     enabledFromConfig_ = true;
     if (*enabled == isEnabled.load()) return true;
-    if (*enabled && !IsCompatibleWithCurrentVersion()) return Fail(std::string("Not supported on ") + GetGameVersionName());
+    if (*enabled && !IsCompatibleWithCurrentVersion()) return Fail(UnavailableReason());
     return *enabled ? Install() : Uninstall();
 }
 

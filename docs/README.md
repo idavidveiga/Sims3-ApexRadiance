@@ -42,6 +42,7 @@ stay, as an SDR-only module.
 | [engine/camera-and-map-view.md](engine/camera-and-map-view.md) | Camera, projection, map view 0x73E060 |
 | [engine/mono-gc.md](engine/mono-gc.md) | Mono / Boehm GC and the simulation thread |
 | [engine/timers-and-sleeps.md](engine/timers-and-sleeps.md) | Clock, sleeps, frame limiter, Smooth Patch sites |
+| [engine/game-versions.md](engine/game-versions.md) | Game builds (Steam 1.67.2, EA app 1.69.47), the encrypted EA .text, the signature table of every Night Lights address and how it is resolved at run time |
 
 ### Features
 | Document | Feature |

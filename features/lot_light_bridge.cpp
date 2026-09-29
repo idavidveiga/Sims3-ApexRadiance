@@ -16,6 +16,7 @@
 #define NOMINMAX
 #endif
 #include "lot_light_bridge.h"
+#include "game_addresses.h"
 #include "shader_ids.h"
 #include "roof_ps_hlsl.h"
 #include "water_lamps_hlsl.h"
@@ -204,8 +205,10 @@ constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
 // SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
 int ReadLotRects(LotRect* out, int max) {
     int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
     __try {
-        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(0x011D1860);
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
         const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
         if (!lightMgr) return -1;
         const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
@@ -504,16 +507,19 @@ struct EnumVisitor {
 } g_enumVisitor{g_enumVtbl};
 bool g_enumChecked = false, g_enumOk = false;
 
+uintptr_t g_enumFn = 0; // 0x006ACF70 on Steam, found by signature on other builds (game_addresses.h)
+
 bool EnumerateLights() {
-    if (!g_enumChecked) {
+    if (!g_enumChecked && GameAddr::Resolved()) {
         g_enumChecked = true;
-        static const BYTE expect[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00};
-        g_enumOk = std::memcmp(reinterpret_cast<const void*>(0x006ACF70), expect, sizeof(expect)) == 0;
+        g_enumFn = GameAddr::Get(GameAddr::Id::EnumLights);
+        static const BYTE expect[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00}; // Steam (checked on Steam)
+        g_enumOk = g_enumFn && (!GameAddr::IsFixed() || std::memcmp(reinterpret_cast<const void*>(g_enumFn), expect, sizeof(expect)) == 0);
     }
     if (!g_enumOk) return false;
     g_enumLights.clear();
     __try {
-        reinterpret_cast<void(__stdcall*)(void*)>(0x006ACF70)(&g_enumVisitor);
+        reinterpret_cast<void(__stdcall*)(void*)>(g_enumFn)(&g_enumVisitor);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

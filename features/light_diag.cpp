@@ -7,6 +7,7 @@
 // Read-only. Runs on the render thread from Present.
 
 #include "patch_base.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "d3d9_hooks.h"
@@ -25,10 +26,11 @@
 
 namespace {
 
-constexpr uintptr_t kRootGetter = 0x006E97B0; // A1 <imm32> 85 C0 75 01 C3 8B 80 C0 01 00 00
+// Addresses: the fixed Steam 1.67.2 ones, or found by signature on other builds (game_addresses.h); set by Init.
+uintptr_t kRootGetter = 0; // 0x006E97B0: A1 <imm32> 85 C0 75 01 C3 8B 80 C0 01 00 00
 constexpr BYTE kRootGetterTail[] = {0x85, 0xC0, 0x75, 0x01, 0xC3, 0x8B, 0x80, 0xC0, 0x01, 0x00, 0x00};
-constexpr uintptr_t kEnumLights = 0x006ACF70; // stdcall(visitor*), visitor vtable[0] = thiscall(visitor, Light*) ret 4
-constexpr BYTE kEnumLightsBytes[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00};
+uintptr_t kEnumLights = 0; // 0x006ACF70: stdcall(visitor*), visitor vtable[0] = thiscall(visitor, Light*) ret 4
+constexpr BYTE kEnumLightsBytes[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00}; // Steam (checked on Steam)
 using EnumLights_t = void(__stdcall*)(void* visitor);
 
 uintptr_t g_rootPtrAddr = 0;
@@ -99,9 +101,12 @@ std::string Floats(uintptr_t a, int n) {
 // wall/floor light solve. Read-only; nothing changes on screen.
 std::string PixelLampDiag(const std::unordered_map<uintptr_t, size_t>& index) {
     std::string o = "\n==== LUZ POR PIXEL (passo 3, incremento 0) ====\n";
-    o += std::format("k1 [0x11D0A60]={:.6g} k2 [0x11D0A68]={:.6g} Cmax [0x11D1160]={} poste [0x1158DA8]={:.6g} tipo5 s [0x11D11A0]={:.6g}\n", Rd<float>(0x011D0A60),
-                     Rd<float>(0x011D0A68), Floats(0x011D1160, 4), Rd<float>(0x01158DA8), Rd<float>(0x011D11A0));
-    o += std::format("desfoque das paredes: passadas [0x1158B1C]={} modo [0x11D02E4]={}\n", Rd<uint32_t>(0x01158B1C), static_cast<int>(Rd<BYTE>(0x011D02E4)));
+    if (GameAddr::IsFixed()) { // Steam 1.67.2 globals (not looked up on other builds)
+        o += std::format("k1 [0x11D0A60]={:.6g} k2 [0x11D0A68]={:.6g} Cmax [0x11D1160]={} poste [0x1158DA8]={:.6g} tipo5 s [0x11D11A0]={:.6g}\n", Rd<float>(0x011D0A60),
+                         Rd<float>(0x011D0A68), Floats(0x011D1160, 4), Rd<float>(0x01158DA8), Rd<float>(0x011D11A0));
+        o += std::format("desfoque das paredes: passadas [0x1158B1C]={} modo [0x11D02E4]={}\n", Rd<uint32_t>(0x01158B1C), static_cast<int>(Rd<BYTE>(0x011D02E4)));
+    } else
+        o += "(constantes globais: so na versao Steam 1.67.2)\n";
     const uintptr_t root = Rd<uintptr_t>(g_rootPtrAddr);
     const uintptr_t lightMgr = root ? Rd<uintptr_t>(root + 0x1C0) : 0;
     const uintptr_t tree = lightMgr ? Rd<uintptr_t>(lightMgr + 0xD4) : 0;
@@ -145,9 +150,9 @@ std::string PixelLampDiag(const std::unordered_map<uintptr_t, size_t>& index) {
         const uint32_t vt = Rd<uint32_t>(L);
         auto it = index.find(L);
         std::string cone;
-        if (vt == 0x00FF4570) // type 4 spot
+        if (vt == GameAddr::Get(GameAddr::Id::LightVtable4)) // type 4 spot (0x00FF4570 on Steam)
             cone = std::format(" cone: eixo[+0x170]={} desloc[+0x158]={:.4g} escala[+0x154]={:.4g}", Floats(L + 0x170, 3), Rd<float>(L + 0x158), Rd<float>(L + 0x154));
-        else if (vt == 0x00FF4350) // type 5
+        else if (vt == GameAddr::Get(GameAddr::Id::LightVtable5)) // type 5 (0x00FF4350 on Steam)
             cone = std::format(" cone: a1[+0x1A0]={} o1[+0x174]={:.4g} a2[+0x190]={} o2[+0x170]={:.4g} S[+0x150]={}", Floats(L + 0x1A0, 3), Rd<float>(L + 0x174),
                                Floats(L + 0x190, 3), Rd<float>(L + 0x170), Floats(L + 0x150, 3));
         o += std::format("L{:08X} {} vt={:08X} tipo={} listas={} pos={} alcance={:.4g} forca={} E0={} F0={}{}\n", L, it != index.end() ? std::format("#{}", it->second) : "-", vt,
@@ -255,8 +260,11 @@ void WriteDiag() {
 
 namespace LightDiag {
 bool Init() {
+    kRootGetter = GameAddr::Get(GameAddr::Id::RootGetter);
+    kEnumLights = GameAddr::Get(GameAddr::Id::EnumLights);
+    if (!kRootGetter || !kEnumLights) return false;
     if (std::memcmp(reinterpret_cast<const void*>(kRootGetter + 5), kRootGetterTail, sizeof(kRootGetterTail)) != 0 || Rd<BYTE>(kRootGetter) != 0xA1) return false;
-    if (std::memcmp(reinterpret_cast<const void*>(kEnumLights), kEnumLightsBytes, sizeof(kEnumLightsBytes)) != 0) return false;
+    if (GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kEnumLights), kEnumLightsBytes, sizeof(kEnumLightsBytes)) != 0) return false;
     g_rootPtrAddr = Rd<uint32_t>(kRootGetter + 1);
     return true;
 }

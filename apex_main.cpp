@@ -7,7 +7,8 @@
 //  init thread  ApexRadiance_LOG.txt, game version, S3SS detection, features created, one-time migration (previous
 //               S3SS\Apex\Apex.toml, else S3SS.toml), settings (menu, display, Picture, profiler); then waits until
 //               the game settled (first Present + 1 s, so official S3SS has loaded its own patches), checks for the
-//               old combined build and an older S3SSApex.asi, installs the enabled features, and becomes the pump:
+//               old combined build and an older S3SSApex.asi, resolves the game-code addresses (game_addresses.h:
+//               fixed on Steam 1.67.2, signature scan elsewhere), installs the enabled features, and becomes the pump:
 //               every 10 ms each feature's Update() and the config autosave.
 //  Shutdown     only on FreeLibrary (never at process exit, where the loader may hold other threads' locks).
 #include <windows.h>
@@ -21,6 +22,7 @@
 #include "conflict_guard.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
+#include "game_addresses.h"
 #include "game_version.h"
 #include "overlay.h"
 #include "patch_base.h"
@@ -88,7 +90,7 @@ DWORD WINAPI InitThread(LPVOID) {
                          ApexUtil::ToUtf8(ModuleName(nullptr))));
     LOG_INFO("[Main] Files: " + ApexUtil::ToUtf8(ApexPaths::ApexDirectory()));
     if (DetectGameVersion()) LOG_INFO(std::format("[Main] Game: {} [0x{:08X}]", GetGameVersionName(), g_exeTimestamp));
-    else LOG_WARNING(std::format("[Main] Unknown game build [0x{:08X}]: game-code features stay off, display features still work", g_exeTimestamp));
+    else LOG_WARNING(std::format("[Main] Unknown game build [0x{:08X}]: game-code features start only where their code is found by signature", g_exeTimestamp));
 
     S3SSDetect::Scan();
     ApexD3D::EnsureInstalled(); // only does something when the DllMain install could not happen
@@ -112,6 +114,8 @@ DWORD WINAPI InitThread(LPVOID) {
         LOG_ERROR("[Main] The old combined build (" + ApexUtil::ToUtf8(s3ss.combinedModule) + ") is loaded too: " APEX_PRODUCT_NAME "'s features stay off. Delete it from Game\\Bin.");
         ApexGui::SetStartup(ApexGui::Startup::RefusedOldBuild, ApexUtil::ToUtf8(s3ss.combinedModule));
     } else {
+        // Game-code addresses: fixed on Steam 1.67.2, found by signature on other builds (game code decrypted by now)
+        GameAddr::Resolve();
         try {
             ApexConfig::LoadFeatures();
         } catch (const std::exception& e) {

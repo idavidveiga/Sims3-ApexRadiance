@@ -22,6 +22,7 @@
 #define NOMINMAX
 #endif
 #include "object_light_bridge.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include <windows.h>
@@ -38,16 +39,18 @@
 
 namespace {
 
-constexpr uintptr_t kVtableSlot = 0x00FF4308;       // class 0xFF42F8 vfunc+0x10
-constexpr uintptr_t kOriginalFn = 0x006C02A0;       // FUN_006c02a0
-constexpr uintptr_t kRigGatherReturn = 0x006BB2B3;  // after "call edx" in FUN_006bb270
-constexpr uintptr_t kCapOperandSite = 0x006B9418;   // mov ecx, offset 0x011D0BA8
-const std::vector<BYTE> kCapOrig = {0xB9, 0xA8, 0x0B, 0x1D, 0x01};
-constexpr uintptr_t kCapGlobal = 0x011D0BA8;
-constexpr uintptr_t kLumaWeights = 0x011D1140;
-constexpr uintptr_t kDirtyAllRigs = 0x006B58F0;     // __fastcall(cells)
-const BYTE kDirtyAllBytes[] = {0x83, 0xEC, 0x10, 0x55, 0x8B, 0xE9, 0x33, 0xC9, 0x33, 0xC0, 0x39, 0x4D, 0x30};
-constexpr uintptr_t kRootPtr = 0x011D1860;
+// Addresses: the fixed Steam 1.67.2 ones (in the comments), or found by signature on other builds (game_addresses.h).
+// Set by LoadAddresses before anything uses them; 0 = not found on this build.
+uintptr_t kVtableSlot = 0;       // 0x00FF4308: class 0xFF42F8 (type 11, street lamp) vfunc+0x10
+uintptr_t kOriginalFn = 0;       // 0x006C02A0: FUN_006c02a0
+uintptr_t kRigGatherReturn = 0;  // 0x006BB2B3: after "call edx" in FUN_006bb270
+uintptr_t kCapOperandSite = 0;   // 0x006B9418: mov ecx, offset 0x011D0BA8
+std::vector<BYTE> kCapOrig;      // B9 <kCapGlobal>
+uintptr_t kCapGlobal = 0;        // 0x011D0BA8
+uintptr_t kLumaWeights = 0;      // 0x011D1140
+uintptr_t kDirtyAllRigs = 0;     // 0x006B58F0: __fastcall(cells)
+const BYTE kDirtyAllBytes[] = {0x83, 0xEC, 0x10, 0x55, 0x8B, 0xE9, 0x33, 0xC9, 0x33, 0xC0, 0x39, 0x4D, 0x30}; // Steam's prologue (checked on Steam)
+uintptr_t kRootPtr = 0;          // 0x011D1860
 
 using LightColour_t = void(__fastcall*)(void* light, void* edx, const float* pos, float* rec);
 using DirtyAll_t = void(__fastcall*)(void* cells);
@@ -60,8 +63,8 @@ std::atomic<bool> g_refreshRequested{false};
 std::atomic<DWORD> g_renderThread{0}; // the game's light system may only be touched from the render thread
 std::atomic<int> g_boosted{0};
 
-constexpr uintptr_t kRigCtor = 0x006BB8F0;                                     // FUN_006bb8f0 (thiscall rig, flag, model, kind)
-constexpr uintptr_t kRigCtorCalls[] = {0x006F7905, 0x006F795C, 0x006F799D};    // call sites in FUN_006f7880
+uintptr_t kRigCtor = 0;            // 0x006BB8F0: FUN_006bb8f0 (thiscall rig, flag, model, kind)
+uintptr_t kRigCtorCalls[3] = {};   // 0x006F7905, 0x006F795C, 0x006F799D: call sites in FUN_006f7880
 std::vector<MemPatch::PatchLocation> g_rigPatches;
 std::atomic<bool> g_forceAll{true};
 std::atomic<int> g_forcedRigs{0};
@@ -82,9 +85,9 @@ void* __fastcall RigCtorForce(void* rig, void*, unsigned flag, void* model, int 
 // to no room, so a fenced yard never gets their light. Fix: after the room gather, for mode 1 rigs also run the world
 // cell gather (FUN_006b5af0, the one outdoor objects use) with rig+0x1e0 briefly set to 0. The game then keeps the three
 // strongest of both lists.
-constexpr uintptr_t kRoomGatherCall = 0x006BBE70; // CALL FUN_006bb2f0 in FUN_006bbde0
-constexpr uintptr_t kRoomGather = 0x006BB2F0;
-constexpr uintptr_t kCellGather = 0x006B5AF0;
+uintptr_t kRoomGatherCall = 0; // 0x006BBE70: CALL FUN_006bb2f0 in FUN_006bbde0
+uintptr_t kRoomGather = 0;     // 0x006BB2F0
+uintptr_t kCellGather = 0;     // 0x006B5AF0
 std::vector<MemPatch::PatchLocation> g_roomPatches;
 std::atomic<int> g_roomRigs{0};
 
@@ -114,8 +117,8 @@ void CellGatherForRoomRig(BYTE* rig) {
 // lamps switch on at dusk (FUN_006b58f0 walks the cells). So the extra cell gather above would keep the lamps of the
 // moment the rig was placed (none, for a save loaded by day). The rigs it served are remembered and re-gathered on the
 // render thread whenever the night level moves by 0.1 (FUN_006bbf90 = unconditional rig update, which comes back here).
-constexpr uintptr_t kRigUpdate = 0x006BBF90; // __fastcall(rig)
-constexpr uint32_t kRigVtable = 0x00FF4218;  // set by the rig constructor FUN_006bb8f0
+uintptr_t kRigUpdate = 0; // 0x006BBF90: __fastcall(rig)
+uint32_t kRigVtable = 0;  // 0x00FF4218: set by the rig constructor FUN_006bb8f0
 std::mutex g_roomRigMx;
 std::unordered_set<BYTE*> g_roomRigSet;
 float g_regatherLevel = -1.0f;
@@ -131,6 +134,7 @@ void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, voi
 
 // True when the rig is still a live room-mode rig and was updated.
 bool RegatherRoomRig(BYTE* rig) {
+    if (!kRigUpdate || !kRigVtable) return false;
     __try {
         if (*reinterpret_cast<const uint32_t*>(rig) != kRigVtable || *reinterpret_cast<const int*>(rig + 0x1D4) != 1) return false;
         reinterpret_cast<void(__fastcall*)(void*)>(kRigUpdate)(rig);
@@ -155,6 +159,7 @@ void RegatherRoomRigs() {
 
 // Render thread, every frame: current night level and light cells (0 when no world).
 bool ReadNight(float& level, uintptr_t& cells) {
+    if (!kRootPtr) return false;
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(kRootPtr);
         const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
@@ -183,9 +188,25 @@ void UpdateRoomRigs() {
     RegatherRoomRigs();
 }
 
+// FUN_006b5af0 returns with "ret 4" (thiscall(cells, rig)): at +0x145 on Steam; on other builds within its first 0x400
+// bytes after the stack cleanup "add esp,1Ch" (its frame, same signature)
+bool CellGatherReturns4() {
+    if (GameAddr::IsFixed()) return std::memcmp(reinterpret_cast<const void*>(kCellGather + 0x145), "\xC2\x04\x00", 3) == 0;
+    BYTE f[0x400];
+    if (!MemPatch::ReadBytes(kCellGather, f, sizeof f)) return false;
+    for (size_t i = 0; i + 6 <= sizeof f; i++)
+        if (std::memcmp(f + i, "\x83\xC4\x1C\xC2\x04\x00", 6) == 0) return true;
+    return false;
+}
+
 bool InstallRoomGatherPatch() {
+    std::string missing;
+    if (!GameAddr::Have({GameAddr::Id::RoomGatherCall, GameAddr::Id::RoomGather, GameAddr::Id::CellGather, GameAddr::Id::RigUpdate, GameAddr::Id::RigVtable}, &missing)) {
+        LOG_WARNING("[ObjectLightBridge] Fenced areas: " + GameAddr::NotAvailable(missing));
+        return false;
+    }
     if (*reinterpret_cast<const BYTE*>(kRoomGatherCall) != 0xE8 || kRoomGatherCall + 5 + *reinterpret_cast<const int32_t*>(kRoomGatherCall + 1) != kRoomGather ||
-        std::memcmp(reinterpret_cast<const void*>(kCellGather + 0x145), "\xC2\x04\x00", 3) != 0)
+        !CellGatherReturns4())
         return false;
     DWORD orig = static_cast<DWORD>(kRoomGather - (kRoomGatherCall + 5));
     const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&RoomGatherThunk) - (kRoomGatherCall + 5));
@@ -193,6 +214,11 @@ bool InstallRoomGatherPatch() {
 }
 
 bool InstallRigCtorPatch() {
+    std::string missing;
+    if (!GameAddr::Have({GameAddr::Id::RigCtor, GameAddr::Id::RigCtorCall0, GameAddr::Id::RigCtorCall1, GameAddr::Id::RigCtorCall2}, &missing)) {
+        LOG_WARNING("[ObjectLightBridge] Object light creation: " + GameAddr::NotAvailable(missing));
+        return false;
+    }
     for (uintptr_t site : kRigCtorCalls) {
         if (*reinterpret_cast<const BYTE*>(site) != 0xE8 ||
             site + 5 + *reinterpret_cast<const int32_t*>(site + 1) != kRigCtor) return false;
@@ -219,10 +245,12 @@ struct LightClass {
     uintptr_t slot; // vtable + 0x10
     uintptr_t orig;
 };
-constexpr LightClass kClasses[] = {{0x00FF42B0, 0x006C02A0}, {0x00FF4308, 0x006C02A0}, {0x00FF4360, 0x006C0690}, {0x00FF43B8, 0x006C0AF0},
-                                   {0x00FF44D0, 0x006C16D0}, {0x00FF4528, 0x006C1980}, {0x00FF4580, 0x006C1BC0},
-                                   {0x00FF4418, 0x006C0FE0}, {0x00FF4478, 0x006C1320}};
-constexpr int kStreetClass = 1; // vtable 0xFF42F8
+// Steam: {0x00FF42B0, 0x006C02A0}, {0x00FF4308, 0x006C02A0}, {0x00FF4360, 0x006C0690}, {0x00FF43B8, 0x006C0AF0},
+// {0x00FF44D0, 0x006C16D0}, {0x00FF4528, 0x006C1980}, {0x00FF4580, 0x006C1BC0}, {0x00FF4418, 0x006C0FE0}, {0x00FF4478, 0x006C1320}.
+// Light types of those classes (the light factory FUN_006ac590 makes type N with the vtable GameAddr::LightVtableN):
+constexpr int kClassTypes[] = {3, 11, 5, 7, 9, 10, 4, 8, 6};
+LightClass kClasses[std::size(kClassTypes)] = {}; // set by LoadAddresses; {0, 0} = class not found on this build
+constexpr int kStreetClass = 1; // vtable 0xFF42F8 (type 11)
 std::atomic<int> g_classesPatched{0};
 
 void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
@@ -274,6 +302,7 @@ const LightColour_t kClassThunks[] = {&ClassColour<0>, &ClassColour<1>, &ClassCo
 static_assert(std::size(kClassThunks) == std::size(kClasses));
 
 void DirtyAllRigs() {
+    if (!kRootPtr || !kDirtyAllRigs) return; // not found on this build
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(kRootPtr);
         if (!root) return;
@@ -294,10 +323,10 @@ void DirtyAllRigs() {
 //    FUN_006bc3e0(light, rgba) for every light of the object (call at 0x6B0BDE).
 // Both write +0xF0 (base colour) and +0xE0 (intensity * colour when lit). Both go through TintStockColour, which turns
 // the stock pink into warm white (tungsten-like) with the same brightness. Other colours are left alone.
-constexpr uintptr_t kSetLightColour = 0x006BDA90;
-constexpr uintptr_t kSetColourCalls[] = {0x006C047D, 0x006C051D, 0x006C05C1, 0x006C1251, 0x006C15D1, 0x006C1891, 0x006C1B11};
-constexpr uintptr_t kScriptSetColour = 0x006BC3E0;
-constexpr uintptr_t kScriptSetColourCall = 0x006B0BDE;
+uintptr_t kSetLightColour = 0;      // 0x006BDA90
+uintptr_t kSetColourCalls[7] = {};  // 0x006C047D, 0x006C051D, 0x006C05C1, 0x006C1251, 0x006C15D1, 0x006C1891, 0x006C1B11
+uintptr_t kScriptSetColour = 0;     // 0x006BC3E0
+uintptr_t kScriptSetColourCall = 0; // 0x006B0BDE
 std::vector<MemPatch::PatchLocation> g_colourPatches;
 std::atomic<float> g_lampTint{1.0f};
 std::atomic<int> g_tinted{0};
@@ -339,12 +368,63 @@ bool RedirectCall(uintptr_t site, uintptr_t target, const void* thunk) {
     return MemPatch::WriteDWORD(site + 1, rel, &g_colourPatches, &orig);
 }
 
+// Fills the addresses above from GameAddr once it resolved (Steam: the fixed values in the comments).
+void LoadAddresses() {
+    static bool loaded = false;
+    if (loaded || !GameAddr::Resolved()) return;
+    loaded = true;
+    using GameAddr::Get;
+    using GameAddr::Id;
+    const uintptr_t streetVtable = Get(Id::LightVtable11);
+    kVtableSlot = streetVtable ? streetVtable + 0x10 : 0;
+    kOriginalFn = Get(Id::LightColour11);
+    kRigGatherReturn = Get(Id::RigGatherReturn);
+    kCapOperandSite = Get(Id::CapOperandSite);
+    kCapGlobal = Get(Id::CapGlobal);
+    const uint32_t cap = static_cast<uint32_t>(kCapGlobal);
+    kCapOrig = {0xB9, static_cast<BYTE>(cap), static_cast<BYTE>(cap >> 8), static_cast<BYTE>(cap >> 16), static_cast<BYTE>(cap >> 24)};
+    kLumaWeights = Get(Id::LumaWeights);
+    kDirtyAllRigs = Get(Id::DirtyAllRigs);
+    kRootPtr = Get(Id::RootPtr);
+    kRigCtor = Get(Id::RigCtor);
+    for (int i = 0; i < 3; i++) kRigCtorCalls[i] = Get(static_cast<Id>(static_cast<int>(Id::RigCtorCall0) + i));
+    kRoomGatherCall = Get(Id::RoomGatherCall);
+    kRoomGather = Get(Id::RoomGather);
+    kCellGather = Get(Id::CellGather);
+    kRigUpdate = Get(Id::RigUpdate);
+    kRigVtable = static_cast<uint32_t>(Get(Id::RigVtable));
+    for (size_t i = 0; i < std::size(kClassTypes); i++) {
+        const int t = kClassTypes[i] - 3;
+        const uintptr_t vt = Get(static_cast<Id>(static_cast<int>(Id::LightVtable3) + t));
+        const uintptr_t fn = Get(static_cast<Id>(static_cast<int>(Id::LightColour3) + t));
+        kClasses[i] = vt && fn ? LightClass{vt + 0x10, fn} : LightClass{0, 0};
+    }
+    kSetLightColour = Get(Id::SetLightColour);
+    for (int i = 0; i < 7; i++) kSetColourCalls[i] = Get(static_cast<Id>(static_cast<int>(Id::SetColourCall0) + i));
+    kScriptSetColour = Get(Id::ScriptSetColour);
+    kScriptSetColourCall = Get(Id::ScriptSetColourCall);
+}
+
+// The return address follows "call reg" (FF D0..FF D7): FF D2 (call edx) on Steam
+bool AfterCallReg(uintptr_t ret) {
+    const BYTE* p = reinterpret_cast<const BYTE*>(ret - 2);
+    return GameAddr::IsFixed() ? std::memcmp(p, "\xFF\xD2", 2) == 0 : (p[0] == 0xFF && (p[1] & 0xF8) == 0xD0);
+}
+
 } // namespace
 
 namespace ObjectLightBridge {
 
 bool InstallLampColour() {
     if (!g_colourPatches.empty()) return true;
+    LoadAddresses();
+    std::string missing;
+    if (!GameAddr::Have({GameAddr::Id::SetLightColour, GameAddr::Id::SetColourCall0, GameAddr::Id::SetColourCall1, GameAddr::Id::SetColourCall2, GameAddr::Id::SetColourCall3,
+                         GameAddr::Id::SetColourCall4, GameAddr::Id::SetColourCall5, GameAddr::Id::SetColourCall6, GameAddr::Id::ScriptSetColour, GameAddr::Id::ScriptSetColourCall},
+                        &missing)) {
+        LOG_WARNING("[ObjectLightBridge] Lamp colour: " + GameAddr::NotAvailable(missing));
+        return false;
+    }
     bool ok = true;
     for (uintptr_t site : kSetColourCalls) ok = ok && RedirectCall(site, kSetLightColour, reinterpret_cast<const void*>(&LampColourSet));
     ok = ok && RedirectCall(kScriptSetColourCall, kScriptSetColour, reinterpret_cast<const void*>(&LampColourSetScript));
@@ -374,13 +454,21 @@ std::string LampColourStatus() {
 
 bool Install(std::string& error) {
     if (g_installed) return true;
+    LoadAddresses();
+    std::string missing;
+    if (!GameAddr::Have({GameAddr::Id::LightVtable11, GameAddr::Id::LightColour11, GameAddr::Id::RigGatherReturn, GameAddr::Id::CapOperandSite, GameAddr::Id::CapGlobal,
+                         GameAddr::Id::LumaWeights, GameAddr::Id::DirtyAllRigs, GameAddr::Id::RootPtr},
+                        &missing)) {
+        error = "Objects: " + GameAddr::NotAvailable(missing);
+        return false;
+    }
     if (*reinterpret_cast<const uint32_t*>(kVtableSlot) != kOriginalFn) {
-        error = "Street lamp light function differs at 0xFF4308";
+        error = std::format("Street lamp light function differs at 0x{:X}", kVtableSlot);
         return false;
     }
     if (!MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kCapOperandSite), kCapOrig.data(), kCapOrig.size()) ||
-        std::memcmp(reinterpret_cast<const void*>(kDirtyAllRigs), kDirtyAllBytes, sizeof(kDirtyAllBytes)) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(kRigGatherReturn - 2), "\xFF\xD2", 2) != 0) {
+        (GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kDirtyAllRigs), kDirtyAllBytes, sizeof(kDirtyAllBytes)) != 0) ||
+        !AfterCallReg(kRigGatherReturn)) {
         error = "Object light code differs (different game version?)";
         return false;
     }
@@ -395,6 +483,7 @@ bool Install(std::string& error) {
     }
     int classes = 0;
     for (int i = 0; i < static_cast<int>(std::size(kClasses)); i++) {
+        if (!kClasses[i].slot) continue; // class not found on this build
         if (*reinterpret_cast<const uint32_t*>(kClasses[i].slot) != kClasses[i].orig) continue; // not the expected function: leave it
         DWORD orig = static_cast<DWORD>(kClasses[i].orig);
         if (MemPatch::WriteDWORD(kClasses[i].slot, static_cast<DWORD>(reinterpret_cast<uintptr_t>(kClassThunks[i])), &g_patches, &orig)) classes++;
@@ -434,6 +523,7 @@ void SetStrength(float s) {
 
 void OnPresent() {
     g_renderThread = GetCurrentThreadId();
+    LoadAddresses();
     if (!g_installed) {
         if (g_refreshRequested.exchange(false)) DirtyAllRigs();
         return;

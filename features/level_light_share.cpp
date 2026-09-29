@@ -36,6 +36,7 @@
 #define NOMINMAX
 #endif
 #include "level_light_share.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include <windows.h>
@@ -54,36 +55,77 @@
 
 namespace {
 
-constexpr uintptr_t kAddWorldLights = 0x006C6AB0;                  // FUN_006c6ab0 thiscall(treeLevel, room) ret 4
-constexpr uintptr_t kGatherCalls[] = {0x006C5816, 0x006C7094};     // its two callers
-constexpr uintptr_t kLevelGather = 0x006C6990;                     // thiscall(treeLevel, room, char ownFloor) ret 8
-constexpr uintptr_t kLevelGatherCalls[] = {0x006C6B08, 0x006C6B2D}; // the game's two calls of it, inside FUN_006c6ab0
-constexpr uintptr_t kRoomById = 0x006A6550;                        // thiscall(manager, id) ret 4
-constexpr uintptr_t kInvalidateRoom = 0x0069EED0;                  // thiscall(room, char full, char keep) ret 8
-constexpr uintptr_t kSetInsert = 0x00B7AAD0;                       // thiscall(set, out, const int* key, char) ret 0xC
-constexpr uintptr_t kRoomByIdCall = 0x006C73F0, kInvalidateCall = 0x006C73FF, kSetInsertCall = 0x006C741B; // same, in FUN_006c7250
-constexpr uintptr_t kCascadeTest = 0x006C73AA;                     // cmp [esi+0x1a0], eax / jnz 0x6C7432
-const BYTE kCascadeBytes[] = {0x39, 0x86, 0xA0, 0x01, 0x00, 0x00, 0x0F, 0x85, 0x7C, 0x00, 0x00, 0x00};
-constexpr uintptr_t kCascadeJcc = 0x006C73B1;                      // 0x85 (jnz) -> 0x8C (jl)
-constexpr uintptr_t kRootPtr = 0x011D1860;
+// Addresses: the fixed Steam 1.67.2 ones (in the comments), or found by signature on other builds (game_addresses.h).
+// Set by LoadAddresses (Install); 0 = not found on this build.
+uintptr_t kAddWorldLights = 0;         // 0x006C6AB0: FUN_006c6ab0 thiscall(treeLevel, room) ret 4
+uintptr_t kGatherCalls[2] = {};        // 0x006C5816, 0x006C7094: its two callers
+uintptr_t kLevelGather = 0;            // 0x006C6990: thiscall(treeLevel, room, char ownFloor) ret 8
+uintptr_t kLevelGatherCalls[2] = {};   // 0x006C6B08, 0x006C6B2D: the game's two calls of it, inside FUN_006c6ab0
+uintptr_t kRoomById = 0;               // 0x006A6550: thiscall(manager, id) ret 4
+uintptr_t kInvalidateRoom = 0;         // 0x0069EED0: thiscall(room, char full, char keep) ret 8
+uintptr_t kSetInsert = 0;              // 0x00B7AAD0: thiscall(set, out, const int* key, char) ret 0xC
+uintptr_t kRoomByIdCall = 0, kInvalidateCall = 0, kSetInsertCall = 0; // 0x006C73F0, 0x006C73FF, 0x006C741B: same, in FUN_006c7250
+uintptr_t kCascadeTest = 0;            // 0x006C73AA: cmp [esi+0x1a0], eax / jnz 0x6C7432
+const BYTE kCascadeBytes[] = {0x39, 0x86, 0xA0, 0x01, 0x00, 0x00, 0x0F, 0x85, 0x7C, 0x00, 0x00, 0x00}; // Steam; other builds: the first 8 (the jnz distance may differ)
+uintptr_t kCascadeJcc = 0;             // 0x006C73B1 (kCascadeTest + 7): 0x85 (jnz) -> 0x8C (jl)
+uintptr_t kRootPtr = 0;                // 0x011D1860
 
-constexpr uintptr_t kSolvePoint = 0x0069FD60;                              // LightPointWithAllLights thiscall(room, out, l2D, l3D, flags, sample) ret 0x14
-constexpr uintptr_t kSolvePointCalls[] = {0x006A1187, 0x006A126F, 0x006A3336}; // FUN_006a0f50 x2, FUN_006a31d0
-constexpr uintptr_t kLightEvalReturn = 0x0069FE19;                         // after "call edx" (light vfunc+0x4C) in it
-constexpr uintptr_t kWallTest = 0x0069FC40;                                // thiscall(room, int* indexVec, lightPos, sample, float* t) ret 0x10
-constexpr uintptr_t kWallTestCall = 0x0069FE93;                            // the game's call of it, in LightPointWithAllLights
-constexpr uintptr_t kLightPos = 0x009691E0;                                // vfunc+0x24 of the 9 classes: thiscall(light, float out[4]) ret 4
-constexpr uintptr_t kBatchSolveCall = 0x006A3336;                          // the call inside FUN_006a31d0 (a batch of wall samples)
-constexpr uintptr_t kBatchSamples = 0x01158AC8;                            // global vector {begin, end} of that batch, 0x30 per sample
-constexpr uintptr_t kBatchPushes[] = {0x006A3B03, 0x006A3687, 0x006A37CD, 0x006A3956}; // "push 0x1158AC8" in the 4 callers of FUN_006a31d0
-constexpr uintptr_t kWallCull = 0x0069DFF0;                                // thiscall(walls, int-vector* out, const float* from, const float* lightPos) ret 0xC
-constexpr uintptr_t kWallCullCall = 0x006A311F;                            // its call in FUN_006a30b0 (per-light wall lists of a batch)
+uintptr_t kSolvePoint = 0;             // 0x0069FD60: LightPointWithAllLights thiscall(room, out, l2D, l3D, flags, sample) ret 0x14
+uintptr_t kSolvePointCalls[3] = {};    // 0x006A1187, 0x006A126F, 0x006A3336: FUN_006a0f50 x2, FUN_006a31d0
+uintptr_t kLightEvalReturn = 0;        // 0x0069FE19: after "call edx" (light vfunc+0x4C) in it
+uintptr_t kWallTest = 0;               // 0x0069FC40: thiscall(room, int* indexVec, lightPos, sample, float* t) ret 0x10
+uintptr_t kWallTestCall = 0;           // 0x0069FE93: the game's call of it, in LightPointWithAllLights
+uintptr_t kLightPos = 0;               // 0x009691E0: vfunc+0x24 of the 9 classes: thiscall(light, float out[4]) ret 4
+uintptr_t kBatchSolveCall = 0;         // 0x006A3336: the call inside FUN_006a31d0 (a batch of wall samples)
+uintptr_t kBatchSamples = 0;           // 0x01158AC8: global vector {begin, end} of that batch, 0x30 per sample
+// "push 0x1158AC8" in the 4 callers of FUN_006a31d0: checked on Steam (other builds found kBatchSamples in such a push)
+constexpr uintptr_t kBatchPushesSteam[] = {0x006A3B03, 0x006A3687, 0x006A37CD, 0x006A3956};
+uintptr_t kWallCull = 0;               // 0x0069DFF0: thiscall(walls, int-vector* out, const float* from, const float* lightPos) ret 0xC
+uintptr_t kWallCullCall = 0;           // 0x006A311F: its call in FUN_006a30b0 (per-light wall lists of a batch)
 struct LightClass {
     uintptr_t vtable, eval;
 };
-constexpr LightClass kClasses[] = {{0xFF42A0, 0x6BDE90}, {0xFF42F8, 0x6BE020}, {0xFF4350, 0x6BE1C0}, {0xFF43A8, 0x6BEFD0},
-                                   {0xFF44C0, 0x6BFBA0}, {0xFF4518, 0x6BFDC0}, {0xFF4570, 0x6BFFB0},
-                                   {0xFF4408, 0x6BF880}, {0xFF4468, 0x6BFA70}}; // +0x4C; the last two (CircleWindowLight, TubeLight) are missing from light_vtables.txt
+// Steam: {0xFF42A0, 0x6BDE90}, {0xFF42F8, 0x6BE020}, {0xFF4350, 0x6BE1C0}, {0xFF43A8, 0x6BEFD0}, {0xFF44C0, 0x6BFBA0}, {0xFF4518, 0x6BFDC0},
+// {0xFF4570, 0x6BFFB0}, {0xFF4408, 0x6BF880}, {0xFF4468, 0x6BFA70} (+0x4C; the last two, CircleWindowLight and TubeLight, are missing
+// from light_vtables.txt). Their light types (the light factory FUN_006ac590 makes type N with GameAddr::LightVtableN):
+constexpr int kClassTypes[] = {3, 11, 5, 7, 9, 10, 4, 8, 6};
+LightClass kClasses[std::size(kClassTypes)] = {}; // {0, 0} = class not found on this build
+
+void LoadAddresses() {
+    static bool loaded = false;
+    if (loaded || !GameAddr::Resolved()) return;
+    loaded = true;
+    using GameAddr::Get;
+    using GameAddr::Id;
+    auto at = [](Id first, int k) { return Get(static_cast<Id>(static_cast<int>(first) + k)); };
+    kAddWorldLights = Get(Id::AddWorldLights);
+    for (int k = 0; k < 2; k++) kGatherCalls[k] = at(Id::AddWorldLightsCall0, k);
+    kLevelGather = Get(Id::LevelGather);
+    for (int k = 0; k < 2; k++) kLevelGatherCalls[k] = at(Id::LevelGatherCall0, k);
+    kRoomById = Get(Id::RoomById);
+    kInvalidateRoom = Get(Id::InvalidateRoom);
+    kSetInsert = Get(Id::SetInsert);
+    kRoomByIdCall = Get(Id::RoomByIdCall);
+    kInvalidateCall = Get(Id::InvalidateCall);
+    kSetInsertCall = Get(Id::SetInsertCall);
+    kCascadeTest = Get(Id::CascadeTest);
+    kCascadeJcc = kCascadeTest ? kCascadeTest + 7 : 0;
+    kRootPtr = Get(Id::RootPtr);
+    kSolvePoint = Get(Id::SolvePoint);
+    for (int k = 0; k < 3; k++) kSolvePointCalls[k] = at(Id::SolvePointCall0, k);
+    kLightEvalReturn = Get(Id::LightEvalReturn);
+    kWallTest = Get(Id::WallTest);
+    kWallTestCall = Get(Id::WallTestCall);
+    kLightPos = Get(Id::LightPos);
+    kBatchSolveCall = Get(Id::BatchSolveCall);
+    kBatchSamples = Get(Id::BatchSamples);
+    kWallCull = Get(Id::WallCull);
+    kWallCullCall = Get(Id::WallCullCall);
+    for (size_t i = 0; i < std::size(kClassTypes); i++) {
+        const uintptr_t vt = at(Id::LightVtable3, kClassTypes[i] - 3), eval = at(Id::LightEval3, kClassTypes[i] - 3);
+        kClasses[i] = vt && eval ? LightClass{vt, eval} : LightClass{0, 0};
+    }
+}
 
 using AddWorldLights_t = void(__thiscall*)(void* treeLevel, void* room);
 using LevelGather_t = void(__thiscall*)(void* treeLevel, void* room, int ownFloor);
@@ -481,6 +523,7 @@ void ClearDiag() {
 
 void RefreshAllLots() {
     ClearDiag(); // the records show the solve that follows
+    if (!kRootPtr) return;
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(kRootPtr);
         if (!root) return;
@@ -509,6 +552,12 @@ void RefreshAllLots() {
     }
 }
 
+// The return address follows "call reg" (FF D0..FF D7): FF D2 (call edx) on Steam
+bool AfterCallReg(uintptr_t ret) {
+    const BYTE* p = reinterpret_cast<const BYTE*>(ret - 2);
+    return GameAddr::IsFixed() ? std::memcmp(p, "\xFF\xD2", 2) == 0 : (p[0] == 0xFF && (p[1] & 0xF8) == 0xD0);
+}
+
 bool CallsTarget(uintptr_t site, uintptr_t target) {
     return *reinterpret_cast<const BYTE*>(site) == 0xE8 && site + 5 + *reinterpret_cast<const int32_t*>(site + 1) == target;
 }
@@ -530,9 +579,20 @@ namespace LevelLightShare {
 
 bool Install(std::string& error) {
     if (g_installed) return true;
-    bool ok = MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kCascadeTest), kCascadeBytes, sizeof(kCascadeBytes)) &&
+    LoadAddresses();
+    using GameAddr::Id;
+    std::string missing;
+    if (!GameAddr::Have({Id::AddWorldLights, Id::AddWorldLightsCall0, Id::AddWorldLightsCall1, Id::LevelGather, Id::LevelGatherCall0, Id::LevelGatherCall1, Id::CascadeTest,
+                         Id::RoomByIdCall, Id::RoomById, Id::InvalidateCall, Id::InvalidateRoom, Id::SetInsertCall, Id::SetInsert, Id::RootPtr, Id::SolvePoint,
+                         Id::SolvePointCall0, Id::SolvePointCall1, Id::SolvePointCall2, Id::LightEvalReturn, Id::WallTestCall, Id::WallTest},
+                        &missing)) {
+        error = "Light between stories: " + GameAddr::NotAvailable(missing);
+        return false;
+    }
+    const bool fixed = GameAddr::IsFixed();
+    bool ok = MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kCascadeTest), kCascadeBytes, fixed ? sizeof(kCascadeBytes) : 8) &&
               CallsTarget(kRoomByIdCall, kRoomById) && CallsTarget(kInvalidateCall, kInvalidateRoom) && CallsTarget(kSetInsertCall, kSetInsert) &&
-              CallsTarget(kWallTestCall, kWallTest) && std::memcmp(reinterpret_cast<const void*>(kLightEvalReturn - 2), "\xFF\xD2", 2) == 0;
+              CallsTarget(kWallTestCall, kWallTest) && AfterCallReg(kLightEvalReturn);
     for (uintptr_t site : kGatherCalls) ok = ok && CallsTarget(site, kAddWorldLights);
     for (uintptr_t site : kLevelGatherCalls) ok = ok && CallsTarget(site, kLevelGather);
     for (uintptr_t site : kSolvePointCalls) ok = ok && CallsTarget(site, kSolvePoint);
@@ -551,13 +611,16 @@ bool Install(std::string& error) {
     }
     // Walls of the lamp's floor: optional part, each class only if its slot is the expected function.
     int classes = 0;
-    bool solveOk = CallsTarget(kWallCullCall, kWallCull);
-    for (uintptr_t push : kBatchPushes) solveOk = solveOk && std::memcmp(reinterpret_cast<const void*>(push), "\x68\xC8\x8A\x15\x01", 5) == 0;
+    std::string wallsMissing;
+    bool solveOk = GameAddr::Have({Id::WallCullCall, Id::WallCull, Id::BatchSolveCall, Id::BatchSamples, Id::LightPos}, &wallsMissing) && CallsTarget(kWallCullCall, kWallCull);
+    if (fixed)
+        for (uintptr_t push : kBatchPushesSteam) solveOk = solveOk && std::memcmp(reinterpret_cast<const void*>(push), "\x68\xC8\x8A\x15\x01", 5) == 0;
     for (uintptr_t site : kSolvePointCalls)
         solveOk = solveOk && Redirect(site, kSolvePoint, site == kBatchSolveCall ? reinterpret_cast<const void*>(&SolvePointBatch) : reinterpret_cast<const void*>(&SolvePointSingle));
     solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
     if (solveOk) {
         for (size_t i = 0; i < std::size(kClasses); i++) {
+            if (!kClasses[i].vtable) continue; // class not found on this build
             const uintptr_t slot = kClasses[i].vtable + 0x4C;
             if (*reinterpret_cast<const uint32_t*>(slot) != kClasses[i].eval || *reinterpret_cast<const uint32_t*>(kClasses[i].vtable + 0x24) != kLightPos) continue;
             g_evalOrig[i] = kClasses[i].eval;
@@ -565,7 +628,8 @@ bool Install(std::string& error) {
             if (MemPatch::WriteDWORD(slot, static_cast<DWORD>(reinterpret_cast<uintptr_t>(kEvalHooks[i])), &g_patches, &orig)) classes++;
         }
     } else
-        LOG_WARNING("[LevelLightShare] Per-point evaluation differs; no shadow from the walls of other stories");
+        LOG_WARNING(wallsMissing.empty() ? std::string("[LevelLightShare] Per-point evaluation differs; no shadow from the walls of other stories")
+                                         : "[LevelLightShare] Walls of other stories: " + GameAddr::NotAvailable(wallsMissing));
     g_evalClasses = classes;
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;

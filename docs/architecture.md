@@ -488,9 +488,11 @@ This is one shared trigger for effects that work on the finished 3D scene, befor
     the metadata and calls `RegisterPatch`, which rejects duplicate names.
 - **`FeatureInfo`**: `displayName`, `description` (the combined build put "Part of Sims3 Settings Setter Apex Edition.
   Credits: @loinyx" at its end; the standalone writes "Part of " `APEX_PRODUCT_NAME` = "Apex Radiance"), `category`, `experimental`, `enabledByDefault`, `supportedVersions` (`VERSION_STEAM`,
-  `VERSION_EA`, `VERSION_RETAIL`, `VERSION_ALL`), `technicalDetails`.
+  `VERSION_EA`, `VERSION_RETAIL`, `VERSION_ALL`), `technicalDetails`, `gameCodeGroup` (standalone).
   - `IsCompatibleWithCurrentVersion()` checks `supportedVersions` against `g_gameVersion`. An unknown version means
-    incompatible.
+    incompatible, unless the feature names a `gameCodeGroup` ("NightLights", "SplitLevel") whose addresses the
+    signature scan found on this build (`framework/game_addresses.h`, [engine/game-versions.md](engine/game-versions.md));
+    `UnavailableReason()` gives "Not available on <version>: missing <addresses>".
 - `patches/_TEMPLATE.cpp` is **not compiled**. It uses `.targetVersion`, which no longer exists: use
   `.supportedVersions`. The `SaveState` / `LoadState` INI examples in `patches/README.md` are also stale, because
   persistence is TOML now.

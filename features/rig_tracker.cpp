@@ -14,29 +14,32 @@
 #define NOMINMAX
 #endif
 #include "rig_tracker.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include <windows.h>
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
 
-constexpr uintptr_t kModelDraw = 0x006F6250;
+// Addresses: the fixed Steam 1.67.2 ones, or found by signature on other builds (game_addresses.h); set by Install.
+uintptr_t kModelDraw = 0; // 0x006F6250 on Steam
 const BYTE kModelDrawProlog[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0x94, 0x01, 0x00, 0x00};
-constexpr uintptr_t kBinderCall = 0x006F68C5; // CALL FUN_006b8b30, ECX = rig
-constexpr uintptr_t kBinder = 0x006B8B30;
-constexpr uint32_t kRigVtable = 0x00FF4218;
-constexpr uintptr_t kInstanceFlush = 0x006CF920;
+uintptr_t kBinderCall = 0; // 0x006F68C5 on Steam: CALL FUN_006b8b30, ECX = rig
+uintptr_t kBinder = 0;     // 0x006B8B30 on Steam
+uint32_t kRigVtable = 0;   // 0x00FF4218 on Steam
+uintptr_t kInstanceFlush = 0; // 0x006CF920 on Steam
 const BYTE kInstanceFlushProlog[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0xA4, 0x0B, 0x00, 0x00};
 
 using ModelDraw_t = void(__thiscall*)(void* model, void* part, void* ctx);
 using Binder_t = void(__fastcall*)(void* rig);
 using InstanceFlush_t = void(__thiscall*)(void* self, void* a, void* b, void* c, void* d, void* e);
 
-ModelDraw_t oModelDraw = reinterpret_cast<ModelDraw_t>(kModelDraw);
-InstanceFlush_t oInstanceFlush = reinterpret_cast<InstanceFlush_t>(kInstanceFlush);
+ModelDraw_t oModelDraw = nullptr;
+InstanceFlush_t oInstanceFlush = nullptr;
 std::vector<MemPatch::PatchLocation> g_patches;
 std::vector<DetourBatch::Hook> g_hooks;
 bool g_installed = false;
@@ -81,8 +84,21 @@ namespace RigTracker {
 
 bool Install() {
     if (g_installed) return true;
-    if (std::memcmp(reinterpret_cast<const void*>(kModelDraw), kModelDrawProlog, sizeof(kModelDrawProlog)) != 0 ||
-        std::memcmp(reinterpret_cast<const void*>(kInstanceFlush), kInstanceFlushProlog, sizeof(kInstanceFlushProlog)) != 0 ||
+    using GameAddr::Id;
+    std::string missing;
+    if (!GameAddr::Have({Id::ModelDraw, Id::BinderCall, Id::Binder, Id::InstanceFlush, Id::RigVtable}, &missing)) {
+        LOG_WARNING("[RigTracker] " + GameAddr::NotAvailable(missing));
+        return false;
+    }
+    kModelDraw = GameAddr::Get(Id::ModelDraw);
+    kBinderCall = GameAddr::Get(Id::BinderCall);
+    kBinder = GameAddr::Get(Id::Binder);
+    kRigVtable = static_cast<uint32_t>(GameAddr::Get(Id::RigVtable));
+    kInstanceFlush = GameAddr::Get(Id::InstanceFlush);
+    // The prologue checks are Steam's exact bytes; on other builds the signatures (which may leave the frame size open) found them
+    const bool fixed = GameAddr::IsFixed();
+    if ((fixed && std::memcmp(reinterpret_cast<const void*>(kModelDraw), kModelDrawProlog, sizeof(kModelDrawProlog)) != 0) ||
+        (fixed && std::memcmp(reinterpret_cast<const void*>(kInstanceFlush), kInstanceFlushProlog, sizeof(kInstanceFlushProlog)) != 0) ||
         *reinterpret_cast<const BYTE*>(kBinderCall) != 0xE8 || kBinderCall + 5 + *reinterpret_cast<const int32_t*>(kBinderCall + 1) != kBinder) {
         LOG_WARNING("[RigTracker] Object draw code differs (different game version?)");
         return false;

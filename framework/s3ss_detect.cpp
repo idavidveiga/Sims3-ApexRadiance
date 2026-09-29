@@ -3,6 +3,7 @@
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "apex_util.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include <psapi.h>
 #include <toml++/toml.hpp>
@@ -245,11 +246,12 @@ namespace S3SSDetect {
 
 bool SplitLevelFixActive() {
     if (S3SSPatchEnabled("SplitLevelLightingFix")) return true;
-    if (g_gameVersion != GameVersion::Steam) return false;
-    // GetLotID (0x6BC020): mov eax,[ecx+0C0h]; mov edx,[ecx+0C4h]; ret  (read from TS3W.exe 1.67.2 Steam)
+    // GetLotID (0x6BC020 on Steam, found by signature on other builds): mov eax,[ecx+0C0h]; mov edx,[ecx+0C4h]; ret
+    const uintptr_t getLotId = GameAddr::Get(GameAddr::Id::GetLotId);
+    if (!getLotId) return false;
     static const BYTE kVanilla[] = {0x8B, 0x81, 0xC0, 0x00, 0x00, 0x00, 0x8B, 0x91, 0xC4, 0x00, 0x00, 0x00, 0xC3};
     BYTE now[sizeof kVanilla] = {};
-    if (!MemPatch::ReadBytes(0x006BC020, now, sizeof now)) return false;
+    if (!MemPatch::ReadBytes(getLotId, now, sizeof now)) return false;
     return std::memcmp(now, kVanilla, sizeof now) != 0;
 }
 
