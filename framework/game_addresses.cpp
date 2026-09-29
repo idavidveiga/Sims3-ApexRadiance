@@ -174,6 +174,9 @@ constexpr Info kInfo[] = {
     {"SceneNodeBounds", 0x006FB4B0},
     {"SceneSpatialCall", 0x006E41E6},
     {"SceneNodeSpatial", 0x006FAD70},
+    {"SceneNodeDtor", 0x006FD930},
+    {"SceneAddNode", 0x006E6480},
+    {"SceneHolderTeardown", 0x006E4DE0},
     {"ObjectTreeWalk", 0x00C60D30},
     {"ObjectTreeSearch", 0x00C5FA60},
     {"WorldManagerPtr", 0x011ECBC4},
@@ -373,6 +376,10 @@ const Entry kTable[] = {
     {Id::SceneNodeBounds, K::Target, W::Text, Id::SceneBoundsCall, 0, {{"55 8B EC 83 E4 F0 81 EC 8C 00 00 00 56 8B F1 8A 46 40 F6 D0 A8 01 75 ?? 8B 46 30 85 C0 74 ?? 83 78 2C 00 74", 0, M::At}, NOSIG}},
     {Id::SceneSpatialCall, K::InRange, W::Text, Id::SceneDrain, 0xD1, {{"50 8B CE E8 ?? ?? ?? ?? 8B 4C 24 1C 01 5F 18", 3, M::At}, {"E8 ?? ?? ?? ?? 8B 4C 24 1C 01 5F 18", 0, M::At}}},
     {Id::SceneNodeSpatial, K::Target, W::Text, Id::SceneSpatialCall, 0, {{"8B 41 30 85 C0 74 14 8B 40 2C 85 C0 74 0D 8B 54 24 04 52 51 8B C8 E8 ?? ?? ?? ?? C2 04 00", 0, M::At}, NOSIG}},
+    //      the node lifetime hooks: base destructor (writes the base vtable, then the child list at +0x194), AddNode (owner test at +0x30), holder teardown (spatial tree at +0x2C)
+    {Id::SceneNodeDtor, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 94 00 00 00 53 56 57 8B F9 8D 9F 94 01 00 00 C7 07 ?? ?? ?? ?? 39 5B 04 74", 0, M::At}, {"8D 9F 94 01 00 00 C7 07 ?? ?? ?? ?? 39 5B 04 74 ?? 8D 4C 24 10 E8", -17, M::At}}},
+    {Id::SceneAddNode, K::Sig, W::Text, None, 0, {{"56 8B 74 24 08 83 7E 30 00 57 8B F9 0F 85 ?? ?? ?? ?? 53 55 E8", 0, M::At}, {"83 7E 30 00 57 8B F9 0F 85 ?? ?? ?? ?? 53 55 E8", -5, M::At}}},
+    {Id::SceneHolderTeardown, K::Sig, W::Text, None, 0, {{"53 55 56 57 8B F9 8B 4F 2C 85 C9 74 ?? E8 ?? ?? ?? ?? 8B 77 2C 85 F6 74", 0, M::At}, {"8B 4F 2C 85 C9 74 ?? E8 ?? ?? ?? ?? 8B 77 2C 85 F6 74 ?? 8B CE E8", -6, M::At}}},
     // ---- Object lookup index (docs/features/performance.md): the tree walk behind ObjectById ----
     {Id::ObjectTreeWalk, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 08 55 8B 6C 24 10 56 8B F1 8B CB 33 C0 0B CD 74 ?? 8B 96 A0 00 00 00 2B 96 9C 00 00 00 57 33 FF C1 FA 02", 0, M::At}, {"8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", 6, M::Call}}},
     {Id::ObjectTreeSearch, K::Sig, W::Text, None, 0, {{"53 55 56 8B 74 24 10 85 F6 0F 84 ?? ?? ?? ?? 8B 46 48 8B 5C 24 14 3B C3 8B 6C 24 18 75 ?? 8B 4E 4C 3B CD 74", 0, M::At}, {"8B 04 B8 51 55 53 50 E8 ?? ?? ?? ?? 83 C4 10 85 C0 75", 7, M::Call}}},
@@ -402,8 +409,8 @@ const Group kGroups[] = {
     {"FileListCache", {Id::ResKeyList, Id::ResKeyListSlot, Id::ResKeyListDerived, Id::ResKeyListDerivedSlot, Id::KeyTypeFilterVtable, Id::ResRegisterDb, Id::ResRegisterDbSlot,
                        Id::ResRegisterDbDerived, Id::ResRegisterDbDerivedSlot, Id::ResSetDbPriority, Id::ResSetDbPrioritySlot0, Id::ResSetDbPrioritySlot1, Id::ResDbChanged,
                        Id::ResDbChangedSlot0, Id::ResDbChangedSlot1, Id::ShadowedDbVtable}},
-    {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::CameraRootCall,
-                         Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
+    {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::SceneNodeDtor,
+                         Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
 };
 

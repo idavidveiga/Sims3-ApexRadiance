@@ -16,7 +16,8 @@
 // Used by the Frame Profiler (dev build, the outer layer) and the fast DXT encoder (features/fast_dxt.h) on the game's
 // CPU DXT1 / DXT5 encoders, by the resource lookup cache's write epochs (features/resource_cache.h) on the writable
 // package database's direct record write, and by the Frame Profiler and the object lookup index (features/object_index.h)
-// on the object-by-ID lookup. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
+// on the object-by-ID lookup, and by the scene node budget (features/scene_budget.h) on the scene node destructor, AddNode
+// and the holder teardown. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -29,11 +30,14 @@ enum class Site : int {
     DpfWriteDirect, // 0x004A7FC0 thiscall(5 args), ret 0x14: the writable package database's direct record write; prologue
                     // 83 EC 28 53 56 (sub esp,28h; push ebx; push esi); bracketed by the write epochs of features/resource_cache.cpp
     ObjectById, // 0x00C62D40 thiscall(idLo, idHi, int* visited), ret 0xC; prologue 8B 44 24 0C 8B 54 24 08 (two movs, 8 bytes)
+    SceneNodeDtor,       // 0x006FD930 thiscall(), ret: the scene node base destructor; prologue 55 8B EC 83 E4 F0 (as the DXT encoders)
+    SceneAddNode,        // 0x006E6480 thiscall(node, group), ret 8: the pending holder's AddNode; prologue 56 8B 74 24 08
+    SceneHolderTeardown, // 0x006E4DE0 thiscall(), ret: the pending holder's teardown; prologue 53 55 56 57 8B F9
     Count
 };
 // lower = outer. FastDxt: the DXT sites only; ResourceCache: the DpfWriteDirect site only; ObjectIndex: the ObjectById
-// site only.
-enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, Count };
+// site only; SceneBudget: the three scene node sites only (features/scene_budget.h).
+enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, Count };
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

@@ -14,7 +14,8 @@
 //   FastCacheCompression the RefPack stream write answered by a faster compressor with the same stream format
 //                        (features/fast_refpack.h). Off by default until checked in game.
 //   SceneNodeBudget      while the camera moves, Scene::BeginFrame's pending-node drain processes at most N nodes / T ms
-//                        per frame, the rest the next frames (features/scene_budget.h). Experimental, off by default.
+//                        per frame, the rest the next frames; the nodes left are guarded by hooks on the node destructor,
+//                        AddNode and the holder teardown (features/scene_budget.h). Experimental, off by default.
 //   ObjectLookupIndex    the object-by-ID lookup answered from a validated index of the paths the game's walk found
 //                        (features/object_index.h). Experimental, off by default.
 // All are drawn by the menu's Performance page (apex_gui.cpp, PerformanceCard); their developer lines go to Developer >
@@ -465,7 +466,10 @@ APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                        .technicalDetails = {"Scene::BeginFrame's call of the pending-node drain (0x6EBC49 -> 0x6E4130) goes through Apex: while the camera eye moved in "
                                             "the last 300 ms, an exact copy of the game's loop stops after 512 nodes or 2 ms; the rest stays queued in the game's own "
                                             "list and goes first next frame.",
-                                            "Camera still, or a node waited 500 ms: the game's own drain runs. The other five callers of the drain are untouched."},
+                                            "Camera still, or a node waited 500 ms: the game's own drain runs. The other five callers of the drain are untouched.",
+                                            "Every node left queued is recorded: the node destructor (0x6FD930) unlinks a recorded node that is still queued, AddNode "
+                                            "(0x6E6480) unlinks one before queueing it again, and the scene teardown (0x6E4DE0) forgets its records, so a node "
+                                            "held for later can never be freed or queued twice while linked."},
                        .gameCodeGroup = "SceneNodeBudget"});
 
 APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
