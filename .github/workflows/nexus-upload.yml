@@ -1,0 +1,60 @@
+# Publishes each GitHub release to Nexus Mods: the release's ApexRadiance.asi, zipped, becomes a new version of the
+# existing file on the Nexus mod page (official action Nexus-Mods/upload-action, Nexus upload API v3).
+#
+# One-time setup (repository Settings > Secrets and variables > Actions):
+#   secret   NEXUSMODS_API_KEY  the Nexus API key (Nexus Mods > your account > API keys)
+#   variable NEXUS_FILE_ID      the id of the mod's main file (mod page > Files > "Advanced", or Manage Files > edit)
+#   variable NEXUS_MOD_ID       the mod's id (the number in its page URL), for the changelog and the mod version
+# Without them the job is skipped.
+name: Upload to Nexus Mods
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload (e.g. v1.4.8)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    if: ${{ vars.NEXUS_FILE_ID != '' }}
+    env:
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download the release's ApexRadiance.asi and notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern ApexRadiance.asi --dir dist
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          {
+            echo "CHANGELOG<<APEX_EOF"
+            cat notes.md
+            echo "APEX_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Zip
+        run: |
+          cd dist
+          zip -9 "../ApexRadiance-$VERSION.zip" ApexRadiance.asi
+
+      - name: Upload to Nexus Mods
+        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ vars.NEXUS_FILE_ID }}
+          mod_id: ${{ vars.NEXUS_MOD_ID }}
+          filename: ApexRadiance-${{ env.VERSION }}.zip
+          version: ${{ env.VERSION }}
+          display_name: Apex Radiance ${{ env.VERSION }}
+          description: "Copy ApexRadiance.asi into The Sims 3\\Game\\Bin\\ (needs an ASI loader). Full notes: https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}"
+          changelog: ${{ env.CHANGELOG }}
+          update_mod_version: true
+          archive_existing_version: true
