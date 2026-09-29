@@ -2,7 +2,7 @@
 // The Performance page's features (patches/performance_patches.cpp): "ResourceLookupCache" (features/resource_cache.h),
 // "LotLightingMotion" (features/lot_lighting_motion.h), "FastTextureCompression" (features/fast_dxt.h) and
 // "FastCacheCompression" (features/fast_refpack.h). The menu draws their rows (apex_gui.cpp, PerformanceCard); these
-// functions give it the one setting that is not a switch. docs/features/performance.md.
+// functions give it the settings that are not the features' own switches. docs/features/performance.md.
 #include <string>
 
 namespace Performance {
@@ -16,6 +16,11 @@ inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered defaul
 // "Lot lighting time while moving" (ms, 1..15): the saved setting; Set saves it and applies it at once
 int LotLightingBudgetMs();
 void SetLotLightingBudgetMs(int ms);
+
+// "Use several cores" under Faster texture compression ([patches.FastTextureCompression] useSeveralCores, default on):
+// the saved setting; Set saves it and applies it to the next texture
+bool FastTextureSeveralCores();
+void SetFastTextureSeveralCores(bool on);
 
 // One-line states for the menu
 std::string ResourceCacheStatus();

@@ -104,17 +104,40 @@ class LotLightingMotionPatch : public ApexPatch {
     int budgetMs_ = Performance::kLotLightingBudgetDefault;
 };
 
+class FastTextureCompressionPatch;
+std::atomic<FastTextureCompressionPatch*> g_texPatch{nullptr};
+
 class FastTextureCompressionPatch : public ApexPatch {
   public:
-    FastTextureCompressionPatch() : ApexPatch(Performance::kFastTextureName, nullptr) {}
+    FastTextureCompressionPatch() : ApexPatch(Performance::kFastTextureName, nullptr) {
+        // TOML key: never rename
+        RegisterBoolSetting(&severalCores_, "useSeveralCores", true, "Use several cores");
+        g_texPatch.store(this);
+    }
+    ~FastTextureCompressionPatch() override { g_texPatch.store(nullptr); }
 
     bool Install() override {
         if (isEnabled) return true;
         lastError.clear();
+        FastDxt::SetSeveralCores(severalCores_);
         std::string error;
         if (!FastDxt::Start(&error)) return Fail(error);
         isEnabled = true;
         return true;
+    }
+
+    // "Use several cores" is read by the hook on every image: applied at once, nothing to reinstall
+    void Update() override {
+        pendingReinstall = false;
+        FastDxt::SetSeveralCores(severalCores_);
+    }
+
+    bool SeveralCores() const { return severalCores_; }
+    void SetSeveralCores(bool on) {
+        if (on == severalCores_) return;
+        severalCores_ = on;
+        FastDxt::SetSeveralCores(on);
+        NotifySettingChanged(); // saved (Update clears the reinstall request)
     }
 
     bool Uninstall() override {
@@ -125,8 +148,11 @@ class FastTextureCompressionPatch : public ApexPatch {
         return true;
     }
 
-    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderCustomUI() override {} // the Performance card draws the rows
     void RenderDeveloperUI() override { FastDxt::RenderDeveloperUI(); }
+
+  private:
+    bool severalCores_ = true;
 };
 
 class FastCacheCompressionPatch : public ApexPatch {
@@ -171,6 +197,15 @@ void Performance::SetLotLightingBudgetMs(int ms) {
     if (LotLightingMotionPatch* p = g_lotPatch.load()) p->SetBudgetMs(ms);
 }
 
+bool Performance::FastTextureSeveralCores() {
+    FastTextureCompressionPatch* p = g_texPatch.load();
+    return p ? p->SeveralCores() : true;
+}
+
+void Performance::SetFastTextureSeveralCores(bool on) {
+    if (FastTextureCompressionPatch* p = g_texPatch.load()) p->SetSeveralCores(on);
+}
+
 std::string Performance::ResourceCacheStatus() { return ResourceCache::StatusText(); }
 std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusText(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
@@ -213,6 +248,8 @@ APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The CPU DXT1 / DXT5 encoders (0x6152F0 / 0x6154B0) are replaced at their entries by the same algorithm run on four blocks at "
                                             "once with SSE2: every block gets the same bytes as the game's.",
+                                            "Use several cores: textures of 256 x 256 and more are split by rows of blocks over up to 6 worker threads (the calling "
+                                            "thread's floating-point state in each); the call still returns the finished texture.",
                                             "The first 16 textures of each session are also encoded by the game and compared; a difference turns the feature off."},
                        .gameCodeGroup = "FastTextureCompression"});
 

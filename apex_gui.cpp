@@ -585,7 +585,11 @@ void PerformanceCard() {
             o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
-        FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures");
+        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures")) {
+            bool cores = Performance::FastTextureSeveralCores();
+            if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result", true))
+                Performance::SetFastTextureSeveralCores(cores);
+        }
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
     }
     ApexUi::EndCard();

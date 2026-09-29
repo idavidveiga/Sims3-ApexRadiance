@@ -855,6 +855,7 @@ The 28/09 log shows different ids for the two main threads: SmoothPatchPrecise l
 | Logger flush thread | `Logger::Handler::Initialize` | Writes pending log lines once a second |
 | Frame Profiler sampler | Profiler, when sampling is on (Advanced) | Suspends the render and/or sim thread at `g_sampleHz` (default 2000) and copies 512 bytes of stack |
 | Frame Profiler writer | Profiler | Appends hitches to `S3SS_Hitches.txt` at most once a second |
+| DXT workers ("Apex DXT worker", up to min(logical processors - 2, 6)) | `DxtCodec::Parallel` (`features/dxt_codec.cpp`), at Faster Texture Compression's start with "Use several cores" on, or at the first large texture | Sleep on an event; encode rows of blocks of a large texture while the game's calling thread (which also encodes) waits in the DXT hook; normal priority, 256 KB stack reservation, never destroyed ([features/performance.md](features/performance.md), "Several cores") |
 
 ### 10.3 Which Apex code runs on which thread
 | Code | Thread |
