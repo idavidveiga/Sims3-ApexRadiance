@@ -45,7 +45,7 @@ sliders save on `IsItemDeactivatedAfterEdit`.
 | Enable frame profiler | `enabled` | bool | false | | `SetEnabled`; if absent (no table) the profiler is set off |
 | Hitch multiplier (Advanced) | `hitch_multiplier` | float (TOML double) | 2.0 | 1.2 .. 5.0 | hitch = frame > max(mult x median of last 120 frames, floor) |
 | Hitch floor (Advanced) | `hitch_floor_ms` | float | 8.0 | 1 .. 100 ms | |
-| Count state calls (Advanced) | `count_state_calls` | bool | true | | registers SetTexture / Set*Shader / Set*ShaderConstantF / SetRenderTarget counters; re-registers hooks live |
+| Count state calls (Advanced) | `count_state_calls` | bool | true | | shows SetTexture / Set*Shader / Set*ShaderConstantF / SetRenderTarget per frame. Standalone since 2026-09-29: the registry's detours count them with plain counters (always, development build); the option only decides whether they are shown. Before, it registered six counting callbacks, which made every state call of the game run a full dispatch (0.25-0.35 ms per frame) |
 | Write S3SS_Hitches.txt (Advanced) | `write_file` | bool | true | | hitches are queued to the writer only while this is on |
 | Sample the render thread (Advanced > Sampling) | `sample_render` | bool | false | | starts / stops the sampler thread |
 | Sample the simulation thread (Advanced > Sampling) | `sample_simulation` | bool | false | | needs the simulation thread id (first GC call) |
@@ -71,10 +71,12 @@ Clear right before the run and Save report now right after it.
    QPC by a 20 ms busy wait and used as the clock (`g_useTsc`, never changed later); else QPC. `g_blockTicks` = 0.1 ms.
    `RefineClock` (every 128 frames on the render thread) recomputes ms/tick from the long QPC/TSC baseline.
 2. `g_needBaseline = true`, `StartWriter()` (writer thread, see Output), `g_attachPending = true`.
-3. `RegisterD3DHooks()` registers the registry hooks under the name `"FrameProfiler"`: Present / DrawIndexedPrimitive /
-   DrawPrimitive at priority **-1000** (start) and **+1000** (end), CreateTexture / CreateRenderTarget /
-   CreateVertexShader / CreatePixelShader counters at -1000, and (if `count_state_calls`) SetTexture, Set{Vertex,Pixel}Shader,
-   Set{Vertex,Pixel}ShaderConstantF, SetRenderTarget counters. `Priority` is an int enum (First=0 .. Last=100,
+3. `RegisterD3DHooks()` registers the registry hooks under the name `"FrameProfiler"`: Present at priority **-1000**
+   (start) and **+1000** (end), DrawIndexedPrimitive / DrawPrimitive counting hooks at -1000 (standalone since 2026-09-29:
+   no +1000 draw hooks, the registry times its dispatches itself, see "D3D9 counters and mod hook time"), CreateTexture /
+   CreateRenderTarget / CreateVertexShader / CreatePixelShader counters at -1000. (Until 2026-09-29, with
+   `count_state_calls`, also SetTexture, Set{Vertex,Pixel}Shader, Set{Vertex,Pixel}ShaderConstantF and SetRenderTarget
+   counters; now counted in the registry's detours.) `Priority` is an int enum (First=0 .. Last=100,
    `d3d9_hook_registry.h`) and the registry `std::sort`s by its value, so -1000 / +1000 bracket every other module.
 4. `UpdateSamplerLocked()` starts the sampler thread if a sampling option is on.
 5. **The game functions are attached at the next frame boundary**, inside the first Present hook, on the render thread
@@ -309,12 +311,34 @@ largest render-thread self time (>= 0.05 ms), or none.
 
 ### D3D9 counters and mod hook time
 - `OnDrawStart` (DIP / DP start hook): counts DIP / DP; a draw while `open[kEndScene] > 0` is an "end-of-frame draw"
-  (S3SS overlay, post passes inside EndScene), else a game draw (primitives summed). Pushes a `kModD3DHooks` dispatch
-  frame keyed by the `DeviceContext` address (a stack local of the registry's `Hooked_*` function); the +1000 end hook
-  pops it (`EndDispatch`). A module hook returning Skip / Block ends the chain before the end hook: the open dispatch
-  is dropped by `CleanStale` at the next push from the same or a shallower stack depth (`kStaleMargin` 64 bytes).
+  (S3SS overlay, post passes inside EndScene), else a game draw (primitives summed).
+- **"D3D hooks (mod)" (standalone, 2026-09-29; M1 of `research\perf2\apexcost\report.md`):** the registry itself
+  (`framework/d3d9_hooks.cpp` `Run`, development build) books its **outermost** dispatch on a thread, of every chain
+  except Present, with `FrameProfiler::BeginModTime(ModTime::D3DDispatch, &ctx)` / `EndModTime` around the whole chain:
+  a `kModD3DHooks` frame from before the first callback to after the last one, **also when a callback returns Skip /
+  Block**. Nested dispatches (a draw Night Lighting replaces is re-issued inside its own dispatch) are part of the outer
+  one, so its driver call is counted too (the game's own call of that draw is skipped). Before, the -1000 hook pushed a
+  dispatch frame that the +1000 hook popped; a dispatch cut short by Skip (every replaced draw) never reached the +1000
+  hook and was dropped by `CleanStale`, and the state chains were not timed at all: the report measured Apex code at
+  ~0.8 ms of a 5.1 ms frame while "mod D3D" read 0.16 ms. The frames carry no `kDispatch` flag (never dropped as stale).
+  The time includes the bookkeeping: two clock reads and a push / pop per outermost dispatch, about 20-40 ns, now also
+  for every SetPixelShader / SetVertexShader of the game (Night Lighting's shader tracking), so expect a few tenths of a
+  ms of measurement overhead per frame in "mod D3D" with the profiler on.
 - Present: the -1000 hook is the frame boundary (`OnPresentStart`) and pushes a `kPresentHooks` dispatch; the +1000 hook
   pops it. So "Present hooks (mod)" includes all modules' Present hooks and the profiler's own per-frame bookkeeping.
+- **"Lamp refresh (mod)"** (standalone, 2026-09-29): Night Lighting's 20-frame lamp list refresh
+  (`LotLightBridge::OnPresent`, `FrameProfiler::ModTimeScope(ModTime::LampRefresh)`), a category of its own inside
+  "Present hooks (mod)" (its time moves out of the Present hooks' self time). The per-frame `mod D3D` value is
+  D3D hooks + Present hooks + Lamp refresh.
+- **State-call counts** (standalone, 2026-09-29, P1): SetTexture, Set{Vertex,Pixel}Shader,
+  Set{Vertex,Pixel}ShaderConstantF and SetRenderTarget are counted in the registry's detours with plain per-method
+  counters (`D3D9Hooks::ReadStateCallCounts`, monotonic; `FrameBoundary` takes the difference from `g_stateBase`), not by
+  registered callbacks. Calls Apex makes with `CallOriginal*` (Night Lighting's own state changes around a replaced
+  draw) bypass the detours and are not counted; before they were.
+- **Off-thread dispatches:** the draw and state chains run without a lock on the render thread; a call from another
+  thread takes the registry lock and is counted (`D3D9Hooks::OffThreadDispatches()`, Advanced line "Draw / state hooks
+  called from another thread than the render thread", report line "Draw / state hooks called off the render thread").
+  The draw counts above assume draws come from the render thread; a non-zero value says they may race.
 - The registry only calls hooks before the device method, so resource-creation *duration* is not measurable (counts
   only). Not exposed by the registry at all: CreateVertexBuffer / CreateIndexBuffer, Lock / Unlock, SetRenderState;
   DrawPrimitiveUP / DrawIndexedPrimitiveUP exist only through ExtraHooks' single observer slot, owned by Frame Capture.
@@ -328,6 +352,14 @@ the name string's address (fast path) verified by content (registry names live i
 most 64 names / 256 pointer cache entries. `RollRegistryWindow` (render thread, per frame) publishes ms/frame and
 calls/frame per name once per second into `g_regDisplay` ("Registry hooks by name" in Advanced). The list includes the
 profiler's own "FrameProfiler" entries.
+
+Standalone (`framework/d3d9_hooks.cpp` `RunList`, 2026-09-29): the draw chains are timed per name as above (option
+"Per-hook registry timing"); **every Present callback is timed per name whenever the profiler is on** (M3,
+`PresentHookTimingActive()`), reported as `"<name> (Present)"` (e.g. `NightTerrainRelight (Present)`, `PostScene
+(Present)`, `ApexCore (Present)`, `FrameProfiler (Present)`), so the Present hooks' cost is split by module without
+the option. The "Registry hooks by name" list is shown while the option is on or any name has data, and "Save report
+now" adds it ("Registry hooks by name (last second; ...)"). `AddRegistryHookTime` is still serialised by the registry's
+own timing mutex.
 
 ### Hitch detection (`FrameBoundary`)
 - Frame time = time between two Present boundaries. Median of the last 120 frames (`kMedianWindow`, `nth_element`),
@@ -366,6 +398,14 @@ Symbolisation:
   `int3` (0xCC). Checked on the 4126 functions of the RE dump: 94% start that way, 5.5% follow a RET without padding
   (merged with the previous function), 0.1% of aligned positions inside bodies follow a CC (split). Printed
   `TS3W fn~XXXXXXXX`: a grouping key, resolve with the decompile / `engine_map`. Cached in a 16384-entry direct map.
+- **Apex code** (standalone, 2026-09-29, M2): samples in this ASI are keyed the same way inside its own `.text`
+  (`OwnFnStartGuess`) instead of one key for the whole module, and printed as an RVA, `apexradiance.asi fn~+1A2B0` (and
+  `apexradiance.asi+1A2B3` in the exact-EIP list). The Release configuration writes `ApexRadiance.map` next to the .asi
+  (`GenerateMapFile`); RVA = map address - preferred base (the map's "Preferred load address", normally 0x10000000).
+  The module base, size and PE TimeDateStamp are logged once per session when the sampler starts (`[FrameProfiler] Apex
+  code in the samples: apexradiance.asi base ..., PE TimeDateStamp ...`) and printed at the top of the report's sampling
+  section, so a report can be matched with the map of the same build. The int3-padding guess is unverified for MSVC's
+  x86 output of this project: if a key lands far from any symbol, use the exact-EIP list.
 - Per hitch: share of samples per class, top 8 code keys per thread, top 8 TS3W call sites on the render stack, top 4
   "system code called from" (first TS3W return address of samples whose EIP is in system code: waits, heap, I/O).
   Session tables (`g_agg[0]` other frames, `[1]` hitch frames): 4096-entry count tables, plus exact EIPs in hitch frames.
@@ -405,7 +445,9 @@ none` when no counter reached 0.05 ms of render self time.
 
 The report adds "Counters since Clear" (per bucket calls x ms, longest calls, render-thread per-frame averages, extras),
 "Counters per hitch" (the hitch ring), "Apex shaders: ..." (the shader precompile status, see
-[architecture](../architecture.md#shader-precompile)), "Resource lookup cache: ...", "Resource lookup cache counters:
+[architecture](../architecture.md#shader-precompile)), (standalone, 2026-09-29) "Registry hooks by name (last second; ...)"
+with one line per name (Present hooks always, draw hooks with the option) and "Draw / state hooks called off the render
+thread (dispatched under the lock): N", "Resource lookup cache: ...", "Resource lookup cache counters:
 ..." (round 3: lookups, from memory, absent, answers with no probe of the counted packages, game lookups, re-check
 failed, stored / absent stored / not stored / unreliable read-only package, list changes, notices, missed changes, the
 package counts, counted classes and writes, sums refreshed, checks; and the file list counters when that cache ran),
@@ -468,7 +510,7 @@ Scheduler; still timed because the redirected code calls the detoured entry). `L
 | | `AttachSlots`, `DetachSlots`, `SwapSlot`, `WriteCallSuspended`, `AttachWaitingLocked`, `UpdateSummaryLocked`, `ApplyMutexOptionLocked`, `ResolveRemoteCallKeysLocked` | attach (standalone) |
 | | `CounterFrame`, `ComputeDominant`, `DomName`, `DominantText`, `FormatCounters`, `CounterExtraText`, `CounterReport`, `DominantSummaryLines`, `RenderCounters`, `ApplyPreset` | counters output / UI (standalone) |
 | `framework/game_addresses.*` | ids `ResFindProvider` .. `RemoteMethodVtable2`, kind `K::SlotsOf` | the counters' addresses (standalone) |
-| `d3d9_hook_registry.cpp` | `Internal::ExecuteDrawIndexedPrimitiveHooks`, `ExecuteDrawPrimitiveHooks` | per-hook-name timing |
+| `d3d9_hook_registry.cpp` (combined) / `framework/d3d9_hooks.cpp` (standalone: `Run`, `RunList`, `ModTimeGuard`, `CountCall`, `ReadStateCallCounts`, `OffThreadDispatches`) | `Internal::ExecuteDrawIndexedPrimitiveHooks`, `ExecuteDrawPrimitiveHooks` (combined) | per-hook-name timing; standalone also the mod D3D time, the Present per-name timing and the state-call counts |
 | `config/config_store.cpp` | `SaveAll`, `LoadAll` | `[qol.frame_profiler]` |
 | `gui.cpp` | Apex tab, "Performance" | collapsing header |
 | `dllmain.cpp` | `DLL_PROCESS_DETACH` | `FrameProfiler::Shutdown()` |
@@ -551,13 +593,13 @@ None.
 
 - Steam 1.67.2 is the verified build; other builds rely on unique pattern scans and service names are Steam-only.
 - The profiler's own overhead (see below) is included in what it measures: "Present hooks (mod)" includes its own bookkeeping;
-  every draw pays two extra registry hooks; every Mutex::Lock / Semaphore::Wait on every thread pays two clock reads.
+  every draw pays one extra registry hook (standalone since 2026-09-29; two before) and every outermost registry dispatch a push / pop; every Mutex::Lock / Semaphore::Wait on every thread pays two clock reads.
 - Other threads' time is attributed to the frame in which the call returns (a 100 ms job on a worker lands in one frame).
 - Threads beyond 128 that run timed code are not timed; call stacks deeper than 32 timed levels drop the deeper calls.
 - Keyed tables are fixed-size open addressing (per frame: 64 services, 256 jobs, 128 waits; session: 256 / 1024 / 512),
   90% fill limit, overflow counted in `lost` (not displayed).
 - Duration of CreateTexture / shader creation and anything the registry does not expose is not measurable.
-- Per-hook registry timing covers only DrawIndexedPrimitive / DrawPrimitive hooks.
+- Per-hook registry timing covers only DrawIndexedPrimitive / DrawPrimitive hooks, and (standalone, always while on) the Present hooks.
 - Sampling: stack walk is heuristic; `fn~` keys are guesses; a target thread is paused 5-30 us per sample under WOW64
   (header comment), roughly 1-6% of the sampled thread at 2000 Hz, plus similar CPU on the sampler's core.
 - Services on other threads are session totals only (not per frame / per hitch).

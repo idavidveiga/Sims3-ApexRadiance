@@ -51,6 +51,11 @@ Combined build only: the roof strength was multiplied by the HDR lamp gain; see
   the 64 best candidates, then the 16 lowest scores into `g_lampData`: `[0..15]` = (head, R), `[16..31]` = (colour, 0),
   `[32]` = params. Roofs use `maxScore = 80` m, at the roof piece's world translation (VS `c8.w`, `c10.w`), so the choice
   never depends on the camera.
+- Standalone, 2026-09-29 (not tested in game yet): the list is built by `ReadEnumeratedLamps` (the old `UpdateLampList`,
+  now in the same pass as the lot lamp tracking), and `SelectLamps` is memoized: 512 direct-mapped entries keyed on the
+  exact float bits of (x, z, maxScore), holding the 32 rows, the count and the candidate number the scan produced. The
+  memo is valid only while `g_allLamps` stays the same bit for bit (a refresh that changes it starts a new generation),
+  so a hit is exactly the scan's result. Developer "Roofs" line: "lamp choice memo: N reused, M computed".
 
 ### Summer roofs (`DrawRoof`)
 
@@ -109,7 +114,7 @@ stairs (first test 25/09 10:43). Now:
 
 | File | Function / symbol | Role |
 |---|---|---|
-| `lot_light_bridge.cpp` | `EnsureRoof`, `DrawRoof`, `EnsureRoofSnow`, `DrawRoofSnow`, `SelectLamps`, `ReadLamp`, `UpdateLampList`, `EnumerateLights`, `OnDrawInner` (order), `RoofStatus`, `SetRoofFix`, `PrecreatePs` | dispatch and constants |
+| `lot_light_bridge.cpp` | `EnsureRoof`, `DrawRoof`, `EnsureRoofSnow`, `DrawRoofSnow`, `SelectLamps`, `ReadLamp`, `EnumerateLights`, `ReadEnumeratedLamps` (29/09, was `UpdateLampList`), `OnDrawInner` (order), `RoofStatus`, `SetRoofFix`, `PrecreatePs` | dispatch and constants |
 | `roof_ps.hlsl` / `roof_ps_hlsl.h` (`kRoofHlsl`) | `main` | summer roof replacement |
 | `roof_snow_lamps_ps.hlsl` / `roof_snow_lamps_hlsl.h` (`kRoofSnowLampsHlsl`) | `main` | snowy roof additive pass |
 | `shader_ids.h` | `kRoofPs`, `kRoofVs`, `kRoofSnowPs` | exact ids (size + FNV-1a over DWORDs) |

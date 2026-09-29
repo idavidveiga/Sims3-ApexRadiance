@@ -27,6 +27,12 @@ class table;
 
 namespace FrameProfiler {
 
+// Mod time measured outside the profiler's own hooks (development build; no-ops in the public build):
+//  - D3DDispatch: the registry times its outermost dispatch of every chain but Present (framework/d3d9_hooks.cpp),
+//    booked as "D3D hooks (mod)", also when a callback returns Skip / Block;
+//  - LampRefresh: Night Lighting's lamp list refresh (every 20 frames, lot_light_bridge.cpp), "Lamp refresh (mod)".
+enum class ModTime : int { D3DDispatch, LampRefresh };
+
 #ifndef S3SS_PUBLIC // development build
 
 // Turns the profiler on (registers the D3D9 hooks, starts the file writer; the timed game functions are resolved and
@@ -52,6 +58,31 @@ void Shutdown();
 bool RegistryHookTimingActive();
 uint64_t Ticks();
 void AddRegistryHookTime(const std::string& hookName, uint64_t ticks);
+// Present chain: every callback is timed by name while the profiler is on (a relaxed atomic load); the registry reports
+// it through AddRegistryHookTime under the name "<name> (Present)".
+bool PresentHookTimingActive();
+
+// ---- mod time scopes (see ModTime) ----
+// True while the profiler is on (a relaxed atomic load). BeginModTime pushes a timed frame on the calling thread (key =
+// an address in the caller's stack frame) and returns a token, -1 when nothing was pushed (profiler off, no thread slot);
+// EndModTime(token, key) closes it. Nesting follows the usual self / inclusive rules.
+bool ModTimeActive();
+int BeginModTime(ModTime what, const void* key);
+void EndModTime(int token, const void* key);
+
+// RAII form for a scope on one thread
+class ModTimeScope {
+  public:
+    explicit ModTimeScope(ModTime what) : token_(ModTimeActive() ? BeginModTime(what, this) : -1) {}
+    ~ModTimeScope() {
+        if (token_ >= 0) EndModTime(token_, this);
+    }
+    ModTimeScope(const ModTimeScope&) = delete;
+    ModTimeScope& operator=(const ModTimeScope&) = delete;
+
+  private:
+    int token_;
+};
 
 #else // public build: the profiler is not compiled; [qol.frame_profiler] is left as it is in ApexRadiance.toml
 
@@ -64,6 +95,14 @@ inline void Shutdown() {}
 inline bool RegistryHookTimingActive() { return false; }
 inline uint64_t Ticks() { return 0; }
 inline void AddRegistryHookTime(const std::string&, uint64_t) {}
+inline bool PresentHookTimingActive() { return false; }
+inline bool ModTimeActive() { return false; }
+inline int BeginModTime(ModTime, const void*) { return -1; }
+inline void EndModTime(int, const void*) {}
+class ModTimeScope {
+  public:
+    explicit ModTimeScope(ModTime) {}
+};
 
 #endif
 

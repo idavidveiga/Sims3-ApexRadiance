@@ -174,6 +174,18 @@ Q8W8V8U8 (the normal map is also 256x256 but has 9 mips and Q8W8V8U8; paint laye
 smoothing. The world draw itself gets the smoothed map swapped into that sampler
 ([world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md)).
 
+Standalone, 2026-09-29 (not tested in game yet): `RecordWorldChunk` returns the `g_chunks` entry, so the world draw no
+longer looks the key up again. **Known edge case, kept as it is:** the scan also looks at samplers ABOVE the highest one
+the pixel shader declares, so a matching 256x256 texture left bound there by an earlier draw (the shader never reads it)
+would be taken as the chunk's light map, and the smoothed map would be swapped into that unused sampler (the draw then
+shows the game's map). Scanning only the declared samplers (the analysis' item P5) would be cheaper but would pick
+differently in exactly that case, so it was not done. The development build counts it instead: `Classify` records the
+highest declared sampler of every `WorldCandidate` shader, and the Developer status line "Street lamps in lots" ends
+with "chunk light map found above the declared samplers: N". If N stays 0 over several sessions (day, night, winter,
+several worlds), the declared-range scan is safe. A per-texture cache of the test was not added either: a released
+texture's address can be reused by another texture (a cube or volume texture, or one created below Apex's detours) that
+Apex never sees being created, and the cache would then answer for the wrong texture.
+
 ### Per-channel (sampler) variants
 
 The world terrain PS reads the light map from a sampler that depends on the number of paint layers: s8 with 4 layers,
@@ -241,6 +253,16 @@ enumerations, so additions and removals waited for the 15 s stuck-countdown fall
 repeated "7 edited" of lot 7D6F0019FAF78910 were its 7 disabled type-3 lamps (flags 0x35 / 0xB5), never baked (see
 terrain-relight.md "Lamp change decisions").
 
+**Cost (standalone, 2026-09-29, not tested in game yet; same counts, logs and snapshot):** the refresh reads the
+enumeration once (`ReadEnumeratedLamps`: the lit lamp list for roofs / water / objects when one of them is on, and the
+tracked lot lamps), keeps the tracked lamps in two sorted vectors that are swapped and reused (`g_lotLampSig`,
+`g_lotLampCur`; same ascending pointer order as the std::map they replace, the first reading of a pointer kept as
+`emplace` did) and walks them side by side for additions / edits and then removals (the same two passes, so the dev log
+details keep their order). The bake snapshot's lamps and lots are rebuilt only when a lamp was added, removed, changed a
+raw field or its lot (otherwise the rebuild would give the same vectors); the settled lots, which depend on time, every
+refresh. The enumeration still runs when those three options are off (the tracking needs it), and a failed enumeration
+still skips the tracking only then, as before. Frame Profiler: "Lamp refresh (mod)".
+
 ### Snow variant
 
 In snow the lot light pass is another shader (`PsClass::LotLightSnow`, 1852 bytes): it is bytecode-patched rather than
@@ -256,7 +278,7 @@ replaced, see [snow.md](snow.md) section "Snowy lot ground".
 | | `RecordWorldChunk`, `g_chunks`, `Key`, `ChunkTexture` | chunk light map registry (key = chunk centre) |
 | | `ClassifyPsCode` | `LotLight` / `WorldCandidate` classes |
 | | `LotLightBridge::SetEnabled`, `Status`, `OnWorldChanged` (`ClearChunks`), `Shutdown(keepChunkMaps)`, `ChunkCount` | lifecycle |
-| | `ReadLotLamp`, `InBake`, `LampChangeText`, `TrackLotLampEdits`, `LotLampEdits`, `LotLampUserEdits`, `LastUserChangeLots`, `LotLampStatus`; `CurrentBakeLamps`, `LampEnumerations`, `RequestLampRefresh`, `DiffBake` (29/09) | lot lamp change tracking and the bake snapshot |
+| | `ReadLotLamp`, `InBake`, `LampChangeText`, `ReadEnumeratedLamps` (29/09), `TrackLotLampEdits`, `LotLampEdits`, `LotLampUserEdits`, `LastUserChangeLots`, `LotLampStatus`; `CurrentBakeLamps`, `LampEnumerations`, `RequestLampRefresh`, `DiffBake` (29/09) | lot lamp change tracking and the bake snapshot |
 | | `LotRect`, `ReadLotRects` (SEH walk), `RefreshLotRects`, `FindLotRect`, `LotEdgeConstants`, `g_softEdges`, `kEdgeBand`; `LotLightBridge::SetSoftLotEdges`, `LotEdgeStatus` | soft lot edges |
 | shader_ids.h | `kLotLightPs` {568, 0xFDAD274B} | exact gate |
 | lightmap_smooth.cpp | `LightmapSmooth::Atlas`, `Find`, `Get` | terrain light source |

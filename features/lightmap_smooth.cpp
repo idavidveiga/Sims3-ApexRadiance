@@ -47,6 +47,7 @@
 #include <cstring>
 #include <deque>
 #include <format>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -90,6 +91,7 @@ struct Entry {
     bool awaiting = false;             // a rebuild is sweeping and this chunk was not re-rendered yet
     int gen = 0;
     uint32_t lastUse = 0; // frame of the last draw that asked for it (visible chunks are processed first)
+    bool byUseMoved = false; // listed in g_byUseMoved: lastUse changed (or new) since g_byUse was ordered
 
     // ---- GPU path (see "GPU path" below); the CPU fields above stay unused while it is active ----
     IDirect3DTexture9* gtex = nullptr; // 1024x1024 A8R8G8B8, 11 levels, D3DUSAGE_RENDERTARGET, D3DPOOL_DEFAULT
@@ -129,6 +131,58 @@ size_t g_boostCursor = 0;
 int g_inFlight = 0;
 uint32_t g_frame = 0; // OnPresent counter, for Entry::lastUse
 int g_genCounter = 0;
+
+// ---- chunks in order of use (2026-09-29, render thread) ----
+// The GPU service (first call of a frame, and again when a change was seen), the GPU Present step and the CPU Present
+// step each walk the chunks most recently drawn first. They used to build a list of g_entries and stable_sort it by
+// lastUse every time. That order is exactly the order by (lastUse descending, key ascending): the input was in key order
+// and the keys are unique. It is kept here and brought up to date only for the chunks whose lastUse changed since (a few
+// per frame: Get marks them), by taking those out, sorting them and merging them back; the result equals a full sort.
+using EntryNode = std::pair<const LightmapSmooth::Key, Entry>;
+std::vector<EntryNode*> g_byUse;      // g_entries by (lastUse desc, key asc) as of the last ByUse()
+bool g_byUseValid = false;            // false: rebuild from g_entries (start, and after Clear)
+std::vector<EntryNode*> g_byUseMoved; // entries marked byUseMoved (new, or lastUse changed) since g_byUse was ordered
+
+bool ByUseLess(const EntryNode* a, const EntryNode* b) {
+    return a->second.lastUse != b->second.lastUse ? a->second.lastUse > b->second.lastUse : a->first < b->first;
+}
+
+void NoteUseChanged(EntryNode* n) {
+    if (n->second.byUseMoved) return;
+    n->second.byUseMoved = true;
+    g_byUseMoved.push_back(n);
+}
+
+const std::vector<EntryNode*>& ByUse() {
+    if (!g_byUseValid) {
+        for (EntryNode* n : g_byUseMoved) n->second.byUseMoved = false;
+        g_byUseMoved.clear();
+        g_byUse.clear();
+        g_byUse.reserve(g_entries.size());
+        for (auto& kv : g_entries) g_byUse.push_back(&kv);
+        std::sort(g_byUse.begin(), g_byUse.end(), ByUseLess);
+        g_byUseValid = true;
+        return g_byUse;
+    }
+    if (g_byUseMoved.empty()) return g_byUse;
+    static std::vector<EntryNode*> rest;
+    rest.clear();
+    for (EntryNode* n : g_byUse) // the unchanged ones, still in order (their lastUse and key are the same)
+        if (!n->second.byUseMoved) rest.push_back(n);
+    std::sort(g_byUseMoved.begin(), g_byUseMoved.end(), ByUseLess);
+    g_byUse.clear();
+    std::merge(rest.begin(), rest.end(), g_byUseMoved.begin(), g_byUseMoved.end(), std::back_inserter(g_byUse), ByUseLess);
+    for (EntryNode* n : g_byUseMoved) n->second.byUseMoved = false;
+    g_byUseMoved.clear();
+    return g_byUse;
+}
+
+// After g_entries lost elements: the lists hold dangling pointers (their flags are not touched)
+void ForgetByUse() {
+    g_byUse.clear();
+    g_byUseMoved.clear();
+    g_byUseValid = false;
+}
 
 // timing / sweep state (render thread)
 uint32_t g_expectUntil = 0;   // no new jobs before this frame (a rebuild is imminent)
@@ -1032,7 +1086,10 @@ void BumpVersion(const LightmapSmooth::Key& k, Entry& e, const char* via) {
 // Chunk re-render notices (render thread; cheap when there are none): the map changed now, rebuild it before its next
 // use. A lockable map whose hash did not change (a rebuild by day re-renders every chunk the same) is not rebuilt.
 void DrainNotices() {
-    if (!g_noticePending.exchange(false)) return;
+    // A plain load first (2026-09-29): this runs from every draw that asks for a chunk; the locked exchange only when a
+    // notice is waiting. A notice posted just after the load is taken by the next call, as one posted just after the
+    // exchange always was.
+    if (!g_noticePending.load(std::memory_order_relaxed) || !g_noticePending.exchange(false)) return;
     std::vector<LightmapSmooth::Key> keys;
     {
         std::lock_guard<std::mutex> lk(g_noticeMx);
@@ -1552,10 +1609,9 @@ void GpuService(IDirect3DDevice9* dev) {
 
     static std::vector<std::pair<const LightmapSmooth::Key, Entry>*> order;
     static std::vector<BuildItem> items;
-    order.clear();
+    const std::vector<EntryNode*>& byUse = ByUse(); // most recently drawn first (a copy: the batch below may draw)
+    order.assign(byUse.begin(), byUse.end());
     items.clear();
-    for (auto& kv : g_entries) order.push_back(&kv);
-    std::stable_sort(order.begin(), order.end(), [](auto* a, auto* b) { return a->second.lastUse > b->second.lastUse; });
     int urgent = 0, cells = 0;
     for (auto* kv : order) {
         Entry& e = kv->second;
@@ -1601,10 +1657,7 @@ void OnPresentGpu(IDirect3DDevice9* dev) {
         std::lock_guard<std::mutex> lk(g_mx); // a job the worker finished after a switch from the CPU path
         g_results.clear();
     }
-    std::vector<std::pair<const LightmapSmooth::Key, Entry>*> order;
-    order.reserve(g_entries.size());
-    for (auto& kv : g_entries) order.push_back(&kv);
-    std::stable_sort(order.begin(), order.end(), [](auto* a, auto* b) { return a->second.lastUse > b->second.lastUse; });
+    const std::vector<EntryNode*>& order = ByUse(); // most recently drawn first (nothing below draws or adds chunks)
     if (g_frame < g_boostUntil) { // after a kick / rebuild: 4 chunks in view per frame
         size_t nVisible = 0;
         while (nVisible < order.size() && Visible(order[nVisible]->second)) nVisible++;
@@ -1732,8 +1785,10 @@ static IDirect3DTexture9* Current(const Entry& e) {
 
 IDirect3DTexture9* Get(const Key& key, IDirect3DTexture9* original) {
     if (!Enabled() || !original) return nullptr;
-    auto it = g_entries.try_emplace(key).first;
+    const auto placed = g_entries.try_emplace(key);
+    const auto it = placed.first;
     Entry& e = it->second;
+    if (placed.second || e.lastUse != g_frame) NoteUseChanged(&*it); // ByUse() puts it back in order
     e.lastUse = g_frame;
     if (e.src != original) {
         const bool known = e.src != nullptr;
@@ -1847,10 +1902,9 @@ static void OnPresentBody(IDirect3DDevice9* dev) {
     EnsureWorker();
     g_frame++;
     // Chunks in view first: order by the last frame a draw asked for them (then by key, for a stable order).
-    std::vector<std::pair<const Key, Entry>*> order;
-    order.reserve(g_entries.size());
-    for (auto& kv : g_entries) order.push_back(&kv);
-    std::stable_sort(order.begin(), order.end(), [](auto* a, auto* b) { return a->second.lastUse > b->second.lastUse; });
+    static std::vector<std::pair<const Key, Entry>*> order;
+    const std::vector<EntryNode*>& byUse = ByUse(); // a copy: the steps below read and upload chunks
+    order.assign(byUse.begin(), byUse.end());
     auto visible = [](const Entry& e) { return e.lastUse + 2 >= g_frame; };
 
     // 1. Chunks the game just re-rendered (notice from its per-chunk texture render): read now.
@@ -2017,6 +2071,7 @@ void Clear() {
         if (e.smooth) e.smooth->Release();
     }
     g_entries.clear();
+    ForgetByUse();
     g_checkCursor = g_boostCursor = 0;
     g_inFlight = 0;
     g_sweepOn = false;

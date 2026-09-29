@@ -179,6 +179,19 @@ Mechanics:
 (`thiscall(set, out, const int* key, char)`), skipping rooms already pending (`+0xF0 == 1 && +0x168 != 0`). On uninstall
 the lists drop the other stories' lamps at that re-gather.
 
+## Cost of the per-point hooks (standalone, 2026-09-29, not tested in game yet)
+
+The point solve runs for every texel of a room light map, so what the hooks do there counts:
+- the thread checks (`SolveInfo` per point, `ShareOutdoorLights`, `RefreshSoon`, `OnPresent`) read the thread id from the
+  TEB (`__readfsdword(0x24)`, what `GetCurrentThreadId` returns) instead of calling it;
+- the F8 sample records (`Diag`, called from `CrossFloorShadow` for every lit cross-story evaluation: the active-lot test
+  under SEH and a distance test, then a record near the lamps) exist only in the development build and are collected
+  only while armed: Developer > Lighting "Record story light samples for the diagnostics", or the first F8 / "Save light
+  diagnostics" of a session, which writes the section with a note and arms it (the next dump has the samples of the
+  solves in between; `DiagText` still empties the records). The game's own wall test is wrapped (`GameWallTest`, only to
+  record its result) in the development build only; the public build leaves its CALL as the game has it. Light shares,
+  wall tests and the lighting itself are unchanged.
+
 ## Files and functions
 
 | File | Function | Role |
@@ -187,9 +200,9 @@ the lists drop the other stories' lamps at that re-gather.
 | | `OutdoorGather`, `ShareOutdoorLights`, `RecordRoom`, `FloorOutdoorLights` | part 1 (sharing, cross-story list) |
 | | `SolvePoint`, `SolvePointSingle`, `SolvePointBatch`, `SolveInfo`, `BatchCentreFor` | per-point solve context |
 | | `LightEvalHook<I>`, `CrossFloorShadow`, `WallPass(Impl)`, `CulledWalls`, `HomeFloor` | part 3 (walls of the lamp's story) |
-| | `GameWallTest` | wrapper of the game's own wall test at `0x69FE93`, records its result for F8 |
+| | `GameWallTest` | wrapper of the game's own wall test at `0x69FE93`, records its result for F8 (development build only since 2026-09-29: the public build leaves that CALL untouched) |
 | | `QueueOutdoorRegather`, `RefreshAllLots`, `OnPresent`, `OnWorldChanged` | refresh |
-| | `Diag`, `DiagText`, `Status` | F8 section and status line |
+| | `Diag`, `DiagText`, `SetDiagArmed` / `DiagArmed`, `Status` | F8 section (development build, recorded only while armed since 2026-09-29) and status line |
 | `patches/night_terrain_relight_patch.cpp` | `Install`, `ApplyLive`, `ReinstallNow`, Present hook | install/uninstall, calls `LevelLightShare::OnPresent()` every frame |
 | `light_diag.cpp` (F8) and `patches/light_diag_patch.cpp` | dump | append `LevelLightShare::DiagText()` (both: the F8 key uses `light_diag.cpp`, namespace `LightDiag`) |
 

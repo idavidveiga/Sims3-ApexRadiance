@@ -18,6 +18,7 @@
 #include "memory_patch.h"
 #include "apex_log.h"
 #include <windows.h>
+#include <intrin.h>
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -56,7 +57,7 @@ void __fastcall ModelDrawHook(void* model, void*, void* part, void* ctx) {
     const uintptr_t saved = g_rig;
     g_rig = 0;
     g_depth++;
-    g_drawThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_drawThread.store(__readfsdword(0x24), std::memory_order_relaxed); // TEB ClientId.UniqueThread = GetCurrentThreadId(), without the call (every model draw)
     oModelDraw(model, part, ctx);
     g_depth--;
     g_rig = saved;
@@ -141,7 +142,7 @@ void Uninstall() {
 bool IsInstalled() { return g_installed; }
 
 int CurrentMode() {
-    if (!g_installed || g_depth <= 0 || !g_rig || GetCurrentThreadId() != g_drawThread.load(std::memory_order_relaxed)) return -1;
+    if (!g_installed || g_depth <= 0 || !g_rig || __readfsdword(0x24) != g_drawThread.load(std::memory_order_relaxed)) return -1;
     return ReadMode(g_rig);
 }
 

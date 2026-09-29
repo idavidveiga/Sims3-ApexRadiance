@@ -1573,6 +1573,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (ImGui::Button("Save light diagnostics")) LightDiag::RequestDump();
         ImGui::SameLine();
         ImGui::TextDisabled("(or Ctrl+Shift+F8)");
+        bool storySamples = LevelLightShare::DiagArmed();
+        if (ImGui::Checkbox("Record story light samples for the diagnostics", &storySamples)) LevelLightShare::SetDiagArmed(storySamples);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Records, in every lot light solve, the points near each lamp of the active lot with the game's wall test and ours\n"
+                              "(the \"stories\" section of the diagnostics). Costs time in every solve, so it is off until checked or until the\n"
+                              "first diagnostics of the session are saved.");
         ImGui::TextWrapped("Diagnostics: %s", LightDiag::Status().c_str());
         ImGui::TextWrapped("Street lamps in lots: %s", LotLightBridge::Status().c_str());
         if (ImGui::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();

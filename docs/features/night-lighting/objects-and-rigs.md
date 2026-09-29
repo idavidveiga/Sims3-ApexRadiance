@@ -237,7 +237,7 @@ from a lamp 3 m up: about 3x the ground value), as with real light. The previous
 of `AppendPixelLamps`; not in the notes).
 
 **Lamp list and selection.**
-- `LotLightBridge::OnPresent`: every 20 frames, if roofs, water or `luzPorPixelNosObjetos` are on, `UpdateLampList`
+- `LotLightBridge::OnPresent`: every 20 frames, if roofs, water or `luzPorPixelNosObjetos` are on, `ReadEnumeratedLamps` (29/09; was `UpdateLampList`, see [roofs.md](roofs.md) for the `SelectLamps` memo)
   enumerates all lights with `FUN_006acf70(visitor)` (stdcall, visitor vtable[0] = thiscall(visitor, Light*); prologue
   checked: `E8 2B 36 00 00 8B 4C 24 04 51 68 40 CF 6A 00`) and keeps in `g_allLamps` every light that is alive (`0x01`) and
   lit (`0x20`) and is a street lamp (type `0xB`) or an outdoor lamp (`flags & 0x04` and room 0): head `+0x120`, visual
@@ -261,7 +261,7 @@ a gate with 0.19x the ground light while the fence next to it got all of it (pro
 | | `InstallLampColour` etc. | lamp colour, see [lamp-colour.md](lamp-colour.md) |
 | `rig_tracker.cpp/.h` | `Install`, `BinderThunk`, `ModelDrawHook`, `InstanceFlushHook`, `CurrentMode`, `CurrentCentre` | current rig per draw |
 | `shader_patches.cpp/.h` | `PatchObjectLampVs`, `PatchObjectLampPs`, `AppendPixelLamps`, `kObjectPixelLamps = 8`, `ObjectLampPatch` | bytecode patches |
-| `lot_light_bridge.cpp` | `ClassifyVsCode` (class 10), `ObjectVsFor`, `DrawObjectLamp`, `DescribeObjectDraw`, `SelectPixelLamps`, `ReadLamp`, `UpdateLampList`, `EnumerateLights`, `PatchedFor`, `SaveRefused`, `DescribeDraw` | dispatch, constants, lamp list, diagnostics |
+| `lot_light_bridge.cpp` | `ClassifyVsCode` (class 10), `ObjectVsFor`, `DrawObjectLamp`, `DescribeObjectDraw`, `SelectPixelLamps`, `ReadLamp`, `ReadEnumeratedLamps`, `EnumerateLights`, `PatchedFor`, `SaveRefused`, `DescribeDraw` | dispatch, constants, lamp list, diagnostics |
 | `patches/night_terrain_relight_patch.cpp` | settings registration, Present hook, `ApplyLive`, UI | options |
 
 ## Game addresses and patterns

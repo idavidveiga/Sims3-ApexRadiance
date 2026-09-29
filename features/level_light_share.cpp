@@ -39,6 +39,7 @@
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
+#include "build_flavor.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -169,6 +170,10 @@ uintptr_t g_evalOrig[std::size(kClasses)] = {};
 
 uintptr_t TreeLevel(uintptr_t tracker, int level) { return tracker + 0x6A0 + static_cast<intptr_t>(level) * 0x1A4; }
 
+// The calling thread's id from the TEB (ClientId.UniqueThread, what GetCurrentThreadId returns) without the call: the
+// point solve checks it for every point it lights (2026-09-29)
+inline DWORD ThreadId() { return __readfsdword(0x24); }
+
 size_t ListSize(const BYTE* room) {
     const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room + 0xC8), e = *reinterpret_cast<const uintptr_t*>(room + 0xCC);
     return e >= b ? (e - b) / 4 : 0;
@@ -247,7 +252,7 @@ void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
     if (level < 0 || level > 7 || !tracker || TreeLevel(tracker, level) != reinterpret_cast<uintptr_t>(treeLevel)) return;
     if (*reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, roomLevel)) != rmgr) return;
     if (level != roomLevel && level != 0) return; // only the lot-load path (FUN_006c54e0) gathers through another floor, level 0
-    g_gatherThread = GetCurrentThreadId();
+    g_gatherThread = ThreadId();
 
     int added = 0;
     for (int other = 0; other <= 7; other++) {
@@ -302,6 +307,10 @@ struct Culled {
 std::vector<Culled> g_culled; // per batch: (light, floor) -> walls of that floor's room 0 between the batch centre and the light
 
 // ---- diagnostics (F8): samples near each light of the active lot, with the game's wall test and ours ----
+// Development build only, and only while armed (2026-09-29; before, every lit cross-floor evaluation of every solve paid
+// the active-lot test and the distance test): the Developer checkbox "Record story light samples", or the first
+// Ctrl+Shift+F8 / "Save light diagnostics" of a session, arms it; the records then cover the solves that follow.
+std::atomic<bool> g_diagArmed{false};
 struct DiagRec {
     int level, home; // home = -1: the room's own light (or a world light)
     uintptr_t light;
@@ -327,7 +336,7 @@ bool RoomStillSame(const RoomInfo& info, const BYTE* room) {
 
 const RoomInfo* SolveInfo(BYTE* room) {
     if (!g_installed.load(std::memory_order_relaxed) || g_rooms.empty()) return nullptr;
-    if (GetCurrentThreadId() != g_gatherThread.load(std::memory_order_relaxed)) {
+    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) {
         g_otherThread.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
     }
@@ -489,7 +498,12 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
     }
-    if (lit) Diag(info, light, sample, before, home, mine, culledList);
+    if constexpr (!kPublicBuild) {
+        if (lit) {
+            if (g_diagArmed.load(std::memory_order_relaxed)) Diag(info, light, sample, before, home, mine, culledList);
+            else g_lastRec = -1; // as Diag does first: no record for the game's wall test that follows
+        }
+    }
 }
 
 template <int I> void __fastcall LightEvalHook(void* light, void*, const float* sample, const float* normal, float* colour) {
@@ -569,7 +583,7 @@ bool Redirect(uintptr_t site, uintptr_t target, const void* thunk) {
 }
 
 void RefreshSoon() {
-    if (GetCurrentThreadId() == g_renderThread.load()) RefreshAllLots();
+    if (ThreadId() == g_renderThread.load()) RefreshAllLots();
     else g_refreshRequested = true; // done by the next OnPresent on the render thread
 }
 
@@ -617,7 +631,9 @@ bool Install(std::string& error) {
         for (uintptr_t push : kBatchPushesSteam) solveOk = solveOk && std::memcmp(reinterpret_cast<const void*>(push), "\x68\xC8\x8A\x15\x01", 5) == 0;
     for (uintptr_t site : kSolvePointCalls)
         solveOk = solveOk && Redirect(site, kSolvePoint, site == kBatchSolveCall ? reinterpret_cast<const void*>(&SolvePointBatch) : reinterpret_cast<const void*>(&SolvePointSingle));
-    solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
+    // The game's own wall test is wrapped only to record its result for the F8 diagnostics: development build only (the
+    // public build leaves that CALL as it is; the wrapper only forwarded it).
+    if constexpr (!kPublicBuild) solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
     if (solveOk) {
         for (size_t i = 0; i < std::size(kClasses); i++) {
             if (!kClasses[i].vtable) continue; // class not found on this build
@@ -654,18 +670,26 @@ void Uninstall() {
 bool IsInstalled() { return g_installed.load(); }
 
 void OnPresent() {
-    g_renderThread = GetCurrentThreadId();
+    g_renderThread = ThreadId();
     if (g_refreshRequested.exchange(false)) RefreshAllLots();
 }
 
 void OnWorldChanged() { g_clearRooms = true; }
 
+void SetDiagArmed(bool on) { g_diagArmed = on; }
+bool DiagArmed() { return g_diagArmed.load(); }
+
 std::string DiagText() {
+    const bool wasArmed = g_diagArmed.exchange(true); // a dump arms the recording for the next one
     std::vector<DiagRec> recs;
     {
         std::lock_guard<std::mutex> lk(g_diagMx);
         recs.swap(g_diag);
     }
+    if (!wasArmed)
+        return std::format("\n==== ANDARES (luz externa entre andares) ====\n{}\nNo samples: recording them was off (it costs time in every light solve). It is on "
+                           "now: let the lot relight (or use \"Relight lots now\") and save the diagnostics again.\n",
+                           Status());
     std::sort(recs.begin(), recs.end(), [](const DiagRec& a, const DiagRec& b) {
         if (a.light != b.light) return a.light < b.light;
         if (a.level != b.level) return a.level < b.level;

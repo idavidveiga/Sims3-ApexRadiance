@@ -91,6 +91,8 @@
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <!-- ApexRadiance.map next to the .asi: resolves the Frame Profiler's "apexradiance.asi fn~+RVA" sample keys offline -->
+      <GenerateMapFile>true</GenerateMapFile>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

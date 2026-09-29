@@ -347,6 +347,56 @@ hooks.
 - The total mod D3D-hook time per draw and per Present comes from the -1000 and +1000 bracket hooks (see
   [features/frame-profiler.md](features/frame-profiler.md)).
 
+### 3.6 The standalone registry (`framework/d3d9_hooks.{h,cpp}`, own-cost work of 2026-09-29)
+Written, not compiled or tested in game yet. Analysis: `research\perf2\apexcost\report.md` (items P1, P2, P3, M1, M3).
+The standalone registry was rewritten from scratch (12.0): same 15 detours, same priorities / Skip / Block, stable order
+for equal priorities. What differs from 3.1-3.5:
+- **Lock-free dispatch of the draw and state chains.** Each chain publishes an immutable list through an atomic pointer
+  (`Chain::list`). DrawIndexedPrimitive, DrawPrimitive, SetRenderTarget, SetViewport, SetPixelShader, SetVertexShader,
+  SetTexture and Set{Pixel,Vertex}ShaderConstantF are dispatched **without any lock on the render thread** (the thread
+  of the first EndScene, recorded by `Install`): one relaxed count test, one acquire load, the callbacks. Before, every
+  dispatch took the `std::recursive_mutex` and copied a `shared_ptr` (two lock operations and two interlocked reference
+  count changes).
+  - Present, BeginScene and the four Create* chains keep the recursive lock; so does any chain called from **another
+    thread** (counted: `D3D9Hooks::OffThreadDispatches()`, Frame Profiler Advanced and report; the first one per method is
+    logged `[D3D9Hooks] <method> called from thread N (render thread M): dispatched under the lock`). Callbacks of the
+    lock-free chains are therefore no longer serialised against callbacks running on other threads; that matters only if
+    that counter grows.
+  - Register / UnregisterAll build the new list under the lock and publish it; **every list ever published is kept until
+    `Uninstall`**, so a dispatch still reading an older one (the render thread, or a callback that registers during its
+    own dispatch) reads valid memory. The retired lists are a few KB per (un)registration.
+  - `UnregisterAll` from the render thread returns at once (as before, a chain being run keeps its list until it
+    returns). From **another thread** it publishes, drops the lock, calls `FlushProcessWriteBuffers` (so a later render
+    dispatch sees the new list, or its "inside" flag is visible) and waits until the render thread has left the lock-free
+    dispatch that may still run the removed callback (`g_renderInside` / `g_renderExits`, written only by the render
+    thread with plain stores). Bounded at 1 s (logged `[D3D9Hooks] UnregisterAll("X") from thread N: the render thread
+    did not leave its draw hook within 1 s; continuing`): a caller holding a lock that a draw / state callback takes
+    (e.g. `PostScene::Remove` holds its effect mutex, which the trigger takes) would otherwise deadlock. Rule: do not free
+    what a draw / state callback uses from another thread without unregistering first, and prefer the render thread.
+- **`CallOriginal*`** now also exists for SetPixelShader, SetVertexShader, SetTexture and SetPixelShaderConstantF. Night
+  Lighting's draw handlers use them for their own state changes around a replaced draw ([night-lighting
+  README](features/night-lighting/README.md) "Own cost"); the re-issued draw itself still goes through the device. A
+  `CallOriginal*` call runs the trampoline: a module that detoured the same DXVK function **before** Apex (inner) still
+  sees it, one that detoured it **after** Apex (outer) does not. Official S3SS's registry registers nothing on these
+  chains (12.2), so either order is harmless; a proxy `d3d9.dll` (ReShade) sees every call, being below the detours.
+- **Profiler instrumentation (development build only, `if constexpr (!kPublicBuild)`):**
+  - the detours of SetTexture, Set{Vertex,Pixel}Shader, Set{Vertex,Pixel}ShaderConstantF and SetRenderTarget count their
+    calls with plain per-method counters (`ReadStateCallCounts`), replacing six counting callbacks that made every state
+    call of the game run a full dispatch (P1);
+  - `Run` books its **outermost** dispatch on a thread (all chains but Present) as the profiler's "D3D hooks (mod)"
+    (`FrameProfiler::BeginModTime` / `EndModTime`, keyed by the dispatch's stack address), also when a callback returns
+    Skip / Block (M1). A nested dispatch (a replaced draw's re-issue) is part of the outer one;
+  - every Present callback is timed by name while the profiler is on and reported as `"<name> (Present)"` (M3); the draw
+    callbacks still only with Advanced > "Per-hook registry timing".
+- 3.4's table for the standalone: Present -2000 ApexCore, -1000 / +1000 Frame Profiler (dev), First PostScene / Picture
+  / Edge Smoothing / Depth Blur (while its depth swap is active), Normal LotLightingMotion (camera sample, while on), Last
+  NightTerrainRelight / FrameCapture (dev); DIP / DP: -1000 Frame Profiler counting hook (dev; no +1000 hook since
+  2026-09-29), First PostScene, 10 Picture, Normal LotLightBridge (Skip), Last Light Probe (Skip when it re-draws) /
+  FrameCapture (dev); SetRenderTarget:
+  PostScene, Picture, FrameCapture (dev); Set{Pixel,Vertex}Shader: LotLightBridge; BeginScene: FrameCapture (dev);
+  Create*: Frame Profiler counters (dev). SetTexture, Set*ShaderConstantF and SetViewport have no callback in either build,
+  so their dispatch ends at the count test.
+
 ---
 
 ## 4. Other hook plumbing
@@ -888,7 +938,8 @@ The 28/09 log shows different ids for the two main threads: SmoothPatchPrecise l
    thread.** NTR's `DeferredReinstall` pattern (5.3). Profiler attach runs at the frame boundary: "so the call-site writes
    never race the render thread executing them".
 3. **Registry state** is guarded by one recursive mutex. It is held during each dispatch and each (un)registration, and
-   released before the original call.
+   released before the original call. (Standalone since 2026-09-29: the draw and state chains run without it on the render
+   thread, and `UnregisterAll` from another thread waits for the render thread instead; see 3.6.)
    - Registration from the hook thread (startup, debounced reinstall) blocks while the render thread dispatches.
    - Do not wait, from inside a registry callback, on a lock that another thread holds while it registers. The profiler
      uses `try_lock` on `g_ctrlMutex` in its Present hook for this reason.

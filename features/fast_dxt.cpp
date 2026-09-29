@@ -33,7 +33,7 @@ std::mutex g_ctrl;
 bool g_started = false; // guarded by g_ctrl
 std::atomic<bool> g_on{false};
 std::atomic<bool> g_selfDisabled{false};
-std::atomic<int> g_verifyEvery{kPublicBuild ? 0 : 8};
+std::atomic<int> g_verifyEvery{kPublicBuild ? 0 : 64};
 std::atomic<uint64_t> g_verifyAllUntil{0};
 std::atomic<uint32_t> g_seq{0};
 std::atomic<uint64_t> c_images{0}, c_pixels{0}, c_blocks{0}, c_delegated{0}, c_power{0}, c_solid{0}, c_passed{0};

@@ -46,7 +46,11 @@ options for the atlas consumers).
 (see [lot-light-pass.md](lot-light-pass.md)) and calls `LightmapSmooth::Get(key, gameTexture)`:
 - creates or updates the `Entry` for `key` = chunk centre (x, z) (256-unit steps; centre = 256*i + 128);
 - stores the game texture AddRef'd; when the game's texture pointer changes, resets `hash = 0` (map unknown until read);
-- sets `lastUse = g_frame` (chunks in view are processed first);
+- sets `lastUse = g_frame` (chunks in view are processed first); since 2026-09-29 (standalone, not tested in game yet) a
+  new entry or a changed `lastUse` also marks the entry for `ByUse()`, the kept order of the chunks by use: the GPU
+  service, the GPU Present step and the CPU Present step used to build a list of every entry and `stable_sort` it by
+  `lastUse` each time; that order is exactly (lastUse descending, key ascending), so `ByUse()` keeps it and only takes the
+  marked entries out, sorts them and merges them back (the same result as a full sort);
 - returns the smoothed texture **only while it was built from the game's current map** (`hash == doneHash`), else
   nullptr; the world draw then swaps it into the sampler for that draw only, or keeps the game's map. `Find` (roads, lot
   passes without the atlas) follows the same rule.
@@ -92,7 +96,8 @@ integer `(sum + 2) / 4`; the explicit passes are exact and cost little.
 
 **When a chunk is built** (`GpuService`, from the draw hooks, inside the game's scene):
 - A change is seen by (a) the re-render notice (`DrainNotices`, on the next draw; a lockable map whose hash did not change
-  is not rebuilt: "same map"), (b) a new texture pointer in `Get` (also a brand-new chunk), (c) the fallback hash checks
+  is not rebuilt: "same map"; since 2026-09-29 it reads the pending flag with a plain load before the locked exchange,
+  as it runs from every draw that asks for a chunk), (b) a new texture pointer in `Get` (also a brand-new chunk), (c) the fallback hash checks
   at Present (`GpuHashCheck`: round robin 1 per frame, 4 chunks in view per frame while boosted; only lockable managed
   DXT5 maps, `gNoHash` for the others). Each bumps the entry's version `gver`.
 - `Get` (world terrain draw of that chunk): if its version was not built yet, it is built right there, before the draw.
@@ -192,7 +197,7 @@ from v0.1.0).
 
 ### Change detection and scheduling (`OnPresentBody`, every frame)
 
-1. Take the chunk re-render notices, sort entries by `lastUse` (most recent first).
+1. Take the chunk re-render notices, sort entries by `lastUse` (most recent first; `ByUse()` since 2026-09-29).
 2. Notices: `CheckEntry` each (and it is no longer `awaiting`).
 3. Up to **4 new** textures per frame (`hash == 0`).
 4. While boosted: 4 chunks in view per frame; then one round-robin chunk (`g_checkCursor`) when no new texture was read.
@@ -261,7 +266,9 @@ of level 1 (512x512).
 | Mapping | `LightmapSmooth::Atlas(c)`: uv = world.xz * c.xy + c.zw, c.x = 1/(W*256), c.y = 1/(H*256), c.z = -minX*256*c.x, c.w = -minZ*256*c.y. Returns nullptr until at least one chunk was copied |
 
 Consumers bind it with `SamplerBind` (CLAMP, LINEAR min/mag, **mip NONE**: the atlas has one level) or, for the lot
-passes, LINEAR mip on s2/s12.
+passes, LINEAR mip on s2/s12 (also through `SamplerBind` since 2026-09-29). `SamplerBind` sets, and afterwards
+restores, only the texture and the sampler states that differ from what is bound (the same state before, during and
+after the draw as six unconditional sets and restores).
 
 | Consumer | Handler | Coordinate | Doc |
 |---|---|---|---|

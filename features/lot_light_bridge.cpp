@@ -31,6 +31,7 @@
 #include "d3d9_extra_hooks.h"
 #include "d3d9_hooks.h"
 #include "shader_cache.h"
+#include "frame_profiler.h"
 #include "build_flavor.h"
 #include "apex_paths.h"
 #include "apex_log.h"
@@ -56,6 +57,54 @@
 namespace {
 
 constexpr const char* kHookName = "LotLightBridge";
+
+// The bridge's own state changes around a draw it replaces go straight to the device below Apex's detours
+// (D3D9Hooks::CallOriginal*, 2026-09-29): before, each one re-entered Apex's own chains (15-25 dispatches per replaced
+// object draw) where the only callbacks were the bridge's own Set*Shader tracking, which skips them (g_inOwnCall), and the
+// Frame Profiler's state-call counts. The device state they set is the same; hooks of other mods that sit below Apex in
+// the Detours chain still see them. The replaced draw itself is still re-issued through the device (its observers:
+// Post-scene and Picture trigger counts, Light Probe, Frame Capture, Frame Profiler). SetSamplerState / SetRenderState are
+// not hooked by the registry: plain device calls.
+inline void SetPs(IDirect3DDevice9* d, IDirect3DPixelShader9* s) { D3D9Hooks::CallOriginalSetPixelShader(d, s); }
+inline void SetVs(IDirect3DDevice9* d, IDirect3DVertexShader9* s) { D3D9Hooks::CallOriginalSetVertexShader(d, s); }
+inline void SetTex(IDirect3DDevice9* d, DWORD stage, IDirect3DBaseTexture9* t) { D3D9Hooks::CallOriginalSetTexture(d, stage, t); }
+inline void SetPsConst(IDirect3DDevice9* d, UINT reg, const float* c, UINT n) { D3D9Hooks::CallOriginalSetPixelShaderConstantF(d, reg, c, n); }
+inline void SetVsConst(IDirect3DDevice9* d, UINT reg, const float* c, UINT n) { D3D9Hooks::CallOriginalSetVertexShaderConstantF(d, reg, c, n); }
+
+// Binds `tex` to sampler s with linear filtering and clamp for one draw; restores everything afterwards.
+// Only what differs is set, and only that is restored (2026-09-29): the state before and after the draw, and during it,
+// is the same as with the six unconditional sets and restores (a state already at its value is left alone).
+struct SamplerBind {
+    IDirect3DDevice9* dev;
+    DWORD s;
+    IDirect3DBaseTexture9* old = nullptr;
+    bool texSet = false;
+    DWORD st[6] = {};
+    uint8_t changed = 0; // bit i: kStates[i] was set
+    static constexpr D3DSAMPLERSTATETYPE kStates[6] = {D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_SRGBTEXTURE};
+    SamplerBind(IDirect3DDevice9* d, DWORD sampler, IDirect3DBaseTexture9* tex, DWORD mip = D3DTEXF_LINEAR) : dev(d), s(sampler) {
+        dev->GetTexture(s, &old);
+        for (int i = 0; i < 6; i++) dev->GetSamplerState(s, kStates[i], &st[i]);
+        const DWORD v[6] = {D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, D3DTEXF_LINEAR, D3DTEXF_LINEAR, mip, FALSE};
+        if (old != tex) {
+            SetTex(dev, s, tex);
+            texSet = true;
+        }
+        for (int i = 0; i < 6; i++)
+            if (st[i] != v[i]) {
+                dev->SetSamplerState(s, kStates[i], v[i]);
+                changed |= static_cast<uint8_t>(1u << i);
+            }
+    }
+    ~SamplerBind() {
+        for (int i = 5; i >= 0; i--)
+            if (changed & (1u << i)) dev->SetSamplerState(s, kStates[i], st[i]);
+        if (texSet) SetTex(dev, s, old);
+        if (old) old->Release();
+    }
+    SamplerBind(const SamplerBind&) = delete;
+    SamplerBind& operator=(const SamplerBind&) = delete;
+};
 
 //
 // Soft lot edges (28/09, research\borda2 + borda3): the lot map saturates at 1.0 within ~2.5 m of a street lamp while
@@ -170,6 +219,12 @@ bool g_inOwnCall = false;
 IDirect3DPixelShader9* g_curPs = nullptr;
 PsClass g_curClass = PsClass::Other;
 std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+// Development build: the highest sampler each WorldCandidate pixel shader declares, and how often RecordWorldChunk took
+// the chunk light map from a sampler above it (a texture left bound by an earlier draw, which the shader never reads).
+// Evidence for scanning only the declared samplers, which would pick differently in exactly that case (not done: the
+// scan keeps all 15 samplers so the choice stays the same).
+std::unordered_map<IDirect3DPixelShader9*, int> g_worldMaxSampler;
+std::atomic<int> g_chunkAboveDeclared{0};
 IDirect3DPixelShader9* g_replacementPs = nullptr;
 IDirect3DPixelShader9* g_objectPs = nullptr;
 bool g_objectCompileTried = false;
@@ -390,6 +445,13 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                         c = PsClass::WorldCandidate;
                         break;
                     }
+                if constexpr (!kPublicBuild)
+                    if (c == PsClass::WorldCandidate) { // development build: the highest sampler it declares (RecordWorldChunk's check)
+                        int maxS = -1;
+                        for (size_t k = 0; k + 2 < n; k++)
+                            if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) maxS = std::max(maxS, static_cast<int>(t[k + 2] & 0x7FF));
+                        g_worldMaxSampler[ps] = maxS;
+                    }
             }
         }
     }
@@ -427,12 +489,10 @@ bool g_curVsIsRoof = false;
 bool g_curVsIsLake = false;
 bool g_curVsIsSnowLot = false;
 bool g_curVsIsRoad = false;
-DWORD g_curRoadMap = 16;                                              // VS constant with the road's terrain uv mapping
-std::unordered_map<IDirect3DVertexShader9*, DWORD> g_roadMapConst;    // per road vertex shader
+DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
 bool g_curVsIsFloor = false;
 bool g_curVsIsSnowFloor = false; // snow lying on lot floor tiles (LightProbe-m69, m71)
 int g_curSnowFloorTc = 7;
-std::unordered_map<IDirect3DVertexShader9*, int> g_snowFloorTc; // per snow-floor VS: where it puts world xz / 2
 bool g_curVsIsSnowCover = false;
 bool g_curVsIsSnowRelief = false;
 bool g_curVsIsFoliage = false;
@@ -444,20 +504,38 @@ struct FoliageVs {
     int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
     int vertexLight = -1; // objects: first colour constant of the rig's 4 vertex lights (COLOR0), -1 if not found
 };
-std::unordered_map<IDirect3DVertexShader9*, FoliageVs> g_foliageVs;
-std::unordered_map<IDirect3DVertexShader9*, FoliageVs> g_objectVs; // objects lit by a rig: + world xzy in TEXCOORD8 (ShaderPatches::PatchObjectLampVs)
+// Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the patched copy of the vertex shader
+// (see DrawFloorAtlas)
+struct FloorVs {
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int tc = 7;
+};
 bool g_curVsIsObject = false;
-std::unordered_map<IDirect3DVertexShader9*, uint8_t> g_vsCache; // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects, 9 snow with relief (stair tops), 10 object lit by a rig
+// Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
+// the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
+// so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
+struct VsInfo {
+    uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
+                          // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
+    DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
+    int snowFloorTc = 7;  // cls 11: where it puts world xz / 2
+    FoliageVs patched;    // cls 6: foliage copy (wrap light); cls 10: object copy (+ world xzy in TEXCOORD8, PatchObjectLampVs)
+    FloorVs floor;        // copy for the outdoor floors of summer (any class; made at the first such draw)
+};
+std::unordered_map<IDirect3DVertexShader9*, VsInfo> g_vsInfo;
+VsInfo* g_curVsInfo = nullptr; // entry of g_curVs (null for no shader)
 std::atomic<int> g_roofDrawn{0};
 float g_cam[3] = {};
 float g_lampData[33][4] = {}; // 16 x pos+radius, 16 x colour, params
 int g_lampCount = 0;
 int g_lampFrame = 0;
 
-uint8_t ClassifyVs(IDirect3DVertexShader9* vs) {
-    if (!vs) return 0;
-    auto it = g_vsCache.find(vs);
-    if (it != g_vsCache.end()) return it->second;
+VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
+    if (!vs) return nullptr;
+    auto it = g_vsInfo.find(vs);
+    if (it != g_vsInfo.end()) return &it->second;
+    VsInfo info;
     uint8_t cls = 0;
     UINT size = 0;
     if (SUCCEEDED(vs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
@@ -473,7 +551,7 @@ uint8_t ClassifyVs(IDirect3DVertexShader9* vs) {
                 std::memcpy(t.data(), code.data(), t.size() * 4);
                 DWORD mapConst = 0;
                 if (ShaderPatches::IsRoadVs(t, mapConst)) {
-                    g_roadMapConst[vs] = mapConst; // c16 in winter, c14 in summer
+                    info.roadMap = mapConst; // c16 in winter, c14 in summer
                     cls = 4;
                 } else if (ShaderPatches::IsInstancedStructureVs(t))
                     cls = 7;
@@ -484,30 +562,31 @@ uint8_t ClassifyVs(IDirect3DVertexShader9* vs) {
                 else if (ShaderPatches::IsFloorVs(t)) // floor variants, e.g. the curved pool edge (LightProbe-m66)
                     cls = 5;
                 else if (ShaderPatches::PatchFoliageVs(t)) {
-                    g_foliageVs[vs].code = std::move(t);
+                    info.patched.code = std::move(t);
                     cls = 6;
                 } else {
                     std::vector<DWORD> o = t;
                     int tc = 7, wk = -1, vl = -1;
                     if (ShaderPatches::PatchObjectLampVs(o, true, nullptr, &wk, &vl)) {
-                        g_objectVs[vs].code = std::move(o);
-                        g_objectVs[vs].worldK = wk;
-                        g_objectVs[vs].vertexLight = vl;
+                        info.patched.code = std::move(o);
+                        info.patched.worldK = wk;
+                        info.patched.vertexLight = vl;
                         cls = 10;
                     } else if (ShaderPatches::IsSnowFloorVs(t, tc)) {
                         // last: the TEXCOORD0.zw shape is shared by terrain and lot passes, which the draw dispatch
                         // handles first (DrawSnowFloor only runs when no pixel-shader class claimed the draw)
-                        g_snowFloorTc[vs] = tc;
+                        info.snowFloorTc = tc;
                         cls = 11;
                     }
                 }
             }
         }
     }
-    g_vsCache[vs] = cls;
+    info.cls = cls;
+    VsInfo& stored = g_vsInfo.emplace(vs, std::move(info)).first->second;
     vs->AddRef();
     g_pinned.push_back(vs);
-    return cls;
+    return &stored;
 }
 
 // Light enumeration (FUN_006acf70, stdcall(visitor), visitor vtable[0] = thiscall(visitor, Light*))
@@ -567,19 +646,11 @@ bool ReadLamp(uintptr_t L, float out[8]) {
     }
 }
 
-// Picks the 16 lit outdoor lamps nearest to the camera.
-std::vector<std::array<float, 8>> g_allLamps; // every lit outdoor lamp: pos, radius, colour
-
-// Refreshes the list of lit outdoor lamps (lamps rarely change, so every 20 frames is plenty).
-void UpdateLampList() {
-    if (!EnumerateLights()) return;
-    g_allLamps.clear();
-    for (uintptr_t L : g_enumLights) {
-        std::array<float, 8> v;
-        if (ReadLamp(L, v.data())) g_allLamps.push_back(v);
-    }
-    g_lampCount = static_cast<int>(g_allLamps.size());
-}
+// Every lit outdoor lamp (pos, radius, colour), in enumeration order: what SelectLamps picks from. Rebuilt with the lot
+// lamp tracking in one pass over the enumeration (ReadEnumeratedLamps, every 20 frames); a rebuild that changes it starts
+// a new generation of the SelectLamps memo.
+std::vector<std::array<float, 8>> g_allLamps;
+uint32_t g_lampMemoGen = 1; // generation of the SelectLamps memo (see LampMemo); 0 marks an empty entry
 
 // ---- Changes of outdoor lot lamps (Build mode, lamps switching by themselves) and the snapshot of what the terrain
 // bake can take. The terrain light has to be rebuilt for changes of lamps IN the bake; the game does it only when the
@@ -620,7 +691,12 @@ struct LotSeen {
     Clock::time_point firstSeen{}, lastUncounted{};
     bool removalPending = false;
 };
-std::map<uintptr_t, LotLampState> g_lotLampSig;
+// Tracked lot lamps, sorted by the light's address (unique): the previous enumeration and the one being read. Two
+// vectors reused (swapped) at every refresh instead of a std::map rebuilt node by node (2026-09-29); iterated in the same
+// ascending order as the map was, so counts, logs and the bake snapshot are the same.
+using LampSig = std::pair<uintptr_t, LotLampState>;
+std::vector<LampSig> g_lotLampSig, g_lotLampCur;
+std::vector<uint64_t> g_lotsNow; // lots of g_lotLampCur, sorted, unique
 std::map<uint64_t, LotSeen> g_lotSeen;
 std::atomic<int> g_lotLampEdits{0}, g_lotLampUserEdits{0};
 int g_lotChangesCounted = 0, g_lotChangesIgnored = 0;
@@ -722,18 +798,49 @@ void AddDetail(std::string& d, int& n, const std::string& t) {
     n++;
 }
 
-void TrackLotLampEdits() {
-    const auto now = Clock::now();
-    std::map<uintptr_t, LotLampState> cur;
+// One pass over the enumeration g_enumLights (every 20 frames; before 2026-09-29 two passes, UpdateLampList and
+// TrackLotLampEdits): the lit outdoor lamps for SelectLamps (only when rebuildAll, as UpdateLampList did) and the tracked
+// lot lamps (g_lotLampCur, sorted by light, the first reading of a light kept, as std::map::emplace did).
+void ReadEnumeratedLamps(bool rebuildAll) {
+    static std::vector<std::array<float, 8>> previous;
+    if (rebuildAll) {
+        previous.swap(g_allLamps);
+        g_allLamps.clear();
+    }
+    g_lotLampCur.clear();
     for (uintptr_t L : g_enumLights) {
+        if (rebuildAll) {
+            std::array<float, 8> v;
+            if (ReadLamp(L, v.data())) g_allLamps.push_back(v);
+        }
         LotLampState s;
         if (ReadLotLamp(L, s)) {
             s.baked = InBake(s);
-            cur.emplace(L, s);
+            g_lotLampCur.emplace_back(L, s);
         }
     }
-    std::map<uint64_t, int> lotsNow;
-    for (const auto& [L, s] : cur) lotsNow[s.lot]++;
+    if (rebuildAll) {
+        g_lampCount = static_cast<int>(g_allLamps.size());
+        // the SelectLamps memo stays valid only while the list is the same, bit for bit and in the same order
+        if (g_allLamps.size() != previous.size() || (!g_allLamps.empty() && std::memcmp(g_allLamps.data(), previous.data(), g_allLamps.size() * sizeof(g_allLamps[0])) != 0))
+            g_lampMemoGen++;
+    }
+    std::stable_sort(g_lotLampCur.begin(), g_lotLampCur.end(), [](const LampSig& a, const LampSig& b) { return a.first < b.first; });
+    g_lotLampCur.erase(std::unique(g_lotLampCur.begin(), g_lotLampCur.end(), [](const LampSig& a, const LampSig& b) { return a.first == b.first; }), g_lotLampCur.end());
+}
+
+// Compares g_lotLampCur (just read) with g_lotLampSig (the previous enumeration), then keeps the new one.
+void TrackLotLampEdits() {
+    const auto now = Clock::now();
+    std::vector<LampSig>& cur = g_lotLampCur;
+    g_lotsNow.clear();
+    for (const auto& [L, s] : cur) g_lotsNow.push_back(s.lot);
+    std::sort(g_lotsNow.begin(), g_lotsNow.end());
+    g_lotsNow.erase(std::unique(g_lotsNow.begin(), g_lotsNow.end()), g_lotsNow.end());
+    const auto lotNow = [](uint64_t lot) { return std::binary_search(g_lotsNow.begin(), g_lotsNow.end(), lot); };
+    // Anything the bake snapshot is built from changed: a lamp added or removed, its lot, or a raw change (flags, type,
+    // colour, intensity, range, position; baked and animated follow from those). Otherwise the snapshot is kept as it is.
+    bool snapDirty = false;
     // per lot: counted additions / edits / removals in this enumeration, and (dev) what changed
     struct Change {
         int added = 0, edited = 0, moved = 0, removed = 0;
@@ -747,9 +854,11 @@ void TrackLotLampEdits() {
     };
     std::map<uint64_t, Quiet> quiet;
     int total = 0;
+    auto prev = g_lotLampSig.begin(); // both lists are sorted by light: one walk finds each lamp's previous state
     for (auto& [L, s] : cur) {
-        auto it = g_lotLampSig.find(L);
-        if (it == g_lotLampSig.end()) {
+        while (prev != g_lotLampSig.end() && prev->first < L) ++prev;
+        if (prev == g_lotLampSig.end() || prev->first != L) {
+            snapDirty = true;
             if (s.baked) {
                 Change& c = changes[s.lot];
                 c.added++;
@@ -758,11 +867,13 @@ void TrackLotLampEdits() {
             }
             continue;
         }
-        const LotLampState& p = it->second;
+        const LotLampState& p = prev->second;
         s.autoChanges = p.autoChanges;
         s.autoWindow = p.autoWindow;
         s.animated = p.animated;
+        if (p.lot != s.lot) snapDirty = true;
         if (!RawChanged(p, s)) continue;
+        snapDirty = true;
         const char* why = nullptr; // why a raw change does not count
         bool counts = false, moved = false;
         float pl[3], sl[3];
@@ -809,24 +920,29 @@ void TrackLotLampEdits() {
             AddDetail(q.detail, q.details, LampChangeText(L, p, s) + " (" + why + ")");
         }
     }
-    for (const auto& [L, p] : g_lotLampSig)
-        if (!cur.count(L) && p.baked) {
+    auto inCur = cur.cbegin(); // removals: lamps of the previous enumeration missing from this one (same walk)
+    for (const auto& [L, p] : g_lotLampSig) {
+        while (inCur != cur.cend() && inCur->first < L) ++inCur;
+        if (inCur != cur.cend() && inCur->first == L) continue;
+        snapDirty = true;
+        if (p.baked) {
             Change& c = changes[p.lot];
             c.removed++;
             total++;
             if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: removed", L, p.type));
         }
-    g_lotLampSig.swap(cur);
+    }
+    g_lotLampSig.swap(cur); // g_lotLampCur keeps the old list's memory for the next read
 
     // lots seen: new lots start their settle time, vanished lots are forgotten (with any pending removal)
-    for (const auto& [lot, n] : lotsNow)
+    for (uint64_t lot : g_lotsNow)
         if (!g_lotSeen.count(lot)) g_lotSeen[lot] = LotSeen{now, now, false};
     for (auto it = g_lotSeen.begin(); it != g_lotSeen.end();) {
-        if (!lotsNow.count(it->first)) it = g_lotSeen.erase(it);
+        if (!lotNow(it->first)) it = g_lotSeen.erase(it);
         else ++it;
     }
     for (auto it = g_quietLogAt.begin(); it != g_quietLogAt.end();) {
-        if (!lotsNow.count(it->first)) it = g_quietLogAt.erase(it);
+        if (!lotNow(it->first)) it = g_quietLogAt.erase(it);
         else ++it;
     }
 
@@ -896,22 +1012,25 @@ void TrackLotLampEdits() {
     }
 
     // snapshot for the terrain relight: every tracked lamp (baked or not, so a lamp switched off still matches its
-    // baked self by position), sorted by lot; the lots and the settled lots
-    g_bakeSnap.lamps.clear();
-    g_bakeSnap.lots.clear();
-    g_bakeSnap.settledLots.clear();
-    for (const auto& [L, s] : g_lotLampSig) {
-        LotLightBridge::BakeLamp b;
-        b.lot = s.lot;
-        b.type = s.type;
-        std::memcpy(b.pos, s.pos, sizeof b.pos);
-        for (int c = 0; c < 3; c++) b.light[c] = LampLight(s, c);
-        b.baked = s.baked;
-        b.animated = s.animated;
-        g_bakeSnap.lamps.push_back(b);
+    // baked self by position), sorted by lot; the lots and the settled lots. The lamps and lots are rebuilt only when
+    // something they are made of changed (snapDirty): unchanged, the rebuild would produce the same vectors.
+    if (snapDirty) {
+        g_bakeSnap.lamps.clear();
+        g_bakeSnap.lots.clear();
+        for (const auto& [L, s] : g_lotLampSig) {
+            LotLightBridge::BakeLamp b;
+            b.lot = s.lot;
+            b.type = s.type;
+            std::memcpy(b.pos, s.pos, sizeof b.pos);
+            for (int c = 0; c < 3; c++) b.light[c] = LampLight(s, c);
+            b.baked = s.baked;
+            b.animated = s.animated;
+            g_bakeSnap.lamps.push_back(b);
+        }
+        std::stable_sort(g_bakeSnap.lamps.begin(), g_bakeSnap.lamps.end(), [](const LotLightBridge::BakeLamp& a, const LotLightBridge::BakeLamp& b) { return a.lot < b.lot; });
+        g_bakeSnap.lots = g_lotsNow; // sorted, unique
     }
-    std::stable_sort(g_bakeSnap.lamps.begin(), g_bakeSnap.lamps.end(), [](const LotLightBridge::BakeLamp& a, const LotLightBridge::BakeLamp& b) { return a.lot < b.lot; });
-    for (const auto& [lot, n] : lotsNow) g_bakeSnap.lots.push_back(lot); // std::map: already sorted
+    g_bakeSnap.settledLots.clear(); // time-dependent: every refresh
     for (const auto& [lot, seen] : g_lotSeen)
         if (now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5)) g_bakeSnap.settledLots.push_back(lot);
     g_lampEnumerations++;
@@ -920,7 +1039,53 @@ void TrackLotLampEdits() {
 // Picks up to 16 lamps whose light can reach the roof piece at world position (x, z): chosen per draw from the roof
 // position, so the camera (zoom, rotation) never changes which lamps light a roof.
 int g_lastLampCandidates = 0; // lamps within reach at the last SelectLamps (light probe detail)
+
+// Memo of SelectLamps (2026-09-29, render thread). Its result is a function of (x, z, maxScore) and g_allLamps alone, and
+// g_allLamps changes only in ReadEnumeratedLamps (every 20 frames), which starts a new generation whenever the list is not
+// the same bit for bit: a hit returns exactly the rows, count and candidate number the scan would produce (keys are the
+// exact float bits, so no two different inputs share an entry). Most roof pieces and objects are drawn at the same place
+// frame after frame. The memo is cleared (new generation) and never needs a size limit (direct-mapped, 512 entries).
+struct LampMemo {
+    uint32_t gen = 0; // 0 = empty
+    uint32_t x = 0, z = 0, maxScore = 0;
+    int picked = 0, candidates = 0;
+    float rows[32][4] = {}; // g_lampData[0..31] as SelectLamps leaves them
+};
+constexpr uint32_t kLampMemoSize = 512; // direct-mapped, indexed by the top 9 bits of a hash
+static_assert(kLampMemoSize == (1u << (32 - 23)));
+LampMemo g_lampMemo[kLampMemoSize];
+uint32_t g_lampMemoHits = 0, g_lampMemoMisses = 0;
+
+uint32_t FloatBits(float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    return u;
+}
+
+int SelectLampsScan(float x, float z, float maxScore);
+
 int SelectLamps(float x, float z, float maxScore) {
+    const uint32_t bx = FloatBits(x), bz = FloatBits(z), bm = FloatBits(maxScore);
+    LampMemo& e = g_lampMemo[((bx * 0x9E3779B1u) ^ (bz * 0x85EBCA77u) ^ (bm * 0xC2B2AE3Du)) >> 23]; // top 9 bits: 512 entries
+    if (e.gen == g_lampMemoGen && e.x == bx && e.z == bz && e.maxScore == bm) {
+        g_lampMemoHits++;
+        g_lastLampCandidates = e.candidates;
+        std::memcpy(g_lampData, e.rows, sizeof(e.rows));
+        return e.picked;
+    }
+    g_lampMemoMisses++;
+    const int m = SelectLampsScan(x, z, maxScore);
+    e.gen = g_lampMemoGen;
+    e.x = bx;
+    e.z = bz;
+    e.maxScore = bm;
+    e.picked = m;
+    e.candidates = g_lastLampCandidates;
+    std::memcpy(e.rows, g_lampData, sizeof(e.rows));
+    return m;
+}
+
+int SelectLampsScan(float x, float z, float maxScore) {
     struct Cand { float score; const std::array<float, 8>* v; };
     Cand c[64];
     int n = 0;
@@ -982,11 +1147,11 @@ template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw) {
     dev->GetPixelShaderConstantF(20, &saved[0][0], 33);
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
-    dev->SetPixelShader(g_roofPs);
-    dev->SetPixelShaderConstantF(20, &g_lampData[0][0], 33);
+    SetPs(dev, g_roofPs);
+    SetPsConst(dev, 20, &g_lampData[0][0], 33);
     draw();
-    dev->SetPixelShaderConstantF(20, &saved[0][0], 33);
-    dev->SetPixelShader(original);
+    SetPsConst(dev, 20, &saved[0][0], 33);
+    SetPs(dev, original);
     g_inOwnCall = false;
     g_roofDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -1073,7 +1238,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
             dev->GetRenderState(D3DRS_ZENABLE, &zen);
             dev->SetRenderState(D3DRS_ZENABLE, FALSE);
             ExtraHooks::RawSetDepthStencilSurface(dev, nullptr);
-            dev->SetTexture(7, depthTex);
+            SetTex(dev, 7, depthTex);
             dev->SetSamplerState(7, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             dev->SetSamplerState(7, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             dev->SetSamplerState(7, D3DSAMP_MINFILTER, D3DTEXF_POINT);
@@ -1099,14 +1264,14 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
         dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-        dev->SetPixelShader(g_waterPs);
-        dev->SetPixelShaderConstantF(20, &consts[0][0], 40);
+        SetPs(dev, g_waterPs);
+        SetPsConst(dev, 20, &consts[0][0], 40);
         DepthShare::SetInternalPass(true); // ZENABLE is off here: not the first UI draw for Depth Blur
         draw();
         DepthShare::SetInternalPass(false);
-        dev->SetPixelShaderConstantF(20, &saved[0][0], 40);
+        SetPsConst(dev, 20, &saved[0][0], 40);
         if (useDepth) {
-            dev->SetTexture(7, old7);
+            SetTex(dev, 7, old7);
             if (old7) old7->Release();
             dev->SetSamplerState(7, D3DSAMP_ADDRESSU, s7u);
             dev->SetSamplerState(7, D3DSAMP_ADDRESSV, s7v);
@@ -1118,7 +1283,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
             dev->SetRenderState(D3DRS_ZENABLE, zen);
         }
         if (curDs) curDs->Release();
-        dev->SetPixelShader(original);
+        SetPs(dev, original);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, at);
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, cw);
         dev->SetRenderState(D3DRS_ZWRITEENABLE, zw);
@@ -1205,36 +1370,16 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) 
     }
     const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
     IDirect3DPixelShader9* original = g_curPs;
-    IDirect3DBaseTexture9* old12 = nullptr;
-    dev->GetTexture(12, &old12);
-    DWORD au, av, mn, mg, mp, srgb;
-    dev->GetSamplerState(12, D3DSAMP_ADDRESSU, &au);
-    dev->GetSamplerState(12, D3DSAMP_ADDRESSV, &av);
-    dev->GetSamplerState(12, D3DSAMP_MINFILTER, &mn);
-    dev->GetSamplerState(12, D3DSAMP_MAGFILTER, &mg);
-    dev->GetSamplerState(12, D3DSAMP_MIPFILTER, &mp);
-    dev->GetSamplerState(12, D3DSAMP_SRGBTEXTURE, &srgb);
     g_inOwnCall = true;
-    dev->SetPixelShader(g_snowPs);
-    dev->SetTexture(12, terrain);
-    if (atlas) dev->SetVertexShaderConstantF(15, atlasMap, 1);
-    dev->SetSamplerState(12, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(12, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(12, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(12, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(12, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(12, D3DSAMP_SRGBTEXTURE, FALSE);
-    draw();
-    dev->SetSamplerState(12, D3DSAMP_SRGBTEXTURE, srgb);
-    dev->SetSamplerState(12, D3DSAMP_MIPFILTER, mp);
-    dev->SetSamplerState(12, D3DSAMP_MAGFILTER, mg);
-    dev->SetSamplerState(12, D3DSAMP_MINFILTER, mn);
-    dev->SetSamplerState(12, D3DSAMP_ADDRESSV, av);
-    dev->SetSamplerState(12, D3DSAMP_ADDRESSU, au);
-    dev->SetTexture(12, old12);
-    if (old12) old12->Release();
-    if (atlas) dev->SetVertexShaderConstantF(15, v, 1);
-    dev->SetPixelShader(original);
+    {
+        // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
+        SamplerBind terrainMap(dev, 12, terrain);
+        SetPs(dev, g_snowPs);
+        if (atlas) SetVsConst(dev, 15, atlasMap, 1);
+        draw();
+        if (atlas) SetVsConst(dev, 15, v, 1);
+        SetPs(dev, original);
+    }
     g_inOwnCall = false;
     g_snowDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -1328,27 +1473,6 @@ template <typename PatchFn> PatchedPs& PatchedFor(IDirect3DDevice9* dev, std::un
     return p;
 }
 
-// Binds `tex` to sampler s with linear filtering and clamp for one draw; restores everything afterwards.
-struct SamplerBind {
-    IDirect3DDevice9* dev;
-    DWORD s;
-    IDirect3DBaseTexture9* old = nullptr;
-    DWORD st[6] = {};
-    static constexpr D3DSAMPLERSTATETYPE kStates[6] = {D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_SRGBTEXTURE};
-    SamplerBind(IDirect3DDevice9* d, DWORD sampler, IDirect3DBaseTexture9* tex, DWORD mip = D3DTEXF_LINEAR) : dev(d), s(sampler) {
-        dev->GetTexture(s, &old);
-        for (int i = 0; i < 6; i++) dev->GetSamplerState(s, kStates[i], &st[i]);
-        const DWORD v[6] = {D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, D3DTEXF_LINEAR, D3DTEXF_LINEAR, mip, FALSE};
-        dev->SetTexture(s, tex);
-        for (int i = 0; i < 6; i++) dev->SetSamplerState(s, kStates[i], v[i]);
-    }
-    ~SamplerBind() {
-        for (int i = 5; i >= 0; i--) dev->SetSamplerState(s, kStates[i], st[i]);
-        dev->SetTexture(s, old);
-        if (old) old->Release();
-    }
-};
-
 template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
     PatchedPs& p = PatchedFor(dev, g_roadPs, "Road", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchRoad(t, pp.road); });
     if (!p.ps) return false;
@@ -1373,13 +1497,13 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
     g_inOwnCall = true;
     {
         SamplerBind terrain(dev, p.road.extraSampler, ChunkTexture(it->first, it->second.tex));
-        if (smooth) dev->SetTexture(p.road.lightSampler, smooth);
-        if (sidewalk) dev->SetPixelShaderConstantF(p.road.sidewalkConst, c, 1);
-        dev->SetPixelShader(p.ps);
+        if (smooth) SetTex(dev, p.road.lightSampler, smooth);
+        if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, c, 1);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(original);
-        if (sidewalk) dev->SetPixelShaderConstantF(p.road.sidewalkConst, oldC, 1);
-        if (smooth) dev->SetTexture(p.road.lightSampler, oldLight);
+        SetPs(dev, original);
+        if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, oldC, 1);
+        if (smooth) SetTex(dev, p.road.lightSampler, oldLight);
     }
     if (oldLight) oldLight->Release();
     g_inOwnCall = false;
@@ -1411,13 +1535,13 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.inst.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.inst.atlasConst, c, 1);
-        dev->SetPixelShaderConstantF(p.inst.strengthConst, s, 1);
-        dev->SetPixelShader(p.ps);
+        SetPsConst(dev, p.inst.atlasConst, c, 1);
+        SetPsConst(dev, p.inst.strengthConst, s, 1);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(original);
-        dev->SetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
-        dev->SetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
+        SetPs(dev, original);
+        SetPsConst(dev, p.inst.strengthConst, oldB, 1);
+        SetPsConst(dev, p.inst.atlasConst, oldA, 1);
     }
     g_inOwnCall = false;
     g_fenceDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -1448,13 +1572,13 @@ bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDi
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.snow.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.snow.atlasConst, c, 1);
-        dev->SetPixelShaderConstantF(p.snow.strengthConst, s, 1);
-        dev->SetPixelShader(p.ps);
+        SetPsConst(dev, p.snow.atlasConst, c, 1);
+        SetPsConst(dev, p.snow.strengthConst, s, 1);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(original);
-        dev->SetPixelShaderConstantF(p.snow.strengthConst, oldB, 1);
-        dev->SetPixelShaderConstantF(p.snow.atlasConst, oldA, 1);
+        SetPs(dev, original);
+        SetPsConst(dev, p.snow.strengthConst, oldB, 1);
+        SetPsConst(dev, p.snow.atlasConst, oldA, 1);
     }
     g_inOwnCall = false;
     drawn.fetch_add(1, std::memory_order_relaxed);
@@ -1470,10 +1594,10 @@ template <typename DrawFn> bool DrawSnowCover(IDirect3DDevice9* dev, DrawFn draw
 // outside get different light. The patched shaders (ShaderPatches::PatchObjectLampVs / PatchObjectLampPs) use, per pixel,
 // max(rig lamps + vertex lights, ground light atlas * (0.5 + 0.5 N.y) * strength). Only when the bound rig is outdoor
 // (RigTracker: rig+0x1D4 == 2): indoor objects would pick up ground light from under the house. ----
+// The patched copy of the current vertex shader (g_curVs / g_curVsInfo) when it is an object lit by a rig
 IDirect3DVertexShader9* ObjectVsFor(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
-    auto it = g_objectVs.find(vs);
-    if (it == g_objectVs.end()) return nullptr;
-    FoliageVs& f = it->second;
+    if (!g_curVsInfo || g_curVsInfo->cls != 10) return nullptr;
+    FoliageVs& f = g_curVsInfo->patched;
     if (!f.tried) {
         f.tried = true;
         if (FAILED(dev->CreateVertexShader(f.code.data(), &f.vs))) f.vs = nullptr;
@@ -1540,7 +1664,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     bool zeroRig = false;
     float oldRig[3][4] = {}, oldVl[4][4] = {};
     const float noRig[4][4] = {};
-    const int vl = g_objectVs[g_curVs].vertexLight, wk = g_objectVs[g_curVs].worldK;
+    const int vl = g_curVsInfo->patched.vertexLight, wk = g_curVsInfo->patched.worldK; // ObjectVsFor succeeded: an object entry
     int nLamps = 0;
     lamps[0][3] = 1e-4f;
     for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
@@ -1574,27 +1698,27 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.obj.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.obj.atlasConst, c, 1);
-        dev->SetPixelShaderConstantF(p.obj.strengthConst, s, 1);
-        dev->SetPixelShaderConstantF(p.obj.lampParamConst, &lamps[0][0], 1 + 2 * N);
+        SetPsConst(dev, p.obj.atlasConst, c, 1);
+        SetPsConst(dev, p.obj.strengthConst, s, 1);
+        SetPsConst(dev, p.obj.lampParamConst, &lamps[0][0], 1 + 2 * N);
         if (zeroRig && p.obj.rigLamps) {
             dev->GetPixelShaderConstantF(5, &oldRig[0][0], 3);
-            dev->SetPixelShaderConstantF(5, &noRig[0][0], 3);
+            SetPsConst(dev, 5, &noRig[0][0], 3);
         }
         if (zeroRig && vl >= 0) {
             dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
-            dev->SetVertexShaderConstantF(static_cast<UINT>(vl), &noRig[0][0], 4);
+            SetVsConst(dev, static_cast<UINT>(vl), &noRig[0][0], 4);
         }
-        dev->SetVertexShader(vs);
-        dev->SetPixelShader(p.ps);
+        SetVs(dev, vs);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(originalPs);
-        dev->SetVertexShader(originalVs);
-        if (zeroRig && vl >= 0) dev->SetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
-        if (zeroRig && p.obj.rigLamps) dev->SetPixelShaderConstantF(5, &oldRig[0][0], 3);
-        dev->SetPixelShaderConstantF(p.obj.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
-        dev->SetPixelShaderConstantF(p.obj.strengthConst, oldB, 1);
-        dev->SetPixelShaderConstantF(p.obj.atlasConst, oldA, 1);
+        SetPs(dev, originalPs);
+        SetVs(dev, originalVs);
+        if (zeroRig && vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
+        if (zeroRig && p.obj.rigLamps) SetPsConst(dev, 5, &oldRig[0][0], 3);
+        SetPsConst(dev, p.obj.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+        SetPsConst(dev, p.obj.strengthConst, oldB, 1);
+        SetPsConst(dev, p.obj.atlasConst, oldA, 1);
     }
     g_objDrawInfo.clear();
     g_inOwnCall = false;
@@ -1619,9 +1743,9 @@ template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw)
     std::memcpy(c, old, sizeof(c));
     c[0] *= gain;
     g_inOwnCall = true;
-    dev->SetPixelShaderConstantF(it->second, c, 1);
+    SetPsConst(dev, it->second, c, 1);
     draw();
-    dev->SetPixelShaderConstantF(it->second, old, 1);
+    SetPsConst(dev, it->second, old, 1);
     g_inOwnCall = false;
     g_wallDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -1639,11 +1763,11 @@ template <typename DrawFn> bool DrawFloor(IDirect3DDevice9* dev, DrawFn draw) {
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, c, 1);
-        dev->SetPixelShader(p.ps);
+        SetPsConst(dev, p.floor.atlasConst, c, 1);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(original);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+        SetPs(dev, original);
+        SetPsConst(dev, p.floor.atlasConst, oldC, 1);
     }
     g_inOwnCall = false;
     g_floorDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -1675,11 +1799,11 @@ template <typename DrawFn> bool DrawSnowFloor(IDirect3DDevice9* dev, DrawFn draw
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, half, 1);
-        dev->SetPixelShader(p.ps);
+        SetPsConst(dev, p.floor.atlasConst, half, 1);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(original);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+        SetPs(dev, original);
+        SetPsConst(dev, p.floor.atlasConst, oldC, 1);
     }
     g_inOwnCall = false;
     g_snowFloorDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -1689,20 +1813,15 @@ template <typename DrawFn> bool DrawSnowFloor(IDirect3DDevice9* dev, DrawFn draw
 // Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the vertex shader gets a copy that
 // also writes world xz to the first free TEXCOORD (7 or up: many floor vertex shaders already use 7), the pixel shader
 // a copy with max(floor map, atlas) before the map's scale (ShaderPatches::PatchBakedAtlasPs), as the winter floors.
-struct FloorVs {
-    IDirect3DVertexShader9* vs = nullptr;
-    bool tried = false;
-    int tc = 7;
-};
-std::unordered_map<IDirect3DVertexShader9*, FloorVs> g_floorVs;
+// The vertex shader copy lives in the shader's VsInfo (FloorVs).
 std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_floorAtlasPs; // per TEXCOORD index
 std::atomic<int> g_floorAtlasDrawn{0};
 
 template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn draw) {
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
-    if (!atlas || !g_curVs) return false;
-    FloorVs& fv = g_floorVs[g_curVs];
+    if (!atlas || !g_curVs || !g_curVsInfo) return false;
+    FloorVs& fv = g_curVsInfo->floor;
     if (!fv.tried) {
         fv.tried = true;
         UINT size = 0;
@@ -1726,13 +1845,13 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, c, 1);
-        dev->SetVertexShader(fv.vs);
-        dev->SetPixelShader(p.ps);
+        SetPsConst(dev, p.floor.atlasConst, c, 1);
+        SetVs(dev, fv.vs);
+        SetPs(dev, p.ps);
         draw();
-        dev->SetPixelShader(originalPs);
-        dev->SetVertexShader(originalVs);
-        dev->SetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+        SetPs(dev, originalPs);
+        SetVs(dev, originalVs);
+        SetPsConst(dev, p.floor.atlasConst, oldC, 1);
     }
     g_inOwnCall = false;
     g_floorAtlasDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -1744,10 +1863,10 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
 // PatchFoliageVs): lamps get wrap lighting. Winter bushes also multiply the lamp light by the moon shadow (like the
 // summer object shader fixed in DrawObjectRig): patched pixel shader (ShaderPatches::PatchLeafShadow) lifts that shadow
 // to 1 at night. ----
+// The patched copy of the current vertex shader (g_curVs / g_curVsInfo) when it is foliage
 IDirect3DVertexShader9* FoliageVsFor(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
-    auto it = g_foliageVs.find(vs);
-    if (it == g_foliageVs.end()) return nullptr;
-    FoliageVs& f = it->second;
+    if (!g_curVsInfo || g_curVsInfo->cls != 6) return nullptr;
+    FoliageVs& f = g_curVsInfo->patched;
     if (!f.tried) {
         f.tried = true;
         if (FAILED(dev->CreateVertexShader(f.code.data(), &f.vs))) f.vs = nullptr;
@@ -1766,11 +1885,11 @@ template <typename DrawFn> bool DrawLeafShadow(IDirect3DDevice9* dev, DrawFn dra
     const float c[4] = {night, 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
-    dev->SetPixelShaderConstantF(p.nightConst, c, 1);
-    dev->SetPixelShader(p.ps);
+    SetPsConst(dev, p.nightConst, c, 1);
+    SetPs(dev, p.ps);
     draw();
-    dev->SetPixelShader(original);
-    dev->SetPixelShaderConstantF(p.nightConst, oldC, 1);
+    SetPs(dev, original);
+    SetPsConst(dev, p.nightConst, oldC, 1);
     g_inOwnCall = false;
     g_leafDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -1809,11 +1928,11 @@ template <typename DrawFn> bool DrawRoofSnow(IDirect3DDevice9* dev, DrawFn draw)
         for (int i = 0; i < 8; i++) dev->GetRenderState(kRs[i], &rs[i]);
         for (int i = 0; i < 8; i++) dev->SetRenderState(kRs[i], set[i]);
         IDirect3DPixelShader9* original = g_curPs;
-        dev->SetPixelShader(g_roofSnowPs);
-        dev->SetPixelShaderConstantF(20, &consts[0][0], 34);
+        SetPs(dev, g_roofSnowPs);
+        SetPsConst(dev, 20, &consts[0][0], 34);
         draw();
-        dev->SetPixelShaderConstantF(20, &saved[0][0], 34);
-        dev->SetPixelShader(original);
+        SetPsConst(dev, 20, &saved[0][0], 34);
+        SetPs(dev, original);
         for (int i = 7; i >= 0; i--) dev->SetRenderState(kRs[i], rs[i]);
         g_roofSnowDrawn.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1832,18 +1951,19 @@ template <typename DrawFn> bool DrawObjectRig(IDirect3DDevice9* dev, DrawFn draw
     const float c3[4] = {night, 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
-    dev->SetPixelShader(g_objectPs);
-    dev->SetPixelShaderConstantF(3, c3, 1);
+    SetPs(dev, g_objectPs);
+    SetPsConst(dev, 3, c3, 1);
     draw();
-    dev->SetPixelShaderConstantF(3, oldC3, 1);
-    dev->SetPixelShader(original);
+    SetPsConst(dev, 3, oldC3, 1);
+    SetPs(dev, original);
     g_inOwnCall = false;
     g_objectDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
-// Returns the sampler that holds the chunk light map (0 = not a terrain chunk draw) and the chunk key.
-DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key) {
+// Returns the sampler that holds the chunk light map (0 = not a terrain chunk draw), the chunk key and its g_chunks entry
+// (std::map: the reference stays valid; the caller no longer looks the key up a second time).
+DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex*& chunk) {
     float c[16];
     if (FAILED(dev->GetVertexShaderConstantF(8, c, 3))) return 0; // c8..c10 = world matrix rows
     float m[4];
@@ -1875,7 +1995,12 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key) {
         slot.tex = t; // keep the reference from GetTexture
     } else
         t->Release();
+    chunk = &slot;
     g_worldSeen.fetch_add(1, std::memory_order_relaxed);
+    if constexpr (!kPublicBuild) {
+        const auto it = g_worldMaxSampler.find(g_curPs);
+        if (it != g_worldMaxSampler.end() && static_cast<int>(sampler) > it->second) g_chunkAboveDeclared.fetch_add(1, std::memory_order_relaxed);
+    }
     return sampler;
 }
 
@@ -1902,20 +2027,21 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
     if (g_curClass == PsClass::WorldCandidate) {
         std::pair<int, int> key;
-        const DWORD s = RecordWorldChunk(dev, key);
+        ChunkTex* chunk = nullptr;
+        const DWORD s = RecordWorldChunk(dev, key, chunk);
         if (!s) {
             // not a world terrain chunk: the snow-on-floor pixel shaders (m69, m71) also declare s6+ and land here
             if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
             return D3D9Hooks::HookAction::Continue;
         }
-        IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(g_chunks[key].tex));
+        IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
         if (!smooth) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
         dev->GetTexture(s, &old);
         g_inOwnCall = true;
-        dev->SetTexture(s, smooth);
+        SetTex(dev, s, smooth);
         draw();
-        dev->SetTexture(s, old);
+        SetTex(dev, s, old);
         g_inOwnCall = false;
         if (old) old->Release();
         return D3D9Hooks::HookAction::Skip;
@@ -1968,40 +2094,19 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     dev->GetPixelShaderConstantF(28, savedEdge, 3);
 
     IDirect3DPixelShader9* original = g_curPs;
-    IDirect3DBaseTexture9* old2 = nullptr;
-    dev->GetTexture(2, &old2);
-    DWORD au, av, mn, mg, mp, srgb;
-    dev->GetSamplerState(2, D3DSAMP_ADDRESSU, &au);
-    dev->GetSamplerState(2, D3DSAMP_ADDRESSV, &av);
-    dev->GetSamplerState(2, D3DSAMP_MINFILTER, &mn);
-    dev->GetSamplerState(2, D3DSAMP_MAGFILTER, &mg);
-    dev->GetSamplerState(2, D3DSAMP_MIPFILTER, &mp);
-    dev->GetSamplerState(2, D3DSAMP_SRGBTEXTURE, &srgb);
-
     g_inOwnCall = true;
-    dev->SetPixelShader(g_replacementPs);
-    dev->SetTexture(2, terrain);
-    if (atlas) dev->SetVertexShaderConstantF(14, atlasMap, 1);
-    dev->SetPixelShaderConstantF(28, edge, 3);
-    dev->SetSamplerState(2, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(2, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(2, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(2, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(2, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(2, D3DSAMP_SRGBTEXTURE, FALSE);
-    draw();
-    dev->SetSamplerState(2, D3DSAMP_SRGBTEXTURE, srgb);
-    dev->SetSamplerState(2, D3DSAMP_MIPFILTER, mp);
-    dev->SetSamplerState(2, D3DSAMP_MAGFILTER, mg);
-    dev->SetSamplerState(2, D3DSAMP_MINFILTER, mn);
-    dev->SetSamplerState(2, D3DSAMP_ADDRESSV, av);
-    dev->SetSamplerState(2, D3DSAMP_ADDRESSU, au);
-    dev->SetTexture(2, old2);
-    if (old2) old2->Release();
-    if (atlas) dev->SetVertexShaderConstantF(14, v, 1);
-    dev->SetPixelShaderConstantF(28, savedEdge, 3);
+    {
+        // s2 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
+        SamplerBind terrainMap(dev, 2, terrain);
+        SetPs(dev, g_replacementPs);
+        if (atlas) SetVsConst(dev, 14, atlasMap, 1);
+        SetPsConst(dev, 28, edge, 3);
+        draw();
+        if (atlas) SetVsConst(dev, 14, v, 1);
+        SetPsConst(dev, 28, savedEdge, 3);
+    }
     g_objDrawInfo.clear();
-    dev->SetPixelShader(original);
+    SetPs(dev, original);
     g_inOwnCall = false;
     g_lotDrawn.fetch_add(1, std::memory_order_relaxed);
     return D3D9Hooks::HookAction::Skip;
@@ -2009,19 +2114,27 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
 
 // Foliage vertex shaders are swapped around everything else (the pixel side may be patched too): set the patched VS,
 // let the pixel-shader handling draw (or draw here), restore the game's VS.
-void TrackPs(IDirect3DPixelShader9* ps) {
+// The game sets the same shader again and again (every draw of a batch): an unchanged pointer keeps what was derived from
+// it (2026-09-29). Exact: the class caches only grow while the hooks are registered, and Shutdown, which empties them,
+// also resets g_curPs / g_curVs and sets g_stateUnknown, whose path (OnDrawTracked) calls these with force = true before
+// the next draw uses anything.
+void TrackPs(IDirect3DPixelShader9* ps, bool force = false) {
+    if (ps == g_curPs && !force) return;
     g_curPs = ps;
     g_curClass = Classify(ps);
 }
 
-void TrackVs(IDirect3DVertexShader9* vs) {
+void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
+    if (vs == g_curVs && !force) return;
     g_curVs = vs;
-    const uint8_t cls = ClassifyVs(vs);
+    VsInfo* info = ClassifyVs(vs);
+    g_curVsInfo = info;
+    const uint8_t cls = info ? info->cls : 0;
     g_curVsIsRoof = cls == 1;
     g_curVsIsLake = cls == 2;
     g_curVsIsSnowLot = cls == 3;
     g_curVsIsRoad = cls == 4;
-    if (g_curVsIsRoad) g_curRoadMap = g_roadMapConst[vs];
+    if (g_curVsIsRoad) g_curRoadMap = info->roadMap;
     g_curVsIsFloor = cls == 5;
     g_curVsIsFoliage = cls == 6;
     g_curVsIsInstanced = cls == 7;
@@ -2029,7 +2142,7 @@ void TrackVs(IDirect3DVertexShader9* vs) {
     g_curVsIsSnowRelief = cls == 9;
     g_curVsIsObject = cls == 10;
     g_curVsIsSnowFloor = cls == 11;
-    if (g_curVsIsSnowFloor) g_curSnowFloorTc = g_snowFloorTc[vs];
+    if (g_curVsIsSnowFloor) g_curSnowFloorTc = info->snowFloorTc;
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9* dev, DrawFn draw) {
@@ -2041,8 +2154,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
         IDirect3DVertexShader9* vs = nullptr;
         dev->GetPixelShader(&ps);
         dev->GetVertexShader(&vs);
-        TrackPs(ps);
-        TrackVs(vs);
+        TrackPs(ps, true);
+        TrackVs(vs, true);
         if (ps) ps->Release(); // Classify / ClassifyVs pinned them
         if (vs) vs->Release();
         g_stateUnknown = false;
@@ -2051,7 +2164,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
     if (!foliage) return OnDrawInner(dev, draw);
     IDirect3DVertexShader9* original = g_curVs;
     g_inOwnCall = true;
-    dev->SetVertexShader(foliage);
+    SetVs(dev, foliage);
     g_inOwnCall = false;
     if (OnDrawInner(dev, draw) == D3D9Hooks::HookAction::Continue) {
         g_inOwnCall = true;
@@ -2059,7 +2172,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
         g_inOwnCall = false;
     }
     g_inOwnCall = true;
-    dev->SetVertexShader(original);
+    SetVs(dev, original);
     g_inOwnCall = false;
     g_foliageDrawn.fetch_add(1, std::memory_order_relaxed);
     return D3D9Hooks::HookAction::Skip;
@@ -2152,9 +2265,9 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     if (!m) return r;
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
-    dev->SetPixelShader(m);
+    SetPs(dev, m);
     draw();
-    dev->SetPixelShader(original);
+    SetPs(dev, original);
     g_inOwnCall = false;
     return D3D9Hooks::HookAction::Skip;
 }
@@ -2395,8 +2508,14 @@ void OnPresent() {
     if (++g_lampFrame < 20 && !g_lampRefreshNow) return;
     g_lampFrame = 0;
     g_lampRefreshNow = false;
-    if (g_roofFix.load() || g_waterFix.load() || g_objPixelLamps.load()) UpdateLampList(); // enumerates the lights
-    else if (!EnumerateLights()) return;
+    FrameProfiler::ModTimeScope timed(FrameProfiler::ModTime::LampRefresh); // development build: "Lamp refresh (mod)"
+    // As before 2026-09-29: with roofs / water / per-pixel object lamps on, the lit lamp list is rebuilt from a successful
+    // enumeration, and the lot lamps are tracked even when the enumeration failed (over what it left in g_enumLights);
+    // with those off, a failed enumeration skips the tracking.
+    const bool wantLamps = g_roofFix.load() || g_waterFix.load() || g_objPixelLamps.load();
+    const bool enumerated = EnumerateLights();
+    if (!wantLamps && !enumerated) return;
+    ReadEnumeratedLamps(wantLamps && enumerated);
     TrackLotLampEdits();
 }
 
@@ -2471,13 +2590,17 @@ std::string BakeDiff::Text() const {
 }
 
 std::string RoofStatus() {
-    return std::format("roofs: {} | lamps on: {} | draws fixed: {} | with snow: {}", g_roofFix.load() ? (g_roofPs ? "fixed" : "waiting") : "off",
-                       g_lampCount, g_roofDrawn.load(), g_roofSnowDrawn.load());
+    std::string s = std::format("roofs: {} | lamps on: {} | draws fixed: {} | with snow: {}", g_roofFix.load() ? (g_roofPs ? "fixed" : "waiting") : "off",
+                                g_lampCount, g_roofDrawn.load(), g_roofSnowDrawn.load());
+    if constexpr (!kPublicBuild) s += std::format(" | lamp choice memo: {} reused, {} computed", g_lampMemoHits, g_lampMemoMisses);
+    return s;
 }
 
 std::string Status() {
-    return std::format("{} | terrain chunks seen: {} | lot light fixed: {} draws (snow: {}, roads: {}, floors: {}, outdoor floors (summer): {}, snow on floors: {}, fences/stairs: {}, snow on objects: {}, snow with relief: {}, outdoor objects: {}) | without terrain texture: {}", g_status,
+    std::string s = std::format("{} | terrain chunks seen: {} | lot light fixed: {} draws (snow: {}, roads: {}, floors: {}, outdoor floors (summer): {}, snow on floors: {}, fences/stairs: {}, snow on objects: {}, snow with relief: {}, outdoor objects: {}) | without terrain texture: {}", g_status,
         g_chunks.size(), g_lotDrawn.load(), g_snowDrawn.load(), g_roadDrawn.load(), g_floorDrawn.load(), g_floorAtlasDrawn.load(), g_snowFloorDrawn.load(), g_fenceDrawn.load(), g_snowCoverDrawn.load(), g_snowReliefDrawn.load(), g_objLampDrawn.load(), g_lotMissing.load());
+    if constexpr (!kPublicBuild) s += std::format(" | chunk light map found above the declared samplers: {}", g_chunkAboveDeclared.load());
+    return s;
 }
 
 std::string DescribeDraw() {
@@ -2488,14 +2611,14 @@ std::string DescribeDraw() {
                                 "object with rig", "snowy floor"};
     static const char* kPs[] = {"unknown", "other", "world candidate", "lot light", "object rig", "roof", "lake", "snowy lot", "snowy roof",
                                 "outside wall", "outdoor floor"};
-    const auto itv = g_vsCache.find(g_curVs);
-    const int vc = itv == g_vsCache.end() ? -1 : itv->second;
+    const auto itv = g_vsInfo.find(g_curVs);
+    const int vc = itv == g_vsInfo.end() ? -1 : itv->second.cls;
     const int pc = static_cast<int>(Classify(g_curPs));
     const int rig = RigTracker::CurrentMode();
     std::string s = std::format("game (the mod did not replace this draw) | VS {} | PS {} | rig mode {}", vc < 0 || vc > 11 ? "not classified" : kVs[vc], pc >= 0 && pc < 11 ? kPs[pc] : "?",
                                 rig);
     if (vc == 10) {
-        const FoliageVs& o = g_objectVs[g_curVs];
+        const FoliageVs& o = itv->second.patched;
         s += std::format(" | object: world c{}, vertex lights c{}", o.worldK, o.vertexLight);
         const auto it = g_objLampPs.find(g_curPs);
         s += it == g_objLampPs.end() ? " | PS not tested yet" : it->second.ps ? " | PS accepted" : " | PS REFUSED (outside the pattern)";
@@ -2535,15 +2658,12 @@ void Shutdown(bool keepChunkMaps) {
             if (p.ps) p.ps->Release();
         cache->clear();
     }
-    for (auto& [k, f] : g_foliageVs)
-        if (f.vs) f.vs->Release();
-    g_foliageVs.clear();
-    for (auto& [k, f] : g_objectVs)
-        if (f.vs) f.vs->Release();
-    g_objectVs.clear();
-    g_snowFloorTc.clear();
-    g_vsCache.clear();
-    g_roadMapConst.clear();
+    for (auto& [k, info] : g_vsInfo) { // patched copies: foliage / objects, and the outdoor floors of summer
+        if (info.patched.vs) info.patched.vs->Release();
+        if (info.floor.vs) info.floor.vs->Release();
+    }
+    g_curVsInfo = nullptr;
+    g_vsInfo.clear();
     if (g_roofSnowPs) {
         g_roofSnowPs->Release();
         g_roofSnowPs = nullptr;
@@ -2567,10 +2687,9 @@ void Shutdown(bool keepChunkMaps) {
     g_waterFix = false;
     g_roofCompileTried = false;
     g_roofFix = false;
-    g_vsCache.clear();
-    g_roadMapConst.clear();
     g_compileTried = false;
     g_classCache.clear();
+    g_worldMaxSampler.clear();
     for (auto*& m : g_magenta)
         if (m) {
             m->Release();
@@ -2580,9 +2699,6 @@ void Shutdown(bool keepChunkMaps) {
     g_psIs3.clear();
     g_census.clear();
     g_falseColor = false;
-    for (auto& [k, fv] : g_floorVs)
-        if (fv.vs) fv.vs->Release();
-    g_floorVs.clear();
     for (auto& [tc, cache] : g_floorAtlasPs)
         for (auto& [k, p] : cache)
             if (p.ps) p.ps->Release();
@@ -2590,8 +2706,8 @@ void Shutdown(bool keepChunkMaps) {
     g_wallConst.clear();
     for (IUnknown* p : g_pinned) p->Release();
     g_pinned.clear();
-    g_curPs = nullptr;
-    g_curVs = nullptr;
+    TrackPs(nullptr, true); // g_curPs = null, class Other
+    TrackVs(nullptr, true); // g_curVs = null, no class
     g_stateUnknown = true;
     g_keepChunks = false;
 }

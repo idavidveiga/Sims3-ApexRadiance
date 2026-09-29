@@ -190,6 +190,26 @@ bridge / object fix / roof fix / water fix / wall gain != 1 is on (the combined 
   "Excecao dentro do gancho de desenho ..."); `g_stateUnknown` reads the bound VS/PS from the device at the first draw
   after hooks are registered; `UpdateHooks` has a mutex; `Shutdown` clears every fix flag before `SetEnabled(false)` so
   hooks are unregistered before shaders are released.
+- **Own cost (standalone, 2026-09-29; `research\perf2\apexcost\report.md` items P3-P9; written, not compiled or tested in
+  game yet).** Same pixels, less CPU per replaced draw:
+  - the handlers' own `SetPixelShader` / `SetVertexShader` / `SetTexture` / `Set*ShaderConstantF` go straight to the
+    device below Apex's detours (`D3D9Hooks::CallOriginal*`, wrappers `SetPs` / `SetVs` / `SetTex` / `SetPsConst` /
+    `SetVsConst`): before, each re-entered Apex's own chains, where only the bridge's own tracking (which skips them,
+    `g_inOwnCall`) and the profiler's state counts looked at them. The replaced draw itself is still re-issued through
+    the device, so Post-scene / Picture trigger counts, Light Probe, Frame Capture and the profiler see it as before.
+    `SetSamplerState` / `SetRenderState` are not in the registry: plain device calls, as before;
+  - `SamplerBind` (and the lot pass s2 / snowy lot pass s12 bindings, which now use it) sets and restores only the
+    sampler states and texture that differ from what is bound;
+  - `TrackPs` / `TrackVs` do nothing when the game sets the same shader again; everything known about a vertex shader
+    is one `VsInfo` entry (class, road uv constant, snow-floor TEXCOORD, patched foliage / object copy, outdoor-floor
+    copy) with a pointer to the current one, instead of six maps looked up per draw;
+  - `SelectLamps` results are memoized per (x, z, maxScore) (exact float bits) until the lamp list changes; the 20-frame
+    lamp refresh reads the enumeration once (`ReadEnumeratedLamps`), tracks lot lamps in two reused sorted vectors
+    instead of a std::map, and rebuilds the bake snapshot's lamps only when a lamp changed (see
+    [lot-light-pass](lot-light-pass.md) "Lot lamp change tracking", [roofs](roofs.md)); the Frame Profiler shows it as
+    "Lamp refresh (mod)";
+  - `RecordWorldChunk` hands back the chunk's `g_chunks` entry (no second lookup); world light smoothing keeps its
+    chunks-by-use order between calls ([world-atlas](world-atlas-and-smoothed-maps.md)).
 
 ### Game-code side
 

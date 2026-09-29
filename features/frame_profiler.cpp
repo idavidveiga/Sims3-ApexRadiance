@@ -82,17 +82,22 @@
 // CPU time = frame time - Present (driver) - Frame limiter.
 //
 // ---- D3D9 (through the D3D9Hooks registry only) ----
-// Start hooks at priority -1000 and end hooks at +1000 bracket every other module's hooks: the time between them (per draw
-// and per Present) is the mod's own D3D hook time. A module hook that returns Skip / Block ends the chain before the end
-// hook; such an open dispatch is recognised by its DeviceContext address (the registry's frame has returned when a later
-// push comes from the same or a shallower stack depth) and dropped without counting. The measurement includes the cost
-// of this profiler's own two hooks (a few ns each). Counts: DrawIndexedPrimitive / DrawPrimitive (game draws vs draws
-// inside EndScene: overlays, Picture pass), primitives, CreateTexture / CreateRenderTarget / CreateVertexShader /
-// CreatePixelShader, and optionally SetTexture / Set*Shader / Set*ShaderConstantF / SetRenderTarget.
+// Present: the start hook at priority -1000 and the end hook at +1000 bracket every other module's Present hooks ("Present
+// hooks (mod)"), and every Present hook is timed by name while the profiler is on ("<name> (Present)").
+// Every other chain (2026-09-29): the registry itself books its outermost dispatch on a thread as "D3D hooks (mod)"
+// (BeginModTime / EndModTime around the whole chain, framework/d3d9_hooks.cpp), also when a module returns Skip / Block.
+// Until then only the draws were bracketed by -1000 / +1000 hooks, and a dispatch cut short by Skip (every draw Night
+// Lighting replaces) was dropped, so "mod D3D" undercounted about 5x (research\perf2\apexcost\report.md). A replaced
+// draw's re-issue, and its driver call, happen inside the outer dispatch and are counted with it. The measurement
+// includes the bookkeeping (two clock reads and a push / pop per outermost dispatch).
+// Counts: DrawIndexedPrimitive / DrawPrimitive (game draws vs draws inside EndScene: overlays, Picture pass), primitives
+// (a -1000 counting hook), CreateTexture / CreateRenderTarget / CreateVertexShader / CreatePixelShader, and SetTexture /
+// Set*Shader / Set*ShaderConstantF / SetRenderTarget (counted in the registry's detours, D3D9Hooks::ReadStateCallCounts;
+// shown with "Count state calls").
 // The registry only calls hooks before the device method, so the duration of resource creation cannot be measured
 // through it. Not exposed by the registry at all: CreateVertexBuffer / CreateIndexBuffer, Lock / Unlock, SetRenderState;
 // DrawPrimitiveUP / DrawIndexedPrimitiveUP only through ExtraHooks' single observer slot, which Frame Capture owns, so not
-// used. Per-hook-name timing needs the optional instrumentation in d3d9_hook_registry.cpp (frame_profiler.h).
+// used. Per-hook-name timing of the draw hooks: Advanced > "Per-hook registry timing" (frame_profiler.h).
 //
 // ---- Main loop, services, jobs, waits, I/O (engine study, Steam 1.67.2; same verification as above) ----
 // The render thread is the main thread; its loop (0xECA960) runs app state 0xEC6C30, ServiceManager::Update 0x588E00 ->
@@ -265,6 +270,7 @@ enum Cat : int {
     kFileRead,
     kFileFlush,
     kRefPackRead,
+    kLampRefresh, // mod time: Night Lighting's lamp list refresh (FrameProfiler::ModTime::LampRefresh)
     // counters (research\perf2\plan.md section 8): timed on every thread, with per-bucket calls, longest call and an extra count
     kResLookup,
     kScenePending,
@@ -303,7 +309,8 @@ const CatInfo kCats[kCatCount] = {
     {"Present hooks (mod)", "The D3D9 hook registry's Present hooks of all Apex modules (includes this profiler's own per-frame bookkeeping)."},
     {"Present (driver)", "IDirect3DDevice9::Present itself (DXVK): submission, GPU back-pressure and vsync wait. High = GPU or vsync bound."},
     {"Frame limiter", "After Present in FUN_00EC9F00: the Smooth Patch frame limiter, or the game's own ~30 ms sleep while the window is inactive."},
-    {"D3D hooks (mod)", "Time inside the D3D9 hook registry for draw calls: all Apex modules' per-draw hooks."},
+    {"D3D hooks (mod)", "Time inside the D3D9 hook registry: every outermost dispatch of the draw, state and resource-creation chains (all Apex modules' "
+                        "callbacks, also when one skips the game's call; a draw Night Lighting replaces is re-issued inside it, driver call included). Present hooks are separate."},
     {"Lot LOD scoring", "FUN_00C6C290 (from WorldManager::Update): scores the lots around the camera and requests detailed view or demotion."},
     {"Lot detail request", "FUN_00AC20E0: sets a lot's detailed-view flag and posts Lot::AddLotObjectsToScene (run inline when posted from its own thread)."},
     {"Lot renderer update", "FUN_00AEB2E0: per-lot renderer update; drives the lot load state machine."},
@@ -329,6 +336,8 @@ const CatInfo kCats[kCatCount] = {
     {"File read", "FileStream::Read (FUN_004DB850, ReadFile) on the render thread."},
     {"File flush", "FileStream::Flush (FUN_004DB8E0, FlushFileBuffers) on the render thread."},
     {"RefPack read", "RefPack stream read + decompression (FUN_004EC010) on the render thread."},
+    {"Lamp refresh (mod)", "Night Lighting's lamp list refresh, every 20 frames inside its Present hook (lot_light_bridge.cpp OnPresent): light enumeration, the "
+                           "lit outdoor lamps for roofs / water / objects and the lot lamp change tracking. Part of the mod time."},
     {"Resource lookup", "ResourceMgr::FindProvider (FUN_004AFFC0, through its two vtable slots): which package holds a resource key. It asks every registered package "
                         "in turn (two critical sections and a hash probe each; about 290 packages with the user's mods). Materials, async-load finalize jobs, CAS "
                         "and lot loading go through it. All threads."},
@@ -568,14 +577,16 @@ struct Scope {
     Scope& operator=(const Scope&) = delete;
 };
 
-// ---- D3D9 counters: only touched inside registry hooks, which the registry runs under its own mutex ----
+// ---- D3D9 counters: touched inside registry hooks. The draw counts come from the render thread's lock-free draw
+// dispatch (a draw from another thread runs under the registry lock and may race with it: a statistic, and
+// D3D9Hooks::OffThreadDispatches() shows whether it ever happens); the Create* counts under the registry lock. ----
 struct D3DCounts {
     uint32_t dip = 0, dp = 0, gameDraws = 0, endFrameDraws = 0;
     uint64_t prims = 0;
-    uint32_t setTexture = 0, setShader = 0, shaderConst = 0, setRT = 0;
     uint32_t createTex = 0, createVS = 0, createPS = 0, createRT = 0;
 };
 D3DCounts g_d3d;
+D3D9Hooks::StateCallCounts g_stateBase; // render thread: the registry's state-call counters at the last frame boundary
 
 // ---- game-side counters ----
 std::atomic<uint32_t> g_lotsPromoted{0}, g_lotsDemoted{0};
@@ -2360,6 +2371,8 @@ DWORD WINAPI SamplerProc(LPVOID) {
     return 0;
 }
 
+std::string OwnModuleText(); // below, with the module table
+
 // Caller holds g_ctrlMutex
 void UpdateSamplerLocked() {
     const bool want = g_enabled.load() && (g_sampleRender.load() || g_sampleSim.load());
@@ -2369,6 +2382,11 @@ void UpdateSamplerLocked() {
         g_samplerThread = CreateThread(nullptr, 0, SamplerProc, nullptr, 0, nullptr);
         if (!g_samplerThread) LOG_ERROR("[FrameProfiler] Could not start the sampler thread");
         else LOG_INFO("[FrameProfiler] Sampler on");
+        static bool ownLogged = false; // once per session: what the "apexradiance.asi fn~+RVA" keys refer to
+        if (!ownLogged) {
+            ownLogged = true;
+            LOG_INFO("[FrameProfiler] " + OwnModuleText());
+        }
         g_samplerRunning.store(g_samplerThread != nullptr);
     } else if (!want && g_samplerThread) {
         g_samplerStop.store(true);
@@ -2477,6 +2495,7 @@ std::string KeyText(uint32_t key) {
     if (key == kUnknownKey) return "(no module)";
     const int mi = FindModule(key);
     if (mi >= 0 && g_modules[mi].cls == kClsGame) return std::format("TS3W fn~{:08X}", key);
+    if (mi >= 0 && g_modules[mi].cls == kClsOurAsi) return std::format("{} fn~+{:X}", g_modules[mi].name, key - static_cast<uint32_t>(g_modules[mi].base));
     if (mi >= 0) return g_modules[mi].name;
     return std::format("{:08X}", key);
 }
@@ -2497,10 +2516,59 @@ inline uint32_t Hash32(uint32_t k) {
 constexpr uint32_t kFnCache = 16384;
 uint32_t g_fnCacheKey[kFnCache] = {}, g_fnCacheVal[kFnCache] = {}; // render thread
 
+// This ASI's own .text and PE TimeDateStamp (the sampler keys Apex code by RVA; resolve them with ApexRadiance.map of the
+// same build, which the Release configuration writes next to the .asi)
+struct OwnModule {
+    uintptr_t base = 0;
+    uint32_t size = 0;
+    uint32_t timeDateStamp = 0;
+    TextSection text;
+};
+const OwnModule& Own() {
+    static const OwnModule own = [] {
+        OwnModule m;
+        HMODULE self = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&Own), &self) || !self)
+            return m;
+        m.base = reinterpret_cast<uintptr_t>(self);
+        const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m.base);
+        const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(m.base + dos->e_lfanew);
+        m.size = nt->OptionalHeader.SizeOfImage;
+        m.timeDateStamp = nt->FileHeader.TimeDateStamp;
+        const IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(nt);
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, s++) {
+            if (std::strncmp(reinterpret_cast<const char*>(s->Name), ".text", IMAGE_SIZEOF_SHORT_NAME) == 0) {
+                m.text.begin = m.base + s->VirtualAddress;
+                m.text.size = s->Misc.VirtualSize;
+                break;
+            }
+        }
+        return m;
+    }();
+    return own;
+}
+
+std::string OwnModuleText() {
+    const OwnModule& m = Own();
+    return std::format("Apex code in the samples: apexradiance.asi base {:08X}, size {:X}, PE TimeDateStamp {:08X}; keys 'fn~+RVA' = function start guessed from "
+                       "the int3 padding, as an RVA: resolve with ApexRadiance.map of this build (map address - preferred base)",
+                       m.base, m.size, m.timeDateStamp);
+}
+
+uint32_t FnStartIn(uint32_t eip, const TextSection& t);
+
 uint32_t FnStartGuess(uint32_t eip) {
+    return FnStartIn(eip, GetText());
+}
+
+// The same guess inside this ASI's own code (the key stays an absolute address; KeyText prints it as an RVA)
+uint32_t OwnFnStartGuess(uint32_t eip) {
+    return FnStartIn(eip, Own().text);
+}
+
+uint32_t FnStartIn(uint32_t eip, const TextSection& t) {
     const uint32_t slot = Hash32(eip) & (kFnCache - 1);
     if (g_fnCacheKey[slot] == eip && eip) return g_fnCacheVal[slot];
-    const TextSection t = GetText();
     uint32_t result = eip & ~0xFu;
     if (eip >= t.begin + 16 && eip < t.begin + t.size) {
         uintptr_t p = eip & ~static_cast<uintptr_t>(0xF);
@@ -2625,7 +2693,10 @@ void ConsumeSamples(uint64_t intervalStart, uint64_t now, bool hitch, HitchSampl
         const int thr = s.thread ? 1 : 0;
         const int mi = ModuleOf(s.eip);
         const uint8_t cls = mi >= 0 ? g_modules[mi].cls : kClsOther;
-        const uint32_t key = cls == kClsGame ? FnStartGuess(s.eip) : (mi >= 0 ? static_cast<uint32_t>(g_modules[mi].base) : kUnknownKey);
+        // TS3W and this ASI: a function key (guessed start); other modules: the module
+        const uint32_t key = cls == kClsGame ? FnStartGuess(s.eip)
+                             : cls == kClsOurAsi ? OwnFnStartGuess(s.eip)
+                                                 : (mi >= 0 ? static_cast<uint32_t>(g_modules[mi].base) : kUnknownKey);
         agg.total[thr]++;
         agg.cls[thr][cls]++;
         agg.fn[thr].Add(key);
@@ -2919,6 +2990,7 @@ void FrameBoundary(uint64_t now) {
     if (g_needBaseline.exchange(false)) {
         SnapshotThreads(nullptr);
         g_d3d = D3DCounts{};
+        g_stateBase = D3D9Hooks::ReadStateCallCounts();
         g_lotsPromoted.store(0);
         g_lotsDemoted.store(0);
         g_camPointMoved.store(0);
@@ -2952,10 +3024,15 @@ void FrameBoundary(uint64_t now) {
     r.dip = g_d3d.dip;
     r.dp = g_d3d.dp;
     r.prims = g_d3d.prims;
-    r.setTexture = g_d3d.setTexture;
-    r.setShader = g_d3d.setShader;
-    r.shaderConst = g_d3d.shaderConst;
-    r.setRT = g_d3d.setRT;
+    {
+        // counted by the registry's detours themselves (plain counters, no registered callback)
+        const D3D9Hooks::StateCallCounts c = D3D9Hooks::ReadStateCallCounts();
+        r.setTexture = c.setTexture - g_stateBase.setTexture;
+        r.setShader = (c.setVertexShader - g_stateBase.setVertexShader) + (c.setPixelShader - g_stateBase.setPixelShader);
+        r.shaderConst = (c.setVertexConstants - g_stateBase.setVertexConstants) + (c.setPixelConstants - g_stateBase.setPixelConstants);
+        r.setRT = c.setRenderTarget - g_stateBase.setRenderTarget;
+        g_stateBase = c;
+    }
     r.createTex = g_d3d.createTex;
     r.createVS = g_d3d.createVS;
     r.createPS = g_d3d.createPS;
@@ -2968,7 +3045,7 @@ void FrameBoundary(uint64_t now) {
 
     r.presentMs = r.render[kPresentDriver];
     r.limiterMs = r.render[kFrameLimiter];
-    r.modMs = r.render[kModD3DHooks] + r.render[kPresentHooks];
+    r.modMs = r.render[kModD3DHooks] + r.render[kPresentHooks] + r.render[kLampRefresh];
     r.cpuMs = std::max(0.0f, r.frameMs - r.presentMs - r.limiterMs);
     float sum = 0.0f;
     for (int c = 0; c < kCatCount; c++) sum += r.render[c];
@@ -3027,7 +3104,9 @@ void OnPresentStart(D3D9Hooks::DeviceContext& ctx) {
     }
 }
 
-void OnDrawStart(D3D9Hooks::DeviceContext& ctx, bool indexed, UINT prims) {
+// Draw counts only: the dispatch's time is booked by the registry itself (BeginModTime / EndModTime around its outermost
+// dispatch, framework/d3d9_hooks.cpp), which also covers dispatches a module cuts short with Skip.
+void OnDrawStart(bool indexed, UINT prims) {
     ThreadSlot* s = GetSlot();
     if (indexed) g_d3d.dip++;
     else g_d3d.dp++;
@@ -3037,7 +3116,6 @@ void OnDrawStart(D3D9Hooks::DeviceContext& ctx, bool indexed, UINT prims) {
         g_d3d.gameDraws++;
         g_d3d.prims += prims;
     }
-    if (s) Push(s, kModD3DHooks, &ctx, kDispatch);
 }
 
 void EndDispatch(const void* sp) {
@@ -3064,22 +3142,14 @@ void RegisterD3DHooks() {
         EndDispatch(&ctx);
         return HookAction::Continue;
     }, end);
-    RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT primCount) {
-        OnDrawStart(ctx, true, primCount);
+    RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext&, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT primCount) {
+        OnDrawStart(true, primCount);
         return HookAction::Continue;
     }, start);
-    RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT) {
-        EndDispatch(&ctx);
-        return HookAction::Continue;
-    }, end);
-    RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, UINT, UINT primCount) {
-        OnDrawStart(ctx, false, primCount);
+    RegisterDrawPrimitive(kHookName, [](DeviceContext&, D3DPRIMITIVETYPE, UINT, UINT primCount) {
+        OnDrawStart(false, primCount);
         return HookAction::Continue;
     }, start);
-    RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, UINT, UINT) {
-        EndDispatch(&ctx);
-        return HookAction::Continue;
-    }, end);
     RegisterCreateTexture(kHookName, [](DeviceContext&, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*) {
         g_d3d.createTex++;
         return HookAction::Continue;
@@ -3096,33 +3166,11 @@ void RegisterD3DHooks() {
         g_d3d.createPS++;
         return HookAction::Continue;
     }, start);
+    // SetTexture / Set*Shader / Set*ShaderConstantF / SetRenderTarget: counted by the registry's detours with plain
+    // per-method counters (D3D9Hooks::ReadStateCallCounts, read at each frame boundary). Until 2026-09-29 six callbacks were
+    // registered here, which made every state call of the game run a full chain dispatch (0.25-0.35 ms per frame in the
+    // development build, research\perf2\apexcost\report.md); the option now only decides whether the counts are shown.
     g_stateHooksActive = g_countState.load();
-    if (g_stateHooksActive) { // counts only: timing every state call would cost more than it tells
-        RegisterSetTexture(kHookName, [](DeviceContext&, DWORD, IDirect3DBaseTexture9*) {
-            g_d3d.setTexture++;
-            return HookAction::Continue;
-        }, start);
-        RegisterSetVertexShader(kHookName, [](DeviceContext&, IDirect3DVertexShader9*) {
-            g_d3d.setShader++;
-            return HookAction::Continue;
-        }, start);
-        RegisterSetPixelShader(kHookName, [](DeviceContext&, IDirect3DPixelShader9*) {
-            g_d3d.setShader++;
-            return HookAction::Continue;
-        }, start);
-        RegisterSetVertexShaderConstantF(kHookName, [](DeviceContext&, UINT, const float*, UINT) {
-            g_d3d.shaderConst++;
-            return HookAction::Continue;
-        }, start);
-        RegisterSetPixelShaderConstantF(kHookName, [](DeviceContext&, UINT, const float*, UINT) {
-            g_d3d.shaderConst++;
-            return HookAction::Continue;
-        }, start);
-        RegisterSetRenderTarget(kHookName, [](DeviceContext&, DWORD, IDirect3DSurface9*) {
-            g_d3d.setRT++;
-            return HookAction::Continue;
-        }, start);
-    }
 }
 
 // ---- text output ----
@@ -3282,6 +3330,7 @@ std::string SamplingReport() {
     std::string s = "Sampling (return addresses from a heuristic stack walk; 'fn~' = TS3W function start guessed from the int3 padding,\n"
                     "resolve it with the decompile; % = share of that thread's samples in hitch frames / in other frames):\n";
     s += "   " + SamplerStatusText() + "\n";
+    s += "   " + OwnModuleText() + "\n";
     static const char* const kThreadNames[2] = {"Render", "Simulation"};
     constexpr int kRows = 40;
     uint32_t keys[kRows], counts[kRows];
@@ -3309,7 +3358,10 @@ std::string SamplingReport() {
         n = g_hotEip.Top(keys, counts, kRows);
         for (int i = 0; i < n; i++) {
             const int mi = FindModule(keys[i]);
-            s += std::format("   {:08X}                                  {:>8} {:>8.1f}  {}\n", keys[i], counts[i], Pct(counts[i], hi.total[0]), mi >= 0 ? g_modules[mi].name : "?");
+            const std::string where = mi < 0 ? std::string("?")
+                                      : g_modules[mi].cls == kClsOurAsi ? std::format("{}+{:X}", g_modules[mi].name, keys[i] - static_cast<uint32_t>(g_modules[mi].base))
+                                                                        : std::string(g_modules[mi].name);
+            s += std::format("   {:08X}                                  {:>8} {:>8.1f}  {}\n", keys[i], counts[i], Pct(counts[i], hi.total[0]), where);
         }
     }
     return s;
@@ -3831,6 +3883,11 @@ std::string BuildReport() {
     s += std::format("   {:<24} {:>12.1f}\n", "Unattributed (render)", g_stats.unattributed);
     s += CounterReport();
     s += "Apex shaders: " + ShaderCache::StatusText() + "\n";
+    if (!g_regDisplay.empty()) {
+        s += "Registry hooks by name (last second; Present hooks always, draw hooks with per-hook registry timing):\n";
+        for (const auto& d : g_regDisplay) s += std::format("   {:<36} {:>7.3f} ms / frame {:>9.1f} calls / frame\n", d.name, d.msPerFrame, d.callsPerFrame);
+    }
+    s += std::format("Draw / state hooks called off the render thread (dispatched under the lock): {}\n", D3D9Hooks::OffThreadDispatches());
     s += "Resource lookup cache: " + ResourceCache::StatusText() + "\n";
     s += "Resource lookup cache counters: " + ResourceCache::ReportLine() + "\n";
     s += "Remember missing files: " + ResourceCache::MissesStatusText() + "\n";
@@ -4059,7 +4116,8 @@ void RenderLive() {
     ImGui::Text("Draws %.0f / frame (+%.0f end-of-frame)   Mod D3D hooks %.2f ms", a.gameDraws, a.endFrameDraws, a.modMs);
     Hint("Game draw calls (DrawIndexedPrimitive + DrawPrimitive) per frame; end-of-frame = draws inside EndScene (menus, Picture pass).\n"
          "DrawPrimitiveUP / DrawIndexedPrimitiveUP are not counted.\n"
-         "Mod D3D hooks = time all Apex modules spend in their D3D9 hooks (draws and Present) per frame.");
+         "Mod D3D hooks = time all Apex modules spend in their D3D9 hooks per frame: every outermost registry dispatch (draws, state\n"
+         "changes, resource creation; a replaced draw's re-issue included), the Present hooks and Night Lighting's lamp refresh.");
     if (g_stateHooksActive) {
         ImGui::TextDisabled("Per frame: SetTexture %.0f   Set*Shader %.0f   Shader constants %.0f   SetRenderTarget %.0f", a.setTexture, a.setShader, a.shaderConst, a.setRT);
     }
@@ -4361,7 +4419,9 @@ void RenderAdvanced() {
         }
         save = true;
     }
-    Hint("Also count SetTexture, Set*Shader, Set*ShaderConstantF and SetRenderTarget per frame. Costs a few ns per call.");
+    Hint("Also show SetTexture, Set*Shader, Set*ShaderConstantF and SetRenderTarget per frame. The registry's detours count them with plain\n"
+         "counters (no callback, a nanosecond per call, always on in the development build); Apex's own state changes around a replaced draw\n"
+         "bypass the detours and are not counted.");
     bool file = g_writeFile.load();
     if (ImGui::Checkbox("Write ApexRadiance_Hitches.txt", &file)) {
         g_writeFile.store(file);
@@ -4397,7 +4457,8 @@ void RenderAdvanced() {
         g_regTiming.store(reg);
         g_regTimingActive.store(reg && g_enabled.load());
     }
-    Hint("Time of each module's D3D9 registry hooks by name (draw calls; measured by framework/d3d9_hooks.cpp).");
+    Hint("Time of each module's D3D9 registry draw hooks by name (measured by framework/d3d9_hooks.cpp; costs two clock reads per\n"
+         "callback per draw). The Present hooks are always timed by name while the profiler is on.");
     RenderKeyed();
     RenderSampling(save);
     if (save) ApexConfig::RequestSave();
@@ -4474,14 +4535,18 @@ void RenderAdvanced() {
         ImGui::TreePop();
     }
 
-    if (g_regTiming.load()) {
+    if (g_regTiming.load() || !g_regDisplay.empty()) {
         ImGui::SeparatorText("Registry hooks by name");
+        Hint("Present hooks are always timed by name while the profiler is on (\"<name> (Present)\"); the draw hooks only with \"Per-hook registry timing\".");
         if (g_regDisplay.empty()) {
-            ImGui::TextDisabled("No data: d3d9_hook_registry.cpp is not instrumented (see frame_profiler.h).");
+            ImGui::TextDisabled("No data yet (updated once a second).");
         } else {
-            for (const auto& d : g_regDisplay) ImGui::Text("%-28s %.3f ms / frame   %.0f calls / frame", d.name.c_str(), d.msPerFrame, d.callsPerFrame);
+            for (const auto& d : g_regDisplay) ImGui::Text("%-36s %.3f ms / frame   %.0f calls / frame", d.name.c_str(), d.msPerFrame, d.callsPerFrame);
         }
     }
+    ImGui::TextDisabled("Draw / state hooks called from another thread than the render thread: %u (dispatched under the lock)", D3D9Hooks::OffThreadDispatches());
+    Hint("The draw and state hooks run without a lock on the render thread. A call from another thread takes the registry lock instead; if this "
+         "number grows, a module's draw hooks may race with the render thread (see ApexRadiance_LOG.txt, [D3D9Hooks]).");
     ImGui::TreePop();
 }
 
@@ -4621,6 +4686,29 @@ bool RegistryHookTimingActive() {
 
 uint64_t Ticks() {
     return Now();
+}
+
+bool PresentHookTimingActive() {
+    return g_enabled.load(std::memory_order_relaxed);
+}
+
+bool ModTimeActive() {
+    return g_enabled.load(std::memory_order_relaxed);
+}
+
+// The registry's outermost dispatches (D3DDispatch) and Night Lighting's lamp refresh: a timed frame on the calling
+// thread's slot, closed by EndModTime with the same key (Pop checks it; a frame dropped meanwhile is ignored).
+int BeginModTime(ModTime what, const void* key) {
+    if (!g_enabled.load(std::memory_order_relaxed)) return -1;
+    ThreadSlot* s = GetSlot();
+    if (!s) return -1;
+    return Push(s, what == ModTime::LampRefresh ? kLampRefresh : kModD3DHooks, key, 0);
+}
+
+void EndModTime(int token, const void* key) {
+    ThreadSlot* s = t_slot;
+    if (!s || token < 0) return;
+    Pop(s, token, key, Now(), 0, 0);
 }
 
 // Keyed by the name string's address (fast path), verified by content: the registry's short names live inside its

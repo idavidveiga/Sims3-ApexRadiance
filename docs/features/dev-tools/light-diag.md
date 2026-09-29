@@ -134,6 +134,12 @@ passed, 0 blocked, -1 not run) and its factor `t` | our factor (`nosso`, -1 = no
 `DiagText` **swaps the records out**: a second F8 without a new lot solve shows 0 records. Records are also cleared when
 the option is toggled (`RefreshAllLots`). Details in [level-light-share.md](../night-lighting/level-light-share.md).
 
+**Since 2026-09-29 the records are collected only while armed** (they cost time in every lot light solve): Developer >
+Lighting "Record story light samples for the diagnostics", or the first dump of a session, which then writes only the
+status line and "No samples: recording them was off ... It is on now: let the lot relight (or use "Relight lots now")
+and save the diagnostics again." and arms the recording. From then on each dump has the samples of the solves since the
+previous one, as before. Sections 1-3 and 5 are not affected.
+
 ### 5. `==== LUZ POR PIXEL (passo 3, incremento 0) ====` (per-pixel lamp light)
 
 Added 25/09 ~15:15 as PASSO3 increment 0 ("diag only, no visual change"; `PASSO3-PLANO.md` sections 3.7, 4 and 6):

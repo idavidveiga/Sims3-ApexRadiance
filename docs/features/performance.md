@@ -972,7 +972,7 @@ game's walk.
   earlier Smooth Streaming "current lot while moving" cap was never tested with non-default values (removed-features.md).
 - **Tool mode (C7):** budgets of 100 ms or more are never scaled.
 - **DXT translation errors (C9):** the offline test compares the fast path with the translation, not with the game; the
-  in-game checks (first 16 textures of every session, dev 1 in 8) compare with the real function. Any "Verification
+  in-game checks (first 16 textures of every session, dev 1 in 64: each check runs the game encoder too, so a high rate makes rebuild frames slower in the dev build) compare with the real function. Any "Verification
   mismatch" line: keep the feature off and send the line (it has the block's pixels and both byte strings).
 - **DXT and compiler flags (C9):** `dxt_codec.cpp` must be built with legacy SSE (`/arch:SSE2`, the x86 default; it
   refuses `/arch:AVX`) and without `/fp:fast` (it forces `float_control(precise)` and `fp_contract(off)`). Do not
