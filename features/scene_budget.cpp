@@ -84,6 +84,7 @@ constexpr uint32_t kListOff = 0x20;    // holder: pending list sentinel {next, p
 constexpr uint32_t kLinkOff = 0x18;    // node: its pending link
 constexpr uint32_t kUpdateSlot = 0x48; // node vfunc: per-node update
 constexpr uint32_t kMinNodes = 8;      // processed every frame whatever the budget (progress)
+constexpr bool kSuspended = true;    // see Start
 constexpr uint32_t kCountCap = 1u << 20;
 
 struct Link {
@@ -301,6 +302,10 @@ bool Start(std::string* error) {
         if (error) *error = why;
         return false;
     };
+    // Suspended (2026-09-29): a node held past its frame can be freed by the game while still linked (the node destructor
+    // 0x006FD930 does not unlink +0x18), and the next drain then calls through freed memory: the likely cause of a crash
+    // with a garbage EIP ~90 s after it was switched on. Off until nodes are unlinked on destruction.
+    if (kSuspended) return fail("Turned off in this version: it could crash the game (being reworked)");
     std::string missing;
     if (!GameAddr::GroupAvailable("SceneNodeBudget", &missing)) return fail(GameAddr::NotAvailable(missing));
     const uintptr_t drain = GameAddr::Get(GameAddr::Id::SceneDrain);

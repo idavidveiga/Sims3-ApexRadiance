@@ -683,6 +683,13 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 
 ## How it works: Spread New Objects Over Frames (C6)
 
+> **Suspended (2026-09-29, v1.8.0):** `SceneBudget::Start` refuses to start and the menu row is hidden. A node held past
+> its frame can be freed by the game while still linked: the node destructor 0x006FD930 does not unlink `+0x18`, SetOwner
+> 0x006FD9F0 keeps an existing link, and AddNode 0x006E6480 re-pushes a linked node without unlinking it. The next drain
+> (Apex's or one of the game's other drain callers) then calls `vfunc+0x48` through freed memory. The user's crash with a
+> garbage EIP (0xB9497401) about 90 s after switching it on fits this; not proven. Bring it back only with the nodes
+> unlinked on destruction (hook the destructor) or with deferral limited so no node outlives its frame.
+
 Purpose (MEASURED, plan section 2.1): Scene::BeginFrame is the dominant cause of 31% of the 25-50 ms camera-moving
 hitches and 26% of the 50 ms+ ones; the pending-node drain once processed 2224 nodes in 2.84 ms in one frame (usually
 few). Inside it most of the time is the per-node update (materials resolving textures, i.e. C1's lookups).
