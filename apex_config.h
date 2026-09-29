@@ -75,15 +75,32 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly = false);
 void ApplyFeatureState(const toml::table& state);
 
 // ---- profiles: Documents\...\Apex Radiance\Profiles\<name>.toml ----
-// Each file is CaptureFeatureState(profile features) plus [meta] (the build that wrote it). Names: letters, digits,
+// Each file is CaptureFeatureState(profile features), limited to the parts chosen when it was saved, plus [meta] (the
+// build that wrote it). Loading applies the parts the user picks among those the file has (KeepProfileParts). Names: letters, digits,
 // space, - and _ only, at most 32 characters (SanitizeProfileName; empty = not usable).
 inline constexpr int kProfileNameMax = 32;
 std::string SanitizeProfileName(const std::string& raw);
 std::vector<std::string> ListProfiles(); // sorted by name (case-insensitive)
 bool ProfileExists(const std::string& name);
-bool SaveProfile(const std::string& name, std::string* error = nullptr);
+// The parts of a profile, as bit flags (index i = bit 1 << i)
+enum ProfilePart : unsigned {
+    kPartNightLights = 1u << 0,   // Night Lights and Every-Story Ground Light (with Water & Snow)
+    kPartColor = 1u << 1,         // Color ([qol] picture)
+    kPartDepthBlur = 1u << 2,     // Depth Blur
+    kPartEdgeSmoothing = 1u << 3, // Edge Smoothing
+    kPartWindow = 1u << 4,        // window mode ([display])
+    kPartPerformance = 1u << 5,   // the Performance page's features
+};
+inline constexpr int kProfilePartCount = 6;
+inline constexpr unsigned kProfilePartsAll = (1u << kProfilePartCount) - 1;
+const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
+unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has
+void KeepProfileParts(toml::table& state, unsigned parts); // removes the other parts from a profile table
+bool SaveProfile(const std::string& name, unsigned parts = kProfilePartsAll, std::string* error = nullptr);
 // Parses the profile (does not apply it: see ApplyFeatureState)
 bool ReadProfile(const std::string& name, toml::table& out, std::string* error = nullptr);
 bool DeleteProfile(const std::string& name, std::string* error = nullptr);
+std::wstring ProfilesFolder();  // the Profiles folder inside the Apex Radiance folder (trailing backslash)
+bool EnsureProfilesDirectory(); // creates it if needed
 
 } // namespace ApexConfig

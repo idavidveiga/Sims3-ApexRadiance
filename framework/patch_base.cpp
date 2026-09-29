@@ -201,7 +201,7 @@ std::string UnavailableReasonEnglish(const ApexPatch& patch) { return GameAddr::
 // The menu's note: GameAddr::NotAvailable's text in the menu language
 std::string ApexPatch::UnavailableReason() const {
     const std::string missing = MissingGameCode(metadata_.get());
-    const char* version = g_gameVersion == GameVersion::Unknown ? I18n::Tr("an unknown game version") : GetGameVersionName();
+    const char* version = g_gameVersion == GameVersion::Unknown ? I18n::Tr(GetGameVersionName()) : GetGameVersionName(); // "Unknown" translates
     if (!GameAddr::Resolved()) return I18n::Trf("Not available on {} (game code not scanned yet)", version);
     return missing.empty() ? I18n::Trf("Not available on {}", version) : I18n::Trf("Not available on {}: missing {}", version, missing);
 }

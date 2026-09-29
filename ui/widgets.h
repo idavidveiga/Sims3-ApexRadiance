@@ -46,6 +46,8 @@ struct BoolDefault {
 // The next row (SwitchRow, Slider, SliderPercent, SegmentedRow) gets a small amber chip after its label, with a tooltip.
 // Consumed by that row. Used for "Reload save".
 void SetNextRowBadge(const char* text, const char* tooltip);
+// The next row's label is user data (a profile name): shown and searched as it is, never translated
+void SetNextRowUntranslated();
 
 // ---- search filter (the menu's search results) ----
 // While a filter is on, the rows draw only when every word of the query (case-insensitive) appears in their label or
@@ -64,11 +66,13 @@ bool MatchesQuery(const char* query, const char* text);
 // ---- change reports (undo toast) ----
 // What the user just changed, in words ("Night Lights turned on", "Contrast changed"); the last one of a frame wins.
 // Row widgets report by themselves; call it for other changes (Reset buttons, "Turn on" buttons).
+// text is English (a literal from the table): the toast shows it translated, the log gets it as given
 void ReportChange(const char* text);
 // Off: reports are ignored (the Developer page: its switches are not part of the undoable state)
 void SetChangeReporting(bool on);
 // The report of this frame (and clears it); false when nothing was reported
-bool TakeChange(std::string& text);
+// english (optional): the same report in English, for the log
+bool TakeChange(std::string& text, std::string* english = nullptr);
 
 // ---- slider drag state (the menu fades while a slider is dragged) ----
 // A slider was active in the previous frame

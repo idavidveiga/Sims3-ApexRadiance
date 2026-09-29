@@ -85,16 +85,18 @@ toml::table g_clickSnapshot;
 bool g_haveClickSnapshot = false;
 struct Toast {
     bool active = false;
-    std::string text;
+    std::string text;    // as shown
+    std::string logText; // English, for the log
     toml::table undo; // the state Undo restores
     double start = 0.0;
 };
 Toast g_toast;
 constexpr double kToastSeconds = 4.0;
 
-void ShowToast(const std::string& text, toml::table undo) {
+void ShowToast(const std::string& text, toml::table undo, const std::string& logText = {}) {
     g_toast.active = true;
     g_toast.text = text;
+    g_toast.logText = logText.empty() ? text : logText;
     g_toast.undo = std::move(undo);
     g_toast.start = ImGui::GetTime();
 }
@@ -189,7 +191,7 @@ void TurnOnButton(ApexPatch* patch, const char* label, IconId icon, const char* 
     ImGui::BeginDisabled(!Switchable(patch));
     if (ApexUi::IconTextButton(label, icon, nullptr, ButtonKind::Primary)) {
         SetPatch(patch, true);
-        ApexUi::ReportChange(I18n::Tr(changeText)); // the undo toast shows it as given
+        ApexUi::ReportChange(changeText); // the undo toast shows it translated, the log in English
     }
     ImGui::EndDisabled();
 }
@@ -827,10 +829,12 @@ void LanguageRow() {
     const char* labels[] = {automatic.c_str(), I18n::NativeName(I18n::Lang::English), I18n::NativeName(I18n::Lang::Portuguese),
                             I18n::NativeName(I18n::Lang::Spanish), I18n::NativeName(I18n::Lang::French)};
     int current = ui.language + 1; // -1 automatic -> 0
+    ApexUi::SetChangeReporting(false); // a menu preference, not part of the undoable state
     if (ApexUi::SegmentedRow("Language", "The language of this menu", "##Language", &current, labels, 5, nullptr, nullptr, 0)) {
         ui.language = current - 1;
         ApexConfig::SetUi(ui);
     }
+    ApexUi::SetChangeReporting(true);
 }
 
 void StartTour() {
@@ -902,14 +906,21 @@ void MenuTab() {
 
 // ---- Settings > Profiles ----
 
+struct ProfileItem {
+    std::string name;
+    unsigned parts = 0; // what the file has (ApexConfig::ProfilePartsOf)
+};
 struct ProfilesState {
     char name[ApexConfig::kProfileNameMax + 1] = {};
-    std::vector<std::string> list;
+    std::vector<ProfileItem> list;
     bool listDirty = true;
+    unsigned saveParts = ApexConfig::kProfilePartsAll; // what "Save" writes
     std::string message; // the result of the last action
     bool messageError = false;
     std::string confirmDelete;  // a profile waiting for "Delete?"
     std::string confirmReplace; // a name that exists, waiting for "Replace?"
+    std::string loading;        // a profile whose parts are being picked before "Load"
+    unsigned loadParts = 0;
 };
 ProfilesState g_profiles;
 
@@ -925,9 +936,49 @@ void ProfileMessage(const std::string& text, bool error) {
     g_profiles.messageError = error;
 }
 
+// "Night Lights, Color, Window mode" in the menu's language
+std::string ProfilePartsText(unsigned parts) {
+    std::string s;
+    for (int i = 0; i < ApexConfig::kProfilePartCount; i++)
+        if (parts & (1u << i)) {
+            if (!s.empty()) s += ", ";
+            s += I18n::Tr(ApexConfig::ProfilePartName(i));
+        }
+    return s;
+}
+
+// A checkbox per part, three to a line; only the parts in `available`. The ImGui IDs stay the same in every language.
+void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
+    ImGui::PushID(id);
+    const float colW = ImGui::GetContentRegionAvail().x / 3.0f;
+    int shown = 0;
+    for (int i = 0; i < ApexConfig::kProfilePartCount; i++) {
+        const unsigned bit = 1u << i;
+        if (!(available & bit)) continue;
+        if (shown % 3 != 0) ImGui::SameLine(colW * static_cast<float>(shown % 3));
+        bool on = (*parts & bit) != 0;
+        const std::string label = std::string(I18n::Tr(ApexConfig::ProfilePartName(i))) + "###Part" + std::to_string(i);
+        if (ImGui::Checkbox(label.c_str(), &on)) *parts = on ? (*parts | bit) : (*parts & ~bit);
+        shown++;
+    }
+    ImGui::PopID();
+}
+
+// Opens the Profiles folder in Explorer (to copy profiles to another PC or share them), on a short-lived thread
+void OpenProfilesFolder() {
+    ApexConfig::EnsureProfilesDirectory();
+    std::thread([] {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        const std::wstring dir = ApexConfig::ProfilesFolder();
+        const HINSTANCE r = ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(r) <= 32) LOG_WARNING(std::format("[Menu] Could not open the Profiles folder ({})", reinterpret_cast<INT_PTR>(r)));
+        if (SUCCEEDED(com)) CoUninitialize();
+    }).detach();
+}
+
 void SaveProfileNow(const std::string& name) {
     std::string err;
-    if (ApexConfig::SaveProfile(name, &err)) {
+    if (ApexConfig::SaveProfile(name, g_profiles.saveParts, &err)) {
         ProfileMessage(I18n::Trf("Saved \"{}\"", name), false);
         g_profiles.name[0] = '\0';
     } else {
@@ -937,25 +988,32 @@ void SaveProfileNow(const std::string& name) {
     g_profiles.listDirty = true;
 }
 
-void LoadProfileNow(const std::string& name) {
+void LoadProfileNow(const std::string& name, unsigned parts) {
     toml::table state;
     std::string err;
     if (!ApexConfig::ReadProfile(name, state, &err)) {
         ProfileMessage(I18n::Trf("Could not load \"{}\": {}", name, err), true);
         return;
     }
+    ApexConfig::KeepProfileParts(state, parts);
     toml::table before;
     ApexConfig::CaptureFeatureState(before);
     ApexConfig::ApplyFeatureState(state);
-    LOG_INFO("[Menu] Profile loaded: " + name);
+    LOG_INFO(std::format("[Menu] Profile loaded: {} (parts {:#x})", name, parts));
     ProfileMessage(I18n::Trf("Loaded \"{}\"", name), false);
-    ShowToast(I18n::Tr("Profile loaded"), std::move(before));
+    ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + name);
 }
 
 void ProfilesTab() {
     ProfilesState& s = g_profiles;
     if (s.listDirty) {
-        s.list = ApexConfig::ListProfiles();
+        s.list.clear();
+        for (const std::string& name : ApexConfig::ListProfiles()) {
+            ProfileItem item{name, 0};
+            toml::table state;
+            if (ApexConfig::ReadProfile(name, state)) item.parts = ApexConfig::ProfilePartsOf(state);
+            s.list.push_back(std::move(item));
+        }
         s.listDirty = false;
     }
     const float u = ApexUi::Unit();
@@ -964,7 +1022,9 @@ void ProfilesTab() {
         ApexUi::CardHeader(IconId::Bookmark, "Profiles", "Save your setup and switch between them", nullptr, nullptr);
         ApexUi::CardDivider();
         ApexUi::GroupLabel("SAVE CURRENT SETUP");
-        ApexUi::MutedText("Night Lights, Color, Depth Blur, Edge Smoothing and window mode");
+        ApexUi::MutedText("What to save");
+        if (!ApexUi::FilterActive()) ProfilePartChecks("SaveParts", &s.saveParts, ApexConfig::kProfilePartsAll);
+        ApexUi::Gap(ApexUi::kSpace1);
         const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
         const float gap = ImGui::GetStyle().ItemSpacing.x;
         ImGui::SetNextItemWidth(std::fmax(ImGui::GetContentRegionAvail().x - saveW - gap, 80.0f * u));
@@ -972,10 +1032,11 @@ void ProfilesTab() {
                                                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, ProfileNameFilter);
         ImGui::SameLine();
         const std::string clean = ApexConfig::SanitizeProfileName(s.name);
-        ImGui::BeginDisabled(clean.empty() || Loading());
-        const bool save = ApexUi::IconTextButton("Save##Profile", IconId::Save, nullptr, ButtonKind::Primary);
+        const bool canSave = !clean.empty() && s.saveParts != 0 && !Loading();
+        ImGui::BeginDisabled(!canSave);
+        const bool save = ApexUi::IconTextButton("Save##Profile", IconId::Save, s.saveParts == 0 ? "Pick at least one part to save" : nullptr, ButtonKind::Primary);
         ImGui::EndDisabled();
-        if ((save || (enter && !clean.empty())) && !Loading()) {
+        if ((save || (enter && !clean.empty())) && canSave) {
             if (ApexConfig::ProfileExists(clean) && s.confirmReplace != clean) s.confirmReplace = clean;
             else SaveProfileNow(clean);
         }
@@ -994,13 +1055,18 @@ void ProfilesTab() {
 
         ApexUi::GroupLabel("SAVED");
         if (s.list.empty()) ApexUi::MutedText("No profiles yet");
-        for (const std::string& name : s.list) {
+        for (const ProfileItem& item : s.list) {
+            const std::string& name = item.name;
             ImGui::PushID(name.c_str());
             const bool confirming = s.confirmDelete == name;
+            const bool picking = s.loading == name;
             const float loadW = ApexUi::ButtonWidth("Load", true), delW = ApexUi::ButtonWidth("Delete", true);
             const float cancelW = ApexUi::ButtonWidth("Cancel", false);
-            const float controlsW = confirming ? delW + gap + cancelW : loadW + gap + delW;
-            if (ApexUi::BeginControlRow(name.c_str(), confirming ? "Delete this profile?" : nullptr, controlsW)) {
+            const float controlsW = confirming || picking ? (confirming ? delW : loadW) + gap + cancelW : loadW + gap + delW;
+            const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
+            const char* description = confirming ? "Delete this profile?" : picking ? "Pick what to load" : partsText.c_str();
+            ApexUi::SetNextRowUntranslated(); // the name is the user's
+            if (ApexUi::BeginControlRow(name.c_str(), description, controlsW)) {
                 if (confirming) {
                     if (ApexUi::IconTextButton("Delete##Confirm", IconId::Trash2, "Deletes the profile file", ButtonKind::Primary)) {
                         std::string err;
@@ -1011,17 +1077,37 @@ void ProfilesTab() {
                     }
                     ImGui::SameLine();
                     if (ApexUi::TextButton("Cancel")) s.confirmDelete.clear();
-                } else {
-                    ImGui::BeginDisabled(Loading());
-                    if (ApexUi::IconTextButton("Load", IconId::Download, "Apply this profile; Undo puts your settings back")) LoadProfileNow(name);
+                } else if (picking) {
+                    ImGui::BeginDisabled(Loading() || s.loadParts == 0);
+                    if (ApexUi::IconTextButton("Load##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
+                        LoadProfileNow(name, s.loadParts);
+                        s.loading.clear();
+                    }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
-                    if (ApexUi::IconTextButton("Delete", IconId::Trash2)) s.confirmDelete = name;
+                    if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
+                } else {
+                    ImGui::BeginDisabled(Loading() || item.parts == 0);
+                    if (ApexUi::IconTextButton("Load", IconId::Download, "Pick which parts of this profile to apply")) {
+                        s.loading = name;
+                        s.loadParts = item.parts;
+                        s.confirmDelete.clear();
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
+                        s.confirmDelete = name;
+                        s.loading.clear();
+                    }
                 }
                 ApexUi::EndControlRow();
+                if (picking) ProfilePartChecks("LoadParts", &s.loadParts, item.parts);
             }
             ImGui::PopID();
         }
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (ApexUi::IconTextButton("Open the Profiles folder", IconId::ExternalLink, "Copy profile files from there to share them or to use them on another PC"))
+            OpenProfilesFolder();
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -1526,7 +1612,7 @@ void DrawToast(float bottomY) {
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) g_toast.start = now - std::fmin(elapsed, 1.0); // wait while pointed at
         if (undo) {
             ApexConfig::ApplyFeatureState(g_toast.undo);
-            LOG_INFO("[Menu] Undo: " + g_toast.text);
+            LOG_INFO("[Menu] Undo: " + g_toast.logText);
             g_toast.active = false;
         }
     }
@@ -1638,9 +1724,9 @@ void MainWindow() {
     g_keysOverMenu.store(g_menuHovered && !io.WantTextInput);
 
     // The last change of the frame becomes the undo toast (with the state from before the click)
-    std::string change;
-    if (ApexUi::TakeChange(change) && g_haveClickSnapshot) {
-        ShowToast(change, g_clickSnapshot);
+    std::string change, changeEnglish;
+    if (ApexUi::TakeChange(change, &changeEnglish) && g_haveClickSnapshot) {
+        ShowToast(change, g_clickSnapshot, changeEnglish);
         g_haveClickSnapshot = false; // the next change takes a new snapshot at its own click
     }
 

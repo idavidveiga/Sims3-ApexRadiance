@@ -171,12 +171,17 @@ A "Looks" card (Classic / Balanced / Cinematic presets on Overview and in the to
 if ever, save the current setup as a profile first.
 
 ### Profiles (Settings > Profiles)
-"SAVE CURRENT SETUP": a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
+"SAVE CURRENT SETUP": "What to save" = a checkbox per part (Night Lights, Color, Depth Blur, Edge Smoothing,
+Window mode, Performance; all checked by default, kept while the game runs), then a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
 saves) and Save; an existing name asks "... already exists; replace it?" inline. "SAVED": one row per profile with Load
-and Delete (Delete asks inline, "Delete this profile?" with Delete / Cancel). Files:
+and Delete; the row's description lists the parts the file has. Load opens an inline pick of those parts (all
+checked) with Load / Cancel, and applies only the checked ones (`KeepProfileParts`). Delete asks inline, "Delete this
+profile?" with Delete / Cancel. "Open the Profiles folder" opens it in Explorer (to share profiles or copy them to
+another PC). Profile names are user data: shown untranslated (`SetNextRowUntranslated`). Files:
 `Documents\...\Apex Radiance\Profiles\<name>.toml`, written by `ApexConfig::SaveProfile` = `CaptureFeatureState(profile
 features only)` + `[meta]`: the same tables the main config saves for Night Lights (`NightTerrainRelight`), Every-Story
-Ground Light, Edge Smoothing and Depth Blur (`[patches.<Name>]` with `enabled`), Picture (`[qol.picture]`) and the
+Ground Light, Edge Smoothing, Depth Blur and the Performance page's features (`[patches.<Name>]` with `enabled`; not
+the suspended Spread New Objects Over Frames), Picture (`[qol.picture]`) and the
 window mode (`[display]`); developer tools stay out. Load = `ReadProfile` + `ApplyFeatureState` (live, marks unsaved
 changes, autosaves into ApexRadiance.toml) + the undo toast "Profile loaded". Names are sanitised
 (`SanitizeProfileName`: allowed characters only, no leading / double / trailing spaces, Windows device names refused);

@@ -39,7 +39,9 @@ struct FilterState {
     int drawn = 0;
 };
 FilterState g_filter;
-bool g_inControlRow = false; // between BeginControlRow (visible) and EndControlRow: its buttons are part of the row
+bool g_inControlRow = false;
+bool g_nextRaw = false; // SetNextRowUntranslated: the next row's label is shown as it is
+bool g_rowRaw = false;  // the current row's label is shown as it is // between BeginControlRow (visible) and EndControlRow: its buttons are part of the row
 
 char LowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
 
@@ -74,7 +76,8 @@ bool Hidden() { return g_filter.active && !g_inControlRow; }
 // ---- change reports ----
 bool g_reportOn = true;
 bool g_changePending = false;
-std::string g_changeText;
+std::string g_changeText;    // as shown (menu language)
+std::string g_changeEnglish; // for the log
 
 // ---- next row badge ----
 const char* g_nextBadge = nullptr;
@@ -181,7 +184,7 @@ struct LabelInfo {
 // room for the decorations after it); one group. Returns the block's height.
 float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr) {
     const float top = ImGui::GetCursorScreenPos().y;
-    const std::string_view shown = I18n::TrLabel(label);
+    const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * Unit());
     ImGui::PushTextWrapPos(labelWrapX >= 0.0f ? labelWrapX : wrapX);
@@ -206,8 +209,12 @@ ImVec2 ToScreen(float localX, float localY) {
 
 // A change report from an English format ("{} turned on") and the row's visible label, both translated
 void ReportLabel(const char* label, const char* format) {
-    const std::string shown(I18n::TrLabel(label));
-    ReportChange(I18n::Trf(format, shown).c_str());
+    if (!g_reportOn) return;
+    const std::string english(label, VisibleEnd(label));
+    const std::string shown(g_rowRaw ? std::string_view(english) : I18n::TrLabel(label));
+    g_changeText = I18n::Trf(format, shown);
+    g_changeEnglish = std::vformat(format, std::make_format_args(english));
+    g_changePending = true;
 }
 
 // The breadcrumb link above a matching row in the search results (and a hairline between results)
@@ -244,13 +251,15 @@ void FilterCrumb() {
 
 // Rows call it first: false = the search filter hides this row (draw nothing). A matching row gets its breadcrumb.
 bool RowVisible(const char* label, const char* description) {
+    g_rowRaw = g_nextRaw;
+    g_nextRaw = false;
     if (!g_filter.active) return true;
     std::string hay;
     AppendLower(hay, label, VisibleEnd(label));
     hay.push_back(' ');
     AppendLower(hay, description);
     if (I18n::Current() != I18n::Lang::English) { // the search finds a row by its English or its shown text
-        const std::string_view shown = I18n::TrLabel(label);
+        const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
         hay.push_back(' ');
         AppendLower(hay, shown.data(), shown.data() + shown.size());
         hay.push_back(' ');
@@ -355,6 +364,8 @@ float Unit() {
 
 // ---- badges, search filter, change reports, slider drag state ----
 
+void SetNextRowUntranslated() { g_nextRaw = true; }
+
 void SetNextRowBadge(const char* text, const char* tooltip) {
     g_nextBadge = text;
     g_nextBadgeTip = tooltip;
@@ -395,16 +406,18 @@ bool MatchesQuery(const char* query, const char* text) {
 
 void ReportChange(const char* text) {
     if (!g_reportOn || !text || !*text) return;
-    g_changeText = text;
+    g_changeText = T(text);
+    g_changeEnglish = text;
     g_changePending = true;
 }
 
 void SetChangeReporting(bool on) { g_reportOn = on; }
 
-bool TakeChange(std::string& text) {
+bool TakeChange(std::string& text, std::string* english) {
     if (!g_changePending) return false;
     g_changePending = false;
     text = g_changeText;
+    if (english) *english = g_changeEnglish;
     return true;
 }
 
@@ -1063,7 +1076,7 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
     ImGui::SetCursorPosX(textX);
     LabelInfo li;
     {
-        const std::string_view shown = I18n::TrLabel(label);
+        const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
         ImGui::BeginGroup();
         ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
         ImGui::PushTextWrapPos(std::fmax(startX + width - valueW - swatchW - kSpace3 * u - DecorWidth(d), textX + 40.0f * u));

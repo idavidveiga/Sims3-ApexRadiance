@@ -16,8 +16,13 @@ tooltip, `OverviewRow` name / phrase / tooltip / rightText, `SetNextRowBadge` te
 
 - Text drawn with raw ImGui (`ImGui::Text*`, `TextUnformatted`, `TextWrapped`, `TextColored`, `Button`, `Checkbox`,
   `Selectable`, `BeginTabItem`, `Combo` items, `CalcTextSize` used to lay out a text that is then drawn translated) in the
-  PUBLIC build: wrap the text with `I18n::Tr("...")` (or `I18n::TrLabel` for "Text##id" labels; keep the `##id` part
-  English so ImGui IDs do not change with the language).
+  PUBLIC build: wrap the text with `I18n::Tr("...")`. An ImGui widget whose label is also its ID (`Button`,
+  `Checkbox`, `Selectable`, `BeginTabItem`, `TreeNode` ...) needs a fixed ID: `(std::string(I18n::Tr("Text")) +
+  "###Id").c_str()` (`###` makes the ID only the part after it; `##` hashes the whole label, so the ID would change
+  with the language). `I18n::TrLabel` returns a view that is NOT null-terminated: use `.data()` + `.size()`.
+- User data shown as a row label (a profile name): `ApexUi::SetNextRowUntranslated()` before the row.
+- Change reports: `ApexUi::ReportChange("English text")` with the English literal (the toast shows it translated, the
+  log gets the English one).
 - Text built at run time and shown in the public menu: `I18n::Trf("English {} format", args...)` instead of
   `std::format`. The translation must keep the same `{}` placeholders in the same order (Developer > Language lists any
   that do not). Never change a text that also goes to the log: logs stay English (split display and log text if needed).

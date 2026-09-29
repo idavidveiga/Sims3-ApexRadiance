@@ -48,9 +48,26 @@ const char* Pick(const Entry* e, Lang lang) {
     return s && *s ? s : nullptr;
 }
 
+// The text lives in this module's image (a string literal of the code), not on the heap or the stack (a text built at
+// run time, or one already translated): only literals are keys that can be missing from the tables
+bool IsLiteral(const void* p) {
+    static uintptr_t begin = 0, end = 0;
+    if (!begin) {
+        HMODULE m = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&IsLiteral), &m))
+            return false;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const BYTE*>(m) + dos->e_lfanew);
+        end = reinterpret_cast<uintptr_t>(m) + nt->OptionalHeader.SizeOfImage;
+        begin = reinterpret_cast<uintptr_t>(m);
+    }
+    const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+    return a >= begin && a < end;
+}
+
 void NoteMissing(std::string_view key) {
     if constexpr (kPublicBuild) return;
-    if (key.empty()) return;
+    if (key.empty() || !IsLiteral(key.data())) return;
     // Values ("12 ms", "~0.4 ms", "80%"), numbers and single symbols are not texts to translate
     if ((key[0] >= '0' && key[0] <= '9') || key[0] == '~' || key[0] == '+' || key[0] == '-') return;
     bool letters = false;

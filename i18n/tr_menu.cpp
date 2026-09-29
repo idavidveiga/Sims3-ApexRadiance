@@ -329,6 +329,19 @@ const I18n::Entry kEntries[] = {
      "C'est la version précédente d'" APEX_PRODUCT_NAME " ; il reste inactif pour l'instant. Gardez ApexRadiance.asi et le Sims3SettingsSetter.asi officiel."},
     {APEX_PRODUCT_NAME " is ready \xC2\xB7 press {}", APEX_PRODUCT_NAME " está pronto · aperte {}", APEX_PRODUCT_NAME " está listo · pulsa {}",
      APEX_PRODUCT_NAME " est prêt · appuyez sur {}"},
+    // Profiles: what to save and load
+    {"What to save", "O que salvar", "Qué guardar", "Quoi enregistrer"},
+    {"Pick at least one part to save", "Escolha ao menos uma parte para salvar", "Elige al menos una parte para guardar", "Choisissez au moins une partie à enregistrer"},
+    {"Nothing this version can load", "Nada que esta versão consiga carregar", "Nada que esta versión pueda cargar", "Rien que cette version puisse charger"},
+    {"Pick what to load", "Escolha o que carregar", "Elige qué cargar", "Choisissez quoi charger"},
+    {"Apply the checked parts; Undo puts your settings back", "Aplica as partes marcadas; Desfazer volta suas configurações",
+     "Aplica las partes marcadas; Deshacer restaura tus ajustes", "Applique les parties cochées ; Annuler rétablit vos réglages"},
+    {"Pick which parts of this profile to apply", "Escolha quais partes deste perfil aplicar", "Elige qué partes de este perfil aplicar",
+     "Choisissez les parties de ce profil à appliquer"},
+    {"Open the Profiles folder", "Abrir a pasta dos perfis", "Abrir la carpeta de perfiles", "Ouvrir le dossier des profils"},
+    {"Copy profile files from there to share them or to use them on another PC",
+     "Copie os arquivos de perfil de lá para compartilhar ou usar em outro PC", "Copia los archivos de perfil desde ahí para compartirlos o usarlos en otro PC",
+     "Copiez les fichiers de profil depuis ce dossier pour les partager ou les utiliser sur un autre PC"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 

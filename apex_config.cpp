@@ -8,6 +8,7 @@
 #include "picture.h"
 #include "borderless.h"
 #include "frame_profiler.h"
+#include "performance.h"
 #include "ui/i18n.h"
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -420,9 +421,19 @@ bool SavePending() { return g_saveRequested.load() || PatchManager::Get().HasUns
 namespace {
 
 // The features a profile carries (their looks and options); developer tools stay out of profiles
-bool IsProfileFeature(const std::string& name) {
-    return name == "NightTerrainRelight" || name == "SplitLevelGroundLight" || name == "EdgeSmoothing" || name == "DepthBlur";
+// The profile part a feature belongs to (0 = not part of profiles)
+unsigned FeaturePart(const std::string& name) {
+    if (name == "NightTerrainRelight" || name == "SplitLevelGroundLight") return kPartNightLights;
+    if (name == "DepthBlur") return kPartDepthBlur;
+    if (name == "EdgeSmoothing") return kPartEdgeSmoothing;
+    // Spread New Objects Over Frames is suspended (it cannot be turned on): not carried
+    for (const char* p : {Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName, Performance::kLotLightingName,
+                          Performance::kWallShadingName, Performance::kFastTextureName, Performance::kFastCacheName, Performance::kObjectIndexName})
+        if (name == p) return kPartPerformance;
+    return 0;
 }
+
+bool IsProfileFeature(const std::string& name) { return FeaturePart(name) != 0; }
 
 bool ParseDisplayMode(const std::string& text, Borderless::Mode& out) {
     if (text == "off") out = Borderless::Mode::Off;
@@ -499,6 +510,31 @@ void ApplyFeatureState(const toml::table& state) {
 
 // ---- profiles ----
 
+const char* ProfilePartName(int index) {
+    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance"};
+    return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
+}
+
+unsigned ProfilePartsOf(const toml::table& state) {
+    unsigned parts = 0;
+    if (const toml::table* patches = state["patches"].as_table())
+        for (auto&& [key, value] : *patches) parts |= FeaturePart(std::string(key.str()));
+    if (const toml::table* qol = state["qol"].as_table(); qol && !qol->empty()) parts |= kPartColor;
+    if (state["display"].as_table()) parts |= kPartWindow;
+    return parts;
+}
+
+void KeepProfileParts(toml::table& state, unsigned parts) {
+    if (toml::table* patches = state["patches"].as_table()) {
+        std::vector<std::string> drop;
+        for (auto&& [key, value] : *patches)
+            if (!(FeaturePart(std::string(key.str())) & parts)) drop.emplace_back(key.str());
+        for (const std::string& k : drop) patches->erase(k);
+    }
+    if (!(parts & kPartColor)) state.erase("qol");
+    if (!(parts & kPartWindow)) state.erase("display");
+}
+
 namespace {
 
 std::wstring ProfilesDirectory() { return ApexPaths::ApexDirectory() + L"Profiles\\"; }
@@ -553,7 +589,7 @@ bool ProfileExists(const std::string& name) {
     return !clean.empty() && ApexUtil::FileExists(ProfileFile(clean));
 }
 
-bool SaveProfile(const std::string& name, std::string* error) {
+bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
     const std::string clean = SanitizeProfileName(name);
     if (clean.empty() || clean != name) {
         if (error) *error = "invalid name";
@@ -562,6 +598,7 @@ bool SaveProfile(const std::string& name, std::string* error) {
     try {
         toml::table root;
         CaptureFeatureState(root, true);
+        KeepProfileParts(root, parts);
         toml::table meta;
         meta.insert("written_by", APEX_PRODUCT_NAME " " APEX_VERSION_STRING);
         meta.insert("profile", clean);
@@ -602,6 +639,13 @@ bool ReadProfile(const std::string& name, toml::table& out, std::string* error) 
         return false;
     }
     return true;
+}
+
+std::wstring ProfilesFolder() { return ProfilesDirectory(); }
+
+bool EnsureProfilesDirectory() {
+    if (!ApexPaths::EnsureApexDirectory()) return false;
+    return CreateDirectoryW(ProfilesDirectory().c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
 bool DeleteProfile(const std::string& name, std::string* error) {
