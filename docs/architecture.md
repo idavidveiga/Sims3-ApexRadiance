@@ -500,18 +500,23 @@ game yet (anti-stutter plan `research\perf2\plan.md`, items 7 and C5: `d3dcompil
 
 ### 4.7 Layered vtable-slot hooks and suspended code writes (standalone, 2026-09-29)
 - `framework/slot_chain.{h,cpp}` (`SlotChain`): several Apex modules may wrap one game function that is reached only
-  through vtable slots. Each wrapper is a layer with a fixed position (0 = Frame Profiler, outer; 1 = Resource cache);
+  through vtable slots. Each wrapper is a layer with a fixed position (lower = outer; since round 3: 0 = Gate, the wall
+  shading gate, which must be outermost; 1 = Frame Profiler; 2 = Resource cache; 3 = FastCompress);
   the slots hold the outermost installed layer's hook and every hook calls `SlotChain::Next(site, layer)`. Install /
   Remove swap the slots (interlocked compare-exchange, expected value checked) or re-point the outer layer's next
   pointer; a removed hook keeps its next pointer. Sites: FindProvider (profiler + cache) and the resource manager's
   RegisterDatabase (base and derived), SetDatabasePriority and DatabaseChanged (cache only); RefPackCompress (the RefPack
-  stream write slot 0x00FB901C: profiler + the fast compressor, layer 2 `FastCompress`). See
+  stream write slot 0x00FB901C: profiler + the fast compressor); round 3: WallAoStep (the wall AO step slot 0x00FF05B0:
+  gate + profiler), KeyListBase / KeyListDerived (GetKeyList slots 0x00FB2DC0 / 0x00FFE270: profiler + the file list
+  cache). The write epochs of "Remember missing files" swap their database-class slots directly (only Apex module on
+  them; `InstallClassHooks` in features/resource_cache.cpp, same compare-exchange). See
   [features/performance.md](features/performance.md).
 - `framework/entry_chain.{h,cpp}` (`EntryChain`, 2026-09-29): the same layering for functions reached by direct CALLs from
   several threads. The entry's relocation-free prologue is copied to a trampoline (+ JMP back) and a 5-byte JMP to the
   outermost layer's hook is written with `MemPatch::WriteCodeSuspended`; each hook calls `EntryChain::Next(site, layer)`
   (the next inner layer or the trampoline); removing the last layer writes the original bytes back. Sites: the CPU DXT1 /
-  DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder).
+  DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder); round 3: the DPF's
+  direct record write 0x004A7FC0 (layer 2, the resource cache's write epochs; prologue 83 EC 28 53 56).
 - `MemPatch::WriteCodeSuspended(address, bytes, n)`: writes up to 16 code bytes with every other thread suspended and none
   stopped inside them (retried for ~100 ms), for CALL rewrites that several threads may run (Lot Lighting While Moving's
   CALL at 0x00ADB95D). The Frame Profiler keeps its own copy (`WriteCallSuspended`).

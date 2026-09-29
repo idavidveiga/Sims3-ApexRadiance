@@ -32,6 +32,9 @@ const SiteInfo kSiteInfo[kSites] = {
     {"ResourceMgr::SetDatabasePriority", GameAddr::Id::ResSetDbPriority, GameAddr::Id::ResSetDbPrioritySlot0, 2},
     {"ResourceMgr::DatabaseChanged", GameAddr::Id::ResDbChanged, GameAddr::Id::ResDbChangedSlot0, 2},
     {"RefPack stream write", GameAddr::Id::RefPackCompress, GameAddr::Id::RefPackCompressSlot, 1},
+    {"Wall AO solver step", GameAddr::Id::WallAoStep, GameAddr::Id::WallAoStepSlot, 1},
+    {"ResourceMgr::GetKeyList", GameAddr::Id::ResKeyList, GameAddr::Id::ResKeyListSlot, 1},
+    {"ResourceSystem::GetKeyList", GameAddr::Id::ResKeyListDerived, GameAddr::Id::ResKeyListDerivedSlot, 1},
 };
 static_assert(std::size(kSiteInfo) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

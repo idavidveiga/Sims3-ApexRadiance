@@ -17,6 +17,14 @@
 > - **Faster Cache Compression** (`[patches.FastCacheCompression]`, experimental, **off by default**): the RefPack stream
 >   write answered by a fast compressor in the game's stream format; the game decompresses it unchanged (C4, section
 >   below).
+> - Round 3 (`research\perf2\round3.md`, 2026-09-29):
+>   - **Wall Shading While Moving** (`[patches.WallShadingWhileMoving]`, **on by default**): the wall ambient-occlusion
+>     pass waits while the camera moves (the first pass at most 2 s) and runs at most once per frame.
+>   - **Remember Missing Files** (`[patches.ResourceLookupMisses]`, experimental, **off by default**, needs the lookup
+>     cache): "no package holds it" answers are kept too, and the writes of the DPF / DDF / packed-stream classes are
+>     counted so unchanged packages need no re-check.
+>   - **Faster File Lists** (`[patches.FileListCache]`, experimental, **off by default**): GetKeyList for the key-type
+>     filter keeps each read-only package's keys per type.
 >
 > Status: implemented, **not yet compiled or tested in game** (the user compiles). Everything below marked VERIFIED was
 > read in `research\engine_map\full.asm` / `S3SS-dev\re\TS3W.exe`; INFERRED = deduction, not confirmed at run time.
@@ -49,6 +57,9 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | "Faster game file lookups" / "Fewer small stutters when objects and textures load" | `[patches.ResourceLookupCache] enabled` | bool | **false** | - | Experimental. Off until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. |
 | "Spread lot lighting while moving" / "Lots relight in small steps while the camera moves" | `[patches.LotLightingMotion] enabled` | bool | **true** | - | |
 | "Lot lighting time while moving" (shown while the switch is on) / "The current lot's time per frame while moving; 3 ms is the default" | `[patches.LotLightingMotion] budgetWhileMovingMs` | int | **3** | 1-15 | ms; end labels "Smoother" / "Lights sooner"; 15 = the game's own. Applied live (the hook reads it every call; `Update` clears the reinstall request). Never rename the key. |
+| "Remember missing files" (shown while "Faster game file lookups" is on) / "Skips repeated searches for files no package has" | `[patches.ResourceLookupMisses] enabled` | bool | **false** | - | Experimental. Idle ("Waiting: needs Faster game file lookups") while the lookup cache is off. Includes the write epochs. |
+| "Faster file lists" / "Fewer stutters when Sims load outfits and shapes" | `[patches.FileListCache] enabled` | bool | **false** | - | Experimental. Independent of the lookup cache. |
+| "Wall shading waits while moving" / "Walls of new lots get their shading when you stop" | `[patches.WallShadingWhileMoving] enabled` | bool | **true** | - | Independent of "Spread lot lighting while moving" (it shares its camera detection). |
 | "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **false** | - | Experimental until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. No Overview row. |
 | "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
 
@@ -59,7 +70,10 @@ blocks (flat-luma, solid, encoded by the game's function), time, "checked textur
 features, "Check 1 texture in N against the game" (default 8), "Check every texture for 30 s", the last difference;
 cache compression: streams, MB in / out, time, counting runs, writes after a counting run, did not fit, temporary
 contexts, checks (game's decoder), the comparison with the game's compressor, "Check 1 stream in N by decompressing"
-(default 1), "Also run the game's compressor on 1 stream in N" (default 0), "Search depth" (default 32).
+(default 1), "Also run the game's compressor on 1 stream in N" (default 0), "Search depth" (default 32); round 3: the
+cache's lines "Missing files (on / off): answered from memory, remembered, not remembered", "Write epochs: counted
+classes ...; answers with no probe of them, sums refreshed, writes counted", "File list cache: ..." and "File list
+checks"; the wall shading gate's step / pass counters and "First pass: longest wait while moving (ms)" (default 2000).
 
 Both features take part in undo (the menu's state capture covers every `[patches.*]` table) but not in Profiles (only
 the look features are profile features).
@@ -132,9 +146,11 @@ CAS), loader worker threads, simulation thread.
 
 ### The cache (features/resource_cache.cpp)
 
-- **Key** (manager `this`, the 16 key bytes). **Value** {package, priority, its index in the list, stored tick}. Only
-  found keys; the game's own misses are never stored (the measurement had none).
-- **Table:** 64k entries x 40 bytes = 2.5 MB, `VirtualAlloc` once, never freed (a thread may still be inside the hook
+- **Key** (manager `this`, the 16 key bytes). **Value** {package, priority, its index in the list, stored tick, write-epoch
+  sum}. Found keys; since round 3 also "no package holds it" (package 0) when Remember Missing Files is on (below).
+  Since round 3 a store also requires every read-only package above the answer to have answered for sure (its key set
+  present or its file open after the lookup, `ReadOnlyAboveReliable`), so a transient open failure is not kept.
+- **Table:** 64k entries x 44 bytes = 2.8 MB, `VirtualAlloc` once, never freed (a thread may still be inside the hook
   after the feature turns off). Open addressing, linear probing (at most 64 slots). Each entry carries a stamp; entries
   whose stamp is not the table's current one are empty, so "empty the table" is `stamp++` (on a new generation, and when
   75% full), never a memset. SRW lock: shared for lookups, exclusive for stores; **never held while game code runs**.
@@ -179,7 +195,8 @@ probes (~0.1 us each), a few atomics; against ~18 us for the game's 291 probes.
 ### Hooking and the Frame Profiler (framework/slot_chain.{h,cpp})
 
 FindProvider is reached only through vtable slots, and both the profiler (dev build, counter "Resource lookup") and the
-cache wrap it. `SlotChain` gives each wrapper a fixed layer (0 = Frame Profiler, outer; 1 = Resource cache, inner),
+cache wrap it. `SlotChain` gives each wrapper a fixed layer (0 = gate, used only by the wall shading gate; 1 = Frame Profiler; 2 =
+Resource cache; 3 = fast compressor; lower = outer),
 whatever the install order:
 - the slots hold the outermost installed layer's hook; each hook calls `SlotChain::Next(site, layer)` = the next inner
   installed layer's hook, or the game function;
@@ -187,7 +204,8 @@ whatever the install order:
   compare-exchange per slot while the page is writable; every slot must hold the expected pointer or nothing is written)
   or the outer layer's next pointer is re-pointed to it (one atomic store);
 - remove: the reverse; a removed hook keeps its next pointer (threads inside it finish normally).
-The profiler's `AttachSlots` / `DetachSlots` use it for `T_ResLookup` only (the RefPack slot keeps the old path). So the
+The profiler's `AttachSlots` / `DetachSlots` use it for every shared slot (`kSharedSlots`: FindProvider, the RefPack
+write, the wall AO step, both GetKeyList slots). So the
 profiler always times every call (answers from memory included) and the cache sees every call. The profiler reads
 `ResourceCache::TakeLookupNote()` after each call: an answer from memory adds "from cache" and counts the packages the
 cache asked as "packages probed". The list methods (sites RegisterDb, RegisterDbDerived, SetDbPriority, DbChanged) use
@@ -238,11 +256,182 @@ the same mechanism with only the cache layer.
   (`call 0x006E8330` = `mov eax,[0x011D1860]; ret`, `call 0x006E8400` = `mov eax,[ecx+24h]; ret`, `movaps xmm0,[eax+60h]`;
   its y is compared with the terrain height threshold WorldManager+0xE8). The root global, the camera offset and the
   eye offset are parsed from those bytes at Start on every build. Moving = any eye component changed by more than 5 mm
-  since the previous budget call; it lasts 300 ms after the last change. Orbit, zoom and pan all move the eye; following
-  a walking Sim does too. SEH-guarded read; not readable (no world) = not moving. Sampled only inside the hook (no other
-  hook, no WorldManager::Update detour).
+  since the previous sample, or by more than 5 mm within 100 ms (slow pans and zooms); it lasts 300 ms after the last
+  change. Orbit, zoom and pan all move the eye; following a walking Sim does too. SEH-guarded read; not readable (no
+  world) = not moving. Sampled inside the hook and, since round 3, once per frame from a Present callback
+  (`D3D9Hooks::RegisterPresent("LotLightingMotion")`, registered while this feature or Wall Shading While Moving is on):
+  a stale eye after a quiet spell no longer reads as a false "moving" (round3.md section 2.3).
 - The Frame Profiler keeps both its lot lighting targets (the entry of 0x00ADB8F0, Detours; the CALL 0x00ADB9AD): other
   bytes. Its "Lot room solve" calls now receive the scaled budget.
+
+## How it works: Wall Shading While Moving (round 3, section 2)
+
+Measured (round3.md section 2): with Lot Lighting While Moving on, every moving "Lot room solve" hitch of 5 ms or more is
+one wall ambient-occlusion (AO) pass: 10-17 ms each, 54-108 ms when lots load (the AO ray loop `0x0068AF31` in 85% of
+the samples of the 108 ms case). The pass never looks at the budget.
+
+### The game side (VERIFIED in full.asm)
+
+- Every lot level embeds two solvers, `lvl+0x290` (wall AO, vtable 0x00FF0594) and `lvl+0x2E8` (vtable 0x00FF0714).
+  0x006A8BA0 (the room solve, from the lot lighting update) calls slot +0xC of both when `[lvl+0x88] >= 0`.
+- **0x00688920, the solver driver** (slot +0xC of both vtables), thiscall(stopwatch*, float budget), ret 8:
+  `if ([s+0x14] != 2 && [s+8]->vfunc+0xC()) [s+0x14] = s->vfunc+0x1C(stopwatch, budget)`. The step's return value
+  becomes the state; the driver asks again every frame until it is 2. The CALL is `FF D2` at +0x2B; its return address
+  (+0x2D) is `89 46 14` (the store).
+- **0x0068B810, the wall AO step** (slot +0x1C of 0x00FF0594 = **0x00FF05B0**, its only reference), thiscall, ret 8,
+  returns the next state:
+  - level `[s+4]`, outdoor room = RoomById(level, `0x005BFB90()`) (0x006A6550). No room: returns
+    `[level+0x280] ? 2 : 0`. No walls (`(room+0xDC - room+0xD8) / 4 == 0`): `[s+0x18] = 0`, returns 2.
+  - **state 1 (refinement):** `v = [s+8]->vfunc+0x10()`; **v < 0: returns 1**, i.e. the engine's own "not now, try again
+    next frame"; else picks the highest detail level `i < MaximumDetailLevel` whose predicted cost stays under AO.ini
+    WallMillisecondsBudget (`[0x011CF4A0+0x24]`, int ms, 10); none: 2; else one pass at that level, returns 2.
+  - **other states (0, first pass):** one pass at detail 0, `[s+0x18]` = its elapsed ms, returns 1.
+  - a pass: lock the AO image (0x00618DF0), `0x0068B2B0` for every wall, unlock (0x00619160). The stopwatch is read
+    only after the loop; **the budget argument is not used at all**.
+- **Who waits for it:**
+  - 0x00688DB0 binds the AO image to the walls only when the state is 1 or 2 (before the first pass: walls without AO).
+  - **Lot load stage 20** (case 20 of the jump table 0x00AEB280 in the lot load state machine 0x00AEA680) calls
+    0x00ADBBA0 -> 0x006A5B50 for every level: both solvers' state != 0. Not yet: the stage yields and retries next
+    frame. Then it clears the lot lighting "loading" flag `[+0x4F]` (budgets 10/30 -> 5/15) and stage 21 sets the lot
+    renderer's "loaded" flag `[+0x1E]`, which the lot's render managers (0x00AE4D80) and the impostor LOD switch
+    0x00AD9E30 (returns "retry" (7) while not loaded) wait for. **So a lot finishes loading only after the first pass
+    of all its levels.**
+  - 0x006A5BF0 (both states == 2) <- 0x00ADBC30 <- 0x00AE06B0 (a jump thunk from the lot renderer, +0x240) <- the
+    ThumbnailManager's lot capture (CALL 0x00D5BE2F, "UI/ThumbnailManager", state machine near 0x00D5A2E0): a lot
+    thumbnail returns "not yet" until every level's refinement ran. Nothing else waits for the refinement.
+- Resets to state 0: slot +0x10 0x006895C0 (from message 0x0486519D through slot +4, and 0x006A4240 / 0x006A4180) and
+  level creation.
+- **Other callers of the driver:** the synchronous level solve **0x006A4180** (from the lot LOD switch setup 0x00ADBAD0 <-
+  0x00AEB3F0 <- 0x00AD9E30): resets both solvers and drives each once with the 60,000 ms budget `[0x00FF3460]`. The tool
+  mode passes 1000 ms. The impostor pump 0x00AD97E0 runs the lot pass (0x00C7CEA0) only in the tool mode.
+
+### The gate (features/lot_lighting_motion.cpp, `StartWallAo` / `Hook_WallAoStep`)
+
+- Slot swap of 0x00FF05B0 through `SlotChain` (site `WallAoStep`, **layer `Gate`, the outermost**: the gate recognises
+  the driver by its own return address, so nothing may sit outside it). No code bytes change.
+- Start checks the whole driver body (53 bytes) and the step's first 64 bytes against the studied code; any difference:
+  the feature stays off and says so.
+- The gate acts only when its return address is the driver's (+0x2D) and `0 < budget < 100 ms` and the state is 0 or 1.
+  Everything else (the synchronous solve, the tool mode, any unknown caller or state) goes to the game unchanged.
+- **While the camera moves** (`LotLightingMotion` camera, 300 ms hold): the first pass (state 0) returns 0 and the
+  refinement (state 1) returns 1 without a pass, each for at most `firstPassWaitMs` (2000 ms, Developer slider "Longest
+  wait of a pass while moving"; counted per state from the first deferral since a pass of that state last ran), then one
+  runs anyway. So however long the camera moves, a deferred pass of each kind still runs at least every 2 s (a lot with
+  several waiting levels gets one of them per 2 s), and all of them run, one per frame, as soon as it stops.
+- **Always:** at most one pass of >= 1 ms per frame across all lots (a frame = between two Presents, counted by the
+  Present callback; when no Present came for 250 ms, a frame is 33 ms). Passes that take under 1 ms (no room, no walls)
+  do not use up the frame.
+- Returning the current state is exactly what the engine does itself in state 1 when its estimate is negative: the
+  driver stores it unchanged and asks again next frame. Nothing else reads the step's return value.
+- **Visible effect:** outdoor walls of a lot that loads while you pan get their AO shading when the camera stops (or
+  after 2 s), one level per frame; such a lot finishes loading (shown instead of its impostor) up to about 2 s later
+  while panning. The AO detail itself is unchanged (the refinement still picks its level from WallMillisecondsBudget).
+- **Not done:** capping WallMillisecondsBudget while moving (round3 L2): it only shortens the refinement and would change
+  the detail chosen for good; the deferral covers both passes. Making the pass resumable per wall (L3): a
+  re-implementation, not needed unless the deferral looks bad.
+- Counters (Developer > Profiler > Performance): step calls, first passes / refinements run, held while moving (first /
+  refinement), passes run after the wait, moved to a later frame, passed through, pass time (average, longest,
+  last). The Frame Profiler's "Wall AO pass" counter (inner layer) times only the passes that run.
+
+## How it works: Remember Missing Files (round 3, sections 3.3 and 3.4)
+
+Measured (round3.md section 3): with the lookup cache on, ~36% of FindProvider calls are keys that exist in no package
+(the resolve 0x007D8110 looks a key up and, on a miss, looks up the variant 0x007D7580 builds: group ^ 0x08000000, and
+for 5 types with instance-high 0 also instance ^ 0x08000000). Each costs a full scan (~19 us) and together they are 78%
+of the remaining lookup time; cache hits still probe ~17 non-read-only packages (~1.3 us each hit).
+
+### Absent entries
+
+- The game's 0 answer is stored like a found one (provider 0, index "all": every non-read-only package counts as above
+  it), under the same generation rules, and re-checked by probing every non-read-only package; any "yes": the game's
+  lookup runs and replaces the entry. On an answer from memory the cache returns 0 and leaves `*priorityOut` alone, as
+  the game does.
+- **Why it is correct:** read-only packages cannot gain keys without RegisterDatabase / DatabaseChanged (generation);
+  every other package is probed (or its writes are counted, below).
+- **The one read-only exception (VERIFIED, 0x007345D0 / 0x00734710):** a read-only package with no key set
+  (`[db+0xB0] == 0`) whose file cannot be opened at that moment answers "no" for every key. After the game's lookup,
+  such a package is closed with no key set (`[db+0xB0] == 0 && [db+0x14] == 0`; a successful probe leaves it open, and
+  the idle close builds the key set before closing). `Remember` checks every read-only package above the answer (all of
+  them for "absent") and stores nothing when one is in that state (counter "not remembered (a read-only package could
+  not answer for sure)"). This check now also protects found answers (it applies whether or not Remember Missing Files
+  is on).
+
+### Write epochs (zero-probe answers)
+
+The probe is OpenRecord(key, 0, 1, 6, 1, 0). For each non-read-only class, every code path that can change its answer
+was traced (three read-only studies of full.asm, 2026-09-29; V = read in the disassembly):
+
+| Class (vtable) | What the probe reads | Writers hooked (slot: function) | Bump when |
+|---|---|---|---|
+| DPF, writable package (0x00FB2600; derived 0x01048DA0 overrides only +0x7C / +0x84) | hash index `[this+0x2D0]` (vfunc +0x28) under the mutex +0x270; closed: auto-open 0x004A6860 -> slot +0x18 | +0x00 dtor 0x004A8D00 / 0x00996630, +0x08 shutdown 0x004A6AE0, +0x18 open 0x004A76E0, +0x1C close 0x004A8D20, +0x24 flush / compaction 0x004A9B70, +0x34 OpenRecord 0x004A94C0, +0x3C CloseRecord 0x004A8E00, +0x40 DeleteRecord 0x004A85A0, +0x5C set index 0x004A6690, +0x8C load index 0x004A9950, +0x9C convert index 0x004A6C80; **entry** of the non-virtual direct write 0x004A7FC0 (callers 0x007D7A50 / 0x007D7B30 / 0x007D7C10, KeyList copies; 0x004AE510, compaction temp) | always, except OpenRecord (a record asked with write access or a disposition other than 6 / 3: insert or replace) and CloseRecord (`[rec+8] == 0x12E4A892`, a writable record: commit 0x004A8910 removes and re-inserts the key, and leaves it removed on failure) |
+| DDF, loose-file folder (0x00FB2420) | map `[this+0x50]` under the mutex +0x80 when `[this+0x0C]` | +0x00 dtor 0x004A6030, +0x08 0x004A3950, +0x18 open 0x004A3AD0 (full rescan), +0x1C close 0x004A5240, +0x2C set location 0x004A4370, +0x34 OpenRecord 0x004A62B0, +0x40 DeleteRecord 0x004A52A0, +0x58 one-file refresh 0x004A6100, +0x5C rescan 0x004A5340 (both also from the directory watcher thread, through the vtable; DatabaseChanged comes **after** the change) | always, except OpenRecord: whenever a record is asked (it inserts a key whose file appeared on disk even for reading) |
+| Packed stream (0x00FFD790; not the read-only class) | open mode `[this+0x14]` and index `[this+0x70]` | +0x00 dtor 0x0072CD30, +0x08 0x0072C6A0, +0x18 open 0x0072D790, +0x1C close 0x0072C8F0, +0x2C set location 0x0072CD50 (it cannot create or delete records) | always |
+| MemoryDB (0x00FFD5F8) | not counted: the non-virtual PutResource 0x0072C350 (callers 0x007D7CF0 / 0x007D7DD0 / 0x007D7EB0, 0x00D57B90) inserts keys | - | always probed |
+| ContentManager (0x01046EE8, downloaded content, -1200) | not counted: it forwards to sub-databases and its maps change in non-virtual install code (0x0098B5E0, 0x009905E0, 0x00989B50, 0x00984B60, 0x00987C20, ...) | - | always probed |
+
+- Every studied function's first bytes are checked before its class is counted; a class with any difference, an
+  unreadable slot, or a slot another module changed stays probed (all or nothing per class). The DPF classes also need
+  the entry hook of 0x004A7FC0 (`EntryChain` site `DpfWriteDirect`, prologue `83 EC 28 53 56`, no jump lands inside
+  it). Record objects need no hook: they close through the database's slot +0x3C (0x004AD9F0, dtor 0x004AE080).
+- Counters (`WriteBegin` / `WriteEnd` around each hooked call): `g_writeBusy` (writes in progress), `g_writeSeq` (bumped
+  at begin and end) and a per-database epoch in 1024 buckets by pointer (a shared bucket only costs an extra re-check).
+  Nested calls (OpenRecord -> DeleteRecord, flush -> close / open, the probe's own auto-open) just count twice.
+- An entry stores the sum of the epochs of its **counted** databases (the non-read-only ones above it, and its own
+  package when it is not read-only). The sum is taken only when no write was in progress and none happened since
+  before the game's lookup (seqlock on `g_writeSeq`), else "unknown".
+- **Answer:** sum unchanged (read with no write in progress and the sequence stable around it) -> no probe of the
+  counted databases, and none of a read-only answering package (same premise as the cache itself); databases of
+  uncounted classes are still probed. Sum changed or unknown: every package is probed as before; if that passes with no
+  write meanwhile, the entry's sum is refreshed (counter "sums refreshed"). A write therefore costs each affected entry
+  one probe round, not a game lookup.
+- Switching the feature, or the lookup cache, on or off bumps the generation: nothing stored under the other mode is used.
+- **Grace period:** a write that was already running inside a game function when its slot was swapped is not bracketed.
+  Sums are neither taken nor trusted during the first 10 s after the hooks go in (answers are probed as before
+  meanwhile); every such call has long returned by then.
+
+## How it works: Faster File Lists (round 3, section 4.2)
+
+Measured: CAS LoadBlendGeometryCallback 0x005DA0C0 ("CAS/LoadBlendGeometries/ExpressionKeyList") asks ResourceMgr for
+every key of type 0x0A037DDA; every one of ~300 packages walks its whole index (0x004AC9C0 + predicate 0x005949F0).
+17% of the SimService-dominated hitch samples, 5.2% of all hitch samples in the old session.
+
+### The game side (VERIFIED)
+
+- **0x004B1AE0 ResourceMgr::GetKeyList** thiscall(vector* out, filter*, bool unique), ret 0xC; slot +0x20 of the base
+  vtable (**0x00FB2DC0**, its only reference). `unique` (byte) false: `for each {db, prio} in [this+0x30, this+0x34)`
+  (read once, no lock) `count += db->vfunc+0x30(out, filter)`; returns count. `unique` true: another list (+0xA0) and a
+  set; not cached.
+- **0x00736660 ResourceSystem::GetKeyList** (slot +0x20 of the derived vtable, **0x00FFE270**): calls 0x004B1AE0 directly,
+  then, when the count and `out` are not 0, returns **0x004AFCD0(out)** (cdecl: sort + unique of the whole vector,
+  returns its size).
+- `out` = {begin, end, capacity, allocator}, 16-byte keys {instance lo, instance hi, type, group}. The databases only
+  append: in place when end < capacity, else the vector insert **0x006D3810** (thiscall(pos, value*), ret 8, doubles the
+  capacity), or resize 0x0045A5A0 then fill; they return the number appended.
+- **The type filter** {vtable **0x00FD8248**, type}: its only virtual the databases use is +4 = **0x005949F0**
+  (`mov eax,[esp+4]; mov edx,[eax+8]; xor eax,eax; cmp edx,[ecx+4]; sete al; ret 4`: key.type == this+4). 62 code
+  sites build it.
+- The read-only class's +0x30 is 0x00734550: with its key set present, a walk of that set (0x0072DE50); else open the
+  file, walk the index (0x0072C930 -> index vfunc +0x1C = 0x004AC9C0), close. **The order of the keys inside one package
+  therefore already differs between the two paths in the game.** A failed open returns 0 keys.
+
+### The cache (features/resource_cache.cpp, `StartKeyLists`, `Hook_KeyListBase` / `Hook_KeyListDerived`, `EmulateKeyList`)
+
+- Both slots through `SlotChain` (sites `KeyListBase` / `KeyListDerived`, layer `ResourceCache`; the profiler's "Key list"
+  counter is outside). Start checks the base function's start and its non-unique loop (+0xF6), the vector insert (the
+  CALL at +0xA4), the derived function (and that its first CALL reaches the base), the sort (its second CALL), the type
+  filter's predicate and the read-only class's +0x30 against the studied bytes.
+- Cached calls: `unique` false, an `out` vector, a filter whose vtable is the type filter's, no list change in progress.
+  Everything else goes to the game.
+- The cache runs the same loop itself. A read-only package whose keys of that type were captured under the current
+  generation (and less than 60 s ago): its keys are appended as the game appends them and its return value added. Any
+  other package, or no capture yet: the real call; for a read-only package the keys it appended are captured and kept
+  when the generation did not move and the answer was sure (keys found, or an empty list with the key set present / the
+  file open before and after). The derived hook then sorts and uniques exactly like 0x00736660.
+- Same packages in the same order, same keys per package; only the order inside one package can be the other of the
+  game's own two orders. Limits: 262,144 keys in total (4 MB; more: everything is dropped), 65,536 per list.
+- Development check (1 call in N, as the lookup cache): the real calls run for every read-only package with a kept list
+  and their keys are compared as a set (plus the return value); a difference turns the file list cache off for the
+  session and is logged.
 
 ## How it works: Faster Texture Compression (C9)
 
@@ -411,16 +600,16 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 
 | File | Symbols | Role |
 |---|---|---|
-| `features/resource_cache.{h,cpp}` | `Start`, `Stop`, `Hook_FindProvider`, `Find`, `Recheck`, `Remember`, `BuildSnapshot`, `MaybeFingerprint`, `Verify`, `Hook_RegisterDb*`, `Hook_SetDbPriority`, `Hook_DbChanged`, `CheckReadOnlyClass`, `TakeLookupNote`, `GetStats`, `StatusText`, `RenderDeveloperUI` | the cache |
-| `features/lot_lighting_motion.{h,cpp}` | `Start`, `Stop`, `Hook_LotLightBudget`, `SampleCamera`, `ReadEye`, `ParseRootGetter` / `ParseCameraGetter` / `ParseEyeRead`, `SetBudgetMs`, `CameraMoving`, `StatusText`, `RenderDeveloperUI` | the budget wrapper |
+| `features/resource_cache.{h,cpp}` | `Start`, `Stop`, `Hook_FindProvider`, `Find`, `Recheck`, `Remember`, `RoReliable` / `ReadOnlyAboveReliable`, `BuildSnapshot`, `MaybeFingerprint`, `Verify`, `Hook_RegisterDb*`, `Hook_SetDbPriority`, `Hook_DbChanged`, `AcquireWatchers` / `ReleaseWatchers`, `CheckReadOnlyClass`, `TakeLookupNote`, `GetStats`, `StatusText`, `ReportLine`, `RenderDeveloperUI`; round 3: `StartMisses` / `StopMisses` / `UpdateMisses`, `kSpecs` + `EpochHook<I, N>` + `Hook_DpfWriteDirect`, `WriteBegin` / `WriteEnd`, `EnableEpochs` / `DisableEpochs`, `InstallClassHooks`, `EpochSum` / `StableEpochSum` / `RefreshSum`; `StartKeyLists` / `StopKeyLists`, `Hook_KeyListBase` / `Hook_KeyListDerived`, `EmulateKeyList`, `KlFind` / `KlStore`, `AppendKey`, `TakeKeyListNote` | the lookup cache, missing files + write epochs, the file list cache |
+| `features/lot_lighting_motion.{h,cpp}` | `Start`, `Stop`, `Hook_LotLightBudget`, `SampleCamera`, `ReadEye`, `ParseCamera` (`ParseRootGetter` / `ParseCameraGetter` / `ParseEyeRead`), `UpdatePresentSampler` / `OnPresentSample`, `SetBudgetMs`, `CameraMoving`, `StatusText`, `RenderDeveloperUI`; `StartWallAo` / `StopWallAo`, `Hook_WallAoStep`, `FramePassUsed`, `RunPass`, `WallAoStatusText`, `RenderWallAoDeveloperUI` | the budget wrapper and the wall shading gate |
 | `features/dxt_codec.{h,cpp}` | `Ref::EncodeDxt1/5`, `Ref::EncodeBlock`, `Fast::EncodeDxt1/5`, `FetchFull` / `FetchPartial` / `FetchAlphaPartial` / `Endpoints` / `PowerAxis` / `EncodeColor` / `EncodeAlpha` (the game's helpers), `EncodeColorGroup` / `EncodeAlphaFast` / `FlushGroup` (fast), `X87RangeBelowEps`, `CpuHasSse2` | the DXT algorithm, pure (also built by `tools/dxt_test`) |
 | `features/fast_dxt.{h,cpp}` | `Start`, `Stop`, `Hook_Dxt1/5` -> `Encode`, `RunFast`, `GameBlock` (fallback), `Checked`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `features/refpack_codec.{h,cpp}` | `Compress` (fast), `Decompress` (0x004EB3B0 translated), `GameCompress` / `GameCore` (0x004EC0A0 + 0x004EB750 / 0x004EBB90 translated), `ParamsFor`, `SizeBound`, `Context` | the RefPack format, pure (also built by `tools/refpack_test`) |
 | `features/fast_refpack.{h,cpp}` | `Start`, `Stop`, `Tick`, `Hook_StreamWrite`, the context pool, the per-thread counting-run pairing, `Check`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `tools/dxt_test/dxt_test.cpp`, `tools/refpack_test/refpack_test.cpp` | offline tests (console only, no files written) | build and run lines in their headers and below |
-| `patches/performance_patches.cpp`, `patches/performance.h` | `ResourceLookupCachePatch`, `LotLightingMotionPatch`, `FastTextureCompressionPatch`, `FastCacheCompressionPatch`, `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` / `*Status` | the ApexPatch features, their registration and the menu's accessors |
-| `framework/slot_chain.{h,cpp}` | `SlotChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction`; sites incl. `RefPackCompress`, layer `FastCompress` | layered vtable-slot hooks (profiler + cache, profiler + fast compressor) |
-| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, layers `FrameProfiler`, `FastDxt` | layered entry hooks (trampoline + JMP written with all threads suspended) |
+| `patches/performance_patches.cpp`, `patches/performance.h` | `ResourceLookupCachePatch`, `ResourceLookupMissesPatch`, `FileListCachePatch`, `LotLightingMotionPatch`, `WallShadingWhileMovingPatch`, `FastTextureCompressionPatch`, `FastCacheCompressionPatch`, `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` / `*Status` | the ApexPatch features, their registration and the menu's accessors |
+| `framework/slot_chain.{h,cpp}` | `SlotChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction`; sites incl. `RefPackCompress`, `WallAoStep`, `KeyListBase`, `KeyListDerived`; layers `Gate` (outermost), `FrameProfiler`, `ResourceCache`, `FastCompress` | layered vtable-slot hooks (profiler + cache, profiler + fast compressor, gate + profiler) |
+| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, `DpfWriteDirect`; layers `FrameProfiler`, `FastDxt`, `ResourceCache` | layered entry hooks (trampoline + JMP written with all threads suspended) |
 | `framework/memory_patch.{h,cpp}` | `MemPatch::WriteCodeSuspended` | code write with every other thread suspended |
 | `framework/game_addresses.{h,cpp}` | ids `ResRegisterDb` .. `CameraGetter`, `RefPackDecompress`, groups `ResourceCache`, `LotLightingMotion`, `FastTextureCompression`, `FastCacheCompression` | addresses (fixed on Steam, signatures elsewhere) |
 | `features/frame_profiler.cpp` | `Hook_FindProvider` (SlotChain::Next, `kXCacheHits`), `Hook_RefPackCompress` (SlotChain::Next), `DxtEncode` (EntryChain::Next), `AttachSlots` / `DetachSlots` (`T_ResLookup`, `T_RefPackCompress`), `AttachTarget` / `DetachTarget` (`T_DxtEncode1/5`), report lines | profiler side |
@@ -446,6 +635,15 @@ with `research\port169\sigcheck.pl`: 133 of 133 ok, and each alternate matches o
 | DxtEncode1 / DxtEncode5 | 0x006152F0 / 0x006154B0 | Sig (entry) |
 | RefPackCompress / RefPackCompressSlot | 0x004EC200 / 0x00FB901C | Sig / SlotsOf(1) |
 | RefPackDecompress | 0x004EB3B0 | Sig: the CALL in the stream read 0x004EC010 (not the entry, which S3SS detours); optional |
+| WallAoStep / WallAoStepSlot | 0x0068B810 / 0x00FF05B0 | Sig (entry; alternate at +0x21) / SlotsOf(1) |
+| WallAoDriver | 0x00688920 | Sig (the whole body; alternate at +0x1B) |
+| ResKeyList / ResKeyListSlot | 0x004B1AE0 / 0x00FB2DC0 | Sig (entry; alternate = the derived function's first CALL) / SlotsOf(1) |
+| ResKeyListDerived / ResKeyListDerivedSlot | 0x00736660 / 0x00FFE270 | Sig (the whole body) / SlotsOf(1) |
+| KeyTypeFilterVtable | 0x00FD8248 | Sig (dword stored by CAS 0x005DA0C0 next to the type 0x0A037DDA) |
+| DpfVtable / DpfDerivedVtable / DdfVtable / PackedStreamVtable | 0x00FB2600 / 0x01048DA0 / 0x00FB2420 / 0x00FFD790 | Sig (dword stored by the constructor; DPF alternate: its destructor) |
+| DpfWriteDirect | 0x004A7FC0 | Sig (entry) |
+
+Round 3 ids: `sigcheck.pl` 147 of 147 ok (every new primary signature matches once; the alternates too).
 
 Run-time checks on every build (not signatures): the read-only class's OpenRecord / base OpenRecord / DeleteRecord bytes
 (`CheckReadOnlyClass`); the budget CALL's target and the `D9` / `DD` after it; the getters' shapes (`A1 imm32 C3`,
@@ -481,6 +679,17 @@ each session compared with the game.
   outer layers of the entry chain / slot chain, so they time whichever encoder runs (the fast one when on). A texture
   or stream checked against the game is timed with both inside the counter (the dev check is slower on those calls).
   The profiler's Hooks table says "the fast encoder / compressor is inside".
+- **Round 3 and the official Sims3SettingsSetter:** its source has none of the round 3 addresses (the AO step / driver /
+  slot, GetKeyList and its slots, the database vtables and their methods, 0x004A7FC0); its lighting quality patch hooks
+  0x006A0E00 / 0x006A4480 / 0x0069FD60 / 0x006A8D20 / 0x006A8C88 / 0x006A8DE0, none of which is the AO solver.
+- **Wall shading gate and Lot Lighting While Moving:** independent features sharing the camera detection (and its
+  per-frame Present sample). The budget cap makes the room solves resumable pieces; the gate removes the one piece that
+  is not. The Frame Profiler's "Lot room solve" includes the AO passes that run (they happen inside it).
+- **Night Lights and the gate:** Night Lights never resets the wall AO (only message 0x0486519D and level creation do);
+  its room relights are unaffected.
+- **Remember Missing Files and the file list cache** share the lookup cache's generation and package-list watchers
+  (installed while either cache is on). The epoch hooks are installed only while both the lookup cache and Remember
+  Missing Files are on.
 - **Official Sims3SettingsSetter and compression:** its "RefPack decompressor" replaces the decoder 0x004EB3B0 (it only
   reads streams); the fast compressor's streams use the same format and are checked in game through whatever decoder
   is installed (the game's or S3SS's). Nothing in S3SS touches the compressor, the stream vtable or the DXT encoders
@@ -494,7 +703,9 @@ each session compared with the game.
   and caught by the development checks.
 - **Transient open failure (C1, INFERRED risk):** if a read-only package without its key set fails to open during the
   game's own lookup (file locked by another program), the game answers with a lower package; that answer could be stored
-  and served up to 60 s (the game's own resource cache keeps such a resource too). The development checks would log it.
+  and served up to 60 s (the game's own resource cache keeps such a resource too). Since round 3 `Remember` refuses to
+  store when a read-only package above the answer is closed with no key set after the lookup (the state a failed open
+  leaves); only a racing successful open by another thread could hide it. The development checks would log it.
 - **Many non-read-only packages above the answers (C1):** each answer probes them all; more than 32 above an answer =
   not stored. The Developer line "N not of the read-only class" shows the count; with `writable` Resource.cfg lines or
   many code-registered databases the gain shrinks.
@@ -532,11 +743,33 @@ each session compared with the game.
   window would leave the slot pointing into unloaded code (ASI loaders never unload; noted for completeness).
 - **Do not** swap the RefPack slot or hook the DXT entries outside `SlotChain` / `EntryChain` (the profiler and the fast
   paths would lose each other).
+- **Wall shading gate must stay the outermost layer** of 0x00FF05B0: it recognises the driver by its own return address.
+  A layer outside it would make every call "another caller" (passed through: safe, but the gate would do nothing).
+- **Do not defer an AO pass without a bound:** lot load stage 20 waits for the first pass (the lot would stay unfinished,
+  i.e. on its impostor, for as long as the camera moves) and the ThumbnailManager's lot capture for the refinement. The
+  2 s wait per state and the per-frame pass keep both moving.
+- **Do not defer calls with a budget of 100 ms or more:** the synchronous level solve (lot LOD switch, 60 s) and the tool
+  mode (1000 ms, whose impostor pump runs the lot pass without Presents) expect the pass to run.
+- **Absent entries and read-only packages (INFERRED risk):** a read-only package that failed to open during the game's
+  lookup and was then opened by another thread before `Remember` looked at it would look reliable; the wrong "absent"
+  answer would be kept up to 60 s. Needs an open failure and a racing successful open within microseconds; the
+  development checks would log it.
+- **Write epochs cover only the traced classes and paths.** A write path missed by the study would leave a counted
+  database's answers stale until the next generation or 60 s. The development checks (1 in 64, or every answer for
+  10 s) compare with the game; any difference turns the cache off. Classes are all-or-nothing: a changed method keeps
+  its class probed.
+- **Epoch buckets:** 1024 buckets by pointer; writes to a database sharing a bucket re-check more entries (never fewer).
+- **DDF record opens bump its epoch** (a record open can insert a newly appeared file): a mods folder with many loose
+  files read often would keep re-checking the entries below it (probes, not game lookups).
+- **File list order:** within one read-only package the kept list is in the order of the walk that captured it (key set
+  or index); the game itself returns either order depending on whether the file is open. The known callers (CAS) sort
+  and unique; a caller that depended on the order inside one package would already be inconsistent in the game.
+- **File list memory:** up to 4 MB of keys in the 32-bit process; the Developer line shows lists and keys kept.
 
 ## Testing in game
 
 Faster Game File Lookups (development build, Developer > Profiler > Performance):
-1. Turn it on (SYSTEM > Performance). Log: `[SlotChain] ...: layer 1 installed` five times and `[ResourceCache] On: ...`.
+1. Turn it on (SYSTEM > Performance). Log: `[SlotChain] ...: layer 2 installed` five times (layer numbers: 0 gate, 1 profiler, 2 cache, 3 fast compressor) and `[ResourceCache] On: ...`.
 2. Load a save, pan and zoom around busy lots for a few minutes, enter CAS, Buy and Build, Edit Town, travel, save and
    load again. Expect: "Checks: N equal, 0 different"; "changes the hooks missed 0"; list changes counted at world load;
    "answered from memory" above ~90% after warm-up; "packages asked" a small number (1 + the non-read-only packages).
@@ -558,6 +791,42 @@ Lot Lighting While Moving:
    3 and 6 ms. At night with Night Lights: lamps placed / removed still relight their rooms (a moment later while the
    camera moves).
 5. Build / Buy mode and Edit Town still relight at once when still.
+
+Wall Shading While Moving (on by default; development build for the counters):
+1. Log: `[SlotChain] Wall AO solver step: layer 0 installed ...` and `[WallShading] On: wall shading step 0x0068b810 (slot
+   0x00ff05b0) gated for calls from the solver driver 0x00688920 (return 0x0068894d) ...`.
+2. Developer > Profiler > Performance while panning over a neighborhood that loads: "held while moving" grows, "passed
+   through" stays small (only the synchronous solve at LOD switches), "first passes run after the wait" only on long
+   pans.
+3. Frame Profiler, camera test as in round 3: no moving hitch with "Lot room solve" over ~3.5 ms; the "Wall AO pass"
+   counter shows passes only in still frames (or after 2 s), at most one per frame; the 54-108 ms lot-load hitches
+   should become one pass per frame after the camera stops.
+4. Visual: pan quickly to a new part of town and stop: the new lots appear (leave their impostor) at most ~2 s later than
+   before; outdoor walls may look flat for a moment and get their soft shading within a few frames of stopping. Nothing
+   should stay unshaded or unloaded after the camera has been still for a second.
+5. Build mode, Edit Town (tool mode) and lot switches must behave exactly as before (those paths are passed through).
+
+Remember Missing Files (experimental; turn on "Faster game file lookups" first):
+1. Log: `[ResourceCache] Write epochs: DPF counted; DPF (derived) counted; DDF counted; packed stream counted` (any
+   "probed (...)" names the class and why) and `[EntryChain] DPF direct record write (0x004a7fc0): layer 2 installed`.
+2. Developer line "Missing files (on)": "answered from memory" should reach about a third of all lookups after warm-up;
+   "not remembered (a read-only package could not answer for sure)" small. "Package list: ... (asked on every answer
+   unless counted: N)" gives the counted databases.
+3. "Write epochs: ... answers with no probe of them" should dominate the answers; "sums refreshed" grows slowly (about
+   one wave per compositor / cache write); the average "packages asked" per answer should fall towards 0-2.
+4. "Check every answer for 10 s" in CAS (outfit changes write the CAS caches), in Build / Buy (lot saves write the lot
+   DPF) and right after saving the game: still 0 different. Any mismatch line: keep it off and send it (it says
+   "(write epochs)" when the entry relied on them).
+5. Frame Profiler: "Resource lookup" per hitch should drop again (round 3 estimate: 4.1 ms to about 1.5 ms per hitch
+   frame); the hitch lines show ", absent from cache N".
+
+Faster File Lists (experimental):
+1. Log: `[FileListCache] On: GetKeyList 0x004b1ae0 / 0x00736660 answered for the key type filter 0x00fd8248 ...`.
+2. Enter CAS, change outfits and hair of several Sims, load a household: the Developer line "package lists from memory"
+   should dwarf "packages asked" after the first pass; "File list checks: N equal, 0 different".
+3. Frame Profiler: the "Key list" counter's ms per call should drop sharply after the first call of each type; the CAS
+   SimService hitches (`0x005DA175` on the stack in sampling runs) should shrink.
+4. Any file list mismatch line in the log: keep it off and send the line.
 
 Offline tests first (console only, no files written; x86 Native Tools Command Prompt for VS 2022, or after
 `"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat"`):
@@ -584,7 +853,7 @@ Faster Texture Compression (development build, Developer > Profiler > Performanc
 6. After several clean sessions: flip `enabledByDefault` to true (public build: only the first 16 textures are checked).
 
 Faster Cache Compression (development build):
-1. Turn it on. Log: `[SlotChain] RefPack stream write: layer 2 installed ...` and `[FastRefPack] On: ... the game's
+1. Turn it on. Log: `[SlotChain] RefPack stream write: layer 3 installed ...` and `[FastRefPack] On: ... the game's
    decoder 0x004eb3b0`.
 2. Play as above plus save the game (the package writer's counting runs) and load it again. Expect "Checks: N equal, 0
    different" (every stream is checked by default), "writes after our counting run" > 0 after a save, "did not fit" 0.
@@ -596,10 +865,12 @@ Faster Cache Compression (development build):
 
 ## Open items
 
-- Negative caching (the game's misses retry with a transformed key, `0x007D8110`): not done; misses were 0 in the
-  measurement.
-- Per-package write hooks for the writable DPF / memory databases (so they need no probe per answer): only if the
-  Developer line shows many of them.
+- Negative caching and per-database write epochs: done in round 3 (Remember Missing Files). Open: MemoryDB (needs an
+  entry hook on PutResource 0x0072C350) and the ContentManager database (non-virtual install code) stay probed; a
+  resolve-level cache at 0x007D8110 (key -> resolved key) would also remove the first failing lookup.
+- Which databases the "not read-only" ones are in the user's game (round3.md section 8, question 1): the Developer line
+  gives the count and how many are counted; a per-generation dump of index / priority / vtable would answer it fully.
+- Wall shading: if the 2 s first-pass wait looks bad, make the pass resumable per wall (round3 L3) or lower the wait.
 - Why the current lot relights continuously while the camera moves (plan section 10, question 2).
 - How often the game registers / unregisters packages or changes priorities while playing (lot streaming, travel, CAS):
   each one empties the cache. The Developer line "list changes" shows it; if it is frequent, a targeted invalidation

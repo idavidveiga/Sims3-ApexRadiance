@@ -14,7 +14,8 @@
 //   - Before the first write the entry must hold the expected prologue; later, the JMP Apex wrote. Anything else
 //     (another module hooked it) makes Install fail and is never overwritten by Remove.
 // Used by the Frame Profiler (dev build, the outer layer) and the fast DXT encoder (features/fast_dxt.h) on the game's
-// CPU DXT1 / DXT5 encoders. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
+// CPU DXT1 / DXT5 encoders, and by the resource lookup cache's write epochs (features/resource_cache.h) on the writable
+// package database's direct record write. Thread-safe (Install / Remove serialise on one mutex; Next is lock-free).
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -24,9 +25,11 @@ namespace EntryChain {
 enum class Site : int {
     DxtEncode1, // 0x006152F0 cdecl(Dst*, Src*), prologue 55 8B EC 83 E4 F0 (push ebp; mov ebp,esp; and esp,-16)
     DxtEncode5, // 0x006154B0, same prologue
+    DpfWriteDirect, // 0x004A7FC0 thiscall(5 args), ret 0x14: the writable package database's direct record write; prologue
+                    // 83 EC 28 53 56 (sub esp,28h; push ebx; push esi); bracketed by the write epochs of features/resource_cache.cpp
     Count
 };
-enum class Layer : int { FrameProfiler, FastDxt, Count }; // lower = outer
+enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, Count }; // lower = outer
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

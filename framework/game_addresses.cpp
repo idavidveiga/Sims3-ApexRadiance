@@ -157,6 +157,19 @@ constexpr Info kInfo[] = {
     {"CameraRootGetter", 0x006E8330},
     {"CameraGetter", 0x006E8400},
     {"RefPackDecompress", 0x004EB3B0},
+    {"WallAoStep", 0x0068B810},
+    {"WallAoStepSlot", 0x00FF05B0},
+    {"WallAoDriver", 0x00688920},
+    {"ResKeyList", 0x004B1AE0},
+    {"ResKeyListSlot", 0x00FB2DC0},
+    {"ResKeyListDerived", 0x00736660},
+    {"ResKeyListDerivedSlot", 0x00FFE270},
+    {"KeyTypeFilterVtable", 0x00FD8248},
+    {"DpfVtable", 0x00FB2600},
+    {"DpfDerivedVtable", 0x01048DA0},
+    {"DdfVtable", 0x00FB2420},
+    {"PackedStreamVtable", 0x00FFD790},
+    {"DpfWriteDirect", 0x004A7FC0},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -331,6 +344,22 @@ const Entry kTable[] = {
     {Id::CameraGetter, K::Target, W::Text, Id::CameraGetterCall, 0, {NOSIG, NOSIG}},
     // ---- Faster cache compression (docs/features/performance.md) ----
     {Id::RefPackDecompress, K::Sig, W::Text, None, 0, {{"3B C2 77 14 8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 12, M::Call}, {"8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00", 8, M::Call}}},
+    // ---- Wall shading while moving (docs/features/performance.md) ----
+    {Id::WallAoStep, K::Sig, W::Text, None, 0, {{"83 EC 34 55 56 8B F1 83 7E 04 00 74 14 E8 ?? ?? ?? ?? 8B 4E 04 50 E8 ?? ?? ?? ?? 8B E8 85 ED 75 18 8B 46 04 8A 80 80 02 00 00", 0, M::At}, {"8B 46 04 8A 80 80 02 00 00 F6 D8 5E 5D 1B C0 83 E0 02 83 C4 34 C2 08 00 8B 85 DC 00 00 00 2B 85 D8 00 00 00", -33, M::At}}},
+    {Id::WallAoStepSlot, K::SlotsOf, W::Image, Id::WallAoStep, 1, {NOSIG, NOSIG}},
+    {Id::WallAoDriver, K::Sig, W::Text, None, 0, {{"56 8B F1 83 7E 14 02 74 27 8B 4E 08 8B 01 8B 50 0C FF D2 84 C0 74 19 D9 44 24 0C 8B 06 8B 50 1C 51 8B 4C 24 0C D9 1C 24 51 8B CE FF D2 89 46 14 5E C2 08 00", 0, M::At}, {"8B 06 8B 50 1C 51 8B 4C 24 0C D9 1C 24 51 8B CE FF D2 89 46 14 5E C2 08 00", -27, M::At}}},
+    // ---- File list cache (docs/features/performance.md) ----
+    {Id::ResKeyList, K::Sig, W::Text, None, 0, {{"83 EC 10 53 33 C0 38 44 24 20 56 57 89 44 24 0C 0F 84 ?? ?? ?? ?? 8B B1 A0 00 00 00 8B B9 A4 00 00 00 3B F7", 0, M::At}, {"8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8 ?? ?? ?? ?? 85 C0 74 0D 85 F6 74 09 56 E8", 16, M::Call}}},
+    {Id::ResKeyListSlot, K::SlotsOf, W::Image, Id::ResKeyList, 1, {NOSIG, NOSIG}},
+    {Id::ResKeyListDerived, K::Sig, W::Text, None, 0, {{"8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8 ?? ?? ?? ?? 85 C0 74 0D 85 F6 74 09 56 E8 ?? ?? ?? ?? 83 C4 04 5E C2 0C 00", 0, M::At}, NOSIG}},
+    {Id::ResKeyListDerivedSlot, K::SlotsOf, W::Image, Id::ResKeyListDerived, 1, {NOSIG, NOSIG}},
+    {Id::KeyTypeFilterVtable, K::Sig, W::Image, None, 0, {{"57 8D 4C 24 64 51 C7 44 24 68 ?? ?? ?? ?? C7 44 24 6C DA 7D 03 0A 8B 10 8B 52 20", 10, M::Dword}, {"C7 44 24 68 ?? ?? ?? ?? C7 44 24 6C DA 7D 03 0A 8B 10 8B 52 20 8D 4C 24 34 51 8B C8 FF D2", 4, M::Dword}}},
+    // ---- Write epochs (docs/features/performance.md): the database classes' vtables from their constructors / destructors ----
+    {Id::DpfVtable, K::Sig, W::Image, None, 0, {{"33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 88 5E 0D 88 5E 0E C6 46 0F 01", 6, M::Dword}, {"C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8D 8E 68 03 00 00 E8", 2, M::Dword}}},
+    {Id::DpfDerivedVtable, K::Sig, W::Image, None, 0, {{"D9 EE 51 D9 1C 24 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 8D BE 98 03 00 00 C7 47 0C", 8, M::Dword}, NOSIG}},
+    {Id::DdfVtable, K::Sig, W::Image, None, 0, {{"33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 75 05 E8 ?? ?? ?? ?? 89 46 10 88 5E 14 89 5E 18", 6, M::Dword}, NOSIG}},
+    {Id::PackedStreamVtable, K::Sig, W::Image, None, 0, {{"33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 75 05 E8 ?? ?? ?? ?? 89 46 10 89 5E 14 C7 46 28", 6, M::Dword}, NOSIG}},
+    {Id::DpfWriteDirect, K::Sig, W::Text, None, 0, {{"83 EC 28 53 56 8B F1 8D 8E 70 02 00 00 68 ?? ?? ?? ?? 89 4C 24 10 E8 ?? ?? ?? ?? B3 02 84 5E 14", 0, M::At}, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
@@ -349,6 +378,10 @@ const Group kGroups[] = {
     {"LotLightingMotion", {Id::LotLightBudgetCall, Id::LotLightBudget, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"FastTextureCompression", {Id::DxtEncode1, Id::DxtEncode5}},
     {"FastCacheCompression", {Id::RefPackCompress, Id::RefPackCompressSlot}},
+    {"WallShadingWhileMoving", {Id::WallAoStep, Id::WallAoStepSlot, Id::WallAoDriver, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
+    {"FileListCache", {Id::ResKeyList, Id::ResKeyListSlot, Id::ResKeyListDerived, Id::ResKeyListDerivedSlot, Id::KeyTypeFilterVtable, Id::ResRegisterDb, Id::ResRegisterDbSlot,
+                       Id::ResRegisterDbDerived, Id::ResRegisterDbDerivedSlot, Id::ResSetDbPriority, Id::ResSetDbPrioritySlot0, Id::ResSetDbPrioritySlot1, Id::ResDbChanged,
+                       Id::ResDbChangedSlot0, Id::ResDbChangedSlot1, Id::ShadowedDbVtable}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

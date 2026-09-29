@@ -143,6 +143,9 @@ for uniqueness on Steam with `sigcheck.pl` (it must still resolve every id to th
 | Lot Lighting While Moving (`LotLightingMotion`, group `LotLightingMotion`) | LotLightBudgetCall, LotLightBudget, CameraRootCall, CameraGetterCall, CameraRootGetter, CameraGetter (the root global, camera offset and eye offset are parsed from those bytes) | "Not available on <version>: missing ..." / "The camera position was not found" |
 | Faster Texture Compression (`FastTextureCompression`, group `FastTextureCompression`) | DxtEncode1, DxtEncode5 (the prologue `55 8B EC 83 E4 F0` is checked by `framework/entry_chain.cpp`); the first 16 textures of a session are compared with the game's own encoder on every build | "Not available on <version>: missing ..." / "the entry bytes ... changed"; a difference turns it off |
 | Faster Cache Compression (`FastCacheCompression`, group `FastCacheCompression`) | RefPackCompress + RefPackCompressSlot; RefPackDecompress optional (the checks then use Apex's copy of the decoder) | "Not available on <version>: missing ..." |
+| Wall Shading While Moving (`WallShadingWhileMoving`, group `WallShadingWhileMoving`) | WallAoStep + WallAoStepSlot, WallAoDriver, the four camera ids; the driver's whole body and the step's first 64 bytes are checked at run time | "Not available on <version>: missing ..." / "... differs from the one studied; nothing was changed" |
+| Remember Missing Files (`ResourceLookupMisses`, group `ResourceCache`) | as Faster Game File Lookups; the write epochs also use DpfVtable, DpfDerivedVtable, DdfVtable, PackedStreamVtable and DpfWriteDirect, each class optional (its methods' first bytes checked; any difference = that class stays probed, logged by `[ResourceCache] Write epochs: ...`) | per class: "probed (...)" |
+| Faster File Lists (`FileListCache`, group `FileListCache`) | ResKeyList + slot, ResKeyListDerived + slot, KeyTypeFilterVtable, the four package-list methods + slots, ShadowedDbVtable; the base loop, the vector insert, the sort, the filter's predicate and the read-only class's key list are checked at run time | "Not available on <version>: missing ..." / "... differs from the one studied; nothing was changed" |
 
 Not part of this table: the map view probe (`features/map_view.cpp`) already finds its function at run time through the
 script binding name in `.rdata` and its `{function, name}` table, on any build; the Frame Profiler (development build
@@ -254,6 +257,19 @@ at +n" = the target of the CALL there, "dword at +n" = the value there.
 | CameraRootGetter | 0x006E8330 | Target(CameraRootCall) | - | Target(CameraRootCall) |
 | CameraGetter | 0x006E8400 | Target(CameraGetterCall) | - | Target(CameraGetterCall) |
 | RefPackDecompress | 0x004EB3B0 | Sig (CALL target) | `3B C2 77 14 8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00` call at +12<br>alt: `8B 44 24 0C 50 56 52 51 E8 ?? ?? ?? ?? 83 C4 10 5E C2 14 00` call at +8 (both inside the stream read 0x004EC010, not on the decoder's entry, which the official S3SS detours) | matches 1 / 1 (sigcheck.pl 2026-09-29: 134 of 134 ok) |
+| WallAoStep | 0x0068B810 | Sig | `83 EC 34 55 56 8B F1 83 7E 04 00 74 14 E8 ?? ?? ?? ?? 8B 4E 04 50 E8 ?? ?? ?? ?? 8B E8 85 ED 75 18 8B 46 04 8A 80 80 02 00 00` +0<br>alt: `8B 46 04 8A 80 80 02 00 00 F6 D8 5E 5D 1B C0 83 E0 02 83 C4 34 C2 08 00 8B 85 DC 00 00 00 2B 85 D8 00 00 00` +-33 | matches 1 / 1 |
+| WallAoStepSlot | 0x00FF05B0 | SlotsOf(WallAoStep), 1 | - | 1 slot |
+| WallAoDriver | 0x00688920 | Sig | the whole body `56 8B F1 83 7E 14 02 74 27 ... 89 46 14 5E C2 08 00` +0<br>alt: its last 25 bytes `8B 06 8B 50 1C 51 8B 4C 24 0C D9 1C 24 51 8B CE FF D2 89 46 14 5E C2 08 00` +-27 | matches 1 / 1 |
+| ResKeyList | 0x004B1AE0 | Sig | `83 EC 10 53 33 C0 38 44 24 20 56 57 89 44 24 0C 0F 84 ?? ?? ?? ?? 8B B1 A0 00 00 00 8B B9 A4 00 00 00 3B F7` +0<br>alt: the derived function `8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8 ?? ?? ?? ?? 85 C0 74 0D 85 F6 74 09 56 E8` call at +16 | matches 1 / 1 |
+| ResKeyListSlot | 0x00FB2DC0 | SlotsOf(ResKeyList), 1 | - | 1 slot |
+| ResKeyListDerived | 0x00736660 | Sig | the whole body `8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8 ?? ?? ?? ?? 85 C0 74 0D 85 F6 74 09 56 E8 ?? ?? ?? ?? 83 C4 04 5E C2 0C 00` +0 | matches 1 |
+| ResKeyListDerivedSlot | 0x00FFE270 | SlotsOf(ResKeyListDerived), 1 | - | 1 slot |
+| KeyTypeFilterVtable | 0x00FD8248 | Sig (dword) | `57 8D 4C 24 64 51 C7 44 24 68 ?? ?? ?? ?? C7 44 24 6C DA 7D 03 0A 8B 10 8B 52 20` dword at +10 (CAS 0x005DA0C0)<br>alt: `C7 44 24 68 ?? ?? ?? ?? C7 44 24 6C DA 7D 03 0A 8B 10 8B 52 20 8D 4C 24 34 51 8B C8 FF D2` dword at +4 | matches 1 / 1 |
+| DpfVtable | 0x00FB2600 | Sig (dword) | ctor 0x004A8F70: `33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 88 5E 0D 88 5E 0E C6 46 0F 01` dword at +6<br>alt: dtor 0x004A8440: `C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8D 8E 68 03 00 00 E8` dword at +2 | matches 1 / 1 |
+| DpfDerivedVtable | 0x01048DA0 | Sig (dword) | `D9 EE 51 D9 1C 24 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 8D BE 98 03 00 00 C7 47 0C` dword at +8 | matches 1 |
+| DdfVtable | 0x00FB2420 | Sig (dword) | `33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 75 05 E8 ?? ?? ?? ?? 89 46 10 88 5E 14 89 5E 18` dword at +6 | matches 1 |
+| PackedStreamVtable | 0x00FFD790 | Sig (dword) | `33 DB 3B C3 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 88 5E 0C 75 05 E8 ?? ?? ?? ?? 89 46 10 89 5E 14 C7 46 28` dword at +6 | matches 1 |
+| DpfWriteDirect | 0x004A7FC0 | Sig | `83 EC 28 53 56 8B F1 8D 8E 70 02 00 00 68 ?? ?? ?? ?? 89 4C 24 10 E8 ?? ?? ?? ?? B3 02 84 5E 14` +0 | matches 1 (sigcheck.pl 2026-09-29: 147 of 147 ok) |
 
 The ids after the first one of a `Multi` / `CallersOf` entry take the following matches by address: ArmSiteRemoval
 0x6B60D3, ArmSiteRegister 0x6B6516, ArmSiteMoved 0x6B6618; QualitySite0 0xADB66B, QualitySite1 0xADB884; SetColourCall0..6

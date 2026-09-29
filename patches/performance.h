@@ -1,14 +1,19 @@
 #pragma once
 // The Performance page's features (patches/performance_patches.cpp): "ResourceLookupCache" (features/resource_cache.h),
-// "LotLightingMotion" (features/lot_lighting_motion.h), "FastTextureCompression" (features/fast_dxt.h) and
-// "FastCacheCompression" (features/fast_refpack.h). The menu draws their rows (apex_gui.cpp, PerformanceCard); these
-// functions give it the one setting that is not a switch. docs/features/performance.md.
+// "ResourceLookupMisses" (its "Remember missing files" extension), "FileListCache" (the GetKeyList cache, same module),
+// "LotLightingMotion" and "WallShadingWhileMoving" (features/lot_lighting_motion.h), "FastTextureCompression"
+// (features/fast_dxt.h) and "FastCacheCompression" (features/fast_refpack.h). The menu draws their rows (apex_gui.cpp,
+// PerformanceCard); these functions give it the one setting that is not a switch. docs/features/performance.md.
 #include <string>
 
 namespace Performance {
 
+// TOML section names: never rename
 inline constexpr const char* kResourceCacheName = "ResourceLookupCache";
+inline constexpr const char* kLookupMissesName = "ResourceLookupMisses";
+inline constexpr const char* kFileListName = "FileListCache";
 inline constexpr const char* kLotLightingName = "LotLightingMotion";
+inline constexpr const char* kWallShadingName = "WallShadingWhileMoving";
 inline constexpr const char* kFastTextureName = "FastTextureCompression";
 inline constexpr const char* kFastCacheName = "FastCacheCompression";
 inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered default of budgetWhileMovingMs
@@ -19,7 +24,10 @@ void SetLotLightingBudgetMs(int ms);
 
 // One-line states for the menu
 std::string ResourceCacheStatus();
+std::string LookupMissesStatus();
+std::string FileListStatus();
 std::string LotLightingStatus();
+std::string WallShadingStatus();
 std::string FastTextureStatus();
 std::string FastCacheStatus();
 

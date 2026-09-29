@@ -145,8 +145,19 @@
 //   0x006A8BA0 lot room solve              thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return.
 //              Its only caller is the lot lighting update FUN_00ADB8F0 (render thread): timed at that CALL, 0x00ADB9AD.
 //              ecx = one level object of the lot (the deque at manager+0x24..0x40), so calls = lot levels updated (not rooms).
+//   0x0068B810 wall AO step                thiscall(stopwatch*, float budget), ret 8; only reference: slot +0x1C of the solver
+//              vtable 0x00FF0594 (0x00FF05B0), called by the solver driver 0x00688920 from the room solve above. One call =
+//              one pass over every outdoor wall of a level (no time check). Hooked through that slot as a layer of
+//              framework/slot_chain.h inside the wall shading gate (features/lot_lighting_motion.h, Layer::Gate, which must
+//              be outermost), so with the gate on only the passes that run are timed. Extra: none (calls = passes).
+//   0x004B1AE0 / 0x00736660 ResourceMgr / ResourceSystem::GetKeyList  thiscall(vector* out, filter*, bool unique), ret 0xC;
+//              only references: slot +0x20 of the base (0x00FB2DC0) and derived (0x00FFE270) vtables; the derived one calls
+//              the base directly (no double count). Outer layer of both slots; the file list cache (features/resource_cache.h)
+//              is inside. Extras: keys (the out vector's growth in 16-byte keys, before the derived sort / unique), packages
+//              answered from the file list cache (kXListCached).
 //   The FindProvider slots are shared with the resource lookup cache through framework/slot_chain.h (the profiler is the
-//   outer layer whichever installs first); Hook_FindProvider calls SlotChain::Next and adds "from cache" (kXCacheHits).
+//   outer layer whichever installs first); Hook_FindProvider calls SlotChain::Next and adds "from cache" (kXCacheHits)
+//   and "absent from cache" (kXCacheAbsent, "Remember missing files").
 // No branch in .text lands inside any replaced prologue or CALL (checked in full.asm). S3SS and the other installed ASIs
 // touch none of these sites (plan section 6). They are attached only once the game-address scan has run
 // (GameAddr::Scanned, first Present + 1 s), on every build, so the scan's self-check never sees these hooks; the two CALLs
@@ -254,6 +265,8 @@ enum Cat : int {
     kDxtEncode,
     kObjectLookup,
     kLotRoomSolve,
+    kWallAo,
+    kKeyList,
     kCatCount
 };
 constexpr int kFirstGameCat = kLotLodScoring;
@@ -264,7 +277,9 @@ inline bool IsCounterCat(int c) { return c >= kFirstCounterCat && c < kCatCount;
 // Extra counts of the counters (per thread, like the times)
 // kXCacheHits: resource lookups answered by the resource lookup cache (features/resource_cache.h), whose FindProvider
 // layer sits inside the profiler's (framework/slot_chain.h); their kXPackages count is the packages the cache asked.
-enum Extra : int { kXPackages, kXMisses, kXNodes, kXBytesIn, kXBytesOut, kXPixels, kXCacheHits, kExtraCount };
+// kXCacheAbsent: of those, answered "no package holds it" ("Remember missing files"). kXKeys: keys a key list call
+// returned (the out vector's growth); kXListCached: packages whose keys the file list cache gave from memory.
+enum Extra : int { kXPackages, kXMisses, kXNodes, kXBytesIn, kXBytesOut, kXPixels, kXCacheHits, kXCacheAbsent, kXKeys, kXListCached, kExtraCount };
 
 struct CatInfo {
     const char* name;
@@ -314,6 +329,11 @@ const CatInfo kCats[kCatCount] = {
                             "thread), lot lighting, camera. All threads."},
     {"Lot room solve", "FUN_006A8BA0 called by the lot lighting update (CALL 0x00ADB9AD): relights the dirty rooms of one level of a lot within the per-frame "
                        "budget of FUN_00ADB120 (scaled down while the camera moves when Lot Lighting While Moving is on). Calls = lot levels updated."},
+    {"Wall AO pass", "FUN_0068B810 through its vtable slot 0x00FF05B0: the wall ambient-occlusion step of one lot level, run inside the room solve. It shades every "
+                     "outdoor wall of the level in one go with no time check. With Wall Shading While Moving on, only the passes that run are timed (the gate "
+                     "is outside this counter)."},
+    {"Key list", "ResourceMgr::GetKeyList (FUN_004B1AE0 / FUN_00736660, vtable slots 0x00FB2DC0 / 0x00FFE270): lists every key matching a filter by walking the "
+                 "index of every package (CAS asks it for all keys of a type). Keys returned counted; with Faster File Lists on, packages answered from memory. All threads."},
 };
 
 // ---- settings ----
@@ -844,6 +864,9 @@ enum TargetId : int {
     T_DxtEncode5,
     T_ObjectById,
     T_RoomSolve,
+    T_WallAo,
+    T_KeyList,
+    T_KeyListDerived,
     kTargetCount
 };
 
@@ -1127,6 +1150,7 @@ uint64_t __fastcall Hook_FindProvider(void* self, void* edx, uint32_t key, uint3
         const uint32_t provider = static_cast<uint32_t>(r);
         if (note.seen && note.hit) {
             AddX(sc.s, kXCacheHits, 1);
+            if (note.negative) AddX(sc.s, kXCacheAbsent, 1);
             AddX(sc.s, kXPackages, note.probes); // the packages the cache asked
         } else {
             AddX(sc.s, kXPackages, PackagesProbed(static_cast<const uint8_t*>(self), provider));
@@ -1190,6 +1214,46 @@ uint64_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32
 uint64_t __fastcall Hook_RoomSolve(void* self, void* edx, uint32_t timer, uint32_t budget) {
     CounterScope sc(kLotRoomSolve);
     return Orig<T_RoomSolve, FnThis2>()(self, edx, timer, budget);
+}
+
+// The wall AO step (stopwatch*, float budget as raw bits), through its vtable slot. Layer inside the wall shading gate
+// (features/lot_lighting_motion.h), which must stay outermost: only the passes the gate lets through reach this counter.
+uint64_t __fastcall Hook_WallAoStep(void* self, void* edx, uint32_t stopwatch, uint32_t budget) {
+    const FnThis2 next = reinterpret_cast<FnThis2>(SlotChain::Next(SlotChain::Site::WallAoStep, SlotChain::Layer::FrameProfiler));
+    CounterScope sc(kWallAo);
+    return next(self, edx, stopwatch, budget);
+}
+
+// The out vector's size in keys (16 bytes each), SEH-guarded
+uint32_t KeyVectorSize(uint32_t out) {
+    __try {
+        if (!out) return 0;
+        const uint32_t* v = reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(out));
+        return v[1] >= v[0] ? (v[1] - v[0]) / 16 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// ResourceMgr::GetKeyList(out, filter, unique): outer layer of the slot chain; the file list cache (features/resource_cache.h)
+// is the inner layer when on. Keys = growth of the out vector (the derived function sorts and uniques it afterwards).
+uint64_t KeyList(SlotChain::Site site, void* self, void* edx, uint32_t out, uint32_t filter, uint32_t unique) {
+    const FnThis3 next = reinterpret_cast<FnThis3>(SlotChain::Next(site, SlotChain::Layer::FrameProfiler));
+    const uint32_t before = KeyVectorSize(out);
+    CounterScope sc(kKeyList);
+    const uint64_t r = next(self, edx, out, filter, unique);
+    sc.End();
+    const ResourceCache::KeyListNote note = ResourceCache::TakeKeyListNote(); // read on every call: it is cleared per call
+    if (sc.timed) {
+        const uint32_t after = KeyVectorSize(out);
+        AddX(sc.s, kXKeys, after > before ? after - before : 0);
+        if (note.seen) AddX(sc.s, kXListCached, note.cachedPackages);
+    }
+    return r;
+}
+uint64_t __fastcall Hook_KeyList(void* self, void* edx, uint32_t out, uint32_t filter, uint32_t unique) {
+    return KeyList(SlotChain::Site::KeyListBase, self, edx, out, filter, unique);
+}
+uint64_t __fastcall Hook_KeyListDerived(void* self, void* edx, uint32_t out, uint32_t filter, uint32_t unique) {
+    return KeyList(SlotChain::Site::KeyListDerived, self, edx, out, filter, unique);
 }
 
 struct TargetInfo {
@@ -1299,11 +1363,17 @@ const TargetInfo kTargets[kTargetCount] = {
         0, reinterpret_cast<void*>(&Hook_ObjectById), "any (render / simulation)", false, 8, GameAddr::Id::ObjectById},
     {"Lot room solve (CALL at 0x00ADB9AD)", 0x00ADB9AD, "E8 ?? ?? ?? ?? EB 02 DD D8 8D 4C 24 14 E8", 0, 0x006A8BA0,
         reinterpret_cast<void*>(&Hook_RoomSolve), "render (lot lighting update)", false, 0, GameAddr::Id::RoomSolveCall, GameAddr::Id::RoomSolve},
+    {"Wall AO pass (FUN_0068B810, vtable slot)", 0x0068B810, "83 EC 34 55 56 8B F1 83 7E 04 00 74 14 E8 ?? ?? ?? ?? 8B 4E 04 50 E8", -1, 0,
+        reinterpret_cast<void*>(&Hook_WallAoStep), "render (room solve)", false, 0, GameAddr::Id::WallAoStep, kNoAddr, GameAddr::Id::WallAoStepSlot, 1},
+    {"Key list (FUN_004B1AE0, vtable slot)", 0x004B1AE0, "83 EC 10 53 33 C0 38 44 24 20 56 57 89 44 24 0C 0F 84", -1, 0,
+        reinterpret_cast<void*>(&Hook_KeyList), "any", false, 0, GameAddr::Id::ResKeyList, kNoAddr, GameAddr::Id::ResKeyListSlot, 1},
+    {"Key list, ResourceSystem (FUN_00736660, vtable slot)", 0x00736660, "8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8", -1, 0,
+        reinterpret_cast<void*>(&Hook_KeyListDerived), "any", false, 0, GameAddr::Id::ResKeyListDerived, kNoAddr, GameAddr::Id::ResKeyListDerivedSlot, 1},
 };
 const int kTargetCat[kTargetCount] = {kRenderFrame, kEndScene, kLotLodScoring, kLotDetailRequest, kLotRendererUpdate, kLotLoadStages,
     kLotViewSwitch, kLotLightingInit, kRoomLighting, kLotLightingUpdate, kTerrainUpdate, kScriptGC, kLotObjectBuild,
     kService, kService, kJob, kJobWait, kMutexWait, kSemWait, kFileRead, kFileFlush, kRefPackRead, kSceneBeginFrame, kSceneEndFrame, kSceneCapture, kAppState,
-    kClockTick, kImpostorPump, kResLookup, kScenePending, kRefPackCompress, kDxtEncode, kDxtEncode, kObjectLookup, kLotRoomSolve};
+    kClockTick, kImpostorPump, kResLookup, kScenePending, kRefPackCompress, kDxtEncode, kDxtEncode, kObjectLookup, kLotRoomSolve, kWallAo, kKeyList, kKeyList};
 
 struct TargetState {
     uintptr_t addr = 0; // the function entry, or the CALL instruction for call-site targets
@@ -1688,33 +1758,41 @@ bool SwapSlot(uintptr_t slot, uintptr_t expect, uintptr_t value) {
     return static_cast<uintptr_t>(static_cast<unsigned long>(prev)) == expect;
 }
 
+// Targets whose slots are shared with other Apex modules through framework/slot_chain.h: the site, and the module layer
+// that may sit inside (or, for the wall AO gate, outside) the profiler's
+struct SharedSlot {
+    int target;
+    SlotChain::Site site;
+    SlotChain::Layer other;
+    const char* otherText;
+};
+const SharedSlot kSharedSlots[] = {
+    {T_ResLookup, SlotChain::Site::FindProvider, SlotChain::Layer::ResourceCache, "; the resource lookup cache is inside"},
+    {T_RefPackCompress, SlotChain::Site::RefPackCompress, SlotChain::Layer::FastCompress, "; the fast compressor is inside"},
+    {T_WallAo, SlotChain::Site::WallAoStep, SlotChain::Layer::Gate, "; the wall shading gate is outside"},
+    {T_KeyList, SlotChain::Site::KeyListBase, SlotChain::Layer::ResourceCache, "; the file list cache is inside"},
+    {T_KeyListDerived, SlotChain::Site::KeyListDerived, SlotChain::Layer::ResourceCache, "; the file list cache is inside"},
+};
+const SharedSlot* SharedSlotOf(int i) {
+    for (const SharedSlot& s : kSharedSlots)
+        if (s.target == i) return &s;
+    return nullptr;
+}
+
 bool AttachSlots(int i) {
     TargetState& st = g_targets[i];
     const TargetInfo& ti = kTargets[i];
-    if (i == T_ResLookup) {
-        // Shared with the resource lookup cache: the profiler is the outer layer of the slot chain, whichever installs first
+    if (const SharedSlot* shared = SharedSlotOf(i)) {
+        // The profiler is its layer of the slot chain, whichever module installs first
         std::string error;
         g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls SlotChain::Next
-        if (!SlotChain::Install(SlotChain::Site::FindProvider, SlotChain::Layer::FrameProfiler, ti.hook, &error)) {
+        if (!SlotChain::Install(shared->site, SlotChain::Layer::FrameProfiler, ti.hook, &error)) {
             st.status = "Skipped: " + error;
             return false;
         }
         st.attached = true;
-        st.status = std::format("Timed through 2 vtable slots, outer layer of the slot chain ({}{})", st.how,
-                                SlotChain::Installed(SlotChain::Site::FindProvider, SlotChain::Layer::ResourceCache) ? "; the resource lookup cache is inside" : "");
-        return true;
-    }
-    if (i == T_RefPackCompress) {
-        // Shared with the fast RefPack compressor the same way (features/fast_refpack.h)
-        std::string error;
-        g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls SlotChain::Next
-        if (!SlotChain::Install(SlotChain::Site::RefPackCompress, SlotChain::Layer::FrameProfiler, ti.hook, &error)) {
-            st.status = "Skipped: " + error;
-            return false;
-        }
-        st.attached = true;
-        st.status = std::format("Timed through the vtable slot, outer layer of the slot chain ({}{})", st.how,
-                                SlotChain::Installed(SlotChain::Site::RefPackCompress, SlotChain::Layer::FastCompress) ? "; the fast compressor is inside" : "");
+        st.status = std::format("Timed through {} vtable slot{}, a layer of the slot chain ({}{})", ti.slots, ti.slots == 1 ? "" : "s", st.how,
+                                SlotChain::Installed(shared->site, shared->other) ? shared->otherText : "");
         return true;
     }
     const uintptr_t hook = reinterpret_cast<uintptr_t>(ti.hook);
@@ -1748,14 +1826,8 @@ bool AttachSlots(int i) {
 
 void DetachSlots(int i) {
     TargetState& st = g_targets[i];
-    if (i == T_ResLookup) {
-        SlotChain::Remove(SlotChain::Site::FindProvider, SlotChain::Layer::FrameProfiler); // the cache's layer, if any, stays
-        st.attached = false;
-        st.status = "Off";
-        return;
-    }
-    if (i == T_RefPackCompress) {
-        SlotChain::Remove(SlotChain::Site::RefPackCompress, SlotChain::Layer::FrameProfiler); // the fast compressor's layer, if any, stays
+    if (const SharedSlot* shared = SharedSlotOf(i)) {
+        SlotChain::Remove(shared->site, SlotChain::Layer::FrameProfiler); // the other module's layer, if any, stays
         st.attached = false;
         st.status = "Off";
         return;
@@ -3195,6 +3267,7 @@ std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t call
     case kResLookup: {
         std::string t = std::format(", packages per lookup {:.1f}, misses {}", calls ? static_cast<double>(sum(kXPackages)) / static_cast<double>(calls) : 0.0, sum(kXMisses));
         if (sum(kXCacheHits)) t += std::format(", from cache {}", sum(kXCacheHits)); // resource lookup cache on (",": agg.pl splits counters on "; ")
+        if (sum(kXCacheAbsent)) t += std::format(", absent from cache {}", sum(kXCacheAbsent)); // "Remember missing files" on
         return t;
     }
     case kScenePending:
@@ -3203,6 +3276,11 @@ std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t call
         return std::format(", in {:.1f} KB, out {:.1f} KB", static_cast<double>(sum(kXBytesIn)) / 1024.0, static_cast<double>(sum(kXBytesOut)) / 1024.0);
     case kDxtEncode:
         return std::format(", pixels {:.2f} M", static_cast<double>(sum(kXPixels)) / 1e6);
+    case kKeyList: {
+        std::string t = std::format(", keys {}", sum(kXKeys));
+        if (sum(kXListCached)) t += std::format(", packages from cache {}", sum(kXListCached)); // file list cache on
+        return t;
+    }
     default:
         return "";
     }
@@ -3667,7 +3745,11 @@ std::string BuildReport() {
     s += CounterReport();
     s += "Apex shaders: " + ShaderCache::StatusText() + "\n";
     s += "Resource lookup cache: " + ResourceCache::StatusText() + "\n";
+    s += "Resource lookup cache counters: " + ResourceCache::ReportLine() + "\n";
+    s += "Remember missing files: " + ResourceCache::MissesStatusText() + "\n";
+    s += "File list cache: " + ResourceCache::KeyListStatusText() + "\n";
     s += "Lot lighting while moving: " + LotLightingMotion::StatusText() + "\n";
+    s += "Wall shading while moving: " + LotLightingMotion::WallAoStatusText() + "\n";
     const HitchAggregate h = AggregateHitches();
     if (h.count) {
         s += std::format("Last {} hitches: average frame {:.2f} ms (median before them {:.2f}), camera moving in {}, still in {}; per hitch (self ms): category | render | other threads | worst\n",
@@ -3821,6 +3903,10 @@ std::string CounterExtraPerFrame(const CounterAvg& a, int k) {
         return std::format("{:.3f} Mpx", sum(kXPixels) / 1e6);
     case kLotRoomSolve:
         return std::format("{:.2f} lot levels", calls);
+    case kWallAo:
+        return std::format("{:.2f} passes", calls);
+    case kKeyList:
+        return std::format("{:.0f} keys, {:.0f} packages from cache", sum(kXKeys), sum(kXListCached));
     default:
         return "";
     }

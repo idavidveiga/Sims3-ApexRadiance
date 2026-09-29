@@ -13,7 +13,10 @@ Features: Night Lighting (rebuilt night lamp light on ground, roads, floors, wal
 fences, snow; key `NightTerrainRelight`), Every-Story Ground Light (`SplitLevelGroundLight`, lot lamps on any story
 light the ground; part of Night Lighting), Reflections, Picture filters (SDR), Edge Smoothing
 (SMAA/FXAA), Depth Blur, Borderless window, Performance (Faster Game File Lookups `ResourceLookupCache`, off by default
-until tested; Lot Lighting While Moving `LotLightingMotion`; Faster Texture Compression `FastTextureCompression`, a
+until tested, with Remember Missing Files `ResourceLookupMisses` (negative entries + write epochs) and Faster File Lists
+`FileListCache` (GetKeyList cache), both off by default until tested; Lot Lighting While Moving `LotLightingMotion`;
+Wall Shading While Moving `WallShadingWhileMoving` (defers the wall AO pass while moving, on by default); Faster Texture
+Compression `FastTextureCompression`, a
 bit-identical rewrite of the game's CPU DXT encoders, and Faster Cache Compression `FastCacheCompression`, a faster
 RefPack compressor in the game's format, both off by default until tested; offline tests in `tools\dxt_test` and
 `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
@@ -62,7 +65,7 @@ Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI 
 1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
    them without asking.
 2. Back up the installed `C:\Games\Hydra\The Sims 3\Game\Bin\ApexRadiance.asi` (the first time: the old
-   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 45; 23 = source before the menu UX features; 42 = source before the compression features).
+   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 47; 23 = source before the menu UX features; 42 = source before the compression features; 46 = source before the round 3 performance features).
 3. Copy the dev `Release\ApexRadiance.asi` into `Game\Bin\`. Exactly one copy of the mod in `Bin`: **delete the old
    `S3SSApex.asi`** (previous standalone and combined-build name). The official `Sims3SettingsSetter.asi` stays beside
    it. A leftover `S3SSApex.asi` is detected: if it loaded first Apex Radiance idles (log error only), otherwise the old

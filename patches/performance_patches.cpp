@@ -2,7 +2,13 @@
 //   ResourceLookupCache  remembers which package answers each resource lookup (features/resource_cache.h). Off by default:
 //                        its invalidation was verified in the disassembly but not yet in game (use the Developer page's
 //                        checks, then turn the default on).
+//   ResourceLookupMisses "Remember missing files": the cache also keeps "no package holds it" answers, and counts the
+//                        writes of the traced database classes so unchanged packages need no re-check. Off by default
+//                        until checked in game; idle while ResourceLookupCache is off.
+//   FileListCache        the GetKeyList cache for the key-type filter (same module). Off by default until checked in game.
 //   LotLightingMotion    while the camera moves, scales the lot lighting budget down (features/lot_lighting_motion.h).
+//   WallShadingWhileMoving  defers the wall ambient-occlusion pass while the camera moves and allows one pass per frame
+//                        (features/lot_lighting_motion.h). On by default: it only returns the engine's own "try later".
 //   FastTextureCompression  the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical faster version
 //                        (features/fast_dxt.h). Off by default until checked in game.
 //   FastCacheCompression the RefPack stream write answered by a faster compressor with the same stream format
@@ -49,6 +55,82 @@ class ResourceLookupCachePatch : public ApexPatch {
 
     void RenderCustomUI() override {} // the Performance card draws the rows
     void RenderDeveloperUI() override { ResourceCache::RenderDeveloperUI(); }
+};
+
+// "Remember missing files": an extension of the lookup cache (idle while the cache is off)
+class ResourceLookupMissesPatch : public ApexPatch {
+  public:
+    ResourceLookupMissesPatch() : ApexPatch(Performance::kLookupMissesName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!ResourceCache::StartMisses(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        ResourceCache::StopMisses();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {}   // the Performance card draws the row
+    void RenderDeveloperUI() override {} // the lookup cache's developer lines include it
+};
+
+class FileListCachePatch : public ApexPatch {
+  public:
+    FileListCachePatch() : ApexPatch(Performance::kFileListName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!ResourceCache::StartKeyLists(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        ResourceCache::StopKeyLists();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {}   // the Performance card draws the row
+    void RenderDeveloperUI() override {} // the lookup cache's developer lines include it
+};
+
+class WallShadingWhileMovingPatch : public ApexPatch {
+  public:
+    WallShadingWhileMovingPatch() : ApexPatch(Performance::kWallShadingName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotLightingMotion::StartWallAo(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotLightingMotion::StopWallAo(); // the gate layer passes every call through from now on
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { LotLightingMotion::RenderWallAoDeveloperUI(); }
 };
 
 class LotLightingMotionPatch;
@@ -172,7 +254,10 @@ void Performance::SetLotLightingBudgetMs(int ms) {
 }
 
 std::string Performance::ResourceCacheStatus() { return ResourceCache::StatusText(); }
+std::string Performance::LookupMissesStatus() { return ResourceCache::MissesStatusText(); }
+std::string Performance::FileListStatus() { return ResourceCache::KeyListStatusText(); }
 std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusText(); }
+std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoStatusText(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText(); }
 
@@ -189,6 +274,49 @@ APEX_REGISTER_FEATURE(ResourceLookupCachePatch,
                                             "Emptied on every package-list change (RegisterDatabase 0x4B2D00 / 0x736A70, SetDatabasePriority 0x4B2EC0) and on the "
                                             "engine's own change notice (0x4B0960). Vtable slots only; the Frame Profiler keeps counting."},
                        .gameCodeGroup = "ResourceCache"});
+
+APEX_REGISTER_FEATURE(ResourceLookupMissesPatch,
+                      {.displayName = "Remember Missing Files",
+                       .description = "Lets Faster Game File Lookups also remember files that no package has, so the game does not search every package for them again "
+                                      "and again. Needs Faster Game File Lookups. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"FindProvider answers of 0 (about a third of all lookups: the resolve 0x7D8110 retries every miss with the group bit flipped) "
+                                            "are kept too, re-checked against every package that can gain files; stored only when every read-only package answered "
+                                            "from its key set or open index.",
+                                            "Write epochs: the write paths of the DPF, DDF and packed stream classes are hooked (vtable slots, plus the DPF direct write "
+                                            "0x4A7FC0), so answers whose packages did not change are not re-checked at all; other classes are still probed."},
+                       .gameCodeGroup = "ResourceCache"});
+
+APEX_REGISTER_FEATURE(FileListCachePatch,
+                      {.displayName = "Faster File Lists",
+                       .description = "Remembers which files of a kind each of the game's packages holds, so Create a Sim and Sim loading do not read the list of every "
+                                      "package again. Fewer small stutters when Sims change outfits or load. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"ResourceMgr::GetKeyList (0x4B1AE0 / 0x736660, vtable slots) for the key-type filter: each read-only package's matching keys "
+                                            "are kept per type and appended in the same package order; every other package is asked each time.",
+                                            "Emptied on every package-list change and change notice, like the lookup cache."},
+                       .gameCodeGroup = "FileListCache"});
+
+APEX_REGISTER_FEATURE(WallShadingWhileMovingPatch,
+                      {.displayName = "Wall Shading While Moving",
+                       .description = "While the camera moves, the soft ambient shading of the outdoor walls of newly loaded lots waits until the camera stops (or "
+                                      "two seconds), and never more than one wall pass runs per frame, so panning over a neighborhood that is loading stutters "
+                                      "less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The wall ambient-occlusion step (0x68B810, vtable slot 0xFF05B0) shades every outdoor wall of a lot level with no time check. "
+                                            "Called from its solver driver (0x688920) with a frame budget, Apex may return the current state instead, which the driver "
+                                            "stores unchanged: the engine's own \"try again next frame\".",
+                                            "The synchronous level solve (60 s budget) and the tool mode are never touched."},
+                       .gameCodeGroup = "WallShadingWhileMoving"});
 
 APEX_REGISTER_FEATURE(LotLightingMotionPatch,
                       {.displayName = "Lot Lighting While Moving",

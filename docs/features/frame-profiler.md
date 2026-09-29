@@ -141,15 +141,18 @@ callee cleanup, ECX/EDX passed through, EDX:EAX preserved, float args passed as 
 | 27 | Lot impostor pump | 0x00AD97E0 | thiscall(job), ret 4 | Detours | Lot impostor pump | render (see Open items) |
 | 28 | Resource lookup | 0x004AFFC0 | thiscall(2), ret 8 | vtable slots 0x00FB2DE0 / 0x00FFE290 | Resource lookup (counter) | any |
 | 29 | Scene pending nodes | CALL 0x006EBC49 -> 0x006E4130 | thiscall(0) | call site, all threads checked | Scene pending nodes (counter) | render (Scene::BeginFrame) |
-| 30 | RefPack compress | 0x004EC200 | thiscall(5), ret 0x14 | vtable slot 0x00FB901C, outer layer of `SlotChain` (site RefPackCompress; the fast compressor is layer 2) | RefPack compress (counter) | any |
+| 30 | RefPack compress | 0x004EC200 | thiscall(5), ret 0x14 | vtable slot 0x00FB901C, outer layer of `SlotChain` (site RefPackCompress; the fast compressor is layer 3 since round 3 added the gate layer 0) | RefPack compress (counter) | any |
 | 31 | DXT1 encode | 0x006152F0 | cdecl(2) | entry JMP, outer layer of `EntryChain` (the fast DXT encoder is layer 1) | DXT encode (counter) | any |
 | 32 | DXT5 encode | 0x006154B0 | cdecl(2) | entry JMP, outer layer of `EntryChain` | DXT encode (counter) | any |
 | 33 | Object lookup by ID | 0x00C62D40 | thiscall(3), ret 0xC | hand-made, safeLen 8 | Object lookup by ID (counter) | any (render / simulation) |
 | 34 | Lot room solve | CALL 0x00ADB9AD -> 0x006A8BA0 | thiscall(2), ret 8 | call site, all threads checked | Lot room solve (counter) | render (lot lighting update) |
+| 35 | Wall AO pass | 0x0068B810 | thiscall(2), ret 8 | vtable slot 0x00FF05B0, `SlotChain` layer 1 inside the wall shading gate (layer 0, outermost) | Wall AO pass (counter) | render (room solve) |
+| 36 | Key list | 0x004B1AE0 | thiscall(3), ret 0xC | vtable slot 0x00FB2DC0, outer layer of `SlotChain` (the file list cache is layer 2) | Key list (counter) | any |
+| 37 | Key list, ResourceSystem | 0x00736660 | thiscall(3), ret 0xC | vtable slot 0x00FFE270, same | Key list (counter) | any |
 
-Targets 28-34 (standalone, 2026-09-28) take their addresses from `framework/game_addresses.h` (`TargetInfo::addrId`,
+Targets 28-34 (standalone, 2026-09-28) and 35-37 (round 3, 2026-09-29) take their addresses from `framework/game_addresses.h` (`TargetInfo::addrId`,
 `calleeId`, `slotId` / `slots`); see [Counters](#counters-2026-09-28). Target 17 (Mutex::Lock) is attached only with the
-option "Time the Mutex::Lock hook". With the defaults the log reads `[FrameProfiler] Timing 33 of 33 game functions`
+option "Time the Mutex::Lock hook". With the defaults the log reads `[FrameProfiler] Timing 36 of 36 game functions` (33 of 33 before round 3)
 (35 targets; lot object building and Mutex::Lock off by option are not counted).
 
 Full byte patterns are in `kTargets` (they are the ground truth; the header comment of `frame_profiler.cpp` lists the
@@ -236,8 +239,8 @@ detoured by Frame Budget (Detours patches code, not vtables) keep their names.
 
 ### Counters (2026-09-28)
 
-Anti-stutter plan section 8 (`research\perf2\plan.md`). Six categories at the end of `kCats` (`kFirstCounterCat` =
-`kResLookup`, `kNC` = 6), timed on every thread they run on with the same attribution machinery (self / inclusive, thread
+Anti-stutter plan section 8 (`research\perf2\plan.md`). Six categories at the end of `kCats`, eight since round 3 (`kFirstCounterCat` =
+`kResLookup`, `kNC` = 8), timed on every thread they run on with the same attribution machinery (self / inclusive, thread
 buckets). For each: per frame, calls and inclusive ms per bucket (render / simulation / other), the longest single call
 (render thread / other threads; `g_cMax`, atomic max, taken at the frame boundary), and an extra count (per-thread
 `ThreadSlot::extra[]`, snapshotted as deltas like the times). Addresses come from the game-address table
@@ -253,6 +256,8 @@ hooking. Conventions verified in `research\engine_map\full.asm`:
 | DXT encode | DXT1 0x006152F0, DXT5 0x006154B0 | cdecl(dst*, src*) (callers `add esp,8`); dst = {pixels, width +4, height +8, pitch +0xC}; src = {pixels, pitch +0xC, format +0x10}; both return eax = width & ~3 | 8 + 7 callers on several threads. Since 2026-09-29 through `framework/entry_chain.h`: the prologue `55 8B EC 83 E4 F0` moves to a trampoline and a 5-byte JMP to the outermost layer is written with every other thread suspended (`MemPatch::WriteCodeSuspended`); the profiler is layer 0, Faster Texture Compression (`features/fast_dxt.h`) layer 1; `DxtEncode` calls `EntryChain::Next`. (Before: a hand-made hook, safeLen 6.) | pixels (width x height) |
 | Object lookup by ID | 0x00C62D40 | thiscall(idLo, idHi, flag), ret 0xC (ecx passed on to 0x00C60D30) | **hand-made** (233 callers: script natives on the simulation thread, lot lighting, camera), safeLen 8 (`8B 44 24 0C 8B 54 24 08`) | - (calls per bucket = render vs simulation) |
 | Lot room solve | 0x006A8BA0 | thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return; ecx = one **level object** of the lot (the deque at manager+0x24..0x40) | **call site** 0x00ADB9AD in the lot lighting update 0x00ADB8F0 (its only caller), written with every other thread suspended | calls = **lot levels updated** (corrected 2026-09-29; it said "rooms relit"); the hitch line adds the lot lighting update's inclusive ms. With Lot Lighting While Moving on, the budget argument is the scaled one ([performance.md](performance.md)) |
+| Wall AO pass (round 3) | 0x0068B810, the wall ambient-occlusion step | thiscall(stopwatch*, float budget), ret 8; returns the solver's next state; the budget argument is unused; one call = one pass over every outdoor wall of a lot level ([performance.md](performance.md), "Wall Shading While Moving") | **vtable slot** 0x00FF05B0 (solver vtable 0x00FF0594 +0x1C), its only reference, through `SlotChain` site WallAoStep: layer 1, inside the wall shading gate (layer 0, which must be outermost), so with the gate on only the passes that run are timed | calls = passes |
+| Key list (round 3) | ResourceMgr::GetKeyList 0x004B1AE0 and ResourceSystem::GetKeyList 0x00736660 | thiscall(vector* out, filter*, bool unique), ret 0xC; returns the count (the derived one: the vector size after its sort + unique) | **vtable slots** 0x00FB2DC0 and 0x00FFE270, the only references (the derived function calls the base directly: not counted twice), through `SlotChain` sites KeyListBase / KeyListDerived: outer layer, the file list cache inside | keys (growth of `out` in 16-byte keys, read SEH-guarded before and after), packages from cache (`kXListCached`, from `ResourceCache::TakeKeyListNote`) |
 
 - No branch in `.text` lands inside a replaced prologue or CALL (checked in full.asm). S3SS and the other installed ASIs
   touch none of these sites (plan section 6). All the entries are 8-byte aligned (hand-made hooks need it).
@@ -266,7 +271,10 @@ hooking. Conventions verified in `research\engine_map\full.asm`:
   same slots; its Hooks-table status says "outer layer of the slot chain" (+ "; the resource lookup cache is inside").
   `g_orig[T_ResLookup]` is only displayed; `Hook_FindProvider` calls `SlotChain::Next`, and reads
   `ResourceCache::TakeLookupNote()` after every call (it is cleared per call). The RefPack compress target
-  (`T_RefPackCompress`) does the same on site RefPackCompress ("; the fast compressor is inside").
+  (`T_RefPackCompress`) does the same on site RefPackCompress ("; the fast compressor is inside"). Since round 3 the
+  shared slots are listed in `kSharedSlots` (target, site, the other module's layer): also the Wall AO pass (site
+  WallAoStep; "; the wall shading gate is outside") and both Key list targets (sites KeyListBase / KeyListDerived; "; the
+  file list cache is inside"); the Hooks-table status reads "a layer of the slot chain".
 - Entry-chain targets (2026-09-29): the DXT1 / DXT5 encoders (`T_DxtEncode1/5`) attach through
   `EntryChain::Install / Remove` (Layer FrameProfiler) in `AttachTarget` / `DetachTarget`, before the `safeLen` branch
   (their `safeLen` 6 is only informational now). `ResolveTarget` skips its pattern check for them (the entry may hold
@@ -379,14 +387,19 @@ Standalone additions (2026-09-28) to every hitch block, after the `lots promoted
 call, after the render group and after the other-threads group (simulation + other). Extras: RefPack compress
 `, in X KB, out Y KB`; DXT encode `, pixels X M`; Resource lookup `, from cache N` after `misses` when the resource
 lookup cache answered any call of the frame (2026-09-29; a comma, so `agg.pl`, which splits counters on "; ", is
-unaffected). The dominant key is written as `dom.pl` names it: a category name,
+unaffected), then `, absent from cache N` when Remember Missing Files answered "no package holds it" (round 3); Key
+list `, keys N` and `, packages from cache N` (round 3); Wall AO pass: none (calls = passes). The dominant key is written as `dom.pl` names it: a category name,
 `svc:<service>`, `job:<job name>` (`job:job 007297C0`, `job:remote call -> 00AC1130`) or `Unattributed`; `top counter:
 none` when no counter reached 0.05 ms of render self time.
 
 The report adds "Counters since Clear" (per bucket calls x ms, longest calls, render-thread per-frame averages, extras),
 "Counters per hitch" (the hitch ring), "Apex shaders: ..." (the shader precompile status, see
-[architecture](../architecture.md#shader-precompile)), "Resource lookup cache: ..." and "Lot lighting while moving: ..."
-(the two performance features' status lines, [performance.md](performance.md)) and "Dominant cause of the last hitches" (per camera state and
+[architecture](../architecture.md#shader-precompile)), "Resource lookup cache: ...", "Resource lookup cache counters:
+..." (round 3: lookups, from memory, absent, answers with no probe of the counted packages, game lookups, re-check
+failed, stored / absent stored / not stored / unreliable read-only package, list changes, notices, missed changes, the
+package counts, counted classes and writes, sums refreshed, checks; and the file list counters when that cache ran),
+"Remember missing files: ...", "File list cache: ...", "Lot lighting while moving: ..." and "Wall shading while moving:
+..." (the performance features' status lines, [performance.md](performance.md)) and "Dominant cause of the last hitches" (per camera state and
 frame-time bucket < 16 / 16-25 / 25-50 / >= 50 ms: share and average ms of each dominant item, then the top-counter
 distribution; window in foreground only, like `dom.pl`).
 
@@ -588,7 +601,7 @@ hooks (mod)" 10.3 s total = ~0.2 ms/frame (all modules, profiler included), "D3D
 1. Apex tab > Performance > Frame Profiler > Enable. Status line changes from "Waiting for frames..." to the live line.
    S3SS_LOG.txt: `[FrameProfiler] On`, then `[FrameProfiler] Timing 27 of 27 game functions` (28 targets, the
    optional one excluded). Any skipped target is logged as a warning with its reason. Standalone (2026-09-28):
-   `ApexRadiance_LOG.txt`, `Timing 33 of 33 game functions` with the defaults (35 targets; Mutex::Lock and lot object
+   `ApexRadiance_LOG.txt`, `Timing 36 of 36 game functions` with the defaults (38 targets since round 3; Mutex::Lock and lot object
    building off by option), 34 of 34 with "Time the Mutex::Lock hook" on. With the profiler on from start-up the first
    line is `Timing 26 of 33 game functions (7 waiting for the game-address scan)`, then 33 of 33 about a second later.
    For the plan's 60-second protocol use the Measurement preset buttons, then Clear right before the run.
@@ -626,7 +639,7 @@ ms, 6.86% hitches):
   2.4 s). Name them in `kServiceNames` once identified.
 - ~~Set `g_remoteCallJobFn` / `g_remoteMethodVtable` so remote calls are keyed by method~~: done in the standalone
   (2026-09-28, both PostRemoteMethodCall vtables), not yet seen in game.
-- Counters (2026-09-28): verify in game that `Timing 33 of 33` is logged, every counter row fills in, and the Hooks table
+- Counters (2026-09-28): verify in game that `Timing 36 of 36` (33 of 33 before round 3) is logged, every counter row fills in, and the Hooks table
   shows "Timed through 2 vtable slots" / "Timed at the CALL ... written with all threads checked" / "hand-made hook".
 - Instrument Present / Set* executors for per-hook timing if needed.
 - Standalone: rename output file (`ApexRadiance_Hitches.txt`), add "owned by S3SS" in the Hooks table, treat S3SS's module as

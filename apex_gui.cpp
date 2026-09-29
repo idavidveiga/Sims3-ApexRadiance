@@ -572,7 +572,9 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Performance", "Fewer stutters while you play", nullptr, nullptr);
         ApexUi::CardDivider();
-        FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load");
+        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load"))
+            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has");
+        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes");
         if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());
             char value[16];
@@ -585,6 +587,7 @@ void PerformanceCard() {
             o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
+        FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
         FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures");
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
     }
@@ -639,21 +642,29 @@ void DevProfilerTab() {
     ImGui::TextDisabled("Apex shaders: %s", ShaderCache::StatusText().c_str());
     // Performance features: cache counters and checks, lot lighting budget state (docs/features/performance.md)
     ApexPatch* cache = Find(Performance::kResourceCacheName);
+    ApexPatch* lists = Find(Performance::kFileListName);
     ApexPatch* lots = Find(Performance::kLotLightingName);
+    ApexPatch* walls = Find(Performance::kWallShadingName);
     ApexPatch* tex = Find(Performance::kFastTextureName);
     ApexPatch* pack = Find(Performance::kFastCacheName);
-    const bool anyPerf = (cache && cache->IsEnabled()) || (lots && lots->IsEnabled()) || (tex && tex->IsEnabled()) || (pack && pack->IsEnabled());
-    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup cache, lot lighting while moving, texture and cache compression", anyPerf, [cache, lots, tex, pack] {
-        if (cache && cache->IsEnabled()) cache->RenderDeveloperUI();
-        else ImGui::TextDisabled("Resource lookup cache: off");
+    auto on = [](ApexPatch* p) { return p && p->IsEnabled(); };
+    const bool anyPerf = on(cache) || on(lists) || on(lots) || on(walls) || on(tex) || on(pack);
+    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup and file list caches, lot lighting and wall shading while moving, texture and cache compression", anyPerf,
+            [cache, lists, lots, walls, tex, pack, on] {
+        // the lookup cache's lines include "Remember missing files" and the file list cache
+        if (on(cache) || on(lists)) (cache ? cache : lists)->RenderDeveloperUI();
+        else ImGui::TextDisabled("Resource lookup cache and file list cache: off");
         ApexUi::Gap(ApexUi::kSpace2);
-        if (lots && lots->IsEnabled()) lots->RenderDeveloperUI();
+        if (on(lots)) lots->RenderDeveloperUI();
         else ImGui::TextDisabled("Lot lighting while moving: off");
         ApexUi::Gap(ApexUi::kSpace2);
-        if (tex && tex->IsEnabled()) tex->RenderDeveloperUI();
+        if (on(walls)) walls->RenderDeveloperUI();
+        else ImGui::TextDisabled("Wall shading while moving: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (on(tex)) tex->RenderDeveloperUI();
         else ImGui::TextDisabled("Faster texture compression: off");
         ApexUi::Gap(ApexUi::kSpace2);
-        if (pack && pack->IsEnabled()) pack->RenderDeveloperUI();
+        if (on(pack)) pack->RenderDeveloperUI();
         else ImGui::TextDisabled("Faster cache compression: off");
     });
 }

@@ -160,7 +160,7 @@ Load stages of `FUN_00AEA680` (from `re/out/fn_00aea680.c`; allocator tag string
 | 16 | "LotRenderer/InitDetailedView/..." room sets (sunnyRooms, lightableRooms, fogOfExplorationRooms, blackLitRooms, strobeLitRooms, buildableShellRooms) |
 | 17 / 18 | Post a job (function 0xACBB80) / wait for it (+0x30) |
 | 19 | Wait for `FUN_00C4D990` |
-| 20 (0x14) | Lighting ready (`FUN_00ADBBA0`); clears manager+0x4F |
+| 20 (0x14) | Lighting ready (`FUN_00ADBBA0` -> `0x006A5B50` per level: both level solvers' state != 0, i.e. the **wall AO first pass** of every level ran; not yet = yield and retry next frame; round 3, [room-light-maps.md](room-light-maps.md) 4.5); clears manager+0x4F |
 | 21 (0x15) | Done (`FUN_00AD9CA0`) |
 
 The budget stopwatch is unit 4 (ms), started once before the loop, and checked after each stage. A failed stage sets

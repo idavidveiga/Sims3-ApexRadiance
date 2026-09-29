@@ -228,6 +228,27 @@ Cone data read by F8 (light_diag `PixelLampDiag`): type 4 (vtable `0x00FF4570`):
 type 5 (vtable `0x00FF4350`): a1 +0x1A0, o1 +0x174, a2 +0x190, o2 +0x170, S +0x150, s `[0x011D11A0]`. The type-5 blend
 (`FUN_006BC940`) is unverified (PASSO3 section 6, question 4).
 
+### 4.5 The level solvers and the wall ambient occlusion (round 3, 2026-09-29; VERIFIED in full.asm)
+
+- Each lot level embeds two solvers: `lvl+0x290` (wall AO, vtable 0x00FF0594; "Renderer/AOSolver") and `lvl+0x2E8`
+  (vtable 0x00FF0714). The room solve `0x006A8BA0` calls slot +0xC of both (when `[lvl+0x88] >= 0`) before the rooms.
+- Slot +0xC = the driver `0x00688920`: `if ([s+0x14] != 2 && [s+8]->vfunc+0xC()) [s+0x14] = s->vfunc+0x1C(stopwatch,
+  budget)`. The state (0 first pass due, 1 refinement due, 2 done) is whatever the step returns.
+- The wall AO step `0x0068B810` (slot 0x00FF05B0, its only reference): outdoor room = RoomById(level, 0); state 1 =
+  refinement sized by AO.ini WallMillisecondsBudget (`[0x011CF4A0+0x24]`, 10 ms; returns 1 when its estimate is
+  negative, i.e. "try later"); otherwise one pass at detail 0 over **every** outdoor wall (`0x0068B2B0` per wall between
+  the AO image lock 0x00618DF0 / unlock 0x00619160), returns 1. No time check inside a pass; the budget argument is unused.
+  10-17 ms per pass, 54-108 ms when several lots load (round3.md section 2). The second solver (step 0x0068A400) checks
+  the stopwatch per row and resumes.
+- Readers: 0x00688DB0 binds the AO image only in states 1 / 2; lot load stage 20 (`0x00ADBBA0` -> `0x006A5B50`) waits for
+  state != 0 of both solvers of every level ([lot-loading-and-streaming.md](lot-loading-and-streaming.md)); `0x006A5BF0`
+  (both == 2) is waited for by the ThumbnailManager's lot capture (0x00AE06B0 -> 0x00ADBC30, CALL 0x00D5BE2F). Resets: slot +0x10 0x006895C0 (message 0x0486519D, 0x006A4240, 0x006A4180) and level
+  creation. The synchronous level solve 0x006A4180 (lot LOD switch setup 0x00ADBAD0) drives both once with 60,000 ms.
+- AO config singleton 0x011CF4A0 (ctor 0x006886C0, loaded from "AO.ini" by 0x006883A0): +0x0C DetailZeroTexelsPerSample
+  8, +0x10 DetailZeroBlurWidth 19, +0x14 MinimumBlurWidth 7, +0x18 DetailZeroRaysPerQuadrant 5, +0x1C MaximumDetailLevel
+  10, +0x20 NumHeightBands 4, +0x24 WallMillisecondsBudget 10.
+- Apex: Wall Shading While Moving gates the step's slot ([../features/performance.md](../features/performance.md)).
+
 ## 5. Which lights end up in a room map
 
 - Lot lamps (types 3..6, see [light-objects-and-rigs.md](light-objects-and-rigs.md)) of the room, and for room 0 world

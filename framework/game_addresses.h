@@ -125,6 +125,25 @@ enum class Id : uint16_t {
     //      DxtEncode1 + DxtEncode5, "FastCacheCompression" = RefPackCompress + its slot) ----
     RefPackDecompress,        // FUN_004eb3b0 cdecl(dst, capacity, src, srcSize): the only RefPack decoder, found through its CALL in the
                               // stream read FUN_004ec010 (the official S3SS detours its entry; Apex only calls it, to check its own streams)
+    // ---- Wall shading while moving (features/lot_lighting_motion.cpp; group "WallShadingWhileMoving" = these + the camera ids).
+    //      The Frame Profiler's "Wall AO pass" counter uses the first two. ----
+    WallAoStep,               // FUN_0068b810 thiscall(stopwatch*, float budget), ret 8: the wall ambient-occlusion solver step (returns the next state)
+    WallAoStepSlot,           // its only reference: slot +0x1C of the solver vtable 0x00FF0594 (0x00FF05B0)
+    WallAoDriver,             // FUN_00688920 thiscall(stopwatch*, float budget), ret 8: the solver driver (slot +0xC), stores the step's result as the state
+    // ---- File list cache (features/resource_cache.h; group "FileListCache" = these + the package-list watchers). The Frame
+    //      Profiler's "Key list" counter uses the first four. ----
+    ResKeyList,               // ResourceMgr::GetKeyList FUN_004b1ae0 thiscall(vector* out, filter*, bool unique), ret 0xC: returns the count
+    ResKeyListSlot,           // its only reference: slot +0x20 of the base vtable 0x00FB2DA0 (0x00FB2DC0)
+    ResKeyListDerived,        // ResourceSystem's override FUN_00736660 (calls FUN_004b1ae0 directly, then sorts and uniques the output)
+    ResKeyListDerivedSlot,    // its only reference: slot +0x20 of the derived vtable 0x00FFE250 (0x00FFE270)
+    KeyTypeFilterVtable,      // vtable 0x00FD8248 of the "key.type == type" filter {vtable, type} (predicate FUN_005949f0 at +4), from CAS FUN_005da0c0
+    // ---- Write epochs of "Remember missing files" (features/resource_cache.cpp; each class is optional: a class whose
+    //      vtable or studied methods are not found keeps being probed) ----
+    DpfVtable,                // 0x00FB2600: writable package database "DPF" (ctor FUN_004a8f70)
+    DpfDerivedVtable,         // 0x01048DA0: its derived class (ctor near FUN_00996690; overrides only +0x7C / +0x84)
+    DdfVtable,                // 0x00FB2420: loose-file folder database "DDF" (ctor near FUN_004a5510)
+    PackedStreamVtable,       // 0x00FFD790: base packed stream database (ctor FUN_0072cc60; e.g. the CAS compositor cache at priority -1000)
+    DpfWriteDirect,           // FUN_004a7fc0 thiscall(key, data, size, ...), ret 0x14: the DPF's non-virtual record write (removes and re-inserts the key)
     Count
 };
 
@@ -150,7 +169,7 @@ bool Have(std::initializer_list<Id> ids, std::string* missing = nullptr);
 std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
-// "LotLightingMotion"
+// "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1
