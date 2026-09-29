@@ -44,13 +44,16 @@ In the base game lamps glow but barely light anything around them. Apex Radiance
 - **Ground, lots and streets:** smooth, warm pools of light on grass, sidewalks, roads and lot floors, with no hard edge where a lot ends.
 - **Objects, fences, walls and roofs:** outdoor objects, fences, stairs, house walls and roofs pick up the light of nearby lamps.
 - **Every-Story Ground Light:** lamps on upper floors, balconies and terraces light the ground below too.
-- **Lamp color and brightness:** tune how warm and how strong lamp light looks.
+- **Light styles:** Soft, Natural or Bright sets lamp brightness everywhere at once.
+- **Brightness per part:** ground, roads and sidewalks, street lamps, lot lamps, objects, fences, walls, roofs and ponds each have their own slider.
+- **Lamp colors:** from the game's pink to warm white, applied instantly, with an optional separate color for lot lamps.
+- **Moonlight:** choose how much the moon lights the world at night.
 - **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have.
 
 ### Water & Snow
 
 - Lamps glow and sparkle on ponds and lakes.
-- Ponds mirror the trees and houses along their shore.
+- Ponds mirror the trees and houses along their shore (needs Depth Blur on and the game's own Edge Smoothing off).
 - Walked-on sidewalks show through the snow.
 
 ### Color
