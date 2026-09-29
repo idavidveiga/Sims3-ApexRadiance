@@ -73,7 +73,8 @@ jobs:
           filename: ApexRadiance-${{ env.VERSION }}.zip
           version: ${{ env.VERSION }}
           display_name: Apex Radiance ${{ env.VERSION }}
-          description: "Copy ApexRadiance.asi into The Sims 3\\Game\\Bin\\ (needs an ASI loader). Full notes: https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}"
+          # no backslashes: the Nexus page drops them
+          description: "Lighting, visuals and performance for The Sims 3. Install: close the game and copy ApexRadiance.asi into The Sims 3 > Game > Bin (needs an ASI loader). What's new: see the Changelogs tab or https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}"
           changelog: ${{ env.CHANGELOG }}
           update_mod_version: true
           archive_existing_version: true
