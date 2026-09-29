@@ -1,48 +1,78 @@
-// Scene node budget (see scene_budget.h and docs/features/performance.md, section "Spread new objects over frames (C6)").
+// Scene node budget (see scene_budget.h and docs/features/performance.md, section "How it works: Spread New Objects Over
+// Frames (C6)").
 //
 // ---- The game side (Steam 1.67.2, TS3W.exe; research\engine_map\full.asm; addresses through framework/game_addresses.h) ----
-//   Scene sub-object ("pending holder", [scene+8], ctor 0x006E4530): +0x18 counter (nodes processed by the last drain),
-//   +0x20 / +0x24 the sentinel {next, prev} of a circular intrusive list of pending scene nodes.
-//   Scene node (base ctor 0x006FD710, vtable 0x00FF9D00): +0x18 / +0x1C its pending link {next, prev} (0 = not queued),
-//   +0x30 its owner (the pending holder; +0x2C of it = the spatial tree), refcounted (+4, vfunc +0 AddRef / +4 Release).
-//   Queueing (all on the scene's code, no lock anywhere):
-//     0x006FAC70 MarkDirty(node): if link.next == 0: link = self-loop, then 0x006E42E0(owner, node) = push_back on
-//                owner+0x20 (link.prev = tail, link.next = sentinel). Same inline pattern in 0x006FCA20 (children),
-//                0x006FCB10 (LOD band change), 0x006FD9F0 (SetOwner).
-//     0x006E6xxx AddNode (0x006E64EF): the scene AddRefs the node (vfunc +0) and queues it (a new node's link is the
-//                constructor's self-loop, so it is queued unconditionally).
-//     0x006E4984 RemoveNode: if link.next != 0 the node is unlinked from whatever list holds it (link.prev->next =
-//                link.next, link.next->prev = link.prev) and self-looped, then removed from the spatial tree (0x006FB490),
-//                SetOwner(0) (vfunc +0x1C) and Released (vfunc +4). So a queued node is always referenced by its scene
-//                and never freed while linked; the node destructor 0x006FD930 does not touch the link.
+// VERIFIED = read in the disassembly; INFERRED = deduction, not proven.
+//   Pending holder ([scene+8], 0x68 bytes, ctor 0x006E4530): +0x04..+0x08 the slot array of its nodes, +0x18 counter
+//   (nodes processed by the last drain; not a list size: nothing else counts the list), +0x20 / +0x24 the sentinel
+//   {next, prev} of a circular intrusive list of pending scene nodes, +0x2C the spatial tree. VERIFIED.
+//   Scene node (base ctor 0x006FD710, vtable 0x00FF9D00, refcounted: +4 count with lock xadd, vfunc +0 AddRef, +4 Release,
+//   +8 deleting destructor): +0x18 / +0x1C its pending link {next, prev}: 0 = not queued (a drain processed it), self-loop =
+//   not queued (constructor, RemoveNode), else linked in a list. +0x30 its owner (the holder). VERIFIED.
+//   Queueing (no lock anywhere):
+//     0x006FAC70 MarkDirty, 0x006FCA20 (children), 0x006FCB10 (LOD band), 0x006FD9F0 SetOwner: `if (link.next == 0) { link =
+//                self-loop; if (owner) 0x006E42E0(owner, node); }` (push_back at the tail). Every push needs owner != 0. VERIFIED.
+//     0x006E6480 AddNode(node, group): returns at once when node->owner != 0; else takes a slot, AddRef, SetOwner(holder),
+//                then at 0x006E64EF pushes the link again when it is non-zero WITHOUT unlinking it. VERIFIED.
+//   Unlinking / freeing:
+//     0x006E4920 RemoveNode: only when node->owner == this; clears the slot, unlinks the link if non-zero and self-loops it
+//                (0x006E4984), out of the spatial tree, SetOwner(0,0,0), Release. VERIFIED.
+//     0x006E4DE0 holder teardown (only caller 0x006E97F0, which frees the holder right after): destroys the spatial tree,
+//                then SetOwner(0,0,0) + Release on every slot WITHOUT unlinking; the list dies with the holder, and a node
+//                that survives keeps a stale link into freed memory (AddNode later overwrites it). VERIFIED.
+//     0x006FD930 node base destructor: detaches its children (0x006FC860), leaves its spatial cell (0x00706200), owner = 0,
+//                unlinks +0x20 (its parent's child list), never touches +0x18. The base vtable 0x00FF9D00 is written only by
+//                the base ctor and this destructor, so every derived destructor ends in it (23 call / tail-jmp sites). It
+//                ends by storing vtable 0x00FA1B78 (the destroyed-node vtable the development checks look for). VERIFIED.
+//   So in the game a node linked in a LIVE holder's list is always owned by it and held by its slot (AddRef in AddNode,
+//   Release only by RemoveNode after the unlink, or by the teardown whose list dies too): it is never freed while linked,
+//   whatever the time it waits (the guarantee is structural, not "drained within the frame"). VERIFIED for the direct paths;
+//   INFERRED that no other code calls SetOwner(0) (vfunc +0x1C) on a linked node or releases the holder's reference (the
+//   indirect vfunc +0x1C calls with three zero arguments were searched: RemoveNode, the teardown and one non-scene class).
 //   0x006E4130 the drain, thiscall(holder), ret (0xD1 bytes, checked byte for byte at Start):
 //     splices the whole list into a local sentinel on its stack and empties the holder's list; [this+0x18] = 0; then
-//     while the local list is not empty: l = local.prev (the most recently queued first); unlink it (l->prev->next =
-//     &local, local.prev = l->prev); l->prev = l->next = 0; node = l - 0x18; node->vfunc+0x48(); bounds =
-//     0x006FB4B0(node, &aligned32) (world AABB, movaps into the buffer); 0x006FAD70(node, bounds) (moves the node to the
-//     spatial cell that contains it, or out of the tree); [this+0x18] += 1. Nodes queued during the loop go to the
-//     holder's (now empty) list: processed by the next drain.
-//   Callers (all direct): 0x006EBC49 Scene::BeginFrame (every frame), 0x006DF9B5, 0x006EDBC7 (a scene query: drains
-//   first so its answer is current), 0x006EF07D, 0x006F226B (render-to-texture, when asked), 0x006F3CF1. Only the
-//   BeginFrame CALL is redirected; the other five still drain everything, including what this feature left queued.
+//     while the local list is not empty: l = local.prev (the most recently queued first; re-read every iteration); unlink it;
+//     l->prev = l->next = 0; node = l - 0x18; node->vfunc+0x48(); bounds = 0x006FB4B0(node, &aligned32); 0x006FAD70(node,
+//     bounds) (a no-op when owner == 0: its only caller is the drain); [this+0x18] += 1. Nodes queued during the loop go to
+//     the holder's (now empty) list: processed by the next drain. VERIFIED.
+//   Callers (all direct): 0x006EBC49 Scene::BeginFrame (every frame), 0x006DF9B5, 0x006EDBC7 (a scene query: drains first
+//   so its answer is current), 0x006EF07D, 0x006F226B (render-to-texture, when asked), 0x006F3CF1. Only the BeginFrame CALL
+//   is redirected; the other five still drain everything, including what this feature left queued, exactly as they drain
+//   what the game queued after BeginFrame (the list is always well formed when Apex returns). VERIFIED.
+//   Threads: the list has no lock in any of the functions above, so the game must touch it from one thread (the render
+//   thread, which runs BeginFrame). INFERRED. Release is atomic (lock xadd), so a node's destructor may run on any thread.
 //
-// ---- The copy with a budget (Hook_SceneDrain) ----
+// ---- The copy with a budget (BudgetedDrain) ----
 //   Exactly the loop above (same list operations in the same order, same calls, same counter), plus a stop test before
 //   each node: at least kMinNodes, then stop at nodesPerFrame nodes or msPerFrame ms. The nodes not reached stay linked,
-//   in their order, and the whole remainder is spliced back at the FRONT of the holder's list (before anything queued
-//   during the loop), so they stay queued exactly as the game would have them: RemoveNode can still unlink them, MarkDirty
-//   still sees them as queued, any other drain processes them. Nothing is copied out of the game's memory.
-//   Why deferring is safe (VERIFIED parts from the code above; INFERRED where marked):
-//     - no lifetime hazard: a linked node is owned by its scene (AddNode's AddRef, released only by RemoveNode after the
-//       unlink), and the remainder is a well-formed part of the holder's list at all times;
-//     - the game already tolerates queued nodes between drains: nodes queued after BeginFrame (animation, scripts,
-//       streaming later in the frame) are rendered with their previous spatial cell until the next frame's drain, and
-//       0x0071A540 runs a queued node's vfunc +0x48 itself when it needs it (INFERRED: that it covers every consumer);
-//     - consumers that need a current tree drain it themselves first (0x006EDBC7, 0x006F226B...), and still do.
-//   What a deferred node looks like (INFERRED): a new node is culled / not drawn until it is processed (appears a frame or
-//   a few later); a moved node keeps its old spatial cell (may be culled at its old place for those frames).
+//   in their order, and the remainder is spliced back at the TAIL of the holder's list (where the drain takes from), so they
+//   are processed first next frame and stay queued exactly as the game would have them: RemoveNode unlinks them, MarkDirty
+//   sees them as queued, any other drain processes them.
 //   The rule: camera still -> the game's drain; camera moving -> the budgeted copy; a node waited maxDeferMs -> the game's
 //   drain (so the backlog cannot grow without end while the camera keeps moving).
+//
+// ---- The node lifetime guard (the registry and three entry hooks) ----
+//   Every node the budgeted copy leaves queued is recorded (link -> holder). Invariant kept for recorded nodes: when the
+//   link is neither 0 nor a self-loop it is in a LIVE list (the holder's, or a drain's local list on the stack while that
+//   drain runs). It holds because a recorded node can only be queued into its owner's list, the owner changes only through
+//   AddNode (hook below forgets the record) or the teardown (hook below forgets the holder's records), and drains leave
+//   links at 0. With it:
+//     - Hook_NodeDtor (0x006FD930, any thread): a recorded node that is still linked is unlinked (neighbours checked to
+//       point back at it) and self-looped before the game destroys it; the record is dropped. Expected never to unlink.
+//     - Hook_AddNode (0x006E6480): a recorded node with owner 0 that is still linked is unlinked first (the game would push
+//       it again over a live link and corrupt the list); the record is dropped. Expected never to unlink.
+//     - Hook_HolderTeardown (0x006E4DE0): the holder's records are dropped before its nodes are released (their links then
+//       point into a list that dies: the game leaves them, so must Apex).
+//   Records are replaced after every budgeted drain (the nodes left now) and dropped after every game drain through the
+//   hook; they are kept while a drain runs, so a recorded node destroyed during a drain is unlinked from that drain's local
+//   list, which the drain re-reads every iteration. The registry is guarded by an SRW lock never held across game calls.
+//   Development build checks (on failure: logged once, budgeting stops until the game restarts, the game's drain runs):
+//     before each node of the budgeted copy: its neighbours point back at it and its vtable is inside TS3W.exe .rdata, is not
+//     the destroyed-node vtable and its +0x48 slot is inside .text; before each budgeted drain: the same for every recorded
+//     node still linked. A node found destroyed (destroyed-node vtable) but still well linked is taken out by writing only
+//     its neighbours, never called, counted as "repaired" and logged once, without stopping.
+//   After Stop the nodes left are processed by the next BeginFrame (the game's drain): the same exposure as any node the
+//   game queues after BeginFrame.
 //
 // Part of Apex Radiance. Credits: @loinyx
 
@@ -50,6 +80,7 @@
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "call_chain.h"
+#include "entry_chain.h"
 #include "game_addresses.h"
 #include "lot_lighting_motion.h"
 #include "memory_patch.h"
@@ -62,6 +93,7 @@
 #include <format>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace SceneBudget {
@@ -79,12 +111,21 @@ constexpr const char* kDrainBody =
     "24 18 89 32 8B 54 24 1C 8B 52 04 89 54 24 1C 8D 70 E8 C7 01 00 00 00 00 C7 00 00 00 00 00 8B 06 "
     "8B 50 48 8B CE FF D2 8D 44 24 20 50 8B CE E8 ?? ?? ?? ?? 50 8B CE E8 ?? ?? ?? ?? 8B 4C 24 1C 01 "
     "5F 18 8D 54 24 18 3B CA 75 AC 5F 5E 5B 8B E5 5D C3";
+// What the three lifetime hooks rely on (Steam 1.67.2), checked at Start:
+//   AddNode: "push esi; mov esi,[esp+8]; cmp dword ptr [esi+30h],0; push edi; mov edi,ecx; jne (return)" (owner test)
+constexpr const char* kAddNodeHead = "56 8B 74 24 08 83 7E 30 00 57 8B F9 0F 85";
+//   the destructor: stores the base vtable, and at +0x8D "mov dword ptr [edi], <destroyed-node vtable>"
+constexpr const char* kDtorHead = "55 8B EC 83 E4 F0 81 EC 94 00 00 00 53 56 57 8B F9 8D 9F 94 01 00 00 C7 07";
+constexpr uint32_t kDtorDeadVtableStore = 0x8D; // C7 07 imm32
+//   the teardown: "push ebx; push ebp; push esi; push edi; mov edi,ecx; mov ecx,[edi+2Ch]" (the holder's spatial tree)
+constexpr const char* kTeardownHead = "53 55 56 57 8B F9 8B 4F 2C";
+
 constexpr uint32_t kCounterOff = 0x18; // holder: nodes processed by the last drain
 constexpr uint32_t kListOff = 0x20;    // holder: pending list sentinel {next, prev}
 constexpr uint32_t kLinkOff = 0x18;    // node: its pending link
+constexpr uint32_t kOwnerOff = 0x30;   // node: its owner (the holder), 0 = in no scene
 constexpr uint32_t kUpdateSlot = 0x48; // node vfunc: per-node update
 constexpr uint32_t kMinNodes = 8;      // processed every frame whatever the budget (progress)
-constexpr bool kSuspended = true;    // see Start
 constexpr uint32_t kCountCap = 1u << 20;
 
 struct Link {
@@ -93,6 +134,8 @@ struct Link {
 };
 
 using FnDrain = void(__fastcall*)(void* holder, void* edx);
+using FnThis0 = void(__fastcall*)(void* self, void* edx);
+using FnAddNode = void(__fastcall*)(void* holder, void* edx, void* node, int group);
 using FnUpdate = void(__fastcall*)(void* node, void* edx);
 using FnBounds = void*(__fastcall*)(void* node, void* edx, void* out);
 using FnSpatial = void(__fastcall*)(void* node, void* edx, void* bounds);
@@ -100,13 +143,30 @@ using FnSpatial = void(__fastcall*)(void* node, void* edx, void* bounds);
 std::mutex g_ctrl;
 bool g_started = false;
 std::atomic<bool> g_on{false};
+std::atomic<bool> g_stopped{false}; // a safety check failed: the game's drain from then on (sticky until the game restarts)
 uintptr_t g_drainFn = 0;
 FnBounds g_bounds = nullptr;   // 0x006FB4B0
 FnSpatial g_spatial = nullptr; // 0x006FAD70
+std::atomic<DWORD> g_drainThread{0};
 
 std::atomic<int> g_nodesPerFrame{512};
 std::atomic<float> g_msPerFrame{2.0f};
 std::atomic<int> g_maxDeferMs{500};
+
+// TS3W.exe sections and the destroyed-node vtable, for the development checks (set at Start)
+uintptr_t g_textBegin = 0, g_textEnd = 0, g_rdataBegin = 0, g_rdataEnd = 0, g_deadVtable = 0;
+
+// ---- the registry of nodes left queued (link -> holder); guarded by g_regLock, never held across a game call ----
+SRWLOCK g_regLock = SRWLOCK_INIT;
+std::unordered_map<Link*, void*> g_deferred;
+std::atomic<uint32_t> g_deferredCount{0}; // mirror of g_deferred.size() for the lock-free fast path of the hooks
+
+struct RegGuard {
+    RegGuard() { AcquireSRWLockExclusive(&g_regLock); }
+    ~RegGuard() { ReleaseSRWLockExclusive(&g_regLock); }
+    RegGuard(const RegGuard&) = delete;
+    RegGuard& operator=(const RegGuard&) = delete;
+};
 
 // render thread only: per pending holder (one per scene; a few at most), since when nodes we left have been waiting
 struct Waiting {
@@ -145,13 +205,227 @@ struct Counter {
     uint64_t Get() const { return v.load(std::memory_order_relaxed); }
 };
 Counter c_calls, c_fullStill, c_fullForced, c_budgeted, c_framesLeft, c_nodesBudgeted, c_nodesLeft;
+Counter c_dtorUnlinked, c_addUnlinked, c_teardownDropped, c_otherThread, c_foreignOwner, c_repaired;
 std::atomic<uint32_t> g_maxLeft{0}, g_lastDone{0}, g_lastLeft{0};
 std::atomic<float> g_lastMs{0.0f};
+std::atomic<bool> g_loggedDtor{false}, g_loggedAdd{false}, g_loggedThread{false}, g_loggedRepair{false};
 
 int64_t Qpc() {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     return t.QuadPart;
+}
+
+bool Queued(const Link* l) { return l->next && l->next != l; }
+
+// ---- guarded reads (no C++ objects in these functions: SEH) ----
+
+// True when both neighbours of l point back at it (only reads; false if any of it is unreadable)
+bool LinkConsistent(const Link* l) {
+    __try {
+        const Link* n = l->next;
+        const Link* p = l->prev;
+        return n && p && n->prev == l && p->next == l;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Development check of a node before the game's code is called on it: its vtable is inside TS3W.exe .rdata, is not the
+// destroyed-node vtable, and its update slot points into .text. *vtableOut = the vtable read (0 if unreadable).
+bool NodeLooksAlive(const uint8_t* node, uintptr_t* vtableOut) {
+    *vtableOut = 0;
+    __try {
+        const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(node);
+        *vtableOut = vt;
+        if (vt < g_rdataBegin || vt + kUpdateSlot + 4 > g_rdataEnd || vt == g_deadVtable) return false;
+        const uintptr_t fn = *reinterpret_cast<const uintptr_t*>(vt + kUpdateSlot);
+        return fn >= g_textBegin && fn < g_textEnd;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Takes l out of the list that holds it and self-loops it (as RemoveNode 0x006E4984 does). Caller: LinkConsistent(l), and
+// the node is alive (its own memory is written).
+void Unlink(Link* l) {
+    l->prev->next = l->next;
+    l->next->prev = l->prev;
+    l->next = l;
+    l->prev = l;
+}
+
+// The same for a node already destroyed: only its neighbours are written, never its (freed) memory
+void UnlinkDead(const Link* l) {
+    l->prev->next = l->next;
+    l->next->prev = l->prev;
+}
+
+// Registry: forgets the holder's records (caller holds the lock). Returns how many.
+uint32_t DropHolderLocked(void* holder) {
+    uint32_t n = 0;
+    for (auto it = g_deferred.begin(); it != g_deferred.end();) {
+        if (it->second == holder) {
+            it = g_deferred.erase(it);
+            n++;
+        } else {
+            ++it;
+        }
+    }
+    g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
+    return n;
+}
+
+void DropHolder(void* holder) {
+    if (!g_deferredCount.load(std::memory_order_acquire)) return;
+    RegGuard lock;
+    DropHolderLocked(holder);
+}
+
+// Stops budgeting for the rest of the session after a failed safety check (logged once)
+void StopForCheck(const std::string& why) {
+    if (g_stopped.exchange(true)) return;
+    LOG_ERROR("[SceneBudget] Safety check failed: " + why + ". Spreading new objects over frames is stopped until the game restarts; the game's "
+              "own drain runs from now on.");
+}
+
+// ---- the three lifetime hooks ----
+
+// 0x006FD930 (any thread): a recorded node still linked is unlinked before the game destroys it
+void __fastcall Hook_NodeDtor(void* node, void* edx) {
+    const FnThis0 next = reinterpret_cast<FnThis0>(EntryChain::Next(EntryChain::Site::SceneNodeDtor, EntryChain::Layer::SceneBudget));
+    if (node && g_deferredCount.load(std::memory_order_acquire)) {
+        Link* const l = reinterpret_cast<Link*>(static_cast<uint8_t*>(node) + kLinkOff);
+        bool found = false, unlinked = false, bad = false;
+        {
+            RegGuard lock;
+            auto it = g_deferred.find(l);
+            if (it != g_deferred.end()) {
+                found = true;
+                g_deferred.erase(it);
+                g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
+                if (Queued(l)) {
+                    if (LinkConsistent(l)) {
+                        Unlink(l);
+                        unlinked = true;
+                    } else {
+                        bad = true;
+                    }
+                }
+            }
+        }
+        if (found) {
+            const DWORD drainThread = g_drainThread.load(std::memory_order_relaxed);
+            if (drainThread && GetCurrentThreadId() != drainThread) {
+                c_otherThread.Add();
+                if (!g_loggedThread.exchange(true))
+                    LOG_WARNING(std::format("[SceneBudget] A node this feature left queued was destroyed on thread {} (the drain runs on thread {}); "
+                                            "counted, not an error by itself", GetCurrentThreadId(), drainThread));
+            }
+        }
+        if (unlinked) {
+            c_dtorUnlinked.Add();
+            if (!g_loggedDtor.exchange(true))
+                LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was destroyed while still queued; unlinked before its destructor (the game's "
+                                        "code was read not to do this: please report)", reinterpret_cast<uintptr_t>(node)));
+        }
+        if (bad) StopForCheck(std::format("node {:#010x} is being destroyed while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)));
+    }
+    next(node, edx);
+}
+
+// 0x006E6480: AddNode pushes the link again when the node has no owner; a recorded node that is still linked is unlinked
+// first (the game would overwrite a live link). A node that has an owner makes AddNode return at once: left alone.
+void __fastcall Hook_AddNode(void* holder, void* edx, void* node, int group) {
+    const FnAddNode next = reinterpret_cast<FnAddNode>(EntryChain::Next(EntryChain::Site::SceneAddNode, EntryChain::Layer::SceneBudget));
+    if (node && g_deferredCount.load(std::memory_order_acquire) && !*reinterpret_cast<void**>(static_cast<uint8_t*>(node) + kOwnerOff)) {
+        Link* const l = reinterpret_cast<Link*>(static_cast<uint8_t*>(node) + kLinkOff);
+        bool unlinked = false, bad = false;
+        {
+            RegGuard lock;
+            auto it = g_deferred.find(l);
+            if (it != g_deferred.end()) {
+                g_deferred.erase(it);
+                g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
+                if (Queued(l)) {
+                    if (LinkConsistent(l)) {
+                        Unlink(l);
+                        unlinked = true;
+                    } else {
+                        bad = true;
+                    }
+                }
+            }
+        }
+        if (unlinked) {
+            c_addUnlinked.Add();
+            if (!g_loggedAdd.exchange(true))
+                LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was added to a scene while still queued without an owner; unlinked first (the "
+                                        "game's code was read not to do this: please report)", reinterpret_cast<uintptr_t>(node)));
+        }
+        if (bad) StopForCheck(std::format("node {:#010x} is added to a scene while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)));
+    }
+    next(holder, edx, node, group);
+}
+
+// 0x006E4DE0: the holder's list dies with it (the game leaves its nodes' links as they are): forget its records first
+void __fastcall Hook_HolderTeardown(void* holder, void* edx) {
+    const FnThis0 next = reinterpret_cast<FnThis0>(EntryChain::Next(EntryChain::Site::SceneHolderTeardown, EntryChain::Layer::SceneBudget));
+    if (holder && g_deferredCount.load(std::memory_order_acquire)) {
+        uint32_t n = 0;
+        {
+            RegGuard lock;
+            n = DropHolderLocked(holder);
+        }
+        c_teardownDropped.Add(n);
+    }
+    next(holder, edx);
+}
+
+// Development check before a budgeted drain: every recorded node of this holder that is still linked is well linked and
+// alive. One found destroyed but still linked (what the destructor hook exists to prevent) is unlinked; anything else
+// stops budgeting. False = do not budget (the caller runs the game's drain).
+bool CheckRecords(void* holder) {
+    if constexpr (kPublicBuild) return true;
+    if (!g_deferredCount.load(std::memory_order_acquire)) return true;
+    std::string failure;
+    uintptr_t repairedNode = 0;
+    {
+        RegGuard lock;
+        for (auto it = g_deferred.begin(); it != g_deferred.end();) {
+            Link* const l = it->first;
+            if (it->second != holder || !Queued(l)) {
+                ++it;
+                continue;
+            }
+            uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
+            uintptr_t vt = 0;
+            const bool consistent = LinkConsistent(l);
+            const bool alive = NodeLooksAlive(node, &vt);
+            if (consistent && alive) {
+                ++it;
+                continue;
+            }
+            if (consistent && g_deadVtable && vt == g_deadVtable) {
+                UnlinkDead(l); // destroyed but still linked: its neighbours point at it, take it out before any drain calls it
+                c_repaired.Add();
+                repairedNode = reinterpret_cast<uintptr_t>(node);
+                it = g_deferred.erase(it);
+                continue;
+            }
+            failure = std::format("recorded node {:#010x} (vtable {:#010x}) is {}", reinterpret_cast<uintptr_t>(node), vt,
+                                  consistent ? "not a live scene node" : "badly linked (its list neighbours do not point back at it)");
+            break;
+        }
+        g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
+    }
+    if (repairedNode && !g_loggedRepair.exchange(true))
+        LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued before a drain; unlinked (please report)", repairedNode));
+    if (!failure.empty()) {
+        StopForCheck(failure);
+        return false;
+    }
+    return true;
 }
 
 // The budgeted copy of 0x006E4130 (see the header comment). Returns the nodes processed; *left = nodes still queued.
@@ -181,11 +455,30 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         if (done >= kMinNodes && (done >= cap || Qpc() >= deadline)) break;
         Link* const l = local.prev;
         Link* const p = l->prev;
+        uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
+        if constexpr (!kPublicBuild) {
+            uintptr_t vt = 0;
+            const bool linked = LinkConsistent(l) && l->next == &local; // l is the tail: its next is our sentinel
+            const bool alive = NodeLooksAlive(node, &vt);
+            if (!linked || !alive) {
+                if (linked && g_deadVtable && vt == g_deadVtable) {
+                    // destroyed but still queued (what the lifetime hooks exist to prevent): out of the list, never called
+                    UnlinkDead(l);
+                    c_repaired.Add();
+                    if (!g_loggedRepair.exchange(true))
+                        LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued in a drain; unlinked and skipped (please report)",
+                                                reinterpret_cast<uintptr_t>(node)));
+                    continue;
+                }
+                StopForCheck(std::format("before the update of node {:#010x} (vtable {:#010x}): {}", reinterpret_cast<uintptr_t>(node), vt,
+                                         linked ? "it is not a live scene node" : "its list neighbours do not point back at it"));
+                break; // it stays in the list, untouched; the game's drain runs from the next frame on
+            }
+        }
         p->next = &local;
         local.prev = p;
         l->prev = nullptr;
         l->next = nullptr;
-        uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
         const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(node);
         reinterpret_cast<FnUpdate>(*reinterpret_cast<const uintptr_t*>(vtable + kUpdateSlot))(node, nullptr);
         void* const b = g_bounds(node, nullptr, bounds);
@@ -197,7 +490,9 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
     // drain takes from the tail (local.prev first), so the leftover, being newer in the list than anything queued
     // meanwhile, is processed first next frame; at the front it would be processed last and only cleared by the forced
     // full drain.
-    uint32_t n = 0;
+    std::vector<Link*> rest;
+    uint32_t n = 0, foreign = 0;
+    bool capped = false;
     if (local.next != &local) {
         Link* const f = local.next;
         Link* const t = local.prev;
@@ -206,11 +501,27 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         f->prev = tail;
         t->next = head;
         head->prev = t;
-        for (Link* x = f;; x = x->next) { // counted for the statistics only
+        rest.reserve(256);
+        for (Link* x = f;; x = x->next) { // recorded for the lifetime hooks, counted for the statistics
+            rest.push_back(x);
+            if (*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(x) - kLinkOff + kOwnerOff) != holder) foreign++;
             n++;
-            if (x == t || n >= kCountCap) break;
+            if (x == t) break;
+            if (n >= kCountCap) {
+                capped = true;
+                break;
+            }
         }
     }
+    // The records of this holder now are exactly the nodes left (the others were processed: link 0)
+    {
+        RegGuard lock;
+        DropHolderLocked(holder);
+        for (Link* x : rest) g_deferred[x] = holder;
+        g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
+    }
+    if (foreign) c_foreignOwner.Add(foreign);
+    if (capped) StopForCheck(std::format("more than {} nodes left queued (a list that does not end?)", kCountCap));
     *left = n;
     return done;
 }
@@ -223,6 +534,7 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
         next(holder, edx);
         return;
     }
+    g_drainThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     t_note.seen = true;
     c_calls.Add();
     const bool moving = LotLightingMotion::SampleCameraMoving();
@@ -233,9 +545,11 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
     // everything, so it is never drawn with objects missing
     const bool steady = wp && prevSeen && now - prevSeen <= kSteadyMs;
     const bool waitedTooLong = wp && wp->since && now - wp->since >= static_cast<uint64_t>(g_maxDeferMs.load(std::memory_order_relaxed));
-    if (!moving || waitedTooLong || !steady) {
+    const bool stopped = g_stopped.load(std::memory_order_acquire);
+    if (!moving || waitedTooLong || !steady || stopped || !CheckRecords(holder)) {
         (waitedTooLong && moving ? c_fullForced : c_fullStill).Add();
         next(holder, edx); // the game's drain: everything, the nodes we left included
+        DropHolder(holder); // all processed: their links are 0 now (kept during the drain: see the header comment)
         if (wp) wp->since = 0;
         return;
     }
@@ -293,6 +607,27 @@ uintptr_t CallTargetAt(uintptr_t call) {
     return call + 5 + static_cast<uintptr_t>(static_cast<intptr_t>(rel));
 }
 
+// .text and .rdata of the game's module (TS3W.exe)
+bool FindSections() {
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!base) return false;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + static_cast<uintptr_t>(dos->e_lfanew));
+    const IMAGE_SECTION_HEADER* s = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, s++) {
+        const uintptr_t b = base + s->VirtualAddress, e = b + s->Misc.VirtualSize;
+        if (std::strncmp(reinterpret_cast<const char*>(s->Name), ".text", IMAGE_SIZEOF_SHORT_NAME) == 0) g_textBegin = b, g_textEnd = e;
+        if (std::strncmp(reinterpret_cast<const char*>(s->Name), ".rdata", IMAGE_SIZEOF_SHORT_NAME) == 0) g_rdataBegin = b, g_rdataEnd = e;
+    }
+    return g_textBegin && g_rdataBegin;
+}
+
+constexpr EntryChain::Site kLifetimeSites[] = {EntryChain::Site::SceneNodeDtor, EntryChain::Site::SceneAddNode, EntryChain::Site::SceneHolderTeardown};
+
+void RemoveLifetimeHooks() {
+    for (EntryChain::Site s : kLifetimeSites) EntryChain::Remove(s, EntryChain::Layer::SceneBudget);
+}
+
 } // namespace
 
 bool Start(std::string* error) {
@@ -302,19 +637,28 @@ bool Start(std::string* error) {
         if (error) *error = why;
         return false;
     };
-    // Suspended (2026-09-29): a node held past its frame can be freed by the game while still linked (the node destructor
-    // 0x006FD930 does not unlink +0x18), and the next drain then calls through freed memory: the likely cause of a crash
-    // with a garbage EIP ~90 s after it was switched on. Off until nodes are unlinked on destruction.
-    if (kSuspended) return fail("Turned off in this version: it could crash the game (being reworked)");
     std::string missing;
     if (!GameAddr::GroupAvailable("SceneNodeBudget", &missing)) return fail(GameAddr::NotAvailable(missing));
     const uintptr_t drain = GameAddr::Get(GameAddr::Id::SceneDrain);
     const uintptr_t boundsCall = GameAddr::Get(GameAddr::Id::SceneBoundsCall), spatialCall = GameAddr::Get(GameAddr::Id::SceneSpatialCall);
     const uintptr_t bounds = GameAddr::Get(GameAddr::Id::SceneNodeBounds), spatial = GameAddr::Get(GameAddr::Id::SceneNodeSpatial);
+    const uintptr_t dtor = GameAddr::Get(GameAddr::Id::SceneNodeDtor), addNode = GameAddr::Get(GameAddr::Id::SceneAddNode);
+    const uintptr_t teardown = GameAddr::Get(GameAddr::Id::SceneHolderTeardown);
     // The whole drain must be the loop this copy reproduces, and its two calls must reach the functions the copy calls
     if (!MatchAt(drain, kDrainBody)) return fail(std::format("The scene's pending-node drain at {:#010x} is not the code Apex was written for", drain));
     if (boundsCall != drain + 0xAE || spatialCall != drain + 0xB6 || CallTargetAt(boundsCall) != bounds || CallTargetAt(spatialCall) != spatial)
         return fail(std::format("The calls inside the pending-node drain at {:#010x} are not the expected ones", drain));
+    // The lifetime hooks rely on AddNode's owner test, the destructor's layout and the teardown's start
+    if (!MatchAt(addNode, kAddNodeHead)) return fail(std::format("The scene's AddNode at {:#010x} is not the code Apex was written for", addNode));
+    if (!MatchAt(dtor, kDtorHead)) return fail(std::format("The scene node destructor at {:#010x} is not the code Apex was written for", dtor));
+    if (!MatchAt(teardown, kTeardownHead)) return fail(std::format("The scene holder teardown at {:#010x} is not the code Apex was written for", teardown));
+    if (!FindSections()) return fail("Could not read the game's code sections");
+    {
+        uint8_t store[6] = {};
+        uint32_t vt = 0;
+        if (MemPatch::ReadBytes(dtor + kDtorDeadVtableStore, store, sizeof store) && store[0] == 0xC7 && store[1] == 0x07) std::memcpy(&vt, store + 2, 4);
+        g_deadVtable = (vt >= g_rdataBegin && vt < g_rdataEnd) ? vt : 0;
+    }
     if (g_qpcMs == 0.0) {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
@@ -324,16 +668,27 @@ bool Start(std::string* error) {
     g_bounds = reinterpret_cast<FnBounds>(bounds);
     g_spatial = reinterpret_cast<FnSpatial>(spatial);
     LotLightingMotion::SampleCameraMoving(); // parses the camera position now (Start's thread), not in the first frame
-    g_on.store(true, std::memory_order_release); // before the CALL can reach the hook
+    // The lifetime hooks first: from the first node left queued on, every one is covered
     std::string err;
+    void* const hooks[] = {reinterpret_cast<void*>(&Hook_NodeDtor), reinterpret_cast<void*>(&Hook_AddNode), reinterpret_cast<void*>(&Hook_HolderTeardown)};
+    for (int i = 0; i < 3; i++)
+        if (!EntryChain::Install(kLifetimeSites[i], EntryChain::Layer::SceneBudget, hooks[i], &err)) {
+            RemoveLifetimeHooks();
+            return fail("Could not hook the scene node lifetime functions: " + err);
+        }
+    g_on.store(true, std::memory_order_release); // before the CALL can reach the hook
     if (!CallChain::Install(Site::SceneDrain, Layer::SceneBudget, reinterpret_cast<void*>(&Hook_SceneDrain), &err)) {
         g_on.store(false);
+        RemoveLifetimeHooks();
         return fail("Could not hook the scene's pending-node drain: " + err);
     }
     g_started = true;
-    LOG_INFO(std::format("[SceneBudget] On: Scene::BeginFrame's drain call {:#010x} -> {:#010x} goes through Apex (bounds {:#010x}, spatial {:#010x}); while the camera "
-                         "moves: at most {} nodes / {:.1f} ms per frame, longest wait {} ms",
-                         CallChain::CallAddress(Site::SceneDrain), drain, bounds, spatial, g_nodesPerFrame.load(), g_msPerFrame.load(), g_maxDeferMs.load()));
+    LOG_INFO(std::format("[SceneBudget] On: Scene::BeginFrame's drain call {:#010x} -> {:#010x} goes through Apex (bounds {:#010x}, spatial {:#010x}); node lifetime "
+                         "hooks on the destructor {:#010x}, AddNode {:#010x}, holder teardown {:#010x}; while the camera moves: at most {} nodes / {:.1f} ms per "
+                         "frame, longest wait {} ms{}",
+                         CallChain::CallAddress(Site::SceneDrain), drain, bounds, spatial, dtor, addNode, teardown, g_nodesPerFrame.load(), g_msPerFrame.load(),
+                         g_maxDeferMs.load(), kPublicBuild ? "" : std::format("; development checks on (destroyed-node vtable {:#010x})", g_deadVtable)));
+    if (g_stopped.load()) LOG_WARNING("[SceneBudget] A safety check failed earlier in this session: the game's own drain keeps running until the game restarts");
     return true;
 }
 
@@ -342,10 +697,23 @@ void Stop() {
     if (!g_started) return;
     g_on.store(false, std::memory_order_release); // the hook runs the game's drain from now on (everything waiting included)
     CallChain::Remove(Site::SceneDrain, Layer::SceneBudget);
+    // The nodes still left are processed by the next BeginFrame (the game's drain): the same wait as any node the game
+    // queues after BeginFrame, so the records and the lifetime hooks can go now
+    RemoveLifetimeHooks();
+    uint32_t forgotten = 0;
+    {
+        RegGuard reg;
+        forgotten = static_cast<uint32_t>(g_deferred.size());
+        g_deferred.clear();
+        g_deferredCount.store(0, std::memory_order_release);
+    }
     g_started = false;
     const Stats s = GetStats();
-    LOG_INFO(std::format("[SceneBudget] Off ({} drains, {} with a budget, {} left nodes for later, largest backlog {}, {} forced full drains)", s.calls, s.budgeted,
-                         s.framesLeft, s.maxLeft, s.fullForced));
+    LOG_INFO(std::format("[SceneBudget] Off ({} drains, {} with a budget, {} left nodes for later, largest backlog {}, {} forced full drains; lifetime guard: {} "
+                         "unlinked at destruction, {} before AddNode, {} records dropped at teardown, {} destroyed on another thread, {} not owned by their "
+                         "holder, {} repaired; {} records forgotten now)",
+                         s.calls, s.budgeted, s.framesLeft, s.maxLeft, s.fullForced, s.dtorUnlinked, s.addUnlinked, s.teardownDropped, s.otherThread, s.foreignOwner,
+                         s.repaired, forgotten));
 }
 
 bool Running() { return g_on.load(std::memory_order_acquire); }
@@ -373,12 +741,21 @@ Stats GetStats() {
     s.lastDone = g_lastDone.load();
     s.lastLeft = g_lastLeft.load();
     s.lastMs = g_lastMs.load();
+    s.tracked = g_deferredCount.load();
+    s.dtorUnlinked = c_dtorUnlinked.Get();
+    s.addUnlinked = c_addUnlinked.Get();
+    s.teardownDropped = c_teardownDropped.Get();
+    s.otherThread = c_otherThread.Get();
+    s.foreignOwner = c_foreignOwner.Get();
+    s.repaired = c_repaired.Get();
+    s.stopped = g_stopped.load();
     return s;
 }
 
 std::string StatusText() {
     if (!Running()) return "Off";
     const Stats s = GetStats();
+    if (s.stopped) return "Stopped: a safety check failed (see the log); the game places new objects as usual until it restarts";
     if (!s.calls) return "On (no frames yet)";
     if (!s.budgeted) return "On: camera still, the game places new objects as usual";
     return std::format("On: {} of {} frames spread new objects while moving (largest wait {} objects)", s.framesLeft, s.budgeted, s.maxLeft);
@@ -395,6 +772,11 @@ void RenderDeveloperUI() {
     ImGui::TextDisabled("With a budget: %llu nodes processed, %llu frames left nodes (%llu node-frames waiting), largest backlog %u; last: %u done, %u left, %.2f ms",
                         static_cast<unsigned long long>(s.nodesBudgeted), static_cast<unsigned long long>(s.framesLeft), static_cast<unsigned long long>(s.nodesLeft), s.maxLeft,
                         s.lastDone, s.lastLeft, s.lastMs);
+    ImGui::TextDisabled("Lifetime guard: %u nodes recorded; unlinked at destruction %llu, before AddNode %llu, repaired %llu (all three expected 0); dropped at "
+                        "teardown %llu; destroyed on another thread %llu; left nodes not owned by their holder %llu",
+                        s.tracked, static_cast<unsigned long long>(s.dtorUnlinked), static_cast<unsigned long long>(s.addUnlinked),
+                        static_cast<unsigned long long>(s.repaired), static_cast<unsigned long long>(s.teardownDropped), static_cast<unsigned long long>(s.otherThread),
+                        static_cast<unsigned long long>(s.foreignOwner));
     int nodes = g_nodesPerFrame.load();
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::SliderInt("Nodes per frame while moving##SbNodes", &nodes, static_cast<int>(kMinNodes), 4096)) SetNodesPerFrame(nodes);

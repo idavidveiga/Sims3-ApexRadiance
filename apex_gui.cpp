@@ -596,7 +596,7 @@ void PerformanceCard() {
                 Performance::SetFastTextureSeveralCores(cores);
         }
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches", true);
-        // "Spread new objects over frames" (kSceneBudgetName) is suspended: SceneBudget::Start refuses it (crash risk)
+        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves", true);
         FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work", true);
     }
     ApexUi::EndCard();

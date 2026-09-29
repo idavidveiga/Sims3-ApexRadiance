@@ -568,8 +568,10 @@ game yet (anti-stutter plan `research\perf2\plan.md`, items 7 and C5: `d3dcompil
   (the next inner layer or the trampoline); removing the last layer writes the original bytes back. Sites: the CPU DXT1 /
   DXT5 encoders 0x006152F0 / 0x006154B0 (layer 0 Frame Profiler, layer 1 the fast DXT encoder); round 3: the DPF's
   direct record write 0x004A7FC0 (layer 2, the resource cache's write epochs; prologue 83 EC 28 53 56); the object
-  lookup by ID 0x00C62D40 (8-byte prologue; layer 0 Frame Profiler, layer 3 `ObjectIndex` = Faster Object Lookups).
-  Layers: 0 FrameProfiler, 1 FastDxt, 2 ResourceCache, 3 ObjectIndex (each module layer is used on its own sites only).
+  lookup by ID 0x00C62D40 (8-byte prologue; layer 0 Frame Profiler, layer 3 `ObjectIndex` = Faster Object Lookups);
+  the scene node destructor 0x006FD930, the scene AddNode 0x006E6480 and the holder teardown 0x006E4DE0 (layer 4
+  `SceneBudget`: the node lifetime guard of Spread New Objects Over Frames). Layers: 0 FrameProfiler, 1 FastDxt,
+  2 ResourceCache, 3 ObjectIndex, 4 SceneBudget (each module layer is used on its own sites only).
 - `framework/call_chain.{h,cpp}` (`CallChain`, 2026-09-29): the same layering on one CALL instruction (E8 rel32): the CALL
   targets the outermost layer's hook, written with `MemPatch::WriteCodeSuspended`; each hook calls
   `CallChain::Next(site, layer)` (the next inner layer or the original callee); removing the last layer writes the

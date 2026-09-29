@@ -29,7 +29,8 @@
 >     filter keeps each read-only package's keys per type.
 > - **Spread New Objects Over Frames** (`[patches.SceneNodeBudget]`, experimental, **off by default**, added later on
 >   2026-09-29): while the camera moves, Scene::BeginFrame's pending-node drain handles at most 512 nodes / 2 ms per
->   frame and the rest the next frames (C6, section below).
+>   frame and the rest the next frames (C6, section below). Suspended in v1.8.0 over a node lifetime hazard; back (still
+>   experimental, off by default) with a node lifetime guard: hooks on the node destructor, AddNode and the holder teardown.
 > - **Faster Object Lookups** (`[patches.ObjectLookupIndex]`, experimental, **off by default**, added later on
 >   2026-09-29): the object-by-ID lookup (a walk of the whole world object tree) answered from a validated index of
 >   where the game's walk found each object (C8, section below).
@@ -683,68 +684,70 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 
 ## How it works: Spread New Objects Over Frames (C6)
 
-> **Suspended (2026-09-29, v1.8.0):** `SceneBudget::Start` refuses to start and the menu row is hidden. A node held past
-> its frame can be freed by the game while still linked: the node destructor 0x006FD930 does not unlink `+0x18`, SetOwner
-> 0x006FD9F0 keeps an existing link, and AddNode 0x006E6480 re-pushes a linked node without unlinking it. The next drain
-> (Apex's or one of the game's other drain callers) then calls `vfunc+0x48` through freed memory. The user's crash with a
-> garbage EIP (0xB9497401) about 90 s after switching it on fits this; not proven. Bring it back only with the nodes
-> unlinked on destruction (hook the destructor) or with deferral limited so no node outlives its frame.
+> **History:** suspended in v1.8.0 (2026-09-29) because a review found that a node held past its frame could be freed
+> while still linked (the node destructor does not unlink `+0x18`, AddNode re-pushes a linked node). The user's crash at
+> the time (garbage EIP 0xB9497401) turned out to be a different bug. Brought back the same day as an experimental option
+> (off by default) with the **node lifetime guard** below: the facts were re-read in the disassembly, and every node the
+> feature keeps queued is protected by hooks on the node destructor, AddNode and the holder teardown.
 
 Purpose (MEASURED, plan section 2.1): Scene::BeginFrame is the dominant cause of 31% of the 25-50 ms camera-moving
 hitches and 26% of the 50 ms+ ones; the pending-node drain once processed 2224 nodes in 2.84 ms in one frame (usually
 few). Inside it most of the time is the per-node update (materials resolving textures, i.e. C1's lookups).
 
-### The game side (Steam 1.67.2; VERIFIED in `research\engine_map\full.asm` unless marked)
+### The game side (Steam 1.67.2; `research\engine_map\full.asm`, `dwords.txt`)
 
-- **Pending holder** = `[scene+8]`, constructor 0x006E4530: `+0x18` counter (nodes processed by the last drain), `+0x20`
-  / `+0x24` the sentinel {next, prev} of a circular intrusive list, `+0x2C` (through the node's owner) the spatial tree.
-- **Scene node** (base constructor 0x006FD710, vtable 0x00FF9D00, refcounted: vfunc +0 AddRef 0x005044C0, +4 Release
-  0x00692720): `+0x18` / `+0x1C` its pending link {next, prev}, **0 = not queued**; `+0x30` its owner (the holder).
-- **Queueing:** 0x006FAC70 MarkDirty: `if (link.next == 0) { link = self-loop; 0x006E42E0(owner, node); }` and the same
-  inline test in 0x006FCA20 (children), 0x006FCB10 (LOD band change), 0x006FD9F0 (SetOwner). 0x006E42E0 is a plain
-  push_back at the tail (`link.prev = tail; link.next = sentinel; ...`). Scene AddNode (0x006E6xxx, the insert at
-  0x006E64EF) AddRefs the node and queues it (a new node's link is the constructor's self-loop, so it is queued without
-  the test). There is no lock anywhere on this list: all users run on the render thread (INFERRED from the absence of
-  any lock in the drain, the queue and the removal).
-- **Removal:** 0x006E4984 (scene RemoveNode): `if (link.next) { unlink from whatever list holds it; self-loop }`, then
-  0x006FB490 (out of the spatial tree), SetOwner(0) (vfunc +0x1C), Release (vfunc +4). So **a queued node is always held
-  by its scene and never freed while linked**; the node destructor 0x006FD930 does not touch the link (it relies on
-  this).
+VERIFIED = read in the disassembly; INFERRED = deduction.
+
+- **Pending holder** = `[scene+8]` (0x68 bytes, constructor 0x006E4530, allocated in 0x006EB610): `+0x04..+0x08` the slot
+  array of its nodes, `+0x18` counter (nodes processed by the last drain; nothing counts the list itself), `+0x20` /
+  `+0x24` the sentinel {next, prev} of a circular intrusive list, `+0x2C` the spatial tree. VERIFIED.
+- **Scene node** (base constructor 0x006FD710, vtable 0x00FF9D00; refcounted: count at `+4` changed with `lock xadd`,
+  vfunc +0 AddRef 0x005044C0, +4 Release 0x00692720, +8 deleting destructor): `+0x18` / `+0x1C` its pending link {next,
+  prev}: **0** = processed by a drain, **self-loop** = not queued (constructor, RemoveNode), anything else = linked; `+0x30`
+  its owner (the holder). VERIFIED.
+- **Queueing:** 0x006FAC70 MarkDirty, 0x006FCA20 (a node's children), 0x006FCB10 (LOD band change) and 0x006FD9F0 SetOwner
+  (vfunc +0x1C) all do `if (link.next == 0) { link = self-loop; if (owner) 0x006E42E0(owner, node); }`; 0x006E42E0 is a
+  plain push_back at the tail. **Every push needs owner != 0** (children are queued on their own owner's list, only if
+  they have one). SetOwner(0) self-loops a link that is 0 and never unlinks. VERIFIED.
+- **AddNode 0x006E6480** (thiscall(node, group), ret 8; only caller the scene thunk 0x006E84B0): returns at once when
+  `node->owner != 0`; otherwise takes a slot, AddRef, SetOwner(holder), and at 0x006E64EF pushes the link again when it is
+  non-zero, **without unlinking it** (correct for a self-loop, and for the stale link the teardown leaves). VERIFIED.
+- **RemoveNode 0x006E4920** (only when `node->owner == this`): clears the slot, **unlinks** a non-zero link and self-loops
+  it (0x006E4984), leaves the spatial tree (0x006FB490), SetOwner(0,0,0), Release. VERIFIED.
+- **Holder teardown 0x006E4DE0** (only caller 0x006E97F0, which frees the holder right after): destroys the spatial tree,
+  then SetOwner(0,0,0) + Release on every slot **without unlinking**; the list dies with the holder, and a surviving node
+  keeps a stale link into freed memory. VERIFIED.
+- **Node base destructor 0x006FD930** (thiscall, ret): detaches its children (0x006FC860, which unlinks their `+0x20` and
+  calls their vfunc +0x5C), leaves its spatial cell (0x00706200, only the cell's list at `+0x1EC`), owner = 0, unlinks its
+  own `+0x20` (its parent's child list), destroys `+0x1F8` and stores vtable 0x00FA1B78 (the "destroyed node" vtable).
+  **It never touches `+0x18`.** 0x006FAE00 only fills a local transform. The base vtable 0x00FF9D00 is written only by the
+  base constructor and this destructor, so every node destructor ends in it (23 call / tail-jmp sites, the derived
+  destructors). VERIFIED.
+- **Does the game ever free a node that is still linked?** Not while its list is live: a node can only be pushed with an
+  owner, the owner comes from AddNode (which AddRefs the slot), and the holder's reference is released only by
+  RemoveNode (after the unlink) or by the teardown (whose list dies with the holder). The guarantee is structural, not
+  "drained within the frame", so holding a node across frames does not break it. VERIFIED for every direct path;
+  INFERRED that no other code calls SetOwner(0) on a linked node or drops the holder's reference (the indirect vfunc +0x1C
+  calls with three zero arguments in the whole exe are RemoveNode, the teardown and a window class, 0x00588ED0).
 - **The drain 0x006E4130**, thiscall(holder), ret, 0xD1 bytes: splices the whole list into a sentinel on its own stack
   and empties the holder's list (0x006E413E..0x006E4192); `[this+0x18] = 0`; then, **newest first**, while the local
-  list is not empty: `l = local.prev`; unlink it; `l->prev = l->next = 0`; `node = l - 0x18`; `node->vfunc+0x48()` (the
-  base class's is `ret`); `b = 0x006FB4B0(node, &aligned32)` (world AABB: two `movaps` into the buffer); `0x006FAD70(node,
-  b)` (= `owner+0x2C -> 0x00705B70(node, b)`: moves the node to the spatial cell containing it, or out of the tree when
-  outside the world); `[this+0x18] += 1`. Nodes queued during the loop go to the holder's (now empty) list: the next
-  drain handles them.
+  list is not empty: `l = local.prev` (re-read from the stack every iteration); unlink it; `l->prev = l->next = 0`;
+  `node = l - 0x18`; `node->vfunc+0x48()` (the base class's is `ret`); `b = 0x006FB4B0(node, &aligned32)`;
+  `0x006FAD70(node, b)` (= `owner+0x2C -> 0x00705B70(node, b)`; skips a node whose owner is 0; its only caller is the
+  drain); `[this+0x18] += 1`. Nodes queued during the loop go to the holder's (now empty) list. VERIFIED.
 - **Callers:** 0x006EBC49 Scene::BeginFrame (every frame), 0x006DF9B5, 0x006EDBC7 (a scene query that drains first so
-  its answer is current), 0x006EF07D, 0x006F226B (a render-to-texture path, when asked), 0x006F3CF1. 0x0071A540 runs a
-  queued node's vfunc +0x48 itself when it needs it (without dequeuing it).
-
-### Is deferring safe?
-
-Yes, with the design below (arguments from the verified code; the INFERRED parts are marked and are what the in-game
-test must confirm):
-- **No lifetime hazard:** a queued node is referenced by its scene and unlinked by RemoveNode before its Release; the
-  deferred nodes stay in the holder's own list (not in any Apex structure), so RemoveNode unlinks them as always and no
-  pointer to them is kept by Apex. The list is well-formed at every point (the splice back is O(1)).
-- **No lost node:** every node taken off the list is processed in the same iteration; the rest stay queued; every later
-  drain (the game's own included) processes them; a node waiting longer than `maxDeferMs` (500 ms) makes the next
-  BeginFrame run the game's full drain, and the camera stopping does too.
-- **Consumers:** the game already renders with nodes queued (anything queued after BeginFrame waits until the next
-  frame), and the consumers that need a current tree drain it themselves (their five CALLs are untouched and process
-  what was deferred). INFERRED: that no consumer assumes "the list is empty right after BeginFrame" (none was found: the
-  counter `[this+0x18]` is only written by the drain).
-- **What a deferred node looks like** (INFERRED): a new node is not in the spatial tree yet (not drawn until processed:
-  "pop-in" of a frame or a few); a moved node keeps its old cell (it can be culled at its old place for those frames).
-  Order: the processed part keeps the game's order (newest first); the rest is processed first the next frame.
+  its answer is current), 0x006EF07D, 0x006F226B (a render-to-texture path, when asked), 0x006F3CF1. Each drains its own
+  scene's holder (`[scene+8]`). VERIFIED.
+- **Threads:** none of the list functions takes a lock, so the game must use the list from one thread (the render
+  thread, which runs BeginFrame). INFERRED. Release is atomic, so a node's destructor may run on any thread.
 
 ### The copy with a budget (`features/scene_budget.cpp`)
 
 - `Hook_SceneDrain` is layer 1 of `framework/call_chain.h` on the CALL 0x006EBC49 (the Frame Profiler's "Scene pending
   nodes" counter is layer 0). Start compares the **whole drain** (0xD1 bytes, only the two CALL rel32s wildcarded) with
-  the Steam code, checks that its two CALLs sit at +0xAE / +0xB6 and reach `SceneNodeBounds` / `SceneNodeSpatial`, and
-  refuses otherwise.
+  the Steam code, checks that its two CALLs sit at +0xAE / +0xB6 and reach `SceneNodeBounds` / `SceneNodeSpatial`, checks
+  the heads of AddNode (the owner test), the destructor (up to the base vtable store) and the teardown, and refuses
+  otherwise.
 - Per BeginFrame (render thread): samples the camera eye (`LotLightingMotion::SampleCameraMoving`, the same eye read and
   300 ms rule as Lot Lighting While Moving, usable whether that feature is on or not). Camera still, or a node waited
   `maxDeferMs` -> the game's drain (everything). Moving -> `BudgetedDrain`: the game's loop instruction for instruction
@@ -753,9 +756,48 @@ test must confirm):
   **tail** of the holder's list (the game queues at the tail and the drain takes from the tail), in order, so they are
   processed first next frame. Only scenes drained every frame (within 100 ms) are budgeted; others drain fully. Holder
   slots (8) are reused only after 1 s without a drain; with none free the scene drains fully.
+- The other five drain callers are untouched: they process the nodes left exactly as they process what the game queued
+  after BeginFrame (the list is always well formed when Apex returns).
 - The Frame Profiler reads `[this+0x18]` (nodes processed this frame) and `SceneBudget::TakeDrainNote()` ("deferred" =
   nodes left).
-- Stop: the layer is removed; while threads may still be inside it, the hook runs the game's drain (`g_on` false).
+
+### The node lifetime guard
+
+Every node `BudgetedDrain` leaves queued is recorded (`link -> holder`, an `unordered_map` under an SRW lock that is never
+held across a game call; an atomic count gives the hooks a lock-free "nothing recorded" path). Three layers of
+`framework/entry_chain.h` (layer `SceneBudget`) are installed before the drain hook and removed after it:
+
+| Site | Entry | Prologue moved | What the hook does |
+|---|---|---|---|
+| `SceneNodeDtor` | 0x006FD930 (any thread) | `55 8B EC 83 E4 F0` | a recorded node whose link is neither 0 nor a self-loop, and whose neighbours point back at it, is unlinked and self-looped before the game destroys it; the record is dropped |
+| `SceneAddNode` | 0x006E6480 | `56 8B 74 24 08` | for a node without owner (AddNode's only working case): a recorded node that is still linked is unlinked first (the game would push it over a live link); the record is dropped. A node with an owner is left alone (AddNode returns at once) |
+| `SceneHolderTeardown` | 0x006E4DE0 | `53 55 56 57 8B F9` | the holder's records are dropped before its nodes are released (their links then point into a dying list, which the game leaves as it is) |
+
+No branch in .text lands inside the moved bytes (engine_map `calls.tsv` / `jmps.tsv`). The invariant the records keep:
+**a recorded node whose link is neither 0 nor a self-loop is in a live list** (its holder's, or a drain's local list on
+the stack while that drain runs). A recorded node can only be queued on its owner's list; its owner changes only through
+AddNode (record dropped) or the teardown (records dropped); drains leave links at 0. So the hooks never write into a
+dead list. Records are replaced after every budgeted drain (the nodes left now) and dropped after every game drain that
+goes through the hook; they are kept while a drain runs, so a recorded node destroyed inside a drain is unlinked from that
+drain's local list, which both the game's loop and the copy re-read every iteration.
+
+Development build checks (logged once; "stopped" = the game's drain runs until the game restarts):
+- before each node of the budgeted copy: the tail's neighbours point back at it, its vtable is inside TS3W.exe `.rdata`,
+  is not the destroyed-node vtable (read from the destructor's store at +0x8D, 0x00FA1B78 on Steam) and its +0x48 slot
+  is inside `.text`; otherwise stopped;
+- before each budgeted drain: the same for every recorded node of the holder that is still linked;
+- a node found with the destroyed-node vtable but still well linked is taken out by writing only its neighbours (its
+  freed memory is never written), never called, counted as "repaired" and logged once, without stopping.
+
+Stop: `g_on` false (a thread still inside the drain hook runs the game's drain), the drain layer, then the three lifetime
+layers are removed and the records cleared. The nodes still left are processed by the next BeginFrame: the same wait as
+any node the game queues after BeginFrame.
+
+Dev statistics (Developer > Performance, and the Off line in the log): drains (camera still / forced / budgeted), nodes
+processed and left, largest backlog, and the guard: nodes recorded, **unlinked at destruction, unlinked before AddNode,
+repaired** (each expected 0: each is a case the game's code was read not to have), records dropped at teardown
+(expected after world or lot changes), recorded nodes destroyed on another thread, left nodes whose owner is not the
+holder that drained them (expected 0).
 
 ## How it works: Faster Object Lookups (C8)
 
@@ -840,12 +882,12 @@ leaf), with `0x00C62D55` / `0x00C60D76` 16% on the stack; the lookup has 233 dir
 | `features/refpack_codec.{h,cpp}` | `Compress` (fast), `Decompress` (0x004EB3B0 translated), `GameCompress` / `GameCore` (0x004EC0A0 + 0x004EB750 / 0x004EBB90 translated), `ParamsFor`, `SizeBound`, `Context` | the RefPack format, pure (also built by `tools/refpack_test`) |
 | `features/fast_refpack.{h,cpp}` | `Start`, `Stop`, `Tick`, `Hook_StreamWrite`, the context pool, the per-thread counting-run pairing, `Check`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `tools/dxt_test/dxt_test.cpp`, `tools/refpack_test/refpack_test.cpp` | offline tests (console only, no files written) | build and run lines in their headers and below |
-| `features/scene_budget.{h,cpp}` | `Start`, `Stop`, `Hook_SceneDrain`, `BudgetedDrain`, `MatchAt` (the drain body check), `TakeDrainNote`, `Set*` (dev tuning), `GetStats`, `StatusText`, `RenderDeveloperUI` | Spread New Objects Over Frames (C6) |
+| `features/scene_budget.{h,cpp}` | `Start`, `Stop`, `Hook_SceneDrain`, `BudgetedDrain`, `Hook_NodeDtor`, `Hook_AddNode`, `Hook_HolderTeardown` (the node lifetime guard), `CheckRecords`, `NodeLooksAlive`, `LinkConsistent` (dev checks), `MatchAt` (the drain body and hook head checks), `TakeDrainNote`, `Set*` (dev tuning), `GetStats`, `StatusText`, `RenderDeveloperUI` | Spread New Objects Over Frames (C6) |
 | `features/object_index.{h,cpp}` | `Start`, `Stop`, `Hook_ObjectById`, `Find` / `Store` (table), `Build` / `BuildRaw` (path of a found object), `Validate` / `ValidateRaw` (a hit), `ShapeOf` (class shapes), `CheckThisOne` / `RecordMismatch` (verification), `TakeLookupNote`, `GetStats`, `StatusText`, `RenderDeveloperUI` | Faster Object Lookups (C8) |
 | `features/lot_lighting_motion.{h,cpp}` | `SampleCameraMoving`, `EnsureCamera` (the camera eye parse, once, any thread: Start, StartWallAo or the first SampleCameraMoving) | the camera eye sampler, shared by the lot budget, the wall shading gate and the scene node budget |
 | `patches/performance_patches.cpp`, `patches/performance.h` | `ResourceLookupCachePatch`, `ResourceLookupMissesPatch`, `FileListCachePatch`, `LotLightingMotionPatch`, `WallShadingWhileMovingPatch`, `FastTextureCompressionPatch`, `FastCacheCompressionPatch`, `SceneNodeBudgetPatch`, `ObjectLookupIndexPatch`, `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` / `*Status` | the ApexPatch features, their registration and the menu's accessors |
 | `framework/slot_chain.{h,cpp}` | `SlotChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction`; sites incl. `RefPackCompress`, `WallAoStep`, `KeyListBase`, `KeyListDerived`; layers `Gate` (outermost), `FrameProfiler`, `ResourceCache`, `FastCompress` | layered vtable-slot hooks (profiler + cache, profiler + fast compressor, gate + profiler) |
-| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, `DpfWriteDirect`, `ObjectById`; layers `FrameProfiler`, `FastDxt`, `ResourceCache`, `ObjectIndex` | layered entry hooks (trampoline + JMP written with all threads suspended) |
+| `framework/entry_chain.{h,cpp}` | `EntryChain::Install` / `Remove` / `Next` / `Installed` / `GameFunction` / `Original`; sites `DxtEncode1/5`, `DpfWriteDirect`, `ObjectById`, `SceneNodeDtor`, `SceneAddNode`, `SceneHolderTeardown`; layers `FrameProfiler`, `FastDxt`, `ResourceCache`, `ObjectIndex`, `SceneBudget` | layered entry hooks (trampoline + JMP written with all threads suspended) |
 | `framework/call_chain.{h,cpp}` | `CallChain::Install` / `Remove` / `Next` / `Installed` / `CallAddress` / `GameFunction`; site `SceneDrain`, layers `FrameProfiler`, `SceneBudget` | layered hooks on one CALL instruction (rel32 written with all threads suspended) |
 | `framework/memory_patch.{h,cpp}` | `MemPatch::WriteCodeSuspended` | code write with every other thread suspended |
 | `framework/game_addresses.{h,cpp}` | ids `ResRegisterDb` .. `CameraGetter`, `RefPackDecompress`, `SceneBoundsCall` .. `SceneNodeSpatial`, `ObjectTreeWalk`, `ObjectTreeSearch`, groups `ResourceCache`, `LotLightingMotion`, `FastTextureCompression`, `FastCacheCompression`, `SceneNodeBudget`, `ObjectIndex` | addresses (fixed on Steam, signatures elsewhere) |
@@ -882,16 +924,18 @@ with `research\port169\sigcheck.pl`: 140 of 140 ok on 2026-09-29, and each alter
 | SceneDrainCall / SceneDrain | 0x006EBC49 / 0x006E4130 | Sig / Target (fallback Sig) (existing profiler ids) |
 | SceneBoundsCall / SceneNodeBounds | 0x006E41DE / 0x006FB4B0 | InRange(SceneDrain, 0xD1) / Target (fallback Sig) |
 | SceneSpatialCall / SceneNodeSpatial | 0x006E41E6 / 0x006FAD70 | InRange(SceneDrain, 0xD1) / Target (fallback Sig) |
+| SceneNodeDtor / SceneAddNode / SceneHolderTeardown | 0x006FD930 / 0x006E6480 / 0x006E4DE0 | Sig (entry; alternates at +0x11 / +5 / +6) |
 | ObjectById | 0x00C62D40 | Sig (existing profiler id) |
 | ObjectTreeWalk / ObjectTreeSearch | 0x00C60D30 / 0x00C5FA60 | Sig (alternates: the CALLs inside the lookup / the walk) |
 
-Round 3 ids: `sigcheck.pl` 147 of 147 ok (every new primary signature matches once; the alternates too). After merging with C6 / C8 (v1.5.0): 153 of 153 ok.
+Round 3 ids: `sigcheck.pl` 147 of 147 ok (every new primary signature matches once; the alternates too). After merging with C6 / C8 (v1.5.0): 153 of 153 ok. With the C6 lifetime hook ids (2026-09-29): 158 of 158 ok.
 
 Run-time checks on every build (not signatures): the read-only class's OpenRecord / base OpenRecord / DeleteRecord bytes
 (`CheckReadOnlyClass`); the budget CALL's target and the `D9` / `DD` after it; the getters' shapes (`A1 imm32 C3`,
 `8B 41 disp8 C3`) and the eye read `0F 28 40 disp8`; the DXT entries' prologue `55 8B EC 83 E4 F0` (or the entry
 chain's own JMP); the RefPack slot holding the write (or the slot chain's outer hook); the first textures / streams of
-each session compared with the game; the whole scene drain body (0xD1 bytes) and its two CALLs; the object lookup,
+each session compared with the game; the whole scene drain body (0xD1 bytes) and its two CALLs; the heads of the scene
+AddNode, node destructor and holder teardown (and their prologues, or the entry chain's JMP); the object lookup,
 walk and search bodies and their three CALLs; the object lookup's prologue `8B 44 24 0C 8B 54 24 08` (or the entry
 chain's JMP); the scene drain CALL reaching 0x006E4130 (or the call chain's hook); the tree classes' vtable functions
 (bytes) before a path is stored; the first 64 object lookups answered from the index of each session compared with the
@@ -945,7 +989,8 @@ game's walk.
   (the hitch lines add ", deferred N" and ", from index N"). With the profiler's scene counter, `[this+0x18]` = the
   nodes processed this frame (fewer while the budget defers). Either order of install works.
 - **Official Sims3SettingsSetter and C6 / C8:** its source (read only) patches none of 0x006EBC49, 0x006E4130,
-  0x006FB4B0, 0x006FAD70, 0x00C62D40, 0x00C60D30, 0x00C5FA60 or the Layer / Lot vtables (its 0x00C63015 is a JZ byte in
+  0x006FB4B0, 0x006FAD70, 0x006FD930, 0x006E6480, 0x006E4DE0 (the last three also absent as literals from the installed
+  `Sims3SettingsSetter.asi`, `Sims3Performance.asi` and `MonoPatcher.asi`, 2026-09-29), 0x00C62D40, 0x00C60D30, 0x00C5FA60 or the Layer / Lot vtables (its 0x00C63015 is a JZ byte in
   the lot visibility metric, a different function). Its Lot Streaming "object streaming throttle" detours
   AddLotObjectsToScene 0x00AC1130 and spreads object additions over frames itself; both can be on: it limits how many
   objects are created per frame, C6 how many queued scene nodes are placed per frame.
@@ -1044,7 +1089,23 @@ game's walk.
   wait or raise the per-frame limits (Developer card) and report it.
 - **Do not change the drain copy's order or the splice (C6):** the copy must stay the game's loop (newest first, unlink
   before the calls, the local sentinel re-read after every node because game code may unlink other nodes, the rest put
-  back at the tail, where the drain takes from). Do not keep node pointers outside the game's list: only the list keeps a node alive.
+  back at the tail, where the drain takes from). Apex keeps no node pointer it dereferences outside the game's list:
+  the records are keys (the link address), only read or written while the invariant says the link is in a live list.
+- **Node lifetime (C6; the v1.8.0 suspension):** the node destructor 0x006FD930 never unlinks `+0x18` and AddNode
+  0x006E6480 pushes a non-zero link without unlinking it, so a node freed or re-added while still linked would corrupt the
+  list or make the next drain call freed memory. The game itself never does it for a live list (see "Does the game ever
+  free a node that is still linked?"); the lifetime hooks make sure of it for every node Apex leaves queued. Do not remove
+  them, and do not "fix" them into unconditional unlinks: after a holder teardown the game leaves nodes with stale links
+  into freed memory, and unlinking those would write into freed memory. Only recorded nodes (whose list is known to be
+  live) are ever unlinked.
+- **Never write a destroyed node's memory (C6):** the "repaired" path takes a destroyed but still linked node out by
+  writing only its neighbours; its own link is freed memory (the allocator may already use it).
+- **Records of a torn-down holder (C6):** the teardown hook must drop them before the game releases the nodes; the
+  holder's memory can be reused by a new holder at the same address (the waiting-slot key is only a key; the records are
+  gone).
+- **Threads (C6, INFERRED):** the list has no lock in the game; the budgeted copy runs where the game's drain runs. The
+  destructor hook may run on any thread; it is counted ("destroyed on another thread") and still guarded by the SRW
+  lock. If that counter grows together with a crash, report it.
 - **Unproven consumer assumption (C6, INFERRED):** nothing was found that expects the pending list to be empty right
   after BeginFrame; if a crash or a missing object appears only with the feature on, turn it off and send the log.
 - **Duplicate ids (C8, the residual assumption):** the index answers the remembered object as long as its path is valid;
@@ -1163,9 +1224,13 @@ Faster Cache Compression (development build):
 5. After several clean sessions: flip `enabledByDefault` to true.
 
 Spread New Objects Over Frames (development build, Developer > Profiler > Performance):
-1. Turn it on. Log: `[CallChain] Scene::BeginFrame pending-node drain (CALL 0x006ebc49 -> 0x006e4130): layer 1 installed`
-   and `[SceneBudget] On: ... at most 512 nodes / 2.0 ms per frame, longest wait 500 ms`. With the Frame Profiler on
-   (either order): its Hooks table says "outer layer of the call chain ...; the scene node budget is inside".
+1. Turn it on (Performance card, row with the Experimental badge). Log: three `[EntryChain] scene node destructor
+   (0x006fd930)` / `scene AddNode (0x006e6480)` / `scene holder teardown (0x006e4de0): layer 4 installed` lines, then
+   `[CallChain] Scene::BeginFrame pending-node drain (CALL 0x006ebc49 -> 0x006e4130): layer 1 installed` and
+   `[SceneBudget] On: ... node lifetime hooks on the destructor 0x006fd930, AddNode 0x006e6480, holder teardown 0x006e4de0;
+   ... at most 512 nodes / 2.0 ms per frame, longest wait 500 ms; development checks on (destroyed-node vtable
+   0x00fa1b78)`. With the Frame Profiler on (either order): its Hooks table says "outer layer of the call chain ...; the
+   scene node budget is inside".
 2. Camera still: "drains ... game's (camera still)" grows, "with a budget" does not.
 3. Pan quickly over a neighborhood while lots stream in, travel, load a save and pan at once: "with a budget" grows,
    "frames left nodes" > 0 when a lot streams in, "largest backlog" in the hundreds / thousands, "game's (a node waited
@@ -1175,7 +1240,14 @@ Spread New Objects Over Frames (development build, Developer > Profiler > Perfor
    the 25-50 ms moving hitches; the hitch lines show ", deferred N".
 5. Build / Buy: place, move and delete objects while panning; Edit Town; CAS and back: everything placed, nothing left
    invisible. Try the Developer sliders (e.g. 64 nodes, 0.5 ms) to make deferral obvious, then back to the defaults.
-6. After several clean sessions: flip `enabledByDefault` to true.
+6. Node lifetime (what got it suspended): with the sliders low (64 nodes, 0.5 ms, longest wait 2000 ms) pan while lots
+   stream in AND delete objects / Sims leave / travel / go to CAS / load another save, all while moving. The Developer
+   "Lifetime guard" line: "nodes recorded" goes up and down; "unlinked at destruction", "before AddNode" and "repaired"
+   stay 0 (any other value: send the log, it has a `[SceneBudget]` warning naming the node); "dropped at teardown" > 0
+   after a world change is normal; "left nodes not owned by their holder" should stay 0. The status must not read
+   "Stopped: a safety check failed" (else the log has `[SceneBudget] Safety check failed: ...`). Turn it off: the Off
+   line in the log sums the same counters.
+7. After several clean sessions: flip `enabledByDefault` to true.
 
 Faster Object Lookups (development build):
 1. Turn it on. Log: `[EntryChain] object lookup by ID (0x00c62d40): layer 3 installed ...` and `[ObjectIndex] On: object
