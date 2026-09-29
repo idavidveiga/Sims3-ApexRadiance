@@ -618,15 +618,19 @@ bool Recheck(uintptr_t mgr, const uint32_t* key, uint32_t gen, const Answer& a, 
 }
 
 // Stores the game's answer (provider 0 = absent), found under generation gen with no list change around it. seq0 = the
-// write sequence before the game's lookup (valid only when no counted write was in progress then).
-void Remember(uintptr_t mgr, const uint32_t* key, uint32_t provider, int32_t priority, uint32_t gen, bool seqValid, uint32_t seq0) {
+// write sequence before the game's lookup (valid only when no counted write was in progress then). roBefore: every
+// read-only package of the list answered for sure already before the game's lookup (checked only for absent answers).
+void Remember(uintptr_t mgr, const uint32_t* key, uint32_t provider, int32_t priority, uint32_t gen, bool seqValid, uint32_t seq0, bool roBefore) {
     uint32_t index = kAllAbove;
     if (provider && !FindInList(mgr, provider, priority, index)) {
         c_notCached.Add();
         return;
     }
-    // Every read-only package above the answer answered for sure (not a failed open)
-    if (!ReadOnlyAboveReliable(mgr, index)) {
+    // Every read-only package above the answer answered for sure (not a failed open). An absent answer needs it both
+    // before and after the game's lookup: a package whose open failed transiently during the probe (then reopened, or
+    // given its key set, before this check) would otherwise be stored as "absent" although it may hold the key.
+    // Reliability only goes from unreliable to reliable, so the check before the lookup is the one that matters.
+    if ((!provider && !roBefore) || !ReadOnlyAboveReliable(mgr, index)) {
         (provider ? c_notCached : c_negUnreliable).Add();
         return;
     }
@@ -823,13 +827,16 @@ uint32_t __fastcall Hook_FindProvider(void* self, void* edx, const uint32_t* key
     const uint32_t g0 = g_gen.load(std::memory_order_acquire);
     const uint32_t seq0 = g_writeSeq.load(std::memory_order_seq_cst);
     const bool seqValid = g_writeBusy.load(std::memory_order_seq_cst) == 0;
+    // "Remember missing files": whether every read-only package answers for sure before the game's probe (an absent
+    // answer is stored only when this held before and after it; see Remember)
+    const bool roBefore = g_negOn.load(std::memory_order_acquire) && ReadOnlyAboveReliable(mgr, kAllAbove);
     const uint64_t t1 = kPublicBuild ? 0 : Qpc();
     const uint32_t r = next(self, edx, key, priorityOut);
     if constexpr (!kPublicBuild) g_missTicks.fetch_add(Qpc() - t1, std::memory_order_relaxed);
     if (!r) c_notFound.Add();
     if (!r && !g_negOn.load(std::memory_order_acquire)) return r;
     if (m0 == 0 && g_mutating.load(std::memory_order_acquire) == 0 && g_gen.load(std::memory_order_acquire) == g0)
-        Remember(mgr, key, r, r ? *priorityOut : 0, g0, seqValid, seq0);
+        Remember(mgr, key, r, r ? *priorityOut : 0, g0, seqValid, seq0, roBefore);
     else c_notCached.Add();
     return r;
 }
@@ -1014,57 +1021,60 @@ bool ShouldBump(Bump mode, const uint32_t* args) {
     return true;
 }
 
+// WriteBegin / the game's write / WriteEnd. WriteEnd is in a __finally: an exception unwinding through the game's write
+// (SEH, or a C++ exception thrown inside it) must not leave g_writeBusy raised, which would keep every epoch sum from
+// being trusted until the game restarts. No object with a destructor lives in this frame (C2712).
+template <class Call> uint64_t Bracketed(void* db, const Call& call) {
+    uint64_t r = 0;
+    WriteBegin(db);
+    __try {
+        r = call();
+    } __finally {
+        WriteEnd(db);
+    }
+    return r;
+}
+
 template <int I, int N> struct EpochHook;
 template <int I> struct EpochHook<I, 0> {
     static uint64_t __fastcall Fn(void* self, void* edx) {
         const uint32_t args[6] = {};
-        const bool bump = ShouldBump(kSpecs[I].mode, args);
-        if (bump) WriteBegin(self);
-        const uint64_t r = reinterpret_cast<uint64_t(__fastcall*)(void*, void*)>(g_specOrig[I].load(std::memory_order_acquire))(self, edx);
-        if (bump) WriteEnd(self);
-        return r;
+        const auto game = reinterpret_cast<uint64_t(__fastcall*)(void*, void*)>(g_specOrig[I].load(std::memory_order_acquire));
+        if (!ShouldBump(kSpecs[I].mode, args)) return game(self, edx);
+        return Bracketed(self, [&] { return game(self, edx); });
     }
 };
 template <int I> struct EpochHook<I, 1> {
     static uint64_t __fastcall Fn(void* self, void* edx, uint32_t a) {
         const uint32_t args[6] = {a};
-        const bool bump = ShouldBump(kSpecs[I].mode, args);
-        if (bump) WriteBegin(self);
-        const uint64_t r = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire))(self, edx, a);
-        if (bump) WriteEnd(self);
-        return r;
+        const auto game = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire));
+        if (!ShouldBump(kSpecs[I].mode, args)) return game(self, edx, a);
+        return Bracketed(self, [&] { return game(self, edx, a); });
     }
 };
 template <int I> struct EpochHook<I, 2> {
     static uint64_t __fastcall Fn(void* self, void* edx, uint32_t a, uint32_t b) {
         const uint32_t args[6] = {a, b};
-        const bool bump = ShouldBump(kSpecs[I].mode, args);
-        if (bump) WriteBegin(self);
-        const uint64_t r = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire))(self, edx, a, b);
-        if (bump) WriteEnd(self);
-        return r;
+        const auto game = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire));
+        if (!ShouldBump(kSpecs[I].mode, args)) return game(self, edx, a, b);
+        return Bracketed(self, [&] { return game(self, edx, a, b); });
     }
 };
 template <int I> struct EpochHook<I, 3> {
     static uint64_t __fastcall Fn(void* self, void* edx, uint32_t a, uint32_t b, uint32_t c) {
         const uint32_t args[6] = {a, b, c};
-        const bool bump = ShouldBump(kSpecs[I].mode, args);
-        if (bump) WriteBegin(self);
-        const uint64_t r =
-            reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire))(self, edx, a, b, c);
-        if (bump) WriteEnd(self);
-        return r;
+        const auto game = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t)>(g_specOrig[I].load(std::memory_order_acquire));
+        if (!ShouldBump(kSpecs[I].mode, args)) return game(self, edx, a, b, c);
+        return Bracketed(self, [&] { return game(self, edx, a, b, c); });
     }
 };
 template <int I> struct EpochHook<I, 6> {
     static uint64_t __fastcall Fn(void* self, void* edx, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f) {
         const uint32_t args[6] = {a, b, c, d, e, f};
-        const bool bump = ShouldBump(kSpecs[I].mode, args);
-        if (bump) WriteBegin(self);
-        const uint64_t r = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)>(
-            g_specOrig[I].load(std::memory_order_acquire))(self, edx, a, b, c, d, e, f);
-        if (bump) WriteEnd(self);
-        return r;
+        const auto game = reinterpret_cast<uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)>(
+            g_specOrig[I].load(std::memory_order_acquire));
+        if (!ShouldBump(kSpecs[I].mode, args)) return game(self, edx, a, b, c, d, e, f);
+        return Bracketed(self, [&] { return game(self, edx, a, b, c, d, e, f); });
     }
 };
 template <int I> void* EpochHookOf() { return reinterpret_cast<void*>(&EpochHook<I, kSpecs[I].args>::Fn); }
@@ -1074,10 +1084,8 @@ const std::array<void*, kSpecCount> g_specHook = MakeEpochHooks(std::make_index_
 // The DPF's direct record write 0x004A7FC0, thiscall(5 args), ret 0x14 (entry hook)
 uint64_t __fastcall Hook_DpfWriteDirect(void* self, void* edx, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e) {
     using F = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
-    WriteBegin(self);
-    const uint64_t r = reinterpret_cast<F>(EntryChain::Next(EntryChain::Site::DpfWriteDirect, EntryChain::Layer::ResourceCache))(self, edx, a, b, c, d, e);
-    WriteEnd(self);
-    return r;
+    const F game = reinterpret_cast<F>(EntryChain::Next(EntryChain::Site::DpfWriteDirect, EntryChain::Layer::ResourceCache));
+    return Bracketed(self, [&] { return game(self, edx, a, b, c, d, e); });
 }
 
 // One aligned 4-byte vtable slot: compare-exchange while its page is writable

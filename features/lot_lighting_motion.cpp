@@ -105,7 +105,9 @@ std::atomic<int> g_budgetMs{3};
 // Camera eye: [[g_rootGlobal] + g_camOff] + g_eyeOff (parsed once, constant afterwards)
 uintptr_t g_rootGlobal = 0;
 uint32_t g_camOff = 0, g_eyeOff = 0;
-std::atomic<bool> g_cameraParsed{false}; // written under g_ctrl, before anything samples
+std::atomic<bool> g_camReady{false};  // the three above are set before this turns true (release); never changed afterwards
+std::atomic<bool> g_camFailed{false}; // the parse failed (not retried)
+std::mutex g_camInit;                 // the first parse (Start, StartWallAo or SampleCameraMoving, any thread)
 float g_lastEye[3] = {}; // written under g_sampling
 bool g_haveEye = false;
 float g_refEye[3] = {};  // slow-motion reference, under g_sampling
@@ -143,6 +145,7 @@ std::atomic<uint64_t> g_aoPassUs{0}, g_aoLongestUs{0}, g_aoLastUs{0};
 double g_qpcUs = 0.0;
 
 bool ReadEye(float out[3]) {
+    if (!g_camReady.load(std::memory_order_acquire)) return false;
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(g_rootGlobal);
         if (!root) return false;
@@ -163,7 +166,7 @@ bool Differs(const float a[3], const float b[3]) {
 }
 
 void SampleCamera(uint64_t now) {
-    if (!g_cameraParsed.load(std::memory_order_acquire)) return;
+    if (!g_camReady.load(std::memory_order_acquire)) return;
     if (g_sampling.test_and_set(std::memory_order_acquire)) return; // another thread is sampling
     float e[3];
     if (ReadEye(e)) {
@@ -238,6 +241,7 @@ bool FramePassUsed(uint64_t now) {
 
 // moving: the pass runs because a wait ran out during camera motion. The wait is then left running (not cleared), so for the
 // rest of the motion the per-frame limit alone paces the passes; clearing it made every other lot start a fresh wait.
+// Both waits are cleared when the camera is seen still (OnPresentSample), and by a pass that runs while still.
 int RunPass(AoStepFn next, void* solver, void* edx, void* stopwatch, uint32_t budgetBits, int state, bool moving) {
     const uint32_t frame = g_frame.load(std::memory_order_relaxed);
     const uint64_t t0 = QpcNow();
@@ -278,8 +282,9 @@ int __fastcall Hook_WallAoStep(void* solver, void* edx, void* stopwatch, uint32_
     const uint64_t now = GetTickCount64();
     const bool moving = MovingAt(now);
     if (moving) {
-        // Only for a while: the lot's load waits for the first pass, a lot thumbnail for the refinement. One wait per state:
-        // it starts at the first deferral since a pass of that state last ran.
+        // Only for a while: the lot's load waits for the first pass, a lot thumbnail for the refinement. One wait per state
+        // and per camera motion: it starts at the first deferral since the camera was last seen still; once it ran out, the
+        // pending passes of that state run (one per frame) for the rest of the motion.
         std::atomic<uint64_t>& waitSince = state == 0 ? g_firstWaitSince : g_refineWaitSince;
         uint64_t since = waitSince.load(std::memory_order_relaxed);
         if (!since) {
@@ -303,6 +308,12 @@ void OnPresentSample() {
     g_frame.fetch_add(1, std::memory_order_relaxed);
     g_lastPresentTick.store(now, std::memory_order_relaxed);
     SampleCamera(now);
+    // Camera seen still: the wall shading waits start over. Without this a wait could stay set after every pending pass
+    // ran during a motion (nothing left to call RunPass while still), and the next motion would not defer at all.
+    if (!MovingAt(now)) {
+        g_firstWaitSince.store(0, std::memory_order_relaxed);
+        g_refineWaitSince.store(0, std::memory_order_relaxed);
+    }
 }
 
 // Present callback while either part is on (caller holds g_ctrl)
@@ -348,23 +359,27 @@ bool ParseEyeRead(uintptr_t call, uint32_t& off) {
     return true;
 }
 
-// Camera eye location, from the code that reads it (caller holds g_ctrl)
-bool ParseCamera(std::string& why) {
-    if (g_cameraParsed.load()) return true;
+// The camera eye's location, parsed from the game's code once, by whichever comes first: Start, StartWallAo (both under
+// g_ctrl) or the scene node budget's SampleCameraMoving (any thread). Nothing samples before g_camReady turns true.
+bool EnsureCamera() {
+    if (g_camReady.load(std::memory_order_acquire)) return true;
+    if (g_camFailed.load(std::memory_order_relaxed) || !GameAddr::Resolved()) return false;
+    std::lock_guard<std::mutex> lock(g_camInit);
+    if (g_camReady.load(std::memory_order_acquire)) return true;
     uintptr_t root = 0;
     uint32_t camOff = 0, eyeOff = 0;
     if (!ParseRootGetter(GameAddr::Get(GameAddr::Id::CameraRootGetter), root) || !ParseCameraGetter(GameAddr::Get(GameAddr::Id::CameraGetter), camOff) ||
         !ParseEyeRead(GameAddr::Get(GameAddr::Id::CameraGetterCall), eyeOff)) {
-        why = "The camera position was not found in the game's code";
+        g_camFailed.store(true);
         return false;
     }
     g_rootGlobal = root;
     g_camOff = camOff;
     g_eyeOff = eyeOff;
-    g_haveEye = false;
+    g_haveEye = false; // no sampler runs yet (SampleCamera waits for g_camReady)
     g_haveRef = false;
     g_lastMoveTick.store(0);
-    g_cameraParsed.store(true, std::memory_order_release);
+    g_camReady.store(true, std::memory_order_release);
     return true;
 }
 
@@ -411,8 +426,8 @@ bool Start(std::string* error) {
     if (!GameAddr::GroupAvailable("LotLightingMotion", &missing)) return fail(GameAddr::NotAvailable(missing));
     const uintptr_t call = GameAddr::Get(GameAddr::Id::LotLightBudgetCall);
     const uintptr_t budget = GameAddr::Get(GameAddr::Id::LotLightBudget);
-    std::string why;
-    if (!ParseCamera(why)) return fail(why);
+    // Camera eye, from the code that reads it (shared with the wall shading gate and SampleCameraMoving)
+    if (!EnsureCamera()) return fail("The camera position was not found in the game's code");
     // The CALL must still reach the budget function, and its result must be read from ST0 (fst / fstp right after it)
     uint8_t cur[6] = {};
     if (!MemPatch::ReadBytes(call, cur, sizeof cur) || cur[0] != 0xE8 || CallTargetOf(cur, call) != budget)
@@ -462,6 +477,13 @@ int BudgetMs() { return g_budgetMs.load(); }
 
 bool CameraMoving() { return (Running() || WallAoRunning()) && MovingAt(GetTickCount64()); }
 
+bool SampleCameraMoving() {
+    if (!EnsureCamera()) return false;
+    const uint64_t now = GetTickCount64();
+    SampleCamera(now);
+    return MovingAt(now);
+}
+
 std::string StatusText() {
     if (!Running()) return "Off";
     if (!c_calls.load()) return "On (no lot lighting work yet)";
@@ -491,8 +513,7 @@ bool StartWallAo(std::string* error) {
     };
     std::string missing;
     if (!GameAddr::GroupAvailable("WallShadingWhileMoving", &missing)) return fail(GameAddr::NotAvailable(missing));
-    std::string why;
-    if (!ParseCamera(why)) return fail(why);
+    if (!EnsureCamera()) return fail("The camera position was not found in the game's code");
     const uintptr_t step = GameAddr::Get(GameAddr::Id::WallAoStep);
     const uintptr_t driver = GameAddr::Get(GameAddr::Id::WallAoDriver);
     if (!MatchBytes(driver, kDriverBytes))

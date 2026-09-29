@@ -127,7 +127,9 @@
 //              entries) + 1, or all of them on a miss; misses.
 //   0x006E4130 scene pending-node drain    thiscall(), ret; splices the list [this+0x20] out, zeroes [this+0x18] and adds
 //              1 per node processed (0x006E41EF), so [this+0x18] read right after the call = nodes processed. Timed at Scene::BeginFrame's CALL 0x006EBC49 only (the other 5
-//              callers are not per-frame). Extra: nodes.
+//              callers are not per-frame). Extra: nodes. Since 2026-09-29 the CALL is shared through framework/call_chain.h:
+//              the profiler is the outer layer, the scene node budget (features/scene_budget.h) the inner one when on;
+//              extra "deferred" = nodes the budget left queued for the next frames (SceneBudget::TakeDrainNote).
 //   0x004EC200 RefPack stream write        thiscall(src, size, dst, capacity, flags), ret 0x14 (uses [ecx+4] = allocator;
 //              the plan's "stdcall" was wrong). dst == 0 with flags & 1 = size bound only (no work, not timed). Else
 //              FUN_004EC0A0 -> FUN_004EB750 (<= 16 KB) or FUN_004EBB90; returns the compressed size. Only referenced by the
@@ -139,9 +141,11 @@
 //              framework/entry_chain.h (the prologue 55 8B EC 83 E4 F0 moved to a trampoline, a JMP written with all other
 //              threads suspended), the profiler being the outer layer and the fast encoder (features/fast_dxt.h) the inner
 //              one. Extra: pixels (width x height).
-//   0x00C62D40 object lookup by ID         thiscall(idLo, idHi, flag), ret 0xC; ecx passed on to FUN_00C60D30. 233 call
-//              sites (script natives on the simulation thread, lot lighting, camera): hand-made hook, safeLen 8
-//              (8B 44 24 0C 8B 54 24 08).
+//   0x00C62D40 object lookup by ID         thiscall(idLo, idHi, int* visited), ret 0xC; ecx passed on to FUN_00C60D30. 233
+//              call sites (script natives on the simulation thread, lot lighting, camera). Since 2026-09-29 hooked at the
+//              entry through framework/entry_chain.h (site ObjectById: the 8 prologue bytes 8B 44 24 0C 8B 54 24 08 moved to a
+//              trampoline, a JMP written with all other threads suspended), the profiler being the outer layer and the object
+//              lookup index (features/object_index.h) the inner one. Extra: "from index" (ObjectIndex::TakeLookupNote).
 //   0x006A8BA0 lot room solve              thiscall(timer*, float budget), ret 8; x87 stack empty at the call and on return.
 //              Its only caller is the lot lighting update FUN_00ADB8F0 (render thread): timed at that CALL, 0x00ADB9AD.
 //              ecx = one level object of the lot (the deque at manager+0x24..0x40), so calls = lot levels updated (not rooms).
@@ -191,7 +195,10 @@
 #include "shader_cache.h"
 #include "slot_chain.h"
 #include "entry_chain.h"
+#include "call_chain.h"
 #include "resource_cache.h"
+#include "scene_budget.h"
+#include "object_index.h"
 #include "lot_lighting_motion.h"
 #include "apex_config.h"
 #include "apex_paths.h"
@@ -279,7 +286,12 @@ inline bool IsCounterCat(int c) { return c >= kFirstCounterCat && c < kCatCount;
 // layer sits inside the profiler's (framework/slot_chain.h); their kXPackages count is the packages the cache asked.
 // kXCacheAbsent: of those, answered "no package holds it" ("Remember missing files"). kXKeys: keys a key list call
 // returned (the out vector's growth); kXListCached: packages whose keys the file list cache gave from memory.
-enum Extra : int { kXPackages, kXMisses, kXNodes, kXBytesIn, kXBytesOut, kXPixels, kXCacheHits, kXCacheAbsent, kXKeys, kXListCached, kExtraCount };
+// kXDeferred: scene nodes the scene node budget (features/scene_budget.h) left queued; kXIndexHits: object lookups
+// answered by the object lookup index (features/object_index.h). Both layers sit inside the profiler's.
+enum Extra : int {
+    kXPackages, kXMisses, kXNodes, kXBytesIn, kXBytesOut, kXPixels, kXCacheHits, kXCacheAbsent, kXKeys, kXListCached, kXDeferred, kXIndexHits,
+    kExtraCount
+};
 
 struct CatInfo {
     const char* name;
@@ -1160,12 +1172,19 @@ uint64_t __fastcall Hook_FindProvider(void* self, void* edx, uint32_t key, uint3
     return r;
 }
 
-// Scene pending-node drain, from Scene::BeginFrame's CALL (render thread): [this+0x18] = nodes processed afterwards
+// Scene pending-node drain, from Scene::BeginFrame's CALL (render thread): [this+0x18] = nodes processed afterwards.
+// Outer layer of the call chain (framework/call_chain.h): the next layer is the scene node budget when it is on
+// (features/scene_budget.h), else the game's drain.
 uint64_t __fastcall Hook_SceneDrain(void* self, void* edx) {
+    const FnThis0 next = reinterpret_cast<FnThis0>(CallChain::Next(CallChain::Site::SceneDrain, CallChain::Layer::FrameProfiler));
     CounterScope sc(kScenePending);
-    const uint64_t r = Orig<T_SceneDrain, FnThis0>()(self, edx);
+    const uint64_t r = next(self, edx);
     sc.End();
-    if (sc.timed) AddX(sc.s, kXNodes, ReadU32Safe(self, 0x18));
+    const SceneBudget::DrainNote note = SceneBudget::TakeDrainNote(); // read on every call: it is cleared per drain
+    if (sc.timed) {
+        AddX(sc.s, kXNodes, ReadU32Safe(self, 0x18));
+        if (note.seen && note.budgeted) AddX(sc.s, kXDeferred, note.left);
+    }
     return r;
 }
 
@@ -1204,10 +1223,17 @@ uint64_t __cdecl Hook_DxtEncode5(uint32_t dst, uint32_t src) {
     return DxtEncode(T_DxtEncode5, dst, src);
 }
 
-// Object lookup by ID (idLo, idHi, flag): any thread, bucketed render / simulation / other
-uint64_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32_t idHi, uint32_t flag) {
+// Object lookup by ID (idLo, idHi, visited*): any thread, bucketed render / simulation / other. Outer layer of the entry
+// chain (framework/entry_chain.h): the next layer is the object lookup index when it is on (features/object_index.h),
+// else the game's code (the trampoline).
+uint64_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32_t idHi, uint32_t visited) {
+    const FnThis3 next = reinterpret_cast<FnThis3>(EntryChain::Next(EntryChain::Site::ObjectById, EntryChain::Layer::FrameProfiler));
     CounterScope sc(kObjectLookup);
-    return Orig<T_ObjectById, FnThis3>()(self, edx, idLo, idHi, flag);
+    const uint64_t r = next(self, edx, idLo, idHi, visited);
+    sc.End();
+    const ObjectIndex::LookupNote note = ObjectIndex::TakeLookupNote(); // read on every call: it is cleared per lookup
+    if (sc.timed && note.seen && note.hit) AddX(sc.s, kXIndexHits, 1);
+    return r;
 }
 
 // One room of the lot lighting update (timer*, float budget as raw bits), from its only CALL
@@ -1350,16 +1376,17 @@ const TargetInfo kTargets[kTargetCount] = {
     // Counters (research\perf2\plan.md section 8). Patterns = the bytes checked at the game-address table's address.
     {"Resource lookup (FUN_004AFFC0, 2 vtable slots)", 0x004AFFC0, "51 53 55 56 57 8B F9 8D 5F 48 68 ?? ?? ?? ?? 8B CB E8 ?? ?? ?? ?? 8B 77 30 8B 6F 34 3B F5", -1, 0,
         reinterpret_cast<void*>(&Hook_FindProvider), "any", false, 0, GameAddr::Id::ResFindProvider, kNoAddr, GameAddr::Id::ResFindProviderSlot0, 2},
-    {"Scene pending nodes (CALL at 0x006EBC49)", 0x006EBC49, "E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8", 0, 0x006E4130,
+    {"Scene pending nodes (CALL at 0x006EBC49, call chain)", 0x006EBC49, "E8 ?? ?? ?? ?? 80 BE A2 02 00 00 00 75 ?? 8B 4E 38 E8", 0, 0x006E4130,
         reinterpret_cast<void*>(&Hook_SceneDrain), "render (Scene::BeginFrame)", false, 0, GameAddr::Id::SceneDrainCall, GameAddr::Id::SceneDrain},
     {"RefPack compress (FUN_004EC200, vtable slot)", 0x004EC200, "8B 54 24 14 33 C0 F6 C2 02 74 07 B8 01 00 00 00 EB 0D F7 C2 00 00 01 00 74 05 B8 02 00 00 00 56", -1, 0,
         reinterpret_cast<void*>(&Hook_RefPackCompress), "any", false, 0, GameAddr::Id::RefPackCompress, kNoAddr, GameAddr::Id::RefPackCompressSlot, 1},
-    // The two DXT entries go through framework/entry_chain.h (AttachTarget / DetachTarget); safeLen 6 is informational
+    // The two DXT entries and the object lookup go through framework/entry_chain.h, the scene drain CALL through
+    // framework/call_chain.h (AttachTarget / DetachTarget); their safeLen is informational
     {"DXT1 encode (FUN_006152F0, entry chain)", 0x006152F0, "55 8B EC 83 E4 F0 81 EC 54 01 00 00 8B 45 08 8B 50 04 8B 48 08 53 56 8D 72 03", -1, 0,
         reinterpret_cast<void*>(&Hook_DxtEncode1), "any", false, 6, GameAddr::Id::DxtEncode1},
     {"DXT5 encode (FUN_006154B0, entry chain)", 0x006154B0, "55 8B EC 83 E4 F0 81 EC A4 01 00 00 8B 45 08 8B 48 04 8D 51 03 83 E2 FC", -1, 0,
         reinterpret_cast<void*>(&Hook_DxtEncode5), "any", false, 6, GameAddr::Id::DxtEncode5},
-    {"Object lookup by ID (FUN_00C62D40)", 0x00C62D40, "8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", -1,
+    {"Object lookup by ID (FUN_00C62D40, entry chain)", 0x00C62D40, "8B 44 24 0C 8B 54 24 08 56 50 8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", -1,
         0, reinterpret_cast<void*>(&Hook_ObjectById), "any (render / simulation)", false, 8, GameAddr::Id::ObjectById},
     {"Lot room solve (CALL at 0x00ADB9AD)", 0x00ADB9AD, "E8 ?? ?? ?? ?? EB 02 DD D8 8D 4C 24 14 E8", 0, 0x006A8BA0,
         reinterpret_cast<void*>(&Hook_RoomSolve), "render (lot lighting update)", false, 0, GameAddr::Id::RoomSolveCall, GameAddr::Id::RoomSolve},
@@ -1480,9 +1507,9 @@ void ResolveTarget(int i) {
             st.status = std::format("Skipped: {} not found on {} (game_addresses.cpp)", GameAddr::Name(ti.addrId), GetGameVersionName());
             return;
         }
-        // The DXT encoders' entries are shared with the fast encoder through framework/entry_chain.h, which checks the
-        // prologue itself (the entry may already hold its JMP)
-        const bool entryChained = i == T_DxtEncode1 || i == T_DxtEncode5;
+        // The DXT encoders' and the object lookup's entries are shared through framework/entry_chain.h (with the fast
+        // encoder / the object lookup index), which checks the prologue itself (the entry may already hold its JMP)
+        const bool entryChained = i == T_DxtEncode1 || i == T_DxtEncode5 || i == T_ObjectById;
         if (!entryChained && !MatchAt(a, ti.pattern)) {
             st.status = std::format("Skipped: bytes at {:#010x} do not match (detoured or patched by another module?)", a);
             return;
@@ -1495,6 +1522,17 @@ void ResolveTarget(int i) {
         }
         const uintptr_t call = a + static_cast<uintptr_t>(ti.callOffset);
         const uintptr_t callee = GameAddr::Get(ti.calleeId);
+        // The scene drain's CALL is shared with the scene node budget through framework/call_chain.h, which checks where
+        // the CALL goes itself (it may already reach the budget's hook)
+        if (i == T_SceneDrain) {
+            if (*reinterpret_cast<const uint8_t*>(call) != 0xE8 || !callee) {
+                st.status = std::format("Skipped: no CALL at {:#010x}", call);
+                return;
+            }
+            st.how = GameAddr::IsFixed() ? "Steam 1.67.2 address, CALL checked by the call chain" : "game-address signature, CALL checked by the call chain";
+            st.addr = call;
+            return;
+        }
         if (*reinterpret_cast<const uint8_t*>(call) != 0xE8 || !callee || CallTarget(call) != callee) {
             st.status = std::format("Skipped: the CALL at {:#010x} does not reach {} ({:#010x}; redirected by another module?)", call, GameAddr::Name(ti.calleeId), callee);
             return;
@@ -1850,7 +1888,33 @@ bool AttachTarget(int i) {
     ResolveTarget(i);
     if (!st.addr) return false;
     if (ti.slots > 0) return AttachSlots(i);
+    if (i == T_SceneDrain) {
+        // Shared with the scene node budget (features/scene_budget.h): the profiler is the outer layer of the call chain
+        std::string error;
+        g_orig[i] = reinterpret_cast<void*>(GameAddr::Get(ti.calleeId)); // display only: the hook calls CallChain::Next
+        if (!CallChain::Install(CallChain::Site::SceneDrain, CallChain::Layer::FrameProfiler, ti.hook, &error)) {
+            st.status = "Skipped: " + error;
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed at the CALL {:#010x}, outer layer of the call chain ({}; written with all threads checked{})", st.addr, st.how,
+                                CallChain::Installed(CallChain::Site::SceneDrain, CallChain::Layer::SceneBudget) ? "; the scene node budget is inside" : "");
+        return true;
+    }
     if (ti.callOffset >= 0) return AttachCallSite(i);
+    if (i == T_ObjectById) {
+        // Shared with the object lookup index (features/object_index.h): the profiler is the outer layer of the entry chain
+        std::string error;
+        g_orig[i] = reinterpret_cast<void*>(st.addr); // display only: the hook calls EntryChain::Next
+        if (!EntryChain::Install(EntryChain::Site::ObjectById, EntryChain::Layer::FrameProfiler, ti.hook, &error)) {
+            st.status = "Skipped: " + error;
+            return false;
+        }
+        st.attached = true;
+        st.status = std::format("Timed at the entry, outer layer of the entry chain ({}; JMP written with all threads checked{})", st.how,
+                                EntryChain::Installed(EntryChain::Site::ObjectById, EntryChain::Layer::ObjectIndex) ? "; the object lookup index is inside" : "");
+        return true;
+    }
     if (i == T_DxtEncode1 || i == T_DxtEncode5) {
         // Entries shared with the fast DXT encoder (features/fast_dxt.h): the profiler is the outer layer of the entry chain
         const EntryChain::Site site = i == T_DxtEncode5 ? EntryChain::Site::DxtEncode5 : EntryChain::Site::DxtEncode1;
@@ -1905,6 +1969,24 @@ void DetachTarget(int i) {
     if (!st.attached) return;
     if (kTargets[i].slots > 0) {
         DetachSlots(i);
+        return;
+    }
+    if (i == T_SceneDrain) {
+        if (!CallChain::Remove(CallChain::Site::SceneDrain, CallChain::Layer::FrameProfiler)) { // the budget's layer, if any, stays
+            st.status = "Restore failed: still timed";
+            return;
+        }
+        st.attached = false;
+        st.status = "Off";
+        return;
+    }
+    if (i == T_ObjectById) {
+        if (!EntryChain::Remove(EntryChain::Site::ObjectById, EntryChain::Layer::FrameProfiler)) { // the index's layer, if any, stays
+            st.status = "Restore failed: still timed";
+            return;
+        }
+        st.attached = false;
+        st.status = "Off";
         return;
     }
     if (i == T_DxtEncode1 || i == T_DxtEncode5) {
@@ -3270,8 +3352,11 @@ std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t call
         if (sum(kXCacheAbsent)) t += std::format(", absent from cache {}", sum(kXCacheAbsent)); // "Remember missing files" on
         return t;
     }
-    case kScenePending:
-        return std::format(", nodes {}", sum(kXNodes));
+    case kScenePending: {
+        std::string t = std::format(", nodes {}", sum(kXNodes));
+        if (sum(kXDeferred)) t += std::format(", deferred {}", sum(kXDeferred)); // scene node budget on (",": agg.pl splits counters on "; ")
+        return t;
+    }
     case kRefPackCompress:
         return std::format(", in {:.1f} KB, out {:.1f} KB", static_cast<double>(sum(kXBytesIn)) / 1024.0, static_cast<double>(sum(kXBytesOut)) / 1024.0);
     case kDxtEncode:
@@ -3281,6 +3366,8 @@ std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t call
         if (sum(kXListCached)) t += std::format(", packages from cache {}", sum(kXListCached)); // file list cache on
         return t;
     }
+    case kObjectLookup:
+        return sum(kXIndexHits) ? std::format(", from index {}", sum(kXIndexHits)) : std::string(); // object lookup index on
     default:
         return "";
     }
@@ -3750,6 +3837,8 @@ std::string BuildReport() {
     s += "File list cache: " + ResourceCache::KeyListStatusText() + "\n";
     s += "Lot lighting while moving: " + LotLightingMotion::StatusText() + "\n";
     s += "Wall shading while moving: " + LotLightingMotion::WallAoStatusText() + "\n";
+    s += "Spread new objects over frames: " + SceneBudget::StatusText() + "\n";
+    s += "Faster object lookups: " + ObjectIndex::StatusText() + "\n";
     const HitchAggregate h = AggregateHitches();
     if (h.count) {
         s += std::format("Last {} hitches: average frame {:.2f} ms (median before them {:.2f}), camera moving in {}, still in {}; per hitch (self ms): category | render | other threads | worst\n",
@@ -3896,7 +3985,9 @@ std::string CounterExtraPerFrame(const CounterAvg& a, int k) {
         return std::format("{:.0f} packages per lookup, {:.1f} misses, {:.0f}% from cache", calls > 0 ? sum(kXPackages) / calls : 0.0, sum(kXMisses),
                            calls > 0 ? 100.0 * sum(kXCacheHits) / calls : 0.0);
     case kScenePending:
-        return std::format("{:.1f} nodes", sum(kXNodes));
+        return sum(kXDeferred) > 0 ? std::format("{:.1f} nodes, {:.1f} deferred", sum(kXNodes), sum(kXDeferred)) : std::format("{:.1f} nodes", sum(kXNodes));
+    case kObjectLookup:
+        return std::format("{:.0f}% from index", calls > 0 ? 100.0 * sum(kXIndexHits) / calls : 0.0);
     case kRefPackCompress:
         return std::format("{:.1f} -> {:.1f} KB", sum(kXBytesIn) / 1024.0, sum(kXBytesOut) / 1024.0);
     case kDxtEncode:

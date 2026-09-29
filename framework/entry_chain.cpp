@@ -29,11 +29,17 @@ struct SiteInfo {
 // entry (checked in full.asm for the Frame Profiler's hand-made hooks of the same entries). The DPF direct write starts
 // with sub esp,28h; push ebx; push esi (5 bytes, no relocation); no jump or call in .text lands on 0x004A7FC1..0x004A7FC4
 // (engine_map\jmps.tsv, calls.tsv).
+// The object lookup starts with mov eax,[esp+0Ch]; mov edx,[esp+8] (4 + 4 bytes, no relative operand): both move to the
+// trampoline, the JMP covers bytes 0..4 and bytes 5..7 are never executed again. No branch in .text lands on bytes 1..7
+// (checked in full.asm, 2026-09-29); the only instruction boundary inside the JMP is byte 4, which WriteCodeSuspended
+// refuses while a thread is stopped there.
 const SiteInfo kSiteInfo[kSites] = {
     {"DXT1 encoder", GameAddr::Id::DxtEncode1, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"DXT5 encoder", GameAddr::Id::DxtEncode5, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"DPF direct record write", GameAddr::Id::DpfWriteDirect, {0x83, 0xEC, 0x28, 0x53, 0x56}, 5},
+    {"object lookup by ID", GameAddr::Id::ObjectById, {0x8B, 0x44, 0x24, 0x0C, 0x8B, 0x54, 0x24, 0x08}, 8},
 };
+static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 
 struct SiteState {
     uintptr_t fn = 0;

@@ -590,6 +590,8 @@ void PerformanceCard() {
         FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
         FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures");
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
+        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -647,10 +649,13 @@ void DevProfilerTab() {
     ApexPatch* walls = Find(Performance::kWallShadingName);
     ApexPatch* tex = Find(Performance::kFastTextureName);
     ApexPatch* pack = Find(Performance::kFastCacheName);
+    ApexPatch* nodes = Find(Performance::kSceneBudgetName);
+    ApexPatch* objs = Find(Performance::kObjectIndexName);
     auto on = [](ApexPatch* p) { return p && p->IsEnabled(); };
-    const bool anyPerf = on(cache) || on(lists) || on(lots) || on(walls) || on(tex) || on(pack);
-    DevCard("DevPerformance", IconId::Gauge, "Performance", "Lookup and file list caches, lot lighting and wall shading while moving, texture and cache compression", anyPerf,
-            [cache, lists, lots, walls, tex, pack, on] {
+    const bool anyPerf = on(cache) || on(lists) || on(lots) || on(walls) || on(tex) || on(pack) || on(nodes) || on(objs);
+    DevCard("DevPerformance", IconId::Gauge, "Performance",
+            "Lookup and file list caches, lot lighting and wall shading while moving, compression, scene nodes, object lookups", anyPerf,
+            [cache, lists, lots, walls, tex, pack, nodes, objs, on] {
         // the lookup cache's lines include "Remember missing files" and the file list cache
         if (on(cache) || on(lists)) (cache ? cache : lists)->RenderDeveloperUI();
         else ImGui::TextDisabled("Resource lookup cache and file list cache: off");
@@ -666,6 +671,12 @@ void DevProfilerTab() {
         ApexUi::Gap(ApexUi::kSpace2);
         if (on(pack)) pack->RenderDeveloperUI();
         else ImGui::TextDisabled("Faster cache compression: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (on(nodes)) nodes->RenderDeveloperUI();
+        else ImGui::TextDisabled("Spread new objects over frames: off");
+        ApexUi::Gap(ApexUi::kSpace2);
+        if (on(objs)) objs->RenderDeveloperUI();
+        else ImGui::TextDisabled("Faster object lookups: off");
     });
 }
 

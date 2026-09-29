@@ -144,6 +144,15 @@ enum class Id : uint16_t {
     DdfVtable,                // 0x00FB2420: loose-file folder database "DDF" (ctor near FUN_004a5510)
     PackedStreamVtable,       // 0x00FFD790: base packed stream database (ctor FUN_0072cc60; e.g. the CAS compositor cache at priority -1000)
     DpfWriteDirect,           // FUN_004a7fc0 thiscall(key, data, size, ...), ret 0x14: the DPF's non-virtual record write (removes and re-inserts the key)
+    // ---- Scene node budget (features/scene_budget.cpp; group "SceneNodeBudget" = SceneDrainCall, SceneDrain, these four
+    //      and the camera ids) ----
+    SceneBoundsCall,          // call FUN_006fb4b0 inside the drain FUN_006e4130 (node world bounds into an aligned 32-byte buffer)
+    SceneNodeBounds,          // FUN_006fb4b0 thiscall(node, float out[8]), ret 4, returns out (the node's world AABB)
+    SceneSpatialCall,         // call FUN_006fad70 inside the drain (right after the bounds)
+    SceneNodeSpatial,         // FUN_006fad70 thiscall(node, bounds*), ret 4: moves the node in its owner's spatial tree ([node+0x30]+0x2C)
+    // ---- Object lookup index (features/object_index.cpp; group "ObjectIndex" = ObjectById + these two) ----
+    ObjectTreeWalk,           // FUN_00c60d30 thiscall(idLo, idHi, int* visited), ret 0xC: walks the root vector [this+0x9C, this+0xA0)
+    ObjectTreeSearch,         // FUN_00c5fa60 cdecl(node, idLo, idHi, int* visited): recursive depth-first search (id at +0x48/+0x4C)
     Count
 };
 
@@ -169,7 +178,8 @@ bool Have(std::initializer_list<Id> ids, std::string* missing = nullptr);
 std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
-// "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache"
+// "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache",
+// "SceneNodeBudget", "ObjectIndex"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1

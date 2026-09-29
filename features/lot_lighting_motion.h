@@ -10,7 +10,8 @@
 // of its own budget (5 -> 1 ms at 3 ms): the engine's own order and priorities stay, only the time per frame shrinks.
 // The world tool mode's 1000 ms is left alone. When the camera stops (300 ms without motion) the game's budgets return.
 // Camera motion: the camera eye ([[root]+0x24]+0x60, the same read WorldManager::Update does at 0x00C6D5C9), sampled at
-// each budget call and once per frame (Present) while this feature or the wall shading gate below is on.
+// each budget call and once per frame (Present) while this feature or the wall shading gate below is on, and at each
+// Scene::BeginFrame drain while the scene node budget (features/scene_budget.h) is on (SampleCameraMoving).
 #include <string>
 
 namespace LotLightingMotion {
@@ -26,6 +27,12 @@ int BudgetMs();
 
 // The camera moved in the last 300 ms (false when unknown or when both this feature and the wall shading gate are off)
 bool CameraMoving();
+// Samples the camera eye now and returns whether it moved in the last 300 ms, whether or not this feature is on (the
+// camera offsets are parsed from the game's code on the first call; false while they are unknown). Any thread; called
+// once per frame by the scene node budget (features/scene_budget.h). Same motion test as the rest of this file (eye change
+// > 5 mm between two samples, or within 100 ms for slow pans, held 300 ms); its samples also feed the lot budget and the
+// wall shading gate when those are on.
+bool SampleCameraMoving();
 
 std::string StatusText();
 // Development build: status lines
@@ -40,9 +47,11 @@ void RenderDeveloperUI();
 // done, try later", which the step itself does in state 1 when its cost estimate is negative. This gate swaps the slot
 // (framework/slot_chain.h) and, for calls from that driver with a per-frame budget (< 100 ms: the synchronous solve's
 // 60 s and the tool mode's 1000 ms are never touched):
-//   - while the camera moves: defers the first pass (state 0) and the refinement (state 1) until it stops, each for at most
-//     `firstPassWaitMs` (2 s) in a row: the lot's load finishes only after the first pass of all its levels (0x00ADBBA0 at
-//     load stage 20), and a lot thumbnail (ThumbnailManager, 0x00AE06B0 -> 0x00ADBC30) only after every refinement;
+//   - while the camera moves: defers the first passes (state 0) and the refinements (state 1) until it stops, with one wait
+//     of at most `firstPassWaitMs` (default 2 s) per state and per camera motion (the lot's load finishes only after the
+//     first pass of all its levels (0x00ADBBA0 at load stage 20), and a lot thumbnail (ThumbnailManager, 0x00AE06B0 ->
+//     0x00ADBC30) only after every refinement). Once that wait ran out, the pending passes of that state run one per frame
+//     while the camera keeps moving; both waits start over when the camera is seen still (at a Present);
 //   - always: at most one pass that takes >= 1 ms per frame across all lots (a frame = between two Presents, or 33 ms).
 // The gate is the outermost layer of the slot (SlotChain::Layer::Gate): it needs its own return address to recognise the
 // driver, and the Frame Profiler's "Wall AO pass" counter (inner layer) then times only the passes that run.

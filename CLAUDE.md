@@ -18,8 +18,10 @@ until tested, with Remember Missing Files `ResourceLookupMisses` (negative entri
 Wall Shading While Moving `WallShadingWhileMoving` (defers the wall AO pass while moving, on by default); Faster Texture
 Compression `FastTextureCompression`, a
 bit-identical rewrite of the game's CPU DXT encoders, and Faster Cache Compression `FastCacheCompression`, a faster
-RefPack compressor in the game's format, both off by default until tested; offline tests in `tools\dxt_test` and
-`tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
+RefPack compressor in the game's format, both off by default until tested; Spread New Objects Over Frames
+`SceneNodeBudget`, a budgeted copy of the scene's pending-node drain while the camera moves, and Faster Object Lookups
+`ObjectLookupIndex`, a validated index for the object/lot lookup by ID, both experimental and off by default; offline
+tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
 Ctrl+Shift+F7, Light Diag Ctrl+Shift+F8, Frame Capture Ctrl+Shift+F9, Lot Map Probe, census). Menu: Violet UI
 (sidebar plus feature cards), hotkey Ctrl+Shift+F11. Smooth Streaming, Script GC Scheduler and Service Frame Budget
 were removed (see below).
@@ -65,7 +67,7 @@ Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI 
 1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
    them without asking.
 2. Back up the installed `C:\Games\Hydra\The Sims 3\Game\Bin\ApexRadiance.asi` (the first time: the old
-   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 47; 23 = source before the menu UX features; 42 = source before the compression features; 46 = source before the round 3 performance features).
+   `S3SSApex.asi`) into a new numbered folder `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` (next number: 48; 23 = source before the menu UX features; 42 = source before the compression features; 46 = source before the round 3 performance features; 47 = conflicted sources before the v1.5.0 merge of perf-c6-c8).
 3. Copy the dev `Release\ApexRadiance.asi` into `Game\Bin\`. Exactly one copy of the mod in `Bin`: **delete the old
    `S3SSApex.asi`** (previous standalone and combined-build name). The official `Sims3SettingsSetter.asi` stays beside
    it. A leftover `S3SSApex.asi` is detected: if it loaded first Apex Radiance idles (log error only), otherwise the old
@@ -128,7 +130,8 @@ and needs the user's explicit OK.
 - `docs/ui.md`: the Violet menu (pages, widgets, startup banners).
 - `docs/features/performance.md`: the resource lookup cache (FindProvider, package list, database classes), the lot
   lighting budget while moving, the DXT encoders (0x006152F0 / 0x006154B0, reverse-engineered step by step) and the
-  RefPack stream (compressor, decompressor, callers); `framework/slot_chain.h` shares vtable slots and
-  `framework/entry_chain.h` function entries with the Frame Profiler.
+  RefPack stream (compressor, decompressor, callers), the scene pending-node drain (0x006E4130) and the object tree
+  walk behind the lookup by ID (0x00C62D40); `framework/slot_chain.h` shares vtable slots, `framework/entry_chain.h`
+  function entries and `framework/call_chain.h` CALL instructions with the Frame Profiler.
 - `docs/removed-features.md`: HDR, Native HDR, AO, Smooth Streaming, Script GC Scheduler, Service Frame Budget
   (revival notes).
