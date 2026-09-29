@@ -25,6 +25,11 @@ inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered defaul
 int LotLightingBudgetMs();
 void SetLotLightingBudgetMs(int ms);
 
+// "Use several cores" under Faster texture compression ([patches.FastTextureCompression] useSeveralCores, default on):
+// the saved setting; Set saves it and applies it to the next texture
+bool FastTextureSeveralCores();
+void SetFastTextureSeveralCores(bool on);
+
 // One-line states for the menu
 std::string ResourceCacheStatus();
 std::string LookupMissesStatus();

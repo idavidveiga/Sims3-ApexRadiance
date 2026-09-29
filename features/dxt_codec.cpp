@@ -3,9 +3,18 @@
 //
 // Part of Apex Radiance. Credits: @loinyx
 #include "dxt_codec.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <emmintrin.h>
 #include <intrin.h>
+#include <atomic>
 #include <cstring>
+#include <mutex>
 
 #if !defined(_M_IX86)
 #error "dxt_codec.cpp is x86 only (the game is 32-bit and the x87 compare uses inline assembly)"
@@ -924,19 +933,26 @@ template <bool DXT5> void FlushGroup(Group& g, int n, int32_t pitch, uint32_t fo
     cnt.blocks += static_cast<uint32_t>(n);
 }
 
-template <bool DXT5> void FastEncode(const Dst* dst, const Src* src, BlockFallback fb, void* ctx, FastCounters* counters) {
-    if (DXT5 && src->format != 0x3D && src->format != 0x3E) return;
-    FastCounters local;
-    FastCounters& cnt = counters ? *counters : local;
+inline uint32_t BlockRows(uint32_t height) { return (height >> 2) + ((height & 3) ? 1u : 0u); }
+
+// Rows of blocks [rowBegin, rowEnd) of the image. dst / src are always the WHOLE image's descriptors and the rows are
+// absolute, so every block's Job (source pointer, cols, rows, output pointer, and the DXT5 driver locals y, height and
+// padding that the edge-alpha quirk reads) is the one the full serial loop builds for it. Groups of four never span the
+// range's ends; the lanes are independent, so the grouping does not change any block's bytes.
+template <bool DXT5> void FastEncodeRows(const Dst* dst, const Src* src, uint32_t rowBegin, uint32_t rowEnd, BlockFallback fb, void* ctx, FastCounters& cnt) {
     const uint32_t width = dst->width, height = dst->height;
     const uint32_t full = width >> 2, rem = width & 3, blocksX = full + (rem ? 1 : 0);
     const uint32_t bs = DXT5 ? 16 : 8;
     const int32_t pitch = src->pitch;
+    const uint32_t pad = dst->pitch - ((width + 3) & ~3u) * 4; // [esp+3Ch] of the DXT5 driver
     Group g;
     int n = 0;
-    const uint8_t* srow = src->ptr;
-    uint8_t* orow = dst->ptr; // the game advances by blocksX * bs + (pitch - blocksX * bs) per row of blocks
-    for (uint32_t y = 0; y < height; y += 4) {
+    // the same addresses the serial walk reaches by adding pitch * 4 (source) and dst->pitch (output) once per row of
+    // blocks (32-bit wrap-around arithmetic either way)
+    const uint8_t* srow = src->ptr + static_cast<intptr_t>(pitch) * 4 * static_cast<intptr_t>(rowBegin);
+    uint8_t* orow = dst->ptr + static_cast<uintptr_t>(dst->pitch) * rowBegin; // the game advances by blocksX * bs + padding per row of blocks
+    for (uint32_t by = rowBegin; by < rowEnd; by++) {
+        const uint32_t y = 4 * by;
         const uint32_t rows = height - y < 4 ? height - y : 4;
         for (uint32_t bx = 0; bx < blocksX; bx++) {
             Job& j = g.job[n++];
@@ -946,7 +962,7 @@ template <bool DXT5> void FastEncode(const Dst* dst, const Src* src, BlockFallba
             j.out = orow + static_cast<uintptr_t>(bx) * bs;
             j.y = y;
             j.height = height;
-            j.pad = dst->pitch - ((width + 3) & ~3u) * 4; // [esp+3Ch] of the DXT5 driver
+            j.pad = pad;
             if (n == 4) {
                 FlushGroup<DXT5>(g, 4, pitch, src->format, fb, ctx, cnt);
                 n = 0;
@@ -956,6 +972,182 @@ template <bool DXT5> void FastEncode(const Dst* dst, const Src* src, BlockFallba
         orow += dst->pitch;
     }
     if (n) FlushGroup<DXT5>(g, n, pitch, src->format, fb, ctx, cnt);
+}
+
+template <bool DXT5> void FastEncode(const Dst* dst, const Src* src, BlockFallback fb, void* ctx, FastCounters* counters) {
+    if (DXT5 && src->format != 0x3D && src->format != 0x3E) return;
+    FastCounters local;
+    FastCounters& cnt = counters ? *counters : local;
+    FastEncodeRows<DXT5>(dst, src, 0, BlockRows(dst->height), fb, ctx, cnt);
+}
+
+// ---- Parallel: the worker pool ----
+
+uint64_t Qpc() {
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return static_cast<uint64_t>(q.QuadPart);
+}
+double QpcMs() {
+    static const double ms = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1000.0 / static_cast<double>(f.QuadPart);
+    }();
+    return ms;
+}
+
+// The floating-point state a block's bytes depend on: the x87 control word (precision and rounding of the range test)
+// and MXCSR (rounding, FTZ, DAZ of every SSE operation)
+struct FpState {
+    uint16_t x87;
+    uint32_t mxcsr;
+};
+FpState ReadFp() {
+    uint16_t cw;
+    __asm fnstcw cw
+    return FpState{cw, _mm_getcsr()};
+}
+void WriteFp(const FpState& s) {
+    uint16_t cw = s.x87;
+    __asm {
+        fnclex
+        fldcw cw
+    }
+    _mm_setcsr(s.mxcsr & ~0x3Fu); // control bits only; the sticky exception flags start clear
+}
+bool SameFp(const FpState& a, const FpState& b) { return (a.x87 & 0x1F3F) == (b.x87 & 0x1F3F) && (a.mxcsr & 0xFFC0) == (b.mxcsr & 0xFFC0); }
+
+constexpr uint32_t kClosed = 0x80000000u;    // Pool::state: the task takes no more threads
+constexpr uint32_t kCountMask = 0x7FFFFFFFu; // Pool::state: threads checked in
+constexpr uint32_t kChunksPerThread = 4;     // load balance: faster threads take more chunks
+constexpr SIZE_T kWorkerStack = 256 * 1024;  // reserved address space per worker (the game is 32-bit)
+
+struct Task {
+    bool dxt5 = false;
+    const Dst* dst = nullptr;
+    const Src* src = nullptr;
+    BlockFallback fb = nullptr;
+    void* ctx = nullptr;
+    uint32_t blockRows = 0, chunkRows = 0, chunks = 0;
+    FpState fp{};
+    std::atomic<uint32_t> next{0};
+    std::atomic<uint32_t> byWorkers{0}, helpers{0}, fpMismatch{0};
+    std::atomic<uint32_t> blocks{0}, delegated{0}, power{0}, solid{0};
+    std::atomic<uint64_t> workTicks{0};
+};
+
+// Takes chunks until none is left
+void RunChunks(Task& t, bool worker) {
+    FastCounters c;
+    uint64_t ticks = 0;
+    uint32_t mine = 0;
+    for (;;) {
+        const uint32_t i = t.next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= t.chunks) break;
+        const uint32_t r0 = i * t.chunkRows, r1 = t.blockRows - r0 < t.chunkRows ? t.blockRows : r0 + t.chunkRows;
+        const uint64_t q0 = Qpc();
+        if (t.dxt5) FastEncodeRows<true>(t.dst, t.src, r0, r1, t.fb, t.ctx, c);
+        else FastEncodeRows<false>(t.dst, t.src, r0, r1, t.fb, t.ctx, c);
+        ticks += Qpc() - q0;
+        mine++;
+    }
+    t.blocks.fetch_add(c.blocks, std::memory_order_relaxed);
+    t.delegated.fetch_add(c.delegated, std::memory_order_relaxed);
+    t.power.fetch_add(c.powerAxis, std::memory_order_relaxed);
+    t.solid.fetch_add(c.solid, std::memory_order_relaxed);
+    t.workTicks.fetch_add(ticks, std::memory_order_relaxed);
+    if (worker && mine) {
+        t.byWorkers.fetch_add(mine, std::memory_order_relaxed);
+        t.helpers.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// Created once, never destroyed (the threads sleep until the process ends; nothing to tear down at exit).
+// Hand-off protocol (state = kClosed flag | number of threads checked in):
+//   caller: owns the pool (inUse), writes the task while closed, opens it (release), wakes k workers, takes chunks,
+//           closes it, then waits until no thread is checked in. Only then may the task be rewritten.
+//   worker: wakes, checks in (fetch_add). Closed: it touches nothing and leaves (a late wake from an earlier task).
+//           Open: it sets the caller's FP state, takes chunks, restores its own, leaves. The thread whose leaving makes the
+//           count 0 while closed sets `done`; the caller re-checks the count around every wait, so a stale `done` is
+//           harmless and none is lost.
+struct Pool {
+    std::atomic<bool> inUse{false};
+    std::atomic<uint32_t> state{kClosed};
+    std::atomic<uint32_t> created{0};
+    std::mutex createLock;
+    bool createFailed = false; // guarded by createLock
+    HANDLE done = nullptr;
+    HANDLE wake[Parallel::kMaxWorkers] = {};
+    struct Arg {
+        Pool* pool;
+        uint32_t index;
+    } args[Parallel::kMaxWorkers] = {};
+    Task task;
+
+    Pool() { done = CreateEventW(nullptr, FALSE, FALSE, nullptr); }
+
+    static DWORD WINAPI WorkerMain(void* p) {
+        const Arg* a = static_cast<const Arg*>(p);
+        Pool& pool = *a->pool;
+        const HANDLE wakeMe = pool.wake[a->index];
+        for (;;) {
+            if (WaitForSingleObject(wakeMe, INFINITE) != WAIT_OBJECT_0) {
+                Sleep(10);
+                continue;
+            }
+            const uint32_t s = pool.state.fetch_add(1, std::memory_order_acq_rel);
+            if (!(s & kClosed)) {
+                Task& t = pool.task;
+                const FpState own = ReadFp();
+                WriteFp(t.fp);
+                if (!SameFp(ReadFp(), t.fp)) t.fpMismatch.fetch_add(1, std::memory_order_relaxed);
+                RunChunks(t, true);
+                WriteFp(own);
+            }
+            if (pool.state.fetch_sub(1, std::memory_order_acq_rel) == (kClosed | 1u)) SetEvent(pool.done);
+        }
+    }
+
+    // At least n threads when possible; returns how many can be used (<= n)
+    uint32_t EnsureWorkers(uint32_t n) {
+        if (n > Parallel::kMaxWorkers) n = Parallel::kMaxWorkers;
+        uint32_t have = created.load(std::memory_order_acquire);
+        if (have >= n) return n;
+        std::lock_guard<std::mutex> lock(createLock);
+        have = created.load(std::memory_order_relaxed);
+        if (!done) createFailed = true;
+        using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+        static const auto setDescription = reinterpret_cast<SetDescription>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription"));
+        while (have < n && !createFailed) {
+            wake[have] = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!wake[have]) {
+                createFailed = true;
+                break;
+            }
+            args[have] = Arg{this, have};
+            // Normal priority on purpose: the calling thread (render / loader thread) is blocked on this image, so a
+            // lower priority would only let other game threads delay it. The work is bounded (one image) and at least two
+            // logical processors are left free by DefaultWorkers().
+            const HANDLE h = CreateThread(nullptr, kWorkerStack, &Pool::WorkerMain, &args[have], STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+            if (!h) {
+                CloseHandle(wake[have]);
+                wake[have] = nullptr;
+                createFailed = true;
+                break;
+            }
+            if (setDescription) setDescription(h, L"Apex DXT worker");
+            CloseHandle(h); // never joined: the threads live as long as the process
+            have++;
+            created.store(have, std::memory_order_release);
+        }
+        return have < n ? have : n;
+    }
+};
+
+Pool& ThePool() {
+    static Pool* const pool = new Pool(); // intentionally leaked (see Pool)
+    return *pool;
 }
 
 } // namespace
@@ -1010,5 +1202,113 @@ namespace Fast {
 void EncodeDxt1(const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters) { FastEncode<false>(dst, src, fallback, ctx, counters); }
 void EncodeDxt5(const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters) { FastEncode<true>(dst, src, fallback, ctx, counters); }
 } // namespace Fast
+
+namespace Parallel {
+
+uint32_t DefaultWorkers() {
+    static const uint32_t n = [] {
+        uint32_t cpus = 0;
+        DWORD_PTR proc = 0, sys = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc) {
+            for (DWORD_PTR m = proc; m; m &= m - 1) cpus++;
+        } else {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            cpus = si.dwNumberOfProcessors;
+        }
+        if (cpus <= 2) return 0u;
+        return cpus - 2 < kMaxWorkers ? cpus - 2 : kMaxWorkers;
+    }();
+    return n;
+}
+
+void Prepare(uint32_t workers) {
+    if (workers) ThePool().EnsureWorkers(workers);
+}
+
+uint32_t WorkersCreated() { return ThePool().created.load(std::memory_order_acquire); }
+
+Result Encode(bool dxt5, const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters, const Options& options) {
+    Result r;
+    const uint64_t t0 = Qpc();
+    FastCounters local;
+    FastCounters& cnt = counters ? *counters : local;
+    auto serial = [&] {
+        if (dxt5) FastEncode<true>(dst, src, fallback, ctx, &cnt);
+        else FastEncode<false>(dst, src, fallback, ctx, &cnt);
+        r.wallMs = static_cast<double>(Qpc() - t0) * QpcMs();
+        r.workMs = r.wallMs;
+        return r;
+    };
+    if (dxt5 && src->format != 0x3D && src->format != 0x3E) return r; // the game encodes nothing
+    const uint32_t width = dst->width, height = dst->height;
+    const uint32_t workers = options.workers < kMaxWorkers ? options.workers : kMaxWorkers;
+    if (!workers || !width || static_cast<uint64_t>(width) * height < options.minPixels) return serial();
+    // chunks of whole rows of blocks: about kChunksPerThread per thread, at least minBlocksPerChunk blocks each
+    const uint32_t blocksX = (width >> 2) + ((width & 3) ? 1u : 0u), blockRows = BlockRows(height);
+    const uint32_t minBlocks = options.minBlocksPerChunk ? options.minBlocksPerChunk : 1u;
+    const uint32_t minRows = minBlocks / blocksX + ((minBlocks % blocksX) ? 1u : 0u);
+    const uint32_t wanted = (workers + 1) * kChunksPerThread;
+    uint32_t chunkRows = (blockRows + wanted - 1) / wanted;
+    if (chunkRows < minRows) chunkRows = minRows;
+    if (chunkRows < 1) chunkRows = 1;
+    const uint32_t chunks = (blockRows + chunkRows - 1) / chunkRows;
+    if (chunks < 2) return serial();
+    Pool& p = ThePool();
+    if (p.inUse.exchange(true, std::memory_order_acquire)) { // another thread's image has the pool
+        r.busy = true;
+        return serial();
+    }
+    uint32_t k = p.EnsureWorkers(workers);
+    if (k > chunks - 1) k = chunks - 1;
+    if (!k) {
+        p.inUse.store(false, std::memory_order_release);
+        return serial();
+    }
+    // The task is written while the state is closed: threads that check in now (late wakes) leave without reading it
+    Task& t = p.task;
+    t.dxt5 = dxt5;
+    t.dst = dst;
+    t.src = src;
+    t.fb = fallback;
+    t.ctx = ctx;
+    t.blockRows = blockRows;
+    t.chunkRows = chunkRows;
+    t.chunks = chunks;
+    t.fp = ReadFp(); // the caller's x87 control word and MXCSR: every worker encodes with them
+    t.next.store(0, std::memory_order_relaxed);
+    t.byWorkers.store(0, std::memory_order_relaxed);
+    t.helpers.store(0, std::memory_order_relaxed);
+    t.fpMismatch.store(0, std::memory_order_relaxed);
+    t.blocks.store(0, std::memory_order_relaxed);
+    t.delegated.store(0, std::memory_order_relaxed);
+    t.power.store(0, std::memory_order_relaxed);
+    t.solid.store(0, std::memory_order_relaxed);
+    t.workTicks.store(0, std::memory_order_relaxed);
+    p.state.fetch_and(~kClosed, std::memory_order_release); // open
+    for (uint32_t i = 0; i < k; i++) SetEvent(p.wake[i]);
+    RunChunks(t, false); // the caller takes chunks too; when it finds none left, every chunk is taken
+    p.state.fetch_or(kClosed, std::memory_order_acq_rel); // no thread joins from here on
+    // wait for the threads still encoding their last chunk (a short spin first: that is usually microseconds)
+    for (int spin = 0; (p.state.load(std::memory_order_acquire) & kCountMask) != 0; spin++) {
+        if (spin < 4000) _mm_pause();
+        else WaitForSingleObject(p.done, 50);
+    }
+    cnt.blocks += t.blocks.load(std::memory_order_relaxed);
+    cnt.delegated += t.delegated.load(std::memory_order_relaxed);
+    cnt.powerAxis += t.power.load(std::memory_order_relaxed);
+    cnt.solid += t.solid.load(std::memory_order_relaxed);
+    r.parallel = true;
+    r.chunks = chunks;
+    r.chunksByWorkers = t.byWorkers.load(std::memory_order_relaxed);
+    r.participants = t.helpers.load(std::memory_order_relaxed) + (r.chunksByWorkers < chunks ? 1u : 0u);
+    r.fpStateMismatches = t.fpMismatch.load(std::memory_order_relaxed);
+    r.workMs = static_cast<double>(t.workTicks.load(std::memory_order_relaxed)) * QpcMs();
+    p.inUse.store(false, std::memory_order_release);
+    r.wallMs = static_cast<double>(Qpc() - t0) * QpcMs();
+    return r;
+}
+
+} // namespace Parallel
 
 } // namespace DxtCodec

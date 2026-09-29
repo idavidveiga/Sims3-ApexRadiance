@@ -22,6 +22,9 @@
 //           (rcpss / rsqrtss) and the x87 compare are executed per block with the same instruction as the game. A block
 //           where an intermediate value is not finite is handed to the caller's fallback (the game's own encoder in the
 //           ASI), so the output is the game's in every case.
+//   Parallel:: Fast on large images split by block rows over a small persistent pool of worker threads (the calling
+//           thread takes part and the call returns when every block is written). Same bytes as Fast for any split: see
+//           the namespace below.
 #include <cstdint>
 
 namespace DxtCodec {
@@ -71,5 +74,46 @@ namespace Fast {
 void EncodeDxt1(const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters);
 void EncodeDxt5(const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters);
 } // namespace Fast
+
+// Large images on several cores. The image's rows of blocks are cut into chunks; the calling thread and up to
+// `workers` pool threads take chunks until none is left, then the call returns (synchronous, like the game's function).
+// Why the bytes are Fast's, whatever the split:
+//   - a block's bytes depend only on its own inputs: its pixels, cols / rows, and (DXT5 right-edge blocks of the last
+//     row, the game's alpha-fetch quirk) the driver locals source pointer, y, height and row padding. A chunk is encoded
+//     with the WHOLE image's descriptors and absolute block rows, so every block gets exactly the same Job as in the
+//     serial loop (same pointers, same y, same height, same padding);
+//   - Fast's four SSE lanes never mix (no horizontal arithmetic; rcp / rsqrt / x87 / power iteration per lane), so which
+//     blocks share a group (chunk boundaries change the grouping) does not change any block's bytes;
+//   - every worker runs the task with the calling thread's x87 control word (the range test's precision) and MXCSR
+//     (rounding, FTZ / DAZ), read in the caller and set in the worker before its first chunk, restored after.
+// One parallel image at a time: a call made while another thread's image has the pool runs serially on its own thread
+// (Result::busy). The fallback may be called on worker threads (it must be thread-safe; the game's encoder is: it only
+// uses its stack and constants and is already called from several game threads).
+namespace Parallel {
+constexpr uint32_t kMaxWorkers = 6;
+// min(logical processors this process may use - 2, 6); 0 on 1-2 processor machines (keeps two for the game's own threads,
+// one of which is the caller, which also encodes)
+uint32_t DefaultWorkers();
+struct Options {
+    uint32_t workers = 0;             // pool threads besides the caller (0 = serial), at most kMaxWorkers
+    uint64_t minPixels = 256u * 256u; // smaller images are encoded serially (thread hand-off would cost more than it saves)
+    uint32_t minBlocksPerChunk = 128; // chunks are whole rows of blocks, at least this many blocks (the offline test uses 1)
+};
+struct Result {
+    bool parallel = false;       // split over the pool (false: encoded serially on the calling thread)
+    bool busy = false;           // serial because another thread's image had the pool
+    uint32_t participants = 1;   // threads that encoded at least one chunk (the caller included)
+    uint32_t chunks = 0, chunksByWorkers = 0;
+    uint32_t fpStateMismatches = 0; // workers whose x87 control word / MXCSR did not read back as the caller's (must stay 0)
+    double workMs = 0.0;         // chunk encode time summed over every thread (serial: the call's time)
+    double wallMs = 0.0;         // the call's time on the calling thread
+};
+// Same contract as Fast::EncodeDxt1/5 (dxt5 selects the format); counters are summed over all threads.
+Result Encode(bool dxt5, const Dst* dst, const Src* src, BlockFallback fallback, void* ctx, FastCounters* counters, const Options& options);
+// Creates the pool threads now (otherwise at the first large image). Any thread; cheap once they exist.
+void Prepare(uint32_t workers);
+// Pool threads created so far
+uint32_t WorkersCreated();
+} // namespace Parallel
 
 } // namespace DxtCodec

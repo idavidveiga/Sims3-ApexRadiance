@@ -13,7 +13,8 @@
 >   the camera stops.
 > - **Faster Texture Compression** (`[patches.FastTextureCompression]`, experimental, **off by default**): the game's CPU
 >   DXT1 / DXT5 encoders replaced by the same algorithm on four blocks at once; **bit-identical output** (C9, section
->   below).
+>   below). Sub-option "Use several cores" (default on): textures of 256 x 256 and more are split by rows of blocks over
+>   a small pool of worker threads, same bytes.
 > - **Faster Cache Compression** (`[patches.FastCacheCompression]`, experimental, **off by default**): the RefPack stream
 >   write answered by a fast compressor in the game's stream format; the game decompresses it unchanged (C4, section
 >   below).
@@ -68,6 +69,7 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | "Faster file lists" / "Fewer stutters when Sims load outfits and shapes" | `[patches.FileListCache] enabled` | bool | **false** | - | Experimental. Independent of the lookup cache. |
 | "Wall shading waits while moving" / "Walls of new lots get their shading when you stop" | `[patches.WallShadingWhileMoving] enabled` | bool | **true** | - | Independent of "Spread lot lighting while moving" (it shares its camera detection). |
 | "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **false** | - | Experimental until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. No Overview row. |
+| "Use several cores" (shown while the switch above is on) / "Large textures are shared out over several processor cores, with the same result" | `[patches.FastTextureCompression] useSeveralCores` | bool | **true** | - | Applied to the next texture (the hook reads it every call; `Update` clears the reinstall request). Off = every texture on the calling thread, as before. Never rename the key. |
 | "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
 | "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **false** | - | Experimental (C6). No Overview row; the tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
 | "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **false** | - | Experimental (C8). No Overview row. |
@@ -77,6 +79,10 @@ N against the game" (default 64, 0 = never), "Check every answer for 10 s", the 
 camera source, last camera move, budget calls / scaled, last budget (game -> applied); texture compression: textures,
 blocks (flat-luma, solid, encoded by the game's function), time, "checked textures: game X ms, Apex Y ms (Zx)", CPU
 features, "Check 1 texture in N against the game" (default 8), "Check every texture for 30 s", the last difference;
+several cores: state, worker threads created, split textures (chunks, % taken by workers, wall ms), "about X ms saved"
+(summed chunk time minus wall time), textures on one core because another texture had the workers, FP state
+mismatches (must be 0), "Worker threads per texture" (0..min(logical processors - 2, 6), default the maximum, 0 = one
+core), "Split textures from (side, pixels)" (32..2048, default 256), "Default";
 cache compression: streams, MB in / out, time, counting runs, writes after a counting run, did not fit, temporary
 contexts, checks (game's decoder), the comparison with the game's compressor, "Check 1 stream in N by decompressing"
 (default 1), "Also run the game's compressor on 1 stream in N" (default 0), "Search depth" (default 32); round 3: the
@@ -555,6 +561,62 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   per block). Expected 3-5x on the encoder, i.e. 44-49 ms hitches to about 10-15 ms. `tools/dxt_test` times it offline;
   the Developer card shows game vs Apex on the checked textures.
 
+### Several cores (`DxtCodec::Parallel`, "Use several cores")
+
+- **What:** an image with width x height >= 256 x 256 (dev slider) is cut into chunks of whole rows of blocks (about 4
+  chunks per thread, at least 128 blocks each). The calling thread and up to N pool threads take chunks from an atomic
+  counter until none is left; the hook returns only when every chunk is written (the game's callers expect the finished
+  texture). N = min(logical processors of the process's affinity mask - 2, 6); 0 on 1-2 processor machines (then one
+  core, as before). Smaller images, and a large image arriving while another thread's image has the pool, are encoded
+  on the calling thread (the "busy" counter); nothing ever waits for the pool.
+- **Why the bytes are the serial fast path's (exactness argument, VERIFIED offline):**
+  1. *Per-block inputs are unchanged.* A chunk is encoded by `FastEncodeRows(dst, src, rowBegin, rowEnd)` with the
+     WHOLE image's descriptors and absolute rows of blocks, so each block's Job is the one the serial loop builds: same
+     source pointer (`src + pitch * 4 * row`, the address the serial walk reaches by repeated addition), cols / rows,
+     output pointer, and the DXT5 driver locals that the edge-alpha quirk copies (the block's source pointer, y =
+     absolute pixel row, height = the whole image's, padding = `dst.pitch - roundup4(width) * 4`). A split into
+     sub-images would have changed y / height (and those blocks' alpha bytes): not done. Serial `Fast::EncodeDxt1/5`
+     is now `FastEncodeRows(0, all rows)`, one code path.
+  2. *Grouping does not matter.* Chunk ends change which blocks share a group of four (and add padding lanes); the fast
+     path has no horizontal arithmetic between lanes (rcp / rsqrt / x87 test / power iteration run per lane, the
+     push-apart branch only skips work, results are blended per lane), so a block's bytes do not depend on its lane or
+     its neighbours. The flat-luma / solid counters count padding lanes, so those two statistics can differ slightly;
+     blocks and "encoded by the game's function" do not.
+  3. *Same FP state.* The caller reads its x87 control word (`fnstcw`: the range test's precision, 24-bit on the
+     Direct3D device thread) and MXCSR (rounding, FTZ, DAZ); each worker saves its own, clears pending x87 exceptions,
+     loads the caller's (`fldcw`, `ldmxcsr`, status flags cleared), reads them back (mismatch = counter, see below),
+     encodes, and restores its own.
+  4. *No shared mutable state:* each chunk writes disjoint output bytes (rows of blocks; row padding is never written);
+     the source is only read; the fallback (`GameBlock`, the game's own encoder on a one-block image) keeps everything
+     on its stack and is already called by the game from several threads.
+  The offline test compares serial and parallel over the whole destination buffer (row padding included) on 23 sizes
+  (1 x 1 to 2051 x 7, non-multiples of 4, 1-pixel strips, padded source and destination rows), 1 / 2 / 3 / 6 workers,
+  row-sized and default chunks, under x87 53-bit, x87 24-bit, MXCSR round-to-zero + FTZ + DAZ and both together, plus
+  the reference; a 3000-image stress of tiny splits and 4 threads encoding at once (with different FP states) cover the
+  hand-off. Mutation check (2026-09-29): with the worker's FP-state load removed, the MXCSR runs differ in ~1.2 M blocks
+  and the read-back counter fires in the x87 24-bit run (random data almost never flips the x87 test, so the read-back
+  is the guard for the precision).
+- **Pool:** created once (the first large image, or at `Start` / when the option is turned on), never destroyed (the
+  threads sleep in `WaitForSingleObject` on their own auto-reset event and die with the process; nothing to tear down at
+  exit or in `DllMain`). Hand-off: `state` = closed flag | threads checked in. The caller owns the pool (`inUse`), writes
+  the task while closed, opens it, wakes k = min(N, chunks - 1) workers, takes chunks itself, closes, then waits (short
+  spin, then the `done` event, re-checking the count) until no thread is checked in; a worker that wakes late (after
+  the close, or during the next image) sees "closed" and leaves without reading the task, or joins the next image
+  legitimately. Stack reservation 256 KB per worker (the game is 32-bit: 1.5 MB of address space for 6). Thread name
+  "Apex DXT worker" (`SetThreadDescription` when present).
+- **Priority: normal, on purpose.** The calling thread (render or loader thread) is blocked on the texture, so
+  below-normal workers could only be delayed by the game's other normal-priority threads and make that wait longer.
+  The work is bounded (one image, a few ms) and two logical processors stay out of the pool (one is the caller, which
+  also encodes).
+- **Checks unchanged:** the startup / 1-in-N checks encode with the game into scratch and with Apex (parallel when
+  large) into the destination, then compare every row of blocks. A worker whose FP state did not read back as the
+  caller's is counted, the whole image is encoded again on the calling thread (every block rewritten), and several
+  cores stay off until the feature is started again (`[FastDxt] A DXT worker thread did not take ...` in the log).
+- **Speed (offline, `tools/dxt_test`, this PC: 6 workers + caller, 2026-09-29):** 256 x 256 0.43 -> 0.09 ms (DXT1),
+  1024 x 1024 7.3 -> 1.5 ms (DXT1) / 8.6 -> 1.55 ms (DXT5), 2048 x 2048 29 -> 5 ms / 34.5 -> 5.6 ms (about 5-6x on top
+  of the fast path). In game the workers compete with the game's own threads; the Developer line "about X ms saved"
+  (summed chunk time minus wall time; it slightly overstates when the cores slow each other down) measures it.
+
 ## How it works: Faster Cache Compression (C4)
 
 ### The game side (VERIFIED)
@@ -765,7 +827,7 @@ leaf), with `0x00C62D55` / `0x00C60D76` 16% on the stack; the lookup has 233 dir
 | `features/resource_cache.{h,cpp}` | `Start`, `Stop`, `Hook_FindProvider`, `Find`, `Recheck`, `Remember`, `RoReliable` / `ReadOnlyAboveReliable`, `BuildSnapshot`, `MaybeFingerprint`, `Verify`, `Hook_RegisterDb*`, `Hook_SetDbPriority`, `Hook_DbChanged`, `AcquireWatchers` / `ReleaseWatchers`, `CheckReadOnlyClass`, `TakeLookupNote`, `GetStats`, `StatusText`, `ReportLine`, `RenderDeveloperUI`; round 3: `StartMisses` / `StopMisses` / `UpdateMisses`, `kSpecs` + `EpochHook<I, N>` + `Hook_DpfWriteDirect`, `WriteBegin` / `WriteEnd`, `EnableEpochs` / `DisableEpochs`, `InstallClassHooks`, `EpochSum` / `StableEpochSum` / `RefreshSum`; `StartKeyLists` / `StopKeyLists`, `Hook_KeyListBase` / `Hook_KeyListDerived`, `EmulateKeyList`, `KlFind` / `KlStore`, `AppendKey`, `TakeKeyListNote` | the lookup cache, missing files + write epochs, the file list cache |
 | `features/lot_lighting_motion.{h,cpp}` | `Start`, `Stop`, `Hook_LotLightBudget`, `SampleCamera`, `ReadEye`, `ParseCamera` (`ParseRootGetter` / `ParseCameraGetter` / `ParseEyeRead`), `UpdatePresentSampler` / `OnPresentSample`, `SetBudgetMs`, `CameraMoving`, `StatusText`, `RenderDeveloperUI`; `StartWallAo` / `StopWallAo`, `Hook_WallAoStep`, `FramePassUsed`, `RunPass`, `WallAoStatusText`, `RenderWallAoDeveloperUI` | the budget wrapper and the wall shading gate |
 | `features/dxt_codec.{h,cpp}` | `Ref::EncodeDxt1/5`, `Ref::EncodeBlock`, `Fast::EncodeDxt1/5`, `FetchFull` / `FetchPartial` / `FetchAlphaPartial` / `Endpoints` / `PowerAxis` / `EncodeColor` / `EncodeAlpha` (the game's helpers), `EncodeColorGroup` / `EncodeAlphaFast` / `FlushGroup` (fast), `X87RangeBelowEps`, `CpuHasSse2` | the DXT algorithm, pure (also built by `tools/dxt_test`) |
-| `features/fast_dxt.{h,cpp}` | `Start`, `Stop`, `Hook_Dxt1/5` -> `Encode`, `RunFast`, `GameBlock` (fallback), `Checked`, stats, `RenderDeveloperUI` | the hook, checks and counters |
+| `features/fast_dxt.{h,cpp}` | `Start`, `Stop`, `Hook_Dxt1/5` -> `Encode`, `RunFast` (parallel or serial), `GameBlock` (fallback), `SetSeveralCores`, `Checked`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `features/refpack_codec.{h,cpp}` | `Compress` (fast), `Decompress` (0x004EB3B0 translated), `GameCompress` / `GameCore` (0x004EC0A0 + 0x004EB750 / 0x004EBB90 translated), `ParamsFor`, `SizeBound`, `Context` | the RefPack format, pure (also built by `tools/refpack_test`) |
 | `features/fast_refpack.{h,cpp}` | `Start`, `Stop`, `Tick`, `Hook_StreamWrite`, the context pool, the per-thread counting-run pairing, `Check`, stats, `RenderDeveloperUI` | the hook, checks and counters |
 | `tools/dxt_test/dxt_test.cpp`, `tools/refpack_test/refpack_test.cpp` | offline tests (console only, no files written) | build and run lines in their headers and below |
@@ -918,6 +980,15 @@ game's walk.
   identity). A "fix" would change the output of every image whose width is not a multiple of 4.
 - **Other game builds (C9):** the encoders' constants are assumed equal to Steam 1.67.2's; the per-session checks catch a
   difference on the first textures.
+- **DXT several cores (C9):** never encode a chunk as a sub-image (own pointer / height): the DXT5 edge-alpha quirk reads
+  y, height, the source pointer and the padding, so those blocks' alpha would change. Always `FastEncodeRows` with the
+  whole image's descriptors. Never let a worker encode without the caller's x87 control word and MXCSR. Keep the call
+  synchronous (the game uses the texture as soon as the function returns) and never wait for the pool (busy = serial).
+- **DXT on hybrid CPUs (C9, UNVERIFIED):** `rcpss` / `rsqrtss` are approximations whose exact bits are CPU-specific. On a
+  CPU with two core types (e.g. Intel P / E cores) they are assumed to give the same bits on both; this was already
+  assumed by the serial path (Windows moves the calling thread between cores), workers only make it more frequent. A
+  difference would show as a "Verification mismatch" (the feature then turns itself off); "Use several cores" off, or
+  the dev worker slider at 0, removes the extra exposure.
 - **RefPack stream sizes (C4):** streams are a few percent larger than the game's (bounded search). The package writer
   drops streams above its ratio threshold (stored uncompressed) and the memory caches are size-capped: slightly more
   memory / disk per cached item. The dev comparison and `tools/refpack_test` measure it.
@@ -1045,13 +1116,15 @@ Offline tests first (console only, no files written; x86 Native Tools Command Pr
 ```
 cd /d C:\Users\luiz_\Desktop\S3SS-dev\S3SSApex\tools\dxt_test
 cl /nologo /O2 /EHsc /std:c++20 /arch:SSE2 /fp:precise /I..\..\features dxt_test.cpp ..\..\features\dxt_codec.cpp /Fe:dxt_test.exe
-dxt_test.exe                      (10 million blocks per format; --blocks N, --seed N, --bmp file.bmp)
+dxt_test.exe                      (10 million blocks per format; --blocks N, --seed N, --bmp file.bmp; --parallel-only)
 cd /d C:\Users\luiz_\Desktop\S3SS-dev\S3SSApex\tools\refpack_test
 cl /nologo /O2 /EHsc /std:c++20 /I..\..\features refpack_test.cpp ..\..\features\refpack_codec.cpp /Fe:refpack_test.exe
 refpack_test.exe                  (--quick; --file path for real data)
 ```
-Expected: "RESULT: all blocks identical" and "RESULT: every round trip and stream check passed"; the timing lines and
-the size / speed table against the game's compressor go into the report.
+Expected: "RESULT: all blocks identical" (the several-cores lines: "0 different from serial, 0 from the reference;
+counter differences 0, FP state mismatches 0", some encodes "on one core because the pool was busy" in the 4-thread
+stress) and "RESULT: every round trip and stream check passed"; the timing lines and the size / speed table against the
+game's compressor go into the report.
 
 Faster Texture Compression (development build, Developer > Profiler > Performance):
 1. Turn it on. Log: `[EntryChain] DXT1 encoder (0x006152f0): layer 1 installed ...` (twice) and `[FastDxt] On: ...`.
@@ -1062,7 +1135,12 @@ Faster Texture Compression (development build, Developer > Profiler > Performanc
 4. Frame Profiler on (either order): its Hooks table says "outer layer of the entry chain ...; the fast encoder is
    inside"; the "DXT encode" per-hitch ms should drop by about the measured factor.
 5. Visual: identical by construction; any difference would be a mismatch line in the log.
-6. After several clean sessions: flip `enabledByDefault` to true (public build: only the first 16 textures are checked).
+6. Several cores (on by default): the `[FastDxt] On:` line says "images from 256x256 split over this thread and up to N
+   workers (N created)". Developer card: "Split textures" grows in CAS / lot views / terrain, "% by workers" well above
+   0, "FP state mismatches 0", "about X ms saved". Repeat step 3 with it on: still 0 different. Compare the Frame
+   Profiler's "DXT encode" per hitch with "Use several cores" off and on; try the worker slider at 2 / 4 / max and the
+   size slider at 128 / 256 / 512 while panning (the game's own threads share the cores).
+7. After several clean sessions: flip `enabledByDefault` to true (public build: only the first 16 textures are checked).
 
 Faster Cache Compression (development build):
 1. Turn it on. Log: `[SlotChain] RefPack stream write: layer 3 installed ...` and `[FastRefPack] On: ... the game's
@@ -1118,9 +1196,9 @@ Faster Object Lookups (development build):
 - How often the game registers / unregisters packages or changes priorities while playing (lot streaming, travel, CAS):
   each one empties the cache. The Developer line "list changes" shows it; if it is frequent, a targeted invalidation
   (only entries at or below the changed index, after probing the new package) would keep the rest.
-- Texture compression: the images are encoded on the calling thread. Splitting a large texture's block rows over
-  worker threads would divide the remaining time again (bit identity is unaffected: blocks are independent); not done
-  (thread management inside a game hook). Measure first how much "DXT encode" is left with the feature on.
+- Texture compression, several cores: pick the defaults (256 x 256, min(logical processors - 2, 6) workers) from the
+  in-game "ms saved" and the profiler; mip chains are many calls (each level its own image), so levels below the
+  threshold stay serial.
 - Texture compression: an AVX2 path (8 blocks per register) would need proof that the VEX forms of `rcpss` /
   `rsqrtss` give the same results as the legacy ones on the user's CPU; not done.
 - Cache compression: the search depth (default 32) and the "nice length" (96) are chosen without data from the game;

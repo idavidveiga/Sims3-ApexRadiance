@@ -40,6 +40,20 @@ std::atomic<uint64_t> c_images{0}, c_pixels{0}, c_blocks{0}, c_delegated{0}, c_p
 std::atomic<uint64_t> c_checked{0}, c_mismatch{0}, c_notCheckable{0};
 std::atomic<uint64_t> g_fastTicks{0}, g_checkGameTicks{0}, g_checkFastTicks{0};
 double g_qpcMs = 0.0;
+// several cores
+constexpr int kDefaultMinSide = 256;
+std::atomic<bool> g_severalCores{true};
+std::atomic<int> g_parWorkers{-1}; // -1 = DxtCodec::Parallel::DefaultWorkers()
+std::atomic<int> g_parMinSide{kDefaultMinSide};
+std::atomic<uint64_t> c_parImages{0}, c_parBusy{0}, c_parChunks{0}, c_parByWorkers{0}, c_parFpMismatch{0};
+std::atomic<uint64_t> g_parWallUs{0}, g_parSavedUs{0};
+std::atomic<bool> g_fpMismatchLogged{false};
+std::atomic<bool> g_parSelfOff{false}; // a worker's FP state differed: one core only until the next Start
+
+uint32_t WorkersToUse() {
+    const int n = g_parWorkers.load(std::memory_order_relaxed);
+    return n < 0 ? DxtCodec::Parallel::DefaultWorkers() : static_cast<uint32_t>(n);
+}
 std::mutex g_mismatchLock;
 std::string g_lastMismatch; // guarded by g_mismatchLock
 
@@ -55,6 +69,8 @@ struct FallbackCtx {
 
 // One block through the game's own encoder: a one-block image (cols x rows pixels) at the block's pixels, same pitch and
 // format. The game's drivers fetch an edge block exactly like that inside a whole image (same helper, same cols / rows).
+// May run on a DXT worker thread (several cores): the game's function only uses its stack and .rdata constants (the game
+// itself calls it from several threads), and the worker has the calling thread's x87 control word and MXCSR.
 void GameBlock(void* ctx, bool dxt5, const uint8_t* src, int32_t pitch, uint32_t cols, uint32_t rows, uint32_t format, uint8_t* out) {
     DxtCodec::Dst d{out, cols, rows, dxt5 ? 16u : 8u, 0};
     DxtCodec::Src s{src, 0, 0, pitch, format};
@@ -64,8 +80,34 @@ void GameBlock(void* ctx, bool dxt5, const uint8_t* src, int32_t pitch, uint32_t
 void RunFast(bool dxt5, const DxtCodec::Dst* d, const DxtCodec::Src* s, FnCdecl2 game) {
     FallbackCtx f{game};
     DxtCodec::FastCounters c;
-    if (dxt5) DxtCodec::Fast::EncodeDxt5(d, s, &GameBlock, &f, &c);
-    else DxtCodec::Fast::EncodeDxt1(d, s, &GameBlock, &f, &c);
+    DxtCodec::Parallel::Options o;
+    if (g_severalCores.load(std::memory_order_relaxed) && !g_parSelfOff.load(std::memory_order_relaxed)) {
+        o.workers = WorkersToUse();
+        const uint64_t side = static_cast<uint64_t>(g_parMinSide.load(std::memory_order_relaxed));
+        o.minPixels = side * side;
+    }
+    // o.workers == 0: serial on this thread (the same code as Fast::EncodeDxt1/5)
+    const DxtCodec::Parallel::Result r = DxtCodec::Parallel::Encode(dxt5, d, s, &GameBlock, &f, &c, o);
+    if (r.busy) c_parBusy.fetch_add(1, std::memory_order_relaxed);
+    if (r.parallel) {
+        c_parImages.fetch_add(1, std::memory_order_relaxed);
+        c_parChunks.fetch_add(r.chunks, std::memory_order_relaxed);
+        c_parByWorkers.fetch_add(r.chunksByWorkers, std::memory_order_relaxed);
+        g_parWallUs.fetch_add(static_cast<uint64_t>(r.wallMs * 1000.0), std::memory_order_relaxed);
+        if (r.workMs > r.wallMs) g_parSavedUs.fetch_add(static_cast<uint64_t>((r.workMs - r.wallMs) * 1000.0), std::memory_order_relaxed);
+        if (r.fpStateMismatches) {
+            // a worker ran with another FP state: its blocks may differ from the game's. Encode the whole image again on
+            // this thread (every block is rewritten) and keep the workers out for the rest of the session.
+            c_parFpMismatch.fetch_add(r.fpStateMismatches, std::memory_order_relaxed);
+            g_parSelfOff.store(true);
+            if (!g_fpMismatchLogged.exchange(true))
+                LOG_ERROR("[FastDxt] A DXT worker thread did not take the calling thread's floating-point state (x87 control word / MXCSR); the image was encoded "
+                          "again on the calling thread and several cores stay off for this session");
+            c = DxtCodec::FastCounters{};
+            if (dxt5) DxtCodec::Fast::EncodeDxt5(d, s, &GameBlock, &f, &c);
+            else DxtCodec::Fast::EncodeDxt1(d, s, &GameBlock, &f, &c);
+        }
+    }
     c_blocks.fetch_add(c.blocks, std::memory_order_relaxed);
     c_delegated.fetch_add(c.delegated, std::memory_order_relaxed);
     c_power.fetch_add(c.powerAxis, std::memory_order_relaxed);
@@ -202,11 +244,19 @@ bool Start(std::string* error) {
         return fail("Could not hook the DXT5 encoder: " + err);
     }
     g_selfDisabled.store(false);
+    g_parSelfOff.store(false);
+    g_fpMismatchLogged.store(false);
     g_seq.store(0); // the startup checks run again after every start
+    const bool cores = g_severalCores.load();
+    if (cores) DxtCodec::Parallel::Prepare(WorkersToUse()); // the worker threads now, not during the first large texture
     g_on.store(true, std::memory_order_release);
     g_started = true;
-    LOG_INFO(std::format("[FastDxt] On: DXT1 {:#010x} and DXT5 {:#010x} encoders replaced (CPU: {}); the first {} images are checked against the game", EntryChain::GameFunction(Site::DxtEncode1),
-                         EntryChain::GameFunction(Site::DxtEncode5), DxtCodec::CpuFeatureText(), kStartupChecks));
+    const std::string coresText = !cores ? std::string("several cores off")
+                                  : WorkersToUse() ? std::format("images from {0}x{0} split over this thread and up to {1} workers ({2} created)", g_parMinSide.load(), WorkersToUse(),
+                                                                 DxtCodec::Parallel::WorkersCreated())
+                                                   : std::string("one core (this processor has too few for workers)");
+    LOG_INFO(std::format("[FastDxt] On: DXT1 {:#010x} and DXT5 {:#010x} encoders replaced (CPU: {}); {}; the first {} images are checked against the game",
+                         EntryChain::GameFunction(Site::DxtEncode1), EntryChain::GameFunction(Site::DxtEncode5), DxtCodec::CpuFeatureText(), coresText, kStartupChecks));
     return true;
 }
 
@@ -218,16 +268,34 @@ bool Stop() {
     const bool b = EntryChain::Remove(Site::DxtEncode5, Layer::FastDxt);
     g_started = false;
     const Stats s = GetStats();
-    LOG_INFO(std::format("[FastDxt] Off ({} images, {} blocks, {} encoded by the game's function, {} checked, {} different){}", s.images, s.blocks, s.delegated, s.checked,
-                         s.mismatches, a && b ? "" : "; an entry could not be put back (the hook stays and passes every call through)"));
+    LOG_INFO(std::format("[FastDxt] Off ({} images, {} blocks, {} encoded by the game's function, {} checked, {} different; {} split over several cores, about {:.0f} ms "
+                         "saved){}",
+                         s.images, s.blocks, s.delegated, s.checked, s.mismatches, s.parallelImages, s.savedMs,
+                         a && b ? "" : "; an entry could not be put back (the hook stays and passes every call through)"));
     return a && b;
 }
 
 bool Running() { return g_on.load(std::memory_order_acquire); }
 
+void SetSeveralCores(bool on) {
+    const bool was = g_severalCores.exchange(on);
+    if (on && !was && Running()) DxtCodec::Parallel::Prepare(WorkersToUse());
+}
+bool SeveralCores() { return g_severalCores.load(); }
+
 void SetVerifyEvery(int n) { g_verifyEvery.store(n < 0 ? 0 : n); }
 int VerifyEvery() { return g_verifyEvery.load(); }
 void VerifyAllFor(double seconds) { g_verifyAllUntil.store(GetTickCount64() + static_cast<uint64_t>(seconds * 1000.0)); }
+
+void SetParallelWorkers(int n) {
+    const int maxN = static_cast<int>(DxtCodec::Parallel::DefaultWorkers());
+    n = n < 0 ? 0 : (n > maxN ? maxN : n);
+    g_parWorkers.store(n);
+    if (n && Running() && g_severalCores.load()) DxtCodec::Parallel::Prepare(static_cast<uint32_t>(n));
+}
+int ParallelWorkers() { return static_cast<int>(WorkersToUse()); }
+void SetParallelMinSide(int side) { g_parMinSide.store(side < 4 ? 4 : (side > 4096 ? 4096 : side)); }
+int ParallelMinSide() { return g_parMinSide.load(); }
 
 Stats GetStats() {
     Stats s;
@@ -244,6 +312,14 @@ Stats GetStats() {
     s.fastMs = static_cast<double>(g_fastTicks.load()) * g_qpcMs;
     s.checkedGameMs = static_cast<double>(g_checkGameTicks.load()) * g_qpcMs;
     s.checkedFastMs = static_cast<double>(g_checkFastTicks.load()) * g_qpcMs;
+    s.parallelImages = c_parImages.load();
+    s.parallelBusy = c_parBusy.load();
+    s.parallelChunks = c_parChunks.load();
+    s.chunksByWorkers = c_parByWorkers.load();
+    s.fpStateMismatches = c_parFpMismatch.load();
+    s.parallelWallMs = static_cast<double>(g_parWallUs.load()) / 1000.0;
+    s.savedMs = static_cast<double>(g_parSavedUs.load()) / 1000.0;
+    s.workersCreated = DxtCodec::Parallel::WorkersCreated();
     s.selfDisabled = g_selfDisabled.load();
     std::lock_guard<std::mutex> lock(g_mismatchLock);
     s.lastMismatch = g_lastMismatch;
@@ -258,6 +334,7 @@ std::string StatusText() {
     std::string t = std::format("On: {} textures ({:.1f} M pixels) in {:.0f} ms; {} checked against the game, all equal", s.images, static_cast<double>(s.pixels) / 1e6, s.fastMs,
                                 s.checked);
     if (s.checkedFastMs > 0.0 && s.checkedGameMs > 0.0) t += std::format(" ({:.1f}x faster on those)", s.checkedGameMs / s.checkedFastMs);
+    if (s.parallelImages) t += std::format("; {} large ones split over several cores", s.parallelImages);
     return t;
 }
 
@@ -281,6 +358,30 @@ void RenderDeveloperUI() {
     ImGui::TextDisabled("Checks: %llu equal, %llu different, %llu too large to check%s", static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches),
                         static_cast<unsigned long long>(s.notCheckable), all ? "  [checking every texture]" : "");
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
+    // several cores (DxtCodec::Parallel)
+    const uint32_t maxWorkers = DxtCodec::Parallel::DefaultWorkers();
+    const char* coresState = !g_severalCores.load() ? "off (Use several cores)" : g_parSelfOff.load() ? "turned itself off (a worker's FP state differed, see the log)" : "on";
+    ImGui::TextDisabled("Several cores: %s; %u worker threads created (up to %u on this processor)", coresState, s.workersCreated, maxWorkers);
+    ImGui::TextDisabled("Split textures %llu (%llu chunks, %.0f%% by workers) in %.1f ms; about %.1f ms saved (summed chunk time minus wall time); on one core because another "
+                        "texture had the workers %llu; FP state mismatches %llu",
+                        static_cast<unsigned long long>(s.parallelImages), static_cast<unsigned long long>(s.parallelChunks),
+                        s.parallelChunks ? 100.0 * static_cast<double>(s.chunksByWorkers) / static_cast<double>(s.parallelChunks) : 0.0, s.parallelWallMs, s.savedMs,
+                        static_cast<unsigned long long>(s.parallelBusy), static_cast<unsigned long long>(s.fpStateMismatches));
+    if (maxWorkers) {
+        int workers = ParallelWorkers();
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::SliderInt("Worker threads per texture (0 = one core)##FdWorkers", &workers, 0, static_cast<int>(maxWorkers))) SetParallelWorkers(workers);
+    } else {
+        ImGui::TextDisabled("This processor has too few logical processors for workers: one core");
+    }
+    int side = ParallelMinSide();
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::SliderInt("Split textures from (side, pixels)##FdMinSide", &side, 32, 2048, "%d", ImGuiSliderFlags_Logarithmic)) SetParallelMinSide(side);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Default##FdParDefaults")) {
+        SetParallelWorkers(static_cast<int>(maxWorkers));
+        SetParallelMinSide(kDefaultMinSide);
+    }
 }
 
 } // namespace FastDxt
