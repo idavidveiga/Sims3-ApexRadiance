@@ -1,6 +1,6 @@
 # Apex Radiance for The Sims 3
 
-A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
+A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
 
 <div align="center">
@@ -48,8 +48,23 @@ A lighting and visuals mod for The Sims 3. At night, street lamps and lot lamps 
 **System**
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
 - **Borderless window:** windowed or fullscreen, without a title bar.
-- **Performance (experimental):** fewer stutters while you play: faster game file lookups, lot lighting and wall shading spread out while the camera moves, and faster texture and cache compression. Each one can be turned off on its own.
 - **Menu:** search, profiles, undo, per-setting reset and a hold-to-compare view.
+
+**Performance** (System > Performance; every option is experimental and has its own switch, so any that misbehaves can be turned off)
+
+On from the start:
+- **Lot lighting while the camera moves:** instead of spending up to 15 ms of one frame on lot lighting, the work is spread over several frames while you pan or zoom (about 80% fewer lighting stutters while moving, in testing). When the camera stops, the game's normal budget comes back.
+- **Wall shading waits while moving:** the shading of a new lot's walls, a 10 to 17 ms hitch, is done once the camera stops.
+- **Fewer big freezes from Night Lights:** lamps that switch or flicker by themselves no longer rebuild the terrain light, and rebuilds never happen while the camera moves.
+
+Off until you turn them on:
+- **Faster game file lookups:** the game searches every package (hundreds with mods) one by one each time it needs a texture or model. Apex Radiance remembers where things are: lookups cost about half as much, and the stutters they caused dropped by roughly 70% in testing. Under it, **Remember missing files** also skips the repeated searches for files no package has.
+- **Faster file lists:** fewer stutters when Sims load outfits and shapes.
+- **Faster texture compression:** the game's texture encoder rewritten with the exact same output, split over several processor cores for large textures (a 2048×2048 texture: about 35 ms down to about 6 ms).
+- **Faster cache compression:** a faster compressor for what the game stores in its caches, in the game's own format.
+- **Faster object lookups:** less work when lot lights update and for scripts.
+
+Apex Radiance's own shaders are compiled at startup on a background thread, never in the middle of play.
 
 ## Requirements
 
