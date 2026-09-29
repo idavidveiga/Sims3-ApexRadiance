@@ -111,13 +111,87 @@
 > rebuild (another change on a known lot, dusk, the button). Whether the game rebuilds by itself after Build-mode lamp
 > edits (the "by the game itself" rebuilds of the log) is not known.
 >
-> **Local relight (goal evaluated 29/09, not implemented).** Setting `chunk+0x55` only on the chunks whose bake rect
-> overlaps the changed lamps' rects is the game's own path restricted (section "Localized relight mechanics"; the +0x55
-> branch rebuilds every flagged chunk in the same call, so the cost scales with the number of flagged chunks). It needs
-> the WorldManager global, terrain +0x58, the chunk vector +0xB0/+0xB4 and the bake cell grid, none of which has a
-> `GameAddr` id in the standalone yet (`framework/game_addresses.*`), and the post-0.1.0 reconciliation that used it had
-> 12-60 ms hitches ([../../changes-since-0.1.0.md](../../changes-since-0.1.0.md) 2.1). Revisit after this change is
-> tested, behind a dev toggle.
+> ### Local terrain relight and paced sweep (29/09, developer toggles, default off, NOT yet tested in game)
+>
+> **Why.** A full rebuild (`chunk+0x55` on every chunk) bakes and DXT-encodes every chunk **synchronously in the consume
+> frame** (`0x00C83060` → `0x00C7E7A0` at `0x00C8307E`), then sets `+0x54` so the game's sweep renders every chunk a
+> second time: MEASURED 229-241 ms frames (#927: terrain 173 ms + DXT 57 ms, 512 DXT calls = 64 chunks x 2 textures x 4
+> mips) plus ~3.5 ms per frame for 64 frames. The combined build's local relight used `+0x55` on 1-25 chunks: the same
+> synchronous work per chunk, hence its 12-60 ms hitches. `+0x54` alone is the game's one-chunk-per-terrain-update sweep
+> branch (`0x00C85041`, the call `0x00C8504C` that `ChunkRenderThunk` already redirects): ~3.5 ms for one chunk, no
+> geometry, no road mark, no duplicate. Evidence: research\perf2\chunkrelight.md; [../../engine/terrain-and-light-bake.md](../../engine/terrain-and-light-bake.md) 2, 3.3, 4.1.
+>
+> **Phase 1, "Relight only nearby terrain"** (TOML `relightNearbyChunks`, developer build only, default **false**; module
+> `features/terrain_chunk_relight.cpp`, namespace `ChunkRelight`). In `DecideEdit`, after the snapshot compare and before
+> the camera / rate checks, a lamp change (not a switch, and only with a snapshot) goes to `TryLocal`:
+> 1. Lamps: `DiffBake` now returns every counted difference (`BakeDiff::changes`) with the rect the lamp had in the bake
+>    (old) and the one it has now (new): light `+0x134` {minX, minZ, maxX, maxZ}, stored in `BakeLamp::rect` by the lamp
+>    tracking. For a user-driven change on a lot the last rebuild did not have, every lamp of that lot the bake takes now.
+> 2. Pacing: user-driven changes (placed, moved, removed) are queued at once (no camera wait, no 3 s interval).
+>    Automatic changes wait for the camera to be still and relight the same lamp at most once per **5 s**
+>    (`kLocalAutoPerLamp`, instead of 30 s after any rebuild).
+> 3. Selection (`QueueLocal`): for each rect + 1 m, the grid cells it covers plus one cell on each side; each chunk there
+>    is kept when its bake record (`*(*(terrain+0x68)+8)`, the game's own test) overlaps the rect + 1 m. The lamp's own
+>    chunk first, then its other chunks nearest first; deduplicated across lamps.
+> 4. Validated at use (any failure = "refused", the full path takes the change with today's limits until a new change
+>    comes in): WorldManager from `0x011ECBC4`, terrain = WM + disp8 of `0x00C6D68C` (0x58), terrain+0x14 == WM; world in
+>    live play (WM+0x1B4 != 0); vector size == nx x nz (terrain +0xC0 / +0xC4), cell +0xC8 == 256; per chunk: corner
+>    multiple of 256 and at its slot `(z0/256)·nx + x0/256`, size 256, centre == corner + 128, rect == corner..+256; the
+>    world's first rebuild seen (any consumed rebuild; normally the load rebuild) and a sweep render of this terrain seen
+>    by the thunk; `0x00C7E7A0`'s early-exit gates open (below); every chunk has a rebuilt light map (`+0xD8 != 0`); at
+>    most **16 chunks** and a quarter of the world; at most 32 queued; rects finite and at most 4096 m.
+> 5. Release (`ChunkRelight::OnPresent`, every frame after `DecideEdit`): one chunk in flight at a time; its `+0x54` set
+>    only when the previous one finished, never in the frame right after a chunk rendered (a free frame in between), at
+>    most 8 releases in any 1 s, never while any chunk has `+0x55` or `+0x56` (a full rebuild in progress), never while
+>    the gates are closed. Gates mirrored from `0x00C7E7A0`: live and TerrainData (terrain+0x64) `+0x1D == 0` → closed;
+>    `[WM+0x54] ? [[WM+0x54]+8] : 0` (= `0x00C61040`) != 0 and TerrainData `+0x20 == 0` → closed. (A chunk flagged while
+>    closed would stall the game's whole per-chunk loop: `0x00C7E7A0` returns without clearing `+0x54` and the branch
+>    still sets "work done".)
+> 6. Completion: the thunk sees the chunk rendered (`+0x54` back to 0 after the call) and passes its QPC time; or
+>    `OnPresent` finds `+0x54 == 0` (rendered by another game path, e.g. `0x00C83060` during a LOD change: counted "by
+>    another game path", no time). **Timeout**: still set after 120 frames during which no other chunk had `+0x54`,
+>    `+0x55`, `+0x56` or `+0x50` pending (or 1200 frames in all) → `+0x54` put back to 0 if Apex set it and no rebuild is
+>    in progress, queue dropped, local path **off for this world**, one full rebuild (reason "local terrain relight
+>    failed (...)"). The same for "the terrain changed under the queue" or a chunk that changed while queued.
+> 7. Bookkeeping: while a batch is queued the next lamp change waits ("waiting for the terrain relight in progress").
+>    When every chunk of a batch rendered, the lots it covers get the lamps they had when it was decided in `g_baked`
+>    (`LotLightBridge::CoverLots`), so the next compare starts from there. A consumed rebuild (Apex's or the game's)
+>    drops the queue (its snapshot covers everything); a world change resets it; an uninstall / reinstall drops it and
+>    decides the change again.
+> 8. The smoothed maps are not held (`ExpectRebuild`) for a change the local path is likely to take: the few re-rendered
+>    chunks are reported by the thunk and smoothed at once.
+>
+> **Phase 2, "Paced terrain sweep"** (TOML `relightPacedSweep`, developer build only, default **false**). Apex's own dusk
+> rebuild and its lamp-change rebuilds (a change the local path refused or did not take, a switch, the stuck-countdown
+> fallback) become `QueueSweep`: every chunk (all must have `+0xD8`), nearest to the camera eye first, same release rules
+> (so 64 chunks take about 8 s). It starts like a consumed rebuild (snapshot of the lamps now, `g_lastRebuildAt`,
+> pending local batches dropped). Not possible → the kick. The **world-load rebuild and the button stay full
+> rebuilds** (the load rebuild creates the light maps and fixes the world-file chunk borders; the local path needs it).
+>
+> **Developer log**: `[ChunkRelight] WorldManager global 0x011ecbc4, terrain at +0x58` (install); `Lamp change: <reason>
+> (<kind>): relit locally (<diff>; N lamps, chunks (ix,iz) ...)`; `Local relight done: N lamps, chunks ...: K chunks in F
+> frames, M ms per chunk (max X)`; `Lamp change: <reason>: local relight not possible (<why>): full rebuild path`;
+> `Terrain sweep started: <reason> (N chunks, nearest to the camera first)` / `Terrain sweep done: ...`; warning
+> `[ChunkRelight] <why>: queue dropped, local terrain relight off for this world`. **Developer status** (Developer >
+> Lighting, under "Chunk re-render notices", with the two checkboxes): "Local terrain relight: relit locally U / A, done,
+> refused (last: why), failures | paced sweeps" and "Terrain chunks: <ready | why not> | local relights, sweeps, chunks
+> re-rendered (by another game path), refused, failures | queue, in flight (ix,iz) for K frames | chunk render: last /
+> average / max ms | waits: rebuild flags, terrain not ready, 8 per second | sweep renders seen | last".
+>
+> **Default off, why**: the mechanism is the game's own sweep branch and every assumption is checked at use, but nothing
+> of it has run yet, and `+0x54` does not refresh the road partition mark (`0x00B789B0`): roads should see the in-place
+> light map, not verified. Turn it on by default only after the in-game checks below.
+>
+> **To verify in game** (dev build, both toggles on in turn): (1) the install log line above; (2) Build mode at night:
+> place, move, delete and recolour a lot lamp: log `relit locally ... chunks (ix,iz)` with the expected chunks, the
+> Hitches file shows no `DXT x512` frame, only a few frames with `DXT x8` and terrain ~3 ms, every other frame; grass,
+> lot grass, **roads**, sidewalks, snow and fences show the change; (3) a lamp near a chunk border (x or z = k x 256, e.g.
+> 1280): both chunks are relit back to back, no lasting step once the 30-frame smoothing settle passed; (4) map view,
+> CAS, Edit Town, save / load: no "was not re-rendered within" warning, and the game's own sweep still completes
+> (LightmapSmooth "Rebuild sweep done ... 0 not re-rendered"); (5) 20 minutes of night play while moving: local relights
+> per minute, none by day or from streaming; (6) a game rebuild while a batch is queued drops it; a lamp change during
+> the load rebuild takes the full path ("the world's first terrain rebuild has not run yet"); (7) paced sweep at dusk:
+> "Terrain sweep started / done", chunks near the camera light first, no ~240 ms dusk frame.
 >
 > Expected latency (estimates; the game re-renders one chunk per frame after a consumed rebuild, in its own chunk order):
 > save load: rebuild armed ~1-2 s after the world is first drawn (was 5 s after the cells change, often inside the
@@ -171,7 +245,9 @@ Reverse-engineering summary (header comment of the patch file, Steam 1.67.2.0240
 | Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main | Standalone (28/09): live; the visitor and arm-site patches are always installed and read it at run time; toggling it rebuilds once at night. (Combined build: installs the patches, reinstall on change.) The checkbox also sets `automaticoAoAnoitecer` to the same value |
 | Update automatically at dusk | `automaticoAoAnoitecer` | bool | true | | Adv / Dusk | live |
 | Delay after dusk | `atrasoSegundos` | float | 2.0 | 0.5..10 s | Adv / Dusk | live |
-| Relight only around changed lamps | `relightLocal` | bool | true | | Adv / Dusk | live; off = changes get a full rebuild (at most every 15 s) |
+| Relight only around changed lamps | `relightLocal` | bool | true | | Adv / Dusk | combined build only (not registered in the standalone); off = changes get a full rebuild (at most every 15 s) |
+| Relight only nearby terrain | `relightNearbyChunks` | bool | false | | Dev | standalone 29/09, developer build only (the public build never registers it: off); live; see "Local terrain relight" |
+| Paced terrain sweep | `relightPacedSweep` | bool | false | | Dev | standalone 29/09, developer build only; live; Apex's dusk and lamp-change full rebuilds become a paced sweep |
 | Street lamps count as lit in lot light solves | `postesAcesosNoCalculo` | bool | false | | Dev | 0x6BE18C; see [lot-light-pass.md](lot-light-pass.md) |
 | Recalculate every lot at dusk | `recalcularLotesAoAnoitecer` | bool | false | | Dev | re-solve room 0 of every lot after the dusk rebuild |
 
@@ -289,6 +365,9 @@ function is compiled in and falls back to direct flags).
 | | `OnPresent`, `ReadLightState`, `ReadCounters`, `ArmCounters`, `Kick` | dusk and rebuilds |
 | | `Bakeable`, `CollectLamp`, `CollectCurrent`, `MarkAllCovered`, `DiffBaked`, `Moved`, `ValueChanged`, `Reconcile`, `Settle` | reconciliation (combined build only) |
 | | `NoteEdit`, `DecideEdit`, `FinishEdit`, `WaitEdit`, `EditKind`; `ResolveCamera`, `ReadEye`, `SampleCamera`, `CameraStill`; `g_baked` / `g_bakedDue` | standalone lamp change decisions (29/09) |
+| | `TryLocal`, `LocalLamps`, `RebuildAll`, `StartSweep`, `ChunkRenderThunk` (QPC timing, completion signal); `g_localBatches`, `g_relitLamps`, `g_sweepId` | standalone local terrain relight / paced sweep (29/09) |
+| features/terrain_chunk_relight.cpp | `ChunkRelight::Init`, `QueueLocal`, `QueueSweep`, `OnPresent`, `OnChunkRendered`, `OnFullRebuild`, `OnWorldChanged`, `Drop`, `Status`; `ReadViewRaw`, `ReadChunkRaw`, `LayoutOk`, `BakeRectRaw`, `GatesRaw`, `ScanFlagsRaw`, `WriteFlag54` | chunk selection, validation, paced release, completion, timeout |
+| lot_light_bridge.cpp | `BakeLamp::rect`, `DiffBake` (`BakeDiff::changes`), `BakeTakes`, `LampsOfLots`, `CoverLots` | lamp rects and per-lamp changes for the local relight |
 | | `QueueAllLotOutdoorRooms` | lot relight |
 | lot_light_bridge.cpp | `EnumerateLights`, `ReadOutdoorLotLamp`, `RefreshOutdoorLotLamps`, `ForEachOutdoorLotLamp` | lamp list |
 | patches/smooth_streaming_patch.cpp | `SmoothStreamingRelightTerrainRects`, `RelightRectsImpl`, `ReadCellGrid`, `ChunkBakeRect` | local relight |
@@ -305,6 +384,9 @@ function is compiled in and falls back to direct flags).
 | 0x006C7160 | room queue thiscall(treeLevel, roomId) ret 4: `83 EC 2C 53 55 56 33 DB 8B F1` | Fail if different |
 | 0x006ACF70 | light enumeration stdcall(visitor), visitor vtable[0] = thiscall(visitor, Light*) | `E8 2B 36 00 00 8B 4C 24 04 51 68 40 CF 6A 00` |
 | 0x00C84C1B..0x00C84C43 | countdown consume in `FUN_00C845C0`: `call 0x6B5750` (cells test) must be true; then `test bl,bl; jnz` skips the night test, else `call 0x6AC560` (night) must be true; then `call 0x6B5770` (reset to -1) and the loop over chunks (+0xB0/+0xB4) setting +0x55 | read in `re/out/dump/asm/00c845c0.asm` for this doc |
+| 0x011ECBC4 | WorldManager global (GameAddr `WorldManagerPtr`: the store at 0x00C6D0CC, `8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8`) | sigcheck.pl: 1 / 1 matches, Steam ok |
+| 0x00C6D68C | `mov ecx,[esi+58h]; call 0x00C845C0` (GameAddr `TerrainUpdateCall`; the disp8 = terrain offset, checked `8B 4E ?? E8` at run time) | sigcheck.pl: 1 / 1 matches, Steam ok |
+| 0x00C85041..0x00C85056 | the `+0x54` sweep branch (one chunk per terrain update); 0x00C7E7E2..0x00C7E823 the early-exit gates; 0x00C815E0 the chunk layout | full.asm (terrain-and-light-bake.md 2, 3.3) |
 | light +0x08, +0x10, +0x20, +0xB0, +0xC0/+0xC4, +0xD0, +0xE0, +0xF0, +0x100, +0x120, +0x130, +0x134 | room, intensity, fade, type, lot id, storey, effective colour, base colour, flags, position, range, bake rect | [../../engine/light-objects-and-rigs.md](../../engine/light-objects-and-rigs.md) |
 
 **Resolved: there is no night condition in normal play (BL at 0xC84C29).** BL is set at `0x00C84B03..0x00C84B11`:
@@ -401,3 +483,6 @@ None: this part only changes game code and triggers. Its output (chunk light map
   ~240 ms terrain frame right after a "Terrain rebuilt (by the game itself)", and that a Build-mode lamp placed / moved
   on the home lot at night still lights the grass within about 1 s once the camera stops. Then decide on the local
   relight (needs `GameAddr` ids for the terrain chunk list and the bake cell grid).
+- 29/09 local terrain relight and paced sweep (developer toggles, off): the in-game checks listed in "Local terrain
+  relight"; roads after a local relight (the `+0x54` path does not set the road partition mark); then decide the
+  defaults.

@@ -148,6 +148,7 @@ for uniqueness on Steam with `sigcheck.pl` (it must still resolve every id to th
 | Faster File Lists (`FileListCache`, group `FileListCache`) | ResKeyList + slot, ResKeyListDerived + slot, KeyTypeFilterVtable, the four package-list methods + slots, ShadowedDbVtable; the base loop, the vector insert, the sort, the filter's predicate and the read-only class's key list are checked at run time | "Not available on <version>: missing ..." / "... differs from the one studied; nothing was changed" |
 | Spread New Objects Over Frames (`SceneNodeBudget`, group `SceneNodeBudget`) | SceneDrainCall, SceneDrain, SceneBoundsCall, SceneNodeBounds, SceneSpatialCall, SceneNodeSpatial, the four camera ids; at run time the whole drain (0xD1 bytes) is compared with the Steam code (rel32s excepted) and its two CALLs must sit at +0xAE / +0xB6 and reach SceneNodeBounds / SceneNodeSpatial | "Not available on <version>: missing ..." / "... is not the code Apex was written for" |
 | Faster Object Lookups (`ObjectLookupIndex`, group `ObjectIndex`) | ObjectById, ObjectTreeWalk, ObjectTreeSearch; at run time the three bodies are compared with the Steam code (rel32s and the lookup's first 8 bytes excepted), the lookup must CALL the walk at +0x10, the walk the search at +0x41, the search itself at +0x68; container / object classes are recognised by the bytes of their vtable functions | "Not available on <version>: missing ..." / "... is not the code Apex was written for" |
+| Night Lights: local terrain relight and paced sweep (developer toggles `relightNearbyChunks`, `relightPacedSweep`; no group, optional) | WorldManagerPtr, TerrainUpdateCall (the terrain offset is the disp8 of its `mov ecx,[esi+disp8]`), ChunkRenderCall / ChunkRenderFn (the completion signal); at run time the terrain back pointer, the chunk grid (nx x nz, cell 256, dense), each chunk's corner / centre / size / rect and its bake record are checked before a chunk is flagged | lamp changes keep the full rebuild; the developer status says why |
 
 Not part of this table: the map view probe (`features/map_view.cpp`) already finds its function at run time through the
 script binding name in `.rdata` and its `{function, name}` table, on any build; the Frame Profiler (development build
@@ -158,7 +159,8 @@ only) keeps its own fixed Steam targets; shader patches match game shaders by by
 Checked on `S3SS-dev\re\TS3W.exe` (Steam 1.67.2) with `research\port169\sigcheck.pl`, which parses the table from
 `game_addresses.cpp` and runs the same rules: **all 101 ids resolve to the fixed Steam address** (116 of 116 since
 2026-09-28, with the 15 Frame Profiler ids at the end of the table below; 133 of 133 since 2026-09-29, with the 17
-performance ids after them; 153 of 153 since the v1.5.0 merge (v1.4.0 round 3 ids, then the scene node budget and object index ids); their alternates were also checked one by one: each matches once, at the same place). "Matches" gives the
+performance ids after them; 153 of 153 since the v1.5.0 merge (v1.4.0 round 3 ids, then the scene node budget and object index ids); 155 of 155
+with WorldManagerPtr and TerrainUpdateCall (local terrain relight, 2026-09-29); their alternates were also checked one by one: each matches once, at the same place). "Matches" gives the
 count of the primary / alternate signature on Steam (over `.text`, or over the range for `InRange`); `SetLightColour`
 has 2 / 6 matches that all call the same function (accepted: the value agrees). Offsets are from the match start; "call
 at +n" = the target of the CALL there, "dword at +n" = the value there.
@@ -278,6 +280,8 @@ at +n" = the target of the CALL there, "dword at +n" = the value there.
 | SceneNodeSpatial | 0x006FAD70 | Target(SceneSpatialCall) | `8B 41 30 85 C0 74 14 8B 40 2C 85 C0 74 0D 8B 54 24 04 52 51 8B C8 E8 ?? ?? ?? ?? C2 04 00` +0 | fallback sig: 1 match |
 | ObjectTreeWalk | 0x00C60D30 | Sig | `53 8B 5C 24 08 55 8B 6C 24 10 56 8B F1 8B CB 33 C0 0B CD 74 ?? 8B 96 A0 00 00 00 2B 96 9C 00 00 00 57 33 FF C1 FA 02` +0<br>alt: `8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01` call at +6 (inside ObjectById) | matches 1 / 1 |
 | ObjectTreeSearch | 0x00C5FA60 | Sig | `53 55 56 8B 74 24 10 85 F6 0F 84 ?? ?? ?? ?? 8B 46 48 8B 5C 24 14 3B C3 8B 6C 24 18 75 ?? 8B 4E 4C 3B CD 74` +0<br>alt: `8B 04 B8 51 55 53 50 E8 ?? ?? ?? ?? 83 C4 10 85 C0 75` call at +7 (inside the walk) | matches 1 / 1 (sigcheck.pl 2026-09-29, after merging v1.4.0 and C6 / C8: 153 of 153 ok) |
+| WorldManagerPtr | 0x011ECBC4 | Sig (dword) | store in FUN_00c6cf80 at 0x00C6D0CC: `8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8` dword at +8<br>alt: clear in FUN_00c6b500 at 0x00C6B507: `51 53 56 33 DB 8B F1 89 1D ?? ?? ?? ?? 8B 8E 6C 01 00 00` dword at +9 | matches 1 / 1 |
+| TerrainUpdateCall | 0x00C6D68C | Sig | `8B 44 24 0C 50 8D 4C 24 14 51 8B 4E 58 E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00` +10 (the call rel32 is wildcarded: the Frame Profiler redirects it)<br>alt: `51 8B 4E ?? E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00 75` +1 | matches 1 / 1 (sigcheck.pl 2026-09-29: 155 of 155 ok) |
 
 The ids after the first one of a `Multi` / `CallersOf` entry take the following matches by address: ArmSiteRemoval
 0x6B60D3, ArmSiteRegister 0x6B6516, ArmSiteMoved 0x6B6618; QualitySite0 0xADB66B, QualitySite1 0xADB884; SetColourCall0..6

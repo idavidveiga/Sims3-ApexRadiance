@@ -153,6 +153,10 @@ enum class Id : uint16_t {
     // ---- Object lookup index (features/object_index.cpp; group "ObjectIndex" = ObjectById + these two) ----
     ObjectTreeWalk,           // FUN_00c60d30 thiscall(idLo, idHi, int* visited), ret 0xC: walks the root vector [this+0x9C, this+0xA0)
     ObjectTreeSearch,         // FUN_00c5fa60 cdecl(node, idLo, idHi, int* visited): recursive depth-first search (id at +0x48/+0x4C)
+    // ---- Local terrain relight (features/terrain_chunk_relight.cpp; optional part of Night Lights: without them lamp
+    //      changes keep the full terrain rebuild) ----
+    WorldManagerPtr,          // the WorldManager global 0x011ECBC4 (FUN_00c6cf80 stores the manager there at 0x00C6D0CC)
+    TerrainUpdateCall,        // "mov ecx,[esi+58h]; call FUN_00c845c0" in WorldManager::Update (0x00C6D68C): WorldManager+disp8 = terrain
     Count
 };
 

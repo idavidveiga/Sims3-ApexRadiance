@@ -243,8 +243,12 @@ moved d m [enters|leaves the bake]; ...` (up to 6 lamps) or `lamp removed on lot
 minute per lot `Lamp changes that do not rebuild the terrain, lot <id>: <same detail> (not in the bake | below the
 threshold | animated)`. This is the diagnosis of lamps that keep changing: read which field moves.
 
-After each enumeration the bridge keeps `CurrentBakeLamps()`: every tracked lamp (lot, type, position, light, in the
-bake, animated), sorted by lot, plus the lots and the settled lots. The terrain relight stores the one of the enumeration
+After each enumeration the bridge keeps `CurrentBakeLamps()`: every tracked lamp (lot, type, position, light, light rect
++0x134 since 29/09, in the bake, animated), sorted by lot, plus the lots and the settled lots. Since 29/09 `DiffBake`
+also lists each counted difference (`BakeDiff::changes`: lot, type, position, user-driven or not, the rect the lamp had
+in the bake and the one it has now) for the local terrain relight of [terrain-relight.md](terrain-relight.md), with
+`LampsOfLots` / `CoverLots` to mark those lots' lamps as baked once their chunks were re-rendered. A rect change alone
+never counts as a change; it only refreshes the snapshot. The terrain relight stores the one of the enumeration
 right after each consumed rebuild and compares with `DiffBake(baked, now, plainLamps)`: only lots settled now that were
 in `baked`, lamps matched by type and place (5 cm, not by pointer: a lot streamed out and back in has new light objects),
 counts added / removed / switched on / switched off / relit, animated lamps apart. `LotLampStatus()` feeds the Developer

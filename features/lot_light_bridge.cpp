@@ -680,6 +680,7 @@ struct LotLampState {
     int type = 0;
     BYTE flags = 0;
     float col[3] = {}, inten = 0.0f, range = 0.0f, pos[3] = {};
+    float rect[4] = {}; // light rect +0x134 {minX, minZ, maxX, maxZ} (FUN_006BDDF0: position +- sqrt(range / k))
     bool plain = false; // type 3..6
     bool baked = false; // InBake
     // automatic changes of this lamp in the current 60 s window (carried from enumeration to enumeration)
@@ -730,6 +731,7 @@ bool ReadLotLamp(uintptr_t L, LotLampState& out) {
         out.inten = *reinterpret_cast<const float*>(L + 0x10);               // intensity (x)
         out.range = *reinterpret_cast<const float*>(L + 0x130);              // range
         std::memcpy(out.pos, reinterpret_cast<const void*>(L + 0x120), 12); // position
+        std::memcpy(out.rect, reinterpret_cast<const void*>(L + 0x134), 16); // light rect (the bake's chunk test, 0xC29480)
         out.lot = (static_cast<uint64_t>(hi) << 32) | lo;
         out.type = type;
         out.flags = f;
@@ -872,7 +874,12 @@ void TrackLotLampEdits() {
         s.autoWindow = p.autoWindow;
         s.animated = p.animated;
         if (p.lot != s.lot) snapDirty = true;
-        if (!RawChanged(p, s)) continue;
+        if (!RawChanged(p, s)) {
+            // the rect follows position and range (FUN_006BDDF0); should the game update it an enumeration later, the
+            // snapshot still gets the current one (it never counts as a change by itself)
+            if (std::memcmp(p.rect, s.rect, sizeof s.rect) != 0) snapDirty = true;
+            continue;
+        }
         snapDirty = true;
         const char* why = nullptr; // why a raw change does not count
         bool counts = false, moved = false;
@@ -1022,6 +1029,7 @@ void TrackLotLampEdits() {
             b.lot = s.lot;
             b.type = s.type;
             std::memcpy(b.pos, s.pos, sizeof b.pos);
+            std::memcpy(b.rect, s.rect, sizeof b.rect);
             for (int c = 0; c < 3; c++) b.light[c] = LampLight(s, c);
             b.baked = s.baked;
             b.animated = s.animated;
@@ -1968,7 +1976,9 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
     if (FAILED(dev->GetVertexShaderConstantF(8, c, 3))) return 0; // c8..c10 = world matrix rows
     float m[4];
     if (FAILED(dev->GetVertexShaderConstantF(15, m, 1)) || !Near(m[0], 1.0f / 256.0f) || !Near(m[1], 1.0f / 256.0f) || !Near(m[2], 0.5f) || !Near(m[3], 0.5f)) return 0;
-    // The terrain light map is the 256x256 texture with few mips (4 when baked, 1 when rebuilt). Which sampler holds it
+    // The terrain light map is the 256x256 texture with few mips: the world file's map and a rebuilt one are both DXT5 with
+    // 4 mips (the rebuild reads the render target back and CPU-encodes 4 mips into the same texture, 0x00C29AB6 ->
+    // 0x00618CD0; research\perf2\chunkrelight.md 1.3, 512 DXT calls = 128 textures x 4 mips). Which sampler holds it
     // depends on the shader variant (s8 with 4 paint layers, s7 with 3, ...). The normal map is also 256x256 but has 9
     // mips and format Q8W8V8U8, the paint layers are 1024x1024.
     IDirect3DBaseTexture9* t = nullptr;
@@ -2541,9 +2551,29 @@ static std::pair<std::vector<BakeLamp>::const_iterator, std::vector<BakeLamp>::c
     return {first, last};
 }
 
+bool BakeTakes(const BakeLamp& b, bool plainLamps) { return b.baked && (plainLamps || !IsPlainType(b.type)); }
+
 BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps) {
     BakeDiff d;
-    auto inBake = [plainLamps](const BakeLamp& b) { return b.baked && (plainLamps || !IsPlainType(b.type)); };
+    auto inBake = [plainLamps](const BakeLamp& b) { return BakeTakes(b, plainLamps); };
+    // one listed change: old = the lamp as baked (a, if it was in the bake), new = as it is now (b, if it is in the bake)
+    auto note = [&d](const BakeLamp* a, const BakeLamp* b, bool user) {
+        BakeChange c;
+        const BakeLamp& at = b ? *b : *a;
+        c.lot = at.lot;
+        c.type = at.type;
+        std::memcpy(c.pos, at.pos, sizeof c.pos);
+        c.user = user;
+        if (a) {
+            c.hasOld = true;
+            std::memcpy(c.oldRect, a->rect, sizeof c.oldRect);
+        }
+        if (b) {
+            c.hasNew = true;
+            std::memcpy(c.newRect, b->rect, sizeof c.newRect);
+        }
+        d.changes.push_back(c);
+    };
     for (uint64_t lot : now.settledLots) {
         // a lot that streamed in after that bake was never in it: the game does not rebuild for streaming, nor does Apex
         if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) continue;
@@ -2561,25 +2591,66 @@ BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plain
                     break;
                 }
             if (m == b1) {
-                if (inBake(*a)) d.removed++; // removed, or moved away
+                if (inBake(*a)) { // removed, or moved away
+                    d.removed++;
+                    note(&*a, nullptr, true);
+                }
                 continue;
             }
             used[static_cast<size_t>(m - b0)] = 1;
             const bool ia = inBake(*a), ib = inBake(*m);
             if (ia != ib) {
                 if (m->animated) d.animated++;
-                else if (ib) d.switchedOn++;
-                else d.switchedOff++;
+                else {
+                    (ib ? d.switchedOn : d.switchedOff)++;
+                    note(ia ? &*a : nullptr, ib ? &*m : nullptr, false);
+                }
             } else if (ia && LightDiffers(a->light, m->light)) {
                 if (m->animated) d.animated++;
-                else d.light++;
+                else {
+                    d.light++;
+                    note(&*a, &*m, false);
+                }
             }
         }
         for (auto b = b0; b != b1; ++b)
-            if (!used[static_cast<size_t>(b - b0)] && inBake(*b)) d.added++; // placed, or moved here
+            if (!used[static_cast<size_t>(b - b0)] && inBake(*b)) { // placed, or moved here
+                d.added++;
+                note(nullptr, &*b, true);
+            }
         if (d.added + d.removed + d.switchedOn + d.switchedOff + d.light != before) d.lots++;
     }
     return d;
+}
+
+std::vector<uint64_t> BakeDiff::Lots() const {
+    std::vector<uint64_t> lots;
+    for (const BakeChange& c : changes) lots.push_back(c.lot);
+    std::sort(lots.begin(), lots.end());
+    lots.erase(std::unique(lots.begin(), lots.end()), lots.end());
+    return lots;
+}
+
+std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint64_t>& lots) {
+    std::vector<BakeLamp> out;
+    for (uint64_t lot : lots) {
+        const auto [first, last] = LotLamps(s, lot);
+        out.insert(out.end(), first, last);
+    }
+    return out; // lots ascending, each lot's lamps in snapshot order: sorted by lot
+}
+
+void CoverLots(BakeSnapshot& baked, const std::vector<uint64_t>& lots, const std::vector<BakeLamp>& lamps) {
+    if (lots.empty()) return;
+    std::vector<BakeLamp> merged;
+    merged.reserve(baked.lamps.size() + lamps.size());
+    for (const BakeLamp& b : baked.lamps)
+        if (!std::binary_search(lots.begin(), lots.end(), b.lot)) merged.push_back(b);
+    merged.insert(merged.end(), lamps.begin(), lamps.end());
+    std::stable_sort(merged.begin(), merged.end(), [](const BakeLamp& a, const BakeLamp& b) { return a.lot < b.lot; });
+    baked.lamps.swap(merged);
+    for (uint64_t lot : lots)
+        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) baked.lots.insert(std::upper_bound(baked.lots.begin(), baked.lots.end(), lot), lot);
 }
 
 std::string BakeDiff::Text() const {
