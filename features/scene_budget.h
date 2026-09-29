@@ -8,7 +8,7 @@
 // spatial tree (0x006FAD70). There is no limit: a lot that streams in queues thousands of nodes at once (measured once:
 // 2224 nodes, 2.84 ms in one frame).
 // While the camera moves this feature answers that one CALL (0x006EBC49) with an exact copy of the game's loop that stops
-// after `nodesPerFrame` nodes or `msPerFrame` ms; the rest stays at the front of the scene's own list (so the game still
+// after `nodesPerFrame` nodes or `msPerFrame` ms; the rest goes back to the tail of the scene's own list (where the drain takes from) (so the game still
 // owns it: node removal unlinks it, and every other caller of the drain processes it) and is processed first the next
 // frames. When the camera is still, when nothing was left, or when the oldest waiting node waited `maxDeferMs`, the
 // game's own drain runs (all nodes). Effect: an object can appear, or finish moving in the culling tree, one or a few

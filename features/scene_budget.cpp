@@ -110,20 +110,31 @@ std::atomic<int> g_maxDeferMs{500};
 // render thread only: per pending holder (one per scene; a few at most), since when nodes we left have been waiting
 struct Waiting {
     void* holder;
-    uint64_t since; // GetTickCount64 of the first budgeted frame that left nodes (0 = nothing of ours waiting)
+    uint64_t since;    // GetTickCount64 of the first budgeted frame that left nodes (0 = nothing of ours waiting)
+    uint64_t lastSeen; // GetTickCount64 of this holder's previous drain call
 };
-constexpr int kHolders = 4;
+constexpr int kHolders = 8;
+constexpr uint64_t kEvictAfterMs = 1000; // a slot is reused only when its holder has not drained for this long
+constexpr uint64_t kSteadyMs = 100;      // only holders drained every frame (the world scene) are budgeted
 Waiting g_waiting[kHolders] = {};
-int g_waitingNext = 0;
 double g_qpcMs = 0.0;
 
-Waiting& WaitingOf(void* holder) {
+// The holder's slot, or nullptr when every slot belongs to a holder still in use (the caller then drains everything,
+// so a holder can never lose its "waiting since" and escape the forced full drain). prevSeen = its previous call (0 = new).
+Waiting* WaitingOf(void* holder, uint64_t now, uint64_t& prevSeen) {
     for (Waiting& w : g_waiting)
-        if (w.holder == holder) return w;
-    Waiting& w = g_waiting[g_waitingNext]; // a new holder takes the oldest slot (a holder that lost its slot is simply
-    g_waitingNext = (g_waitingNext + 1) % kHolders; // drained by the game's code again once its wait restarts)
-    w = {holder, 0};
-    return w;
+        if (w.holder == holder) {
+            prevSeen = w.lastSeen;
+            w.lastSeen = now;
+            return &w;
+        }
+    prevSeen = 0;
+    for (Waiting& w : g_waiting)
+        if (!w.holder || now - w.lastSeen >= kEvictAfterMs) {
+            w = {holder, 0, now};
+            return &w;
+        }
+    return nullptr;
 }
 thread_local DrainNote t_note;
 
@@ -181,16 +192,19 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         *counter += 1;
         done++;
     }
-    // the rest goes back to the front of the holder's list, in its order, before whatever was queued meanwhile
+    // The rest goes back to the TAIL of the holder's list, in its order. The game queues at the tail (0x006E42E0) and the
+    // drain takes from the tail (local.prev first), so the leftover, being newer in the list than anything queued
+    // meanwhile, is processed first next frame; at the front it would be processed last and only cleared by the forced
+    // full drain.
     uint32_t n = 0;
     if (local.next != &local) {
         Link* const f = local.next;
         Link* const t = local.prev;
-        Link* const h1 = head->next; // == head when nothing was queued meanwhile
-        head->next = f;
-        f->prev = head;
-        t->next = h1;
-        h1->prev = t;
+        Link* const tail = head->prev; // == head when nothing was queued meanwhile
+        tail->next = f;
+        f->prev = tail;
+        t->next = head;
+        head->prev = t;
         for (Link* x = f;; x = x->next) { // counted for the statistics only
             n++;
             if (x == t || n >= kCountCap) break;
@@ -212,14 +226,19 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
     c_calls.Add();
     const bool moving = LotLightingMotion::SampleCameraMoving();
     const uint64_t now = GetTickCount64();
-    Waiting& w = WaitingOf(holder);
-    const bool waitedTooLong = w.since && now - w.since >= static_cast<uint64_t>(g_maxDeferMs.load(std::memory_order_relaxed));
-    if (!moving || waitedTooLong) {
+    uint64_t prevSeen = 0;
+    Waiting* const wp = WaitingOf(holder, now, prevSeen);
+    // Budget only a scene drained every frame (the world); a scene drawn once or now and then (UI / off-screen) gets
+    // everything, so it is never drawn with objects missing
+    const bool steady = wp && prevSeen && now - prevSeen <= kSteadyMs;
+    const bool waitedTooLong = wp && wp->since && now - wp->since >= static_cast<uint64_t>(g_maxDeferMs.load(std::memory_order_relaxed));
+    if (!moving || waitedTooLong || !steady) {
         (waitedTooLong && moving ? c_fullForced : c_fullStill).Add();
         next(holder, edx); // the game's drain: everything, the nodes we left included
-        w.since = 0;
+        if (wp) wp->since = 0;
         return;
     }
+    Waiting& w = *wp;
     const int64_t t0 = Qpc();
     const float ms = std::max(0.1f, g_msPerFrame.load(std::memory_order_relaxed));
     const int64_t deadline = t0 + static_cast<int64_t>(static_cast<double>(ms) / g_qpcMs);

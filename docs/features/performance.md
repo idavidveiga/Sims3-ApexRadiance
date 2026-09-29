@@ -743,7 +743,9 @@ test must confirm):
   `maxDeferMs` -> the game's drain (everything). Moving -> `BudgetedDrain`: the game's loop instruction for instruction
   (same splice, same unlink order, same calls, same counter) plus a stop test before each node: at least 8 nodes, then
   stop at `nodesPerFrame` (512) nodes or `msPerFrame` (2.0 ms, QPC). The nodes not reached are spliced back at the
-  **front** of the holder's list, in order, before anything queued during the loop.
+  **tail** of the holder's list (the game queues at the tail and the drain takes from the tail), in order, so they are
+  processed first next frame. Only scenes drained every frame (within 100 ms) are budgeted; others drain fully. Holder
+  slots (8) are reused only after 1 s without a drain; with none free the scene drains fully.
 - The Frame Profiler reads `[this+0x18]` (nodes processed this frame) and `SceneBudget::TakeDrainNote()` ("deferred" =
   nodes left).
 - Stop: the layer is removed; while threads may still be inside it, the hook runs the game's drain (`g_on` false).
@@ -1035,7 +1037,7 @@ game's walk.
   wait or raise the per-frame limits (Developer card) and report it.
 - **Do not change the drain copy's order or the splice (C6):** the copy must stay the game's loop (newest first, unlink
   before the calls, the local sentinel re-read after every node because game code may unlink other nodes, the rest put
-  back at the front). Do not keep node pointers outside the game's list: only the list keeps a node alive.
+  back at the tail, where the drain takes from). Do not keep node pointers outside the game's list: only the list keeps a node alive.
 - **Unproven consumer assumption (C6, INFERRED):** nothing was found that expects the pending list to be empty right
   after BeginFrame; if a crash or a missing object appears only with the feature on, turn it off and send the log.
 - **Duplicate ids (C8, the residual assumption):** the index answers the remembered object as long as its path is valid;
