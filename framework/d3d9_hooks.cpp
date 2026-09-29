@@ -39,8 +39,9 @@ enum class Timing : uint8_t {
 };
 
 // A chain's list is immutable once published: registering builds a new list and publishes it through an atomic pointer.
-// Every list ever published is kept until Uninstall, so a dispatch that read an older one (possibly the caller of
-// Register, or the render thread's lock-free dispatch) keeps iterating valid memory.
+// Every list published is kept until a safe point (Present on the render thread outside any dispatch, or Uninstall), so
+// a dispatch that read an older one (possibly the caller of Register, or the render thread's lock-free dispatch) keeps
+// iterating valid memory.
 template <typename Fn> struct Chain {
     using List = std::vector<Entry<Fn>>;
     const char* method;
@@ -59,11 +60,15 @@ template <typename Fn> struct Chain {
     }
 };
 
+std::atomic<bool> g_retiredPending{false}; // some chain holds lists older than its current one
+
 // Caller holds g_lock
 template <typename Fn> void Publish(Chain<Fn>& chain, std::unique_ptr<typename Chain<Fn>::List> next) {
-    chain.count.store(next->size(), std::memory_order_relaxed);
-    chain.list.store(next.get(), std::memory_order_seq_cst); // xchg: globally visible before WaitForRenderThread's barrier
-    chain.lists.push_back(std::move(next));
+    chain.lists.push_back(std::move(next)); // owned first: a failed push_back cannot free a list already published
+    const auto* cur = chain.lists.back().get();
+    chain.count.store(cur->size(), std::memory_order_relaxed);
+    chain.list.store(cur, std::memory_order_seq_cst); // xchg: globally visible before WaitForRenderThread's barrier
+    g_retiredPending.store(true, std::memory_order_relaxed);
 }
 
 template <typename Fn> bool Add(Chain<Fn>& chain, const std::string& name, Fn fn, Priority priority) {
@@ -89,7 +94,7 @@ template <typename Fn> bool RemoveName(Chain<Fn>& chain, const std::string& name
     return chain.lockFree;
 }
 
-// Caller holds g_lock (Uninstall): frees every list but the current one
+// Caller holds g_lock, at a safe point (no dispatch can still iterate an older list): frees every list but the current one
 template <typename Fn> void FreeRetired(Chain<Fn>& chain) {
     if (chain.lists.size() > 1) chain.lists.erase(chain.lists.begin(), chain.lists.end() - 1);
 }
@@ -102,6 +107,7 @@ int g_renderDepth = 0;                      // render thread only: nesting of it
 std::atomic<int> g_renderInside{0};         // written by the render thread only: inside a lock-free dispatch
 std::atomic<uint32_t> g_renderExits{0};     // written by the render thread only: outermost lock-free dispatches finished
 std::atomic<uint32_t> g_offThread{0};       // lock-free chains dispatched from another thread (under the lock)
+int g_lockedDepth = 0;                    // guarded by g_lock: dispatches running under the lock (the lock's owner only)
 std::mutex g_timingLock;                    // FrameProfiler::AddRegistryHookTime is not thread-safe on its own
 thread_local int t_dispatchDepth = 0;       // development build: nesting of dispatches on this thread (the mod time)
 
@@ -127,20 +133,22 @@ struct RenderInside {
 // A thread other than the render thread just published new lists (UnregisterAll): returns once the render thread can no
 // longer be running a removed callback. After the barrier, a lock-free dispatch that starts later loads the new list;
 // one that had started is visible through g_renderInside, and it is waited for (it ends when g_renderExits moves or the
-// flag drops). Bounded: a render thread blocked on a lock the caller holds would otherwise never return.
-void WaitForRenderThread(const std::string& name) {
-    if (!g_renderTid.load(std::memory_order_relaxed)) return; // not installed: no dispatch has ever run
+// flag drops). Bounded: a render thread blocked on a lock the caller holds would otherwise never return. False when it
+// timed out (the render thread may still be inside a dispatch).
+bool WaitForRenderThread(const std::string& caller) {
+    if (!g_renderTid.load(std::memory_order_relaxed)) return true; // not installed: no dispatch has ever run
     FlushProcessWriteBuffers();
-    if (g_renderInside.load(std::memory_order_acquire) == 0) return;
+    if (g_renderInside.load(std::memory_order_acquire) == 0) return true;
     const uint32_t exits = g_renderExits.load(std::memory_order_acquire);
     const ULONGLONG start = GetTickCount64();
     while (g_renderInside.load(std::memory_order_acquire) != 0 && g_renderExits.load(std::memory_order_acquire) == exits) {
         if (GetTickCount64() - start > 1000) {
-            LOG_WARNING(std::format("[D3D9Hooks] UnregisterAll(\"{}\") from thread {}: the render thread did not leave its draw hook within 1 s; continuing", name, ThreadId()));
-            return;
+            LOG_WARNING(std::format("[D3D9Hooks] {} from thread {}: the render thread did not leave its draw hook within 1 s; continuing", caller, ThreadId()));
+            return false;
         }
         SwitchToThread();
     }
+    return true;
 }
 
 template <typename Fn> void NoteOffThread(Chain<Fn>& chain) {
@@ -211,6 +219,10 @@ template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDev
         NoteOffThread(chain);
     }
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    struct LockedDepth {
+        LockedDepth() { ++g_lockedDepth; }
+        ~LockedDepth() { --g_lockedDepth; }
+    } depth;
     const auto* list = chain.list.load(std::memory_order_relaxed);
     return RunList(chain, *list, ctx, result, args...);
 }
@@ -230,6 +242,36 @@ Chain<CreatePixelShaderHook> g_cps("CreatePixelShader", false, true, Timing::Non
 Chain<CreateVertexShaderHook> g_cvs("CreateVertexShader", false, true, Timing::None, nullptr);
 Chain<SetPixelShaderConstantFHook> g_psc("SetPixelShaderConstantF", true, true, Timing::None, nullptr);
 Chain<SetVertexShaderConstantFHook> g_vsc("SetVertexShaderConstantF", true, true, Timing::None, nullptr);
+
+// Caller holds g_lock, at a safe point
+void FreeAllRetired() {
+    FreeRetired(g_dip);
+    FreeRetired(g_dp);
+    FreeRetired(g_srt);
+    FreeRetired(g_sps);
+    FreeRetired(g_svs);
+    FreeRetired(g_stex);
+    FreeRetired(g_present);
+    FreeRetired(g_begin);
+    FreeRetired(g_ctex);
+    FreeRetired(g_crt);
+    FreeRetired(g_svp);
+    FreeRetired(g_cps);
+    FreeRetired(g_cvs);
+    FreeRetired(g_psc);
+    FreeRetired(g_vsc);
+}
+
+// Render thread, at Present: frees the retired lists when no dispatch can still iterate one. The render thread is outside
+// its lock-free dispatches (depth 0), holding the lock excludes every other thread's locked dispatch, and a locked
+// dispatch of this thread further up the stack shows in g_lockedDepth. Never blocks: a busy lock waits for the next frame.
+void ReclaimRetired() {
+    if (!g_retiredPending.load(std::memory_order_relaxed) || ThreadId() != g_renderTid.load(std::memory_order_relaxed) || g_renderDepth != 0) return;
+    std::unique_lock<std::recursive_mutex> lock(g_lock, std::try_to_lock);
+    if (!lock.owns_lock() || g_lockedDepth != 0) return;
+    g_retiredPending.store(false, std::memory_order_relaxed);
+    FreeAllRetired();
+}
 
 // ---- development build: state-call counters for the Frame Profiler (replaces six registered counting callbacks) ----
 enum CallSlot : int { kCallSetTexture, kCallSetVS, kCallSetPS, kCallSetVSC, kCallSetPSC, kCallSetRT, kCallSlots };
@@ -326,6 +368,7 @@ HRESULT STDMETHODCALLTYPE H_SetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DB
 }
 HRESULT STDMETHODCALLTYPE H_Present(IDirect3DDevice9* d, const RECT* sr, const RECT* dr, HWND w, const RGNDATA* rg) {
     HRESULT hr = S_OK;
+    ReclaimRetired();
     if (!Run(g_present, d, hr, sr, dr, w, rg)) return hr;
     return o_present(d, sr, dr, w, rg);
 }
@@ -444,7 +487,7 @@ void UnregisterAll(const std::string& name) {
     // The render thread itself (inside or outside a dispatch) needs no wait: as before, a chain it is running keeps its
     // list until it returns. Any other thread waits, outside the lock, for the render thread to leave the dispatch that
     // may still run a removed callback (the locked dispatches of other threads were already excluded by the lock).
-    if (lockFreeChanged && ThreadId() != g_renderTid.load(std::memory_order_relaxed)) WaitForRenderThread(name);
+    if (lockFreeChanged && ThreadId() != g_renderTid.load(std::memory_order_relaxed)) WaitForRenderThread("UnregisterAll(\"" + name + "\")");
 }
 
 // ---- originals ----
@@ -531,24 +574,12 @@ void Uninstall() {
     for (const Target& t : Targets())
         if (*t.original) DetourDetach(t.original, t.detour);
     DetourTransactionCommit();
-    // No new dispatch can start; wait for one the render thread may still be running, then free the retired lists
-    if (ThreadId() != g_renderTid.load(std::memory_order_relaxed)) WaitForRenderThread("(uninstall)");
+    // No new dispatch can start; wait for one the render thread may still be running, then free the retired lists. When
+    // the wait timed out, or this is the render thread inside a dispatch (or any thread inside a locked one), they stay.
+    const bool renderOut = ThreadId() != g_renderTid.load(std::memory_order_relaxed) ? WaitForRenderThread("Uninstall") : g_renderDepth == 0;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    FreeRetired(g_dip);
-    FreeRetired(g_dp);
-    FreeRetired(g_srt);
-    FreeRetired(g_sps);
-    FreeRetired(g_svs);
-    FreeRetired(g_stex);
-    FreeRetired(g_present);
-    FreeRetired(g_begin);
-    FreeRetired(g_ctex);
-    FreeRetired(g_crt);
-    FreeRetired(g_svp);
-    FreeRetired(g_cps);
-    FreeRetired(g_cvs);
-    FreeRetired(g_psc);
-    FreeRetired(g_vsc);
+    if (renderOut && g_lockedDepth == 0) FreeAllRetired();
+    else LOG_INFO("[D3D9Hooks] Uninstall: a dispatch may still be running, older hook lists kept");
 }
 
 } // namespace D3D9Hooks

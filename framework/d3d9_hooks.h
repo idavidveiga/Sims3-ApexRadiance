@@ -9,7 +9,8 @@
 //  - The draw and state chains (DrawIndexedPrimitive, DrawPrimitive, SetRenderTarget, SetViewport, SetPixelShader,
 //    SetVertexShader, SetTexture, Set*ShaderConstantF) are dispatched WITHOUT a lock on the render thread (the thread of
 //    the first EndScene): they read an immutable list through an atomic pointer. Registering publishes a new list under
-//    the registration lock; the old lists are kept until Uninstall, so a dispatch still reading one stays valid.
+//    the registration lock; the old lists are kept until a safe point (Present on the render thread outside every dispatch, or
+//    Uninstall), so a dispatch still reading one stays valid.
 //  - Present, BeginScene and the Create* chains, and every chain called from another thread, run under the one
 //    recursive registration lock, as before (one such dispatch at a time).
 //  - UnregisterAll called from a thread other than the render thread returns only once the render thread has left any

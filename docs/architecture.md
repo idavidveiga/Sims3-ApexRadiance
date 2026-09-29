@@ -362,9 +362,10 @@ for equal priorities. What differs from 3.1-3.5:
     logged `[D3D9Hooks] <method> called from thread N (render thread M): dispatched under the lock`). Callbacks of the
     lock-free chains are therefore no longer serialised against callbacks running on other threads; that matters only if
     that counter grows.
-  - Register / UnregisterAll build the new list under the lock and publish it; **every list ever published is kept until
-    `Uninstall`**, so a dispatch still reading an older one (the render thread, or a callback that registers during its
-    own dispatch) reads valid memory. The retired lists are a few KB per (un)registration.
+  - Register / UnregisterAll build the new list under the lock and publish it; **older lists are kept until a safe point**: Present on
+    the render thread when it is outside every lock-free dispatch and no locked dispatch is running (the lock is only
+    tried, never waited for), or `Uninstall` (skipped when its wait for the render thread timed out). A dispatch still
+    reading an older list (the render thread, or a callback that registers during its own dispatch) reads valid memory.
   - `UnregisterAll` from the render thread returns at once (as before, a chain being run keeps its list until it
     returns). From **another thread** it publishes, drops the lock, calls `FlushProcessWriteBuffers` (so a later render
     dispatch sees the new list, or its "inside" flag is visible) and waits until the render thread has left the lock-free

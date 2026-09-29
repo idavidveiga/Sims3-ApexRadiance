@@ -686,7 +686,7 @@ std::string DiagText() {
         std::lock_guard<std::mutex> lk(g_diagMx);
         recs.swap(g_diag);
     }
-    if (!wasArmed)
+    if (!wasArmed && recs.empty())
         return std::format("\n==== ANDARES (luz externa entre andares) ====\n{}\nNo samples: recording them was off (it costs time in every light solve). It is on "
                            "now: let the lot relight (or use \"Relight lots now\") and save the diagnostics again.\n",
                            Status());
