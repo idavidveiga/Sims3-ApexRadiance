@@ -951,6 +951,10 @@ struct EpochSpec {
     const char* name;
     const char* bytes; // the studied function's first bytes
 };
+// args = the real stack arguments: each function's own return followed to its end, through internal jumps and tail
+// jumps (checked 2026-09-29 for every row). ConvertIndex 0x004A6C80 ends with "jmp 004E17B0" (the lock release, a plain
+// ret): 0 arguments. It was listed with 2 (the "ret 8" after it belongs to the next function, 0x004A6D60), so the
+// wrapper popped 8 bytes of its caller's stack: the crash in DeleteRecord 0x004A85A0 at 0x004A8639 (v1.8.0).
 // clang-format off
 constexpr EpochSpec kSpecs[] = {
     // DPF 0x00FB2600 and its derived class 0x01048DA0: the same functions except the destructor
@@ -964,7 +968,7 @@ constexpr EpochSpec kSpecs[] = {
     {kClsDpf, 0x40, 1, Bump::Always, "DPF DeleteRecord", "83 EC 14 53 56 8B F1 8D 8E 70 02 00 00 68"},
     {kClsDpf, 0x5C, 1, Bump::Always, "DPF set index", "83 79 14 00 8B 81 D0 02 00 00 75 0A 8B 54 24 04 89 91 D0 02"},
     {kClsDpf, 0x8C, 0, Bump::Always, "DPF load index", "83 EC 24 53 56 8B F1 8B 8E D0 02 00 00 32 DB 85 C9"},
-    {kClsDpf, 0x9C, 2, Bump::Always, "DPF convert index", "83 EC 08 55 56 8B F1 8D AE 70 02 00 00 68"},
+    {kClsDpf, 0x9C, 0, Bump::Always, "DPF convert index", "83 EC 08 55 56 8B F1 8D AE 70 02 00 00 68"},
     {kClsDpfDerived, 0x00, 1, Bump::Always, "DPF (derived) destructor", "56 8B F1 C7 06 ?? ?? ?? ?? C7 46 04 ?? ?? ?? ?? 8B 86 98 03"},
     {kClsDpfDerived, 0x08, 0, Bump::Always, "DPF (derived) shutdown", "56 8B F1 80 7E 0C 00 74 49 83 7E 14 00 74 07 8B 06 8B 50 1C"},
     {kClsDpfDerived, 0x18, 3, Bump::Always, "DPF (derived) open", "53 55 8B 6C 24 0C 56 8B F1 8A 4C 24 18 32 C0 84 C9 57"},
@@ -975,7 +979,7 @@ constexpr EpochSpec kSpecs[] = {
     {kClsDpfDerived, 0x40, 1, Bump::Always, "DPF (derived) DeleteRecord", "83 EC 14 53 56 8B F1 8D 8E 70 02 00 00 68"},
     {kClsDpfDerived, 0x5C, 1, Bump::Always, "DPF (derived) set index", "83 79 14 00 8B 81 D0 02 00 00 75 0A 8B 54 24 04 89 91 D0 02"},
     {kClsDpfDerived, 0x8C, 0, Bump::Always, "DPF (derived) load index", "83 EC 24 53 56 8B F1 8B 8E D0 02 00 00 32 DB 85 C9"},
-    {kClsDpfDerived, 0x9C, 2, Bump::Always, "DPF (derived) convert index", "83 EC 08 55 56 8B F1 8D AE 70 02 00 00 68"},
+    {kClsDpfDerived, 0x9C, 0, Bump::Always, "DPF (derived) convert index", "83 EC 08 55 56 8B F1 8D AE 70 02 00 00 68"},
     // DDF 0x00FB2420
     {kClsDdf, 0x00, 1, Bump::Always, "DDF destructor", "56 8B F1 E8 ?? ?? ?? ?? F6 44 24 08 01 74 09 56 E8"},
     {kClsDdf, 0x08, 0, Bump::Always, "DDF shutdown", "80 79 0C 00 74 0B 8B 01 8B 50 1C C6 41 0C 00 FF D2 B0 01 C3"},
