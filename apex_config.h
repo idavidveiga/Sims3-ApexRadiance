@@ -102,8 +102,9 @@ enum ProfilePart : unsigned {
     kPartWindow = 1u << 4,        // window mode ([display])
     kPartPerformance = 1u << 5,   // the Performance page's features
     kPartShortcuts = 1u << 6,     // the keyboard shortcuts ([shortcuts] in a profile: menu key, preset, own keys); not saved by default
+    kPartAmbientOcclusion = 1u << 7, // Ambient Occlusion (after Shortcuts: older saved part masks keep their bits)
 };
-inline constexpr int kProfilePartCount = 7;
+inline constexpr int kProfilePartCount = 8;
 inline constexpr unsigned kProfilePartsAll = (1u << kProfilePartCount) - 1;
 const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
 unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has

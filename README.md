@@ -2,7 +2,7 @@
 
 # Apex Radiance for The Sims 3
 
-A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
+A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, soft ambient occlusion, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
 
 
 <div align="center">
@@ -70,6 +70,10 @@ A full picture editor for the 3D world; menus and text keep their normal look.
 - Film-style tones, a six-color mixer and a vignette.
 - A before/after switch and a hold-to-compare button.
 
+### Ambient Occlusion (experimental)
+
+Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. It is computed at full resolution with no noise, so it stays perfectly still when the camera does, and lamp-lit or bright surfaces keep their light and color. Strength, reach and quality are adjustable. Needs the game's own Edge Smoothing off.
+
 ### Depth Blur
 
 Softly blurs the distant background, like a camera focused on what's near. The focus follows what you're looking at, the effect turns itself off in map view, and its quality is adjustable.
@@ -105,7 +109,7 @@ The first start asks which key opens it (Ctrl+Shift+R, Ctrl+Shift+1 or Ctrl+Shif
 
 - **Four languages:** English, Portuguese, Spanish and French ("Automatic" follows your Windows language).
 - **Search:** find any option by name, with or without accents.
-- **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
+- **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Ambient Occlusion, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
 - **Undo** after any change, **per-setting reset**, a dot on everything changed from its default, and **Reset all settings** (Settings > Menu) to start over.
 - Adjustable text size.
 - A Compatibility page with your game version and the other mods it detects.

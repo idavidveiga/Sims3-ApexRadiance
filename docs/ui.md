@@ -173,7 +173,7 @@ if ever, save the current setup as a profile first.
 
 ### Profiles (Settings > Profiles)
 "SAVE CURRENT SETUP": "What to save" = a checkbox per part (Night Lights, Color, Depth Blur, Edge Smoothing,
-Window mode, Performance; all checked by default, kept while the game runs), then a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
+Window mode, Performance, Shortcuts (off by default), Ambient Occlusion (bit 7, added 30/09 so older part masks keep their bits); the rest checked by default, kept while the game runs), then a name field (only letters, digits, space, - and _ can be typed; at most 32 characters; Enter
 saves) and Save; an existing name asks "... already exists; replace it?" inline. "SAVED": one row per profile with Load
 and Delete; the row's description lists the parts the file has. Load opens an inline pick of those parts (all
 checked) with Load / Cancel, and applies only the checked ones (`KeepProfileParts`). Delete asks inline, "Delete this

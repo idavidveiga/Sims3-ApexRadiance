@@ -447,6 +447,7 @@ namespace {
 // The profile part a feature belongs to (0 = not part of profiles)
 unsigned FeaturePart(const std::string& name) {
     if (name == "NightTerrainRelight" || name == "SplitLevelGroundLight") return kPartNightLights;
+    if (name == "AmbientOcclusion") return kPartAmbientOcclusion;
     if (name == "DepthBlur") return kPartDepthBlur;
     if (name == "EdgeSmoothing") return kPartEdgeSmoothing;
     for (const char* p : {Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName, Performance::kLotLightingName,
@@ -567,7 +568,7 @@ void ApplyFeatureState(const toml::table& state) {
 // ---- profiles ----
 
 const char* ProfilePartName(int index) {
-    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance", "Shortcuts"};
+    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance", "Shortcuts", "Ambient Occlusion"};
     return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
 }
 
