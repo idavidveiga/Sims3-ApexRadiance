@@ -68,19 +68,29 @@ uint64_t Qpc() {
     return static_cast<uint64_t>(t.QuadPart);
 }
 
+// Every drain holds this from taking the batch until its last VirtualFree returned, and bumps g_releasedGen after it: a
+// failing VirtualAlloc waits for a drain in progress (its blocks may be what the call needs) and knows whether one ended
+SRWLOCK g_drainLock = SRWLOCK_INIT;
+std::atomic<uint32_t> g_releasedGen{0};
+HANDLE g_workerDone = nullptr; // set by the worker when it leaves its loop (a thread's exit waits for the loader lock)
+
 // Releases every queued block on the calling thread. Returns how many.
 uint32_t ReleaseQueued() {
     void* batch[kQueueCap];
+    AcquireSRWLockExclusive(&g_drainLock);
     AcquireSRWLockExclusive(&g_qLock);
     const uint32_t n = g_queued;
     std::memcpy(batch, g_queue, n * sizeof(void*));
     g_queued = 0;
     ReleaseSRWLockExclusive(&g_qLock);
-    if (!n) return 0;
-    const uint64_t t0 = Qpc();
-    const FreeFn f = RealFree();
-    for (uint32_t i = 0; i < n; i++) f(batch[i], 0, MEM_RELEASE);
-    g_releaseTicks.fetch_add(Qpc() - t0, std::memory_order_relaxed);
+    if (n) {
+        const uint64_t t0 = Qpc();
+        const FreeFn f = RealFree();
+        for (uint32_t i = 0; i < n; i++) f(batch[i], 0, MEM_RELEASE);
+        g_releaseTicks.fetch_add(Qpc() - t0, std::memory_order_relaxed);
+        g_releasedGen.fetch_add(1, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&g_drainLock);
     return n;
 }
 
@@ -90,14 +100,14 @@ DWORD WINAPI WorkerProc(LPVOID) {
         WaitForSingleObject(g_wake, 100);
         c_deferred.fetch_add(ReleaseQueued(), std::memory_order_relaxed);
     }
+    SetEvent(g_workerDone);
     return 0;
 }
 
 // Replaces "call [VirtualFree]" in FreeInternal: VirtualFree(base, 0, MEM_RELEASE) of a big block, allocator lock held.
-// The allocator ignores the result.
+// The allocator ignores the result. TryAcquire: at process exit the worker may have been ended inside the queue lock.
 BOOL WINAPI Stub_Free(LPVOID address, SIZE_T size, DWORD type) {
-    if (type == MEM_RELEASE && size == 0 && address) {
-        AcquireSRWLockExclusive(&g_qLock);
+    if (type == MEM_RELEASE && size == 0 && address && TryAcquireSRWLockExclusive(&g_qLock)) {
         if (g_workerAlive && g_queued < kQueueCap) {
             g_queue[g_queued++] = address;
             const uint32_t q = g_queued;
@@ -117,10 +127,12 @@ BOOL WINAPI Stub_Free(LPVOID address, SIZE_T size, DWORD type) {
 // released here and the call is made once more
 LPVOID WINAPI Stub_Alloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect) {
     const AllocFn alloc = RealAlloc();
+    const uint32_t gen = g_releasedGen.load(std::memory_order_acquire);
     LPVOID r = alloc(address, size, type, protect);
     if (r) return r;
     const DWORD err = GetLastError();
-    if (!ReleaseQueued()) {
+    // ReleaseQueued waits for a drain in progress; a drain that ended since before the call also counts
+    if (!ReleaseQueued() && g_releasedGen.load(std::memory_order_acquire) == gen) {
         SetLastError(err);
         return r;
     }
@@ -211,12 +223,17 @@ bool StartDeferral(std::string* why) {
         *why = std::format("{} VirtualAlloc calls found in the allocator (expected {})", n, kAllocSites);
         return false;
     }
-    g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    // Both events live for the process (never closed: a stub may still hold the handle while Stop runs)
+    if (!g_wake) g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_workerDone) g_workerDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_wake || !g_workerDone) {
+        *why = "the helper thread's events could not be created";
+        return false;
+    }
+    ResetEvent(g_workerDone);
     g_workerStop.store(false);
-    g_worker = g_wake ? CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr) : nullptr;
+    g_worker = CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr);
     if (!g_worker) {
-        if (g_wake) CloseHandle(g_wake);
-        g_wake = nullptr;
         *why = "the helper thread could not be started";
         return false;
     }
@@ -239,18 +256,16 @@ bool StopDeferral() {
     g_workerAlive = false;
     ReleaseSRWLockExclusive(&g_qLock);
     if (g_worker) {
+        // Wait for the worker to leave its loop, not for the thread to end: on FreeLibrary the loader lock is held here
+        // and a thread's exit needs it
         g_workerStop.store(true, std::memory_order_release);
         SetEvent(g_wake);
-        WaitForSingleObject(g_worker, 5000);
+        WaitForSingleObject(g_workerDone, 2000);
         CloseHandle(g_worker);
         g_worker = nullptr;
     }
     c_deferred.fetch_add(ReleaseQueued(), std::memory_order_relaxed);
     for (auto& s : g_allocSites) ok = Restore(s) && ok;
-    if (g_wake && !g_freeSite.written) {
-        CloseHandle(g_wake);
-        g_wake = nullptr;
-    }
     return ok;
 }
 
@@ -326,7 +341,7 @@ Stats GetStats() {
 std::string StatusText() {
     if (!Running()) return "Off";
     const Stats s = GetStats();
-    return std::format("On: lock spin {}; {} big blocks released outside the lock ({:.1f} ms of release work moved off the game's threads)", s.spinNow, s.deferred,
+    return std::format("On: lock spin {}; {} big blocks released by the helper thread outside the lock ({:.1f} ms of release work in all)", s.spinNow, s.deferred,
                        s.releaseMs);
 }
 

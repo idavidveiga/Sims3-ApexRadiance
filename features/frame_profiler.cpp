@@ -1325,7 +1325,8 @@ int TexBucketOf(uint64_t pixels) {
 // Bytes of the whole mip chain for the formats the game loads (DXT1 8 per 4x4 block, DXT3/5 16, else 4 per pixel), for the report
 uint64_t TexBytes(uint32_t w, uint32_t h, uint32_t levels, D3DFORMAT f) {
     uint64_t total = 0;
-    for (uint32_t l = 0; l < std::max<uint32_t>(levels, 1) && (w || h); l++) {
+    if (levels == 0) levels = 32; // D3D: the full chain (the loop stops at 1x1)
+    for (uint32_t l = 0; l < levels && (w || h); l++) {
         const uint64_t bw = (std::max<uint32_t>(w, 1) + 3) / 4, bh = (std::max<uint32_t>(h, 1) + 3) / 4;
         total += f == D3DFMT_DXT1 ? bw * bh * 8 : (f == D3DFMT_DXT3 || f == D3DFMT_DXT5) ? bw * bh * 16 : static_cast<uint64_t>(std::max<uint32_t>(w, 1)) * std::max<uint32_t>(h, 1) * 4;
         w >>= 1;
@@ -3617,6 +3618,7 @@ std::string CounterExtraText(const uint64_t extra[3][kExtraCount], uint64_t call
     case kRefPackCompress:
         return std::format(", in {:.1f} KB, out {:.1f} KB", static_cast<double>(sum(kXBytesIn)) / 1024.0, static_cast<double>(sum(kXBytesOut)) / 1024.0);
     case kDxtEncode:
+    case kTexCreate:
         return std::format(", pixels {:.2f} M", static_cast<double>(sum(kXPixels)) / 1e6);
     case kKeyList: {
         std::string t = std::format(", keys {}", sum(kXKeys));
@@ -4291,6 +4293,7 @@ std::string CounterExtraPerFrame(const CounterAvg& a, int k) {
     case kRefPackCompress:
         return std::format("{:.1f} -> {:.1f} KB", sum(kXBytesIn) / 1024.0, sum(kXBytesOut) / 1024.0);
     case kDxtEncode:
+    case kTexCreate:
         return std::format("{:.3f} Mpx", sum(kXPixels) / 1e6);
     case kLotRoomSolve:
         return std::format("{:.2f} lot levels", calls);
