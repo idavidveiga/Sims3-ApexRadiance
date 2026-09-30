@@ -7,7 +7,8 @@
 //  - Full resolution, no per-frame noise, no accumulation: the same depth gives the same result bit for bit (a still
 //    camera never changes it), so nothing twinkles or trails. Half resolution was the root of every "micro dots" report.
 //  - A 1/z pyramid (9 levels, R32F, padded to a multiple of 256 so each level is the exact 2x2 average): 1/z is linear
-//    across the screen on a plane, so flat surfaces stay flat at every level. Read trilinearly by the march.
+//    across the screen on a plane, so flat surfaces stay flat at every level. The march reads it bilinearly within the
+//    nearest level: trilinear cost twice as much for the same look (30/09, 4K: 2.4 vs 4.5 ms, image 0.04 levels apart).
 //  - A fixed 4x4 Bayer interleave of the slice angle and the step offset, cancelled by a depth-aware 4x4 box, then a tent.
 // What is new (GTAO, Jimenez 2016 / XeGTAO form):
 //  - 8 slices x 4 geometric steps per side, cosine-weighted visibility with the projected normal, summed as a ratio to
@@ -63,7 +64,11 @@ constexpr float kFirstStep4K = 2.0f, kMipOffset = 2.0f, kMaxRadius = 0.30f;    /
 constexpr float kIsoK = 1.0f, kIsoT = 0.01f;                                    // isolated-pixel fade
 constexpr float kBlurTolerance = 0.03f;                                         // of z
 constexpr float kDeadZone = 0.05f;                                              // composite: faint shade dropped
-constexpr int kQualitySlices[3] = {4, 6, 8};
+// Quality by stored index (the saved "qualidade": 0 Low, 1 Medium, 2 High as in 2.1.0, then 3 Ultra, 4 Very Low) and the
+// order the menu shows them in
+constexpr int kQualityCount = 5;
+constexpr int kQualitySlices[kQualityCount] = {4, 6, 8, 12, 2};
+constexpr int kQualityShown[kQualityCount] = {4, 0, 1, 2, 3}; // Very Low, Low, Medium, High, Ultra
 
 const char* kShaderSource = R"HLSL(
 #ifndef SLICES
@@ -72,7 +77,7 @@ const char* kShaderSource = R"HLSL(
 #define STEPS 4
 sampler2D sDepth : register(s0); // INTZ scene depth, point
 sampler2D sZ     : register(s1); // 1/z pyramid (1/m, 0 = sky), point (exact texel reads)
-sampler2D sZt    : register(s2); // the same pyramid, trilinear (the march)
+sampler2D sZt    : register(s2); // the same pyramid, bilinear within the nearest level (the march)
 sampler2D sAo    : register(s3); // AO + 1/z (G16R16F), point
 sampler2D sColor : register(s4); // copy of the finished scene, point
 float4 cView  : register(c0);  // x = tanX, y = tanY, z = H / (2 tanY) (pixels per metre times z), w = max radius (px)
@@ -249,21 +254,24 @@ const ShaderCache::Id kLinearPsId = AddShader("AO LinearizePS", "LinearizePS", 0
 const ShaderCache::Id kDownPsId = AddShader("AO DownPS", "DownPS", 0);
 const ShaderCache::Id kBlurPsId = AddShader("AO BlurPS", "BlurPS", 0);
 const ShaderCache::Id kCompositePsId = AddShader("AO CompositePS", "CompositePS", 0);
-const ShaderCache::Id kGtaoPsId[3] = {AddShader("AO GtaoPS (Low, SLICES 4)", "GtaoPS", 1, "4"), AddShader("AO GtaoPS (Medium, SLICES 6)", "GtaoPS", 1, "6"),
-                                      AddShader("AO GtaoPS (High, SLICES 8)", "GtaoPS", 0, "8")};
-static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices[2] == 8, "kGtaoPsId lists the SLICES of kQualitySlices");
+const ShaderCache::Id kGtaoPsId[kQualityCount] = {AddShader("AO GtaoPS (Low, SLICES 4)", "GtaoPS", 1, "4"), AddShader("AO GtaoPS (Medium, SLICES 6)", "GtaoPS", 1, "6"),
+                                                  AddShader("AO GtaoPS (High, SLICES 8)", "GtaoPS", 0, "8"), AddShader("AO GtaoPS (Ultra, SLICES 12)", "GtaoPS", 1, "12"),
+                                                  AddShader("AO GtaoPS (Very Low, SLICES 2)", "GtaoPS", 1, "2")};
+static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices[2] == 8 && kQualitySlices[3] == 12 && kQualitySlices[4] == 2,
+              "kGtaoPsId lists the SLICES of kQualitySlices");
 
 struct Params {
     float strength = 1.0f; // multiplies the occlusion (1 = the lab's recommended look)
     float reach = 1.0f;    // scales the radii
     float protect = 0.5f;  // lamp-lit / bright pixels keep this share of their light
-    int quality = 2;       // 0 Low (4 slices), 1 Medium (6), 2 High (8)
-    bool debugView = false; // Developer: the shade alone, in grey
+    int quality = 2;       // stored index into kQualitySlices (2 = High, 8 slices)
+
 };
 
 struct State {
     bool active = false, ready = false, fixedTried = false;
-    bool gtaoTried[3] = {};
+    bool gtaoTried[kQualityCount] = {};
+    bool showShade = false; // Advanced > Show the shade alone (not saved)
     int retryCountdown = 0;
     UINT width = 0, height = 0, padW = 0, padH = 0;
     IDirect3DTexture9* zTex = nullptr; // pyramid, kLevels levels
@@ -273,7 +281,7 @@ struct State {
     IDirect3DTexture9 *aoA = nullptr, *aoB = nullptr, *colorTex = nullptr;
     IDirect3DSurface9 *aoASurf = nullptr, *aoBSurf = nullptr, *colorSurf = nullptr;
     IDirect3DPixelShader9 *psLinear = nullptr, *psDown = nullptr, *psBlur = nullptr, *psComposite = nullptr;
-    IDirect3DPixelShader9* psGtao[3] = {};
+    IDirect3DPixelShader9* psGtao[kQualityCount] = {};
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
@@ -324,7 +332,7 @@ void ReleaseShaders() {
     SafeRelease(g.psDown);
     SafeRelease(g.psBlur);
     SafeRelease(g.psComposite);
-    for (int q = 0; q < 3; q++) {
+    for (int q = 0; q < kQualityCount; q++) {
         SafeRelease(g.psGtao[q]);
         g.gtaoTried[q] = false;
     }
@@ -350,7 +358,7 @@ IDirect3DPixelShader9* CreateShader(IDirect3DDevice9* dev, ShaderCache::Id id, c
 
 // The AO pass of one quality, created on first use
 IDirect3DPixelShader9* GtaoShader(IDirect3DDevice9* dev, int q) {
-    q = std::clamp(q, 0, 2);
+    q = std::clamp(q, 0, kQualityCount - 1);
     if (g.psGtao[q] || g.gtaoTried[q]) return g.psGtao[q];
     g.gtaoTried[q] = true;
     g.psGtao[q] = CreateShader(dev, kGtaoPsId[q], "GtaoPS");
@@ -452,7 +460,7 @@ constexpr D3DSAMPLERSTATETYPE kSamplerStates[] = {D3DSAMP_MINFILTER, D3DSAMP_MAG
                                                   D3DSAMP_MAXMIPLEVEL, D3DSAMP_MIPMAPLODBIAS};
 constexpr int kRS = static_cast<int>(sizeof(kRenderStates) / sizeof(kRenderStates[0]));
 constexpr int kSS = static_cast<int>(sizeof(kSamplerStates) / sizeof(kSamplerStates[0]));
-constexpr DWORD kSamplers = 5; // s0 depth, s1 pyramid, s2 pyramid trilinear, s3 AO, s4 colour
+constexpr DWORD kSamplers = 5; // s0 depth, s1 pyramid, s2 pyramid (march), s3 AO, s4 colour
 constexpr UINT kPSConsts = 11; // c0..c10
 
 struct SavedState {
@@ -528,10 +536,10 @@ void SetPassStates(IDirect3DDevice9* dev) {
     dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
     for (DWORD s = 0; s < kSamplers; s++) {
-        const bool trilinear = s == 2; // sZt: the march's prefiltered reads
-        dev->SetSamplerState(s, D3DSAMP_MINFILTER, trilinear ? D3DTEXF_LINEAR : D3DTEXF_POINT);
-        dev->SetSamplerState(s, D3DSAMP_MAGFILTER, trilinear ? D3DTEXF_LINEAR : D3DTEXF_POINT);
-        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, trilinear ? D3DTEXF_LINEAR : D3DTEXF_NONE);
+        const bool march = s == 2; // sZt: the march's prefiltered reads, bilinear within the nearest level
+        dev->SetSamplerState(s, D3DSAMP_MINFILTER, march ? D3DTEXF_LINEAR : D3DTEXF_POINT);
+        dev->SetSamplerState(s, D3DSAMP_MAGFILTER, march ? D3DTEXF_LINEAR : D3DTEXF_POINT);
+        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, march ? D3DTEXF_POINT : D3DTEXF_NONE);
         dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, 0);
@@ -580,7 +588,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
     g.lastA = A;
     g.lastTanX = tanX;
     g.lastTanY = tanY;
-    const int slices = kQualitySlices[std::clamp(g.p.quality, 0, 2)];
+    const int slices = kQualitySlices[std::clamp(g.p.quality, 0, kQualityCount - 1)];
     const float s = std::clamp(g.p.strength, 0.0f, 2.0f), reach = std::clamp(g.p.reach, 0.5f, 2.0f);
     const float c[kPSConsts][4] = {
         {tanX, tanY, H / (2.0f * tanY), kMaxRadius * H},
@@ -590,7 +598,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {kContactK * s, kLargeKNear * s, kLargeKFar * s, kBlurTolerance},
         {kNearZ, 1.0f / (kFarZ - kNearZ), kIsoK, kIsoT},
         {0, 0, 0, 0},
-        {kDeadZone, 1.0f / (1.0f - kDeadZone), std::clamp(g.p.protect, 0.0f, 1.0f), g.p.debugView ? 1.0f : 0.0f},
+        {kDeadZone, 1.0f / (1.0f - kDeadZone), std::clamp(g.p.protect, 0.0f, 1.0f), g.showShade ? 1.0f : 0.0f},
         {2.0f * tanX / W, -2.0f * tanY / H, -tanX, tanY},
         {std::cos(kPi / slices), std::sin(kPi / slices), 0, 0},
         {A, 1.0f / (nearZ * A), 0, 0}};
@@ -651,7 +659,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
 
 // PostScene effect (order kAmbientOcclusion): first, before edge smoothing, Depth Blur, bloom and the UI
 void AoEffect(IDirect3DDevice9* dev) {
-    if (!g.ready || (g.p.strength <= 0.0f && !g.p.debugView)) return;
+    if (!g.ready || (g.p.strength <= 0.0f && !g.showShade)) return;
     IDirect3DTexture9* depth = DepthShare::Texture();
     if (!depth) return;
     // the scene depth must be the one bound right now (not a reflection or UI pass)
@@ -723,8 +731,7 @@ class AmbientOcclusionPatch : public ApexPatch {
         RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, 1.0f, 0.0f, 2.0f, "How dark the shade gets where things meet (1 = the recommended look)");
         RegisterFloatSetting(&g.p.reach, "alcance", SettingWidget::Slider, 1.0f, 0.5f, 2.0f, "How far the shade spreads from where things meet (scales the radii)");
         RegisterFloatSetting(&g.p.protect, "protegerLuz", SettingWidget::Slider, 0.5f, 0.0f, 1.0f, "Lamp-lit and bright spots keep this share of their light");
-        RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High"});
-        RegisterBoolSetting(&g.p.debugView, "debugView", false, "Show the shade alone in grey");
+        RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High", "Ultra", "Very Low"});
     }
 
     bool Install() override {
@@ -781,21 +788,27 @@ class AmbientOcclusionPatch : public ApexPatch {
 
         changed |= ApexUi::SliderPercent("Strength", &g.p.strength, 0.0f, 2.0f, "How dark the shade gets where things meet; 100% is the recommended look",
                                          kDefaults.strength);
+        // Quality: shown from the lightest to the smoothest; the saved value keeps 2.1.0's indices (kQualityShown)
+        static const char* const kQualities[] = {"Very Low", "Low", "Medium", "High", "Ultra"};
+        static const char* const kQualityTips[] = {"Lightest; a little more shimmer while the camera moves", "Light", "Balanced",
+                                                   "The default", "Steadiest while the camera moves; costs the most"};
+        int shown = 3;
+        for (int i = 0; i < kQualityCount; i++)
+            if (kQualityShown[i] == g.p.quality) shown = i;
+        if (ApexUi::SegmentedRow("Quality", "Lower is lighter on the graphics card", "##Quality", &shown, kQualities, kQualityCount, kQualityTips, nullptr, 3)) {
+            g.p.quality = kQualityShown[std::clamp(shown, 0, kQualityCount - 1)];
+            changed = true;
+        }
         if (ApexUi::BeginAdvanced("Advanced##AmbientOcclusion")) {
             changed |= ApexUi::SliderPercent("Reach", &g.p.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet", kDefaults.reach);
             changed |= ApexUi::SliderPercent("Keep lamp light", &g.p.protect, 0.0f, 1.0f, "Lamp-lit and bright spots keep more of their light; 0% shades everything alike",
                                              kDefaults.protect);
-            static const char* const kQualities[] = {"Low", "Medium", "High"};
-            static const char* const kQualityTips[] = {"Fastest", "Smoother", "The default"};
-            changed |= ApexUi::SegmentedRow("Quality", "Higher is smoother and costs a bit more", "##Quality", &g.p.quality, kQualities, 3, kQualityTips, nullptr,
-                                            kDefaults.quality);
+            ApexUi::SwitchRow("Show the shade alone", &g.showShade, "Shows only the shade, in grey, to see what it does while you adjust it (not saved)");
             ApexUi::EndAdvanced();
         }
         if (ApexUi::IconTextButton("Reset Ambient Occlusion##AmbientOcclusion", IconId::RotateCcw, "Back to the recommended shade")) {
             ApexUi::ReportChange("Ambient Occlusion reset");
-            const bool debugView = g.p.debugView; // a Developer view, not part of the look
             g.p = Params{};
-            g.p.debugView = debugView;
             changed = true;
         }
         if (changed) NotifySettingChanged();
@@ -806,14 +819,13 @@ class AmbientOcclusionPatch : public ApexPatch {
         SAFE_IMGUI_BEGIN();
         ImGui::TextWrapped("Status: %s", g.status.c_str());
         if (g.ready) {
-            if (g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame (%d slices)", g.gpuMs, kQualitySlices[std::clamp(g.p.quality, 0, 2)]);
+            if (g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame (%d slices)", g.gpuMs, kQualitySlices[std::clamp(g.p.quality, 0, kQualityCount - 1)]);
             ImGui::TextDisabled("Frames shaded: %u  |  screen %ux%u, depth pyramid %ux%u (%d levels)", g.frames, g.width, g.height, g.padW, g.padH, kLevels);
             ImGui::TextDisabled("Camera: near %.3f m, A %.6f, tan %.4f x %.4f (%s)", g.lastNear, g.lastA, g.lastTanX, g.lastTanY,
                                 g.lastCamera ? "read this frame" : "fallback");
         }
-        bool changed = ImGui::Checkbox("Show the shade alone", &g.p.debugView);
-        ApexUi::Tooltip("Shows the ambient occlusion in grey instead of the image: white = no shade");
-        if (changed) NotifySettingChanged();
+        ImGui::Checkbox("Show the shade alone", &g.showShade);
+        ApexUi::Tooltip("Shows the ambient occlusion in grey instead of the image: white = no shade (not saved)");
     }
 };
 
@@ -823,10 +835,10 @@ APEX_REGISTER_FEATURE(AmbientOcclusionPatch,
                                       "Computed at full resolution with no noise, so it stays still when the camera does. Works with the game's own Edge "
                                       "Smoothing turned off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Graphics",
-                       .experimental = true,
                        .supportedVersions = VERSION_ALL,
                        .technicalDetails = {"Reads the INTZ scene depth shared by the Depth Blur module (kept running even with Depth Blur off).",
-                                            "GTAO at full resolution, deterministic: 8 slices x 4 geometric steps per side over a 9-level 1/z pyramid read "
-                                            "trilinearly, contact and large horizons, 4x4 Bayer interleave cancelled by a 4x4 box, then a tent.",
+                                            "GTAO at full resolution, deterministic: 2 to 12 slices (quality) x 4 geometric steps per side over a 9-level "
+                                            "1/z pyramid read bilinearly within the nearest level, contact and large horizons, 4x4 Bayer interleave "
+                                            "cancelled by a 4x4 box, then a tent.",
                                             "Composite: dead zone, Jimenez multi-bounce per channel, lamp-lit pixels keep part of their light.",
                                             "Runs first in the PostScene chain (before edge smoothing and Depth Blur); saves/restores only the states it touches."}})

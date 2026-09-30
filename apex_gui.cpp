@@ -592,7 +592,7 @@ void GameEdgeSmoothingNote(const char* forWhat) {
 
 void AmbientOcclusionContent() {
     GameEdgeSmoothingNote("Ambient Occlusion");
-    ApexUi::IconNote(IconId::Info, "Experimental: the look may still change in the next versions");
+    ApexUi::IconNote(IconId::Gauge, "Heavier on the graphics card than other effects: lower the Quality if the game slows down");
     ApexUi::Gap(ApexUi::kSpace1);
     FeatureCard("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade under furniture, in corners and around houses");
 }
