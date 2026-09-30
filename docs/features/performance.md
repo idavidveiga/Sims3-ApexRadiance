@@ -1086,6 +1086,13 @@ game's walk.
 
 ## Pitfalls and risks
 
+- **A lot lighting budget with the camera still too (tried 30/09, reverted the same day, commits 25b3ca4 / its revert):**
+  the steady budgets (15 / 5 ms) scaled to 8 ms with the camera still, the lamp boost, lots in their first 10 s after
+  loading and the tool mode left alone. In game (7 min, much of it in Build mode): the 14-16 ms "Lot room solve" hitches
+  fell from 12% to 1% of them, but the 8-12 ms ones stayed (the solve overshoots its budget by one step), and the user
+  saw lamps moved in Build mode update their light more slowly (moving a lamp is not a switch, so no boost; the budget
+  function's `+0x4D` flag is the lot thumbnail's forced quality, `0x00ADC180` from UI/ThumbnailManager, not a Build mode
+  flag). Small gain, visible cost: do not bring it back without a real Build-mode or lamp-moved signal.
 - **Stale answer after a silent file change (C1, INFERRED risk):** a read-only package whose file changes on disk
   without the watcher noticing, or a closed read-only package re-targeted with SetLocation (slot +0x2C, only allowed while
   closed; only seen at registration) would change what the game finds without a notice. Bounded by the 60 s entry age
