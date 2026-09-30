@@ -515,7 +515,7 @@ APEX_REGISTER_FEATURE(FastCasSortPatch,
                                       "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                        .experimental = true,
-                       .enabledByDefault = true,
+                       .enabledByDefault = false,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The CAS model builder's triangle sort (0x5D1960, \"CAS/ModelBuilder/TriangleSortDataList\") is answered by a rewrite with the "
                                             "same arithmetic: vertex positions computed once, four vertices per SSE instruction, the triangles split over worker threads, "
