@@ -159,5 +159,14 @@ bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 // temp / constant.
 enum class DitherResult { Ok, NotPs30, NoColorWrite, Subroutines, RelativeConstants, NoFreeRegister, Unreadable };
 DitherResult AddDither(std::vector<DWORD>& t, int* amountConst = nullptr);
+// The same grain for ps_2_0 / ps_2_x, which have no vPos: the pixel position comes from TEXCOORDk = the clip position
+// (k = the highest texture coordinate the shader does not use, *texcoordOut), written by a copy of the paired vertex shader
+// (AddScreenPosVs(vs, k)). cA = (amount, width / 2, height / 2, 0), set per draw. The copy is ps_2_x (more slots and
+// temps: the grain does not fit in some ps_2_0). Refused: no free texture coordinate, temp or constant (32), subroutines.
+// The end writes oC0 once, fully.
+DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst = nullptr, int* texcoordOut = nullptr);
+// vs_1_1 / vs_2_x: every write to oPos goes to a free temp, then oPos and oTk = that position. False when oTk is
+// already written, no free temp, subroutines, or another version (vs_3_0 pairs with ps_3_0 only).
+bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord);
 
 } // namespace ShaderPatches

@@ -81,6 +81,7 @@ HRESULT CallOriginalSetVertexShaderConstantF(IDirect3DDevice9* device, UINT star
 HRESULT CallOriginalSetPixelShaderConstantF(IDirect3DDevice9* device, UINT start, const float* data, UINT count);
 HRESULT CallOriginalSetPixelShader(IDirect3DDevice9* device, IDirect3DPixelShader9* shader);
 HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* device, const DWORD* function, IDirect3DPixelShader9** shader);
+HRESULT CallOriginalCreateVertexShader(IDirect3DDevice9* device, const DWORD* function, IDirect3DVertexShader9** shader);
 HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* device, IDirect3DVertexShader9* shader);
 HRESULT CallOriginalSetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9* texture);
 

@@ -1894,4 +1894,95 @@ DitherResult AddDither(std::vector<DWORD>& t, int* amountConst) {
     if (amountConst) *amountConst = static_cast<int>(cA);
     return DitherResult::Ok;
 }
+
+DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst, int* texcoordOut) {
+    if (t.empty() || (t[0] != 0xFFFF0200 && t[0] != 0xFFFF0201)) return DitherResult::NotPs30;
+    if (t.back() != 0x0000FFFFu) return DitherResult::Unreadable;
+    const auto ins = Parse(t);
+    if (ins.empty()) return DitherResult::Unreadable;
+    constexpr DWORD kDp2add = 0x5A, kFrc = 0x13, kCall = 0x19, kCallnz = 0x1A, kRet = 0x1C, kLabel = 0x1E;
+    constexpr DWORD kAbs = 0x23, kRsq = 0x07, kRcp = 0x06, kCmp = 0x58;
+    constexpr DWORD kRegBits = 0x70001800u | 0x7FFu;
+    std::vector<size_t> writes;
+    unsigned usedT = 0; // texture coordinates the shader declares or reads
+    for (const Ins& x : ins) {
+        if (x.op == kCall || x.op == kCallnz || x.op == kRet || x.op == kLabel) return DitherResult::Subroutines;
+        if (x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; k++) {
+            const DWORD r = t[x.at + k];
+            if (!(r & 0x80000000u)) continue;
+            if (Type(r) == kTexture && Num(r) < 8) usedT |= 1u << Num(r);
+            if (x.op != kDcl && Type(r) == kColorOut && Num(r) == 0) writes.push_back(x.at + k);
+        }
+    }
+    if (writes.empty()) return DitherResult::NoColorWrite;
+    int free = -1; // the highest texture coordinate the shader does not use
+    for (int k = 7; k >= 0 && free < 0; k--)
+        if (!(usedT & (1u << k))) free = k;
+    if (free < 0) return DitherResult::NoFreeRegister;
+    const DWORD kT = static_cast<DWORD>(free);
+    const Usage u = Scan(t, ins);
+    // the copy is ps_2_x (more temps and instruction slots than ps_2_0: the grain does not fit in some ps_2_0 shaders)
+    if (u.maxTemp + 2 >= 32 || u.maxConst + 3 >= 32) return DitherResult::NoFreeRegister;
+    const DWORD O = static_cast<DWORD>(u.maxTemp + 1), N = O + 1, cK = static_cast<DWORD>(u.maxConst + 1), cL = cK + 1, cA = cK + 2;
+    for (size_t at : writes) t[at] = (t[at] & ~kRegBits) | (Reg(kTemp, O) & kRegBits); // oC0 -> rO, same mask and modifiers
+    std::vector<Edit> edits;
+    edits.push_back({1, {Op(kDef, 5), Dst(kConst, cK), F(0.06711056f), F(0.00583715f), F(0.0f), F(52.9829189f),
+                         Op(kDef, 5), Dst(kConst, cL), F(2.0f), F(-1.0f), F(1.0f), F(0.0f),
+                         Op(kDcl, 2), 0x80000000u, Dst(kTexture, kT)}});
+    // pixel = (ndc.x * w/2 + w/2, -ndc.y * h/2 + h/2), ndc = t7.xy / t7.w; then the same triangular grain as AddDither.
+    // One constant per instruction (ps_2_0).
+    std::vector<DWORD> tail = {Op(kRcp, 2), Dst(kTemp, N, 0x8), Src(kTexture, kT, kSwzW),
+                               Op(kMul, 3), Dst(kTemp, N, 0x3), Src(kTemp, N, kSwzW), Src(kTexture, kT),
+                               Op(kMad, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzY), Src(kConst, cA, kSwzY),
+                               Op(kMad, 4), Dst(kTemp, N, 0x2), Neg(Src(kTemp, N, kSwzY)), Src(kConst, cA, 0xAA), Src(kConst, cA, 0xAA),
+                               Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kTemp, N), Src(kConst, cK), Src(kConst, cK, 0xAA),
+                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
+                               Op(kMul, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cK, kSwzW),
+                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
+                               Op(kMad, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzX), Src(kConst, cL, kSwzY),
+                               Op(kAbs, 2), Dst(kTemp, N, 0x2), Src(kTemp, N, kSwzX),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x2), Neg(Src(kTemp, N, kSwzY)), Src(kConst, cL, 0xAA),
+                               Op(kRsq, 2), Dst(kTemp, N, 0x4), Src(kTemp, N, kSwzY),
+                               Op(kRcp, 2), Dst(kTemp, N, 0x4), Src(kTemp, N, 0xAA),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x4), Neg(Src(kTemp, N, 0xAA)), Src(kConst, cL, 0xAA),
+                               Op(kCmp, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kTemp, N, 0xAA), Neg(Src(kTemp, N, 0xAA)),
+                               Op(kMad, 4), Dst(kTemp, O, 0x7), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzX), Src(kTemp, O),
+                               Op(kMov, 2), Dst(kColorOut, 0), Src(kTemp, O)};
+    edits.push_back({t.size() - 1, tail});
+    Apply(t, std::move(edits));
+    t[0] = 0xFFFF0201; // ps_2_x
+    if (amountConst) *amountConst = static_cast<int>(cA);
+    if (texcoordOut) *texcoordOut = free;
+    return DitherResult::Ok;
+}
+
+bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord) {
+    if (t.empty() || (t[0] != 0xFFFE0101 && t[0] != 0xFFFE0200 && t[0] != 0xFFFE0201)) return false;
+    if (t.back() != 0x0000FFFFu) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    constexpr DWORD kRastOut = 4, kCall = 0x19, kCallnz = 0x1A, kRet = 0x1C, kLabel = 0x1E;
+    constexpr DWORD kRegBits = 0x70001800u | 0x7FFu;
+    if (texcoord < 0 || texcoord > 7) return false;
+    const DWORD kT = static_cast<DWORD>(texcoord);
+    std::vector<size_t> writes;
+    for (const Ins& x : ins) {
+        if (x.op == kCall || x.op == kCallnz || x.op == kRet || x.op == kLabel) return false;
+        if (x.op == kDcl || x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; k++) {
+            const DWORD r = t[x.at + k];
+            if (!(r & 0x80000000u)) continue;
+            if (Type(r) == kOutput && Num(r) == kT) return false; // that oT is the game's
+            if (Type(r) == kRastOut && Num(r) == 0) writes.push_back(x.at + k);
+        }
+    }
+    if (writes.empty()) return false;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 1 >= 12) return false;
+    const DWORD P = static_cast<DWORD>(u.maxTemp + 1);
+    for (size_t at : writes) t[at] = (t[at] & ~kRegBits) | (Reg(kTemp, P) & kRegBits); // oPos -> rP
+    Apply(t, {{t.size() - 1, {Op(kMov, 2), Dst(kRastOut, 0), Src(kTemp, P), Op(kMov, 2), Dst(kOutput, kT), Src(kTemp, P)}}});
+    return true;
+}
 } // namespace ShaderPatches
