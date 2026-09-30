@@ -508,7 +508,8 @@ parts 1-2 still install and the log says "Calculo por ponto nao confere; sem som
   `0000C007` / `00000006` object; Refresh the lighting did not help): that object is story 2's CEILING layer (world level 3,
   byte `+0x234` = 0, the attic's outline), which names story 2 as well; the pairing took whichever of the two objects was
   noted last, so leaving and entering the lot sometimes "fixed" it. `LevelFor` now keeps only the story's own floor
-  (`LevelOwnFloor`), and F8 lists every object naming each story ("its floor" / "the ceiling layer").
+  (`LevelOwnFloor`), and F8 lists every object naming each story ("its floor" / "the ceiling layer"). Confirmed in game by the user
+  (30/09, build e3fab9d4: the walls above the double-height room lit at once).
 
 ## Testing in game
 
