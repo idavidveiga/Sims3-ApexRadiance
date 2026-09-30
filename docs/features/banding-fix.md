@@ -40,7 +40,24 @@ In game (30/09 evening): "on many walls it changed almost nothing"; the magenta 
 copies made in the session, so most scene draws were not covered. The magenta view was replaced by "Show covered surfaces"
 (a coarse 24-step grain on covered draws only) and the dev build logs the coverage every 20 s (first 12 times):
 `[SceneDither] Last frame, 3D scene draws: N dithered, M ps_2_x (no pixel position), K ps_3_0 refused, L other | ...`.
-**Open: are the walls ps_2_x?** If so, the next step is a ps_2_x path (a VS copy that passes the screen position).
+The log then answered it: in the world 123-130 scene draws per frame were dithered and 166-172 were ps_2_x (0 ps_3_0
+refused): more than half of the scene, the walls among them, drew with ps_2_x shaders.
+
+## ps_2_x path (30/09 evening, 53d1091)
+
+ps_2_x has no `vPos`. `ShaderPatches::AddDither2` reads the clip position from TEXCOORDk (k = the highest texture
+coordinate the pixel shader does not use), computes the pixel `(ndc.x w/2 + w/2, -ndc.y h/2 + h/2)` (w, h from the
+viewport, in the amount constant: `(amount, w/2, h/2, 0)`), then the same triangular grain; one constant per instruction
+(ps_2_0 rule), the end writes `oC0` once. The copy is **ps_2_x** (`0xFFFF0201`): the grain does not fit the 64 arithmetic
+slots of some ps_2_0 (519 of 2308 failed as ps_2_0). `AddScreenPosVs(vs, k)` redirects every `oPos` write to a free temp
+and writes it to `oPos` and `oTk` (vs_1_1 / vs_2_x only: vs_3_0 pairs with ps_3_0). At creation the vertex copy for k = 7
+is made; other k at the first draw. At the draw both copies are bound (a ps_2_x copy without a vertex copy = not
+covered, counted as "vertex shader").
+
+Offline (`scratchpad/dither/dithertest2.cpp`, native D3D9): ps_2_0 2996 / 3104 patched and created (108 with no free
+texture coordinate, temp or constant); vs_2_0 4035 / 4338 (2961 with t7, 1074 with a lower k; 303 refused); a grey drawn
+through a patched vs_2_0 + ps_2_0 pair gives the same means and triangle as ps_3_0 (20.355 / 63.971 / 100.657).
+In-game coverage: the dev log line `[SceneDither] Last frame, 3D scene draws: ...` (first 12 times, every 20 s).
 
 ## How it works (`features/scene_dither.cpp`, `ShaderPatches::AddDither`)
 
