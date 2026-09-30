@@ -149,6 +149,7 @@ class LotLightingMotionPatch : public ApexPatch {
     LotLightingMotionPatch() : ApexPatch(Performance::kLotLightingName, nullptr) {
         // TOML key: never rename
         RegisterIntSetting(&budgetMs_, "budgetWhileMovingMs", Performance::kLotLightingBudgetDefault, 1, 15, "Lot lighting time while moving (ms)");
+        RegisterIntSetting(&stillMs_, "budgetWhenStillMs", Performance::kLotLightingStillDefault, 1, 15, "Lot lighting time when still (ms)");
         g_lotPatch.store(this);
     }
     ~LotLightingMotionPatch() override { g_lotPatch.store(nullptr); }
@@ -157,6 +158,7 @@ class LotLightingMotionPatch : public ApexPatch {
         if (isEnabled) return true;
         lastError.clear();
         LotLightingMotion::SetBudgetMs(budgetMs_);
+        LotLightingMotion::SetStillBudgetMs(stillMs_);
         std::string error;
         if (!LotLightingMotion::Start(&error)) return Fail(error);
         isEnabled = true;
@@ -176,6 +178,7 @@ class LotLightingMotionPatch : public ApexPatch {
     void Update() override {
         pendingReinstall = false;
         LotLightingMotion::SetBudgetMs(budgetMs_);
+        LotLightingMotion::SetStillBudgetMs(stillMs_);
     }
 
     void RenderCustomUI() override {} // the Performance card draws the rows
@@ -190,8 +193,18 @@ class LotLightingMotionPatch : public ApexPatch {
         NotifySettingChanged(); // saved (Update clears the reinstall request)
     }
 
+    int StillBudgetMs() const { return stillMs_; }
+    void SetStillBudgetMs(int ms) {
+        ms = std::clamp(ms, 1, 15);
+        if (ms == stillMs_) return;
+        stillMs_ = ms;
+        LotLightingMotion::SetStillBudgetMs(ms);
+        NotifySettingChanged();
+    }
+
   private:
     int budgetMs_ = Performance::kLotLightingBudgetDefault;
+    int stillMs_ = Performance::kLotLightingStillDefault;
 };
 
 class FastTextureCompressionPatch;
@@ -363,6 +376,15 @@ void Performance::SetLotLightingBudgetMs(int ms) {
     if (LotLightingMotionPatch* p = g_lotPatch.load()) p->SetBudgetMs(ms);
 }
 
+int Performance::LotLightingStillMs() {
+    LotLightingMotionPatch* p = g_lotPatch.load();
+    return p ? p->StillBudgetMs() : kLotLightingStillDefault;
+}
+
+void Performance::SetLotLightingStillMs(int ms) {
+    if (LotLightingMotionPatch* p = g_lotPatch.load()) p->SetStillBudgetMs(ms);
+}
+
 bool Performance::FastTextureSeveralCores() {
     FastTextureCompressionPatch* p = g_texPatch.load();
     return p ? p->SeveralCores() : true;
@@ -441,15 +463,18 @@ APEX_REGISTER_FEATURE(WallShadingWhileMovingPatch,
                        .gameCodeGroup = "WallShadingWhileMoving"});
 
 APEX_REGISTER_FEATURE(LotLightingMotionPatch,
-                      {.displayName = "Lot Lighting While Moving",
-                       .description = "While the camera moves, lots relight in smaller steps each frame instead of taking up to 15 ms at once, so panning over busy "
-                                      "neighborhoods stutters less. Lights finish as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                      {.displayName = "Spread Lot Lighting",
+                       .description = "Lots relight in smaller steps each frame instead of taking up to 15 ms at once: while the camera moves, and for the "
+                                      "background relights when it is still. The light itself is the same, it is only spread over a few more frames. Lamps you "
+                                      "switch and lots you just entered still light up at once. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The lot lighting update's budget call (0xADB95D -> 0xADB120) goes through Apex: while the camera eye moved in the last 300 ms, "
                                             "the budget is scaled so the current lot gets the chosen ms and every other lot the same fraction of its own.",
+                                            "Camera still: only the steady budgets (15 ms current lot, 5 ms others) are scaled to the still time; a lot with a "
+                                            "loading budget in the last 10 s, and every lot for a moment after a lamp switched, keep the game's own.",
                                             "Tool mode (1000 ms) is never changed; nothing is skipped, the room solves resume next frame."},
                        .gameCodeGroup = "LotLightingMotion"});
 

@@ -388,7 +388,7 @@ void OverviewPage() {
         OverviewPatchRow("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean, smooth edges on the world", PageDisplay, &g_displayTab, DisplayAntiAliasing);
         OverviewPatchRow(Performance::kResourceCacheName, IconId::Gauge, "Faster File Lookups", "Fewer small stutters when things load", PagePerformance);
         OverviewPatchRow(Performance::kRoomLightQueueName, IconId::Gauge, "Faster Room Lighting", "Rooms light up sooner on lots and floors", PagePerformance);
-        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
+        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Spread Lot Lighting", "Lots relight in small steps instead of all at once", PagePerformance);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -697,7 +697,7 @@ void PerformanceCard() {
             FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has", true);
         FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes", true);
         FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors", true);
-        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves", true)) {
+        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting", "Lots relight in small steps instead of all at once", true)) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());
             char value[16];
             std::snprintf(value, sizeof value, "%d ms", Performance::LotLightingBudgetMs());
@@ -708,6 +708,15 @@ void PerformanceCard() {
             o.rightLabel = "Lights sooner";
             o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
+            float still = static_cast<float>(Performance::LotLightingStillMs());
+            std::snprintf(value, sizeof value, "%d ms", Performance::LotLightingStillMs());
+            ApexUi::SliderOptions so;
+            so.tooltip = "With the camera still; 15 ms is the game's own. Lamps you switch still light at once";
+            so.valueText = value;
+            so.leftLabel = "Smoother";
+            so.rightLabel = "Lights sooner";
+            so.defaultValue = static_cast<float>(Performance::kLotLightingStillDefault);
+            if (ApexUi::Slider("Lot lighting time when still", &still, 1.0f, 15.0f, so)) Performance::SetLotLightingStillMs(static_cast<int>(std::lround(still)));
         }
         FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop", true);
         if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures", true)) {

@@ -48,16 +48,20 @@ const I18n::Entry kEntries[] = {
      "Pendant que la caméra bouge, l'ombrage doux des murs extérieurs des terrains tout juste chargés attend que la caméra s'arrête (ou deux "
      "secondes), et jamais plus d'une passe de murs par image : survoler un quartier en cours de chargement saccade moins. Fait partie d'"
      APEX_PRODUCT_NAME ". Crédits : @loinyx"},
-    {"While the camera moves, lots relight in smaller steps each frame instead of taking up to 15 ms at once, so panning over busy "
-     "neighborhoods stutters less. Lights finish as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
-     "Enquanto a câmera se move, os lotes são reiluminados em passos menores a cada quadro em vez de levar até 15 ms de uma vez, então "
-     "mover a câmera sobre bairros cheios trava menos. As luzes terminam assim que a câmera para. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Mientras la cámara se mueve, los solares se reiluminan en pasos más pequeños cada fotograma en lugar de tomar hasta 15 ms de golpe, "
-     "así que recorrer barrios concurridos da menos tirones. Las luces terminan en cuanto la cámara se detiene. Parte de " APEX_PRODUCT_NAME
+    {"Lots relight in smaller steps each frame instead of taking up to 15 ms at once: while the camera moves, and for the "
+     "background relights when it is still. The light itself is the same, it is only spread over a few more frames. Lamps you "
+     "switch and lots you just entered still light up at once. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Os lotes são reiluminados em passos menores a cada quadro em vez de levar até 15 ms de uma vez: enquanto a câmera se move e, com "
+     "ela parada, nas reiluminações de fundo. A luz é a mesma, só é distribuída por alguns quadros a mais. Luzes que você liga ou desliga "
+     "e lotes em que você acabou de entrar continuam acendendo na hora. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Los solares se reiluminan en pasos más pequeños cada fotograma en lugar de tomar hasta 15 ms de golpe: mientras la cámara se mueve "
+     "y, con ella quieta, en las reiluminaciones de fondo. La luz es la misma, solo se reparte en unos fotogramas más. Las luces que "
+     "enciendes o apagas y los solares en los que acabas de entrar se siguen iluminando al instante. Parte de " APEX_PRODUCT_NAME
      ". Créditos: @loinyx",
-     "Pendant que la caméra bouge, les terrains se rééclairent par petites étapes à chaque image au lieu de prendre jusqu'à 15 ms d'un coup : "
-     "survoler des quartiers animés saccade moins. L'éclairage se termine dès que la caméra s'arrête. Fait partie d'" APEX_PRODUCT_NAME
-     ". Crédits : @loinyx"},
+     "Les terrains se rééclairent par petites étapes à chaque image au lieu de prendre jusqu'à 15 ms d'un coup : pendant que la caméra "
+     "bouge et, caméra immobile, pour les rééclairages de fond. La lumière est la même, elle est seulement étalée sur quelques images de "
+     "plus. Les lampes que vous allumez ou éteignez et les terrains où vous venez d'entrer s'éclairent toujours aussitôt. Fait partie d'"
+     APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Compresses the textures the game builds while you play (terrain, Sims, lot views, thumbnails) several times faster, with "
      "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
      "Comprime as texturas que o jogo cria enquanto você joga (terreno, Sims, vistas de lotes, miniaturas) várias vezes mais rápido, com "

@@ -25,6 +25,10 @@ inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered defaul
 // "Lot lighting time while moving" (ms, 1..15): the saved setting; Set saves it and applies it at once
 int LotLightingBudgetMs();
 void SetLotLightingBudgetMs(int ms);
+// "Lot lighting time when still" (ms, 1..15, 15 = the game's own; key budgetWhenStillMs, 30/09): the same, camera still
+inline constexpr int kLotLightingStillDefault = 8;
+int LotLightingStillMs();
+void SetLotLightingStillMs(int ms);
 
 // "Use several cores" under Faster texture compression ([patches.FastTextureCompression] useSeveralCores, default on):
 // the saved setting; Set saves it and applies it to the next texture

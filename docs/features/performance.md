@@ -65,8 +65,9 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 |---|---|---|---|---|---|
 | "Faster game file lookups" / "Fewer small stutters when objects and textures load" | `[patches.ResourceLookupCache] enabled` | bool | **false** | - | Experimental. Off until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. |
 | "Faster room lighting" / "Rooms light up sooner when you enter a lot or change floors" | `[patches.RoomLightQueue] enabled` | bool | **true** | - | Experimental (added 2026-09-29). Overview row "Faster Room Lighting". See "How it works: Faster Room Lighting". |
-| "Spread lot lighting while moving" / "Lots relight in small steps while the camera moves" | `[patches.LotLightingMotion] enabled` | bool | **true** | - | |
+| "Spread lot lighting" / "Lots relight in small steps instead of all at once" (until 30/09 "Spread lot lighting while moving"; overview row "Spread Lot Lighting") | `[patches.LotLightingMotion] enabled` | bool | **true** | - | |
 | "Lot lighting time while moving" (shown while the switch is on) / "The current lot's time per frame while moving; 3 ms is the default" | `[patches.LotLightingMotion] budgetWhileMovingMs` | int | **3** | 1-15 | ms; end labels "Smoother" / "Lights sooner"; 15 = the game's own. Applied live (the hook reads it every call; `Update` clears the reinstall request). Never rename the key. |
+| "Lot lighting time when still" (shown while the switch is on) / "With the camera still; 15 ms is the game's own. Lamps you switch still light at once" | `[patches.LotLightingMotion] budgetWhenStillMs` | int | **8** | 1-15 | ms (30/09); 15 = the game's own. Only the steady budgets (15 / 5 ms) are scaled; a lot with a loading budget in the last 10 s and every lot during a lamp boost keep the game's. Applied live. Never rename the key. |
 | "Remember missing files" (shown while "Faster game file lookups" is on) / "Skips repeated searches for files no package has" | `[patches.ResourceLookupMisses] enabled` | bool | **false** | - | Experimental. Idle ("Waiting: needs Faster game file lookups") while the lookup cache is off. Includes the write epochs. |
 | "Faster file lists" / "Fewer stutters when Sims load outfits and shapes" | `[patches.FileListCache] enabled` | bool | **false** | - | Experimental. Independent of the lookup cache. |
 | "Wall shading waits while moving" / "Walls of new lots get their shading when you stop" | `[patches.WallShadingWhileMoving] enabled` | bool | **true** | - | Independent of "Spread lot lighting while moving" (it shares its camera detection). |
@@ -350,6 +351,14 @@ several rooms per frame (frames, extra solves, finished, ms)" and the game's own
   a stale eye after a quiet spell no longer reads as a false "moving" (round3.md section 2.3).
 - The Frame Profiler keeps both its lot lighting targets (the entry of 0x00ADB8F0, Detours; the CALL 0x00ADB9AD): other
   bytes. Its "Lot room solve" calls now receive the scaled budget.
+- **Camera still (30/09, `budgetWhenStillMs`, default 8 ms):** measured in game (30/09, 13 sessions): 677 of the 820
+  "Lot room solve" hitches came with the camera still, mostly 5-15 ms (the priority lot's steady 15 ms spent in one frame;
+  background relights: LOD raises, the indoor light between stories, stale-lamp regathers, Faster Room Lighting). With the
+  camera still the hook now scales only the steady budgets (exactly 15 or 5 ms) by `stillMs / 15` (15 -> 8, 5 -> 2.7 ms).
+  Left at the game's own: any other budget (a lot loading: 30 / 10 ms) and, for 10 s after its last loading budget, that
+  lot (`NoteLoading` / `RecentlyLoaded`, 32 lot managers remembered, the budget call's thread only), so entering a lot
+  lights it at the game's pace; every lot while a lamp boost runs (a lamp switched); the tool mode (>= 100 ms). The light
+  maps come out the same, only over more frames. Not measured in game yet.
 
 ## How it works: Wall Shading While Moving (round 3, section 2)
 
