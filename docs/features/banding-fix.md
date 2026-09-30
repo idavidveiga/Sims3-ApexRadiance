@@ -1,8 +1,8 @@
 # Banding Fix (scene dither)
 
 > Removes the colour steps (banding) of smooth gradients in the 3D world: lamp pools on walls and floors, room light
-> fall-off, shadows. Patch name `SceneDither`, menu Image > Color (the first card) and an Overview row, on by default,
-> no options. Added 30/09/2026 on the user's report ("the colours are not uniform, mainly where there is light"; an
+> fall-off, shadows. Patch name `SceneDither`, menu Image > Color (the first card) and an Overview row, on by default;
+> one setting, Strength (`forca`, 0.5 - 3 steps, default 1). Added 30/09/2026 on the user's report ("the colours are not uniform, mainly where there is light"; an
 > interior wall showed rings around a lamp's pool of light). **First in-game test pending** (build 57a0a09d).
 
 ## Why the rings
@@ -13,6 +13,20 @@ ring; an OLED shows them sharply. Measured on lossless captures (`cor_1/2/6.bmp`
 lifted blacks or clipped range); in smooth dark areas 64-89% of neighbour steps are 1 level and 11-36% are 2 or more.
 Wide gamut (the user's AW3225QF is DCI-P3) is not the cause: the game outputs sRGB, and reaching P3 would need an HDR /
 scRGB output.
+
+## Settings
+
+| UI label | TOML key | Type | Default | Range | Notes |
+|---|---|---|---|---|---|
+| (card switch) | `enabled` | bool | true | | |
+| Strength | `forca` | float | 1.0 | 0.5 - 3 | peak of the triangular grain in 8-bit steps; set per draw in the copy's amount constant |
+| Developer > Show surfaces without the fix in magenta | (not saved) | bool | false | | scene draws with no copy drawn flat magenta (a magenta shader of the same version) |
+
+The first build (30/09, 57a0a09d) used a uniform grain of +-0.5 step; the user found it "a little better, not 100%". Since
+7d5615d the grain is triangular (TPDF: the inverse CDF of the triangular distribution applied to the IGN value), which
+leaves no noise modulation. GPU check (`scratchpad/dither/tpdftest.cpp`): a grey of 20.40 / 100.70 levels comes out as
+20.355 / 100.657 on average (20 / 101 without), the level weights follow the triangle (about 1/8, 3/4, 1/8 on a level).
+The AO composite adds the same grain (it rounds to 8 bits again).
 
 ## How it works (`features/scene_dither.cpp`, `ShaderPatches::AddDither`)
 
