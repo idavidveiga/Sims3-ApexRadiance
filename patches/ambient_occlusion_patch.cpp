@@ -775,6 +775,21 @@ class AmbientOcclusionPatch : public ApexPatch {
     // Settings are read live every frame, never reinstall (that would tear down the depth swap from the wrong thread)
     void Update() override { pendingReinstall = false; }
 
+    // Settings revision (user rule, 30/09: whenever the AO changes, the players' AO settings go back to the new defaults
+    // by themselves). Configs and profiles saved with an older revision load the defaults; the on/off state is kept.
+    void SaveToToml(toml::table& table) const override {
+        ApexPatch::SaveToToml(table);
+        table.insert_or_assign(kRevisionKey, kSettingsRevision);
+    }
+    bool LoadFromToml(const toml::table& table) override {
+        if (Revision(table) >= kSettingsRevision) return ApexPatch::LoadFromToml(table);
+        LOG_INFO(std::format("[AO] Settings of revision {} reset to the defaults of revision {}", Revision(table), kSettingsRevision));
+        const bool ok = ApexPatch::LoadFromToml(WithDefaults(table));
+        PatchManager::Get().SetUnsavedChanges(true); // saved again with the current revision
+        return ok;
+    }
+    void ApplyTableLive(const toml::table& table) override { ApexPatch::ApplyTableLive(Revision(table) >= kSettingsRevision ? table : WithDefaults(table)); }
+
     float GpuCostMs() const override { return (isEnabled.load() && g.ready && g.gpuMs >= 0.0f) ? g.gpuMs : -1.0f; }
 
     // The card's controls (menu: Image > Ambient Occlusion page). Settings are read live every frame.
@@ -814,6 +829,21 @@ class AmbientOcclusionPatch : public ApexPatch {
         if (changed) NotifySettingChanged();
     }
 
+  private:
+    // Bump with every change of the AO's look or options. 1 = 2.1.0 (saved no key), 2 = 30/09 (bilinear march, five
+    // qualities, shade preview).
+    static constexpr int kSettingsRevision = 2;
+    static constexpr const char* kRevisionKey = "revisao";
+    static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
+    // The defaults, with the table's on/off state
+    toml::table WithDefaults(const toml::table& table) const {
+        toml::table d;
+        DefaultsToToml(d);
+        if (const auto on = table["enabled"].value<bool>()) d.insert_or_assign("enabled", *on);
+        return d;
+    }
+
+  public:
     // Developer page > Debug views
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
