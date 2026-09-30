@@ -117,36 +117,6 @@ std::atomic_flag g_sampling; // clear (C++20 default)
 std::atomic<uint64_t> g_lastMoveTick{0};
 std::atomic<uint64_t> g_boostUntil{0}; // GetTickCount64 until which the game's own budget is kept (a lamp just switched)
 
-// Camera still (30/09): the steady budgets (15 ms priority lot, 5 ms others) scaled to g_stillMs / 15, except for a lot that
-// loaded in the last kLoadGraceMs (entering a lot lights it at the game's pace) and while boosted (a lamp switched)
-constexpr float kOtherMs = 5.0f;         // the game's budget for an ordinary lot (constant 0x00FBD498)
-constexpr uint64_t kLoadGraceMs = 10000; // a lot keeps the game's pace this long after its last loading budget
-std::atomic<int> g_stillMs{15};
-struct LoadNote {
-    void* mgr;
-    uint64_t at;
-};
-LoadNote g_loads[32] = {}; // the lot lighting thread only (the budget call)
-std::atomic<uint32_t> c_stillScaled{0};
-void NoteLoading(void* mgr, uint64_t now) {
-    LoadNote* free = nullptr;
-    LoadNote* oldest = &g_loads[0];
-    for (LoadNote& n : g_loads) {
-        if (n.mgr == mgr) {
-            n.at = now;
-            return;
-        }
-        if (!n.mgr || now - n.at > kLoadGraceMs) free = free ? free : &n;
-        if (n.at < oldest->at) oldest = &n;
-    }
-    *(free ? free : oldest) = {mgr, now};
-}
-bool RecentlyLoaded(void* mgr, uint64_t now) {
-    for (const LoadNote& n : g_loads)
-        if (n.mgr == mgr) return now - n.at <= kLoadGraceMs;
-    return false;
-}
-
 // Once-per-frame camera sample and frame counter (Present), while either part is on
 constexpr const char* kPresentHookName = "LotLightingMotion";
 bool g_presentRegistered = false; // guarded by g_ctrl
@@ -235,19 +205,10 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     float out = game;
     // a lamp just switched on or off: the rooms relight at the game's own pace for a moment, even while moving
     const bool boosted = now < g_boostUntil.load(std::memory_order_relaxed);
-    // a lot loading (any budget but the steady 15 / 5 ms) keeps the game's pace when still, and for kLoadGraceMs after
-    const bool steady = std::fabs(game - kPriorityMs) < 0.01f || std::fabs(game - kOtherMs) < 0.01f;
-    if (!steady && game > 0.0f && game < kLeaveAloneMs) NoteLoading(mgr, now);
     if (!boosted && MovingAt(now) && game > 0.0f && game < kLeaveAloneMs) {
         const float scaled = game * (static_cast<float>(g_budgetMs.load(std::memory_order_relaxed)) / kPriorityMs);
         out = std::max(kMinMs, std::min(game, scaled));
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
-    } else if (!boosted && steady) { // camera still: the background relights of a lot that is not loading, in smaller steps
-        const int still = g_stillMs.load(std::memory_order_relaxed);
-        if (still < static_cast<int>(kPriorityMs) && !RecentlyLoaded(mgr, now)) {
-            out = std::max(kMinMs, std::min(game, game * (static_cast<float>(still) / kPriorityMs)));
-            if (out < game) c_stillScaled.fetch_add(1, std::memory_order_relaxed);
-        }
     }
     g_lastGame.store(std::bit_cast<uint32_t>(game), std::memory_order_relaxed);
     g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
@@ -515,8 +476,6 @@ void Stop() {
 bool Running() { return g_on.load(std::memory_order_acquire); }
 
 void SetBudgetMs(int ms) { g_budgetMs.store(std::clamp(ms, 1, 15)); }
-void SetStillBudgetMs(int ms) { g_stillMs.store(std::clamp(ms, 1, 15)); }
-int StillBudgetMs() { return g_stillMs.load(); }
 
 void Boost(unsigned ms) {
     const uint64_t until = GetTickCount64() + ms;
@@ -536,9 +495,7 @@ bool SampleCameraMoving() {
 std::string StatusText() {
     if (!Running()) return "Off";
     if (!c_calls.load()) return "On (no lot lighting work yet)";
-    if (CameraMoving()) return std::format("Camera moving: the current lot's lights get {} ms per frame", g_budgetMs.load());
-    return g_stillMs.load() < static_cast<int>(kPriorityMs) ? std::format("Camera still: {} ms per frame (lamps switched and lots just entered: the game's own)", g_stillMs.load())
-                                                             : std::string("Camera still: the game's own lot lighting budget");
+    return CameraMoving() ? std::format("Camera moving: the current lot's lights get {} ms per frame", g_budgetMs.load()) : std::string("Camera still: the game's own lot lighting budget");
 }
 
 void RenderDeveloperUI() {
@@ -550,8 +507,8 @@ void RenderDeveloperUI() {
     ImGui::TextDisabled("Call %#010x -> %#010x; camera eye [[%#010x]+0x%X]+0x%X (%s); last camera move %s; frames sampled %u", static_cast<unsigned>(g_call),
                         static_cast<unsigned>(g_budgetFn), static_cast<unsigned>(g_rootGlobal), g_camOff, g_eyeOff, g_haveEye ? "read" : "not readable now",
                         last ? std::format("{:.1f} s ago", static_cast<double>(now - last) / 1000.0).c_str() : "never", g_frame.load());
-    ImGui::TextDisabled("Budget calls %u, scaled while moving %u, scaled while still %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(),
-                        c_scaled.load(), c_stillScaled.load(), c_eyeFails.load(), Bits(g_lastGame.load()), Bits(g_lastOut.load()));
+    ImGui::TextDisabled("Budget calls %u, scaled while moving %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(), c_scaled.load(), c_eyeFails.load(),
+                        Bits(g_lastGame.load()), Bits(g_lastOut.load()));
 }
 
 // ---- wall shading gate ----

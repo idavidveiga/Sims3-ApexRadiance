@@ -24,11 +24,6 @@ bool Running();
 // The priority lot's budget while the camera moves, in ms (1..15; 15 = the game's own)
 void SetBudgetMs(int ms);
 int BudgetMs();
-// The same with the camera still (30/09), for the steady budgets only (15 ms priority lot, 5 ms others, scaled alike): a
-// lot that loaded in the last 10 s and a boost (a lamp switched) keep the game's own. 15 = the game's own (the default
-// here; the patch sets its saved value)
-void SetStillBudgetMs(int ms);
-int StillBudgetMs();
 // For the next `ms` milliseconds every lot keeps the game's own lighting budget even while the camera moves (a lot lamp
 // was switched on or off: its rooms relight at once instead of over many frames). Any thread.
 void Boost(unsigned ms);
