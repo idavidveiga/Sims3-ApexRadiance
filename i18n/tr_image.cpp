@@ -308,6 +308,40 @@ const I18n::Entry kEntries[] = {
     {"Back to the default focus, blur and look", "Volta ao foco, desfoque e visual padrão", "Vuelve al enfoque, desenfoque y aspecto predeterminados",
      "Retour à la mise au point, au flou et au rendu par défaut"},
     {"Depth Blur reset", "Desfoque de Profundidade restaurado", "Desenfoque de Profundidad restablecido", "Flou de Profondeur réinitialisé"},
+
+    // ---- Image > Ambient Occlusion (ambient_occlusion_patch.cpp; "Strength", "Quality", "Low", "Medium", "High", "Fastest",
+    // "Smoother", "The default" and the Quality description are above) ----
+    {"Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. "
+     "Computed at full resolution with no noise, so it stays still when the camera does. Works with the game's own Edge "
+     "Smoothing turned off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Sombra suave onde as coisas se encontram: sob os móveis, nos cantos, onde a parede encontra o chão e em volta de casas e "
+     "árvores. Calculada em resolução cheia e sem ruído, então fica parada quando a câmera para. Funciona com a Suavização de "
+     "Bordas do próprio jogo desligada. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Sombra suave donde las cosas se juntan: bajo los muebles, en las esquinas, donde la pared toca el suelo y alrededor de casas "
+     "y árboles. Calculada a resolución completa y sin ruido, así que queda quieta cuando la cámara se detiene. Funciona con el "
+     "Suavizado de Bordes del propio juego desactivado. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Une ombre douce là où les choses se rencontrent : sous les meubles, dans les coins, là où les murs touchent le sol et autour "
+     "des maisons et des arbres. Calculée en pleine résolution et sans bruit, elle reste immobile quand la caméra l'est. "
+     "Fonctionne avec le Lissage des Bords du jeu désactivé. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"How dark the shade gets where things meet; 100% is the recommended look",
+     "Quão escura a sombra fica onde as coisas se encontram; 100% é o visual recomendado",
+     "Qué tan oscura queda la sombra donde las cosas se juntan; 100% es el aspecto recomendado",
+     "L'intensité de l'ombre là où les choses se rencontrent ; 100 % est le rendu recommandé"},
+    {"Reach", "Alcance", "Alcance", "Portée"},
+    {"How far the shade spreads from where things meet", "Até onde a sombra se espalha a partir de onde as coisas se encontram",
+     "Hasta dónde se extiende la sombra desde donde las cosas se juntan", "Jusqu'où l'ombre s'étend depuis là où les choses se rencontrent"},
+    {"Keep lamp light", "Manter a luz das lâmpadas", "Conservar la luz de las lámparas", "Garder la lumière des lampes"},
+    {"Lamp-lit and bright spots keep more of their light; 0% shades everything alike",
+     "Pontos iluminados por lâmpadas e claros mantêm mais da sua luz; 0% sombreia tudo igual",
+     "Los puntos iluminados por lámparas y los claros conservan más de su luz; 0% sombrea todo por igual",
+     "Les zones éclairées par les lampes et les zones claires gardent plus de leur lumière ; 0 % ombre tout de la même façon"},
+    {"Reset Ambient Occlusion", "Restaurar Oclusão de Ambiente", "Restablecer Oclusión Ambiental", "Réinitialiser l'Occlusion Ambiante"},
+    {"Back to the recommended shade", "Volta à sombra recomendada", "Vuelve a la sombra recomendada", "Retour à l'ombre recommandée"},
+    {"Ambient Occlusion reset", "Oclusão de Ambiente restaurada", "Oclusión Ambiental restablecida", "Occlusion Ambiante réinitialisée"},
+    {"the graphics card cannot use the float textures it needs", "a placa de vídeo não consegue usar as texturas de ponto flutuante necessárias",
+     "la tarjeta gráfica no puede usar las texturas de coma flotante que necesita", "la carte graphique ne peut pas utiliser les textures flottantes nécessaires"},
+    {"not enough video memory for the shade textures", "memória de vídeo insuficiente para as texturas da sombra",
+     "memoria de video insuficiente para las texturas de la sombra", "mémoire vidéo insuffisante pour les textures de l'ombre"},
     // Color: why it is on but not applied (Picture::Problem)
     {"Color is on but is not being applied: {}", "A Cor está ligada, mas não está sendo aplicada: {}", "El Color está activado, pero no se está aplicando: {}",
      "La Couleur est activée, mais n'est pas appliquée : {}"},

@@ -146,6 +146,7 @@
     <ClCompile Include="framework\s3ss_detect.cpp" />
     <ClCompile Include="framework\shader_cache.cpp" />
     <ClCompile Include="framework\slot_chain.cpp" />
+    <ClCompile Include="patches\ambient_occlusion_patch.cpp" />
     <ClCompile Include="patches\depth_blur_patch.cpp" />
     <ClCompile Include="patches\edge_smoothing_patch.cpp" />
     <ClCompile Include="patches\frame_capture_patch.cpp" />

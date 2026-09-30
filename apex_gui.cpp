@@ -57,7 +57,7 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
 enum WaterSnowTab : int { WaterTab, SnowTab };
 enum DisplayTab : int { DisplayWindow, DisplayAntiAliasing };
@@ -378,6 +378,7 @@ void OverviewPage() {
             }
             if (nameClicked) Go(PageColor);
         }
+        OverviewPatchRow("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade where things meet", PageAmbientOcclusion);
         OverviewPatchRow("DepthBlur", IconId::Aperture, "Depth Blur", "Softly blurs the distant background", PageDepthBlur);
         ApexUi::OverviewRow("Borderless", IconId::AppWindow, "Borderless", "Play without a window frame", kBorderlessDescription, nullptr, true, BorderlessModeText(),
                             &nameClicked);
@@ -587,6 +588,20 @@ void GameEdgeSmoothingNote(const char* forWhat) {
     ApexUi::Gap(ApexUi::kSpace1);
 }
 
+// ---- Image > Ambient Occlusion ----
+
+void AmbientOcclusionContent() {
+    GameEdgeSmoothingNote("Ambient Occlusion");
+    ApexUi::IconNote(IconId::Info, "Experimental: the look may still change in the next versions");
+    ApexUi::Gap(ApexUi::kSpace1);
+    FeatureCard("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade under furniture, in corners and around houses");
+}
+
+void AmbientOcclusionPage() {
+    ApexUi::PageTitle("Ambient Occlusion", "Soft shade where things meet");
+    AmbientOcclusionContent();
+}
+
 // ---- Image > Depth Blur ----
 
 void DepthBlurContent() {
@@ -772,6 +787,8 @@ void DevDebugViewsTab() {
     DevCard("DebugEdge", IconId::Bug, "Edge Smoothing", "Status, GPU cost, smoothed pixels in red", edge && edge->IsEnabled(), [edge] { edge->RenderDeveloperUI(); });
     ApexPatch* blur = Find("DepthBlur");
     DevCard("DebugBlur", IconId::Bug, "Depth Blur", "Status, focus, GPU cost, blur amount view", blur && blur->IsEnabled(), [blur] { blur->RenderDeveloperUI(); });
+    ApexPatch* ao = Find("AmbientOcclusion");
+    DevCard("DebugAo", IconId::Bug, "Ambient Occlusion", "Status, GPU cost, camera, the shade alone", ao && ao->IsEnabled(), [ao] { ao->RenderDeveloperUI(); });
     DevCard("DebugPicture", IconId::Bug, "Picture", "Technical note and GPU cost", true, [] { Picture::Get().RenderDeveloperUI(); });
 }
 
@@ -1312,6 +1329,7 @@ const SearchPart* SearchParts(int& count) {
         {"Color", "Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},
         {"Color", "Color", PageColor, &g_colorTab, Picture::TabColor, [] { PictureRows(Picture::TabColor); }},
         {"Color", "Detail", PageColor, &g_colorTab, Picture::TabDetail, [] { PictureRows(Picture::TabDetail); }},
+        {"Ambient Occlusion", nullptr, PageAmbientOcclusion, nullptr, 0, AmbientOcclusionContent},
         {"Depth Blur", nullptr, PageDepthBlur, nullptr, 0, DepthBlurContent},
         {"Display", "Window", PageDisplay, &g_displayTab, DisplayWindow, BorderlessCard},
         {"Display", "Anti-aliasing", PageDisplay, &g_displayTab, DisplayAntiAliasing, AntiAliasingContent},
@@ -1574,6 +1592,7 @@ void Sidebar(bool collapsed) {
         {PageLighting, IconId::MoonStar, "Lighting", "WORLD"},
         {PageWaterSnow, IconId::WavesHorizontal, "Water & Snow", nullptr},
         {PageColor, IconId::Palette, "Color", "IMAGE"},
+        {PageAmbientOcclusion, IconId::Contrast, "Ambient Occlusion", nullptr},
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageDisplay, IconId::Monitor, "Display", "SYSTEM"},
         {PagePerformance, IconId::Gauge, "Performance", nullptr},
@@ -1621,6 +1640,7 @@ void DrawPage() {
     case PageLighting: LightingPage(); break;
     case PageWaterSnow: WaterSnowPage(); break;
     case PageColor: ColorPage(); break;
+    case PageAmbientOcclusion: AmbientOcclusionPage(); break;
     case PageDepthBlur: DepthBlurPage(); break;
     case PageDisplay: DisplayPage(); break;
     case PagePerformance: PerformancePage(); break;
@@ -1885,12 +1905,13 @@ void Banner() {
     ImGui::End();
 }
 
-// ---- "Apex Radiance is ready · press <key>" with the logo in the top-right corner for 10 s at every start (never takes
-// input). 30/09, user: "the label that should show every time the game opens, saying the mod is installed, does not show":
-// it used to show only until the menu was first opened (afterwards a faint name in the bottom-right corner for 5 s, drawn
-// as soon as the terrain was, often still under the load screen). Now the full note at every start, kHintDelayMs after the
-// world is on screen, until the menu is opened or the time is up. ----
-constexpr unsigned long long kHintMs = 10000;
+// ---- The start note (user's pick 30/09, "A · compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
+// menu key in light violet, in a dark rounded pill with a faint violet border, top-left corner, 8 s at every start (never
+// takes input; fades out). 30/09, user: "it should always show when the game opens": it waits for the world on screen
+// (NightLighting::WorldLive, which since 6e1cee4 needs a loaded lot: the old fallback went live at the main menu, showed
+// it there and never again), then kHintDelayMs; it shows even when the menu was opened before (at the main menu), and
+// opening the menu ends it. ----
+constexpr unsigned long long kHintMs = 8000;
 constexpr unsigned long long kHintDelayMs = 3000;
 
 // Render thread, every frame (Client::AlwaysDraw): starts the note once per start, when the features run and the world shows
@@ -1910,37 +1931,57 @@ void UpdateHint() {
         g_keySetup = true; // the menu key first (the hint follows once it is picked)
         return;
     }
-    if (!g_menuEverOpened) g_hintUntil.store(now + kHintMs); // every start
+    if (!Overlay::IsVisible()) g_hintUntil.store(now + kHintMs); // every start
 }
 
-bool HintVisible() { return !g_menuEverOpened && GetTickCount64() < g_hintUntil.load(); }
+bool HintVisible() { return GetTickCount64() < g_hintUntil.load(); }
 
 void Hint() {
     const unsigned long long now = GetTickCount64(), until = g_hintUntil.load();
     const float left = static_cast<float>(until > now ? until - now : 0) / 1000.0f;
     const float fade = std::fmin(1.0f, left / 0.8f); // fades out over the last 0.8 s
-    const std::string text = I18n::Trf(APEX_PRODUCT_NAME " is ready \xC2\xB7 press {}", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle));
+    const std::string ready = I18n::Tr(APEX_PRODUCT_NAME " is ready");
+    const std::string press = I18n::Tr("press");
+    const std::string key = ApexConfig::KeyChordText(ApexConfig::GetUi().toggle);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float u = ApexUi::Unit();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - 20.0f * u, vp->Pos.y + 20.0f * u), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.92f);
+    const float lineH = ImGui::GetTextLineHeight();
+    const float logo = std::round(lineH * 1.6f); // 26 px beside 16 px text, as the mock-up
+    const float padY = 7.0f * u, padX = 12.0f * u;
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 20.0f * u, vp->Pos.y + 20.0f * u), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace2 * u));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, (logo + 2.0f * padY) * 0.5f); // a pill
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(VioletTheme::kWindowBg, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(VioletTheme::kAccentLight, 0.18f));
     if (ImGui::Begin("##ApexHint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float lineH = ImGui::GetTextLineHeight();
-        const float logo = lineH * 1.5f; // the logo; the sparkles icon when it could not be made
-        ImGui::Dummy(ImVec2(logo, lineH));
-        if (!ApexUi::DrawLogo(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + (lineH - logo) * 0.5f), ImVec2(p.x + logo, p.y + (lineH + logo) * 0.5f), ImGui::GetStyle().Alpha)) {
+        ImGui::Dummy(ImVec2(logo, logo));
+        if (!ApexUi::DrawLogo(dl, p, ImVec2(p.x + logo, p.y + logo), ImGui::GetStyle().Alpha)) { // the sparkles icon when the logo could not be made
             const float is = ApexUi::kIconSmall * u;
-            ApexUi::DrawIcon(ImGui::GetWindowDrawList(), IconId::Sparkles, ImVec2(p.x, p.y + (lineH - is) * 0.5f), is, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+            ApexUi::DrawIcon(dl, IconId::Sparkles, ImVec2(p.x + (logo - is) * 0.5f, p.y + (logo - is) * 0.5f), is, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
         }
-        ImGui::SameLine(0.0f, 6.0f * u);
-        ImGui::TextUnformatted(text.c_str());
+        // the texts, centred on the logo
+        const float textY = ImGui::GetCursorPosY() - logo - ImGui::GetStyle().ItemSpacing.y + (logo - lineH) * 0.5f;
+        auto part = [&](const char* s, ImVec4 c, bool bold, float gap) {
+            ImGui::SameLine(0.0f, gap);
+            ImGui::SetCursorPosY(textY);
+            if (bold && VioletTheme::BoldFont()) ImGui::PushFont(VioletTheme::BoldFont(), 0.0f);
+            ImGui::TextColored(c, "%s", s);
+            if (bold && VioletTheme::BoldFont()) ImGui::PopFont();
+        };
+        part(ready.c_str(), Col(VioletTheme::kText), true, 10.0f * u);
+        part("\xC2\xB7", Col(VioletTheme::kText, 0.45f), false, 8.0f * u);
+        part(press.c_str(), Col(VioletTheme::kText, 0.8f), false, 8.0f * u);
+        part(key.c_str(), Col(VioletTheme::kAccentLight), true, 6.0f * u);
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(5);
 }
 
 // ---- First start: the menu key is picked from three ready choices (user, 30/09: laptops often have the F keys behind Fn) ----
@@ -2255,7 +2296,7 @@ void KeyNoteWindow() {
     ImGui::PopStyleVar();
 }
 
-// ---- Compare with the game (its shortcut): Night Lighting, Depth Blur, Edge Smoothing and the picture filters off, then
+// ---- Compare with the game (its shortcut): Night Lighting, Ambient Occlusion, Depth Blur, Edge Smoothing and the picture filters off, then
 // back as they were. Not saved: the features are installed / removed directly, and the picture filters are set without a
 // save (a setting saved meanwhile from the menu could store them off: the menu is closed while comparing, normally).
 bool g_comparing = false;
@@ -2264,7 +2305,7 @@ bool g_comparePicture = false;
 void ToggleCompare() {
     if (!g_comparing) {
         g_comparePaused.clear();
-        for (const char* name : {"NightTerrainRelight", "DepthBlur", "EdgeSmoothing"})
+        for (const char* name : {"NightTerrainRelight", "AmbientOcclusion", "DepthBlur", "EdgeSmoothing"})
             if (ApexPatch* p = Find(name); p && p->IsEnabled() && p->Uninstall()) g_comparePaused.push_back(p);
         PictureParams pp = Picture::Get().GetParams();
         g_comparePicture = pp.enabled;
@@ -2365,6 +2406,7 @@ class GuiClient final : public Overlay::Client {
             return;
         }
         g_menuEverOpened = true;
+        g_hintUntil.store(0); // opening the menu ends the start note
         // The welcome tour was removed (user, 30/09): the shortcuts note of the first start and Settings cover it
         if (!g_tourChecked) { // the first open ends the "press <key>" corner hint for good
             g_tourChecked = true;
