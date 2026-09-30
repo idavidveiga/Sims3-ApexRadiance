@@ -32,6 +32,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 using namespace RefPackCodec;
 
@@ -247,6 +249,47 @@ uint32_t CheckOne(Context& ctx, const std::vector<uint8_t>& src, Kind k, uint32_
     return r;
 }
 
+// Segmented compression + checks: the stream checks of CheckOne, and the same bytes when the pieces are parsed in reverse
+// order on two alternating contexts (as threads would); returns the stream size (0 on failure)
+std::vector<Token> g_tokA(kMaxSegmentTokens), g_tokB;
+uint32_t CheckSegmented(Context& ctx, Context& ctx2, const std::vector<uint8_t>& src, Kind k, uint32_t flags, const Effort& ef, double* ms) {
+    const uint32_t size = static_cast<uint32_t>(src.size());
+    std::vector<uint8_t> out(static_cast<size_t>(SizeBound(size)) + 64, 0xEE);
+    const double t0 = NowMs();
+    const uint32_t r = CompressSegmented(ctx, src.data(), size, out.data(), 0, flags, ef, g_tokA.data());
+    if (ms) *ms += NowMs() - t0;
+    if (r == kFailed || r > SizeBound(size)) return Fail("segmented compress", k, size, flags, "no stream or larger than the game's bound"), 0;
+    std::string why;
+    if (!Validate(out, r, size, flags, why)) return Fail("segmented stream check", k, size, flags, why), 0;
+    std::vector<uint8_t> back(size + 1, 0xAB);
+    const uint32_t got = Decompress(back.data(), size, out.data(), r);
+    if (got != size || std::memcmp(back.data(), src.data(), size) != 0) return Fail("segmented round trip (game's decoder)", k, size, flags, "decoded data differs"), 0;
+    if (CompressSegmented(ctx, src.data(), size, nullptr, 0, flags, ef, g_tokA.data()) != r) return Fail("segmented counting run", k, size, flags, "size differs"), 0;
+    // pieces parsed last to first, alternating two contexts, then written in order: the same bytes
+    const uint32_t segs = SegmentCount(size);
+    std::vector<std::vector<Token>> toks(segs);
+    std::vector<uint32_t> counts(segs);
+    for (uint32_t s = segs; s-- > 0;) {
+        toks[s].resize(kMaxSegmentTokens);
+        counts[s] = ParseSegment((s & 1) ? ctx2 : ctx, src.data(), size, flags, s, ef, toks[s].data());
+        if (counts[s] > kMaxSegmentTokens) return Fail("segmented tokens", k, size, flags, "more tokens than kMaxSegmentTokens"), 0;
+    }
+    std::vector<uint8_t> out2(out.size(), 0xEE);
+    SegmentEncoder enc;
+    enc.Begin(src.data(), size, out2.data(), 0, flags);
+    for (uint32_t s = 0; s < segs; s++) enc.Add(toks[s].data(), counts[s]);
+    if (enc.End() != r || std::memcmp(out.data(), out2.data(), r) != 0) return Fail("segmented order", k, size, flags, "another parse order gave other bytes"), 0;
+    if (r > 0) { // one byte short: must fail and write nothing past the capacity; exact capacity works
+        std::vector<uint8_t> tight(static_cast<size_t>(r) + 16, 0x5A);
+        if (CompressSegmented(ctx, src.data(), size, tight.data(), r - 1, flags, ef, g_tokA.data()) != kFailed)
+            return Fail("segmented capacity", k, size, flags, "did not report a stream that does not fit"), 0;
+        for (size_t i = r - 1; i < tight.size(); i++)
+            if (tight[i] != 0x5A) return Fail("segmented capacity", k, size, flags, "wrote past the capacity"), 0;
+        if (CompressSegmented(ctx, src.data(), size, tight.data(), r, flags, ef, g_tokA.data()) != r) return Fail("segmented capacity", k, size, flags, "exact capacity refused"), 0;
+    }
+    return r;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -356,6 +399,95 @@ int main(int argc, char** argv) {
             std::printf("  depth %3d: %.2f MB (%+.2f%% vs game) in %.0f ms (%.1fx faster)\n", depth, out / 1048576.0, 100.0 * (static_cast<double>(out) / gameOut - 1.0), ms,
                         ms > 0 ? gameMs / ms : 0.0);
         }
+    }
+
+    // ---- 6. segmented compression (large streams on several threads in the ASI) ----
+    {
+        std::vector<uint8_t> mem2;
+        Context ctx2 = MakeContext(mem2);
+        uint64_t n = 0;
+        for (int k = 0; k < kKinds; k++)
+            for (uint32_t size = 0; size <= 300; size += 7)
+                for (uint32_t f : kFlags) {
+                    Generate(rng, static_cast<Kind>(k), size, src);
+                    CheckSegmented(ctx, ctx2, src, static_cast<Kind>(k), f, ef, nullptr);
+                    n++;
+                }
+        // around the piece boundaries (a match must never cross one, the last 4 bytes stay literals)
+        for (uint32_t pieces = 1; pieces <= 3; pieces++)
+            for (int d = -9; d <= 9; d++)
+                for (int k : {kZeros, kRuns, kPeriodic, kTexture, kFarRepeats, kText})
+                    for (uint32_t f : kFlags) {
+                        Generate(rng, static_cast<Kind>(k), static_cast<uint32_t>(static_cast<int>(pieces * kSegmentBytes) + d), src);
+                        CheckSegmented(ctx, ctx2, src, static_cast<Kind>(k), f, ef, nullptr);
+                        n++;
+                    }
+        const int buffers = quick ? 30 : 120;
+        uint64_t bytes = 0;
+        for (int i = 0; i < buffers; i++) {
+            const Kind k = static_cast<Kind>(rng.Below(kKinds));
+            const uint32_t size = static_cast<uint32_t>(std::exp(std::log(301.0) + (std::log(6291456.0) - std::log(301.0)) * (rng.Next() / 4294967296.0)));
+            Generate(rng, k, size, src);
+            CheckSegmented(ctx, ctx2, src, k, kFlags[rng.Below(4)], ef, nullptr);
+            bytes += size;
+            n++;
+        }
+        std::printf("\nSegmented: %llu streams checked (%d random up to 6 MB, %.1f MB), %llu failures so far\n", static_cast<unsigned long long>(n), buffers,
+                    static_cast<double>(bytes) / 1048576.0, static_cast<unsigned long long>(g_fail));
+        // size and time against Compress on 5.5 MB streams (flags 2, the caches); the threads: every piece parsed on its own
+        std::printf("  %-14s %9s | %10s %9s | %10s %9s %s\n", "kind", "size", "Compress", "ms", "segmented", "ms (1 thread)", "size");
+        for (int k = 2; k < kKinds; k++) {
+            Generate(rng, static_cast<Kind>(k), 5600000, src);
+            double cms = 0, sms = 0;
+            const uint32_t cs = CheckOne(ctx, src, static_cast<Kind>(k), 2, ef, &cms);
+            const uint32_t ss = CheckSegmented(ctx, ctx2, src, static_cast<Kind>(k), 2, ef, &sms);
+            std::printf("  %-14s %9zu | %10u %9.1f | %10u %9.1f     %+.2f%%\n", kKindName[k], src.size(), cs, cms, ss, sms, cs ? 100.0 * (static_cast<double>(ss) / cs - 1.0) : 0.0);
+        }
+        // real threads (the ASI's rounds: 1 + 6 threads take the pieces of a round, then they are written in order)
+        const uint32_t threads = 7;
+        std::vector<std::vector<uint8_t>> mems(threads);
+        std::vector<Context> ctxs(threads);
+        for (uint32_t t = 0; t < threads; t++) ctxs[t] = MakeContext(mems[t]);
+        std::vector<std::vector<Token>> tok(threads, std::vector<Token>(kMaxSegmentTokens));
+        std::printf("  threaded (%u threads, rounds of %u pieces), same bytes as the serial segmented stream:\n", threads, threads);
+        double serialAll = 0, threadedAll = 0;
+        for (int k = 2; k < kKinds; k++) {
+            Generate(rng, static_cast<Kind>(k), 5600000, src);
+            const uint32_t size = static_cast<uint32_t>(src.size());
+            std::vector<uint8_t> a(static_cast<size_t>(SizeBound(size)) + 64), b(a.size());
+            double t0 = NowMs();
+            const uint32_t ra = CompressSegmented(ctx, src.data(), size, a.data(), 0, 2, ef, g_tokA.data());
+            const double serialMs = NowMs() - t0;
+            t0 = NowMs();
+            SegmentEncoder enc;
+            enc.Begin(src.data(), size, b.data(), 0, 2);
+            const uint32_t pieces = SegmentCount(size);
+            std::vector<uint32_t> counts(threads);
+            for (uint32_t first = 0; first < pieces; first += threads) {
+                const uint32_t count = pieces - first < threads ? pieces - first : threads;
+                std::atomic<uint32_t> next{0};
+                auto work = [&](uint32_t t) {
+                    for (;;) {
+                        const uint32_t i = next.fetch_add(1);
+                        if (i >= count) break;
+                        counts[i] = ParseSegment(ctxs[t], src.data(), size, 2, first + i, ef, tok[i].data());
+                    }
+                };
+                std::vector<std::thread> pool;
+                for (uint32_t t = 1; t < count; t++) pool.emplace_back(work, t);
+                work(0);
+                for (auto& th : pool) th.join();
+                for (uint32_t i = 0; i < count; i++) enc.Add(tok[i].data(), counts[i]);
+            }
+            const uint32_t rb = enc.End();
+            const double threadedMs = NowMs() - t0;
+            serialAll += serialMs;
+            threadedAll += threadedMs;
+            const bool same = ra == rb && std::memcmp(a.data(), b.data(), ra) == 0;
+            if (!same) Fail("threaded segmented", static_cast<Kind>(k), size, 2, "other bytes than the serial run");
+            std::printf("    %-14s serial %7.1f ms, threaded %6.1f ms (thread start included): %s\n", kKindName[k], serialMs, threadedMs, same ? "same bytes" : "DIFFERENT");
+        }
+        std::printf("    total: serial %.0f ms, threaded %.0f ms (%.1fx)\n", serialAll, threadedAll, threadedAll > 0 ? serialAll / threadedAll : 0.0);
     }
 
     // ---- 5. files ----

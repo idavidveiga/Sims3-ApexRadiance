@@ -743,6 +743,24 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 - **Expected (INFERRED, to be measured with `tools/refpack_test` and the dev comparison):** no per-call 768 KB
   allocation or 256 KB clear, and a bounded search instead of the whole chain: 5-20x faster on repetitive data (where
   the hitches are), a few percent larger streams (the caches are size-capped, so slightly earlier evictions).
+- **The counting run's stream, kept for its write (30/09):** measured in game (30/09, 13 sessions): "RefPack compress"
+  was the dominant cause of 81 hitches (10.5 s over the median, max 368 ms), each a counting run and its write of the same
+  stream (the CAS SimService / TextureCompositor caches: 4 calls of ~5.5 MB, ~330 ms, ~65 MB/s). The counting run now
+  compresses into a buffer of its thread (`Held`, SizeBound bytes; up to 1 MB kept, larger ones freed after the write)
+  with the source's CRC-32C (SSE4.2 `crc32`, 4 interleaved lanes, ~0.3 ms per 5 MB); the write of the same source, size,
+  flags and depth copies it when the CRC still matches (else compresses again, as before; no SSE4.2: never copied). The
+  write's checks (decompress and compare) are unchanged.
+- **Large streams on several cores (30/09):** a stream over one piece of `kSegmentBytes` (128 KB) is compressed by the
+  segmented compressor (`ParseSegment` / `SegmentEncoder`): each piece parsed on its own with the hash chains first filled
+  from the window before it and no match past its end, then written in order (literal runs continue across pieces). The
+  bytes depend only on the input, flags and depth, so counting run and write agree whatever thread parsed what, and a
+  stream compressed on the calling thread alone (the pool busy with another thread's stream) is the same. The pool
+  (`ParPool`, the texture encoder's hand-off protocol): `DxtCodec::Parallel::DefaultWorkers()` threads (min(processors -
+  2, 6)), rounds of 2 pieces per thread, the caller parses too and writes each round in order. Memory: 512 KB per worker
+  context and 14 token buffers of 350 KB (on first use, never freed; ~8 MB at most on 8+ processors). Offline
+  (`tools/refpack_test`, 5.6 MB buffers, flags 2): stream size within ±0.13% of `Compress`; one thread 10-20% slower than
+  `Compress` (the window fill per piece); 7 threads 3.8x faster than one (thread start included), same bytes; ~3000
+  segmented streams round-tripped through the game's decoder translation, piece-boundary sizes included.
 
 ## How it works: Spread New Objects Over Frames (C6)
 

@@ -9,6 +9,9 @@
 // reads it), a bounded hash-chain search with lazy matching, and reusable work memory (a pool of 4 x 512 KB, allocated
 // on first use, never freed). Output bytes differ from the game's; the decompressed data is identical.
 //
+// Since 30/09: a counting run keeps its stream (per thread, with the source's CRC-32C) and its write copies it instead
+// of compressing again; streams over 128 KB use the segmented compressor, their pieces parsed on a small pool of worker
+// threads (same bytes whoever parses them; docs/features/performance.md).
 // Hook: the vtable slot through framework/slot_chain.h (the Frame Profiler's "RefPack compress" counter is the outer
 // layer). Calls without a destination: the size bound (flags & 1) passes through; a counting run (the package writer
 // measures a stream before allocating it) is answered by the same compressor that then writes it (per thread, matched by
@@ -47,6 +50,9 @@ struct Stats {
     uint64_t paired = 0;         // writes that followed one of our counting runs
     uint64_t overflows = 0;      // did not fit the capacity: -1 returned
     uint64_t tempContexts = 0;   // all 4 pooled contexts busy: a temporary one was allocated
+    uint64_t reused = 0, reuseMissed = 0;               // writes that copied their counting run's stream; whose source had changed
+    uint64_t large = 0, largeParallel = 0, largeBusy = 0; // streams over one piece; of them on the pool; pool busy (calling thread alone)
+    uint64_t pieces = 0, piecesByWorkers = 0;
     uint64_t checked = 0, mismatches = 0, notCheckable = 0;
     uint64_t compared = 0, comparedGameBytes = 0, comparedFastBytes = 0;
     double comparedGameMs = 0.0, comparedFastMs = 0.0;

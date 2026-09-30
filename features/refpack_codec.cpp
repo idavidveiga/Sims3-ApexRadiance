@@ -375,6 +375,162 @@ uint32_t Compress(Context& ctx, const uint8_t* src, uint32_t size, uint8_t* dst,
     return w.n;
 }
 
+// The parse of Compress on one piece [from, to): the same search, lazy step and positions stored, with the hash chains
+// first filled with the window before the piece, and matches that never end past the piece (nor reach the last 4 bytes
+// of the input, like Compress). Tokens instead of opcodes.
+uint32_t ParseSegment(Context& ctx, const uint8_t* src, uint32_t size, uint32_t flags, uint32_t index, const Effort& effort, Token* out) {
+    if (index >= SegmentCount(size)) return 0;
+    const uint32_t from = index * kSegmentBytes;
+    const uint32_t to = size - from > kSegmentBytes ? from + kSegmentBytes : size;
+    if (from + 4 > (size > 4 ? size - 4 : 0)) return 0; // a tail within the last 4 bytes: only literals (skip the window fill)
+    const Params p = ParamsFor(size, flags);
+    if (ctx.base == 0 || size > 0x7FFFFFF0u || ctx.base > 0xFFFFFFF0u - size) {
+        std::memset(ctx.head, 0, kHeads * sizeof(uint32_t));
+        ctx.base = 1;
+    }
+    const uint32_t base = ctx.base;
+    ctx.base += size + 1;
+    uint32_t* const head = ctx.head;
+    uint32_t* const prev = ctx.prev;
+
+    const uint32_t limit = size > 4 ? size - 4 : 0;
+    const uint32_t end = to < limit ? to : limit; // no match reaches past this
+    const uint32_t window = p.window;
+    const int maxChain = effort.maxChain > 0 ? effort.maxChain : 1;
+    const uint32_t niceLen = effort.niceLen < 4 ? 4 : effort.niceLen;
+
+    auto insert = [&](uint32_t i) {
+        const uint32_t h = Hash4(Load32(src + i));
+        prev[(base + i) & kPrevMask] = head[h];
+        head[h] = base + i;
+    };
+    auto find = [&](uint32_t i, uint32_t& bestLen, uint32_t& bestOff) -> int {
+        bestLen = 0;
+        bestOff = 0;
+        uint32_t maxLen = end - i;
+        if (maxLen > kMaxLen) maxLen = kMaxLen;
+        if (maxLen < 4) return 0; // MatchLen always returns at least 4
+        const uint8_t* cur = src + i;
+        const uint32_t v = Load32(cur);
+        const uint32_t vp = base + i;
+        const uint32_t minVp = i > window ? vp - window : base;
+        uint32_t cand = head[Hash4(v)];
+        int bestGain = 0;
+        for (int d = 0; d < maxChain; d++) {
+            if (cand < minVp || cand >= vp) break;
+            const uint32_t ci = cand - base;
+            const uint8_t* c = src + ci;
+            if (Load32(c) == v && (bestLen == 0 || c[bestLen] == cur[bestLen])) {
+                const uint32_t len = MatchLen(c, cur, maxLen);
+                const uint32_t off = i - ci;
+                const int gain = static_cast<int>(len) - Cost(len, off);
+                if (gain > bestGain) {
+                    bestGain = gain;
+                    bestLen = len;
+                    bestOff = off;
+                    if (len >= niceLen || len >= maxLen) break;
+                }
+            }
+            const uint32_t next = prev[cand & kPrevMask];
+            if (next >= cand) break;
+            cand = next;
+        }
+        return bestGain;
+    };
+
+    for (uint32_t k = from > window ? from - window : 0; k < from && k + 4 <= limit; k++) insert(k); // the window before the piece
+    uint32_t i = from, n = 0;
+    uint32_t curLen = 0, curOff = 0;
+    int curGain = 0;
+    bool haveCur = false;
+    while (i < end && i + 4 <= limit) {
+        if (!haveCur) curGain = find(i, curLen, curOff);
+        haveCur = false;
+        insert(i);
+        if (curGain <= 0) {
+            i++;
+            continue;
+        }
+        if (effort.lazy && curLen < niceLen && i + 1 < end && i + 5 <= limit) {
+            uint32_t nLen, nOff;
+            const int nGain = find(i + 1, nLen, nOff);
+            if (nGain > curGain) {
+                i++;
+                curLen = nLen;
+                curOff = nOff;
+                curGain = nGain;
+                haveCur = true;
+                continue;
+            }
+        }
+        out[n++] = Token{i, (curLen << 17) | (curOff - 1)};
+        const uint32_t e = i + curLen;
+        for (uint32_t k = i + 1; k < e && k + 4 <= limit; k++)
+            if (curLen <= 64 || k < i + 16 || k + 16 >= e || (k & 3) == 0) insert(k);
+        i = e;
+    }
+    return n;
+}
+
+void SegmentEncoder::Begin(const uint8_t* s, uint32_t sz, uint8_t* d, uint32_t capacity, uint32_t flags) {
+    src = s;
+    size = sz;
+    dst = d;
+    cap = capacity;
+    n = 0;
+    litFrom = 0;
+    full = false;
+    const Params p = ParamsFor(size, flags);
+    Writer w{dst, cap};
+    if (!w.Room(2 + p.sizeBytes)) {
+        full = true;
+        return;
+    }
+    w.Byte(p.header >> 8);
+    w.Byte(p.header & 0xFF);
+    for (int i = static_cast<int>(p.sizeBytes) - 1; i >= 0; i--) w.Byte((size >> (8 * i)) & 0xFF);
+    n = w.n;
+}
+
+void SegmentEncoder::Add(const Token* tokens, uint32_t count) {
+    if (full) return;
+    Writer w{dst, cap};
+    w.n = n;
+    for (uint32_t k = 0; k < count; k++) {
+        const uint32_t pos = tokens[k].pos, len = tokens[k].lenOff >> 17, off = (tokens[k].lenOff & 0x1FFFFu) + 1;
+        uint32_t lit = pos - litFrom;
+        if (!FlushLiterals(w, src, litFrom, lit) || !EmitMatch(w, src + litFrom, lit, len, off, Cost(len, off))) {
+            full = true;
+            return;
+        }
+        litFrom = pos + len;
+    }
+    n = w.n;
+}
+
+uint32_t SegmentEncoder::End() {
+    if (full) return kFailed;
+    Writer w{dst, cap};
+    w.n = n;
+    uint32_t rest = size - litFrom;
+    if (!FlushLiterals(w, src, litFrom, rest) || !w.Room(1 + rest)) {
+        full = true;
+        return kFailed;
+    }
+    w.Byte(0xFC + rest);
+    w.Copy(src + litFrom, rest);
+    n = w.n;
+    return n;
+}
+
+uint32_t CompressSegmented(Context& ctx, const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags, const Effort& effort, Token* scratch) {
+    SegmentEncoder enc;
+    enc.Begin(src, size, dst, capacity, flags);
+    const uint32_t segments = SegmentCount(size);
+    for (uint32_t s = 0; s < segments && !enc.full; s++) enc.Add(scratch, ParseSegment(ctx, src, size, flags, s, effort, scratch));
+    return enc.End();
+}
+
 uint32_t Decompress(uint8_t* dst, uint32_t capacity, const uint8_t* src, uint32_t srcSize) {
     if (!src) return 0;
     uint32_t left = srcSize;   // edi

@@ -4,12 +4,15 @@
 // Part of Apex Radiance. Credits: @loinyx
 #include "fast_refpack.h"
 #include "refpack_codec.h"
+#include "dxt_codec.h"
 #include "slot_chain.h"
 #include "game_addresses.h"
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "imgui.h"
 #include <windows.h>
+#include <intrin.h>
+#include <nmmintrin.h>
 #include <atomic>
 #include <cstring>
 #include <format>
@@ -35,6 +38,7 @@ struct Slot {
     RefPackCodec::Context ctx;
     uint8_t* scratch = nullptr;
     uint32_t scratchSize = 0;
+    RefPackCodec::Token* tokens = nullptr; // kMaxSegmentTokens, for a large stream compressed on this thread alone
 };
 Slot g_pool[kPool];
 
@@ -70,11 +74,15 @@ uint64_t Qpc() {
     return static_cast<uint64_t>(q.QuadPart);
 }
 
+// The context and the token buffer of a large stream together: a slot that has one has both, so a counting run and its
+// write always use the same compressor (a slot that cannot get them is not used: the game's compressor answers)
 bool InitSlot(Slot& s) {
-    if (s.mem) return true;
-    s.mem = VirtualAlloc(nullptr, RefPackCodec::ContextBytes(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (s.mem && s.tokens) return true;
+    if (!s.mem) s.mem = VirtualAlloc(nullptr, RefPackCodec::ContextBytes(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!s.mem) return false;
-    RefPackCodec::InitContext(s.ctx, s.mem);
+    if (!s.tokens) s.tokens = static_cast<RefPackCodec::Token*>(VirtualAlloc(nullptr, RefPackCodec::kMaxSegmentTokens * sizeof(RefPackCodec::Token), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!s.tokens) return false;
+    if (!s.ctx.head) RefPackCodec::InitContext(s.ctx, s.mem);
     return true;
 }
 
@@ -86,6 +94,251 @@ Slot* Acquire() {
         return nullptr;
     }
     return nullptr;
+}
+
+// ---- Large streams (more than one piece of RefPackCodec::kSegmentBytes): the segmented compressor, its pieces parsed on
+// the calling thread and a small pool of worker threads. The bytes do not depend on who parsed which piece, so a stream
+// compressed on the calling thread alone (the pool busy with another thread's stream, or no worker) is the same.
+constexpr uint32_t kMaxWorkers = 6;
+constexpr uint32_t kClosed = 0x80000000u;    // ParPool::state: the round takes no more threads
+constexpr uint32_t kCountMask = 0x7FFFFFFFu; // ParPool::state: threads checked in
+constexpr SIZE_T kWorkerStack = 256 * 1024;  // reserved address space per worker (the game is 32-bit)
+constexpr uint32_t kPiecesPerThread = 2;     // pieces per thread and round: faster threads take more (offline: 3.8x vs 3.2x with 1)
+constexpr uint32_t kRoundMax = kPiecesPerThread * (kMaxWorkers + 1);
+
+std::atomic<uint32_t> g_workersMade{0}; // for the developer UI (reading the pool would create it)
+
+struct Round {
+    const uint8_t* src = nullptr;
+    uint32_t size = 0, flags = 0, first = 0, count = 0; // pieces first .. first + count - 1
+    RefPackCodec::Effort effort;
+    RefPackCodec::Token* tokens[kRoundMax] = {}; // one buffer per piece of the round
+    uint32_t counts[kRoundMax] = {};
+    std::atomic<uint32_t> next{0};
+    std::atomic<uint32_t> byWorkers{0};
+};
+
+void RunPieces(Round& r, RefPackCodec::Context& ctx, bool worker) {
+    for (;;) {
+        const uint32_t k = r.next.fetch_add(1, std::memory_order_relaxed);
+        if (k >= r.count) break;
+        r.counts[k] = RefPackCodec::ParseSegment(ctx, r.src, r.size, r.flags, r.first + k, r.effort, r.tokens[k]);
+        if (worker) r.byWorkers.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// Created on the first large stream, never destroyed (the threads sleep until the process ends). The hand-off is the one
+// of the texture encoder's pool (features/dxt_codec.cpp): the caller owns the pool (inUse), writes the round while it is
+// closed, opens it, wakes k workers, parses pieces too, closes it, then waits until no thread is checked in; a worker
+// wakes, checks in, parses pieces only if the round is open, checks out; the one whose check-out makes the count 0 while
+// closed sets `done` (the caller re-checks the count around every wait).
+struct ParPool {
+    std::atomic<bool> inUse{false};
+    std::atomic<uint32_t> state{kClosed};
+    std::atomic<uint32_t> created{0};
+    std::mutex createLock;
+    bool createFailed = false; // guarded by createLock
+    HANDLE done = nullptr;
+    struct Worker {
+        HANDLE wake = nullptr;
+        void* mem = nullptr;
+        RefPackCodec::Context ctx;
+        ParPool* pool = nullptr;
+    } workers[kMaxWorkers];
+    RefPackCodec::Token* tokens[kRoundMax] = {}; // guarded by inUse
+    Round round;
+
+    ParPool() { done = CreateEventW(nullptr, FALSE, FALSE, nullptr); }
+
+    static DWORD WINAPI WorkerMain(void* p) {
+        Worker& w = *static_cast<Worker*>(p);
+        ParPool& pool = *w.pool;
+        for (;;) {
+            if (WaitForSingleObject(w.wake, INFINITE) != WAIT_OBJECT_0) {
+                Sleep(10);
+                continue;
+            }
+            const uint32_t s = pool.state.fetch_add(1, std::memory_order_acq_rel);
+            if (!(s & kClosed)) RunPieces(pool.round, w.ctx, true);
+            if (pool.state.fetch_sub(1, std::memory_order_acq_rel) == (kClosed | 1u)) SetEvent(pool.done);
+        }
+    }
+
+    // At least n workers when possible; returns how many can be used (<= n)
+    uint32_t EnsureWorkers(uint32_t n) {
+        if (n > kMaxWorkers) n = kMaxWorkers;
+        uint32_t have = created.load(std::memory_order_acquire);
+        if (have >= n) return n;
+        std::lock_guard<std::mutex> lock(createLock);
+        have = created.load(std::memory_order_relaxed);
+        if (!done) createFailed = true;
+        using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+        static const auto setDescription = reinterpret_cast<SetDescription>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription"));
+        while (have < n && !createFailed) {
+            Worker& w = workers[have];
+            w.pool = this;
+            w.mem = VirtualAlloc(nullptr, RefPackCodec::ContextBytes(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            w.wake = w.mem ? CreateEventW(nullptr, FALSE, FALSE, nullptr) : nullptr;
+            if (!w.wake) {
+                if (w.mem) VirtualFree(w.mem, 0, MEM_RELEASE);
+                w.mem = nullptr;
+                createFailed = true;
+                break;
+            }
+            RefPackCodec::InitContext(w.ctx, w.mem);
+            // Normal priority on purpose (as the texture encoder's workers): the calling thread waits for this stream
+            const HANDLE h = CreateThread(nullptr, kWorkerStack, &ParPool::WorkerMain, &w, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+            if (!h) {
+                CloseHandle(w.wake);
+                w.wake = nullptr;
+                VirtualFree(w.mem, 0, MEM_RELEASE);
+                w.mem = nullptr;
+                createFailed = true;
+                break;
+            }
+            if (setDescription) setDescription(h, L"Apex RefPack worker");
+            CloseHandle(h); // never joined
+            have++;
+            created.store(have, std::memory_order_release);
+            g_workersMade.store(have, std::memory_order_relaxed);
+        }
+        return have < n ? have : n;
+    }
+
+    // Token buffers for k pieces per round (caller owns the pool)
+    bool EnsureTokens(uint32_t k) {
+        for (uint32_t i = 0; i < k; i++)
+            if (!tokens[i]) {
+                tokens[i] = static_cast<RefPackCodec::Token*>(VirtualAlloc(nullptr, RefPackCodec::kMaxSegmentTokens * sizeof(RefPackCodec::Token), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+                if (!tokens[i]) return false;
+            }
+        return true;
+    }
+};
+
+ParPool& ThePool() {
+    static ParPool* const pool = new ParPool(); // intentionally leaked (see ParPool)
+    return *pool;
+}
+
+std::atomic<uint64_t> c_large{0}, c_largeParallel{0}, c_largeBusy{0}, c_pieces{0}, c_piecesByWorkers{0};
+
+// A large stream: the segmented compressor, on the pool when it is free. Same contract as RefPackCodec::Compress.
+uint32_t CompressLarge(Slot& slot, const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags, const RefPackCodec::Effort& effort) {
+    const uint32_t pieces = RefPackCodec::SegmentCount(size);
+    c_large.fetch_add(1, std::memory_order_relaxed);
+    c_pieces.fetch_add(pieces, std::memory_order_relaxed);
+    auto alone = [&]() -> uint32_t {
+        if (!slot.tokens) slot.tokens = static_cast<RefPackCodec::Token*>(VirtualAlloc(nullptr, RefPackCodec::kMaxSegmentTokens * sizeof(RefPackCodec::Token), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        // out of memory: the plain compressor (a write whose count was segmented may then not fit: -1, the data is stored
+        // uncompressed)
+        if (!slot.tokens) return RefPackCodec::Compress(slot.ctx, src, size, dst, capacity, flags, effort);
+        return RefPackCodec::CompressSegmented(slot.ctx, src, size, dst, capacity, flags, effort, slot.tokens);
+    };
+    const uint32_t want = DxtCodec::Parallel::DefaultWorkers();
+    if (!want || pieces < 2) return alone();
+    ParPool& p = ThePool();
+    if (p.inUse.exchange(true, std::memory_order_acquire)) {
+        c_largeBusy.fetch_add(1, std::memory_order_relaxed);
+        return alone();
+    }
+    uint32_t k = p.EnsureWorkers(want < kMaxWorkers ? want : kMaxWorkers);
+    if (k > pieces - 1) k = pieces - 1;
+    const uint32_t perRound = kPiecesPerThread * (k + 1);
+    if (!k || !p.EnsureTokens(perRound)) {
+        p.inUse.store(false, std::memory_order_release);
+        return alone();
+    }
+    RefPackCodec::SegmentEncoder enc;
+    enc.Begin(src, size, dst, capacity, flags);
+    Round& r = p.round;
+    uint32_t byWorkers = 0;
+    for (uint32_t first = 0; first < pieces && !enc.full; first += perRound) {
+        // written while the state is closed: threads that check in now (late wakes) leave without reading it
+        r.src = src;
+        r.size = size;
+        r.flags = flags;
+        r.effort = effort;
+        r.first = first;
+        r.count = pieces - first < perRound ? pieces - first : perRound;
+        for (uint32_t i = 0; i < r.count; i++) r.tokens[i] = p.tokens[i];
+        r.next.store(0, std::memory_order_relaxed);
+        r.byWorkers.store(0, std::memory_order_relaxed);
+        p.state.fetch_and(~kClosed, std::memory_order_release); // open
+        const uint32_t wake = r.count - 1 < k ? r.count - 1 : k;
+        for (uint32_t i = 0; i < wake; i++) SetEvent(p.workers[i].wake);
+        RunPieces(r, slot.ctx, false); // the caller parses too; when it finds none left, every piece is taken
+        p.state.fetch_or(kClosed, std::memory_order_acq_rel);
+        for (int spin = 0; (p.state.load(std::memory_order_acquire) & kCountMask) != 0; spin++) {
+            if (spin < 4000) _mm_pause();
+            else WaitForSingleObject(p.done, 50);
+        }
+        byWorkers += r.byWorkers.load(std::memory_order_relaxed);
+        for (uint32_t i = 0; i < r.count; i++) enc.Add(r.tokens[i], r.counts[i]);
+    }
+    p.inUse.store(false, std::memory_order_release);
+    c_largeParallel.fetch_add(1, std::memory_order_relaxed);
+    c_piecesByWorkers.fetch_add(byWorkers, std::memory_order_relaxed);
+    return enc.End();
+}
+
+// The fast compressor for any stream: large ones segmented (see above). The size alone decides, so a counting run and its
+// write always use the same one.
+uint32_t CompressAny(Slot& slot, const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags, const RefPackCodec::Effort& effort) {
+    if (size > RefPackCodec::kSegmentBytes) return CompressLarge(slot, src, size, dst, capacity, flags, effort);
+    return RefPackCodec::Compress(slot.ctx, src, size, dst, capacity, flags, effort);
+}
+
+// ---- The counting run's stream, kept for its write ----
+// The package writer measures a stream (no destination), allocates, then writes it: the same compression twice. The
+// counting run now writes into a buffer of this thread and its write copies it, when the source still has the same CRC-32C
+// (checked with the SSE4.2 instruction; without it, or when anything differs, the write compresses again as before).
+constexpr uint32_t kKeepHeld = 1u << 20; // buffers up to 1 MB stay allocated per thread
+struct Held {
+    uint8_t* buf = nullptr;
+    uint32_t cap = 0, len = 0, src = 0, size = 0, flags = 0, crc = 0;
+    int chain = 0;
+    bool valid = false;
+    ~Held() { // the thread ends
+        if (buf) VirtualFree(buf, 0, MEM_RELEASE);
+    }
+};
+thread_local Held t_held;
+std::atomic<uint64_t> c_reused{0}, c_reuseMissed{0};
+
+bool CpuHasCrc32() {
+    static const bool yes = [] {
+        int r[4] = {};
+        __cpuid(r, 1);
+        return (r[2] & (1 << 20)) != 0; // SSE4.2
+    }();
+    return yes;
+}
+
+// CRC-32C of the source, four interleaved lanes (one per 4-byte word of each 16 bytes), then the tail
+uint32_t SourceCrc(const uint8_t* p, uint32_t n) {
+    uint32_t c0 = 0xFFFFFFFFu, c1 = 0x9E3779B9u, c2 = 0x85EBCA6Bu, c3 = 0xC2B2AE35u;
+    uint32_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        uint32_t w[4];
+        std::memcpy(w, p + i, 16);
+        c0 = _mm_crc32_u32(c0, w[0]);
+        c1 = _mm_crc32_u32(c1, w[1]);
+        c2 = _mm_crc32_u32(c2, w[2]);
+        c3 = _mm_crc32_u32(c3, w[3]);
+    }
+    for (; i < n; i++) c0 = _mm_crc32_u8(c0, p[i]);
+    return c0 ^ _rotl(c1, 8) ^ _rotl(c2, 16) ^ _rotl(c3, 24) ^ n;
+}
+
+void DropHeld() {
+    Held& h = t_held;
+    h.valid = false;
+    if (h.buf && h.cap > kKeepHeld) {
+        VirtualFree(h.buf, 0, MEM_RELEASE);
+        h.buf = nullptr;
+        h.cap = 0;
+    }
 }
 
 // Decompresses the stream with the game's decoder and compares it with the source. False only on a real difference.
@@ -155,6 +408,7 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
     Slot* slot = Acquire();
     if (!slot) { // all pooled contexts busy: a temporary one (rare)
         if (!InitSlot(temp)) {
+            if (temp.mem) VirtualFree(temp.mem, 0, MEM_RELEASE); // half made: nothing kept
             if (counting || capacity == 0 || capacity >= RefPackCodec::SizeBound(size)) {
                 if (counting) pr = Pair{src, size, flags, 0, false, true};
                 c_passed.fetch_add(1, std::memory_order_relaxed);
@@ -169,6 +423,7 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
         if (slot == &temp) {
             VirtualFree(temp.mem, 0, MEM_RELEASE);
             if (temp.scratch) VirtualFree(temp.scratch, 0, MEM_RELEASE);
+            if (temp.tokens) VirtualFree(temp.tokens, 0, MEM_RELEASE);
         } else {
             slot->busy.store(false, std::memory_order_release);
         }
@@ -177,9 +432,52 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
     effort.maxChain = chain;
     effort.niceLen = kNiceLen;
     effort.lazy = true;
+    const uint8_t* const s = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(src));
+    uint8_t* const d = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(dst));
     const uint64_t t0 = Qpc();
-    const uint32_t r = RefPackCodec::Compress(slot->ctx, reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(src)), size, reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(dst)),
-                                              capacity, useFlags, effort);
+    uint32_t r = RefPackCodec::kFailed;
+    bool reused = false;
+    Held& h = t_held;
+    if (counting) { // compress into this thread's buffer, kept for the write (else count only, as before)
+        h.valid = false;
+        const uint32_t bound = RefPackCodec::SizeBound(size);
+        if (CpuHasCrc32() && bound > size) {
+            // a buffer larger than needed is kept only while it serves streams that large (a 32-bit game)
+            if (h.buf && (h.cap < bound || (h.cap > kKeepHeld && bound <= kKeepHeld))) {
+                VirtualFree(h.buf, 0, MEM_RELEASE);
+                h.buf = nullptr;
+                h.cap = 0;
+            }
+            if (!h.buf) {
+                const uint32_t want = bound < kKeepHeld ? kKeepHeld : bound;
+                h.buf = static_cast<uint8_t*>(VirtualAlloc(nullptr, want, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+                h.cap = h.buf ? want : 0;
+            }
+            if (h.buf) {
+                const uint32_t crc = SourceCrc(s, size); // before compressing: a source changed meanwhile never matches
+                r = CompressAny(*slot, s, size, h.buf, h.cap, useFlags, effort);
+                if (r != RefPackCodec::kFailed) {
+                    h.len = r, h.src = src, h.size = size, h.flags = useFlags, h.chain = chain;
+                    h.crc = crc;
+                    h.valid = true;
+                }
+            }
+        }
+        if (r == RefPackCodec::kFailed) r = CompressAny(*slot, s, size, nullptr, 0, useFlags, effort);
+    } else {
+        if (h.valid && h.src == src && h.size == size) { // the stream this thread counted last
+            if (h.flags == useFlags && h.chain == chain && SourceCrc(s, size) == h.crc) {
+                r = capacity && capacity < h.len ? RefPackCodec::kFailed : h.len;
+                if (r != RefPackCodec::kFailed) std::memcpy(d, h.buf, r);
+                reused = true;
+                c_reused.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                c_reuseMissed.fetch_add(1, std::memory_order_relaxed);
+            }
+            DropHeld();
+        }
+        if (!reused) r = CompressAny(*slot, s, size, d, capacity, useFlags, effort);
+    }
     const uint64_t t1 = Qpc();
     if (counting) {
         pr = Pair{src, size, flags, chain, true, true};
@@ -213,7 +511,7 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
     }
     finish();
     const int ce = g_compareEvery.load(std::memory_order_relaxed);
-    if (!kPublicBuild && ce > 0 && seq % static_cast<uint32_t>(ce) == 0) { // the game's compressor on the same data, counting only
+    if (!kPublicBuild && !reused && ce > 0 && seq % static_cast<uint32_t>(ce) == 0) { // the game's compressor on the same data, counting only
         const uint64_t g0 = Qpc();
         const uint32_t gs = static_cast<uint32_t>(next(self, edx, src, size, 0, 0, useFlags & ~1u)); // same flags as ours; bit 0 off = compress, not the size bound
         const uint64_t g1 = Qpc();
@@ -307,6 +605,13 @@ Stats GetStats() {
     s.paired = c_paired.load();
     s.overflows = c_overflow.load();
     s.tempContexts = c_temp.load();
+    s.reused = c_reused.load();
+    s.reuseMissed = c_reuseMissed.load();
+    s.large = c_large.load();
+    s.largeParallel = c_largeParallel.load();
+    s.largeBusy = c_largeBusy.load();
+    s.pieces = c_pieces.load();
+    s.piecesByWorkers = c_piecesByWorkers.load();
     s.checked = c_checked.load();
     s.mismatches = c_mismatch.load();
     s.notCheckable = c_notCheckable.load();
@@ -345,6 +650,11 @@ void RenderDeveloperUI() {
     ImGui::TextDisabled("Streams %llu (%.1f ms), counting runs %llu (%.1f ms), writes after our counting run %llu; game's compressor %llu; did not fit (-1) %llu; temporary contexts %llu",
                         static_cast<unsigned long long>(s.streams), s.ms, static_cast<unsigned long long>(s.countingRuns), s.countingMs, static_cast<unsigned long long>(s.paired),
                         static_cast<unsigned long long>(s.passedThrough), static_cast<unsigned long long>(s.overflows), static_cast<unsigned long long>(s.tempContexts));
+    ImGui::TextDisabled("Writes that copied their counting run's stream %llu (source changed since: %llu%s); large streams %llu, on %u worker threads %llu (pool busy: "
+                        "%llu), pieces %llu, by the workers %llu",
+                        static_cast<unsigned long long>(s.reused), static_cast<unsigned long long>(s.reuseMissed), CpuHasCrc32() ? "" : "; no SSE4.2, never copied",
+                        static_cast<unsigned long long>(s.large), g_workersMade.load(), static_cast<unsigned long long>(s.largeParallel),
+                        static_cast<unsigned long long>(s.largeBusy), static_cast<unsigned long long>(s.pieces), static_cast<unsigned long long>(s.piecesByWorkers));
     ImGui::TextDisabled("Checks (%s): %llu equal, %llu different, %llu not checked (no memory); layer %s", s.gameDecoder ? "game's decoder" : "Apex's copy of the decoder",
                         static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.notCheckable),
                         s.installed ? "installed" : "not installed");

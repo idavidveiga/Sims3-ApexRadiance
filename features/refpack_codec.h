@@ -67,6 +67,36 @@ struct Effort {
 // and kFailed is returned when the stream does not fit. Returns the stream size (header included).
 uint32_t Compress(Context& ctx, const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags, const Effort& effort = Effort{});
 
+// ---- Segmented compression: large inputs on several threads ----
+// The input is cut into kSegmentBytes pieces. Each piece is parsed on its own (ParseSegment: its matches may point into
+// the window before it, never past its end), in any order and on any thread, into tokens; a SegmentEncoder then writes
+// the stream from the tokens, piece after piece, in order. Same header, window, opcodes and stop as Compress (literal
+// runs simply continue across pieces). The bytes depend only on the input, the flags and the effort, never on which
+// thread parsed which piece, so a counting run and the write give the same stream. Not the same bytes as Compress (each
+// piece starts a fresh parse; the size differs by a fraction of a percent).
+constexpr uint32_t kSegmentBytes = 128 * 1024;
+constexpr uint32_t kMaxSegmentTokens = kSegmentBytes / 3 + 2; // a match is at least 3 bytes
+struct Token {
+    uint32_t pos;    // where the match starts in the input
+    uint32_t lenOff; // length << 17 | (offset - 1)
+};
+inline uint32_t SegmentCount(uint32_t size) { return (size + kSegmentBytes - 1) / kSegmentBytes; }
+// The tokens of piece `index` (at most kMaxSegmentTokens) into `out`; returns their count. One context per thread.
+uint32_t ParseSegment(Context& ctx, const uint8_t* src, uint32_t size, uint32_t flags, uint32_t index, const Effort& effort, Token* out);
+// Writes the stream: Begin, Add each piece's tokens in order, End (returns the stream size, or kFailed when it does not
+// fit a non-zero capacity; nothing is ever written past dst + capacity). dst == nullptr counts.
+struct SegmentEncoder {
+    uint8_t* dst = nullptr;
+    uint32_t cap = 0, n = 0, litFrom = 0, size = 0;
+    const uint8_t* src = nullptr;
+    bool full = false;
+    void Begin(const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags);
+    void Add(const Token* tokens, uint32_t count);
+    uint32_t End();
+};
+// The whole segmented compression on the calling thread (the reference for the threaded version, and its fallback)
+uint32_t CompressSegmented(Context& ctx, const uint8_t* src, uint32_t size, uint8_t* dst, uint32_t capacity, uint32_t flags, const Effort& effort, Token* scratch);
+
 // 0x004EB3B0 translated: the header's size, 0 on any error (the checks are the game's)
 uint32_t Decompress(uint8_t* dst, uint32_t capacity, const uint8_t* src, uint32_t srcSize);
 
