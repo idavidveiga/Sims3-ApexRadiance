@@ -761,6 +761,10 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   (`tools/refpack_test`, 5.6 MB buffers, flags 2): stream size within ±0.13% of `Compress`; one thread 10-20% slower than
   `Compress` (the window fill per piece); 7 threads 3.8x faster than one (thread start included), same bytes; ~3000
   segmented streams round-tripped through the game's decoder translation, piece-boundary sizes included.
+  **In game (30/09, build 0d1408ad, the same cache writes before and after, hitch frames only):** the ~21 MB writes
+  (4 calls: 2 counting runs + their writes) 299 ms (49 cases) -> 101 ms (3); ~11 MB 121 -> 43 ms; ~5.5 MB 78 -> 24 ms
+  (44 / 6 cases); worst compression-dominated hitch 295-395 ms -> 135 ms. The user: "realmente parece melhor". In game the
+  pieces run ~2x faster than one thread (offline 3.8x): the game's own threads are busy at those moments.
 
 ## How it works: Spread New Objects Over Frames (C6)
 
