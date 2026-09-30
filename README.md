@@ -37,6 +37,12 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 </div>
 
 
+## 🆕 New in 2.3
+
+- 🏠 **Light between floors fixed:** double-height rooms and open floors now light the floor above as soon as the lot loads (no more leaving and entering the lot).
+- ⚡ **Faster cache compression, 3x:** big Sim caches are split over several processor cores and never compressed twice.
+- 🧍 **Faster Sim building (new, Experimental):** the game's slowest step when it builds a Sim's hair and clothing, many times faster with exactly the same result.
+
 ## 🌈 New in 2.2
 
 **Banding Fix (Experimental):** no more color steps (banding) in lamp light, shadows and other smooth gradients. Light now fades smoothly across walls, floors, the ground and objects.
@@ -119,7 +125,8 @@ Off until you turn them on:
 - **Faster game file lookups:** the game searches every package (hundreds with mods) one by one each time it needs a texture or model. Apex Radiance remembers where things are: lookups cost about half as much, and the stutters they caused dropped by roughly 70% in testing. Under it, **Remember missing files** also skips the repeated searches for files no package has.
 - **Faster file lists:** fewer stutters when Sims load outfits and shapes.
 - **Faster texture compression:** the game's texture encoder rewritten with the exact same output, split over several processor cores for large textures (a 2048×2048 texture: about 35 ms down to about 6 ms).
-- **Faster cache compression:** a faster compressor for what the game stores in its caches, in the game's own format.
+- **Faster cache compression:** a faster compressor for what the game stores in its caches, in the game's own format; large Sim caches are split over several processor cores (the ~300 ms freezes when Sims are stored drop to ~100 ms, in testing).
+- **Faster Sim building:** hair and see-through clothing layers are sorted many times faster, with exactly the same result: fewer hitches in Create a Sim and when Sims change outfits.
 - **Faster object lookups:** less work when lot lights update and for scripts.
 - **Spread new objects over frames:** while the camera moves, new objects join the scene over a few frames instead of all at once (fewer hitches when a lot streams in).
 
