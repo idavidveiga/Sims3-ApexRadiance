@@ -19,6 +19,7 @@
 #include "d3d9_hooks.h"
 #include "d3d9_extra_hooks.h"
 #include "depth_share.h"
+#include "scene_dither.h"
 #include "render_callbacks.h"
 #include "post_scene.h"
 #include "shader_cache.h"
@@ -28,6 +29,7 @@
 #include <d3d9.h>
 #include <d3dcompiler.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <string>
@@ -227,12 +229,13 @@ float4 SmaaEdgePS(float2 uv : TEXCOORD0) : COLOR0
 #endif
 #endif
 }
+float4 cSubsample : register(c2); // SMAA T2x: the frame's subsample indices (0 = SMAA 1x)
 float4 SmaaWeightPS(float2 uv : TEXCOORD0) : COLOR0
 {
     float2 pixcoord;
     float4 offset[3];
     SMAABlendingWeightCalculationVS(uv, pixcoord, offset);
-    return SMAABlendingWeightCalculationPS(uv, pixcoord, offset, edgesTex, areaTex, searchTex, float4(0, 0, 0, 0));
+    return SMAABlendingWeightCalculationPS(uv, pixcoord, offset, edgesTex, areaTex, searchTex, cSubsample);
 }
 float4 SmaaBlendPS(float2 uv : TEXCOORD0) : COLOR0
 {
@@ -272,6 +275,55 @@ float4 LogDepthPS(float2 uv : TEXCOORD0) : COLOR0
     return d >= 0.99999 ? 16.0 : -log2(max(cDepth.x - d, 1e-7) * cDepth.y); // sky: 64 km
 }
 )HLSL";
+// ---- SMAA T2x (30/09): the scene is drawn moved by +-1/4 pixel on alternate frames (SceneBinder, the vertex copies);
+// SMAA 1x runs with the matching subsample indices, then this pass blends the frame with the previous frame's SMAA
+// output, fetched where the camera saw the same point (the scene depth and M = previous view-projection x inverse of the
+// current one, computed on the CPU in double precision). The previous colour is clamped to the 3x3 neighbourhood of the
+// current one and dropped where its stored distance differs (a moving object, something uncovered): at most one frame, at
+// half weight, can ever show a wrong pixel.
+const char* kResolveSource = R"HLSL(
+sampler2D sCur     : register(s0); // this frame's SMAA output, point
+sampler2D sPrev    : register(s1); // the previous frame's SMAA output, linear
+sampler2D sDepth   : register(s2); // INTZ, point
+sampler2D sLogPrev : register(s3); // the previous frame's log2 view distance, point
+float4 cM[4]  : register(c3);      // rows of M (current NDC + device depth -> previous clip)
+float4 cRes   : register(c7);      // x = 1/w, y = 1/h, z = history weight, w = debug view
+float4 cRes2  : register(c8);      // x = depth tolerance (log2 units)
+float4 ResolvePS(float2 uv : TEXCOORD0) : COLOR0
+{
+    float3 cur = tex2Dlod(sCur, float4(uv, 0, 0)).rgb;
+    float d = tex2Dlod(sDepth, float4(uv, 0, 0)).r;
+    float4 p = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+    float4 q = float4(dot(cM[0], p), dot(cM[1], p), dot(cM[2], p), dot(cM[3], p));
+    float2 prevUv = float2(q.x / q.w * 0.5 + 0.5, 0.5 - q.y / q.w * 0.5);
+    float w = cRes.z;
+    if (q.w <= 0.0 || any(prevUv < 0.0) || any(prevUv > 1.0)) w = 0.0;
+    // the distance the previous frame stored around that point (2x2: the jitter moves silhouettes by a quarter pixel)
+    if (d < 0.99999)
+    {
+        float expect = log2(q.w);
+        float2 h = 0.5 * cRes.xy;
+        float4 s = float4(tex2Dlod(sLogPrev, float4(prevUv + float2(-h.x, -h.y), 0, 0)).r, tex2Dlod(sLogPrev, float4(prevUv + float2(h.x, -h.y), 0, 0)).r,
+                          tex2Dlod(sLogPrev, float4(prevUv + float2(-h.x, h.y), 0, 0)).r, tex2Dlod(sLogPrev, float4(prevUv + float2(h.x, h.y), 0, 0)).r);
+        float4 e = abs(s - expect);
+        if (min(min(e.x, e.y), min(e.z, e.w)) > cRes2.x) w = 0.0;
+    }
+    // the 3x3 neighbourhood of the current frame bounds the previous colour
+    float3 mn = cur, mx = cur;
+    [unroll] for (int y = -1; y <= 1; y++)
+        [unroll] for (int x = -1; x <= 1; x++)
+        {
+            float3 c = tex2Dlod(sCur, float4(uv + float2(x, y) * cRes.xy, 0, 0)).rgb;
+            mn = min(mn, c);
+            mx = max(mx, c);
+        }
+    float3 prev = clamp(tex2Dlod(sPrev, float4(prevUv, 0, 0)).rgb, mn, mx);
+    float3 o = lerp(cur, prev, w);
+    if (cRes.w > 0.5) o = lerp(o, w > 0.0 ? float3(0, 0.6, 0) : float3(0.8, 0, 0.8), 0.35); // debug: green = blended, magenta = history dropped
+    return float4(o, 1);
+}
+)HLSL";
+
 constexpr const char* kDepthStep = "0.02";      // log2 units: a 1.4% jump in distance between neighbours = an object edge
 constexpr const char* kDepthEdgeScale = "0.4"; // the contrast needed there (x the usual threshold)
 
@@ -321,6 +373,17 @@ ShaderCache::Id AddDepthLog() {
     d.priority = 0;
     return ShaderCache::Add(std::move(d));
 }
+ShaderCache::Id AddResolve() {
+    ShaderCache::Desc d;
+    d.tag = "EdgeSmoothing SMAA T2x resolve";
+    d.source = kResolveSource;
+    d.sourceName = "edge_smoothing_resolve.hlsl";
+    d.entry = "ResolvePS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}
 // pass 0..2 = edges, weights, blend; pass 3 = the edge pass with depth predication
 ShaderCache::Id AddSmaa(int q, int pass, const char* tag) {
     static const char* const kEntries[3] = {"SmaaEdgePS", "SmaaWeightPS", "SmaaBlendPS"};
@@ -364,6 +427,7 @@ const ShaderCache::Id kSmaaDepthEdgeId[kSmaaLevels] = {AddSmaa(0, 3, "EdgeSmooth
 const ShaderCache::Id kFxaaDepthId[kFxaaLevels] = {AddFxaa(0, "EdgeSmoothing FXAA + depth (Fast)", true), AddFxaa(1, "EdgeSmoothing FXAA + depth (Balanced)", true),
                                                    AddFxaa(2, "EdgeSmoothing FXAA + depth (High)", true), AddFxaa(3, "EdgeSmoothing FXAA + depth (Extreme)", true)};
 const ShaderCache::Id kDepthLogId = AddDepthLog();
+const ShaderCache::Id kResolveId = AddResolve();
 
 struct Params {
     int method = 1;           // 0 FXAA, 1 SMAA
@@ -373,6 +437,9 @@ struct Params {
     float sensitivity = 0.125f; // edge threshold: lower = more edges smoothed
     bool depthEdges = true;   // also find object edges in the scene depth (fainter edges of objects smoothed)
     float sharpen = 0.0f;     // texture sharpening of the pixels the smoothing left alone, 0..1 (0 = off)
+    bool temporal = false;    // SMAA T2x: the scene drawn with a quarter-pixel jitter, blended with the previous frame
+    bool debugTemporal = false; // developer: green = blended with the previous frame, magenta = history dropped
+    bool swapJitter = false;    // developer: the other pairing of jitter and subsample indices
     bool debugView = false;
 };
 
@@ -401,6 +468,18 @@ struct AaState {
     bool depthRequested = false; // DepthShare::Request(true) held
     bool depthUsed = false;      // the last frame's pass used the depth
     unsigned framesWithDepth = 0;
+    // SMAA T2x
+    IDirect3DTexture9 *histTex[2] = {}, *logPrevTex = nullptr; // [cur] this frame's SMAA output, [1 - cur] the previous one
+    IDirect3DSurface9 *histSurf[2] = {}, *logPrevSurf = nullptr;
+    int histCur = 0;
+    IDirect3DPixelShader9* psResolve = nullptr;
+    bool resolveTried = false;
+    bool temporalHeld = false;   // SceneBinder::AcquireJitter + PostScene::WantCamera held
+    bool historyValid = false;   // the previous frame left a usable history (its SMAA output, depth and camera)
+    double prevVp[4][4] = {};
+    int jitterIndex = -1;        // the jitter the scene of this frame was drawn with (0 / 1), -1 none
+    bool ranThisFrame = false;
+    unsigned framesBlended = 0, historyResets = 0;
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
@@ -433,6 +512,13 @@ void ReleaseResources() {
     SafeRelease(g.searchTex);
     SafeRelease(g.depthLogSurf);
     SafeRelease(g.depthLogTex);
+    for (int i = 0; i < 2; i++) {
+        SafeRelease(g.histSurf[i]);
+        SafeRelease(g.histTex[i]);
+    }
+    SafeRelease(g.logPrevSurf);
+    SafeRelease(g.logPrevTex);
+    g.historyValid = false;
     for (int i = 0; i < AaState::kQ; i++) {
         SafeRelease(g.qDisjoint[i]);
         SafeRelease(g.qBegin[i]);
@@ -455,6 +541,8 @@ void ReleaseShaders() {
     for (auto& ps : g.fxaaDepthPs) SafeRelease(ps);
     SafeRelease(g.psDepthLog);
     g.depthShadersTried = false;
+    SafeRelease(g.psResolve);
+    g.resolveTried = false;
 }
 
 // The depth-edge shaders (all variants, created on first use from the precompiled bytecode). False when any is missing:
@@ -571,6 +659,23 @@ bool InitResources(IDirect3DDevice9* dev) {
         SafeRelease(g.depthLogTex);
         LOG_WARNING("[EdgeSmoothing] No video memory for the depth-edge target: edges from colour only");
     }
+    // SMAA T2x history (optional: without it the temporal blend stays off)
+    bool histOk = g.depthLogTex != nullptr;
+    for (int i = 0; i < 2 && histOk; i++)
+        histOk = SUCCEEDED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, bd.Format, D3DPOOL_DEFAULT, &g.histTex[i], nullptr)) && g.histTex[i] &&
+                 SUCCEEDED(g.histTex[i]->GetSurfaceLevel(0, &g.histSurf[i])) && g.histSurf[i];
+    histOk = histOk && SUCCEEDED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &g.logPrevTex, nullptr)) && g.logPrevTex &&
+             SUCCEEDED(g.logPrevTex->GetSurfaceLevel(0, &g.logPrevSurf)) && g.logPrevSurf;
+    if (!histOk) {
+        for (int i = 0; i < 2; i++) {
+            SafeRelease(g.histSurf[i]);
+            SafeRelease(g.histTex[i]);
+        }
+        SafeRelease(g.logPrevSurf);
+        SafeRelease(g.logPrevTex);
+        LOG_WARNING("[EdgeSmoothing] No video memory for the temporal history: SMAA T2x unavailable");
+    }
+    g.historyValid = false;
     for (int i = 0; i < AaState::kQ; i++) {
         dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &g.qDisjoint[i]);
         dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &g.qBegin[i]);
@@ -599,8 +704,9 @@ constexpr UINT kPSConsts = 3;
 
 // The depth-edge pass: the scene depth (INTZ, bound as the depth-stencil right now) -> log2 of the view distance in
 // depthLogTex. True when it ran (the AA passes then read it at s5). Saves and restores everything it touches.
+bool TemporalWanted(); // SMAA T2x on (below)
 bool RunDepthPass(IDirect3DDevice9* dev) {
-    if (!g.p.depthEdges || !g.depthLogSurf) return false;
+    if (!(g.p.depthEdges || TemporalWanted()) || !g.depthLogSurf) return false;
     IDirect3DTexture9* depth = DepthShare::Texture();
     if (!depth || !DepthShaders(dev)) return false;
     IDirect3DSurface9* ds = nullptr; // the scene depth must be the one bound now (not a reflection or UI pass), as AO checks
@@ -805,7 +911,7 @@ void DrawQuad(IDirect3DDevice9* dev) {
 }
 
 // SMAA's three passes. Saves and restores what they touch (render target, samplers 0..4, shaders, constants c0..c1).
-void RunSmaa(IDirect3DDevice9* dev, bool useDepth) {
+void RunSmaa(IDirect3DDevice9* dev, bool useDepth, const float subsample[4]) {
     const int q = std::clamp(g.p.smaaQuality, 0, kSmaaLevels - 1);
     if (!SmaaShaders(dev, q)) return;
     DepthSampler depthSampler(dev, useDepth);
@@ -866,7 +972,7 @@ void RunSmaa(IDirect3DDevice9* dev, bool useDepth) {
         dev->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, 0);
     }
     const float W = static_cast<float>(g.width), H = static_cast<float>(g.height);
-    const float c[kPSConsts][4] = {{1.0f / W, 1.0f / H, W, H}, {kSmaaPresets[q].threshold, std::clamp(g.p.sharpen, 0.0f, 1.0f), 0, g.p.debugView ? 1.0f : 0.0f}, {0, 0, 0, 0}};
+    const float c[kPSConsts][4] = {{1.0f / W, 1.0f / H, W, H}, {kSmaaPresets[q].threshold, std::clamp(g.p.sharpen, 0.0f, 1.0f), 0, g.p.debugView ? 1.0f : 0.0f}, {subsample[0], subsample[1], subsample[2], subsample[3]}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
     // 1. edges (the targets are cleared every frame, alpha too: the passes discard where there is nothing to do)
@@ -917,6 +1023,185 @@ void RunSmaa(IDirect3DDevice9* dev, bool useDepth) {
     g.framesSmoothed++;
 }
 
+// ---- SMAA T2x: jitter sequence, camera reprojection, history ----
+// The reference's T2x pairs (SMAA.h / its demo): the jitter in pixels and the subsample indices of the weights pass
+constexpr float kT2xJitter[2][2] = {{0.25f, -0.25f}, {-0.25f, 0.25f}};
+constexpr float kT2xSubsample[2][4] = {{1, 1, 1, 0}, {2, 2, 2, 0}};
+constexpr float kT2xWeight = 0.5f;    // the previous frame's share where it is kept
+constexpr float kT2xDepthTol = 0.03f; // log2 units: the stored distance may differ by ~2%
+constexpr double kCutNdc = 0.3;       // the screen centre moved more than this (NDC) since the last frame: a camera cut
+
+bool TemporalWanted() { return g.active && g.p.method == 1 && g.p.temporal; }
+
+// 4x4 inverse (Gauss-Jordan, partial pivoting), false when singular
+bool Invert(const double a[4][4], double out[4][4]) {
+    double m[4][8];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 8; c++) m[r][c] = c < 4 ? a[r][c] : (c - 4 == r ? 1.0 : 0.0);
+    for (int c = 0; c < 4; c++) {
+        int p = c;
+        for (int r = c + 1; r < 4; r++)
+            if (std::abs(m[r][c]) > std::abs(m[p][c])) p = r;
+        if (std::abs(m[p][c]) < 1e-12) return false;
+        if (p != c)
+            for (int k = 0; k < 8; k++) std::swap(m[p][k], m[c][k]);
+        const double inv = 1.0 / m[c][c];
+        for (int k = 0; k < 8; k++) m[c][k] *= inv;
+        for (int r = 0; r < 4; r++) {
+            if (r == c) continue;
+            const double f = m[r][c];
+            for (int k = 0; k < 8; k++) m[r][k] -= f * m[c][k];
+        }
+    }
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) out[r][c] = m[r][c + 4];
+    return true;
+}
+
+// This frame's SMAA output (the back buffer now) becomes the next frame's history
+void StoreHistory(IDirect3DDevice9* dev) {
+    IDirect3DSurface9* bb = nullptr;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+    dev->StretchRect(bb, nullptr, g.histSurf[g.histCur], nullptr, D3DTEXF_NONE);
+    bb->Release();
+}
+
+// The blend with the previous frame into the back buffer (reads histTex[histCur] = this frame, histTex[1 - histCur] = the
+// previous one). Saves and restores what it touches.
+void RunResolve(IDirect3DDevice9* dev, const double M[4][4]) {
+    if (!g.resolveTried) {
+        g.resolveTried = true;
+        std::string msg;
+        if (ShaderCache::CreatePixelShader(dev, kResolveId, &g.psResolve, &msg) == ShaderCache::Result::CompileFailed)
+            LOG_ERROR("[EdgeSmoothing] T2x resolve failed to compile: " + msg);
+    }
+    IDirect3DTexture9* depth = DepthShare::Texture();
+    if (!g.psResolve || !depth) return;
+    constexpr DWORD kSamplers = 4;
+    constexpr UINT kC0 = 3, kCN = 6; // c3..c8
+    IDirect3DSurface9 *bb = nullptr, *oldRt = nullptr;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+    IDirect3DPixelShader9* oldPs = nullptr;
+    IDirect3DVertexShader9* oldVs = nullptr;
+    IDirect3DVertexDeclaration9* oldDecl = nullptr;
+    DWORD oldFvf = 0;
+    IDirect3DVertexBuffer9* oldStream = nullptr;
+    UINT oldOffset = 0, oldStride = 0;
+    IDirect3DBaseTexture9* oldTex[kSamplers] = {};
+    DWORD rs[kRS], ss[kSamplers][kSS];
+    float oldConst[kCN * 4];
+    D3DVIEWPORT9 oldVp{};
+    dev->GetRenderTarget(0, &oldRt);
+    dev->GetPixelShader(&oldPs);
+    dev->GetVertexShader(&oldVs);
+    dev->GetVertexDeclaration(&oldDecl);
+    dev->GetFVF(&oldFvf);
+    dev->GetStreamSource(0, &oldStream, &oldOffset, &oldStride);
+    for (DWORD s = 0; s < kSamplers; s++) {
+        dev->GetTexture(s, &oldTex[s]);
+        for (int i = 0; i < kSS; i++) dev->GetSamplerState(s, kSamplerStates[i], &ss[s][i]);
+    }
+    for (int i = 0; i < kRS; i++) dev->GetRenderState(kRenderStates[i], &rs[i]);
+    dev->GetPixelShaderConstantF(kC0, oldConst, kCN);
+    dev->GetViewport(&oldVp);
+
+    dev->SetRenderTarget(0, bb);
+    dev->SetVertexShader(nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE); // alpha: the bloom mask
+    IDirect3DBaseTexture9* tex[kSamplers] = {g.histTex[g.histCur], g.histTex[1 - g.histCur], depth, g.logPrevTex};
+    for (DWORD s = 0; s < kSamplers; s++) {
+        const DWORD f = s == 1 ? D3DTEXF_LINEAR : D3DTEXF_POINT;
+        dev->SetTexture(s, tex[s]);
+        dev->SetSamplerState(s, D3DSAMP_MINFILTER, f);
+        dev->SetSamplerState(s, D3DSAMP_MAGFILTER, f);
+        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, 0);
+        dev->SetSamplerState(s, D3DSAMP_MAXMIPLEVEL, 0);
+        dev->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, 0);
+    }
+    float c[kCN][4] = {};
+    for (int r = 0; r < 4; r++)
+        for (int k = 0; k < 4; k++) c[r][k] = static_cast<float>(M[r][k]);
+    c[4][0] = 1.0f / static_cast<float>(g.width);
+    c[4][1] = 1.0f / static_cast<float>(g.height);
+    c[4][2] = kT2xWeight;
+    c[4][3] = g.p.debugTemporal ? 1.0f : 0.0f;
+    c[5][0] = kT2xDepthTol;
+    dev->SetPixelShaderConstantF(kC0, &c[0][0], kCN);
+    dev->SetPixelShader(g.psResolve);
+    DrawQuad(dev);
+
+    dev->SetRenderTarget(0, oldRt);
+    for (DWORD s = 0; s < kSamplers; s++) {
+        dev->SetTexture(s, oldTex[s]);
+        for (int i = 0; i < kSS; i++) dev->SetSamplerState(s, kSamplerStates[i], ss[s][i]);
+        SafeRelease(oldTex[s]);
+    }
+    for (int i = 0; i < kRS; i++) dev->SetRenderState(kRenderStates[i], rs[i]);
+    dev->SetPixelShaderConstantF(kC0, oldConst, kCN);
+    dev->SetPixelShader(oldPs);
+    dev->SetVertexShader(oldVs);
+    if (oldDecl) dev->SetVertexDeclaration(oldDecl);
+    else dev->SetFVF(oldFvf);
+    dev->SetStreamSource(0, oldStream, oldOffset, oldStride);
+    dev->SetViewport(&oldVp);
+    SafeRelease(oldRt);
+    SafeRelease(oldPs);
+    SafeRelease(oldVs);
+    SafeRelease(oldDecl);
+    SafeRelease(oldStream);
+    bb->Release();
+}
+
+// After SMAA (T2x on, depth pass done): blend with the history when it is usable, then keep this frame as the next history
+void TemporalStep(IDirect3DDevice9* dev, bool haveVp, const float vpNow[4][4]) {
+    if (!haveVp) {
+        g.historyValid = false;
+        return;
+    }
+    double cur[4][4], inv[4][4], M[4][4];
+    for (int r = 0; r < 4; r++)
+        for (int k = 0; k < 4; k++) cur[r][k] = vpNow[r][k];
+    bool blend = g.historyValid && Invert(cur, inv);
+    if (blend) {
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) {
+                double s = 0;
+                for (int j = 0; j < 4; j++) s += g.prevVp[r][j] * inv[j][k];
+                M[r][k] = s;
+            }
+        // a camera cut: the screen centre (mid depth) lands far from where it was
+        const double qx = M[0][2] * 0.5 + M[0][3], qy = M[1][2] * 0.5 + M[1][3], qw = M[3][2] * 0.5 + M[3][3];
+        if (qw <= 1e-9 || std::abs(qx / qw) > kCutNdc || std::abs(qy / qw) > kCutNdc) blend = false;
+    }
+    StoreHistory(dev); // this frame's SMAA output, before the blend writes the back buffer
+    if (blend) {
+        RunResolve(dev, M);
+        g.framesBlended++;
+    } else if (g.historyValid) {
+        g.historyResets++;
+    }
+    // the next frame: this frame is its history (SMAA output, log2 depth, camera)
+    dev->StretchRect(g.depthLogSurf, nullptr, g.logPrevSurf, nullptr, D3DTEXF_NONE);
+    g.histCur = 1 - g.histCur;
+    std::memcpy(g.prevVp, cur, sizeof cur);
+    g.historyValid = true;
+}
+
 // GPU time of the effect, from timestamp queries of an earlier frame (never waits); restarts when the method changes
 void ReadTimings() {
     for (int i = 0; i < AaState::kQ; i++) {
@@ -951,11 +1236,30 @@ void FxaaEffect(IDirect3DDevice9* dev) {
         g.qDisjoint[qi]->Issue(D3DISSUE_BEGIN);
         g.qBegin[qi]->Issue(D3DISSUE_END);
     }
-    const bool useDepth = RunDepthPass(dev);
-    g.depthUsed = useDepth;
-    if (useDepth) g.framesWithDepth++;
-    if (method == 1) RunSmaa(dev, useDepth);
+    const bool depthRan = RunDepthPass(dev);
+    const bool useDepth = depthRan && g.p.depthEdges;
+    g.depthUsed = depthRan;
+    if (depthRan) g.framesWithDepth++;
+    g.ranThisFrame = true;
+    const bool t2x = method == 1 && TemporalWanted() && depthRan && g.histTex[0] && g.logPrevTex;
+    float vp[4][4] = {};
+    const bool haveVp = t2x && PostScene::CameraViewProj(vp);
+    static const float kNoSubsample[4] = {0, 0, 0, 0};
+    const int j = g.jitterIndex; // the jitter this frame's scene was drawn with
+    const float* subsample = (t2x && j >= 0) ? kT2xSubsample[g.p.swapJitter ? 1 - j : j] : kNoSubsample;
+    if (method == 1) RunSmaa(dev, useDepth, subsample);
     else RunFxaa(dev, useDepth);
+    if (t2x) TemporalStep(dev, haveVp, vp);
+    else g.historyValid = false;
+    // the next frame's jitter: only while the blend can run (else the image would shake)
+    if (t2x && haveVp) {
+        g.jitterIndex = j == 0 ? 1 : 0;
+        SceneBinder::SetFrameJitter(true, 2.0f * kT2xJitter[g.jitterIndex][0] / static_cast<float>(g.width),
+                                    2.0f * kT2xJitter[g.jitterIndex][1] / static_cast<float>(g.height));
+    } else {
+        g.jitterIndex = -1;
+        SceneBinder::SetFrameJitter(false, 0, 0);
+    }
     if (timed) {
         g.qEnd[qi]->Issue(D3DISSUE_END);
         g.qFreq[qi]->Issue(D3DISSUE_END);
@@ -967,11 +1271,32 @@ void FxaaEffect(IDirect3DDevice9* dev) {
 
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
-    // the INTZ depth swap runs while the depth edges are wanted (it also runs for Depth Blur and AO)
-    if (g.p.depthEdges != g.depthRequested) {
-        DepthShare::Request(g.p.depthEdges);
-        g.depthRequested = g.p.depthEdges;
+    // the INTZ depth swap runs while the depth edges or SMAA T2x want it (it also runs for Depth Blur and AO)
+    const bool wantDepth = g.p.depthEdges || TemporalWanted();
+    if (wantDepth != g.depthRequested) {
+        DepthShare::Request(wantDepth);
+        g.depthRequested = wantDepth;
     }
+    // SMAA T2x: the jittered vertex copies and the camera while it is on
+    if (TemporalWanted() != g.temporalHeld) {
+        g.temporalHeld = !g.temporalHeld;
+        if (g.temporalHeld) {
+            SceneBinder::AcquireJitter();
+            PostScene::WantCamera(true);
+        } else {
+            SceneBinder::ReleaseJitter();
+            PostScene::WantCamera(false);
+            g.jitterIndex = -1;
+            g.historyValid = false;
+        }
+    }
+    // a frame without the scene (loading, a menu over a black screen): no jitter and no history until it comes back
+    if (!g.ranThisFrame && g.jitterIndex >= 0) {
+        g.jitterIndex = -1;
+        g.historyValid = false;
+        SceneBinder::SetFrameJitter(false, 0, 0);
+    }
+    g.ranThisFrame = false;
     if (!g.ready && --g.retryCountdown <= 0) {
         g.retryCountdown = kRetryFrames;
         InitResources(dev);
@@ -1010,6 +1335,9 @@ class EdgeSmoothingPatch : public ApexPatch {
         RegisterBoolSetting(&g.p.depthEdges, "depthEdges", true,
                             "Also finds the edges of objects from the scene depth, so edges with little contrast (walls against walls of the same colour, "
                             "night scenes) are smoothed too, while textures stay sharp.");
+        RegisterBoolSetting(&g.p.temporal, "temporal", false,
+                            "SMAA T2x: the world is drawn a quarter pixel apart on alternate frames and each frame is blended with the last one, so thin "
+                            "lines and far edges shimmer much less. Experimental.");
         RegisterFloatSetting(&g.p.sharpen, "sharpen", SettingWidget::Slider, 0.0f, 0.0f, 1.0f,
                              "Sharpens the textures the smoothing leaves alone (the smoothed edges stay smooth). 0% is off.");
         RegisterBoolSetting(&g.p.debugView, "debugView", false, "Show the smoothed pixels in red");
@@ -1041,6 +1369,13 @@ class EdgeSmoothingPatch : public ApexPatch {
         g.active = false;
         if (g.depthRequested) DepthShare::Request(false);
         g.depthRequested = false;
+        if (g.temporalHeld) {
+            SceneBinder::SetFrameJitter(false, 0, 0);
+            SceneBinder::ReleaseJitter();
+            PostScene::WantCamera(false);
+            g.temporalHeld = false;
+        }
+        g.jitterIndex = -1;
         D3D9Hooks::UnregisterAll(kHookName);
         RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
         RenderCallbacks::Remove(RenderCallbacks::postReset, OnPostReset);
@@ -1082,6 +1417,9 @@ class EdgeSmoothingPatch : public ApexPatch {
             static const char* const kSmaaTips[] = {"Fastest; smooths the clearest edges", "A good balance", "Also smooths diagonals and corners",
                                                     "Catches faint edges too, great at night", "Straightest long edges, best at 4K; costs the most"};
             changed |= ApexUi::SegmentedRow("Quality##Smaa", "Higher smooths more edges and costs a bit more", "##SmaaQuality", &g.p.smaaQuality, kSmaa, 5, kSmaaTips, nullptr, kDefaults.smaaQuality);
+            ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong, turn it off");
+            changed |= ApexUi::SwitchRow("Temporal smoothing", &g.p.temporal, "Also blends each frame with the last one: thin lines and far edges shimmer much less",
+                                         kDefaults.temporal);
         } else {
             static const char* const kFxaa[] = {"Fast", "Balanced", "High", "Extreme"};
             static const char* const kFxaaTips[] = {"Fastest", "A good balance", "Smoother long edges; costs a little more", "Straightest long edges, best at 4K; costs the most"};
@@ -1124,7 +1462,14 @@ class EdgeSmoothingPatch : public ApexPatch {
         if (g.ready && g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame", g.gpuMs);
         bool changed = ImGui::Checkbox("Show smoothed pixels in red", &g.p.debugView);
         ApexUi::Tooltip("Tints every pixel the smoothing changed red, to see which edges it catches");
-        if (g.ready) ImGui::TextDisabled("Frames smoothed: %u", g.framesSmoothed);
+        if (g.ready) ImGui::TextDisabled("Frames smoothed: %u (with the scene depth %u)", g.framesSmoothed, g.framesWithDepth);
+        if (g.p.temporal) {
+            const SceneBinder::Coverage cov = SceneBinder::LastCoverage();
+            ImGui::TextDisabled("SMAA T2x: %u frames blended, %u history resets, jitter %d; last frame: %u scene draws moved, %u vertex shaders refused, %u fixed-function",
+                                g.framesBlended, g.historyResets, g.jitterIndex, cov.jittered, cov.refused, cov.noShader);
+            changed |= ImGui::Checkbox("Show the temporal blend (green = blended, magenta = history dropped)", &g.p.debugTemporal);
+            changed |= ImGui::Checkbox("Swap jitter and subsample pairing", &g.p.swapJitter);
+        }
         if (changed) NotifySettingChanged();
     }
 };

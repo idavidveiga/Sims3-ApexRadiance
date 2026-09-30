@@ -76,12 +76,24 @@ struct FrameCount {
     unsigned dithered3 = 0, dithered2 = 0; // 3D scene draws with the grain: ps_3_0, ps_2_x
     unsigned ps2NoPair = 0;                // ps_2_x with a copy whose vertex shader could not carry the position
     unsigned ps2Refused = 0, ps3Refused = 0, other = 0;
+    unsigned jittered = 0, jitterRefused = 0, jitterNoShader = 0; // temporal AA: scene draws moved / whose vertex shader was refused / fixed-function
 };
 FrameCount g_frame, g_last;
 unsigned long long g_lastLog = 0;
 int g_logs = 0;
 
-uint64_t VsKey(IDirect3DVertexShader9* vs, int k) { return (reinterpret_cast<uint64_t>(vs) << 3) | static_cast<uint64_t>(k & 7); }
+// vertex copy key: the game shader, the texture coordinate k carrying the clip position (-1 none) and the temporal jitter
+uint64_t VsKey(IDirect3DVertexShader9* vs, int k, bool jitter) {
+    return (reinterpret_cast<uint64_t>(vs) << 5) | (jitter ? 16u : 0u) | static_cast<uint64_t>(k < 0 ? 8 : (k & 7));
+}
+
+// ---- the shared scene-draw binder (30/09): the Banding Fix's pixel copies and the temporal anti-aliasing's jittered vertex
+// copies (Edge Smoothing, SMAA T2x) bound together in one final draw hook, as two features cannot both skip and redraw ----
+std::atomic<int> g_hookUsers{0};  // Banding Fix and temporal AA (the hooks are registered while > 0)
+bool g_jitterOn = false;          // render thread: this frame's scene draws are moved
+std::atomic<bool> g_jitterWanted{false}; // temporal AA is on (vertex copies with the jitter made at creation)
+float g_jitter[4] = {};           // clip-space offset (c252.xy)
+constexpr int kJitterConst = 252; // no game vertex shader uses a constant above c241 (Shaders_Win32.precomp, 30/09)
 
 // Tokens up to and with the end token (no length is given to Create*Shader), 0 when unreadable
 size_t CodeLength(const DWORD* fn) {
@@ -135,8 +147,10 @@ Copy MakeCopy(IDirect3DDevice9* dev, std::vector<DWORD> t) {
 }
 
 // The copy of a game vertex shader that also writes the clip position to TEXCOORDk, or null
-IDirect3DVertexShader9* MakeVsCopy(IDirect3DDevice9* dev, std::vector<DWORD> t, int k) {
-    if (t.empty() || !ShaderPatches::AddScreenPosVs(t, k)) return nullptr;
+IDirect3DVertexShader9* MakeVsCopy(IDirect3DDevice9* dev, std::vector<DWORD> t, int k, bool jitter) {
+    if (t.empty()) return nullptr;
+    if (jitter && ShaderPatches::AddJitterVs(t, kJitterConst) != ShaderPatches::JitterResult::Ok) return nullptr;
+    if (k >= 0 && !ShaderPatches::AddScreenPosVs(t, k)) return nullptr; // after the jitter: TEXCOORDk gets the moved position
     IDirect3DVertexShader9* copy = nullptr;
     t_own = true;
     const HRESULT hr = D3D9Hooks::CallOriginalCreateVertexShader(dev, t.data(), &copy);
@@ -167,12 +181,13 @@ void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
 // A new game vertex shader at an address: its old copies (every k) go
 void ForgetVs(IDirect3DVertexShader9* vs) {
     std::lock_guard<std::mutex> lock(g_lock);
-    for (int k = 0; k < 8; k++) {
-        const auto it = g_vsCopies.find(VsKey(vs, k));
-        if (it == g_vsCopies.end()) continue;
-        if (it->second) it->second->Release();
-        g_vsCopies.erase(it);
-    }
+    for (int j = 0; j < 2; j++)
+        for (int k = -1; k < 8; k++) {
+            const auto it = g_vsCopies.find(VsKey(vs, k, j != 0));
+            if (it == g_vsCopies.end()) continue;
+            if (it->second) it->second->Release();
+            g_vsCopies.erase(it);
+        }
 }
 
 void ReleaseCopies() {
@@ -197,21 +212,22 @@ Copy CopyOf(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
     return copy;
 }
 
-// Render thread: the vertex copy writing TEXCOORDk (made now when missing)
-IDirect3DVertexShader9* VsCopyOf(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs, int k) {
-    const uint64_t key = VsKey(vs, k);
+// Render thread: the vertex copy writing TEXCOORDk (k -1: none) and / or moved by the jitter (made now when missing)
+IDirect3DVertexShader9* VsCopyOf(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs, int k, bool jitter) {
+    const uint64_t key = VsKey(vs, k, jitter);
     {
         std::lock_guard<std::mutex> lock(g_lock);
         const auto it = g_vsCopies.find(key);
         if (it != g_vsCopies.end()) return it->second;
     }
-    IDirect3DVertexShader9* copy = MakeVsCopy(dev, ReadCode(vs), k);
+    IDirect3DVertexShader9* copy = MakeVsCopy(dev, ReadCode(vs), k, jitter);
     RememberVs(key, copy);
     return copy;
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
-    if (!g_on.load(std::memory_order_relaxed) || !g_backBuffer) return D3D9Hooks::HookAction::Continue;
+    const bool dither = g_on.load(std::memory_order_relaxed), jitter = g_jitterOn;
+    if ((!dither && !jitter) || !g_backBuffer) return D3D9Hooks::HookAction::Continue;
     IDirect3DSurface9* rt = nullptr;
     dev->GetRenderTarget(0, &rt);
     const bool toScreen = rt && rt == g_backBuffer;
@@ -220,43 +236,67 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     DWORD z = D3DZB_FALSE;
     dev->GetRenderState(D3DRS_ZENABLE, &z);
     if (z == D3DZB_FALSE) return D3D9Hooks::HookAction::Continue; // UI and 2D passes
+    // the Banding Fix's pixel copy
     IDirect3DPixelShader9* ps = nullptr;
-    dev->GetPixelShader(&ps);
-    if (!ps) return D3D9Hooks::HookAction::Continue;
-    ps->Release(); // the device keeps it alive
-    const Copy copy = CopyOf(dev, ps);
-    const DWORD major = (copy.version >> 8) & 0xFF;
-    if (!copy.ps) {
-        (major == 2 ? g_frame.ps2Refused : major == 3 ? g_frame.ps3Refused : g_frame.other)++;
-        return D3D9Hooks::HookAction::Continue;
+    Copy copy;
+    if (dither) {
+        dev->GetPixelShader(&ps);
+        if (ps) {
+            ps->Release(); // the device keeps it alive
+            copy = CopyOf(dev, ps);
+            if (!copy.ps) {
+                const DWORD major = (copy.version >> 8) & 0xFF;
+                (major == 2 ? g_frame.ps2Refused : major == 3 ? g_frame.ps3Refused : g_frame.other)++;
+            }
+        }
     }
+    bool useDither = copy.ps != nullptr;
+    const int k = useDither ? copy.texcoord : -1; // ps_2_x copies: the vertex shader must carry the position
+    // the vertex copy: TEXCOORDk and / or the temporal jitter
     IDirect3DVertexShader9 *vs = nullptr, *vsCopy = nullptr;
-    if (copy.texcoord >= 0) { // ps_2_x: the vertex shader must carry the position
+    bool useJitter = jitter;
+    if (useJitter || k >= 0) {
         dev->GetVertexShader(&vs);
-        if (vs) {
-            vs->Release();
-            vsCopy = VsCopyOf(dev, vs, copy.texcoord);
+        if (vs) vs->Release();
+        if (!vs && useJitter) {
+            g_frame.jitterNoShader++;
+            useJitter = false;
         }
-        if (!vsCopy) {
+        if (vs && (useJitter || k >= 0)) {
+            vsCopy = VsCopyOf(dev, vs, k, useJitter);
+            if (!vsCopy && useJitter) { // refused with the jitter: at least the grain
+                g_frame.jitterRefused++;
+                useJitter = false;
+                if (k >= 0) vsCopy = VsCopyOf(dev, vs, k, false);
+            }
+        }
+        if (k >= 0 && !vsCopy) {
             g_frame.ps2NoPair++;
-            return D3D9Hooks::HookAction::Continue;
+            useDither = false;
         }
     }
-    D3DVIEWPORT9 vp{};
-    dev->GetViewport(&vp);
+    if (!useDither && !useJitter) return D3D9Hooks::HookAction::Continue;
     float before[4] = {};
-    dev->GetPixelShaderConstantF(static_cast<UINT>(copy.amountReg), before, 1);
-    // Developer "Show covered surfaces": a coarse grain only where the fix applies
-    const float amount[4] = {(g_showCovered ? kShowCoveredSteps : SceneDither::Strength()) / 255.0f, 0.5f * static_cast<float>(vp.Width), 0.5f * static_cast<float>(vp.Height),
-                             SceneDither::GrainPhase()};
-    D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), amount, 1);
-    D3D9Hooks::CallOriginalSetPixelShader(dev, copy.ps);
+    if (useDither) {
+        D3DVIEWPORT9 vp{};
+        dev->GetViewport(&vp);
+        dev->GetPixelShaderConstantF(static_cast<UINT>(copy.amountReg), before, 1);
+        // Developer "Show covered surfaces": a coarse grain only where the fix applies
+        const float amount[4] = {(g_showCovered ? kShowCoveredSteps : SceneDither::Strength()) / 255.0f, 0.5f * static_cast<float>(vp.Width),
+                                 0.5f * static_cast<float>(vp.Height), SceneDither::GrainPhase()};
+        D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), amount, 1);
+        D3D9Hooks::CallOriginalSetPixelShader(dev, copy.ps);
+    }
+    if (useJitter) D3D9Hooks::CallOriginalSetVertexShaderConstantF(dev, kJitterConst, g_jitter, 1); // no game shader reads c252
     if (vsCopy) D3D9Hooks::CallOriginalSetVertexShader(dev, vsCopy);
     draw();
     if (vsCopy) D3D9Hooks::CallOriginalSetVertexShader(dev, vs);
-    D3D9Hooks::CallOriginalSetPixelShader(dev, ps);
-    D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), before, 1); // the game may cache it
-    (vsCopy ? g_frame.dithered2 : g_frame.dithered3)++;
+    if (useDither) {
+        D3D9Hooks::CallOriginalSetPixelShader(dev, ps);
+        D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), before, 1); // the game may cache it
+        (k >= 0 ? g_frame.dithered2 : g_frame.dithered3)++;
+    }
+    if (useJitter) g_frame.jittered++;
     return D3D9Hooks::HookAction::Skip;
 }
 
@@ -301,11 +341,18 @@ void RegisterHooks() {
         return HookAction::Skip;
     }, kAfterEveryone);
     RegisterCreateVertexShader(kHookName, [](DeviceContext& ctx, const DWORD* fn, IDirect3DVertexShader9** out) {
-        if (t_own || !fn || !out || !g_on.load()) return HookAction::Continue;
+        const bool dither = g_on.load(), jitter = g_jitterWanted.load();
+        if (t_own || !fn || !out || (!dither && !jitter)) return HookAction::Continue;
         if (FAILED(CallOriginalCreateVertexShader(ctx.device, fn, out)) || !*out) return HookAction::Block;
         ForgetVs(*out); // a reused address: the old shader's copies must go
-        std::vector<DWORD> t = ReadCode(fn);
-        if (!t.empty() && t[0] != 0xFFFE0300u) RememberVs(VsKey(*out, kUsualTexcoord), MakeVsCopy(ctx.device, std::move(t), kUsualTexcoord));
+        // the copies the draws will ask for, made now (while the game loads) rather than at the first draw
+        const std::vector<DWORD> t = ReadCode(fn);
+        const bool vs3 = !t.empty() && t[0] == 0xFFFE0300u;
+        if (!t.empty() && dither && !vs3) RememberVs(VsKey(*out, kUsualTexcoord, false), MakeVsCopy(ctx.device, t, kUsualTexcoord, false));
+        if (!t.empty() && jitter) {
+            RememberVs(VsKey(*out, -1, true), MakeVsCopy(ctx.device, t, -1, true));
+            if (dither && !vs3) RememberVs(VsKey(*out, kUsualTexcoord, true), MakeVsCopy(ctx.device, t, kUsualTexcoord, true));
+        }
         return HookAction::Skip;
     }, kAfterEveryone);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
@@ -315,6 +362,21 @@ void RegisterHooks() {
         return OnDraw(ctx.device, [&] { CallOriginalDrawPrimitive(ctx.device, type, start, prims); });
     }, kAfterEveryone);
     RenderCallbacks::Add(RenderCallbacks::preReset, OnPreReset);
+}
+
+// The draw hooks run while the Banding Fix or the temporal AA uses them
+void AcquireHooks() {
+    if (g_hookUsers.fetch_add(1) == 0) {
+        g_backBuffer = nullptr;
+        RegisterHooks();
+    }
+}
+void ReleaseHooks() {
+    if (g_hookUsers.fetch_sub(1) != 1) return;
+    D3D9Hooks::UnregisterAll(kHookName);
+    RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
+    ReleaseCopies(); // an address reused while off must never meet an old copy
+    g_backBuffer = nullptr;
 }
 
 } // namespace
@@ -329,9 +391,8 @@ class SceneDitherPatch : public ApexPatch {
     bool Install() override {
         if (isEnabled) return true;
         lastError.clear();
-        g_backBuffer = nullptr;
         g_on = true;
-        RegisterHooks();
+        AcquireHooks();
         isEnabled = true;
         LOG_INFO("[SceneDither] Installed");
         return true;
@@ -341,10 +402,7 @@ class SceneDitherPatch : public ApexPatch {
         if (!isEnabled) return true;
         lastError.clear();
         g_on = false;
-        D3D9Hooks::UnregisterAll(kHookName);
-        RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
-        ReleaseCopies(); // an address reused while off must never meet an old copy
-        g_backBuffer = nullptr;
+        ReleaseHooks();
         isEnabled = false;
         LOG_INFO(std::format("[SceneDither] Uninstalled (copies made this session: pixel {}, vertex {})", g_made.load(), g_madeVs.load()));
         return true;
@@ -398,6 +456,24 @@ APEX_REGISTER_FEATURE(SceneDitherPatch, {.displayName = "Banding Fix",
                                                               "with the clip position.",
                                                               "Bound only for draws into the back buffer with the depth test on (the 3D scene), last in the draw chain; "
                                                               "the amount constant's previous value is put back after the draw."}})
+
+namespace SceneBinder {
+void AcquireJitter() {
+    g_jitterWanted = true;
+    AcquireHooks();
+}
+void ReleaseJitter() {
+    g_jitterWanted = false;
+    g_jitterOn = false;
+    ReleaseHooks();
+}
+void SetFrameJitter(bool on, float clipX, float clipY) {
+    g_jitterOn = on && g_jitterWanted.load();
+    g_jitter[0] = clipX;
+    g_jitter[1] = clipY;
+}
+Coverage LastCoverage() { return {g_last.jittered, g_last.jitterRefused, g_last.jitterNoShader}; }
+} // namespace SceneBinder
 
 namespace SceneDither {
 bool On() { return g_on.load(std::memory_order_relaxed); }
