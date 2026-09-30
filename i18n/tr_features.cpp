@@ -74,6 +74,18 @@ const I18n::Entry kEntries[] = {
      "formato del juego, así que esos momentos dan menos tirones. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
      "Compresse ce que le jeu stocke dans ses caches et ses sauvegardes (Sims, objets, sol) avec un compresseur bien plus rapide, au format "
      "du jeu : ces moments saccadent moins. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"When the game builds a Sim (Create a Sim, and when a Sim changes outfits), it sorts the triangles of hair and other see-through "
+     "layers with a slow test of every triangle against every point of the mesh. This does the same sort many times faster, with "
+     "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Quando o jogo monta um Sim (no Criar um Sim e quando um Sim troca de roupa), ele ordena os triângulos do cabelo e de outras camadas "
+     "transparentes com um teste lento de cada triângulo contra cada ponto da malha. Isto faz a mesma ordenação muitas vezes mais rápido, "
+     "com exatamente o mesmo resultado, então esses momentos travam menos. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Cuando el juego construye un Sim (en Crear un Sim y cuando un Sim cambia de ropa), ordena los triángulos del pelo y de otras capas "
+     "transparentes con una prueba lenta de cada triángulo contra cada punto de la malla. Esto hace la misma ordenación muchas veces más "
+     "rápido, con exactamente el mismo resultado, así que esos momentos dan menos tirones. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Quand le jeu construit un Sim (dans Créer un Sim et quand un Sim change de tenue), il trie les triangles des cheveux et des autres "
+     "couches transparentes avec un test lent de chaque triangle contre chaque point du maillage. Ceci fait le même tri bien plus vite, avec "
+     "exactement le même résultat : ces moments saccadent moins. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

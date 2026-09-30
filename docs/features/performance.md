@@ -73,6 +73,7 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **false** | - | Experimental until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. No Overview row. |
 | "Use several cores" (shown while the switch above is on) / "Large textures are shared out over several processor cores, with the same result" | `[patches.FastTextureCompression] useSeveralCores` | bool | **true** | - | Applied to the next texture (the hook reads it every call; `Update` clears the reinstall request). Off = every texture on the calling thread, as before. Never rename the key. |
 | "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
+| "Faster Sim building" / "Fewer hitches when Sims are edited or change outfits" | `[patches.FastCasSort] enabled` | bool | **true** | - | Experimental (30/09). Bit-identical result, checked against the game's function on the first 16 calls. No Overview row. See "How it works: Faster Sim Building". |
 | "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **false** | - | Experimental (C6). No Overview row; the tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
 | "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **false** | - | Experimental (C8). No Overview row. |
 
@@ -765,6 +766,40 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   (4 calls: 2 counting runs + their writes) 299 ms (49 cases) -> 101 ms (3); ~11 MB 121 -> 43 ms; ~5.5 MB 78 -> 24 ms
   (44 / 6 cases); worst compression-dominated hitch 295-395 ms -> 135 ms. The user: "realmente parece melhor". In game the
   pieces run ~2x faster than one thread (offline 3.8x): the game's own threads are busy at those moments.
+
+## How it works: Faster Sim Building (FastCasSort, 30/09)
+
+Found with the frame profiler's sampling run (30/09, 10 minutes, CAS and play): "CAS SimService" dominated 38 hitches
+(~80 ms each, 3.0 s over the median); 83% of their render-thread samples were keyed "TS3W fn~005D1010", with the stack
+0x005D38F8 in 84%. **Pitfall:** the sampler guesses a function's start from the int3 padding before it, and FUN_005d1960
+follows FUN_005d1010's jump table with no padding, so its samples were booked to 005D1010. A read-only probe on 005D1010
+(development build, removed again) showed it cheap (2566 calls, 84 ms in all, writing plain private memory, not
+write-combined); 0x005D38F8 is the return address of `call 005D1960`.
+
+- **The game side** (VERIFIED in full.asm and re\out\fn_005d1960.c): FUN_005d1960 "CAS/ModelBuilder/TriangleSortDataList",
+  cdecl(u16* indices, u8* vertices, u32 indexCount, u32 vertexCount, u16 stride, u8 positionOffset), plain `ret`, its only
+  call at 0x005D38F3 in FUN_005d3760 "CAS/ModelBuilder/FillDrawable" (per mesh part, when the part asks for it). For each
+  triangle: its three positions (x, y, z, x) / w from signed 16-bit values (the packing of FUN_005d1010 case 1), two unit
+  edge vectors (rsqrtps + two Newton steps `(1 - r r L)(0.5 r) + r`, constants 1.0 at 0x0107A538 and 0.5 at 0x00F9A5AC), a
+  cross product C; then for every vertex v of the part (read at `v & 0xFFFF`) the unit vector from P0 and the sum
+  `(z + y) + x` of its product with C, counted when above FLT_EPSILON (0x00FE3474, `comiss`/`jbe`). The triangle list is
+  sorted by EASTL's list merge sort (0x005CC2D0, merge 0x005C9DE0: a node of the second half goes first only when its
+  count is larger, unsigned: stable, descending) and the indices are written back. triangles x vertices steps of divps +
+  rsqrtps: a 2013-vertex, 3000-triangle part is ~90 ms.
+- **The replacement** (`features/cas_tri_sort.{h,cpp}` pure code, `features/fast_cas.{h,cpp}` the feature, entry chain site
+  `CasTriSort` layer `FastCas`, GameAddr `CasTriSort` group `FastCasSort`): every vertex's (x, y, z) / w once (the same
+  divps), then four vertices per SSE instruction with each lane doing the game's operations in the game's grouping
+  (rsqrtps per lane = the same approximation as on the game's broadcast value), the triangles split over up to 6 worker
+  threads when triangles x vertices >= 300,000 (the pool is the texture encoder's hand-off protocol; the caller's MXCSR
+  copied to the workers), then `std::stable_sort` by count, descending, and the write-back. Allocation failures fall back
+  to the game's function on the untouched indices.
+- **Checks:** the first 16 calls of each session (both builds) and in the development build 1 in 16 afterwards run the
+  game's own function on a copy of the indices and compare; a difference: `[FastCas] Result differs from the game's`, the
+  game's result is used and the feature turns itself off for the session.
+- **Offline** (`tools/cas_sort_test`, read-only, console only): 565 meshes (packed like the game, odd values: w = 0 or
+  negative, repeated vertices, degenerate triangles, index counts not a multiple of 3, vertex counts over 65536), every
+  count and every sorted list equal to the literal translation (`CasTriSort::Ref`). Time: 1030 x 1500 21 -> 1.5 ms,
+  2013 x 3000 88 -> 2.5 ms, 3363 x 5000 242 -> 5.2 ms (8 threads, thread start included).
 
 ## How it works: Spread New Objects Over Frames (C6)
 

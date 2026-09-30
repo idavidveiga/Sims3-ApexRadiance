@@ -31,6 +31,7 @@
 #include "lot_lighting_motion.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
+#include "fast_cas.h"
 #include "scene_budget.h"
 #include "object_index.h"
 #include "room_light_queue.h"
@@ -276,6 +277,31 @@ class FastCacheCompressionPatch : public ApexPatch {
     void RenderDeveloperUI() override { FastRefPack::RenderDeveloperUI(); }
 };
 
+class FastCasSortPatch : public ApexPatch {
+  public:
+    FastCasSortPatch() : ApexPatch(Performance::kFastCasName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!FastCas::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        FastCas::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { FastCas::RenderDeveloperUI(); }
+};
+
 class SceneNodeBudgetPatch : public ApexPatch {
   public:
     SceneNodeBudgetPatch() : ApexPatch(Performance::kSceneBudgetName, nullptr) {}
@@ -481,6 +507,21 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                                             "The first 16 streams of each session are decompressed with the game's decoder and compared with the source; a difference "
                                             "turns the feature off."},
                        .gameCodeGroup = "FastCacheCompression"});
+
+APEX_REGISTER_FEATURE(FastCasSortPatch,
+                      {.displayName = "Faster Sim Building",
+                       .description = "When the game builds a Sim (Create a Sim, and when a Sim changes outfits), it sorts the triangles of hair and other see-through "
+                                      "layers with a slow test of every triangle against every point of the mesh. This does the same sort many times faster, with "
+                                      "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The CAS model builder's triangle sort (0x5D1960, \"CAS/ModelBuilder/TriangleSortDataList\") is answered by a rewrite with the "
+                                            "same arithmetic: vertex positions computed once, four vertices per SSE instruction, the triangles split over worker threads, "
+                                            "and the same stable sort.",
+                                            "The first 16 calls of each session also run the game's function and compare the indices; a difference turns the feature off."},
+                       .gameCodeGroup = "FastCasSort"});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",

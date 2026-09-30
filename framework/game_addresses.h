@@ -219,6 +219,8 @@ enum class Id : uint16_t {
     //      "Moonlight" are not available) ----
     BakeColourSite,           // movaps xmm0,[edi+0F0h] in the terrain bake FUN_00c292b0: the lamp colour copied to its shader parameter
     SunlightScale,            // the "Sunlight Scale" float FUN_00c11ad0 multiplies the sun / moon colour by (mov ecx,imm32 at 0x00C11B01)
+    CasTriSort,               // FUN_005d1960 cdecl(u16* indices, u8* vertices, u32 indexCount, u32 vertexCount, u16 stride, u8 offset):
+                              // "CAS/ModelBuilder/TriangleSortDataList" (features/cas_tri_sort.h)
     Count
 };
 

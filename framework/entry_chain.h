@@ -35,11 +35,12 @@ enum class Site : int {
     SceneHolderTeardown, // 0x006E4DE0 thiscall(), ret: the pending holder's teardown; prologue 53 55 56 57 8B F9
     RoomInvalidate,      // 0x0069EED0 thiscall(room, char full, char keep), ret 8; prologue 56 8B F1 8B 0E (push esi; mov esi,ecx; mov ecx,[esi])
     RoomInvalidateFlag,  // 0x0069F160 thiscall(room, char flag), ret 4; prologue 8A 44 24 04 56 (mov al,[esp+4]; push esi)
+    CasTriSort,          // 0x005D1960 cdecl(6 args), ret: the CAS model builder's triangle sort; prologue 55 8B EC 83 E4 F0 (as the DXT encoders)
     Count
 };
 // lower = outer. FastDxt: the DXT sites only; ResourceCache: the DpfWriteDirect site only; ObjectIndex: the ObjectById
 // site only; SceneBudget: the three scene node sites only (features/scene_budget.h).
-enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, Count };
+enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, FastCas, Count };
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

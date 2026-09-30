@@ -17,6 +17,7 @@ inline constexpr const char* kLotLightingName = "LotLightingMotion";
 inline constexpr const char* kWallShadingName = "WallShadingWhileMoving";
 inline constexpr const char* kFastTextureName = "FastTextureCompression";
 inline constexpr const char* kFastCacheName = "FastCacheCompression";
+inline constexpr const char* kFastCasName = "FastCasSort";
 inline constexpr const char* kSceneBudgetName = "SceneNodeBudget";
 inline constexpr const char* kObjectIndexName = "ObjectLookupIndex";
 inline constexpr const char* kRoomLightQueueName = "RoomLightQueue";

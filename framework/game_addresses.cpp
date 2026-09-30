@@ -242,6 +242,7 @@ constexpr Info kInfo[] = {
     {"TerrainUpdateCall", 0x00C6D68C},
     {"BakeColourSite", 0x00C2950F},
     {"SunlightScale", 0x011D0918},
+    {"CasTriSort", 0x005D1960},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -503,6 +504,7 @@ const Entry kTable[] = {
     {Id::TerrainUpdateCall, K::Sig, W::Text, None, 0, {{"8B 44 24 0C 50 8D 4C 24 14 51 8B 4E 58 E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00", 10, M::At}, {"51 8B 4E ?? E8 ?? ?? ?? ?? 80 BE 58 02 00 00 00 75", 1, M::At}}},
     {Id::BakeColourSite, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17 0F 28 47 10", 5, M::At}, {"0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17", 0, M::At}}},
     {Id::SunlightScale, K::Sig, W::Image, None, 0, {{"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E 00 08 00 00", 1, M::Dword}, {"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E ?? ?? 00 00 8D 8E", 1, M::Dword}}},
+    {Id::CasTriSort, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC A4 00 00 00 33 C0 89 44 24 08 89 44 24 0C 53 8D 44 24 0C 8B C8 89 44 24 0C 33 C0 56 57 89 44 24 20 89 44 24 24 89 44 24 28 8D 54 24 20 52 B8 AB AA AA AA F7 65 10", 0, M::At}, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
@@ -528,6 +530,7 @@ const Group kGroups[] = {
     {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::SceneNodeDtor,
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
+    {"FastCasSort", {Id::CasTriSort}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
