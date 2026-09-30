@@ -37,6 +37,22 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 </div>
 
 
+## 🌗 New in 2.1.0
+
+**Ambient Occlusion (Experimental):** soft shade where things meet: under furniture, in corners, where walls meet the floor, around houses and trees.
+
+- 🎯 Full resolution, **no noise or flicker**: it stays perfectly still when the camera does.
+- 💡 Lamp-lit and bright surfaces **keep their light and color** (no grey film).
+- 🎚️ Adjust **Strength**, plus Reach, Keep lamp light and Quality under Advanced.
+- 📂 Saved in your profiles and turned off by "Compare with the game".
+
+> [!NOTE]
+> It needs the game's own Edge Smoothing off (Options › Graphics). Apex's anti-aliasing works with it.
+
+**Also new:** a small note in the top-left corner shows the mod is running (and your menu key) from the first loading screen, and the automatic lighting refresh no longer runs at the main menu before a save is loaded.
+
+📥 **Download:** [Nexus Mods](https://www.nexusmods.com/thesims3/mods/247) · [GitHub release](https://github.com/loinyx/Sims3-ApexRadiance/releases/latest). Every version's notes are on the [Releases](https://github.com/loinyx/Sims3-ApexRadiance/releases) page.
+
 ## Features
 
 ### Night Lights
