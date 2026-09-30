@@ -46,6 +46,8 @@ from the combined build.
 | Advanced > Softness | `suavidade` | float | 0.5 | 0 .. 1 | FXAA sub-pixel amount (`cParams.x`). Disabled (greyed) with SMAA |
 | Advanced > Sensitivity | `sensibilidade` | float | 0.125 | 0.063 .. 0.333 | FXAA edge threshold (`cParams.y`); the minimum threshold is `sensitivity / 3` (`cParams.z`). Disabled with SMAA |
 | Advanced > Reset to defaults | | button | | | `g.p = Params{}` (all fields, including `debugView`) |
+| Edges from depth (both methods, 30/09) | `depthEdges` | bool | true | | Requests the INTZ depth swap (DepthShare::Request) and, when the scene depth is the bound depth-stencil at the trigger (as AO checks), runs a pass writing log2 of the view distance (R32F, `LogDepthPS`: 1/z = (A - d)/(near A) from PostScene) that the edge passes read at s5 (point). SMAA: the reference predication (`SMAA_PREDICATION` 1, threshold 0.02 log2 = a 1.4% distance step, scale 1.0, strength 0.6 = the threshold x 0.4 where the depth steps; textures keep the preset threshold). FXAA: its contrast test x 0.4 where any of the 4 neighbours' log-depth differs by more than 0.02. Without the depth (swap off, reflection pass bound) the plain variants run; the card notes it |
+| Sharpen textures (both methods, 30/09) | `sharpen` | float | 0 | 0 .. 1 | Contrast-adaptive sharpening (after AMD FidelityFX CAS, MIT: 4 neighbours, weight -amp/lerp(8, 5, amount), amp = sqrt(min(mn, 1 - mx)/mx)) of the pixels the smoothing left as they were (SMAA: no blend weight around the pixel; FXAA: its early-out), so the smoothed edges are never sharpened again. 0 = off (no visual change). Independent of Color > Sharpness |
 | Developer > Show smoothed pixels in red (dev) | `debugView` | bool | false | | Tints every pixel the AA changed 60% red |
 
 Status line on the card: `Status: <text>` and, once timings arrive, `GPU cost: x.xx ms per frame`. Developer also shows
@@ -224,8 +226,8 @@ draws, then the first depth-off back-buffer draw) and on the game's back buffer 
 - SMAA reads and blends in **gamma space** (all samplers `SRGBTEXTURE = 0`). The reference allows this ("If sRGB reads in
   this last pass are not possible, the technique will work anyway, but will perform antialiasing in gamma space",
   `SMAA.hlsl` note 5). Edge detection in gamma space is what the reference wants.
-- SMAA 1x only: no temporal (T2x) or MSAA-combined (S2x/4x) modes, no predication, luma edges only (no colour or depth
-  edge detection).
+- SMAA 1x only: no temporal (T2x) or MSAA-combined (S2x/4x) modes. Luma edges (Extreme: colour edges); since 30/09 depth
+  predication with "Edges from depth" (below).
 - Runs before the game's bloom composite, so bloom halos themselves are not smoothed (irrelevant in practice).
 - The trigger is the **first** depth-off back-buffer draw after 20 scene draws. In some interiors the game has depth-off
   draws in the middle of the scene (HDR diagnostic 28/09); geometry drawn after that point is not smoothed (inferred, not

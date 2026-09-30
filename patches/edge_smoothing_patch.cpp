@@ -17,6 +17,8 @@
 #include "apex_log.h"
 #include "d3d9_bootstrap.h"
 #include "d3d9_hooks.h"
+#include "d3d9_extra_hooks.h"
+#include "depth_share.h"
 #include "render_callbacks.h"
 #include "post_scene.h"
 #include "shader_cache.h"
@@ -46,12 +48,37 @@ constexpr int kRetryFrames = 120;
 // STEPS and the step sizes come from the quality level (macros).
 const char* kShaderSource = R"HLSL(
 sampler2D sColor : register(s0);
+sampler2D sDepthLog : register(s5); // log2 of the view distance (APEX_DEPTH_EDGES), point
 float4 cRcp    : register(c0); // xy = 1 / screen size
 float4 cParams : register(c1); // x = sub-pixel amount, y = edge threshold, z = edge threshold minimum, w = debug view
+float4 cSharp  : register(c2); // x = texture sharpening 0..1 (pixels the smoothing left alone)
 
 static const float kStep[STEPS] = { STEP_SIZES };
 
 float Luma(float2 uv) { return dot(tex2Dlod(sColor, float4(uv, 0, 0)).rgb, float3(0.299, 0.587, 0.114)); }
+
+// Contrast-adaptive sharpening of one pixel from its 4 neighbours (after AMD FidelityFX CAS, MIT): less where the
+// neighbourhood is already contrasty or near black / white, so no halos
+float3 Sharpen(float3 c, float3 n, float3 s, float3 w, float3 e, float amount)
+{
+    float3 mn = min(c, min(min(n, s), min(w, e)));
+    float3 mx = max(c, max(max(n, s), max(w, e)));
+    float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+    float3 wgt = amp * (-1.0 / lerp(8.0, 5.0, amount));
+    return saturate((c + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt));
+}
+
+// A pixel FXAA leaves as it is: sharpened when asked
+float3 Unsmoothed(float2 pos, float3 c, float2 rcp)
+{
+    [branch] if (cSharp.x > 0.0)
+    {
+        float3 n = tex2Dlod(sColor, float4(pos - float2(0, rcp.y), 0, 0)).rgb, s = tex2Dlod(sColor, float4(pos + float2(0, rcp.y), 0, 0)).rgb;
+        float3 w = tex2Dlod(sColor, float4(pos - float2(rcp.x, 0), 0, 0)).rgb, e = tex2Dlod(sColor, float4(pos + float2(rcp.x, 0), 0, 0)).rgb;
+        return Sharpen(c, n, s, w, e, cSharp.x);
+    }
+    return c;
+}
 
 float4 FxaaPS(float2 pos : TEXCOORD0) : COLOR0
 {
@@ -65,8 +92,19 @@ float4 FxaaPS(float2 pos : TEXCOORD0) : COLOR0
     float rangeMax = max(max(lumaN, lumaW), max(lumaE, max(lumaS, lumaM)));
     float rangeMin = min(min(lumaN, lumaW), min(lumaE, min(lumaS, lumaM)));
     float range = rangeMax - rangeMin;
+#ifdef APEX_DEPTH_EDGES
+    // a step in the scene depth next to this pixel (log2 of the view distance, apart by more than DEPTH_STEP): the edge
+    // of an object, smoothed down to a lower contrast (walls against walls of the same colour, night scenes)
+    float dM = tex2Dlod(sDepthLog, float4(pos, 0, 0)).r;
+    float4 dN4 = float4(tex2Dlod(sDepthLog, float4(pos - float2(0, rcp.y), 0, 0)).r, tex2Dlod(sDepthLog, float4(pos + float2(0, rcp.y), 0, 0)).r,
+                        tex2Dlod(sDepthLog, float4(pos - float2(rcp.x, 0), 0, 0)).r, tex2Dlod(sDepthLog, float4(pos + float2(rcp.x, 0), 0, 0)).r);
+    float depthScale = any(abs(dN4 - dM) > DEPTH_STEP) ? DEPTH_EDGE_SCALE : 1.0;
+    [branch] if (range < max(cParams.z, rangeMax * cParams.y) * depthScale)
+        return float4(Unsmoothed(pos, rgbM, rcp), 1);
+#else
     [branch] if (range < max(cParams.z, rangeMax * cParams.y))
-        return float4(rgbM, 1);
+        return float4(Unsmoothed(pos, rgbM, rcp), 1);
+#endif
 
     float lumaNW = Luma(pos - rcp);
     float lumaSE = Luma(pos + rcp);
@@ -169,15 +207,24 @@ sampler2D edgesTex  : register(s1); // linear
 sampler2D areaTex   : register(s2); // A8L8, linear
 sampler2D searchTex : register(s3); // L8, point
 sampler2D blendTex  : register(s4); // linear
+sampler2D depthTex  : register(s5); // log2 of the view distance (predication), point
 
 float4 SmaaEdgePS(float2 uv : TEXCOORD0) : COLOR0
 {
     float4 offset[3];
     SMAAEdgeDetectionVS(uv, offset);
+#if SMAA_PREDICATION
+#ifdef APEX_SMAA_COLOR_EDGES
+    return float4(SMAAColorEdgeDetectionPS(uv, offset, colorTex, depthTex), 0, 0);
+#else
+    return float4(SMAALumaEdgeDetectionPS(uv, offset, colorTex, depthTex), 0, 0);
+#endif
+#else
 #ifdef APEX_SMAA_COLOR_EDGES
     return float4(SMAAColorEdgeDetectionPS(uv, offset, colorTex), 0, 0); // every channel: also edges of equal brightness
 #else
     return float4(SMAALumaEdgeDetectionPS(uv, offset, colorTex), 0, 0);
+#endif
 #endif
 }
 float4 SmaaWeightPS(float2 uv : TEXCOORD0) : COLOR0
@@ -192,14 +239,41 @@ float4 SmaaBlendPS(float2 uv : TEXCOORD0) : COLOR0
     float4 offset;
     SMAANeighborhoodBlendingVS(uv, offset);
     float4 c = SMAANeighborhoodBlendingPS(uv, offset, colorTex, blendTex);
-    if (cParams.w > 0.5)
+    [branch] if (cParams.w > 0.5 || cParams.y > 0.0)
     {
         float4 a = float4(tex2Dlod(blendTex, float4(offset.xy, 0, 0)).a, tex2Dlod(blendTex, float4(offset.zw, 0, 0)).g, tex2Dlod(blendTex, float4(uv, 0, 0)).xz);
-        if (dot(a, 1.0) > 1e-5) c.rgb = lerp(c.rgb, float3(1, 0, 0), 0.6); // debug: the pixels SMAA blended
+        bool blended = dot(a, 1.0) > 1e-5;
+        if (!blended && cParams.y > 0.0) // texture sharpening, only where SMAA left the pixel as it was (edges stay smooth)
+        {
+            float2 r = SMAA_RT_METRICS.xy;
+            float3 n = tex2Dlod(colorTex, float4(uv - float2(0, r.y), 0, 0)).rgb, s = tex2Dlod(colorTex, float4(uv + float2(0, r.y), 0, 0)).rgb;
+            float3 w = tex2Dlod(colorTex, float4(uv - float2(r.x, 0), 0, 0)).rgb, e = tex2Dlod(colorTex, float4(uv + float2(r.x, 0), 0, 0)).rgb;
+            float3 mn = min(c.rgb, min(min(n, s), min(w, e))), mx = max(c.rgb, max(max(n, s), max(w, e)));
+            float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+            float3 wgt = amp * (-1.0 / lerp(8.0, 5.0, cParams.y)); // after AMD FidelityFX CAS (MIT)
+            c.rgb = saturate((c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt));
+        }
+        if (blended && cParams.w > 0.5) c.rgb = lerp(c.rgb, float3(1, 0, 0), 0.6); // debug: the pixels SMAA blended
     }
     return float4(c.rgb, 1);
 }
 )HLSL";
+
+// ---- Edges found by depth too (30/09): the scene depth (INTZ, shared by Depth Blur / AO) turned into log2 of the view
+// distance, so a step between two pixels is a relative distance (an object in front of another), the same near and far.
+// SMAA: the reference's predication (threshold lowered where the depth steps, SMAA_PREDICATION_SCALE 1 so textures keep
+// the preset's threshold). FXAA: the same idea on its contrast test.
+const char* kDepthLogSource = R"HLSL(
+sampler2D sDepth : register(s0); // INTZ, point
+float4 cDepth : register(c2);    // x = A, y = 1 / (near A): 1/z = (A - d) / (near A)
+float4 LogDepthPS(float2 uv : TEXCOORD0) : COLOR0
+{
+    float d = tex2Dlod(sDepth, float4(uv, 0, 0)).r;
+    return d >= 0.99999 ? 16.0 : -log2(max(cDepth.x - d, 1e-7) * cDepth.y); // sky: 64 km
+}
+)HLSL";
+constexpr const char* kDepthStep = "0.02";      // log2 units: a 1.4% jump in distance between neighbours = an object edge
+constexpr const char* kDepthEdgeScale = "0.4"; // the contrast needed there (x the usual threshold)
 
 // the reference presets (SMAA.hlsl, "SMAA Presets"), with the threshold as a shader constant
 struct SmaaPreset {
@@ -219,7 +293,7 @@ constexpr SmaaPreset kSmaaPresets[kSmaaLevels] = {{0.15f, "4", nullptr, false}, 
 // ---- every variant compiled at start-up on a background thread (framework/shader_cache.h) ----
 // The render thread only creates the shader objects from the kept bytecode (first use, and after ReleaseShaders).
 // Priority 0 = the default FXAA quality (Balanced) and SMAA preset (High).
-ShaderCache::Id AddFxaa(int q, const char* tag) {
+ShaderCache::Id AddFxaa(int q, const char* tag, bool depth = false) {
     ShaderCache::Desc d;
     d.tag = tag;
     d.source = kShaderSource;
@@ -228,19 +302,42 @@ ShaderCache::Id AddFxaa(int q, const char* tag) {
     d.target = "ps_3_0";
     d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
     d.macros = {{"STEPS", kQualities[q].steps}, {"STEP_SIZES", kQualities[q].sizes}};
+    if (depth) {
+        d.macros.emplace_back("APEX_DEPTH_EDGES", "1");
+        d.macros.emplace_back("DEPTH_STEP", kDepthStep);
+        d.macros.emplace_back("DEPTH_EDGE_SCALE", kDepthEdgeScale);
+    }
     d.priority = q == 1 ? 0 : 1;
     return ShaderCache::Add(std::move(d));
 }
+ShaderCache::Id AddDepthLog() {
+    ShaderCache::Desc d;
+    d.tag = "EdgeSmoothing depth (log2)";
+    d.source = kDepthLogSource;
+    d.sourceName = "edge_smoothing_depth.hlsl";
+    d.entry = "LogDepthPS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 0;
+    return ShaderCache::Add(std::move(d));
+}
+// pass 0..2 = edges, weights, blend; pass 3 = the edge pass with depth predication
 ShaderCache::Id AddSmaa(int q, int pass, const char* tag) {
     static const char* const kEntries[3] = {"SmaaEdgePS", "SmaaWeightPS", "SmaaBlendPS"};
     ShaderCache::Desc d;
     d.tag = tag;
     d.source = std::string(kSmaaPrefix) + reinterpret_cast<const char*>(kSmaaHlsl) + kSmaaSuffix;
     d.sourceName = "SMAA.hlsl";
-    d.entry = kEntries[pass];
+    d.entry = kEntries[pass == 3 ? 0 : pass];
     d.target = "ps_3_0";
     d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
     d.macros.emplace_back("SMAA_MAX_SEARCH_STEPS", kSmaaPresets[q].steps);
+    if (pass == 3) {
+        d.macros.emplace_back("SMAA_PREDICATION", "1");
+        d.macros.emplace_back("SMAA_PREDICATION_THRESHOLD", kDepthStep);
+        d.macros.emplace_back("SMAA_PREDICATION_SCALE", "1.0");
+        d.macros.emplace_back("SMAA_PREDICATION_STRENGTH", "0.6"); // threshold x 0.4 where the depth steps
+    }
     if (kSmaaPresets[q].stepsDiag) {
         d.macros.emplace_back("SMAA_MAX_SEARCH_STEPS_DIAG", kSmaaPresets[q].stepsDiag);
         d.macros.emplace_back("SMAA_CORNER_ROUNDING", "25");
@@ -261,6 +358,12 @@ const ShaderCache::Id kSmaaPsId[kSmaaLevels][3] = {
     {AddSmaa(3, 0, "EdgeSmoothing SMAA edges (Ultra)"), AddSmaa(3, 1, "EdgeSmoothing SMAA weights (Ultra)"), AddSmaa(3, 2, "EdgeSmoothing SMAA blend (Ultra)")},
     {AddSmaa(4, 0, "EdgeSmoothing SMAA edges (Extreme)"), AddSmaa(4, 1, "EdgeSmoothing SMAA weights (Extreme)"), AddSmaa(4, 2, "EdgeSmoothing SMAA blend (Extreme)")},
 };
+const ShaderCache::Id kSmaaDepthEdgeId[kSmaaLevels] = {AddSmaa(0, 3, "EdgeSmoothing SMAA edges + depth (Low)"), AddSmaa(1, 3, "EdgeSmoothing SMAA edges + depth (Medium)"),
+                                                       AddSmaa(2, 3, "EdgeSmoothing SMAA edges + depth (High)"), AddSmaa(3, 3, "EdgeSmoothing SMAA edges + depth (Ultra)"),
+                                                       AddSmaa(4, 3, "EdgeSmoothing SMAA edges + depth (Extreme)")};
+const ShaderCache::Id kFxaaDepthId[kFxaaLevels] = {AddFxaa(0, "EdgeSmoothing FXAA + depth (Fast)", true), AddFxaa(1, "EdgeSmoothing FXAA + depth (Balanced)", true),
+                                                   AddFxaa(2, "EdgeSmoothing FXAA + depth (High)", true), AddFxaa(3, "EdgeSmoothing FXAA + depth (Extreme)", true)};
+const ShaderCache::Id kDepthLogId = AddDepthLog();
 
 struct Params {
     int method = 1;           // 0 FXAA, 1 SMAA
@@ -268,6 +371,8 @@ struct Params {
     int smaaQuality = 2;      // SMAA: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme
     float subpix = 0.5f;      // sub-pixel smoothing (thin lines, texture detail): 0 = off, 1 = soft
     float sensitivity = 0.125f; // edge threshold: lower = more edges smoothed
+    bool depthEdges = true;   // also find object edges in the scene depth (fainter edges of objects smoothed)
+    float sharpen = 0.0f;     // texture sharpening of the pixels the smoothing left alone, 0..1 (0 = off)
     bool debugView = false;
 };
 
@@ -286,6 +391,16 @@ struct AaState {
     IDirect3DSurface9 *edgesSurf = nullptr, *blendSurf = nullptr;
     IDirect3DPixelShader9* smaaPs[kSmaaLevels][3] = {};
     bool smaaTried[kSmaaLevels] = {};
+    // depth edges
+    IDirect3DTexture9* depthLogTex = nullptr;
+    IDirect3DSurface9* depthLogSurf = nullptr;
+    IDirect3DPixelShader9* psDepthLog = nullptr;
+    IDirect3DPixelShader9* smaaDepthEdgePs[kSmaaLevels] = {};
+    IDirect3DPixelShader9* fxaaDepthPs[kFxaaLevels] = {};
+    bool depthShadersTried = false;
+    bool depthRequested = false; // DepthShare::Request(true) held
+    bool depthUsed = false;      // the last frame's pass used the depth
+    unsigned framesWithDepth = 0;
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
@@ -316,6 +431,8 @@ void ReleaseResources() {
     SafeRelease(g.blendTex);
     SafeRelease(g.areaTex);
     SafeRelease(g.searchTex);
+    SafeRelease(g.depthLogSurf);
+    SafeRelease(g.depthLogTex);
     for (int i = 0; i < AaState::kQ; i++) {
         SafeRelease(g.qDisjoint[i]);
         SafeRelease(g.qBegin[i]);
@@ -333,7 +450,33 @@ void ReleaseShaders() {
     for (int q = 0; q < kSmaaLevels; q++) {
         for (auto& ps : g.smaaPs[q]) SafeRelease(ps);
         g.smaaTried[q] = false;
+        SafeRelease(g.smaaDepthEdgePs[q]);
     }
+    for (auto& ps : g.fxaaDepthPs) SafeRelease(ps);
+    SafeRelease(g.psDepthLog);
+    g.depthShadersTried = false;
+}
+
+// The depth-edge shaders (all variants, created on first use from the precompiled bytecode). False when any is missing:
+// the effect then runs without the depth.
+bool DepthShaders(IDirect3DDevice9* dev) {
+    if (!g.depthShadersTried) {
+        g.depthShadersTried = true;
+        auto make = [&](ShaderCache::Id id, IDirect3DPixelShader9** ps, const char* what) {
+            std::string msg;
+            if (ShaderCache::CreatePixelShader(dev, id, ps, &msg) == ShaderCache::Result::CompileFailed)
+                LOG_ERROR(std::format("[EdgeSmoothing] {} failed to compile: {}", what, msg));
+        };
+        make(kDepthLogId, &g.psDepthLog, "LogDepthPS");
+        for (int q = 0; q < kSmaaLevels; q++) make(kSmaaDepthEdgeId[q], &g.smaaDepthEdgePs[q], "SMAA edges + depth");
+        for (int q = 0; q < kFxaaLevels; q++) make(kFxaaDepthId[q], &g.fxaaDepthPs[q], "FXAA + depth");
+    }
+    if (!g.psDepthLog) return false;
+    for (auto* ps : g.smaaDepthEdgePs)
+        if (!ps) return false;
+    for (auto* ps : g.fxaaDepthPs)
+        if (!ps) return false;
+    return true;
 }
 
 // The three SMAA passes of one preset (created on first use from the precompiled bytecode)
@@ -421,6 +564,13 @@ bool InitResources(IDirect3DDevice9* dev) {
         g.status = "ERROR: not enough video memory for SMAA";
         return false;
     }
+    // the depth-edge target (optional: without it the effect runs on colour alone)
+    if (FAILED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &g.depthLogTex, nullptr)) || !g.depthLogTex ||
+        FAILED(g.depthLogTex->GetSurfaceLevel(0, &g.depthLogSurf)) || !g.depthLogSurf) {
+        SafeRelease(g.depthLogSurf);
+        SafeRelease(g.depthLogTex);
+        LOG_WARNING("[EdgeSmoothing] No video memory for the depth-edge target: edges from colour only");
+    }
     for (int i = 0; i < AaState::kQ; i++) {
         dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &g.qDisjoint[i]);
         dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &g.qBegin[i]);
@@ -445,11 +595,126 @@ constexpr D3DSAMPLERSTATETYPE kSamplerStates[] = {D3DSAMP_MINFILTER, D3DSAMP_MAG
                                                   D3DSAMP_MAXMIPLEVEL, D3DSAMP_MIPMAPLODBIAS};
 constexpr int kRS = static_cast<int>(sizeof(kRenderStates) / sizeof(kRenderStates[0]));
 constexpr int kSS = static_cast<int>(sizeof(kSamplerStates) / sizeof(kSamplerStates[0]));
-constexpr UINT kPSConsts = 2;
+constexpr UINT kPSConsts = 3;
 
-void RunFxaa(IDirect3DDevice9* dev) {
-    IDirect3DPixelShader9* ps = ShaderFor(dev, g.p.quality);
+// The depth-edge pass: the scene depth (INTZ, bound as the depth-stencil right now) -> log2 of the view distance in
+// depthLogTex. True when it ran (the AA passes then read it at s5). Saves and restores everything it touches.
+bool RunDepthPass(IDirect3DDevice9* dev) {
+    if (!g.p.depthEdges || !g.depthLogSurf) return false;
+    IDirect3DTexture9* depth = DepthShare::Texture();
+    if (!depth || !DepthShaders(dev)) return false;
+    IDirect3DSurface9* ds = nullptr; // the scene depth must be the one bound now (not a reflection or UI pass), as AO checks
+    ExtraHooks::RawGetDepthStencilSurface(dev, &ds);
+    const bool sceneDepth = ds && ds == DepthShare::Surface();
+    if (ds) ds->Release();
+    if (!sceneDepth) return false;
+    IDirect3DSurface9* oldRt = nullptr;
+    IDirect3DPixelShader9* oldPs = nullptr;
+    IDirect3DVertexShader9* oldVs = nullptr;
+    IDirect3DVertexDeclaration9* oldDecl = nullptr;
+    DWORD oldFvf = 0;
+    IDirect3DVertexBuffer9* oldStream = nullptr;
+    UINT oldOffset = 0, oldStride = 0;
+    IDirect3DBaseTexture9* oldTex = nullptr;
+    DWORD rs[kRS], ss[kSS];
+    float oldConst[4];
+    D3DVIEWPORT9 oldVp{};
+    dev->GetRenderTarget(0, &oldRt);
+    dev->GetPixelShader(&oldPs);
+    dev->GetVertexShader(&oldVs);
+    dev->GetVertexDeclaration(&oldDecl);
+    dev->GetFVF(&oldFvf);
+    dev->GetStreamSource(0, &oldStream, &oldOffset, &oldStride);
+    dev->GetTexture(0, &oldTex);
+    for (int i = 0; i < kRS; i++) dev->GetRenderState(kRenderStates[i], &rs[i]);
+    for (int i = 0; i < kSS; i++) dev->GetSamplerState(0, kSamplerStates[i], &ss[i]);
+    dev->GetPixelShaderConstantF(2, oldConst, 1);
+    dev->GetViewport(&oldVp);
+
+    dev->SetRenderTarget(0, g.depthLogSurf);
+    dev->SetVertexShader(nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->SetTexture(0, depth);
+    dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+    dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
+    dev->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
+    dev->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
+    const float nearZ = PostScene::CameraNear() > 0.0f ? PostScene::CameraNear() : 0.25f, A = PostScene::CameraDepthA();
+    const float c[4] = {A, 1.0f / (nearZ * A), 0, 0};
+    dev->SetPixelShaderConstantF(2, c, 1);
+    dev->SetPixelShader(g.psDepthLog);
+    const float x1 = static_cast<float>(g.width) - 0.5f, y1 = static_cast<float>(g.height) - 0.5f;
+    const QuadVertex v[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {x1, -0.5f, 0, 1, 1, 0}, {-0.5f, y1, 0, 1, 0, 1}, {x1, y1, 0, 1, 1, 1}};
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(QuadVertex));
+
+    dev->SetRenderTarget(0, oldRt); // resets the viewport, restored below
+    dev->SetTexture(0, oldTex);
+    for (int i = 0; i < kSS; i++) dev->SetSamplerState(0, kSamplerStates[i], ss[i]);
+    for (int i = 0; i < kRS; i++) dev->SetRenderState(kRenderStates[i], rs[i]);
+    dev->SetPixelShaderConstantF(2, oldConst, 1);
+    dev->SetPixelShader(oldPs);
+    dev->SetVertexShader(oldVs);
+    if (oldDecl) dev->SetVertexDeclaration(oldDecl);
+    else dev->SetFVF(oldFvf);
+    dev->SetStreamSource(0, oldStream, oldOffset, oldStride); // DrawPrimitiveUP clears stream 0
+    dev->SetViewport(&oldVp);
+    SafeRelease(oldRt);
+    SafeRelease(oldTex);
+    SafeRelease(oldPs);
+    SafeRelease(oldVs);
+    SafeRelease(oldDecl);
+    SafeRelease(oldStream);
+    return true;
+}
+
+// Binds (or restores) sampler 5 for the depth-edge variants
+struct DepthSampler {
+    IDirect3DDevice9* dev;
+    bool on;
+    IDirect3DBaseTexture9* oldTex = nullptr;
+    DWORD ss[kSS] = {};
+    DepthSampler(IDirect3DDevice9* d, bool use) : dev(d), on(use) {
+        if (!on) return;
+        dev->GetTexture(5, &oldTex);
+        for (int i = 0; i < kSS; i++) dev->GetSamplerState(5, kSamplerStates[i], &ss[i]);
+        dev->SetTexture(5, g.depthLogTex);
+        dev->SetSamplerState(5, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(5, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(5, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        dev->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(5, D3DSAMP_SRGBTEXTURE, 0);
+        dev->SetSamplerState(5, D3DSAMP_MAXMIPLEVEL, 0);
+        dev->SetSamplerState(5, D3DSAMP_MIPMAPLODBIAS, 0);
+    }
+    ~DepthSampler() {
+        if (!on) return;
+        dev->SetTexture(5, oldTex);
+        for (int i = 0; i < kSS; i++) dev->SetSamplerState(5, kSamplerStates[i], ss[i]);
+        SafeRelease(oldTex);
+    }
+};
+
+void RunFxaa(IDirect3DDevice9* dev, bool useDepth) {
+    IDirect3DPixelShader9* ps = useDepth ? g.fxaaDepthPs[std::clamp(g.p.quality, 0, kFxaaLevels - 1)] : ShaderFor(dev, g.p.quality);
     if (!ps) return;
+    DepthSampler depthSampler(dev, useDepth);
     IDirect3DSurface9* bb = nullptr;
     if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
     if (FAILED(dev->StretchRect(bb, nullptr, g.copySurf, nullptr, D3DTEXF_NONE))) {
@@ -505,7 +770,8 @@ void RunFxaa(IDirect3DDevice9* dev) {
     dev->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
     dev->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
     const float c[kPSConsts][4] = {{1.0f / static_cast<float>(g.width), 1.0f / static_cast<float>(g.height), 0, 0},
-                                   {g.p.subpix, g.p.sensitivity, g.p.sensitivity / 3.0f, g.p.debugView ? 1.0f : 0.0f}};
+                                   {g.p.subpix, g.p.sensitivity, g.p.sensitivity / 3.0f, g.p.debugView ? 1.0f : 0.0f},
+                                   {std::clamp(g.p.sharpen, 0.0f, 1.0f), 0, 0, 0}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
     dev->SetPixelShader(ps);
     const float x1 = static_cast<float>(g.width) - 0.5f, y1 = static_cast<float>(g.height) - 0.5f;
@@ -539,9 +805,10 @@ void DrawQuad(IDirect3DDevice9* dev) {
 }
 
 // SMAA's three passes. Saves and restores what they touch (render target, samplers 0..4, shaders, constants c0..c1).
-void RunSmaa(IDirect3DDevice9* dev) {
+void RunSmaa(IDirect3DDevice9* dev, bool useDepth) {
     const int q = std::clamp(g.p.smaaQuality, 0, kSmaaLevels - 1);
     if (!SmaaShaders(dev, q)) return;
+    DepthSampler depthSampler(dev, useDepth);
     IDirect3DSurface9 *bb = nullptr, *oldRt = nullptr;
     if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
     if (FAILED(dev->StretchRect(bb, nullptr, g.copySurf, nullptr, D3DTEXF_NONE))) {
@@ -599,14 +866,14 @@ void RunSmaa(IDirect3DDevice9* dev) {
         dev->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, 0);
     }
     const float W = static_cast<float>(g.width), H = static_cast<float>(g.height);
-    const float c[kPSConsts][4] = {{1.0f / W, 1.0f / H, W, H}, {kSmaaPresets[q].threshold, 0, 0, g.p.debugView ? 1.0f : 0.0f}};
+    const float c[kPSConsts][4] = {{1.0f / W, 1.0f / H, W, H}, {kSmaaPresets[q].threshold, std::clamp(g.p.sharpen, 0.0f, 1.0f), 0, g.p.debugView ? 1.0f : 0.0f}, {0, 0, 0, 0}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
     // 1. edges (the targets are cleared every frame, alpha too: the passes discard where there is nothing to do)
     dev->SetRenderTarget(0, g.edgesSurf);
     dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0, 1.0f, 0);
     dev->SetTexture(0, g.copyTex);
-    dev->SetPixelShader(g.smaaPs[q][0]);
+    dev->SetPixelShader(useDepth ? g.smaaDepthEdgePs[q] : g.smaaPs[q][0]);
     DrawQuad(dev);
     // 2. blending weights
     dev->SetRenderTarget(0, g.blendSurf);
@@ -684,8 +951,11 @@ void FxaaEffect(IDirect3DDevice9* dev) {
         g.qDisjoint[qi]->Issue(D3DISSUE_BEGIN);
         g.qBegin[qi]->Issue(D3DISSUE_END);
     }
-    if (method == 1) RunSmaa(dev);
-    else RunFxaa(dev);
+    const bool useDepth = RunDepthPass(dev);
+    g.depthUsed = useDepth;
+    if (useDepth) g.framesWithDepth++;
+    if (method == 1) RunSmaa(dev, useDepth);
+    else RunFxaa(dev, useDepth);
     if (timed) {
         g.qEnd[qi]->Issue(D3DISSUE_END);
         g.qFreq[qi]->Issue(D3DISSUE_END);
@@ -697,6 +967,11 @@ void FxaaEffect(IDirect3DDevice9* dev) {
 
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    // the INTZ depth swap runs while the depth edges are wanted (it also runs for Depth Blur and AO)
+    if (g.p.depthEdges != g.depthRequested) {
+        DepthShare::Request(g.p.depthEdges);
+        g.depthRequested = g.p.depthEdges;
+    }
     if (!g.ready && --g.retryCountdown <= 0) {
         g.retryCountdown = kRetryFrames;
         InitResources(dev);
@@ -732,6 +1007,11 @@ class EdgeSmoothingPatch : public ApexPatch {
                              "Also smooths thin lines and sub-pixel detail. Higher = smoother, but textures get slightly softer.");
         RegisterFloatSetting(&g.p.sensitivity, "sensibilidade", SettingWidget::Slider, 0.125f, 0.063f, 0.333f,
                              "Minimum contrast for an edge to be smoothed. Lower = catches more edges (also in dark night scenes).");
+        RegisterBoolSetting(&g.p.depthEdges, "depthEdges", true,
+                            "Also finds the edges of objects from the scene depth, so edges with little contrast (walls against walls of the same colour, "
+                            "night scenes) are smoothed too, while textures stay sharp.");
+        RegisterFloatSetting(&g.p.sharpen, "sharpen", SettingWidget::Slider, 0.0f, 0.0f, 1.0f,
+                             "Sharpens the textures the smoothing leaves alone (the smoothed edges stay smooth). 0% is off.");
         RegisterBoolSetting(&g.p.debugView, "debugView", false, "Show the smoothed pixels in red");
     }
 
@@ -759,6 +1039,8 @@ class EdgeSmoothingPatch : public ApexPatch {
         lastError.clear();
         PostScene::Remove(FxaaEffect);
         g.active = false;
+        if (g.depthRequested) DepthShare::Request(false);
+        g.depthRequested = false;
         D3D9Hooks::UnregisterAll(kHookName);
         RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
         RenderCallbacks::Remove(RenderCallbacks::postReset, OnPostReset);
@@ -814,6 +1096,11 @@ class EdgeSmoothingPatch : public ApexPatch {
                 changed = true;
             }
         }
+        // both methods (30/09): object edges from the scene depth, and texture sharpening where nothing was smoothed
+        changed |= ApexUi::SwitchRow("Edges from depth", &g.p.depthEdges, "Also smooths faint edges of objects, while textures stay sharp", kDefaults.depthEdges);
+        if (g.p.depthEdges && g.ready && g.framesSmoothed > 60 && !g.depthUsed)
+            ApexUi::IconNote(IconId::Info, "The scene depth is not available right now: edges come from colour only");
+        changed |= ApexUi::SliderPercent("Sharpen textures", &g.p.sharpen, 0.0f, 1.0f, "Crisper textures; the smoothed edges stay smooth. 0% is off", kDefaults.sharpen);
         // 30/09 (user: "many players at 1080p showed the game very jagged", with this on): at 1200 lines or fewer, the driver's
         // own supersampling (render at a higher resolution, shown on the same screen) smooths what no post-process AA can
         // (thin rails, wires, leaves)
