@@ -56,7 +56,7 @@ std::atomic<bool> g_installed{false}; // the slot-chain layer (changed under g_c
 std::atomic<bool> g_on{false};
 std::atomic<bool> g_selfDisabled{false};
 std::atomic<uint64_t> g_lastFastCountTick{0};
-std::atomic<int> g_verifyEvery{kPublicBuild ? 0 : 1};
+std::atomic<int> g_verifyEvery{kPublicBuild ? 0 : 8}; // dev: 1 in 8 after the first 16 (every stream until 30/09: its decode was 19% of the compression hitches)
 std::atomic<int> g_compareEvery{0};
 std::atomic<int> g_chain{32};
 std::atomic<uint32_t> g_seq{0};
@@ -293,7 +293,9 @@ uint32_t CompressAny(Slot& slot, const uint8_t* src, uint32_t size, uint8_t* dst
 // The package writer measures a stream (no destination), allocates, then writes it: the same compression twice. The
 // counting run now writes into a buffer of this thread and its write copies it, when the source still has the same CRC-32C
 // (checked with the SSE4.2 instruction; without it, or when anything differs, the write compresses again as before).
-constexpr uint32_t kKeepHeld = 1u << 20; // buffers up to 1 MB stay allocated per thread
+constexpr uint32_t kMinHeld = 1u << 20;  // the smallest buffer allocated
+constexpr uint32_t kKeepHeld = 8u << 20; // buffers up to 8 MB stay allocated per thread (a 5.5 MB Sim cache: 6.9 MB), so the next
+                                         // large stream does not allocate and fault its pages in again
 struct Held {
     uint8_t* buf = nullptr;
     uint32_t cap = 0, len = 0, src = 0, size = 0, flags = 0, crc = 0;
@@ -449,7 +451,7 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
                 h.cap = 0;
             }
             if (!h.buf) {
-                const uint32_t want = bound < kKeepHeld ? kKeepHeld : bound;
+                const uint32_t want = bound < kMinHeld ? kMinHeld : bound;
                 h.buf = static_cast<uint8_t*>(VirtualAlloc(nullptr, want, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
                 h.cap = h.buf ? want : 0;
             }

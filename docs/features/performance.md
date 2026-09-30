@@ -735,7 +735,7 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   counting run is 2 s old (`FastRefPack::Tick` from the patch's `Update`).
 - **Capacity:** unlike the game, the write never goes past `capacity` (when non-zero): a stream that does not fit returns
   -1 (the callers store the data uncompressed).
-- **Checks:** the first 16 streams of each session (both builds) and in the development build every stream (default)
+- **Checks:** the first 16 streams of each session (both builds) and in the development build 1 stream in 8 (default; every stream until 30/09, when its decode through S3SS's decoder was 19% of the compression hitches)
   are decompressed with the game's decoder (`RefPackDecompress`, else Apex's translation) and compared with the source.
   A difference: `[FastRefPack] Verification mismatch: ...`, the game's compressor writes that stream (when the
   destination can hold its bound, else -1) and the feature turns itself off for the session. Optional (dev): the game's
@@ -1307,7 +1307,7 @@ Faster Cache Compression (development build):
 1. Turn it on. Log: `[SlotChain] RefPack stream write: layer 3 installed ...` and `[FastRefPack] On: ... the game's
    decoder 0x004eb3b0`.
 2. Play as above plus save the game (the package writer's counting runs) and load it again. Expect "Checks: N equal, 0
-   different" (every stream is checked by default), "writes after our counting run" > 0 after a save, "did not fit" 0.
+   different" (1 stream in 8 is checked by default), "writes after our counting run" > 0 after a save, "did not fit" 0.
 3. Set "Also run the game's compressor on 1 stream in N" to 4 for a few minutes: note "size +x%, y.yx faster" (this
    slows those calls down; set it back to 0).
 4. Frame Profiler: "RefPack compress" per-hitch ms should drop. Load the saved game after turning the feature off again:

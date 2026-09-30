@@ -18,7 +18,7 @@
 // source and size; the fast write reuses the counting run's flags and depth, so it has exactly the counted size), so a
 // buffer sized by one compressor is never written by the other. A stream that does not fit the caller's capacity
 // returns -1 (the callers then store the data uncompressed).
-// Checks: the first 16 streams of each session (both builds) and, in the development build, every stream by default are
+// Checks: the first 16 streams of each session (both builds) and, in the development build, 1 stream in 8 by default are
 // decompressed with the game's own decoder (0x004EB3B0) and compared with the source; a difference is logged, the game's
 // compressor writes that stream instead (when the destination can hold it; else -1), and the feature turns itself off.
 #include <cstdint>
