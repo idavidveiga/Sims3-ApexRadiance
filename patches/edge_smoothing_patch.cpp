@@ -1417,7 +1417,7 @@ class EdgeSmoothingPatch : public ApexPatch {
             static const char* const kSmaaTips[] = {"Fastest; smooths the clearest edges", "A good balance", "Also smooths diagonals and corners",
                                                     "Catches faint edges too, great at night", "Straightest long edges, best at 4K; costs the most"};
             changed |= ApexUi::SegmentedRow("Quality##Smaa", "Higher smooths more edges and costs a bit more", "##SmaaQuality", &g.p.smaaQuality, kSmaa, 5, kSmaaTips, nullptr, kDefaults.smaaQuality);
-            ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong, turn it off");
+            ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
             changed |= ApexUi::SwitchRow("Temporal smoothing", &g.p.temporal, "Also blends each frame with the last one: thin lines and far edges shimmer much less",
                                          kDefaults.temporal);
         } else {
