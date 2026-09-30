@@ -21,6 +21,7 @@
 #include "apex_version.h"
 #include "build_flavor.h"
 #include "conflict_guard.h"
+#include "cas_fill_probe.h"
 #include "crash_report.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
@@ -186,6 +187,7 @@ DWORD WINAPI InitThread(LPVOID) {
         }
         ApexGui::SetStartup(ApexGui::Startup::Running);
         LOG_INFO("[Main] Features started");
+        if constexpr (!kPublicBuild) CasFillProbe::Start(); // development build: measures the CAS vertex packing (read-only)
     }
     CrashReport::Install(); // after the game's own start-up (it may set a filter too): ApexRadiance_Crash.txt on a crash
 
@@ -193,6 +195,7 @@ DWORD WINAPI InitThread(LPVOID) {
     ULONGLONG lastGuardTick = 0;
     while (!Stopping(kPumpIntervalMs)) {
         if (ApexGui::GetStartup() == ApexGui::Startup::Running) PatchManager::Get().UpdateAll();
+        if constexpr (!kPublicBuild) CasFillProbe::Tick();
         ApexConfig::PumpAutosave();
         const ULONGLONG now = GetTickCount64();
         if (now - lastGuardTick >= 1000) {
