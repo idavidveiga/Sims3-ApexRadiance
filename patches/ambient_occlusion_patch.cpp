@@ -65,6 +65,9 @@ constexpr float kContactK = 1.2f, kLargeKNear = 0.5f, kLargeKFar = 0.8f;       /
 constexpr float kNearZ = 20.0f, kFarZ = 40.0f;                                 // near set -> far set between these depths
 constexpr float kThin = 0.3f;                                                   // depth part of a distance x (1 + thin)
 constexpr float kFade0 = 150.0f, kFade1 = 400.0f;                              // shade fades out between these depths
+// Map view (30/09, lab on 3 captures of the map: view 950-1800 m, one depth step 5-20 cm with near ~1 m): radii for
+// houses and trees at that distance, no fade (AO shift 0.35-0.48 levels, as close up)
+constexpr float kMapContact = 4.0f, kMapLarge = 15.0f, kMapFade0 = 5000.0f, kMapFade1 = 6000.0f;
 constexpr float kFirstStep4K = 2.0f, kMipOffset = 2.0f, kMaxRadius = 0.30f;    // px at 4K, levels, fraction of H
 constexpr float kIsoK = 1.0f, kIsoT = 0.01f;                                    // isolated-pixel fade
 constexpr float kBlurTolerance = 0.03f;                                         // of z
@@ -281,6 +284,7 @@ struct Params {
     float reach = 1.0f;    // scales the radii
     float protect = 0.5f;  // lamp-lit / bright pixels keep this share of their light
     int quality = 2;       // stored index into kQualitySlices (2 = High, 8 slices)
+    bool inMapView = true; // the map view gets its own radii (else the shade fades out there, as it is far)
 
 };
 
@@ -719,11 +723,12 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
     g.lastTanY = tanY;
     const int slices = kQualitySlices[std::clamp(g.p.quality, 0, kQualityCount - 1)];
     const float s = std::clamp(g.p.strength, 0.0f, 2.0f), reach = std::clamp(g.p.reach, 0.5f, 2.0f);
+    const bool map = g.p.inMapView && MapView::IsOpen();
     const float c[kPSConsts][4] = {
         {tanX, tanY, H / (2.0f * tanY), kMaxRadius * H},
         {W, H, static_cast<float>(g.padW), static_cast<float>(g.padH)},
-        {kFirstStep4K * H / 2160.0f, kMipOffset, (1.0f + kThin) * (1.0f + kThin), 1.0f / (kFade1 - kFade0)},
-        {kContactRadius * reach, kLargeNear * reach, kLargeFar * reach, kFade1},
+        {kFirstStep4K * H / 2160.0f, kMipOffset, (1.0f + kThin) * (1.0f + kThin), 1.0f / (map ? kMapFade1 - kMapFade0 : kFade1 - kFade0)},
+        {(map ? kMapContact : kContactRadius) * reach, (map ? kMapLarge : kLargeNear) * reach, (map ? kMapLarge : kLargeFar) * reach, map ? kMapFade1 : kFade1},
         {kContactK * s, kLargeKNear * s, kLargeKFar * s, kBlurTolerance},
         {kNearZ, 1.0f / (kFarZ - kNearZ), kIsoK, kIsoT},
         {0, 0, 0, 0},
@@ -864,6 +869,7 @@ class AmbientOcclusionPatch : public ApexPatch {
         RegisterFloatSetting(&g.p.reach, "alcance", SettingWidget::Slider, 1.0f, 0.5f, 2.0f, "How far the shade spreads from where things meet (scales the radii)");
         RegisterFloatSetting(&g.p.protect, "protegerLuz", SettingWidget::Slider, 0.5f, 0.0f, 1.0f, "Lamp-lit and bright spots keep this share of their light");
         RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High", "Ultra", "Very Low"});
+        RegisterBoolSetting(&g.p.inMapView, "noMapa", true, "Also shade the map view (radii for houses and trees seen from far away)");
     }
 
     bool Install() override {
@@ -946,6 +952,7 @@ class AmbientOcclusionPatch : public ApexPatch {
             g.p.quality = kQualityShown[std::clamp(shown, 0, kQualityCount - 1)];
             changed = true;
         }
+        changed |= ApexUi::SwitchRow("Also in map view", &g.p.inMapView, "Soft shade around houses and trees when the map view is open", kDefaults.inMapView);
         if (ApexUi::BeginAdvanced("Advanced##AmbientOcclusion")) {
             changed |= ApexUi::SliderPercent("Reach", &g.p.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet", kDefaults.reach);
             changed |= ApexUi::SliderPercent("Keep lamp light", &g.p.protect, 0.0f, 1.0f, "Lamp-lit and bright spots keep more of their light; 0% shades everything alike",
@@ -963,8 +970,8 @@ class AmbientOcclusionPatch : public ApexPatch {
 
   private:
     // Bump with every change of the AO's look or options. 1 = 2.1.0 (saved no key), 2 = 30/09 (bilinear march, five
-    // qualities, shade preview), 3 = 30/09 evening (grain in the composite).
-    static constexpr int kSettingsRevision = 3;
+    // qualities, shade preview), 3 = 30/09 evening (grain in the composite), 4 = 30/09 night (the map view).
+    static constexpr int kSettingsRevision = 4;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
     // The defaults, with the table's on/off state
