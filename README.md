@@ -37,19 +37,22 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 </div>
 
 
-## 🌗 New in 2.1.0
+## 🌈 New in 2.2.0
 
-**Ambient Occlusion (Experimental):** soft shade where things meet: under furniture, in corners, where walls meet the floor, around houses and trees.
+**Banding Fix:** no more color steps (banding) in lamp light, shadows and other smooth gradients. Light now fades smoothly across walls, floors, the ground and objects.
 
-- 🎯 Full resolution, **no noise or flicker**: it stays perfectly still when the camera does.
-- 💡 Lamp-lit and bright surfaces **keep their light and color** (no grey film).
-- 🎚️ Adjust **Strength**, plus Reach, Keep lamp light and Quality under Advanced.
-- 📂 Saved in your profiles and turned off by "Compare with the game".
+- ✨ An invisible, fixed grain where the game rounds its colors, on **every surface of the 3D world**; menus are untouched.
+- 🎚️ New **Color › Banding** tab: the fix's Strength and **Smooth gradients**, which now works with Picture off too and also helps the sky.
+
+**Ambient Occlusion, lighter and more flexible:**
+
+- ⚡ About **25-30% lighter** at the same look (4K, in testing).
+- 🎚️ **Five qualities**, from Very Low to Ultra, right on the card.
+- 🗺️ **Also in map view:** soft shade around houses and trees when the map is open.
+- 👁️ **Show the shade alone** (Advanced) to see what it does while you adjust it.
 
 > [!NOTE]
-> It needs the game's own Edge Smoothing off (Options › Graphics). Apex's anti-aliasing works with it.
-
-**Also new:** a small note in the top-left corner shows the mod is running (and your menu key) from the first loading screen, and the automatic lighting refresh no longer runs at the main menu before a save is loaded.
+> Ambient Occlusion needs the game's own Edge Smoothing off (Options › Graphics). Apex's anti-aliasing works with it.
 
 📥 **Download:** [Nexus Mods](https://www.nexusmods.com/thesims3/mods/247) · [GitHub release](https://github.com/loinyx/Sims3-ApexRadiance/releases/latest). Every version's notes are on the [Releases](https://github.com/loinyx/Sims3-ApexRadiance/releases) page.
 
@@ -82,13 +85,16 @@ In the base game lamps glow but barely light anything around them. Apex Radiance
 A full picture editor for the 3D world; menus and text keep their normal look.
 
 - Brightness, contrast, saturation, warmth and sharpness.
-- Smooth gradients (less banding in skies and shadows).
 - Film-style tones, a six-color mixer and a vignette.
 - A before/after switch and a hold-to-compare button.
 
-### Ambient Occlusion (experimental)
+### Banding Fix
 
-Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. It is computed at full resolution with no noise, so it stays perfectly still when the camera does, and lamp-lit or bright surfaces keep their light and color. Strength, reach and quality are adjustable. Needs the game's own Edge Smoothing off.
+The game rounds its picture to 256 shades per color, so smooth light (a lamp's glow on a wall, a room fading into shadow) shows visible steps. The Banding Fix adds an invisible, fixed grain right where the colors are rounded, so light fades smoothly on every surface of the 3D world; menus are untouched. On by default, with its Strength and **Smooth gradients** (which also softens the sky) on the Color › Banding tab.
+
+### Ambient Occlusion
+
+Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. It is computed at full resolution with no noise, so it stays perfectly still when the camera does, and lamp-lit or bright surfaces keep their light and color. Five qualities from Very Low to Ultra, adjustable strength and reach, and it also works in map view. It is heavier on the graphics card than the other effects, and needs the game's own Edge Smoothing off.
 
 ### Depth Blur
 
