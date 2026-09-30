@@ -169,4 +169,12 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst = nullptr, int* 
 // already written, no free temp, subroutines, or another version (vs_3_0 pairs with ps_3_0 only).
 bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord);
 
+// Temporal anti-aliasing (temporal_aa.cpp): every write to the position output (oPos, or the vs_3_0 output declared
+// POSITION0) goes to a free temp rP, and at the end rP.xy += c[jitterConst].xy * rP.w, then position = rP: the image moves
+// by c.xy in clip units (2 / width = one pixel), the depth is unchanged. Any vertex shader version. Refused (t unchanged):
+// subroutines or ret, no position write, only plain copies of an input (pre-transformed full-screen passes), no free temp,
+// or the constant already used. Composes with AddScreenPosVs applied after it (TEXCOORDk gets the moved position).
+enum class JitterResult { Ok, NotVertexShader, Unreadable, NoPosition, Subroutines, PassThrough, NoFreeRegister, ConstantInUse };
+JitterResult AddJitterVs(std::vector<DWORD>& t, int jitterConst);
+
 } // namespace ShaderPatches

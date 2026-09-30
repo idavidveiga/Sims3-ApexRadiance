@@ -1987,4 +1987,47 @@ bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord) {
     Apply(t, {{t.size() - 1, {Op(kMov, 2), Dst(kRastOut, 0), Src(kTemp, P), Op(kMov, 2), Dst(kOutput, kT), Src(kTemp, P)}}});
     return true;
 }
+
+JitterResult AddJitterVs(std::vector<DWORD>& t, int jitterConst) {
+    if (t.empty() || (t[0] & 0xFFFF0000u) != 0xFFFE0000u) return JitterResult::NotVertexShader;
+    if (t.back() != 0x0000FFFFu) return JitterResult::Unreadable;
+    const auto ins = Parse(t);
+    if (ins.empty()) return JitterResult::Unreadable;
+    constexpr DWORD kRastOut = 4, kCall = 0x19, kCallnz = 0x1A, kRet = 0x1C, kLabel = 0x1E;
+    constexpr DWORD kRegBits = 0x70001800u | 0x7FFu;
+    const bool v3 = ((t[0] >> 8) & 0xFF) == 3;
+    // the position register: oPos (vs_1_1 / vs_2_x), or the output declared POSITION0 (vs_3_0)
+    DWORD posType = kRastOut, posNum = 0;
+    if (v3) {
+        bool found = false;
+        for (const Ins& x : ins)
+            if (x.op == kDcl && x.len == 2 && Type(t[x.at + 2]) == kOutput && (t[x.at + 1] & 0x1F) == 0 && ((t[x.at + 1] >> 16) & 0xF) == 0) {
+                posType = kOutput;
+                posNum = Num(t[x.at + 2]);
+                found = true;
+            }
+        if (!found) return JitterResult::NoPosition;
+    }
+    std::vector<size_t> writes;
+    bool onlyCopies = true; // every position write is a plain copy of an input: a pre-transformed full-screen pass
+    for (const Ins& x : ins) {
+        if (x.op == kCall || x.op == kCallnz || x.op == kRet || x.op == kLabel) return JitterResult::Subroutines;
+        if (x.op == kDcl || x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        if (x.len >= 1 && IsReg(t[x.at + 1], posType, posNum)) {
+            writes.push_back(x.at + 1);
+            if (!(x.op == kMov && x.len == 2 && Type(t[x.at + 2]) == kInput)) onlyCopies = false;
+        }
+    }
+    if (writes.empty()) return JitterResult::NoPosition;
+    if (onlyCopies) return JitterResult::PassThrough;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 1 >= (v3 ? 32 : 12)) return JitterResult::NoFreeRegister;
+    if (jitterConst <= u.maxConst) return JitterResult::ConstantInUse;
+    const DWORD P = static_cast<DWORD>(u.maxTemp + 1), J = static_cast<DWORD>(jitterConst);
+    for (size_t at : writes) t[at] = (t[at] & ~kRegBits) | (Reg(kTemp, P) & kRegBits); // position -> rP, same mask and modifiers
+    // clip.xy += jitter.xy * clip.w: the whole image moves by a fraction of a pixel, the depth does not change
+    Apply(t, {{t.size() - 1, {Op(kMad, 4), Dst(kTemp, P, 0x3), Src(kTemp, P, kSwzW), Src(kConst, J), Src(kTemp, P),
+                              Op(kMov, 2), Dst(posType, posNum), Src(kTemp, P)}}});
+    return JitterResult::Ok;
+}
 } // namespace ShaderPatches
