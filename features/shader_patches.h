@@ -151,11 +151,13 @@ bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out);
 // ((1, 1, 1, 1) = unchanged; .yzw at 0 would make the cube black)
 bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 
-// Smooth light gradients (scene dither, scene_dither.cpp): every write to oC0 goes to a free temp rO, and at the end
-// oC0.rgb = rO.rgb + (interleaved gradient noise(vPos) - 0.5) / 255, oC0.a = rO.a (the alpha is the bloom mask: untouched).
-// A fixed per-pixel pattern (no time): the 8-bit steps of smooth lighting become an invisible grain. ps_3_0 only (vPos);
-// refused (false, t unchanged): no oC0 write, subroutines or ret, relative constant addressing, no free temp / constant.
+// Banding Fix (scene dither, scene_dither.cpp): every write to oC0 goes to a free temp rO, and at the end
+// oC0.rgb = rO.rgb + t(vPos) * cA.x, oC0.a = rO.a (the alpha is the bloom mask: untouched). t = triangular noise in
+// (-1, 1) from interleaved gradient noise (a fixed per-pixel pattern, no time); cA.x = the amount in output units, set per
+// draw (*amountConst = A; 1/255 = one 8-bit step). The 8-bit steps of smooth lighting become an invisible grain.
+// ps_3_0 only (vPos); refused (t unchanged): no oC0 write, subroutines or ret, relative constant addressing, no free
+// temp / constant.
 enum class DitherResult { Ok, NotPs30, NoColorWrite, Subroutines, RelativeConstants, NoFreeRegister, Unreadable };
-DitherResult AddDither(std::vector<DWORD>& t);
+DitherResult AddDither(std::vector<DWORD>& t, int* amountConst = nullptr);
 
 } // namespace ShaderPatches

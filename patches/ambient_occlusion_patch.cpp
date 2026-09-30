@@ -95,7 +95,7 @@ float4 cDir   : register(c6);  // blur: xy = step (uv), z = 0 box / 1 tent; down
 float4 cLook  : register(c7);  // composite: x = dead zone, y = 1 / (1 - dead zone), z = keep lamp light, w = 1 shading only
 float4 cPos   : register(c8);  // view position = z * (p * cPos.xy + cPos.zw, 1)
 float4 cRot   : register(c9);  // x = cos(pi / SLICES), y = sin(pi / SLICES)
-float4 cDepth : register(c10); // x = A, y = 1 / (near A)   (1/z = (A - d) / (near A))
+float4 cDepth : register(c10); // x = A, y = 1 / (near A)   (1/z = (A - d) / (near A)), z = composite grain (1/255)
 
 static const float PI = 3.14159265;
 
@@ -222,6 +222,13 @@ float4 BlurPS(float2 uv : TEXCOORD0) : COLOR0
     return float4(ws > 0 ? sum / ws : c0.x, c0.y, 0, 0);
 }
 
+// Triangular noise in (-1, 1) of the pixel position (the Banding Fix's grain): the composite rounds to 8 bits again
+float TriNoise(float2 p)
+{
+    float r = 2.0 * frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))) - 1.0;
+    return sign(r) * (1.0 - sqrt(1.0 - abs(r)));
+}
+
 // Jimenez 2016 multi-bounce: bright surfaces bounce light back into their own shade
 float3 MultiBounce(float v, float3 a)
 {
@@ -231,7 +238,7 @@ float3 MultiBounce(float v, float3 a)
 // Developer capture: the device depth as it is (the lab reads it back as floats)
 float4 DepthPS(float2 uv : TEXCOORD0) : COLOR0 { return tex2Dlod(sDepth, float4(uv, 0, 0)).r; }
 
-float4 CompositePS(float2 uv : TEXCOORD0) : COLOR0
+float4 CompositePS(float2 uv : TEXCOORD0, float2 vpos : VPOS) : COLOR0
 {
     float3 col = tex2Dlod(sColor, float4(uv, 0, 0)).rgb;
     float ao = tex2Dlod(sAo, float4(uv, 0, 0)).r;
@@ -241,7 +248,7 @@ float4 CompositePS(float2 uv : TEXCOORD0) : COLOR0
     float3 m = MultiBounce(v, alb);
     float luma = dot(col, float3(0.299, 0.587, 0.114));
     m = lerp(m, 1.0, saturate((luma - 0.35) * 2.5) * cLook.z);  // lamp-lit / bright pixels keep part of their light
-    return float4(col * m, 1);
+    return float4(col * m + TriNoise(vpos) * cDepth.z, 1);        // grain: no new steps where the shade is smooth
 }
 )HLSL";
 
@@ -723,7 +730,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {kDeadZone, 1.0f / (1.0f - kDeadZone), std::clamp(g.p.protect, 0.0f, 1.0f), g.showShade ? 1.0f : 0.0f},
         {2.0f * tanX / W, -2.0f * tanY / H, -tanX, tanY},
         {std::cos(kPi / slices), std::sin(kPi / slices), 0, 0},
-        {A, 1.0f / (nearZ * A), 0, 0}};
+        {A, 1.0f / (nearZ * A), 1.0f / 255.0f, 0}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
     if constexpr (!kPublicBuild)
@@ -956,8 +963,8 @@ class AmbientOcclusionPatch : public ApexPatch {
 
   private:
     // Bump with every change of the AO's look or options. 1 = 2.1.0 (saved no key), 2 = 30/09 (bilinear march, five
-    // qualities, shade preview).
-    static constexpr int kSettingsRevision = 2;
+    // qualities, shade preview), 3 = 30/09 evening (grain in the composite).
+    static constexpr int kSettingsRevision = 3;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
     // The defaults, with the table's on/off state

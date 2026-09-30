@@ -1835,7 +1835,7 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     Apply(t, std::move(edits));
     return true;
 }
-DitherResult AddDither(std::vector<DWORD>& t) {
+DitherResult AddDither(std::vector<DWORD>& t, int* amountConst) {
     if (t.empty() || t[0] != 0xFFFF0300) return DitherResult::NotPs30;
     if (t.back() != 0x0000FFFFu) return DitherResult::Unreadable;
     const auto ins = Parse(t);
@@ -1865,23 +1865,33 @@ DitherResult AddDither(std::vector<DWORD>& t) {
     }
     if (writes.empty() || !(mask & 0x7)) return DitherResult::NoColorWrite;
     const Usage u = Scan(t, ins);
-    if (u.maxTemp + 2 >= 32 || u.maxConst + 2 >= 224) return DitherResult::NoFreeRegister;
-    const DWORD O = static_cast<DWORD>(u.maxTemp + 1), N = O + 1, cK = static_cast<DWORD>(u.maxConst + 1), cL = cK + 1;
+    if (u.maxTemp + 2 >= 32 || u.maxConst + 3 >= 224) return DitherResult::NoFreeRegister;
+    const DWORD O = static_cast<DWORD>(u.maxTemp + 1), N = O + 1, cK = static_cast<DWORD>(u.maxConst + 1), cL = cK + 1, cA = cK + 2;
     for (size_t at : writes) t[at] = (t[at] & ~kRegBits) | (Reg(kTemp, O) & kRegBits); // oC0 -> rO, same mask and modifiers
+    constexpr DWORD kAbs = 0x23, kRsq = 0x07, kRcp = 0x06, kCmp = 0x58;
     std::vector<Edit> edits;
     std::vector<DWORD> head = {Op(kDef, 5), Dst(kConst, cK), F(0.06711056f), F(0.00583715f), F(0.0f), F(52.9829189f),
-                               Op(kDef, 5), Dst(kConst, cL), F(-0.5f), F(1.0f / 255.0f), F(0.0f), F(0.0f)};
+                               Op(kDef, 5), Dst(kConst, cL), F(2.0f), F(-1.0f), F(1.0f), F(0.0f)};
     if (!vPos) head.insert(head.end(), {Op(kDcl, 2), 0x80000000u, Dst(kMisc, 0, 0x3)});
     edits.push_back({1, head});
-    std::vector<DWORD> tail = {Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kMisc, 0), Src(kConst, cK), Src(kConst, cK, 0xAA), // IGN(vPos)
+    // u = IGN(vPos) in [0, 1); r = 2u - 1; triangular t = sign(r) (1 - sqrt(1 - |r|)) in (-1, 1): the inverse CDF of the
+    // triangular distribution, so the dither is TPDF (no noise modulation: the steps vanish instead of thinning out)
+    std::vector<DWORD> tail = {Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kMisc, 0), Src(kConst, cK), Src(kConst, cK, 0xAA),
                                Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
                                Op(kMul, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cK, kSwzW),
-                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
-                               Op(kAdd, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzX),                // -0.5 .. 0.5
-                               Op(kMad, 4), Dst(kColorOut, 0, mask & 0x7), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzY), Src(kTemp, O)};
+                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),                                                // u
+                               Op(kMad, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzX), Src(kConst, cL, kSwzY), // r
+                               Op(kAbs, 2), Dst(kTemp, N, 0x2), Src(kTemp, N, kSwzX),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x2), Neg(Src(kTemp, N, kSwzY)), Src(kConst, cL, 0xAA),                  // 1 - |r|
+                               Op(kRsq, 2), Dst(kTemp, N, 0x4), Src(kTemp, N, kSwzY),
+                               Op(kRcp, 2), Dst(kTemp, N, 0x4), Src(kTemp, N, 0xAA),                                                 // sqrt
+                               Op(kAdd, 3), Dst(kTemp, N, 0x4), Neg(Src(kTemp, N, 0xAA)), Src(kConst, cL, 0xAA),                  // 1 - sqrt
+                               Op(kCmp, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kTemp, N, 0xAA), Neg(Src(kTemp, N, 0xAA)), // t
+                               Op(kMad, 4), Dst(kColorOut, 0, mask & 0x7), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzX), Src(kTemp, O)};
     if (mask & 0x8) tail.insert(tail.end(), {Op(kMov, 2), Dst(kColorOut, 0, 0x8), Src(kTemp, O)});
     edits.push_back({t.size() - 1, tail}); // before the end token
     Apply(t, std::move(edits));
+    if (amountConst) *amountConst = static_cast<int>(cA);
     return DitherResult::Ok;
 }
 } // namespace ShaderPatches
