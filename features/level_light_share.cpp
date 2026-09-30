@@ -44,7 +44,8 @@
 //     - Openings: quadrants with no floor in story B's floor grid over an indoor room of story B-1 (the room below:
 //       tile+0x7C+q*0x14 > 0; the landing around a stairwell is often room 0 on B, railings close no room). The lighting
 //       side cannot tell a floor from a hole (it lights stair holes too); the floor grid lives in the world-side level
-//       floor object (vtable 0x01062680; +0x238 = the story's lighting manager, +0x264 = FloorGrid*: +0 data, +0x10
+//       floor object (vtable 0x01062680; its story's lighting manager found through its owner lot like the game does,
+//       LevelManager: the copy at +0x238 goes stale; +0x264 = FloorGrid*: +0 data, +0x10
 //       width, +0x14 height, 40-byte tiles, quadrant key at +8+q*8). An opening = a removed floor: a key with bit
 //       0x40000000 of its low dword and other low bits (RemovedFloorKey, measured in game; not the bare 40000000 along
 //       walls, not the never-built empty key 0xFFFFFFF8/0xFFFFFFFF).
@@ -486,6 +487,15 @@ std::atomic<long> g_indoorAdded{0}, g_indoorTests{0}, g_indoorFloorBlocked{0}, g
 // Level floor objects seen by the floor set / remove calls; their +0x238 is their story's lighting manager
 std::mutex g_levelsMx;
 std::vector<uintptr_t> g_levels;
+uint32_t g_levelsGen = 0; // bumped when g_levels changes (under g_levelsMx)
+// LevelFor's snapshot of (story manager found through the lot, floor object), newest floor first (under g_levelsMx)
+struct LevelLink {
+    uintptr_t mgr, level;
+};
+std::vector<LevelLink> g_links;
+uint32_t g_linksGen = ~0u;
+DWORD g_linksAt = 0;
+constexpr DWORD kLinksMaxAgeMs = 250;
 std::vector<std::pair<uintptr_t, int>> g_dirtyLevels; // floors changed: (level floor object, tries left)
 std::vector<uintptr_t> g_dirtyMgrs;                   // their lighting managers, once quiet (OnPresent)
 std::atomic<bool> g_dirtyReady{false};
@@ -494,8 +504,44 @@ std::atomic<DWORD> g_floorTick{0}; // GetTickCount of the last floor change not 
 std::atomic<long> g_floorEdits{0};
 uintptr_t g_floorSetTarget = 0, g_floorRemoveTarget = 0; // the thunks' jumps (the game's functions)
 
-// The level floor object's lighting manager, or 0 when it is not (or no longer) one
+// A lot's lighting manager of one story: 0x00ADBCC0 translated (thiscall(lot lighting, level) ret 4, pure reads), the
+// lookup the world code does every time it talks to the lighting. A deque of story managers: +0x24 first element, +0x28 /
+// +0x2C its block, +0x30 / +0x40 the first and last block slots of the map, +0x34 / +0x38 the last element and its block,
+// 64 per block, +0x48 the lowest level. 0 = no such story.
+uintptr_t LotStoryManager(uintptr_t lot, int32_t level) {
+    const auto rd = [lot](uint32_t off) { return *reinterpret_cast<const int32_t*>(lot + off); };
+    int32_t count = ((rd(0x40) - rd(0x30)) >> 2) - 1;
+    count = (count << 6) + ((rd(0x34) - rd(0x38)) >> 2) + ((rd(0x2C) - rd(0x24)) >> 2);
+    const int32_t rel = level - rd(0x48);
+    if (static_cast<uint32_t>(rel) >= static_cast<uint32_t>(count)) return 0;
+    const int32_t idx = ((rd(0x24) - rd(0x28)) >> 2) + rel;
+    const int32_t t = idx + 0x1000000;
+    const int32_t block = ((t + ((t >> 31) & 0x3F)) >> 6) - 0x40000;
+    const uintptr_t blockPtr = *reinterpret_cast<const uintptr_t*>(static_cast<uintptr_t>(rd(0x30)) + static_cast<uintptr_t>(block) * 4);
+    return *reinterpret_cast<const uintptr_t*>(blockPtr + static_cast<uintptr_t>(idx - block * 64) * 4);
+}
+
+// The level floor object's lighting manager, or 0 when it is not (or no longer) one. Found the way the game finds it
+// (0x00A89B60..0x00A89B89 at the floor's init; the world level code at 0x00A9D0DC does the same with its own fields): the
+// floor's owner lot +0x214, the lot's lighting +0x23C, and 0x00ADBCC0 at world level +0x230, minus 1 when byte +0x234 is 0.
+// The floor keeps a copy at +0x238, written only at that init: when a lot's lighting is built again the copy goes stale,
+// and a new story manager made at the same address made an old floor match it (in-game 30/09: a double-height room whose
+// story 2 was paired with a floor of another shape, so no opening was seen and the lamp below never lit the walls above
+// until the lot was left and entered again). Released floors (0x00A88980) have no owner.
 uintptr_t LevelManager(uintptr_t level) {
+    __try {
+        if (!level || *reinterpret_cast<const uintptr_t*>(level) != kLevelVtable) return 0;
+        const uintptr_t owner = *reinterpret_cast<const uintptr_t*>(level + 0x214);
+        const uintptr_t lot = owner ? *reinterpret_cast<const uintptr_t*>(owner + 0x23C) : 0;
+        if (!lot) return 0;
+        const int32_t worldLevel = *reinterpret_cast<const int32_t*>(level + 0x230);
+        return LotStoryManager(lot, *reinterpret_cast<const uint8_t*>(level + 0x234) ? worldLevel : worldLevel - 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+// The copy the floor keeps (+0x238), for the F8 notes only
+uintptr_t LevelManagerCopy(uintptr_t level) {
     __try {
         if (!level || *reinterpret_cast<const uintptr_t*>(level) != kLevelVtable) return 0;
         return *reinterpret_cast<const uintptr_t*>(level + 0x238);
@@ -522,6 +568,7 @@ void __cdecl NoteLevel(uintptr_t level) {
         if (g_levels.size() >= 4096) std::erase_if(g_levels, [](uintptr_t l) { return !LevelAlive(l); });
         if (g_levels.size() >= 4096) g_levels.erase(g_levels.begin()); // the oldest
         g_levels.push_back(level);
+        g_levelsGen++;
     }
     if (g_dirtyLevels.size() < 256 && std::none_of(g_dirtyLevels.begin(), g_dirtyLevels.end(), [&](const auto& d) { return d.first == level; }))
         g_dirtyLevels.emplace_back(level, 10);
@@ -540,6 +587,7 @@ void* __fastcall LevelCtorHook(void* level) {
             if (g_levels.size() >= 4096) std::erase_if(g_levels, [](uintptr_t x) { return !LevelAlive(x); });
             if (g_levels.size() >= 4096) g_levels.erase(g_levels.begin()); // the oldest
             g_levels.push_back(l);
+            g_levelsGen++;
         }
     }
     return made;
@@ -567,13 +615,39 @@ __declspec(naked) void FloorRemoveThunk() {
     }
 }
 
-// The floor object of a story (by its lighting manager), or 0 when no floor was set on it since the mod started
+// The floor object of a story (by its lighting manager), or 0 when no floor was set on it since the mod started.
+// Every floor's link is found through its lot (LevelManager, ~20 reads), so the links are kept in a snapshot rebuilt when
+// the list of floors changes or after kLinksMaxAgeMs; a hit is checked again (a lot relit since then rebuilds it at once),
+// a miss may be up to kLinksMaxAgeMs old (a lot that just loaded: its rooms gather again when their openings appear,
+// LotState).
+void RebuildLinksLocked(DWORD now) {
+    g_links.clear();
+    for (auto it = g_levels.rbegin(); it != g_levels.rend(); ++it)
+        if (const uintptr_t m = LevelManager(*it)) g_links.push_back({m, *it});
+    g_linksGen = g_levelsGen;
+    g_linksAt = now;
+}
 uintptr_t LevelFor(uintptr_t mgr) {
     if (!mgr) return 0;
     std::lock_guard<std::mutex> lk(g_levelsMx);
-    for (auto it = g_levels.rbegin(); it != g_levels.rend(); ++it)
-        if (LevelManager(*it) == mgr) return *it;
-    return 0;
+    const DWORD now = GetTickCount();
+    bool rebuilt = false;
+    if (g_linksGen != g_levelsGen || now - g_linksAt > kLinksMaxAgeMs) {
+        RebuildLinksLocked(now);
+        rebuilt = true;
+    }
+    for (;;) {
+        bool changed = false;
+        for (const LevelLink& k : g_links)
+            if (k.mgr == mgr) {
+                if (LevelManager(k.level) == mgr) return k.level;
+                changed = true;
+                break;
+            }
+        if (!changed || rebuilt) return 0;
+        RebuildLinksLocked(now);
+        rebuilt = true;
+    }
 }
 
 // World -> lot: rows at mgr+0xE0 / +0xF0 / +0x100 / +0x110 (the inverse of the lot matrix, the same on every story)
@@ -3415,13 +3489,36 @@ std::string SeamDiagText() {
     return s;
 }
 
+// F8: floors whose kept copy of their story manager (+0x238) differs from the one found through their lot (LevelManager);
+// with mgr, only those whose stale copy names mgr (the floors the copy would have paired with that story by mistake)
+int StaleFloorCopies(uintptr_t mgr) {
+    std::lock_guard<std::mutex> lk(g_levelsMx);
+    int n = 0;
+    for (const uintptr_t l : g_levels) {
+        const uintptr_t copy = LevelManagerCopy(l);
+        if (copy && copy != LevelManager(l) && (!mgr || copy == mgr)) n++;
+    }
+    return n;
+}
+
 std::string IndoorDiagText() {
-    std::string s = std::format("\n==== STORIES INDOORS (indoor lamps through stair openings) ====\n{} | floor objects known: {} | floor changes: {}, lots updated after them: {}\n",
-                                !g_indoorReady ? "Not installed" : g_indoorOn ? "On" : "Off", [] {
-                                    std::lock_guard<std::mutex> lk(g_levelsMx);
-                                    return g_levels.size();
-                                }(),
-                                g_floorEdits.load(), g_floorRefreshes.load());
+    int linked = 0, same = 0, stale = 0, noLot = 0, known = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_levelsMx);
+        known = static_cast<int>(g_levels.size());
+        for (const uintptr_t l : g_levels) {
+            const uintptr_t fresh = LevelManager(l), copy = LevelManagerCopy(l);
+            linked += fresh != 0;
+            same += fresh && fresh == copy;
+            stale += fresh && copy && fresh != copy;
+            noLot += !fresh && copy;
+        }
+    }
+    std::string s = std::format("\n==== STORIES INDOORS (indoor lamps through stair openings) ====\n{} | floor objects known: {}, linked to a story through their lot: {} "
+                                "({} the same as their own copy, {} with a stale copy, not used), a copy but no lot lighting now: {} | floor changes: {}, lots updated "
+                                "after them: {}\n",
+                                !g_indoorReady ? "Not installed" : g_indoorOn ? "On" : "Off", known, linked, same, stale, noLot, g_floorEdits.load(),
+                                g_floorRefreshes.load());
     s += std::format("Lamps taken through openings: {} | points tested: {}, a floor in the way: {}, a wall of the lamp's room: {} | rooms sent to gather again: {}\n",
                      g_indoorAdded.load(), g_indoorTests.load(), g_indoorFloorBlocked.load(), g_indoorWallBlocked.load(), g_indoorQueued.load());
     uintptr_t trackers[256];
@@ -3440,9 +3537,12 @@ std::string IndoorDiagText() {
                 continue;
             }
             rooms |= r.indoorQuads > 0;
-            rows += std::format("  story {}: manager {:08X}, floor object {:08X} | lighting tiles {}x{} ({} tiles, {} indoor quadrants) | floor grid {}x{}, {} "
+            const int stale = StaleFloorCopies(mgr);
+            rows += std::format("  story {}: manager {:08X}, floor object {:08X}{}{} | lighting tiles {}x{} ({} tiles, {} indoor quadrants) | floor grid {}x{}, {} "
                                 "quadrants with a floor | openings (no floor over an indoor room below): {} | lowest floor {:.2f}\n",
-                                st, mgr, level, r.lightW, r.lightH, r.tiles, r.indoorQuads, r.floorW, r.floorH, r.floorQuads, r.openings, r.lowest);
+                                st, mgr, level, level && LevelManagerCopy(level) != mgr ? " (its own copy of the link is stale)" : "",
+                                stale ? std::format(" ({} other floor(s) with a stale copy naming this story, ignored)", stale) : std::string(), r.lightW, r.lightH, r.tiles,
+                                r.indoorQuads, r.floorW, r.floorH, r.floorQuads, r.openings, r.lowest);
         }
         if (!rooms) continue; // lots without indoor rooms (parks, empty lots) are left out
         shown++;

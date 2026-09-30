@@ -189,9 +189,12 @@ Data (RE agent 2026-09-29, verified in code unless marked):
   (`FUN_006a42d0`); tile `+0x78` floor height in lot space (`FUN_006a9620`, set from `0x00A880C0`), `+0x7C + q*0x14` the
   room of quadrant q (`FUN_006a9760`). The floor and ceiling batches light every quadrant of a room, holes included: the
   lighting side cannot tell a floor from an opening.
-- **Floor grid** (world side): the level floor object (0x350 bytes, ctor `0x00A88790`, vtable `0x01062680`): `+0x238` the
-  story's lighting manager, `+0x264` FloorGrid* (null: no floor on the story), `+0x230` world level (can differ from the
-  lighting level by 1: always pair through `+0x238`). FloorGrid (ctor `0x00A89300`): `+0` data, `+0x10` width, `+0x14`
+- **Floor grid** (world side): the level floor object (0x350 bytes, ctor `0x00A88790`, vtable `0x01062680`): `+0x214` its owner lot, `+0x230` world
+  level, byte `+0x234` (lighting level = world level, minus 1 when it is 0), `+0x238` a COPY of the story's lighting manager
+  written only when the floor is set up (`0x00A89B60..0x00A89B89`), `+0x264` FloorGrid* (null: no floor on the story). The
+  game itself finds the manager every time from the lot (`[owner+0x23C]` = the lot's lighting, then `0x00ADBCC0(level)`,
+  a deque of story managers; the world level code does the same at `0x00A9D0DC`): pair through that, never through the
+  copy (30/09, see Pitfalls). FloorGrid (ctor `0x00A89300`): `+0` data, `+0x10` width, `+0x14`
   height, 40-byte tiles, quadrant key at `+8 + q*8` (two dwords), never built = `0xFFFFFFF8 / 0xFFFFFFFF`.
 - **A removed floor is not the empty key** (measured with F8 maps, 2026-09-29): removing a floor leaves a key with bit
   `0x40000000` of its low dword (test tower: `0001E00F` with its floor, `4001E000` without; the ground under the
@@ -212,8 +215,8 @@ What the module does:
 1. **Floor objects.** Nothing found links a manager to its floor object, so the 5 calls that set or remove a floor
    quadrant (`FUN_00a89dd0` from `0x00AA0ADB/0CCC/0E4A/0F72`, `FUN_00a893a0` from `0x00AA05C7`; `ecx` =
    `[worldLevel+0x100]` = the floor object) go through `FloorSetThunk` / `FloorRemoveThunk` (naked: `NoteLevel(ecx)` then
-   jump to the game's function). `LevelFor(mgr)` finds the object whose `+0x238` is the manager (vtable checked under
-   SEH). A lot loads its floors through these calls, so objects are known from the first lot load after the mod started.
+   jump to the game's function). `LevelFor(mgr)` finds the object whose manager, found through its lot like the game does (`LevelManager`:
+   owner `+0x214` -> `+0x23C` -> `0x00ADBCC0` translated as `LotStoryManager`), is `mgr` (vtable checked, all under SEH). A lot loads its floors through these calls, so objects are known from the first lot load after the mod started.
 2. **Openings** (`ReadOpenings` / `BuildOpeningMask`): quadrants with a removed floor on story B (`RemovedFloorKey`) over a quadrant of an
    indoor room (id > 0) of story B-1. The room is read below: the landing around the test house's stairwell is room 0 on
    story 2 (railings close no room), and the air outside a house has no indoor room under it. The point test uses the
@@ -491,6 +494,13 @@ parts 1-2 still install and the log says "Calculo por ponto nao confere; sem som
   incomplete `light_vtables.txt`.
 - Option changes of other Night Lighting settings used to reinstall this module too; `ReinstallNow` now leaves it in place
   (`reinstalling` flag) and removes it only if the rest cannot come back.
+- **Pairing a story with its floor through the floor's `+0x238` (until 30/09).** That field is a copy the game writes once,
+  when the floor is set up; it goes stale when the lot's lighting is built again, and a new story manager allocated at the
+  old address made another floor "belong" to that story. In game (30/09, a double-height room, lot `8C41002E4010A180`): F8
+  paired story 2 with a floor of another shape and other floor keys (`0000C007` / `00000006`, 1064 quadrants, no removed
+  floor), so no opening was seen and the lamp below never lit the walls above; after leaving and entering the lot, the real
+  floor (`0000C041`, `4000C000` removed x224, `0000C010`) was found and the light passed. Now the manager is found through the
+  floor's lot like the game does (`LevelManager`); F8 counts the floors whose copy is stale.
 
 ## Testing in game
 
