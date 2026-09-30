@@ -491,6 +491,7 @@ uint32_t g_levelsGen = 0; // bumped when g_levels changes (under g_levelsMx)
 // LevelFor's snapshot of (story manager found through the lot, floor object), newest floor first (under g_levelsMx)
 struct LevelLink {
     uintptr_t mgr, level;
+    bool own; // the story's own floor (byte +0x234 set), not the ceiling layer of the story below
 };
 std::vector<LevelLink> g_links;
 uint32_t g_linksGen = ~0u;
@@ -536,6 +537,26 @@ uintptr_t LevelManager(uintptr_t level) {
         if (!lot) return 0;
         const int32_t worldLevel = *reinterpret_cast<const int32_t*>(level + 0x230);
         return LotStoryManager(lot, *reinterpret_cast<const uint8_t*>(level + 0x234) ? worldLevel : worldLevel - 1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+// Whether the floor object is its story's own floor. The lot's floor renderer makes two per story (0x00AA1710, the only
+// maker; its callers 0x00AA35F4 / 0x00AA3690 pass byte 1, 0x00AA4171 / 0x00AA4398 pass 0): a floor at world level L with
+// byte +0x234 = 1, lit by story L, and a layer at world level L+1 with byte 0, lit by story L too (LevelManager: minus 1),
+// the ceiling of story L, which has the shape of the floor above and none of its holes. Both name story L; only the first
+// says where story L's floor is open (in-game 30/09: the double-height room of lot 8C41002E4010A180 was paired with its
+// ceiling (keys 0000C007 / 00000006, the attic's outline) whenever that object was the newer one, so no opening was seen).
+bool LevelOwnFloor(uintptr_t level) {
+    __try {
+        return level && *reinterpret_cast<const uint8_t*>(level + 0x234) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+int LevelWorld(uintptr_t level) {
+    __try {
+        return level ? *reinterpret_cast<const int32_t*>(level + 0x230) : 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
@@ -615,7 +636,8 @@ __declspec(naked) void FloorRemoveThunk() {
     }
 }
 
-// The floor object of a story (by its lighting manager), or 0 when no floor was set on it since the mod started.
+// The floor object of a story (by its lighting manager): its own floor (LevelOwnFloor), never the ceiling layer that
+// names the same story; 0 when none is known.
 // Every floor's link is found through its lot (LevelManager, ~20 reads), so the links are kept in a snapshot rebuilt when
 // the list of floors changes or after kLinksMaxAgeMs; a hit is checked again (a lot relit since then rebuilds it at once),
 // a miss may be up to kLinksMaxAgeMs old (a lot that just loaded: its rooms gather again when their openings appear,
@@ -623,7 +645,7 @@ __declspec(naked) void FloorRemoveThunk() {
 void RebuildLinksLocked(DWORD now) {
     g_links.clear();
     for (auto it = g_levels.rbegin(); it != g_levels.rend(); ++it)
-        if (const uintptr_t m = LevelManager(*it)) g_links.push_back({m, *it});
+        if (const uintptr_t m = LevelManager(*it)) g_links.push_back({m, *it, LevelOwnFloor(*it)});
     g_linksGen = g_levelsGen;
     g_linksAt = now;
 }
@@ -639,7 +661,7 @@ uintptr_t LevelFor(uintptr_t mgr) {
     for (;;) {
         bool changed = false;
         for (const LevelLink& k : g_links)
-            if (k.mgr == mgr) {
+            if (k.mgr == mgr && k.own) {
                 if (LevelManager(k.level) == mgr) return k.level;
                 changed = true;
                 break;
@@ -3501,6 +3523,16 @@ int StaleFloorCopies(uintptr_t mgr) {
     return n;
 }
 
+// F8: every floor object that names the story through its lot: "address (world level W, floor | ceiling layer)"
+std::string FloorsNaming(uintptr_t mgr) {
+    std::string s;
+    std::lock_guard<std::mutex> lk(g_levelsMx);
+    for (auto it = g_levels.rbegin(); it != g_levels.rend(); ++it)
+        if (LevelManager(*it) == mgr)
+            s += std::format("{}{:08X} (world level {}, {})", s.empty() ? "" : ", ", *it, LevelWorld(*it), LevelOwnFloor(*it) ? "its floor" : "the ceiling layer");
+    return s.empty() ? "none" : s;
+}
+
 std::string IndoorDiagText() {
     int linked = 0, same = 0, stale = 0, noLot = 0, known = 0;
     {
@@ -3543,6 +3575,7 @@ std::string IndoorDiagText() {
                                 st, mgr, level, level && LevelManagerCopy(level) != mgr ? " (its own copy of the link is stale)" : "",
                                 stale ? std::format(" ({} other floor(s) with a stale copy naming this story, ignored)", stale) : std::string(), r.lightW, r.lightH, r.tiles,
                                 r.indoorQuads, r.floorW, r.floorH, r.floorQuads, r.openings, r.lowest);
+            rows += std::format("    objects naming story {} through the lot (newest first): {}\n", st, FloorsNaming(mgr));
         }
         if (!rooms) continue; // lots without indoor rooms (parks, empty lots) are left out
         shown++;

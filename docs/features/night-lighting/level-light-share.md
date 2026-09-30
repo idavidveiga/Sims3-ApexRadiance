@@ -194,7 +194,10 @@ Data (RE agent 2026-09-29, verified in code unless marked):
   written only when the floor is set up (`0x00A89B60..0x00A89B89`), `+0x264` FloorGrid* (null: no floor on the story). The
   game itself finds the manager every time from the lot (`[owner+0x23C]` = the lot's lighting, then `0x00ADBCC0(level)`,
   a deque of story managers; the world level code does the same at `0x00A9D0DC`): pair through that, never through the
-  copy (30/09, see Pitfalls). FloorGrid (ctor `0x00A89300`): `+0` data, `+0x10` width, `+0x14`
+  copy (30/09, see Pitfalls). **Two objects name each story:** the lot's floor renderer (`0x00AA1710`, callers `0x00AA35F4` /
+  `0x00AA3690` byte 1, `0x00AA4171` / `0x00AA4398` byte 0) makes the story's own floor (world level L, byte 1) and a layer at
+  world level L+1 with byte 0, lit by story L: its ceiling, with the outline of the floor above and none of its holes. Only
+  the own floor (`LevelOwnFloor`) says where the story is open. FloorGrid (ctor `0x00A89300`): `+0` data, `+0x10` width, `+0x14`
   height, 40-byte tiles, quadrant key at `+8 + q*8` (two dwords), never built = `0xFFFFFFF8 / 0xFFFFFFFF`.
 - **A removed floor is not the empty key** (measured with F8 maps, 2026-09-29): removing a floor leaves a key with bit
   `0x40000000` of its low dword (test tower: `0001E00F` with its floor, `4001E000` without; the ground under the
@@ -501,6 +504,11 @@ parts 1-2 still install and the log says "Calculo por ponto nao confere; sem som
   floor), so no opening was seen and the lamp below never lit the walls above; after leaving and entering the lot, the real
   floor (`0000C041`, `4000C000` removed x224, `0000C010`) was found and the light passed. Now the manager is found through the
   floor's lot like the game does (`LevelManager`); F8 counts the floors whose copy is stale.
+  **That was only half of it** (same day, next session: 37 of 37 copies were fresh, and story 2 was again paired with the
+  `0000C007` / `00000006` object; Refresh the lighting did not help): that object is story 2's CEILING layer (world level 3,
+  byte `+0x234` = 0, the attic's outline), which names story 2 as well; the pairing took whichever of the two objects was
+  noted last, so leaving and entering the lot sometimes "fixed" it. `LevelFor` now keeps only the story's own floor
+  (`LevelOwnFloor`), and F8 lists every object naming each story ("its floor" / "the ceiling layer").
 
 ## Testing in game
 
