@@ -726,7 +726,7 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
   as base + index and older entries fall below the base, so the table is never cleared per call); up to 32 chain
   candidates per position (dev slider 4..256), stop at 96 bytes; the game's cost / gain rule; one step of lazy
   matching; all positions of short matches inserted, a sample of long ones. Match lengths compared 16 bytes at a time.
-- **Memory:** a pool of 4 contexts (allocated on first use, never freed: at most 2 MB); a 5th simultaneous call gets a
+- **Memory:** a pool of 4 contexts (allocated on first use, never freed: 512 KB each plus their token buffers, about 3.5 MB); a 5th simultaneous call gets a
   temporary context. Check buffers up to 1 MB are kept per context.
 - **Counting runs:** answered by the fast compressor too, and the thread remembers (source, size, flags, search depth,
   which compressor): the write that follows uses the same compressor, even if the feature was switched meanwhile, so a
@@ -748,7 +748,7 @@ Constants used (all from `.rdata`, exact bit patterns in `features/dxt_codec.cpp
 - **The counting run's stream, kept for its write (30/09):** measured in game (30/09, 13 sessions): "RefPack compress"
   was the dominant cause of 81 hitches (10.5 s over the median, max 368 ms), each a counting run and its write of the same
   stream (the CAS SimService / TextureCompositor caches: 4 calls of ~5.5 MB, ~330 ms, ~65 MB/s). The counting run now
-  compresses into a buffer of its thread (`Held`, SizeBound bytes; up to 1 MB kept, larger ones freed after the write)
+  compresses into a buffer of its thread (`Held`, SizeBound bytes; buffers up to 8 MB kept per thread, at most 12 MB for all threads together since 30/09, larger ones freed after the write)
   with the source's CRC-32C (SSE4.2 `crc32`, 4 interleaved lanes, ~0.3 ms per 5 MB); the write of the same source, size,
   flags and depth copies it when the CRC still matches (else compresses again, as before; no SSE4.2: never copied). The
   write's checks (decompress and compare) are unchanged.
@@ -848,6 +848,26 @@ write-combined); 0x005D38F8 is the return address of `call 005D1960`.
 - **Measure:** Developer > Profiler shows the spin (10 -> 2000), the releases done by the helper and any VirtualAlloc
   retry. A/B: the sampling run's "system code called from" rows 004E5935 / 004E5954 / 004E69E5 / 004E6A0B (allocator lock)
   and 004E530C (the release).
+
+## How it works: the unused Vulkan driver (address space, 30/09)
+
+- **Why:** TS3W is 32-bit (large-address-aware: 4 GB). The address-space study of 30/09 (session notes loadre\addrspace.md,
+  from S3SS's memory statistics in the 10 crash logs of 29-30/09: 1618-2250 MB free, largest free block >= 1 GB, no
+  out-of-memory crash) found AMD's 32-bit Vulkan driver `amdvlk32.dll` (85 MB image, at 0x0FB30000 in the low 2 GB the
+  game heaps use) loaded into the game on a PC with an RTX and an AMD integrated GPU: DXVK asks the Vulkan loader for every
+  GPU ("Found device: AMD Radeon(TM) Graphics" in TS3W_d3d9.log) though it renders on the RTX.
+- **The change** (`features/vulkan_driver_guard.{h,cpp}`, always on, no menu row): in Apex's Direct3DCreate9 detour, before
+  the first real call (DXVK loads vulkan-1.dll there), `VK_LOADER_DRIVERS_DISABLE=amd-vulkan32.json,amdvlk32.json` is set for
+  this process only (Vulkan loader 1.3.234+; this PC 1.4.341), when vulkan-1.dll is not loaded yet, no
+  VK_LOADER_DRIVERS_* / VK_DRIVER_FILES / VK_ICD_FILENAMES / VK_ADD_DRIVER_FILES is set, DXGI lists an AMD adapter and a
+  non-AMD one, the adapter with the most dedicated memory is not AMD, and every AMD adapter has under half of its memory.
+  Log: `[VulkanDriverGuard] ...` and `[D3D] Adapter N of M; AMD Vulkan driver in the game: loaded / not loaded`.
+- **Effect:** ~85-100 MB of address space back (image + the driver's heaps); the D3D9 adapter count drops from 2 to 1 (the
+  game creates its device on adapter 0, the RTX, either way). Nothing drawn changes.
+- **Apex's own kept buffers (same day):** the RefPack counting run's per-thread buffer (`Held`) is still kept up to 8 MB per
+  thread, but all threads together keep at most 12 MB (`kKeepHeldTotal`); above that a buffer is freed after its write.
+  Output bytes unchanged.
+- **Monitor:** `features/address_space.{h,cpp}` (development build): see docs/features/frame-profiler.md, "Address space".
 
 ## How it works: Spread New Objects Over Frames (C6)
 

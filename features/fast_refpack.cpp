@@ -296,14 +296,27 @@ uint32_t CompressAny(Slot& slot, const uint8_t* src, uint32_t size, uint8_t* dst
 constexpr uint32_t kMinHeld = 1u << 20;  // the smallest buffer allocated
 constexpr uint32_t kKeepHeld = 8u << 20; // buffers up to 8 MB stay allocated per thread (a 5.5 MB Sim cache: 6.9 MB), so the next
                                          // large stream does not allocate and fault its pages in again
+constexpr uint32_t kKeepHeldTotal = 12u << 20; // ... and all threads together keep at most this much (a 32-bit game's address space:
+                                              // up to 8 MB per thread was kept before 30/09)
+std::atomic<uint32_t> g_heldBytes{0};         // allocated held buffers of all threads
 struct Held {
     uint8_t* buf = nullptr;
     uint32_t cap = 0, len = 0, src = 0, size = 0, flags = 0, crc = 0;
     int chain = 0;
     bool valid = false;
-    ~Held() { // the thread ends
-        if (buf) VirtualFree(buf, 0, MEM_RELEASE);
+    void Free() {
+        if (!buf) return;
+        VirtualFree(buf, 0, MEM_RELEASE);
+        g_heldBytes.fetch_sub(cap, std::memory_order_relaxed);
+        buf = nullptr;
+        cap = 0;
     }
+    void Alloc(uint32_t want) {
+        buf = static_cast<uint8_t*>(VirtualAlloc(nullptr, want, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        cap = buf ? want : 0;
+        g_heldBytes.fetch_add(cap, std::memory_order_relaxed);
+    }
+    ~Held() { Free(); } // the thread ends
 };
 thread_local Held t_held;
 std::atomic<uint64_t> c_reused{0}, c_reuseMissed{0};
@@ -336,11 +349,7 @@ uint32_t SourceCrc(const uint8_t* p, uint32_t n) {
 void DropHeld() {
     Held& h = t_held;
     h.valid = false;
-    if (h.buf && h.cap > kKeepHeld) {
-        VirtualFree(h.buf, 0, MEM_RELEASE);
-        h.buf = nullptr;
-        h.cap = 0;
-    }
+    if (h.buf && (h.cap > kKeepHeld || g_heldBytes.load(std::memory_order_relaxed) > kKeepHeldTotal)) h.Free();
 }
 
 // Decompresses the stream with the game's decoder and compares it with the source. False only on a real difference.
@@ -445,16 +454,8 @@ uint64_t __fastcall Hook_StreamWrite(void* self, void* edx, uint32_t src, uint32
         const uint32_t bound = RefPackCodec::SizeBound(size);
         if (CpuHasCrc32() && bound > size) {
             // a buffer larger than needed is kept only while it serves streams that large (a 32-bit game)
-            if (h.buf && (h.cap < bound || (h.cap > kKeepHeld && bound <= kKeepHeld))) {
-                VirtualFree(h.buf, 0, MEM_RELEASE);
-                h.buf = nullptr;
-                h.cap = 0;
-            }
-            if (!h.buf) {
-                const uint32_t want = bound < kMinHeld ? kMinHeld : bound;
-                h.buf = static_cast<uint8_t*>(VirtualAlloc(nullptr, want, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
-                h.cap = h.buf ? want : 0;
-            }
+            if (h.buf && (h.cap < bound || (h.cap > kKeepHeld && bound <= kKeepHeld))) h.Free();
+            if (!h.buf) h.Alloc(bound < kMinHeld ? kMinHeld : bound);
             if (h.buf) {
                 const uint32_t crc = SourceCrc(s, size); // before compressing: a source changed meanwhile never matches
                 r = CompressAny(*slot, s, size, h.buf, h.cap, useFlags, effort);

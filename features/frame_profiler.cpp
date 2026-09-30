@@ -207,6 +207,7 @@
 #include "lot_lighting_motion.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
+#include "address_space.h"
 #include "apex_config.h"
 #include "apex_paths.h"
 #include "apex_log.h"
@@ -4115,6 +4116,7 @@ std::string BuildReport() {
     s += CounterReport();
     s += TextureLoadReport();
     s += PageFaultText();
+    s += AddressSpace::ReportText();
     s += "Apex shaders: " + ShaderCache::StatusText() + "\n";
     if (!g_regDisplay.empty()) {
         s += "Registry hooks by name (last second; Present hooks always, draw hooks with per-hook registry timing):\n";

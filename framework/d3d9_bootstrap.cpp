@@ -8,6 +8,7 @@
 #include "s3ss_detect.h"
 #include "borderless.h"
 #include "picture.h"
+#include "vulkan_driver_guard.h"
 #include <detours/detours.h>
 #include <atomic>
 #include <cstring>
@@ -181,6 +182,8 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateDevice(IDirect3D9* self, UINT adapter, D3
             LOG_INFO(std::format("[D3D] Graphics card: {} (vendor {:#06x}, device {:#06x}), driver {} {}.{}.{}.{}", id.Description, id.VendorId, id.DeviceId, id.Driver,
                                  HIWORD(v.HighPart), LOWORD(v.HighPart), HIWORD(v.LowPart), LOWORD(v.LowPart)));
         }
+        LOG_INFO(std::format("[D3D] Adapter {} of {}; AMD Vulkan driver in the game: {}", adapter, self->GetAdapterCount(),
+                             GetModuleHandleW(L"amdvlk32.dll") ? "loaded" : "not loaded"));
         HookDevice(*out);
         const HWND w = pp && pp->hDeviceWindow ? pp->hDeviceWindow : focus;
         if (w) g_window.store(w);
@@ -201,6 +204,7 @@ void HookCreateDevice(IDirect3D9* d3d) {
 }
 
 IDirect3D9* WINAPI Hooked_Direct3DCreate9(UINT sdk) {
+    VulkanDriverGuard::BeforeDirect3DCreate(); // before DXVK loads the Vulkan loader (vulkan_driver_guard.h)
     IDirect3D9* d3d = o_create9(sdk);
     // The first caller installs the CreateDevice detour, on its own thread, before it returns (see the header).
     if (d3d) std::call_once(g_createDeviceOnce, [d3d] { HookCreateDevice(d3d); });

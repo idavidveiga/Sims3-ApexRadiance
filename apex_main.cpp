@@ -19,6 +19,7 @@
 #include "apex_paths.h"
 #include "apex_util.h"
 #include "apex_version.h"
+#include "address_space.h"
 #include "build_flavor.h"
 #include "conflict_guard.h"
 #include "crash_report.h"
@@ -154,6 +155,7 @@ DWORD WINAPI InitThread(LPVOID) {
     // Apex's HLSL shaders (every quality and mode) compile now on a background thread, so the render thread never runs
     // D3DCompile: the features only create the shader objects from the bytecode (shader_cache.h).
     ShaderCache::Start();
+    AddressSpace::Start(); // development build: the address-space monitor (address_space.h)
 
     S3SSDetect::Scan();
     ApexD3D::EnsureInstalled(); // only does something when the DllMain install could not happen
@@ -245,6 +247,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
             SetEvent(g_stop);        // never waited for inside DllMain
             ShaderCache::Shutdown(); // the precompile worker stops between two compiles
             FrameProfiler::Shutdown();
+            AddressSpace::Stop();
             PatchManager::Get().UninstallAll();
             ApexD3D::Shutdown();
             ApexLog::Close();

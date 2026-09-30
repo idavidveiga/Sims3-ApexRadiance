@@ -401,6 +401,16 @@ Added 30/09 (loading RE follow-ups):
   "Texture fill" (FUN_0060d290, the mip copy), plus a report table by size class (loads, create / fill ms total, average,
   max, MB) from the profiler's CreateTexture callback, which notes the size on the creating thread.
 
+### Address space (development build, 30/09)
+`features/address_space.{h,cpp}`, started by the init thread whether the profiler is on or not: a below-normal thread (64 KB
+stack) walks the address space with VirtualQuery every 10 s (~1-3 ms, off the game's threads). It keeps the free total and
+largest free block (below / above 2 GB), the five largest free blocks, committed / reserved-only memory by kind (images,
+mapped views, private; committed private PAGE_EXECUTE_READWRITE = the script GC heap), private allocations by size class,
+the 8 largest images and the game allocator's own big blocks ([[0x011CB864]+0x488 / +0x48C]), and the snapshot with the
+session's smallest largest-free-block. One `[AddressSpace]` log line a minute; both snapshots in the profiler report.
+The number to watch: the largest free block (big allocations, the save's Error 12, DXVK's texture views and the script
+heap's 8 MB growth steps need one contiguous piece; below ~64 MB is the danger zone).
+
 Symbolisation:
 - Module classes (`ClassifyModule`): **TS3W** (main module), **S3SS** (the module containing `ClassifyModule` itself,
   i.e. this ASI; shows as `s3ssapex.asi` in the hot list), **other ASI** (`*.asi`), **DXVK/driver** (`d3d9.dll`,
