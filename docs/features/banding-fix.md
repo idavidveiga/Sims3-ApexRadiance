@@ -28,6 +28,20 @@ leaves no noise modulation. GPU check (`scratchpad/dither/tpdftest.cpp`): a grey
 20.355 / 100.657 on average (20 / 101 without), the level weights follow the triangle (about 1/8, 3/4, 1/8 on a level).
 The AO composite adds the same grain (it rounds to 8 bits again).
 
+## Menu and Smooth gradients (30/09)
+
+Color page, tab Banding (user's idea: everything against colour steps in one place): the Banding Fix card with Strength
+and Picture's Smooth gradients (the deband post filter). The deband follows the Banding Fix switch, not Picture's: with
+Picture off, Picture's pass runs with only the deband while the Banding Fix is on and Smooth gradients > 0 (never in a frame
+without a copy of the scene, where it would smooth the menus). It is the only help for ps_2_x surfaces (the sky...).
+
+In game (30/09 evening): "on many walls it changed almost nothing"; the magenta view turned the whole screen magenta
+(a full-screen Z-on ps_2_x pass drawn over the scene with blending became opaque magenta) and the log showed only 109-139
+copies made in the session, so most scene draws were not covered. The magenta view was replaced by "Show covered surfaces"
+(a coarse 24-step grain on covered draws only) and the dev build logs the coverage every 20 s (first 12 times):
+`[SceneDither] Last frame, 3D scene draws: N dithered, M ps_2_x (no pixel position), K ps_3_0 refused, L other | ...`.
+**Open: are the walls ps_2_x?** If so, the next step is a ps_2_x path (a VS copy that passes the screen position).
+
 ## How it works (`features/scene_dither.cpp`, `ShaderPatches::AddDither`)
 
 - **The patch** (ps_3_0 only; pure function, tested offline): every write to `oC0` goes to a free temp `rO`; at the end

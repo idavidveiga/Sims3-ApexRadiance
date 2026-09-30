@@ -66,6 +66,7 @@ int g_page = PageOverview;
 int g_lightingTab = LightingLamps;
 int g_waterSnowTab = WaterTab;
 int g_colorTab = Picture::TabBasic;
+constexpr int kColorBandingTab = Picture::TabCount; // Color > Banding: the Banding Fix and Smooth gradients
 int g_displayTab = DisplayWindow;
 int g_settingsTab = SettingsMenu;
 
@@ -379,7 +380,7 @@ void OverviewPage() {
             if (nameClicked) Go(PageColor);
         }
         OverviewPatchRow("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade where things meet", PageAmbientOcclusion);
-        OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageColor);
+        OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageColor, &g_colorTab, kColorBandingTab);
         OverviewPatchRow("DepthBlur", IconId::Aperture, "Depth Blur", "Softly blurs the distant background", PageDepthBlur);
         ApexUi::OverviewRow("Borderless", IconId::AppWindow, "Borderless", "Play without a window frame", kBorderlessDescription, nullptr, true, BorderlessModeText(),
                             &nameClicked);
@@ -573,16 +574,32 @@ void PictureRows(int tab) {
     ImGui::PopID();
 }
 
-// The Banding Fix card (scene_dither.cpp): only its switch
-void BandingFixCard() { FeatureCard("SceneDither", IconId::Blend, "Banding Fix", "Smooth light, with no color steps"); }
+// Color > Banding (user, 30/09: everything against color steps in one place): the Banding Fix card (scene_dither.cpp:
+// switch, grain Strength) with Picture's Smooth gradients (the deband), which follows the Banding Fix's switch
+void BandingTabContent() {
+    FeatureCardWith("SceneDither", IconId::Blend, "Banding Fix", "Smooth light, with no color steps", [](ApexPatch* p) {
+        p->RenderCustomUI();
+        static const PictureParams kDef{};
+        PictureParams q = Picture::Get().GetParams();
+        if (ApexUi::SliderPercent("Smooth gradients", &q.deband, 0.0f, 2.0f, "Softens the steps left in skies and shadows; works with Picture off too; 0% is off",
+                                  kDef.deband))
+            Picture::Get().SetParams(q, ApexUi::SliderCommitted());
+        else if (ApexUi::SliderCommitted())
+            Picture::Get().SetParams(q, true);
+        ApexUi::IconNote(IconId::Info, "Smooth gradients also reaches the sky and other surfaces the grain can't");
+    });
+}
 
 void ColorPage() {
     ApexUi::PageTitle("Color", "How the game's picture looks");
-    BandingFixCard();
-    PictureHeaderCard();
-    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail"};
-    static_assert(IM_COUNTOF(kTabs) == Picture::TabCount, "one tab name per Picture tab");
+    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail", "Banding"};
+    static_assert(IM_COUNTOF(kTabs) == Picture::TabCount + 1, "one tab name per Picture tab, then Banding");
     ApexUi::TabBar("##ColorTabs", &g_colorTab, kTabs, IM_COUNTOF(kTabs));
+    if (g_colorTab == kColorBandingTab) {
+        BandingTabContent();
+        return;
+    }
+    PictureHeaderCard();
     PictureRows(g_colorTab);
 }
 
@@ -1331,7 +1348,7 @@ const SearchPart* SearchParts(int& count) {
         {"Lighting", "Stories", PageLighting, &g_lightingTab, LightingStories, StoriesTabContent},
         {"Water & Snow", "Water", PageWaterSnow, &g_waterSnowTab, WaterTab, WaterTabContent},
         {"Water & Snow", "Snow", PageWaterSnow, &g_waterSnowTab, SnowTab, SnowTabContent},
-        {"Color", nullptr, PageColor, nullptr, 0, BandingFixCard},
+        {"Color", "Banding", PageColor, &g_colorTab, kColorBandingTab, BandingTabContent},
         {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
         {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
         {"Color", "Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},

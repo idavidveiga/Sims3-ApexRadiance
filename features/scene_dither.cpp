@@ -24,6 +24,7 @@
 #include "d3d9_hooks.h"
 #include "render_callbacks.h"
 #include "shader_patches.h"
+#include "scene_dither.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
@@ -53,13 +54,18 @@ struct Copy {
 };
 std::unordered_map<IDirect3DPixelShader9*, Copy> g_copies; // game shader -> its copy
 float g_strength = 1.0f;                  // the grain in 8-bit steps (triangular, peak): 1 = +-1 step
-bool g_showUncovered = false;             // Developer: draws without a copy in magenta (not saved)
-IDirect3DPixelShader9* g_magenta[2] = {}; // ps_2_0, ps_3_0 (made on first use)
+bool g_showCovered = false;               // Developer: a coarse grain where the fix applies (not saved)
+constexpr float kShowCoveredSteps = 24.0f;
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only (render thread)
 
 // statistics (Developer page)
 std::atomic<unsigned> g_made{0}, g_refused[7] = {};
-unsigned g_frameDithered = 0, g_frameUndithered = 0, g_lastDithered = 0, g_lastUndithered = 0;
+struct FrameCount {
+    unsigned dithered = 0, ps2 = 0, ps3Refused = 0, other = 0; // 3D scene draws by what happened to them
+};
+FrameCount g_frame, g_last;
+unsigned long long g_lastLog = 0;
+int g_logs = 0;
 
 // Tokens up to and with the end token (no length is given to CreatePixelShader), 0 when unreadable
 size_t CodeLength(const DWORD* fn) {
@@ -124,11 +130,6 @@ void ReleaseCopies() {
     for (auto& [game, copy] : g_copies)
         if (copy.ps) copy.ps->Release();
     g_copies.clear();
-    for (auto& m : g_magenta)
-        if (m) {
-            m->Release();
-            m = nullptr;
-        }
 }
 
 // Render thread: the copy for the bound shader (made now when the shader is older than the feature)
@@ -141,20 +142,6 @@ Copy CopyOf(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
     const Copy copy = MakeCopy(dev, ReadCode(ps));
     Remember(ps, copy);
     return copy;
-}
-
-// Developer view: a flat magenta shader of the game shader's version (a ps_3_0 needs a vs_3_0 and the reverse)
-IDirect3DPixelShader9* Magenta(IDirect3DDevice9* dev, DWORD version) {
-    const int i = version == 0xFFFF0300u ? 1 : ((version & 0xFFFFFF00u) == 0xFFFF0200u ? 0 : -1);
-    if (i < 0) return nullptr;
-    if (!g_magenta[i]) {
-        const DWORD code[] = {i ? 0xFFFF0300u : 0xFFFF0200u, 0x05000051u, 0xA00F0000u, 0x3F800000u, 0u, 0x3F800000u, 0x3F800000u, // def c0, 1, 0, 1, 1
-                              0x02000001u, 0x800F0800u, 0xA0E40000u, 0x0000FFFFu};                                             // mov oC0, c0
-        t_own = true;
-        if (FAILED(D3D9Hooks::CallOriginalCreatePixelShader(dev, code, &g_magenta[i]))) g_magenta[i] = nullptr;
-        t_own = false;
-    }
-    return g_magenta[i];
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
@@ -173,27 +160,20 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     ps->Release(); // the device keeps it alive
     const Copy copy = CopyOf(dev, ps);
     if (!copy.ps) {
-        g_frameUndithered++;
-        if constexpr (!kPublicBuild) {
-            if (g_showUncovered)
-                if (IDirect3DPixelShader9* m = Magenta(dev, copy.version)) {
-                    D3D9Hooks::CallOriginalSetPixelShader(dev, m);
-                    draw();
-                    D3D9Hooks::CallOriginalSetPixelShader(dev, ps);
-                    return D3D9Hooks::HookAction::Skip;
-                }
-        }
+        const DWORD major = (copy.version >> 8) & 0xFF;
+        (major == 2 ? g_frame.ps2 : major == 3 ? g_frame.ps3Refused : g_frame.other)++;
         return D3D9Hooks::HookAction::Continue;
     }
     float before[4] = {};
     dev->GetPixelShaderConstantF(static_cast<UINT>(copy.amountReg), before, 1);
-    const float amount[4] = {g_strength / 255.0f, 0, 0, 0};
+    // Developer "Show covered surfaces": a coarse grain only where the fix applies
+    const float amount[4] = {(g_showCovered ? kShowCoveredSteps : g_strength) / 255.0f, 0, 0, 0};
     D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), amount, 1);
     D3D9Hooks::CallOriginalSetPixelShader(dev, copy.ps);
     draw();
     D3D9Hooks::CallOriginalSetPixelShader(dev, ps);
     D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), before, 1); // the game may cache it
-    g_frameDithered++;
+    g_frame.dithered++;
     return D3D9Hooks::HookAction::Skip;
 }
 
@@ -203,9 +183,22 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g_backBuffer = bb;
         bb->Release();
     }
-    g_lastDithered = g_frameDithered;
-    g_lastUndithered = g_frameUndithered;
-    g_frameDithered = g_frameUndithered = 0;
+    g_last = g_frame;
+    g_frame = {};
+    // Development build: the coverage in the log now and then (the first 12 times, every 20 s of scene)
+    if constexpr (!kPublicBuild) {
+        const unsigned long long now = GetTickCount64();
+        const unsigned total = g_last.dithered + g_last.ps2 + g_last.ps3Refused + g_last.other;
+        if (total > 50 && g_logs < 12 && now - g_lastLog >= 20000) {
+            g_lastLog = now;
+            g_logs++;
+            LOG_INFO(std::format("[SceneDither] Last frame, 3D scene draws: {} dithered, {} ps_2_x (no pixel position), {} ps_3_0 refused, {} other "
+                                 "| copies made {}, refused: not ps_3_0 {}, no colour write {}, subroutines {}, relative constants {}, no free register {}, "
+                                 "unreadable {}",
+                                 g_last.dithered, g_last.ps2, g_last.ps3Refused, g_last.other, g_made.load(), g_refused[1].load(), g_refused[2].load(),
+                                 g_refused[3].load(), g_refused[4].load(), g_refused[5].load(), g_refused[6].load()));
+        }
+    }
 }
 
 void OnPreReset(IDirect3DDevice9*) { g_backBuffer = nullptr; } // read again at the next frame boundary
@@ -271,7 +264,6 @@ class SceneDitherPatch : public ApexPatch {
         SAFE_IMGUI_BEGIN();
         bool changed = ApexUi::SliderPercent("Strength", &g_strength, 0.5f, 3.0f, "More hides stronger steps, with a slightly more visible grain; 100% is the default",
                                              1.0f);
-        ApexUi::IconNote(ApexUi::IconId::Info, "Covers walls, floors, ground, objects and Sims; the sky keeps its own look");
         if (changed) NotifySettingChanged();
     }
 
@@ -286,11 +278,11 @@ class SceneDitherPatch : public ApexPatch {
         ImGui::TextDisabled("Shaders seen: %zu  |  dithered copies made: %u", pairs, g_made.load());
         ImGui::TextDisabled("Refused: not ps_3_0 %u, no colour write %u, subroutines %u, relative constants %u, no free register %u, unreadable %u",
                             g_refused[1].load(), g_refused[2].load(), g_refused[3].load(), g_refused[4].load(), g_refused[5].load(), g_refused[6].load());
-        const unsigned total = g_lastDithered + g_lastUndithered;
-        ImGui::TextDisabled("Last frame, 3D scene draws: %u dithered, %u without a copy (%.0f%% covered)", g_lastDithered, g_lastUndithered,
-                            total ? 100.0 * g_lastDithered / total : 0.0);
-        ImGui::Checkbox("Show surfaces without the fix in magenta", &g_showUncovered);
-        ApexUi::Tooltip("3D scene draws that have no dithered copy (ps_2_0 shaders and refused ones) are drawn in flat magenta (not saved)");
+        const unsigned total = g_last.dithered + g_last.ps2 + g_last.ps3Refused + g_last.other;
+        ImGui::TextDisabled("Last frame, 3D scene draws: %u dithered (%.0f%%), %u ps_2_x (no pixel position), %u ps_3_0 refused, %u other", g_last.dithered,
+                            total ? 100.0 * g_last.dithered / total : 0.0, g_last.ps2, g_last.ps3Refused, g_last.other);
+        ImGui::Checkbox("Show covered surfaces", &g_showCovered);
+        ApexUi::Tooltip("A coarse grain on every surface the fix covers; smooth surfaces are not covered (not saved)");
     }
 };
 
@@ -306,3 +298,7 @@ APEX_REGISTER_FEATURE(SceneDitherPatch, {.displayName = "Banding Fix",
                                                               "Bound only for draws into the back buffer with the depth test on (the 3D scene), last in the draw chain; "
                                                               "the amount constant's previous value is put back after the draw.",
                                                               "ps_2_x shaders (the sky, rugs, foliage, pool water and a few others) have no pixel position and stay as they are."}})
+
+namespace SceneDither {
+bool On() { return g_on.load(std::memory_order_relaxed); }
+} // namespace SceneDither

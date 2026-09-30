@@ -25,6 +25,7 @@
 #include "imgui.h"
 #include "ui/i18n.h"
 #include "ui/widgets.h"
+#include "scene_dither.h"
 #include <d3dcompiler.h>
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -505,13 +506,24 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
 
 // ---- end of frame ----
 
+// Smooth gradients (deband) is on the Color page's Banding tab since 30/09 and follows the Banding Fix's switch, not
+// Picture's: with Picture off the pass still runs, with only the deband (every other control neutral), while the Banding
+// Fix is on. That smoothing-only pass is skipped in a frame without a copy of the scene (it would smooth the game's menus).
+static PictureParams Effective(const PictureParams& q) {
+    PictureParams e = q.enabled ? q : PictureParams{};
+    e.deband = SceneDither::On() ? q.deband : 0.0f;
+    e.enabled = q.enabled || e.deband > 0.001f;
+    if (!q.enabled) e.compare = false;
+    return e;
+}
+
 void Picture::BeforeOverlay(IDirect3DDevice9* dev) {
     // the frame ended on the scene (no game UI after it): the copy is the scene as it is now
-    if (GetParams().enabled && dev && gpu.frameReady && gpu.sceneDraws >= kMinSceneDraws && (gpu.lastWasScene || gpu.copyAfterStrip)) CopyScene(dev);
+    if (Effective(GetParams()).enabled && dev && gpu.frameReady && gpu.sceneDraws >= kMinSceneDraws && (gpu.lastWasScene || gpu.copyAfterStrip)) CopyScene(dev);
 }
 
 void Picture::OnEndScene(IDirect3DDevice9* dev) {
-    const PictureParams q = GetParams();
+    const PictureParams raw = GetParams(), q = Effective(raw);
     if (!dev || !q.enabled) {
         m_gpuMs = -1.0f;
         // Off: the scene-copy hooks go too (they counted every back buffer draw each frame while off; registered again at
@@ -558,6 +570,10 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         return;
     }
     gpu.frameReady = false;
+    if (!raw.enabled && !gpu.sceneCopied) { // smoothing only (Picture off): never over the game's menus
+        bb->Release();
+        return;
+    }
     m_skip.store(kSkipNone);
     m_lastApplied.store(now);
     if (gpu.sceneCopied) m_lastSceneCopy.store(now);
@@ -1001,7 +1017,6 @@ void Picture::RenderUI(int tab) {
         percent("Saturation", &q.saturation, 0.0f, 1.6f, "How colorful everything is; 0% is black and white", kDef.saturation);
         signedAmount("Temperature", &q.temperature, kDef.temperature, "A cooler, bluer or warmer, more golden picture", "Cooler", "Warmer");
         percent("Sharpness", &q.sharpen, 0.0f, 1.5f, "Crisper fine detail without bright outlines; 0% is off", kDef.sharpen);
-        percent("Smooth gradients", &q.deband, 0.0f, 2.0f, "Removes visible color steps in skies and shadows; 0% is off", kDef.deband);
         break;
     }
     }
@@ -1010,6 +1025,7 @@ void Picture::RenderUI(int tab) {
         q = PictureParams{};
         q.enabled = en;
         q.compare = cmp;
+        q.deband = GetParams().deband; // Smooth gradients belongs to the Banding tab now
         changed = save = true;
         ApexUi::ReportChange("Picture reset");
     }

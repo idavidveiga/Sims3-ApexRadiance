@@ -46,7 +46,7 @@ immediately; values apply live every frame while dragging.
 | Contrast | `contrast` | float | 1.0 | 0.6..1.5 | clamp 0.5..1.8, `cGrade.y` | Power curve around mid grey 0.18 (linear). |
 | Saturation | `saturation` | float | 1.0 | 0..1.6 | clamp 0..2, `cLook.x` | Lerp from luminance; multiplied by the colour mixer value when the mixer is not neutral. |
 | Temperature | `temperature` | float | 0.0 | -1..1 | clamp -1..1, x 0.08 | Red gain 1 + 0.08t, blue 1 - 0.08t, normalised to keep white's luminance (`cWb.rgb`). |
-| Smooth gradients | `deband` | float | **1.0** | 0..2 | clamp 0..2; threshold `deband x 6/255` (encoded units) | On by default once Picture is enabled. 0 = off (`cDeband.w`). |
+| Smooth gradients | `deband` | float | **1.0** | 0..2 | clamp 0..2; threshold `deband x 6/255` (encoded units) | Since 30/09 on the Color page's Banding tab and gated by the Banding Fix switch (`SceneDither`), not by Picture: with Picture off the pass runs with only the deband (`Effective()` in picture.cpp: every other control neutral), skipped in frames without a scene copy. Reset Picture keeps it. 0 = off (`cDeband.w`). |
 | Sharpening | `sharpen` | float | 0.0 | 0..1.5 | clamp 0..1.5, `cColor.z` | 4-neighbour unsharp, clamped to the neighbours' range (no halos). |
 | Midtones (Advanced > Tones) | `midtones` | float | 1.0 | 0.6..1.6 | clamp 0.5..2; `cTone.x = 1/midtones` | Power on luminance below 1: black and white stay. |
 | Shadows (Advanced > Tones) | `shadows` | float | 0.0 | -1..1 | `cTone.y` | Up to +/-50% gain below luminance ~0.25. |
