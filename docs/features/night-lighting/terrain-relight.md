@@ -72,7 +72,10 @@
 > 1. Only bake changes count (lot-light-pass.md "Lot lamp change tracking"): a lamp of the bake added / removed / moved
 >    more than 5 cm ("user-driven"), a lamp entering or leaving the bake, or its light changing by more than 5 % per
 >    channel ("automatic"). A lamp with 3 automatic changes within 60 s is **animated**: its changes never trigger, its
->    state goes into the next rebuild made for another reason (log line "switches or dims by itself").
+>    state goes into the next rebuild made for another reason (log line "switches or dims by itself"); after 2 min with
+>    no automatic change it counts again (30/09: lamps the user toggled while testing stayed ignored). More than 8
+>    changes in one enumeration are ignored as dusk / streaming, unless all are switches of ONE lot (30/09: a town
+>    square's 57 lamps were only caught by the stuck countdown, ~15-30 s late).
 > 2. **Snapshot of the last rebuild.** Whenever a rebuild is consumed (Apex's or the game's), the bridge enumerates the
 >    lights in that same frame (`RequestLampRefresh`) and the next frame stores the snapshot `g_baked`. A pending change
 >    is then compared with `DiffBake(g_baked, current)`: only on lots settled now that were in that snapshot (lots that

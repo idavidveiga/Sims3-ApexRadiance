@@ -708,10 +708,11 @@ uint32_t g_lampMemoGen = 1; // generation of the SelectLamps memo (see LampMemo)
 //    repeated "7 edited" of lot 7D6F0019FAF78910 were its 7 DISABLED type-3 lamps (flags 0x35 / 0xB5), never baked;
 //  - automatic changes (on / off, dimming, recolouring) of a lamp that already changed 3 times within 60 s are ignored:
 //    the lamp is "animated" (motion or timer lights, colour-cycling lights) and its current state goes into the next
-//    rebuild made for any other reason;
+//    rebuild made for any other reason; after 2 min with no automatic change it is a plain lamp again (30/09);
 //  - its lot is settled: seen in every enumeration for at least 10 s, and no uncounted change on it for 5 s (a lot that
 //    is still loading keeps adding lamps and so never becomes settled while it trickles in);
-//  - at most 8 changes in the enumeration (more = lamps switching at dusk / dawn, or streaming in bulk);
+//  - at most 8 changes in the enumeration (more = lamps switching at dusk / dawn, or streaming in bulk), unless they are
+//    all switches of one lot (30/09: a town square's 57 lamps);
 //  - removals: the lot is still there in the NEXT enumeration and lost no more lamps (a lot unloading lamp by lamp, or
 //    vanishing, is streaming out). The removal of a lot's last lamp is therefore never counted (the lot vanishes).
 // Lots streaming in and out must never look like edits (NOTAS 1c: a rebuild every ~30 s from streaming lamps).
@@ -729,6 +730,7 @@ struct LotLampState {
     // automatic changes of this lamp in the current 60 s window (carried from enumeration to enumeration)
     int autoChanges = 0;
     Clock::time_point autoWindow{};
+    Clock::time_point lastAuto{}; // the last automatic change (an animated lamp quiet for kAnimatedExpire counts again)
     bool animated = false;
 };
 struct LotSeen {
@@ -757,6 +759,7 @@ constexpr float kLightRel = 0.05f;  // relative change of colour x intensity x r
 constexpr float kLightAbs = 0.05f;  // absolute floor (colour x intensity x range: typical lamps give 5..200)
 constexpr int kAnimatedChanges = 3; // automatic changes within kAnimatedWindow: the lamp is animated
 constexpr auto kAnimatedWindow = std::chrono::seconds(60);
+constexpr auto kAnimatedExpire = std::chrono::seconds(120); // an animated lamp with no automatic change for this long is a plain lamp again
 constexpr auto kQuietLogEvery = std::chrono::seconds(60);
 
 bool IsPlainType(int type) { return type >= 3 && type <= 6; }
@@ -967,6 +970,7 @@ void TrackLotLampEdits() {
         const LotLampState& p = prev->second;
         s.autoChanges = p.autoChanges;
         s.autoWindow = p.autoWindow;
+        s.lastAuto = p.lastAuto;
         s.animated = p.animated;
         if (p.lot != s.lot) snapDirty = true;
         if (!RawChanged(p, s)) {
@@ -987,6 +991,13 @@ void TrackLotLampEdits() {
             counts = moved = true; // user-driven (Build mode)
         } else if (p.baked != s.baked || (p.baked && s.baked && LightDiffers(pl, sl))) {
             // automatic: switched on / off, dimmed, recoloured
+            if (s.animated && now - s.lastAuto > kAnimatedExpire) { // quiet long enough: a switch again (30/09: lamps toggled while testing stayed ignored)
+                s.animated = false;
+                s.autoChanges = 0;
+                s.autoWindow = now;
+                if (g_lampsAnimated > 0) g_lampsAnimated--;
+            }
+            s.lastAuto = now;
             if (now - s.autoWindow > kAnimatedWindow) {
                 s.autoWindow = now;
                 s.autoChanges = 0;
@@ -1063,7 +1074,12 @@ void TrackLotLampEdits() {
         userLots.push_back(lot);
         what = std::format("lamp removed on lot {:016X} (user-driven)", lot);
     }
-    const bool bulk = total > 8;
+    // More than 8 changes = lamps switching at dusk / dawn or streaming in bulk; except when they are all switches (no lamp
+    // added or removed) of ONE lot: a lot's own lamps switched together (30/09: a town square's 57 lamps were ignored here,
+    // so only the slow stuck-countdown fallback took them, ~15-30 s late). Dusk / dawn is still left to the dusk rebuild
+    // by the terrain relight (lamp changes by day are not rebuilt), and an unsettled lot is still ignored below.
+    const bool oneLotSwitch = changes.size() == 1 && changes.begin()->second.added == 0 && changes.begin()->second.removed == 0;
+    const bool bulk = total > 8 && !oneLotSwitch;
     for (const auto& [lot, c] : changes) {
         auto s = g_lotSeen.find(lot);
         if (s == g_lotSeen.end()) { // the lot vanished: streaming out
