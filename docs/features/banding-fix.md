@@ -2,7 +2,7 @@
 
 > Removes the colour steps (banding) of smooth gradients in the 3D world: lamp pools on walls and floors, room light
 > fall-off, shadows. Patch name `SceneDither`, menu Image > Color (the first card) and an Overview row, on by default;
-> one setting, Strength (`forca`, 0.5 - 3 steps, default 1). Added 30/09/2026 on the user's report ("the colours are not uniform, mainly where there is light"; an
+> settings: Strength (`forca`, 0 - 1 step, default 1) and Moving grain (`graoEmMovimento`, off). Added 30/09/2026 on the user's report ("the colours are not uniform, mainly where there is light"; an
 > interior wall showed rings around a lamp's pool of light). **First in-game test pending** (build 57a0a09d).
 
 ## Why the rings
@@ -19,14 +19,17 @@ scRGB output.
 | UI label | TOML key | Type | Default | Range | Notes |
 |---|---|---|---|---|---|
 | (card switch) | `enabled` | bool | true | | |
-| Strength | `forca` | float | 1.0 | 0.5 - 3 | peak of the triangular grain in 8-bit steps; set per draw in the copy's amount constant |
+| Strength | `forca` | float | 1.0 | 0 - 1 | peak of the triangular grain in 8-bit steps (100% = +-1 step, the full TPDF; 0.5 - 3 until 30/09 night, when every surface got covered and the user asked for 0 - 100%); set per draw in the copy's amount constant |
+| Moving grain | `graoEmMovimento` | bool | false | | a new pattern phase every frame (`cA.w` = frac(frame x golden ratio), added to the IGN input): high frame rates average the grain away (the user saw "micro specks" at 223%); at low ones a faint shimmer |
 | Developer > Show surfaces without the fix in magenta | (not saved) | bool | false | | scene draws with no copy drawn flat magenta (a magenta shader of the same version) |
 
 The first build (30/09, 57a0a09d) used a uniform grain of +-0.5 step; the user found it "a little better, not 100%". Since
 7d5615d the grain is triangular (TPDF: the inverse CDF of the triangular distribution applied to the IGN value), which
 leaves no noise modulation. GPU check (`scratchpad/dither/tpdftest.cpp`): a grey of 20.40 / 100.70 levels comes out as
 20.355 / 100.657 on average (20 / 101 without), the level weights follow the triangle (about 1/8, 3/4, 1/8 on a level).
-The AO composite adds the same grain (it rounds to 8 bits again).
+The AO composite adds the same grain (it rounds to 8 bits again). Since 30/09 night it follows the Banding Fix (its Strength and phase; none when
+it is off) and only where the shade changed the pixel, with a shifted pattern: the same pattern added twice doubled the
+grain (one of the causes of the "micro specks"). AO settings revision 5.
 
 ## Menu and Smooth gradients (30/09)
 

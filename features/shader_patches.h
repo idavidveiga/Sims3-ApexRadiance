@@ -154,7 +154,7 @@ bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 // Banding Fix (scene dither, scene_dither.cpp): every write to oC0 goes to a free temp rO, and at the end
 // oC0.rgb = rO.rgb + t(vPos) * cA.x, oC0.a = rO.a (the alpha is the bloom mask: untouched). t = triangular noise in
 // (-1, 1) from interleaved gradient noise (a fixed per-pixel pattern, no time); cA.x = the amount in output units, set per
-// draw (*amountConst = A; 1/255 = one 8-bit step). The 8-bit steps of smooth lighting become an invisible grain.
+// draw (cA.w = a phase added to the pattern: 0 = still, a new value each frame = moving grain) (*amountConst = A; 1/255 = one 8-bit step). The 8-bit steps of smooth lighting become an invisible grain.
 // ps_3_0 only (vPos); refused (t unchanged): no oC0 write, subroutines or ret, relative constant addressing, no free
 // temp / constant.
 enum class DitherResult { Ok, NotPs30, NoColorWrite, Subroutines, RelativeConstants, NoFreeRegister, Unreadable };

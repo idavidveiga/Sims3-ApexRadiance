@@ -35,6 +35,7 @@
 #include "ui/widgets.h"
 #include "build_flavor.h"
 #include <d3d9.h>
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <format>
@@ -63,6 +64,8 @@ std::unordered_map<IDirect3DPixelShader9*, Copy> g_copies; // game pixel shader 
 // game vertex shader -> its copies writing the clip position to TEXCOORDk (null = cannot), key = pointer * 8 + k
 std::unordered_map<uint64_t, IDirect3DVertexShader9*> g_vsCopies;
 float g_strength = 1.0f;                  // the grain in 8-bit steps (triangular, peak): 1 = +-1 step
+bool g_moving = false;                    // a new grain pattern every frame (high frame rates average it away)
+unsigned g_frameIndex = 0;                // counts frames for the moving grain
 bool g_showCovered = false;               // Developer: a coarse grain where the fix applies (not saved)
 constexpr float kShowCoveredSteps = 24.0f;
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only (render thread)
@@ -244,7 +247,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     float before[4] = {};
     dev->GetPixelShaderConstantF(static_cast<UINT>(copy.amountReg), before, 1);
     // Developer "Show covered surfaces": a coarse grain only where the fix applies
-    const float amount[4] = {(g_showCovered ? kShowCoveredSteps : g_strength) / 255.0f, 0.5f * static_cast<float>(vp.Width), 0.5f * static_cast<float>(vp.Height), 0};
+    const float amount[4] = {(g_showCovered ? kShowCoveredSteps : SceneDither::Strength()) / 255.0f, 0.5f * static_cast<float>(vp.Width), 0.5f * static_cast<float>(vp.Height),
+                             SceneDither::GrainPhase()};
     D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, static_cast<UINT>(copy.amountReg), amount, 1);
     D3D9Hooks::CallOriginalSetPixelShader(dev, copy.ps);
     if (vsCopy) D3D9Hooks::CallOriginalSetVertexShader(dev, vsCopy);
@@ -262,6 +266,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g_backBuffer = bb;
         bb->Release();
     }
+    g_frameIndex++;
     g_last = g_frame;
     g_frame = {};
     // Development build: the coverage in the log now and then (the first 12 times, every 20 s of scene)
@@ -317,7 +322,8 @@ void RegisterHooks() {
 class SceneDitherPatch : public ApexPatch {
   public:
     SceneDitherPatch() : ApexPatch("SceneDither", nullptr) {
-        RegisterFloatSetting(&g_strength, "forca", SettingWidget::Slider, 1.0f, 0.5f, 3.0f, "Grain in 8-bit steps (triangular peak); 1 = +-1 step");
+        RegisterFloatSetting(&g_strength, "forca", SettingWidget::Slider, 1.0f, 0.0f, 1.0f, "Grain in 8-bit steps (triangular peak); 1 = +-1 step, 0 = none");
+        RegisterBoolSetting(&g_moving, "graoEmMovimento", false, "A new grain pattern every frame (vanishes at high frame rates)");
     }
 
     bool Install() override {
@@ -349,8 +355,10 @@ class SceneDitherPatch : public ApexPatch {
 
     void RenderCustomUI() override {
         SAFE_IMGUI_BEGIN();
-        if (ApexUi::SliderPercent("Strength", &g_strength, 0.5f, 3.0f, "More hides stronger steps, with a slightly more visible grain; 100% is the default", 1.0f))
-            NotifySettingChanged();
+        bool changed = ApexUi::SliderPercent("Strength", &g_strength, 0.0f, 1.0f, "How much grain hides the color steps; 100% hides them fully, 0% is off", 1.0f);
+        changed |= ApexUi::SwitchRow("Moving grain", &g_moving, "A new grain each frame: invisible at high frame rates, a faint shimmer at low ones",
+                                     false);
+        if (changed) NotifySettingChanged();
     }
 
     // Developer page > Debug views
@@ -392,4 +400,10 @@ APEX_REGISTER_FEATURE(SceneDitherPatch, {.displayName = "Banding Fix",
 
 namespace SceneDither {
 bool On() { return g_on.load(std::memory_order_relaxed); }
+float Strength() { return std::clamp(g_strength, 0.0f, 1.0f); }
+float GrainPhase() {
+    if (!g_moving) return 0.0f;
+    const double v = g_frameIndex * 0.6180339887498949; // golden ratio steps: every frame a different, even phase
+    return static_cast<float>(v - static_cast<double>(static_cast<unsigned long long>(v)));
+}
 } // namespace SceneDither

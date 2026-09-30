@@ -32,7 +32,7 @@ six saved frames of the game (depth dumps `Documents\...\S3SS\Profundidade\profu
 | Quality (visible) | `qualidade` | enum | 2 (High) | stored 0 Low, 1 Medium, 2 High, 3 Ultra, 4 Very Low | 4 / 6 / 8 / 12 / 2 slices; the menu shows Very Low .. Ultra (`kQualityShown`), stored indices kept from 2.1.0 |
 | Advanced > Show the shade alone | (not saved) | bool | false | | the shade in grey (also on the Developer page) |
 | Also in map view (visible) | `noMapa` | bool | true | | with the map view open: contact 4 m, large 15 m, no fade (lab on 3 map captures 30/09: view 950-1800 m, one depth step 5-20 cm as near is ~1 m there; AO shift 0.35-0.48 levels) |
-| (none) | `revisao` | int | 4 | | settings revision (user rule 30/09): **bump `kSettingsRevision` with every change of the AO**; a config or profile with an older revision (2.1.0 saved none = 1) loads the defaults, keeping only the on/off state |
+| (none) | `revisao` | int | 5 | | settings revision (user rule 30/09): **bump `kSettingsRevision` with every change of the AO**; a config or profile with an older revision (2.1.0 saved none = 1) loads the defaults, keeping only the on/off state |
 
 All live (read every frame). The old combined build's keys (`intensidade`, `raioM`, `visualizar`) are not read.
 

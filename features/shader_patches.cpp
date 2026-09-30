@@ -1877,6 +1877,7 @@ DitherResult AddDither(std::vector<DWORD>& t, int* amountConst) {
     // u = IGN(vPos) in [0, 1); r = 2u - 1; triangular t = sign(r) (1 - sqrt(1 - |r|)) in (-1, 1): the inverse CDF of the
     // triangular distribution, so the dither is TPDF (no noise modulation: the steps vanish instead of thinning out)
     std::vector<DWORD> tail = {Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kMisc, 0), Src(kConst, cK), Src(kConst, cK, 0xAA),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzW), // + cA.w: 0 still, per frame moving
                                Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
                                Op(kMul, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cK, kSwzW),
                                Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),                                                // u
@@ -1937,6 +1938,7 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst, int* texcoordOu
                                Op(kMad, 4), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzY), Src(kConst, cA, kSwzY),
                                Op(kMad, 4), Dst(kTemp, N, 0x2), Neg(Src(kTemp, N, kSwzY)), Src(kConst, cA, 0xAA), Src(kConst, cA, 0xAA),
                                Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kTemp, N), Src(kConst, cK), Src(kConst, cK, 0xAA),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cA, kSwzW),
                                Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
                                Op(kMul, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cK, kSwzW),
                                Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
