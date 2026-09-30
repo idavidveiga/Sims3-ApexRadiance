@@ -119,7 +119,7 @@ On from the start:
 - **Faster room lighting:** rooms light up sooner when you enter a lot or change floors.
 - **Lot lighting while the camera moves:** instead of spending up to 15 ms of one frame on lot lighting, the work is spread over several frames while you pan or zoom (about 80% fewer lighting stutters while moving, in testing). When the camera stops, the game's normal budget comes back.
 - **Wall shading waits while moving:** the shading of a new lot's walls, a 10 to 17 ms hitch, is done once the camera stops.
-- **Fewer big freezes from Night Lights:** lamps that switch or flicker by themselves no longer rebuild the terrain light, and rebuilds never happen while the camera moves.
+- **Fewer big freezes from Night Lights:** lamps that switch or flicker by themselves no longer rebuild the terrain light, and a rebuild waits for the camera to stop, for at most 2 seconds.
 
 Off until you turn them on:
 - **Faster game file lookups:** the game searches every package (hundreds with mods) one by one each time it needs a texture or model. Apex Radiance remembers where things are: lookups cost about half as much, and the stutters they caused dropped by roughly 70% in testing. Under it, **Remember missing files** also skips the repeated searches for files no package has.

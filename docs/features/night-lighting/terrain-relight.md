@@ -84,7 +84,9 @@
 >    "the <reason> rebuild just ran").
 > 4. **Camera still.** No lamp-change kick while the camera eye moved within the last 1 s (eye `[[root]+0x24]+0x60`,
 >    offsets parsed from the code like `LotLightingMotion`; moving = more than 2 cm from the last reference, so slow
->    orbits add up; eye unknown = still). The change stays pending ("deferred: camera moving").
+>    orbits add up; eye unknown = still). The change stays pending ("deferred: camera moving"), **at most 2 s** after it
+>    was first seen (`kCameraWaitMax`, 30/09: the user saw a square's 57 lamps reach the ground ~16 s late while panning);
+>    then it goes ahead while moving (one ~0.25-0.3 s rebuild; the rate limits below still apply).
 > 5. **Rate limits.** User-driven changes and the switches: at most one rebuild every 3 s (~0.5-1 s latency otherwise).
 >    Automatic changes and the stuck-countdown fallback: at most once per 30 s after the last rebuild of any kind
 >    ("rate-limited"); the change stays pending and is re-checked (it is dropped if the lamps go back meanwhile).

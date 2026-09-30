@@ -259,6 +259,7 @@ constexpr auto kEditMinInterval = std::chrono::seconds(3);
 constexpr auto kAutoMinInterval = std::chrono::seconds(5);   // automatic lamp changes: after the last rebuild of any kind (was 30 s: lamps switched by Sims stayed on the ground too long; flickering lamps are "animated" and never rebuild)
 constexpr auto kAutoBusyInterval = std::chrono::seconds(30); // ... once two automatic rebuilds ran within the last minute
 constexpr auto kCameraStill = std::chrono::seconds(1);
+constexpr auto kCameraWaitMax = std::chrono::seconds(2); // a lamp change waits at most this long for the camera to stop (user, 30/09: the square's lamps took ~16 s to reach the ground while panning)
 constexpr auto kGameRebuiltSlack = std::chrono::seconds(2); // a rebuild up to 2 s before a change was SEEN already had it
 constexpr auto kSnapshotWaitMax = std::chrono::seconds(2);
 enum class EditWait { None, Snapshot, Camera, Interval, Rate, Relight, LampRate };
@@ -708,6 +709,8 @@ void SampleCamera(Clock::time_point now) {
 }
 
 bool CameraStill(Clock::time_point now) { return !g_camOk || !g_camHave || now - g_camMovedAt >= kCameraStill; }
+// A pending lamp change goes ahead while the camera moves once it has waited kCameraWaitMax (one ~0.3 s rebuild then)
+bool CameraAllowsEdit(Clock::time_point now) { return CameraStill(now) || now - g_editFirstAt >= kCameraWaitMax; }
 
 std::string CameraText(Clock::time_point now) {
     if (!g_camOk) return "not found (lamp rebuilds do not wait for it)";
@@ -807,7 +810,7 @@ int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const 
     const bool user = g_editUser;
     std::erase_if(g_relitLamps, [now](const RelitLamp& r) { return now - r.at >= kLocalAutoPerLamp; });
     if (!user) { // automatic: camera still, and at most once per 5 s per lamp (user-driven changes are relit at once)
-        if (!CameraStill(now)) {
+        if (!CameraAllowsEdit(now)) {
             WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
             return 2;
         }
@@ -926,7 +929,7 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
         if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Lamp change: {}: local relight not possible ({}): full rebuild path", g_editReason, why));
         diffText += "; local relight not possible: " + why;
     }
-    if (!CameraStill(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
+    if (!CameraAllowsEdit(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
     const bool fast = g_editForce || g_editUser;
     if (fast && now - g_lastEditKick < kEditMinInterval) return WaitEdit(EditWait::Interval, "rate-limited: at most one lamp rebuild every 3 s");
     // Automatic changes (lamps switched by Sims): 5 s after the last rebuild for an occasional switch, 30 s once two
