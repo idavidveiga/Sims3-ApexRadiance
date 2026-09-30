@@ -37,6 +37,8 @@ struct SiteInfo {
 // 0x006E6481..0x006E6484 or 0x006E4DE1..0x006E4DE5): the destructor's push ebp; mov ebp,esp; and esp,-16 (6 bytes);
 // AddNode's push esi; mov esi,[esp+8] (1 + 4 bytes; [esp+8] is read after the push in the trampoline too); the teardown's
 // four pushes and mov edi,ecx (6 bytes: byte 5 is never executed again, byte 4 is a boundary WriteCodeSuspended protects).
+// The record CRC (2026-09-30) starts like the object lookup: mov ecx,[esp+4]; mov eax,[esp+8] (4 + 4 bytes, no relative
+// operand); no branch in .text lands on 0x004FA4C1..0x004FA4C7 (jmps.tsv / calls.tsv).
 const SiteInfo kSiteInfo[kSites] = {
     {"DXT1 encoder", GameAddr::Id::DxtEncode1, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"DXT5 encoder", GameAddr::Id::DxtEncode5, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
@@ -48,6 +50,7 @@ const SiteInfo kSiteInfo[kSites] = {
     {"room invalidate", GameAddr::Id::InvalidateRoom, {0x56, 0x8B, 0xF1, 0x8B, 0x0E}, 5},
     {"room invalidate on flag change", GameAddr::Id::InvalidateFlag, {0x8A, 0x44, 0x24, 0x04, 0x56}, 5},
     {"CAS triangle sort", GameAddr::Id::CasTriSort, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
+    {"record CRC", GameAddr::Id::RecordCrc, {0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x44, 0x24, 0x08}, 8},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

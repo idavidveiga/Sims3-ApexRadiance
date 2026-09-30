@@ -12,7 +12,11 @@
 //   FastTextureCompression  the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical faster version
 //                        (features/fast_dxt.h). Off by default until checked in game.
 //   FastCacheCompression the RefPack stream write answered by a faster compressor with the same stream format
-//                        (features/fast_refpack.h). Off by default until checked in game.
+//                        (features/fast_refpack.h), and the compositor cache's record checksum computed eight bytes per step
+//                        (features/fast_crc.h). Off by default until checked in game.
+//   FastCasSort          the CAS triangle sort rewritten (features/fast_cas.h). Off by default until checked in game.
+//   FastMemory           the game allocator's lock spin, and its big-block release done by a helper thread outside the lock
+//                        (features/fast_memory.h). Experimental, off by default.
 //   SceneNodeBudget      while the camera moves, Scene::BeginFrame's pending-node drain processes at most N nodes / T ms
 //                        per frame, the rest the next frames; the nodes left are guarded by hooks on the node destructor,
 //                        AddNode and the holder teardown (features/scene_budget.h). Experimental, off by default.
@@ -32,6 +36,8 @@
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
+#include "fast_crc.h"
+#include "fast_memory.h"
 #include "scene_budget.h"
 #include "object_index.h"
 #include "room_light_queue.h"
@@ -255,6 +261,8 @@ class FastCacheCompressionPatch : public ApexPatch {
         lastError.clear();
         std::string error;
         if (!FastRefPack::Start(&error)) return Fail(error);
+        std::string crcError; // the record checksums are a separate part: the compressor works without them
+        if (!FastCrc::Start(&crcError)) LOG_WARNING("[FastCrc] Not used: " + crcError);
         isEnabled = true;
         return true;
     }
@@ -262,6 +270,7 @@ class FastCacheCompressionPatch : public ApexPatch {
     bool Uninstall() override {
         if (!isEnabled) return true;
         FastRefPack::Stop();
+        FastCrc::Stop();
         isEnabled = false;
         lastError.clear();
         return true;
@@ -300,6 +309,31 @@ class FastCasSortPatch : public ApexPatch {
 
     void RenderCustomUI() override {} // the Performance card draws the row
     void RenderDeveloperUI() override { FastCas::RenderDeveloperUI(); }
+};
+
+class FastMemoryPatch : public ApexPatch {
+  public:
+    FastMemoryPatch() : ApexPatch(Performance::kFastMemoryName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!FastMemory::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        FastMemory::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { FastMemory::RenderDeveloperUI(); }
 };
 
 class SceneNodeBudgetPatch : public ApexPatch {
@@ -404,7 +438,8 @@ std::string Performance::FileListStatus() { return ResourceCache::KeyListStatusT
 std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusText(); }
 std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoStatusText(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
-std::string Performance::FastCacheStatus() { return FastRefPack::StatusText(); }
+std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
+std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
 std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
 std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
@@ -505,7 +540,9 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                        .technicalDetails = {"The RefPack stream write (0x4EC200) is answered through its vtable slot by a bounded hash-chain compressor with reusable "
                                             "memory; same header, window and opcodes, so the game's decoder reads it unchanged.",
                                             "The first 16 streams of each session are decompressed with the game's decoder and compared with the source; a difference "
-                                            "turns the feature off."},
+                                            "turns the feature off.",
+                                            "The texture compositor cache's record checksum (CRC-32, 0x4FA4C0) is computed eight bytes per step with tables derived from "
+                                            "the game's own table; its first 16 values of each session are compared with the game's."},
                        .gameCodeGroup = "FastCacheCompression"});
 
 APEX_REGISTER_FEATURE(FastCasSortPatch,
@@ -522,6 +559,24 @@ APEX_REGISTER_FEATURE(FastCasSortPatch,
                                             "and the same stable sort.",
                                             "The first 16 calls of each session also run the game's function and compare the indices; a difference turns the feature off."},
                        .gameCodeGroup = "FastCasSort"});
+
+APEX_REGISTER_FEATURE(FastMemoryPatch,
+                      {.displayName = "Faster Memory Handling",
+                       .description = "Every part of the game shares one memory manager. When two parts need it at once, the second one used to go to sleep at once "
+                                      "and wake up late, and freeing a big block of memory made everyone wait. Now it waits a few microseconds before sleeping, and "
+                                      "big blocks are handed back to Windows in the background. Nothing else changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The general allocator's critical section (created with a spin count of 10, about 24 ns) gets Windows' default of 2000 "
+                                            "(SetCriticalSectionSpinCount; the flag bits are kept).",
+                                            "Its release of blocks of 128 KB and more (VirtualFree MEM_RELEASE at 0x4E5306, made while the allocator is locked and "
+                                            "whose result it ignores) goes to a queue a helper thread empties at once. Its five VirtualAlloc calls go through Apex too: "
+                                            "if one fails while releases are queued, they are released first and the call is made again.",
+                                            "The decommit of a core's tail is never deferred. Every call site is checked before it is rewritten and written back when "
+                                            "the feature is turned off."},
+                       .gameCodeGroup = "FastMemory"});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",

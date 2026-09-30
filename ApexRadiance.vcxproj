@@ -106,6 +106,8 @@
     <ClCompile Include="features\fast_refpack.cpp" />
     <ClCompile Include="features\cas_tri_sort.cpp" />
     <ClCompile Include="features\fast_cas.cpp" />
+    <ClCompile Include="features\fast_crc.cpp" />
+    <ClCompile Include="features\fast_memory.cpp" />
     <ClCompile Include="features\frame_profiler.cpp" />
     <ClCompile Include="features\level_light_share.cpp" />
     <ClCompile Include="features\light_diag.cpp" />
@@ -179,6 +181,8 @@
     <ClInclude Include="features\fast_refpack.h" />
     <ClInclude Include="features\cas_tri_sort.h" />
     <ClInclude Include="features\fast_cas.h" />
+    <ClInclude Include="features\fast_crc.h" />
+    <ClInclude Include="features\fast_memory.h" />
     <ClInclude Include="features\frame_profiler.h" />
     <ClInclude Include="features\level_light_share.h" />
     <ClInclude Include="features\light_diag.h" />

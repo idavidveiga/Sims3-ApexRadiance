@@ -221,6 +221,17 @@ enum class Id : uint16_t {
     SunlightScale,            // the "Sunlight Scale" float FUN_00c11ad0 multiplies the sun / moon colour by (mov ecx,imm32 at 0x00C11B01)
     CasTriSort,               // FUN_005d1960 cdecl(u16* indices, u8* vertices, u32 indexCount, u32 vertexCount, u16 stride, u8 offset):
                               // "CAS/ModelBuilder/TriangleSortDataList" (features/cas_tri_sort.h)
+    // ---- Faster memory handling (features/fast_memory.h) ----
+    AllocGlobal,              // the global general allocator pointer 0x011CB864 (operator new FUN_004e3f90: mov ecx,[global])
+    AllocMmapFreeCall,        // "call [VirtualFree]" in the allocator's FreeInternal FUN_004e51b0 (0x004E5306): releases a big block
+    // ---- Faster cache compression, record checksums (features/fast_crc.h) ----
+    RecordCrc,                // FUN_004fa4c0 cdecl(bytes, length, crc, bool invert): MSB-first table CRC-32 of the cache records
+    RecordCrcTable,           // its 256-entry table (0x0114D330)
+    // ---- Frame Profiler: the DDS texture loader's create and fill calls (texture load finalize job 0x007297C0) ----
+    TexCreateCall,            // call FUN_0060cea0 (0x0060E1DC): creates the D3D texture (cdecl, 9 args)
+    TexCreate,
+    TexFillCall,              // call FUN_0060d290 (0x0060E1FF): copies every mip level into it (cdecl, 4 args)
+    TexFill,
     Count
 };
 

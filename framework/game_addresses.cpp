@@ -243,6 +243,14 @@ constexpr Info kInfo[] = {
     {"BakeColourSite", 0x00C2950F},
     {"SunlightScale", 0x011D0918},
     {"CasTriSort", 0x005D1960},
+    {"AllocGlobal", 0x011CB864},
+    {"AllocMmapFreeCall", 0x004E5306},
+    {"RecordCrc", 0x004FA4C0},
+    {"RecordCrcTable", 0x0114D330},
+    {"TexCreateCall", 0x0060E1DC},
+    {"TexCreate", 0x0060CEA0},
+    {"TexFillCall", 0x0060E1FF},
+    {"TexFill", 0x0060D290},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -505,6 +513,18 @@ const Entry kTable[] = {
     {Id::BakeColourSite, K::Sig, W::Text, None, 0, {{"E8 ?? ?? ?? ?? 0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17 0F 28 47 10", 5, M::At}, {"0F 28 87 F0 00 00 00 0F 29 86 20 01 00 00 8B 17", 0, M::At}}},
     {Id::SunlightScale, K::Sig, W::Image, None, 0, {{"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E 00 08 00 00", 1, M::Dword}, {"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 0F 10 00 0F 28 8E ?? ?? 00 00 8D 8E", 1, M::Dword}}},
     {Id::CasTriSort, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC A4 00 00 00 33 C0 89 44 24 08 89 44 24 0C 53 8D 44 24 0C 8B C8 89 44 24 0C 33 C0 56 57 89 44 24 20 89 44 24 24 89 44 24 28 8D 54 24 20 52 B8 AB AA AA AA F7 65 10", 0, M::At}, NOSIG}},
+    // ---- Faster memory handling: operator new's "mov ecx,[global]"; FreeInternal's big-block release (stats update, then
+    //      push base; call [VirtualFree]) ----
+    {Id::AllocGlobal, K::Sig, W::Image, None, 0, {{"8B 44 24 0C 8B 4C 24 04 50 51 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? C3", 12, M::Dword}, NOSIG}},
+    {Id::AllocMmapFreeCall, K::Sig, W::Text, None, 0, {{"29 9F 8C 04 00 00 83 87 88 04 00 00 FF 51 FF 15 ?? ?? ?? ??", 14, M::At}, NOSIG}},
+    // ---- Record checksum: the whole function (its table operand masked); the table is the dword at +0x25 ----
+    {Id::RecordCrc, K::Sig, W::Text, None, 0, {{"8B 4C 24 04 8B 44 24 08 8D 14 01 3B CA 8B 44 24 0C 73 1F 56 57 0F B6 39 8B F0 C1 EE 18 33 F7 C1 E0 08 33 04 B5 ?? ?? ?? ?? 83 C1 01 3B CA 72 E5 5F 5E 80 7C 24 10 00 74 02 F7 D0 C3", 0, M::At}, NOSIG}},
+    {Id::RecordCrcTable, K::Deref, W::Image, Id::RecordCrc, 0x25, {NOSIG, NOSIG}},
+    // ---- Frame Profiler: the DDS loader's create and fill calls (pushes of their arguments, the CALL, the stack cleanup) ----
+    {Id::TexCreateCall, K::Sig, W::Text, None, 0, {{"8B 45 DC 50 8B 4D F4 51 8B 55 08 52 E8 ?? ?? ?? ?? 83 C4 24", 12, M::At}, NOSIG}},
+    {Id::TexCreate, K::Target, W::Text, Id::TexCreateCall, 0, {NOSIG, NOSIG}},
+    {Id::TexFillCall, K::Sig, W::Text, None, 0, {{"8A 4D FB 51 8B 55 10 52 8B 45 0C 50 8B 4D 08 51 E8 ?? ?? ?? ?? 83 C4 10", 16, M::At}, NOSIG}},
+    {Id::TexFill, K::Target, W::Text, Id::TexFillCall, 0, {NOSIG, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
@@ -531,6 +551,8 @@ const Group kGroups[] = {
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
     {"FastCasSort", {Id::CasTriSort}},
+    {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
+    {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

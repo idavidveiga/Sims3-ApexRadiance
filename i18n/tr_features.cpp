@@ -86,6 +86,21 @@ const I18n::Entry kEntries[] = {
      "Quand le jeu construit un Sim (dans Créer un Sim et quand un Sim change de tenue), il trie les triangles des cheveux et des autres "
      "couches transparentes avec un test lent de chaque triangle contre chaque point du maillage. Ceci fait le même tri bien plus vite, avec "
      "exactement le même résultat : ces moments saccadent moins. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"Every part of the game shares one memory manager. When two parts need it at once, the second one used to go to sleep at once "
+     "and wake up late, and freeing a big block of memory made everyone wait. Now it waits a few microseconds before sleeping, and "
+     "big blocks are handed back to Windows in the background. Nothing else changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Todas as partes do jogo dividem um único gerenciador de memória. Quando duas partes precisavam dele ao mesmo tempo, a segunda "
+     "dormia na hora e acordava atrasada, e liberar um bloco grande de memória fazia todo mundo esperar. Agora ela espera alguns "
+     "microssegundos antes de dormir, e os blocos grandes são devolvidos ao Windows em segundo plano. Nada mais muda. Parte do "
+     APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Todas las partes del juego comparten un único gestor de memoria. Cuando dos partes lo necesitaban a la vez, la segunda se "
+     "dormía enseguida y despertaba tarde, y liberar un bloque grande de memoria hacía esperar a todos. Ahora espera unos "
+     "microsegundos antes de dormirse, y los bloques grandes se devuelven a Windows en segundo plano. Nada más cambia. Parte de "
+     APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Toutes les parties du jeu partagent un seul gestionnaire de mémoire. Quand deux parties en avaient besoin en même temps, la "
+     "seconde s'endormait aussitôt et se réveillait en retard, et libérer un gros bloc de mémoire faisait attendre tout le monde. "
+     "Désormais elle attend quelques microsecondes avant de s'endormir, et les gros blocs sont rendus à Windows en arrière-plan. Rien "
+     "d'autre ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

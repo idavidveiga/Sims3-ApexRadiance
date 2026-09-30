@@ -380,13 +380,26 @@ own timing mutex.
 `SamplerProc` thread, `THREAD_PRIORITY_HIGHEST`, waits on a high-resolution waitable timer
 (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`, fallback plain timer or `Sleep(1)`), period `1/hz` relative per iteration
 (so the achieved rate is below target; the UI shows the measured rate). For each wanted thread (render =
-`g_renderTid`, simulation = `g_simTid`): `SuspendThread`, `GetThreadContext(CONTEXT_CONTROL)`, copy up to 512 bytes
-from ESP (bounded by the stack region found with `VirtualQuery` on the first sample, SEH-guarded), `ResumeThread`.
+`g_renderTid`, simulation = `g_simTid`): `SuspendThread`, `GetThreadContext(CONTEXT_CONTROL)`, copy up to 4 KB (512
+bytes until 30/09: deep DXVK / driver / kernel frames hid the game's in ~24% of the hitch samples) from ESP (bounded by the stack region found with `VirtualQuery` on the first sample, SEH-guarded), `ResumeThread`.
 Nothing between suspend and resume allocates, logs or locks. After resuming, dwords of the copy that point into
 TS3W's `.text` right after a CALL instruction (`IsCallSite`: `E8 rel32` landing in `.text`, or FF /2 forms) are kept
 as candidate return addresses (up to 12; a frame-pointer-free heuristic that can pick up stale slots, so deep entries
 are hints). Samples go to an 8192-entry SPSC ring with the TSC timestamp; at each frame boundary the render thread
 assigns those in `[intervalStart, now)` to the frame (`ConsumeSamples`).
+
+Added 30/09 (loading RE follow-ups):
+- For a sample whose EIP is in system code, the sampler also keeps the first dword of the copy that is a return address
+  after a CALL in any non-system module (TS3W, d3d9.dll, a driver, an ASI; `FirstOutsideSystem`, over a sorted copy of
+  the module table, SEH-guarded). Report table "system code: first caller outside system code", printed `TS3W XXXXXXXX`
+  or `module+RVA`.
+- The exact-EIP table names system-code EIPs by the nearest export (`ntdll.dll NtWaitForAlertByThreadId+0xC`).
+- Page faults of the process per frame (`GetProcessMemoryInfo`): per hitch ("page faults N" on the lots line) and the
+  session average for hitch / other frames.
+- Two counters on the DDS texture loader's calls (GameAddr `TexCreateCall` / `TexFillCall`, CALL targets with all threads
+  checked): "Texture create" (FUN_0060cea0, the D3D CreateTexture of a loaded texture; level-0 pixels counted) and
+  "Texture fill" (FUN_0060d290, the mip copy), plus a report table by size class (loads, create / fill ms total, average,
+  max, MB) from the profiler's CreateTexture callback, which notes the size on the creating thread.
 
 Symbolisation:
 - Module classes (`ClassifyModule`): **TS3W** (main module), **S3SS** (the module containing `ClassifyModule` itself,

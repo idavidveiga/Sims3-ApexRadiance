@@ -176,11 +176,11 @@
 // ---- Sampling (Advanced, off by default) ----
 // For the time no timed function covers ("Unattributed"): a sampler thread pauses the render and/or simulation thread
 // g_sampleHz times a second (default 2000; high-resolution waitable timer), records EIP and the TS3W return addresses
-// found on the first 512 bytes of its stack, and the render thread assigns the samples to frame intervals. Per hitch:
+// found on the first 4 KB of its stack, and the render thread assigns the samples to frame intervals. Per hitch:
 // share of samples per code class (TS3W, DXVK/driver, system, Apex, other ASI, other), the top 8 code locations (TS3W
 // function start guessed from the int3 padding, or the module), the top 8 TS3W call sites on the stack and the TS3W
 // callers of samples in system code (waits, heap, I/O). Session tables compare hitch frames with other frames.
-// Cost: each sample pauses the target for the SuspendThread / GetThreadContext / 512-byte copy / ResumeThread round trip
+// Cost: each sample pauses the target for the SuspendThread / GetThreadContext / 4 KB copy / ResumeThread round trip
 // (typically 5-30 us under WOW64, measured and shown in the UI), i.e. roughly 1-6% of the sampled thread at 2000 Hz, plus
 // the same order of CPU on the sampler's core. The render thread's per-frame work is a table update per sample.
 //
@@ -205,6 +205,8 @@
 #include "scene_budget.h"
 #include "object_index.h"
 #include "lot_lighting_motion.h"
+#include "fast_crc.h"
+#include "fast_memory.h"
 #include "apex_config.h"
 #include "apex_paths.h"
 #include "apex_log.h"
@@ -280,6 +282,8 @@ enum Cat : int {
     kLotRoomSolve,
     kWallAo,
     kKeyList,
+    kTexCreate,
+    kTexFill,
     kCatCount
 };
 constexpr int kFirstGameCat = kLotLodScoring;
@@ -355,6 +359,10 @@ const CatInfo kCats[kCatCount] = {
                      "is outside this counter)."},
     {"Key list", "ResourceMgr::GetKeyList (FUN_004B1AE0 / FUN_00736660, vtable slots 0x00FB2DC0 / 0x00FFE270): lists every key matching a filter by walking the "
                  "index of every package (CAS asks it for all keys of a type). Keys returned counted; with Faster File Lists on, packages answered from memory. All threads."},
+    {"Texture create", "FUN_0060CEA0 called by the DDS texture loader (CALL 0x0060E1DC; texture load finalize job 0x007297C0): IDirect3DDevice9::CreateTexture "
+                       "of a loaded texture (MANAGED pool; in DXVK a zero-filled, mapped CPU copy). Pixels of level 0 counted; by size in the report. All threads."},
+    {"Texture fill", "FUN_0060D290 called by the DDS texture loader (CALL 0x0060E1FF): locks every mip level of the new texture and copies the file's rows into it. "
+                     "By size in the report. All threads."},
 };
 
 // ---- settings ----
@@ -890,6 +898,8 @@ enum TargetId : int {
     T_WallAo,
     T_KeyList,
     T_KeyListDerived,
+    T_TexCreate,
+    T_TexFill,
     kTargetCount
 };
 
@@ -1293,6 +1303,76 @@ uint64_t __fastcall Hook_KeyListDerived(void* self, void* edx, uint32_t out, uin
     return KeyList(SlotChain::Site::KeyListDerived, self, edx, out, filter, unique);
 }
 
+// ---- texture loads by size (the DDS loader's create and fill calls). The profiler's CreateTexture callback notes the
+// size of the texture this thread is creating; the create hook files the call under its size class and leaves the class
+// for the fill call that follows it on the same thread. ----
+constexpr int kTexBuckets = 6; // level 0 pixels: <= 128^2, 256^2, 512^2, 1024^2, 2048^2, more
+const char* const kTexBucketNames[kTexBuckets] = {"up to 128x128", "up to 256x256", "up to 512x512", "up to 1024x1024", "up to 2048x2048", "larger"};
+struct TexBucket {
+    std::atomic<uint64_t> loads{0}, createTicks{0}, createMax{0}, fills{0}, fillTicks{0}, fillMax{0}, bytes{0};
+};
+TexBucket g_tex[kTexBuckets + 1]; // + unknown size
+thread_local uint32_t t_texW = 0, t_texH = 0, t_texLevels = 0;
+thread_local D3DFORMAT t_texFormat = D3DFMT_UNKNOWN;
+thread_local int t_texBucket = kTexBuckets;
+
+int TexBucketOf(uint64_t pixels) {
+    if (!pixels) return kTexBuckets;
+    int b = 0;
+    for (uint64_t lim = 128ull * 128ull; b < kTexBuckets - 1 && pixels > lim; lim *= 4) b++;
+    return b;
+}
+// Bytes of the whole mip chain for the formats the game loads (DXT1 8 per 4x4 block, DXT3/5 16, else 4 per pixel), for the report
+uint64_t TexBytes(uint32_t w, uint32_t h, uint32_t levels, D3DFORMAT f) {
+    uint64_t total = 0;
+    for (uint32_t l = 0; l < std::max<uint32_t>(levels, 1) && (w || h); l++) {
+        const uint64_t bw = (std::max<uint32_t>(w, 1) + 3) / 4, bh = (std::max<uint32_t>(h, 1) + 3) / 4;
+        total += f == D3DFMT_DXT1 ? bw * bh * 8 : (f == D3DFMT_DXT3 || f == D3DFMT_DXT5) ? bw * bh * 16 : static_cast<uint64_t>(std::max<uint32_t>(w, 1)) * std::max<uint32_t>(h, 1) * 4;
+        w >>= 1;
+        h >>= 1;
+    }
+    return total;
+}
+inline void StoreMax(std::atomic<uint64_t>& m, uint64_t v) {
+    uint64_t cur = m.load(std::memory_order_relaxed);
+    while (v > cur && !m.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {}
+}
+
+using FnCdecl4 = uint64_t(__cdecl*)(uint32_t, uint32_t, uint32_t, uint32_t);
+using FnCdecl9 = uint64_t(__cdecl*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+uint64_t __cdecl Hook_TexCreate(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g, uint32_t h, uint32_t i) {
+    t_texW = t_texH = t_texLevels = 0;
+    t_texFormat = D3DFMT_UNKNOWN;
+    CounterScope sc(kTexCreate);
+    const uint64_t t0 = Now();
+    const uint64_t r = Orig<T_TexCreate, FnCdecl9>()(a, b, c, d, e, f, g, h, i);
+    const uint64_t dt = Now() - t0;
+    sc.End();
+    const uint64_t pixels = static_cast<uint64_t>(t_texW) * t_texH;
+    if (sc.timed) AddX(sc.s, kXPixels, pixels);
+    const int bucket = TexBucketOf(pixels);
+    t_texBucket = bucket;
+    TexBucket& tb = g_tex[bucket];
+    tb.loads.fetch_add(1, std::memory_order_relaxed);
+    tb.createTicks.fetch_add(dt, std::memory_order_relaxed);
+    StoreMax(tb.createMax, dt);
+    tb.bytes.fetch_add(TexBytes(t_texW, t_texH, t_texLevels, t_texFormat), std::memory_order_relaxed);
+    return r;
+}
+uint64_t __cdecl Hook_TexFill(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    CounterScope sc(kTexFill);
+    const uint64_t t0 = Now();
+    const uint64_t r = Orig<T_TexFill, FnCdecl4>()(a, b, c, d);
+    const uint64_t dt = Now() - t0;
+    sc.End();
+    TexBucket& tb = g_tex[t_texBucket];
+    t_texBucket = kTexBuckets;
+    tb.fills.fetch_add(1, std::memory_order_relaxed);
+    tb.fillTicks.fetch_add(dt, std::memory_order_relaxed);
+    StoreMax(tb.fillMax, dt);
+    return r;
+}
+
 struct TargetInfo {
     const char* name;
     uintptr_t steam;     // Steam 1.67.2: where the pattern starts (the function entry, or the context of a CALL)
@@ -1407,11 +1487,15 @@ const TargetInfo kTargets[kTargetCount] = {
         reinterpret_cast<void*>(&Hook_KeyList), "any", false, 0, GameAddr::Id::ResKeyList, kNoAddr, GameAddr::Id::ResKeyListSlot, 1},
     {"Key list, ResourceSystem (FUN_00736660, vtable slot)", 0x00736660, "8B 44 24 0C 8B 54 24 08 56 8B 74 24 08 50 52 56 E8", -1, 0,
         reinterpret_cast<void*>(&Hook_KeyListDerived), "any", false, 0, GameAddr::Id::ResKeyListDerived, kNoAddr, GameAddr::Id::ResKeyListDerivedSlot, 1},
+    {"Texture create (CALL at 0x0060E1DC)", 0x0060E1DC, "E8 ?? ?? ?? ?? 83 C4 24 0F B6 C0 85 C0", 0, 0x0060CEA0,
+        reinterpret_cast<void*>(&Hook_TexCreate), "render (texture load finalize)", false, 0, GameAddr::Id::TexCreateCall, GameAddr::Id::TexCreate},
+    {"Texture fill (CALL at 0x0060E1FF)", 0x0060E1FF, "E8 ?? ?? ?? ?? 83 C4 10", 0, 0x0060D290,
+        reinterpret_cast<void*>(&Hook_TexFill), "render (texture load finalize)", false, 0, GameAddr::Id::TexFillCall, GameAddr::Id::TexFill},
 };
 const int kTargetCat[kTargetCount] = {kRenderFrame, kEndScene, kLotLodScoring, kLotDetailRequest, kLotRendererUpdate, kLotLoadStages,
     kLotViewSwitch, kLotLightingInit, kRoomLighting, kLotLightingUpdate, kTerrainUpdate, kScriptGC, kLotObjectBuild,
     kService, kService, kJob, kJobWait, kMutexWait, kSemWait, kFileRead, kFileFlush, kRefPackRead, kSceneBeginFrame, kSceneEndFrame, kSceneCapture, kAppState,
-    kClockTick, kImpostorPump, kResLookup, kScenePending, kRefPackCompress, kDxtEncode, kDxtEncode, kObjectLookup, kLotRoomSolve, kWallAo, kKeyList, kKeyList};
+    kClockTick, kImpostorPump, kResLookup, kScenePending, kRefPackCompress, kDxtEncode, kDxtEncode, kObjectLookup, kLotRoomSolve, kWallAo, kKeyList, kKeyList, kTexCreate, kTexFill};
 
 struct TargetState {
     uintptr_t addr = 0; // the function entry, or the CALL instruction for call-site targets
@@ -2130,6 +2214,7 @@ struct HitchRecord {
     uint32_t setTexture = 0, setShader = 0, shaderConst = 0, setRT = 0;
     uint32_t createTex = 0, createVS = 0, createPS = 0, createRT = 0;
     uint32_t lotsPromoted = 0, lotsDemoted = 0;
+    uint32_t pageFaults = 0; // the process's page faults during the frame
     int8_t camera = -1; // 1 moving, 0 still, -1 unknown
     bool foreground = true;
     bool stateCounted = false;
@@ -2143,6 +2228,10 @@ struct HitchRecord {
     float domMs = 0;
     int8_t topCounter = -1; // counter index (0..kNC-1), -1 none
 };
+
+// page faults per frame, [0] other frames, [1] hitch frames (render thread; reset by Clear)
+uint64_t g_pfSum[2] = {}, g_pfFrames[2] = {};
+uint32_t g_lastPageFaults = 0;
 
 // ---- render-thread statistics ----
 constexpr int kMedianWindow = 120;
@@ -2229,7 +2318,7 @@ std::vector<RegDisplay> g_regDisplay; // render thread
 
 // ---- statistical sampler ----
 // A dedicated thread wakes about g_sampleHz times a second (high-resolution waitable timer), suspends the render and/or
-// simulation thread, reads its context (EIP, ESP), copies up to 512 bytes of its stack and resumes it. Between
+// simulation thread, reads its context (EIP, ESP), copies up to 4 KB of its stack and resumes it. Between
 // SuspendThread and ResumeThread it only calls GetThreadContext and memcpy into a preallocated buffer: no heap, no
 // logging, nothing that takes a lock the suspended thread could hold. The copy is bounded by the thread's stack region
 // (VirtualQuery on the first ESP, done while the thread runs), so it cannot fault; it is SEH-guarded anyway.
@@ -2242,7 +2331,7 @@ std::vector<RegDisplay> g_regDisplay; // render thread
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 constexpr int kMaxRets = 12;
-constexpr size_t kStackCopy = 512;
+constexpr size_t kStackCopy = 4096; // 512 until 30/09: DXVK / driver / kernel frames hid the game's in ~24% of the hitch samples
 constexpr uint32_t kSampleRing = 8192;
 constexpr uint32_t kUnknownKey = 0xFFFFFFFFu;
 
@@ -2250,9 +2339,13 @@ struct Sample {
     uint64_t t;
     uint32_t eip;
     uint32_t ret[kMaxRets];
+    uint32_t firstOut; // EIP in system code: the first return address on the stack in any other module (TS3W, DXVK, an ASI...), 0 none
     uint8_t nRet;
     uint8_t thread; // 0 render, 1 simulation
 };
+// Sampler thread: for an EIP in system code, the first dword of the stack copy that is a return address after a CALL in a
+// module that is not system code (defined with the module table below)
+uint32_t FirstOutsideSystem(uint32_t eip, const uint32_t* stack, size_t dwords);
 
 Sample g_sampleRing[kSampleRing];
 std::atomic<uint32_t> g_sHead{0}, g_sTail{0};
@@ -2342,6 +2435,7 @@ void TakeSample(SampleTarget& tg, uint8_t which, uintptr_t textBegin, uintptr_t 
         const uintptr_t v = g_stackBuf[k];
         if (v >= textBegin + 7 && v < textEnd && IsCallSite(v, textBegin, textEnd)) s.ret[s.nRet++] = static_cast<uint32_t>(v);
     }
+    s.firstOut = FirstOutsideSystem(ctx.Eip, g_stackBuf, copied / 4);
     g_sHead.store(h + 1, std::memory_order_release);
     Add32(g_sTaken, 1);
 }
@@ -2468,6 +2562,93 @@ int FindModule(uintptr_t a) {
     for (int i = 0; i < n; i++)
         if (a >= g_modules[i].base && a < g_modules[i].end) return i;
     return -1;
+}
+
+// ---- sampler thread: the module table sorted by base (rebuilt when the render thread appended modules) ----
+struct SortedModule {
+    uintptr_t base, end;
+    uint8_t cls;
+};
+SortedModule g_sortedModules[kMaxModules]; // sampler thread only
+int g_sortedCount = 0, g_sortedSeen = -1;
+
+int SortedFind(uintptr_t a) {
+    int lo = 0, hi = g_sortedCount - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (a < g_sortedModules[mid].base) hi = mid - 1;
+        else if (a >= g_sortedModules[mid].end) lo = mid + 1;
+        else return mid;
+    }
+    return -1;
+}
+
+// No C++ objects (SEH): the module's bytes before r may be unreadable
+bool IsCallSiteGuarded(uintptr_t r, uintptr_t begin, uintptr_t end) {
+    __try {
+        return IsCallSite(r, begin, end);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+uint32_t FirstOutsideSystem(uint32_t eip, const uint32_t* stack, size_t dwords) {
+    const int n = g_moduleCount.load(std::memory_order_acquire);
+    if (n != g_sortedSeen) {
+        for (int i = 0; i < n; i++) g_sortedModules[i] = {g_modules[i].base, g_modules[i].end, g_modules[i].cls};
+        std::sort(g_sortedModules, g_sortedModules + n, [](const SortedModule& a, const SortedModule& b) { return a.base < b.base; });
+        g_sortedCount = n;
+        g_sortedSeen = n;
+    }
+    const int em = SortedFind(eip);
+    if (em < 0 || g_sortedModules[em].cls != kClsSystem) return 0;
+    for (size_t k = 0; k < dwords; k++) {
+        const uintptr_t v = stack[k];
+        const int m = SortedFind(v);
+        if (m < 0 || g_sortedModules[m].cls == kClsSystem || v < g_sortedModules[m].base + 0x1000) continue;
+        if (IsCallSiteGuarded(v, g_sortedModules[m].base, g_sortedModules[m].end)) return static_cast<uint32_t>(v);
+    }
+    return 0;
+}
+
+// The exported function of module mi at or before `a` ("NtWaitForAlertByThreadId+0xC"), or "" (report threads)
+bool ExportNearRaw(uintptr_t base, uintptr_t a, char* out, size_t outSize) {
+    __try {
+        const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!dir.VirtualAddress) return false;
+        const auto ex = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+        const auto funcs = reinterpret_cast<const DWORD*>(base + ex->AddressOfFunctions);
+        const auto names = reinterpret_cast<const DWORD*>(base + ex->AddressOfNames);
+        const auto ords = reinterpret_cast<const WORD*>(base + ex->AddressOfNameOrdinals);
+        const DWORD rva = static_cast<DWORD>(a - base);
+        DWORD best = 0;
+        const char* bestName = nullptr;
+        for (DWORD i = 0; i < ex->NumberOfNames; i++) {
+            const DWORD f = funcs[ords[i]];
+            if (f >= dir.VirtualAddress && f < dir.VirtualAddress + dir.Size) continue; // forwarder
+            if (f <= rva && f >= best) {
+                best = f;
+                bestName = reinterpret_cast<const char*>(base + names[i]);
+            }
+        }
+        if (!bestName) return false;
+        _snprintf_s(out, outSize, _TRUNCATE, "%s+0x%X", bestName, rva - best);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+std::string ExportNear(int mi, uintptr_t a) {
+    char buf[128];
+    if (mi < 0 || !ExportNearRaw(g_modules[mi].base, a, buf, sizeof buf)) return "";
+    return buf;
+}
+
+// "TS3W XXXXXXXX" or "module+RVA"
+std::string CallerText(uint32_t a) {
+    const int mi = FindModule(a);
+    if (mi < 0) return std::format("{:08X}", a);
+    if (g_modules[mi].cls == kClsGame) return std::format("TS3W {:08X}", a);
+    return std::format("{}+{:X}", g_modules[mi].name, a - static_cast<uint32_t>(g_modules[mi].base));
 }
 
 // Render thread: FindModule, refreshing the table (at most once a second) for addresses in modules not seen yet
@@ -2645,6 +2826,7 @@ struct SampleAgg {
     CountTable<4096> fn[2];      // hottest code per thread
     CountTable<4096> site;       // render thread: call sites on the stack
     CountTable<1024> wait;       // render thread: first TS3W return address of samples in system code
+    CountTable<1024> deep;       // render thread: first return address outside system code (any module) of samples in system code
 };
 SampleAgg g_agg[2];
 CountTable<4096> g_hotEip; // render thread, hitch frames: exact EIP
@@ -2666,6 +2848,7 @@ void ClearSampleAggregates() {
         a.fn[1].Clear();
         a.site.Clear();
         a.wait.Clear();
+        a.deep.Clear();
     }
     g_hotEip.Clear();
 }
@@ -2718,6 +2901,7 @@ void ConsumeSamples(uint64_t intervalStart, uint64_t now, bool hitch, HitchSampl
                 agg.wait.Add(s.ret[0]);
                 if (hitch) fa.wait.Add(s.ret[0]);
             }
+            if (cls == kClsSystem && s.firstOut) agg.deep.Add(s.firstOut);
         }
     }
     g_sTail.store(t, std::memory_order_release);
@@ -3059,6 +3243,18 @@ void FrameBoundary(uint64_t now) {
     g_medianRing[g_medianPos] = r.frameMs;
     g_medianPos = (g_medianPos + 1) % kMedianWindow;
     g_medianCount = std::min(g_medianCount + 1, kMedianWindow);
+    {
+        // page faults of the whole process during this frame (soft and hard: DXVK's mapped texture copies, fresh allocations)
+        PROCESS_MEMORY_COUNTERS pmc;
+        if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) {
+            if (g_lastPageFaults) {
+                r.pageFaults = pmc.PageFaultCount - g_lastPageFaults;
+                g_pfSum[hitch ? 1 : 0] += r.pageFaults;
+                g_pfFrames[hitch ? 1 : 0]++;
+            }
+            g_lastPageFaults = pmc.PageFaultCount;
+        }
+    }
     ConsumeSamples(intervalStart, now, hitch, &r.samples);
     ConsumeFrameTables(hitch, &r.detail);
     if (hitch) ComputeDominant(r);
@@ -3150,8 +3346,12 @@ void RegisterD3DHooks() {
         OnDrawStart(false, primCount);
         return HookAction::Continue;
     }, start);
-    RegisterCreateTexture(kHookName, [](DeviceContext&, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*) {
+    RegisterCreateTexture(kHookName, [](DeviceContext&, UINT w, UINT h, UINT levels, DWORD, D3DFORMAT format, D3DPOOL, IDirect3DTexture9**, HANDLE*) {
         g_d3d.createTex++;
+        t_texW = w; // for the texture-load table (Hook_TexCreate, same thread)
+        t_texH = h;
+        t_texLevels = levels;
+        t_texFormat = format;
         return HookAction::Continue;
     }, start);
     RegisterCreateRenderTarget(kHookName, [](DeviceContext&, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*) {
@@ -3354,12 +3554,17 @@ std::string SamplingReport() {
         n = hi.wait.Top(keys, counts, 20);
         for (int i = 0; i < n; i++)
             s += std::format("   {:08X}                                  {:>8} {:>8.1f} {:>8.1f}\n", keys[i], counts[i], Pct(counts[i], hi.total[0]), Pct(lo.wait.Get(keys[i]), lo.total[0]));
+        s += "   system code: first caller outside system code (4 KB of stack; TS3W, DXVK, driver, ASI...)  samples  hitch %  other %\n";
+        n = hi.deep.Top(keys, counts, 20);
+        for (int i = 0; i < n; i++)
+            s += std::format("   {:<40} {:>8} {:>8.1f} {:>8.1f}\n", CallerText(keys[i]), counts[i], Pct(counts[i], hi.total[0]), Pct(lo.deep.Get(keys[i]), lo.total[0]));
         s += "   exact EIPs in hitch frames                  samples  hitch %  module\n";
         n = g_hotEip.Top(keys, counts, kRows);
         for (int i = 0; i < n; i++) {
             const int mi = FindModule(keys[i]);
             const std::string where = mi < 0 ? std::string("?")
                                       : g_modules[mi].cls == kClsOurAsi ? std::format("{}+{:X}", g_modules[mi].name, keys[i] - static_cast<uint32_t>(g_modules[mi].base))
+                                      : g_modules[mi].cls == kClsSystem ? std::string(g_modules[mi].name) + " " + ExportNear(mi, keys[i])
                                                                         : std::string(g_modules[mi].name);
             s += std::format("   {:08X}                                  {:>8} {:>8.1f}  {}\n", keys[i], counts[i], Pct(counts[i], hi.total[0]), where);
         }
@@ -3456,7 +3661,7 @@ std::string FormatHitch(const HitchRecord& h) {
     s += std::format("   d3d: draws {} (+{} end-of-frame), prims {}, created: textures {}, render targets {}, vertex shaders {}, pixel shaders {}", h.gameDraws, h.endFrameDraws, h.prims,
         h.createTex, h.createRT, h.createVS, h.createPS);
     if (h.stateCounted) s += std::format("; SetTexture {}, Set*Shader {}, shader constants {}, SetRenderTarget {}", h.setTexture, h.setShader, h.shaderConst, h.setRT);
-    s += std::format("\n   lots promoted {}, demoted {}\n", h.lotsPromoted, h.lotsDemoted);
+    s += std::format("\n   lots promoted {}, demoted {}, page faults {}\n", h.lotsPromoted, h.lotsDemoted, h.pageFaults);
     if (const std::string c = FormatCounters(h.counters, h.renderIncl); !c.empty()) s += "   counters (calls x ms incl. on the render / simulation / other threads): " + c + "\n";
     if (h.domKind != kDomNone) s += "   " + DominantText(h) + "\n";
     s += FormatHitchDetail(h.detail);
@@ -3857,6 +4062,30 @@ std::string CounterReport() {
     return s;
 }
 
+// Texture loads by size (the DDS loader's create and fill calls, since Clear)
+std::string TextureLoadReport() {
+    std::string s;
+    for (int b = 0; b <= kTexBuckets; b++) {
+        const TexBucket& t = g_tex[b];
+        const uint64_t n = t.loads.load(), f = t.fills.load();
+        if (!n && !f) continue;
+        const double c = static_cast<double>(t.createTicks.load()) * g_msPerTick, fl = static_cast<double>(t.fillTicks.load()) * g_msPerTick;
+        s += std::format("   {:<16} {:>7} {:>9.1f} {:>7.3f} {:>7.2f} {:>9.1f} {:>7.3f} {:>7.2f} {:>9.1f}\n", b < kTexBuckets ? kTexBucketNames[b] : "size unknown", n, c,
+            n ? c / static_cast<double>(n) : 0.0, static_cast<double>(t.createMax.load()) * g_msPerTick, fl, f ? fl / static_cast<double>(f) : 0.0,
+            static_cast<double>(t.fillMax.load()) * g_msPerTick, static_cast<double>(t.bytes.load()) / (1024.0 * 1024.0));
+    }
+    if (s.empty()) return "";
+    return "Texture loads by size (DDS loader: create = CALL 0x0060E1DC, fill = CALL 0x0060E1FF; all threads, since Clear):\n"
+           "   level 0            loads  create ms     avg     max   fill ms     avg     max        MB\n" +
+           s;
+}
+
+std::string PageFaultText() {
+    const auto per = [](uint64_t faults, uint64_t frames) { return frames ? static_cast<double>(faults) / static_cast<double>(frames) : 0.0; };
+    return std::format("Page faults per frame (process, soft and hard): hitch frames {:.0f}, other frames {:.0f}\n", per(g_pfSum[1], g_pfFrames[1]),
+        per(g_pfSum[0], g_pfFrames[0]));
+}
+
 std::string BuildReport() {
     const LiveSample a = AverageLive();
     std::string s = std::format("\n==== Frame profiler report {} ====\n", NowString());
@@ -3882,6 +4111,8 @@ std::string BuildReport() {
     }
     s += std::format("   {:<24} {:>12.1f}\n", "Unattributed (render)", g_stats.unattributed);
     s += CounterReport();
+    s += TextureLoadReport();
+    s += PageFaultText();
     s += "Apex shaders: " + ShaderCache::StatusText() + "\n";
     if (!g_regDisplay.empty()) {
         s += "Registry hooks by name (last second; Present hooks always, draw hooks with per-hook registry timing):\n";
@@ -3896,6 +4127,8 @@ std::string BuildReport() {
     s += "Wall shading while moving: " + LotLightingMotion::WallAoStatusText() + "\n";
     s += "Spread new objects over frames: " + SceneBudget::StatusText() + "\n";
     s += "Faster object lookups: " + ObjectIndex::StatusText() + "\n";
+    s += "Faster cache compression, record checksums: " + FastCrc::StatusText() + "\n";
+    s += "Faster memory handling: " + FastMemory::StatusText() + "\n";
     const HitchAggregate h = AggregateHitches();
     if (h.count) {
         s += std::format("Last {} hitches: average frame {:.2f} ms (median before them {:.2f}), camera moving in {}, still in {}; per hitch (self ms): category | render | other threads | worst\n",
@@ -3937,6 +4170,16 @@ void SaveReport() {
 
 void Clear() {
     ClearSampleAggregates();
+    for (auto& t : g_tex) {
+        t.loads = 0;
+        t.createTicks = 0;
+        t.createMax = 0;
+        t.fills = 0;
+        t.fillTicks = 0;
+        t.fillMax = 0;
+        t.bytes = 0;
+    }
+    for (int b = 0; b < 2; b++) g_pfSum[b] = g_pfFrames[b] = 0;
     for (int b = 0; b < 2; b++) {
         g_aSvc[b].Clear();
         g_aJob[b].Clear();

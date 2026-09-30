@@ -74,6 +74,7 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | "Use several cores" (shown while the switch above is on) / "Large textures are shared out over several processor cores, with the same result" | `[patches.FastTextureCompression] useSeveralCores` | bool | **true** | - | Applied to the next texture (the hook reads it every call; `Update` clears the reinstall request). Off = every texture on the calling thread, as before. Never rename the key. |
 | "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
 | "Faster Sim building" / "Fewer hitches when Sims are edited or change outfits" | `[patches.FastCasSort] enabled` | bool | **false** | - | Experimental (30/09), off by default until its in-game checks are confirmed. Bit-identical result, checked against the game's function on the first 16 calls. No Overview row. See "How it works: Faster Sim Building". |
+| "Faster memory handling" / "Less waiting when the game hands out and frees memory" | `[patches.FastMemory] enabled` | bool | **false** | - | Experimental (30/09), off by default until tested in game. See "How it works: Faster Memory Handling". The record checksums have no row: they are part of Faster cache compression. |
 | "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **false** | - | Experimental (C6). No Overview row; the tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
 | "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **false** | - | Experimental (C8). No Overview row. |
 
@@ -800,6 +801,53 @@ write-combined); 0x005D38F8 is the return address of `call 005D1960`.
   negative, repeated vertices, degenerate triangles, index counts not a multiple of 3, vertex counts over 65536), every
   count and every sorted list equal to the literal translation (`CasTriSort::Ref`). Time: 1030 x 1500 21 -> 1.5 ms,
   2013 x 3000 88 -> 2.5 ms, 3363 x 5000 242 -> 5.2 ms (8 threads, thread start included).
+
+## How it works: record checksums (part of Faster Cache Compression, 30/09)
+
+- **The game side** (VERIFIED in full.asm): FUN_004fa4c0 cdecl(bytes, length, crc, bool invert), plain `ret`: an MSB-first
+  table CRC-32, one lookup per byte (`crc = (crc << 8) ^ T[(crc >> 24) ^ b]`), table 0x0114D330 = the standard 0x04C11DB7
+  table (static data in the file), result inverted when the low byte of the fourth argument is set; nothing read when
+  bytes + length wraps. Called 4 times, all from the checksum filter of the texture compositor's cache package (vtable
+  0x00FE2594: verify 0x0072C580 on reads, write 0x0072C610; set up at 0x005BBB8B, 0x005BBF6B and by 0x0072C602). The
+  loading RE (loadre\compositor.md) found it at 6-10% of a 490 ms cache eviction cascade.
+- **The replacement** (`features/fast_crc.{h,cpp}`, entry chain site `RecordCrc` layer `FastCrc`, GameAddr `RecordCrc` +
+  `RecordCrcTable`, group `FastRecordCrc`; started and stopped by the Faster Cache Compression patch, a failure only logs
+  `[FastCrc] Not used`): slicing by 8 with tables derived from the game's own table read at start (T[k][i] = T[k-1][i]
+  advanced by a zero byte), so the value is the same for every input.
+- **Checks:** at start the table must be linear (T[0] = 0, every entry the XOR of its bits' entries) and 192 test buffers
+  (0..70000 bytes, 8 alignments, seeds 0 / ~0 / random, both inversions) must give the game's own function's values; then
+  the first 16 calls of each session (dev build: 1 in 64 afterwards) are compared with the game's; a difference logs
+  `[FastCrc] Result differs`, the game's value is used and the part turns itself off. Offline (scratch test with the
+  table read from TS3W.exe): 4850 cases, all equal to the byte-wise loop.
+
+## How it works: Faster Memory Handling (FastMemory, 30/09)
+
+- **The game side** (VERIFIED in full.asm and this PC's SysWOW64 ntdll; research notes loadre\memory.md): one EA PPMalloc
+  general allocator (dlmalloc style) for every thread, global pointer 0x011CB864 (operator new 0x004E3F90 reads it), one
+  CRITICAL_SECTION at allocator+0x4E8 (pointer at +0x4E4) taken by every Malloc / Free, created by
+  InitializeCriticalSectionAndSpinCount(cs, 10) at 0x004E48D1. Windows' spin budget is SpinCount x 10 TSC ticks: 10 is
+  ~24 ns (effectively no spin); the game's other critical sections get the default 2000 (~5 us). Blocks of 128 KB and
+  more ([+0x494]) get their own VirtualAlloc (0x004E512A) and are freed with VirtualFree(base, 0, MEM_RELEASE) at
+  0x004E5306 inside FreeInternal, lock held, result ignored. Other VirtualAlloc calls: new core 0x004E4E81 / 0x004E4EB4 /
+  0x004E4EDB, core growth 0x004E5536. The core tail decommit (0x004E504C) and the core release (0x004E48AB) are not touched.
+- **The patch** (`features/fast_memory.{h,cpp}`, GameAddr `AllocGlobal` + `AllocMmapFreeCall`, group `FastMemory`):
+  - SetCriticalSectionSpinCount(cs, 2000) after checking `[a+0x4E4] == a+0x4E8`; Windows keeps the flag bits. Put back on
+    Stop.
+  - The release call (6 bytes, `FF 15 [VirtualFree slot]`) becomes `nop; call Stub_Free` (the CALL ends where the original
+    did, so a thread still inside the stub when the bytes are written back returns to an instruction boundary). The stub
+    queues the address (32 entries, SRW lock) and wakes a helper thread (above-normal priority) that releases the queue;
+    queue full, stopping, or not a plain release: VirtualFree on the calling thread.
+  - The five VirtualAlloc calls, found at start as `FF 15 [VirtualAlloc slot]` within [release - 0x600, release + 0x300)
+    (exactly 5 or the feature stays off), become `nop; call Stub_Alloc`: the same call; when it fails, the queue is
+    released on the spot and the call made once more, so a queued release can never make an allocation fail.
+  - The import slots are found in TS3W's import table (kernel32 VirtualAlloc / VirtualFree) and called through, so another
+    module's IAT hook is kept. Every write is `MemPatch::WriteCodeSuspended`; Stop restores the release first, empties the
+    queue, then the allocation calls.
+- **Why nothing changes:** the allocator's state and every value it reads are the same; the spin only changes how long a
+  waiting thread spins before it sleeps; the address range of a freed big block goes back to Windows microseconds later.
+- **Measure:** Developer > Profiler shows the spin (10 -> 2000), the releases done by the helper and any VirtualAlloc
+  retry. A/B: the sampling run's "system code called from" rows 004E5935 / 004E5954 / 004E69E5 / 004E6A0B (allocator lock)
+  and 004E530C (the release).
 
 ## How it works: Spread New Objects Over Frames (C6)
 
