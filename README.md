@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/logo-256.png" width="140" alt="Apex Radiance logo"></p>
+
 # Apex Radiance for The Sims 3
 
 A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
