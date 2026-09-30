@@ -151,4 +151,11 @@ bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out);
 // ((1, 1, 1, 1) = unchanged; .yzw at 0 would make the cube black)
 bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 
+// Smooth light gradients (scene dither, scene_dither.cpp): every write to oC0 goes to a free temp rO, and at the end
+// oC0.rgb = rO.rgb + (interleaved gradient noise(vPos) - 0.5) / 255, oC0.a = rO.a (the alpha is the bloom mask: untouched).
+// A fixed per-pixel pattern (no time): the 8-bit steps of smooth lighting become an invisible grain. ps_3_0 only (vPos);
+// refused (false, t unchanged): no oC0 write, subroutines or ret, relative constant addressing, no free temp / constant.
+enum class DitherResult { Ok, NotPs30, NoColorWrite, Subroutines, RelativeConstants, NoFreeRegister, Unreadable };
+DitherResult AddDither(std::vector<DWORD>& t);
+
 } // namespace ShaderPatches

@@ -9,6 +9,27 @@ namespace {
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
     // ---- Color page: Picture card header (apex_gui.cpp) and tabs ----
+    // ---- Color page: Banding Fix card (scene_dither.cpp; also the Overview row) ----
+    {"Banding Fix", "Correção de Faixas", "Corrección de Bandas", "Correction des Bandes"},
+    {"Smooth light, with no color steps", "Luz suave, sem degraus de cor", "Luz suave, sin escalones de color", "Une lumière douce, sans paliers de couleur"},
+    {"No color steps in light and shadows", "Sem degraus de cor na luz e nas sombras", "Sin escalones de color en la luz y las sombras",
+     "Pas de paliers de couleur dans la lumière et les ombres"},
+    {"Covers walls, floors, ground, objects and Sims; the sky keeps its own look",
+     "Vale para paredes, pisos, chão, objetos e Sims; o céu mantém o visual dele",
+     "Cubre paredes, suelos, terreno, objetos y Sims; el cielo mantiene su aspecto",
+     "Couvre murs, sols, terrain, objets et Sims ; le ciel garde son aspect"},
+    {"Removes the color steps (banding) in lamp light, shadows and other smooth gradients of the 3D world: "
+     "an invisible, fixed grain where the game rounds its colors, so light fades smoothly. Menus are "
+     "untouched. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Remove os degraus de cor (banding) na luz das lâmpadas, nas sombras e em outros degradês suaves do mundo 3D: "
+     "um grão invisível e fixo onde o jogo arredonda as cores, para a luz se apagar suavemente. Os menus não mudam. "
+     "Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Elimina los escalones de color (banding) en la luz de las lámparas, las sombras y otros degradados suaves del mundo 3D: "
+     "un grano invisible y fijo donde el juego redondea sus colores, para que la luz se apague suavemente. Los menús no cambian. "
+     "Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Supprime les paliers de couleur (banding) dans la lumière des lampes, les ombres et les autres dégradés doux du monde 3D : "
+     "un grain invisible et fixe là où le jeu arrondit ses couleurs, pour que la lumière s'estompe en douceur. Les menus ne "
+     "changent pas. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Picture", "Imagem", "Imagen", "Image"},
     {"Brightness, contrast, color and sharpness", "Brilho, contraste, cor e nitidez", "Brillo, contraste, color y nitidez", "Luminosité, contraste, couleur et netteté"},
     {"Fine-tune how the world looks: brightness, contrast, color, sharpness and smoother skies, plus film-style "

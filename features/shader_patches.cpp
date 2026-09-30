@@ -1835,4 +1835,53 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     Apply(t, std::move(edits));
     return true;
 }
+DitherResult AddDither(std::vector<DWORD>& t) {
+    if (t.empty() || t[0] != 0xFFFF0300) return DitherResult::NotPs30;
+    if (t.back() != 0x0000FFFFu) return DitherResult::Unreadable;
+    const auto ins = Parse(t);
+    if (ins.empty()) return DitherResult::Unreadable;
+    constexpr DWORD kMisc = 17, kDp2add = 0x5A, kFrc = 0x13, kCall = 0x19, kCallnz = 0x1A, kRet = 0x1C, kLabel = 0x1E;
+    constexpr DWORD kRegBits = 0x70001800u | 0x7FFu, kRelative = 0x2000u;
+    bool vPos = false;
+    DWORD mask = 0;                // components of oC0 the shader writes
+    std::vector<size_t> writes;    // token indices of the oC0 destinations
+    for (const Ins& x : ins) {
+        if (x.op == kCall || x.op == kCallnz || x.op == kRet || x.op == kLabel) return DitherResult::Subroutines;
+        if (x.op == kDcl) {
+            const DWORD r = t[x.at + 2];
+            if (Type(r) == kMisc && Num(r) == 0) vPos = true;
+            continue;
+        }
+        if (x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; k++) {
+            const DWORD r = t[x.at + k];
+            if (!(r & 0x80000000u)) continue;
+            if (Type(r) == kConst && (r & kRelative)) return DitherResult::RelativeConstants;
+            if (Type(r) == kColorOut && Num(r) == 0) { // an output: only ever a destination
+                writes.push_back(x.at + k);
+                mask |= WMask(r);
+            }
+        }
+    }
+    if (writes.empty() || !(mask & 0x7)) return DitherResult::NoColorWrite;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 2 >= 32 || u.maxConst + 2 >= 224) return DitherResult::NoFreeRegister;
+    const DWORD O = static_cast<DWORD>(u.maxTemp + 1), N = O + 1, cK = static_cast<DWORD>(u.maxConst + 1), cL = cK + 1;
+    for (size_t at : writes) t[at] = (t[at] & ~kRegBits) | (Reg(kTemp, O) & kRegBits); // oC0 -> rO, same mask and modifiers
+    std::vector<Edit> edits;
+    std::vector<DWORD> head = {Op(kDef, 5), Dst(kConst, cK), F(0.06711056f), F(0.00583715f), F(0.0f), F(52.9829189f),
+                               Op(kDef, 5), Dst(kConst, cL), F(-0.5f), F(1.0f / 255.0f), F(0.0f), F(0.0f)};
+    if (!vPos) head.insert(head.end(), {Op(kDcl, 2), 0x80000000u, Dst(kMisc, 0, 0x3)});
+    edits.push_back({1, head});
+    std::vector<DWORD> tail = {Op(kDp2add, 4), Dst(kTemp, N, 0x1), Src(kMisc, 0), Src(kConst, cK), Src(kConst, cK, 0xAA), // IGN(vPos)
+                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
+                               Op(kMul, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cK, kSwzW),
+                               Op(kFrc, 2), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX),
+                               Op(kAdd, 3), Dst(kTemp, N, 0x1), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzX),                // -0.5 .. 0.5
+                               Op(kMad, 4), Dst(kColorOut, 0, mask & 0x7), Src(kTemp, N, kSwzX), Src(kConst, cL, kSwzY), Src(kTemp, O)};
+    if (mask & 0x8) tail.insert(tail.end(), {Op(kMov, 2), Dst(kColorOut, 0, 0x8), Src(kTemp, O)});
+    edits.push_back({t.size() - 1, tail}); // before the end token
+    Apply(t, std::move(edits));
+    return DitherResult::Ok;
+}
 } // namespace ShaderPatches

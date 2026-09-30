@@ -379,6 +379,7 @@ void OverviewPage() {
             if (nameClicked) Go(PageColor);
         }
         OverviewPatchRow("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade where things meet", PageAmbientOcclusion);
+        OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageColor);
         OverviewPatchRow("DepthBlur", IconId::Aperture, "Depth Blur", "Softly blurs the distant background", PageDepthBlur);
         ApexUi::OverviewRow("Borderless", IconId::AppWindow, "Borderless", "Play without a window frame", kBorderlessDescription, nullptr, true, BorderlessModeText(),
                             &nameClicked);
@@ -572,8 +573,12 @@ void PictureRows(int tab) {
     ImGui::PopID();
 }
 
+// The Banding Fix card (scene_dither.cpp): only its switch
+void BandingFixCard() { FeatureCard("SceneDither", IconId::Blend, "Banding Fix", "Smooth light, with no color steps"); }
+
 void ColorPage() {
     ApexUi::PageTitle("Color", "How the game's picture looks");
+    BandingFixCard();
     PictureHeaderCard();
     static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail"};
     static_assert(IM_COUNTOF(kTabs) == Picture::TabCount, "one tab name per Picture tab");
@@ -789,6 +794,8 @@ void DevDebugViewsTab() {
     DevCard("DebugBlur", IconId::Bug, "Depth Blur", "Status, focus, GPU cost, blur amount view", blur && blur->IsEnabled(), [blur] { blur->RenderDeveloperUI(); });
     ApexPatch* ao = Find("AmbientOcclusion");
     DevCard("DebugAo", IconId::Bug, "Ambient Occlusion", "Status, GPU cost, camera, the shade alone", ao && ao->IsEnabled(), [ao] { ao->RenderDeveloperUI(); });
+    ApexPatch* dither = Find("SceneDither");
+    DevCard("DebugDither", IconId::Bug, "Banding Fix", "Shaders with a copy, scene draws covered", dither && dither->IsEnabled(), [dither] { dither->RenderDeveloperUI(); });
     DevCard("DebugPicture", IconId::Bug, "Picture", "Technical note and GPU cost", true, [] { Picture::Get().RenderDeveloperUI(); });
 }
 
@@ -1324,6 +1331,7 @@ const SearchPart* SearchParts(int& count) {
         {"Lighting", "Stories", PageLighting, &g_lightingTab, LightingStories, StoriesTabContent},
         {"Water & Snow", "Water", PageWaterSnow, &g_waterSnowTab, WaterTab, WaterTabContent},
         {"Water & Snow", "Snow", PageWaterSnow, &g_waterSnowTab, SnowTab, SnowTabContent},
+        {"Color", nullptr, PageColor, nullptr, 0, BandingFixCard},
         {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
         {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
         {"Color", "Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},
@@ -2319,7 +2327,7 @@ bool g_comparePicture = false;
 void ToggleCompare() {
     if (!g_comparing) {
         g_comparePaused.clear();
-        for (const char* name : {"NightTerrainRelight", "AmbientOcclusion", "DepthBlur", "EdgeSmoothing"})
+        for (const char* name : {"NightTerrainRelight", "AmbientOcclusion", "SceneDither", "DepthBlur", "EdgeSmoothing"})
             if (ApexPatch* p = Find(name); p && p->IsEnabled() && p->Uninstall()) g_comparePaused.push_back(p);
         PictureParams pp = Picture::Get().GetParams();
         g_comparePicture = pp.enabled;

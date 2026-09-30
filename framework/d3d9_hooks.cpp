@@ -507,6 +507,7 @@ HRESULT CallOriginalSetPixelShaderConstantF(IDirect3DDevice9* d, UINT r, const f
     return o_psc ? o_psc(d, r, c, n) : d->SetPixelShaderConstantF(r, c, n);
 }
 HRESULT CallOriginalSetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* s) { return o_sps ? o_sps(d, s) : d->SetPixelShader(s); }
+HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DPixelShader9** s) { return o_cps ? o_cps(d, fn, s) : d->CreatePixelShader(fn, s); }
 HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* d, IDirect3DVertexShader9* s) { return o_svs ? o_svs(d, s) : d->SetVertexShader(s); }
 HRESULT CallOriginalSetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DBaseTexture9* t) { return o_stex ? o_stex(d, st, t) : d->SetTexture(st, t); }
 

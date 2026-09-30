@@ -126,6 +126,7 @@
     <ClCompile Include="features\resource_cache.cpp" />
     <ClCompile Include="features\rig_tracker.cpp" />
     <ClCompile Include="features\scene_budget.cpp" />
+    <ClCompile Include="features\scene_dither.cpp" />
     <ClCompile Include="features\shader_patches.cpp" />
     <ClCompile Include="features\terrain_chunk_relight.cpp" />
     <ClCompile Include="framework\apex_log.cpp" />
