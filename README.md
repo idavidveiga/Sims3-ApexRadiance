@@ -37,12 +37,12 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 </div>
 
 
-## 🌈 New in 2.2.0
+## 🌈 New in 2.2
 
-**Banding Fix:** no more color steps (banding) in lamp light, shadows and other smooth gradients. Light now fades smoothly across walls, floors, the ground and objects.
+**Banding Fix (Experimental):** no more color steps (banding) in lamp light, shadows and other smooth gradients. Light now fades smoothly across walls, floors, the ground and objects.
 
 - ✨ An invisible, fixed grain where the game rounds its colors, on **every surface of the 3D world**; menus are untouched.
-- 🎚️ New **Color › Banding** tab: the fix's Strength and **Smooth gradients**, which now works with Picture off too and also helps the sky.
+- 🎚️ New **Color › Banding** tab: the grain's Strength (0-100%), an optional **Moving grain** for high frame rates, and **Smooth gradients**, which now works with Picture off too and also helps the sky.
 
 **Ambient Occlusion, lighter and more flexible:**
 
@@ -88,9 +88,9 @@ A full picture editor for the 3D world; menus and text keep their normal look.
 - Film-style tones, a six-color mixer and a vignette.
 - A before/after switch and a hold-to-compare button.
 
-### Banding Fix
+### Banding Fix (experimental)
 
-The game rounds its picture to 256 shades per color, so smooth light (a lamp's glow on a wall, a room fading into shadow) shows visible steps. The Banding Fix adds an invisible, fixed grain right where the colors are rounded, so light fades smoothly on every surface of the 3D world; menus are untouched. On by default, with its Strength and **Smooth gradients** (which also softens the sky) on the Color › Banding tab.
+The game rounds its picture to 256 shades per color, so smooth light (a lamp's glow on a wall, a room fading into shadow) shows visible steps. The Banding Fix adds an invisible, fixed grain right where the colors are rounded, so light fades smoothly on every surface of the 3D world; menus are untouched. On by default, with its Strength, an optional Moving grain (a new grain every frame, for high frame rates) and **Smooth gradients** (which also softens the sky) on the Color › Banding tab. If anything looks wrong, turn it off there.
 
 ### Ambient Occlusion
 

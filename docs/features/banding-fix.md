@@ -1,7 +1,7 @@
 # Banding Fix (scene dither)
 
 > Removes the colour steps (banding) of smooth gradients in the 3D world: lamp pools on walls and floors, room light
-> fall-off, shadows. Patch name `SceneDither`, menu Image > Color (the first card) and an Overview row, on by default;
+> fall-off, shadows. Patch name `SceneDither`, menu Image > Color > Banding and an Overview row, on by default, flagged experimental (2.2.1, the user's call; a "Still being tested" note on the tab);
 > settings: Strength (`forca`, 0 - 1 step, default 1) and Moving grain (`graoEmMovimento`, off). Added 30/09/2026 on the user's report ("the colours are not uniform, mainly where there is light"; an
 > interior wall showed rings around a lamp's pool of light). **First in-game test pending** (build 57a0a09d).
 

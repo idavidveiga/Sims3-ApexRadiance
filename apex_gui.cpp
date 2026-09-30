@@ -577,6 +577,8 @@ void PictureRows(int tab) {
 // Color > Banding (user, 30/09: everything against color steps in one place): the Banding Fix card (scene_dither.cpp:
 // switch, grain Strength) with Picture's Smooth gradients (the deband), which follows the Banding Fix's switch
 void BandingTabContent() {
+    ApexUi::IconNote(IconId::Info, "Still being tested: if anything looks wrong or the game crashes, turn it off");
+    ApexUi::Gap(ApexUi::kSpace1);
     FeatureCardWith("SceneDither", IconId::Blend, "Banding Fix", "Smooth light, with no color steps", [](ApexPatch* p) {
         p->RenderCustomUI();
         static const PictureParams kDef{};

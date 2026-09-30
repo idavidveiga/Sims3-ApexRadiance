@@ -389,6 +389,7 @@ APEX_REGISTER_FEATURE(SceneDitherPatch, {.displayName = "Banding Fix",
                                                         "an invisible, fixed grain where the game rounds its colors, so light fades smoothly. Menus are "
                                                         "untouched. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                                          .category = "Graphics",
+                                         .experimental = true,
                                          .enabledByDefault = true,
                                          .supportedVersions = VERSION_ALL,
                                          .technicalDetails = {"A dithered copy of every pixel shader (triangular noise from interleaved gradient noise of the pixel "
