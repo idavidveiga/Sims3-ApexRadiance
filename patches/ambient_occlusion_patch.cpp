@@ -36,11 +36,16 @@
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
 #include "build_flavor.h"
+#include "apex_paths.h"
+#include "map_view.h"
 #include <d3d9.h>
 #include <d3dcompiler.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <vector>
 #include <format>
 #include <string>
 
@@ -223,6 +228,9 @@ float3 MultiBounce(float v, float3 a)
     float3 A = 2.0404 * a - 0.3324, B = -4.7951 * a + 0.6417, C = 2.7552 * a + 0.6903;
     return max(v, ((v * A + B) * v + C) * v);
 }
+// Developer capture: the device depth as it is (the lab reads it back as floats)
+float4 DepthPS(float2 uv : TEXCOORD0) : COLOR0 { return tex2Dlod(sDepth, float4(uv, 0, 0)).r; }
+
 float4 CompositePS(float2 uv : TEXCOORD0) : COLOR0
 {
     float3 col = tex2Dlod(sColor, float4(uv, 0, 0)).rgb;
@@ -254,6 +262,7 @@ const ShaderCache::Id kLinearPsId = AddShader("AO LinearizePS", "LinearizePS", 0
 const ShaderCache::Id kDownPsId = AddShader("AO DownPS", "DownPS", 0);
 const ShaderCache::Id kBlurPsId = AddShader("AO BlurPS", "BlurPS", 0);
 const ShaderCache::Id kCompositePsId = AddShader("AO CompositePS", "CompositePS", 0);
+const ShaderCache::Id kDepthPsId = AddShader("AO DepthPS (Developer capture)", "DepthPS", 1);
 const ShaderCache::Id kGtaoPsId[kQualityCount] = {AddShader("AO GtaoPS (Low, SLICES 4)", "GtaoPS", 1, "4"), AddShader("AO GtaoPS (Medium, SLICES 6)", "GtaoPS", 1, "6"),
                                                   AddShader("AO GtaoPS (High, SLICES 8)", "GtaoPS", 0, "8"), AddShader("AO GtaoPS (Ultra, SLICES 12)", "GtaoPS", 1, "12"),
                                                   AddShader("AO GtaoPS (Very Low, SLICES 2)", "GtaoPS", 1, "2")};
@@ -280,7 +289,7 @@ struct State {
     IDirect3DSurface9* tmpSurf[kLevels] = {};
     IDirect3DTexture9 *aoA = nullptr, *aoB = nullptr, *colorTex = nullptr;
     IDirect3DSurface9 *aoASurf = nullptr, *aoBSurf = nullptr, *colorSurf = nullptr;
-    IDirect3DPixelShader9 *psLinear = nullptr, *psDown = nullptr, *psBlur = nullptr, *psComposite = nullptr;
+    IDirect3DPixelShader9 *psLinear = nullptr, *psDown = nullptr, *psBlur = nullptr, *psComposite = nullptr, *psDepth = nullptr;
     IDirect3DPixelShader9* psGtao[kQualityCount] = {};
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
@@ -292,6 +301,9 @@ struct State {
     // last camera used (Developer read-out)
     float lastNear = 0, lastA = 0, lastTanX = 0, lastTanY = 0;
     bool lastCamera = false;
+    // Developer: save the depth, colour and camera of the next frame (the lab's input)
+    bool captureRequested = false;
+    std::string captureNote;
     Params p;
     std::string status = "Off";
 };
@@ -332,6 +344,7 @@ void ReleaseShaders() {
     SafeRelease(g.psDown);
     SafeRelease(g.psBlur);
     SafeRelease(g.psComposite);
+    SafeRelease(g.psDepth);
     for (int q = 0; q < kQualityCount; q++) {
         SafeRelease(g.psGtao[q]);
         g.gtaoTried[q] = false;
@@ -565,6 +578,115 @@ void ReadTimings() {
     }
 }
 
+// ---- Developer capture (the lab's input, 30/09: AO in the map view) ----
+// Writes Documents\...\Apex Radiance\Profundidade\profundidade_N_WxH.f32 (the device depth, floats, top-down rows),
+// cor_N.bmp (the scene before the AO and the UI, 24-bit) and info_N.txt (camera + the VS constants of the last scene
+// draw, in the "[i](x y z w)" form the lab reads). Three files per request, only on the Developer button.
+int NextCaptureNumber(const std::filesystem::path& dir) {
+    int best = 0;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string n = e.path().filename().string();
+        int k = 0;
+        if (std::sscanf(n.c_str(), "info_%d.txt", &k) == 1) best = std::max(best, k);
+    }
+    return best + 1;
+}
+
+void CaptureFrame(IDirect3DDevice9* dev, IDirect3DTexture9* depth, float nearZ, float A, float tanX, float tanY) {
+    g.captureRequested = false;
+    if (!g.psDepth) g.psDepth = CreateShader(dev, kDepthPsId, "DepthPS");
+    if (!g.psDepth) {
+        g.captureNote = "Not saved: the depth shader could not be created";
+        return;
+    }
+    const UINT W = g.width, H = g.height;
+    // the device depth into level 0 of the pyramid (the 1/z pass overwrites it right after)
+    dev->SetRenderTarget(0, g.zLevel[0]);
+    const D3DVIEWPORT9 vpScreen{0, 0, W, H, 0.0f, 1.0f};
+    dev->SetViewport(&vpScreen);
+    dev->SetTexture(0, depth);
+    dev->SetPixelShader(g.psDepth);
+    DrawQuad(dev, W, H);
+    dev->SetTexture(0, nullptr);
+    std::vector<float> d(size_t(W) * H);
+    std::vector<uint8_t> bgr(size_t(W) * H * 3);
+    bool ok = false;
+    IDirect3DSurface9 *sysD = nullptr, *sysC = nullptr;
+    D3DSURFACE_DESC cd{};
+    g.colorSurf->GetDesc(&cd);
+    if (SUCCEEDED(dev->CreateOffscreenPlainSurface(g.padW, g.padH, D3DFMT_R32F, D3DPOOL_SYSTEMMEM, &sysD, nullptr)) &&
+        SUCCEEDED(dev->CreateOffscreenPlainSurface(W, H, cd.Format, D3DPOOL_SYSTEMMEM, &sysC, nullptr)) && SUCCEEDED(dev->GetRenderTargetData(g.zLevel[0], sysD)) &&
+        SUCCEEDED(dev->GetRenderTargetData(g.colorSurf, sysC)) && (cd.Format == D3DFMT_X8R8G8B8 || cd.Format == D3DFMT_A8R8G8B8)) {
+        D3DLOCKED_RECT lr{};
+        if (SUCCEEDED(sysD->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+            for (UINT y = 0; y < H; y++) std::memcpy(&d[size_t(y) * W], static_cast<const uint8_t*>(lr.pBits) + size_t(y) * lr.Pitch, W * 4);
+            sysD->UnlockRect();
+            if (SUCCEEDED(sysC->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+                for (UINT y = 0; y < H; y++) {
+                    const uint8_t* row = static_cast<const uint8_t*>(lr.pBits) + size_t(y) * lr.Pitch;
+                    for (UINT x = 0; x < W; x++) std::memcpy(&bgr[(size_t(y) * W + x) * 3], row + x * 4, 3);
+                }
+                sysC->UnlockRect();
+                ok = true;
+            }
+        }
+    }
+    SafeRelease(sysD);
+    SafeRelease(sysC);
+    if (!ok) {
+        g.captureNote = "Not saved: the frame could not be read back";
+        return;
+    }
+    float vs[256][4] = {};
+    dev->GetVertexShaderConstantF(0, &vs[0][0], 256);
+    const std::filesystem::path dir = std::filesystem::path(ApexPaths::ApexDirectory()) / "Profundidade";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const int n = NextCaptureNumber(dir);
+    bool written = false;
+    if (FILE* fd = _wfopen((dir / std::format(L"profundidade_{}_{}x{}.f32", n, W, H)).c_str(), L"wb")) {
+        written = std::fwrite(d.data(), 4, d.size(), fd) == d.size();
+        std::fclose(fd);
+    }
+    if (FILE* fc = _wfopen((dir / std::format(L"cor_{}.bmp", n)).c_str(), L"wb")) {
+        const UINT row = (W * 3 + 3) & ~3u;
+        BITMAPFILEHEADER fh{};
+        BITMAPINFOHEADER ih{};
+        fh.bfType = 0x4D42;
+        fh.bfOffBits = sizeof fh + sizeof ih;
+        fh.bfSize = fh.bfOffBits + row * H;
+        ih.biSize = sizeof ih;
+        ih.biWidth = static_cast<LONG>(W);
+        ih.biHeight = static_cast<LONG>(H); // bottom-up
+        ih.biPlanes = 1;
+        ih.biBitCount = 24;
+        ih.biSizeImage = row * H;
+        std::fwrite(&fh, sizeof fh, 1, fc);
+        std::fwrite(&ih, sizeof ih, 1, fc);
+        std::vector<uint8_t> line(row, 0);
+        for (UINT y = 0; y < H; y++) {
+            std::memcpy(line.data(), &bgr[size_t(H - 1 - y) * W * 3], size_t(W) * 3);
+            std::fwrite(line.data(), 1, row, fc);
+        }
+        written = written && std::ferror(fc) == 0;
+        std::fclose(fc);
+    }
+    if (FILE* fi = _wfopen((dir / std::format(L"info_{}.txt", n)).c_str(), L"w")) {
+        std::fprintf(fi, "largura %u altura %u | tanX %.9g tanY %.9g | near %.6g A %.9g (%s) | map view %s | AO fade %.0f-%.0f m\n", W, H, tanX, tanY, nearZ, A,
+                     g.lastCamera ? "camera read this frame" : "fallback", MapView::IsOpen() ? "open" : "closed", kFade0, kFade1);
+        std::fprintf(fi, "VS c0..c255 no momento (ultimo desenho da cena), zeros omitidos:\n");
+        for (int i = 0; i < 256; i++)
+            if (vs[i][0] != 0 || vs[i][1] != 0 || vs[i][2] != 0 || vs[i][3] != 0) std::fprintf(fi, "[%d](%.9g %.9g %.9g %.9g)\n", i, vs[i][0], vs[i][1], vs[i][2], vs[i][3]);
+        std::fclose(fi);
+    } else {
+        written = false;
+    }
+    g.captureNote = written ? std::format("Saved capture {} ({}x{}, map view {}) in Profundidade", n, W, H, MapView::IsOpen() ? "open" : "closed")
+                            : "Not saved: the files could not be written";
+    LOG_INFO("[AO] " + g.captureNote);
+}
+
 void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* bb, IDirect3DPixelShader9* psGtao) {
     SavedState saved;
     saved.Capture(dev);
@@ -603,6 +725,9 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {std::cos(kPi / slices), std::sin(kPi / slices), 0, 0},
         {A, 1.0f / (nearZ * A), 0, 0}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
+
+    if constexpr (!kPublicBuild)
+        if (g.captureRequested) CaptureFrame(dev, depth, nearZ, A, tanX, tanY);
 
     // 1. 1/z into level 0 of the pyramid (the screen area of it; the padding stays sky = 0 from the clear)
     dev->SetRenderTarget(0, g.zLevel[0]);
@@ -855,6 +980,12 @@ class AmbientOcclusionPatch : public ApexPatch {
                                 g.lastCamera ? "read this frame" : "fallback");
         }
         ImGui::Checkbox("Show the shade alone", &g.showShade);
+        if (ImGui::Button("Save depth and colour##AoCapture")) {
+            g.captureRequested = true;
+            g.captureNote = g.ready ? "Saving at the next frame..." : "Turn Ambient Occlusion on first";
+        }
+        ApexUi::Tooltip("Saves the next frame's depth, colour (before the AO and the menus) and camera into Documents > ... > Apex Radiance > Profundidade, for the offline AO lab. Open the map view first to capture it");
+        if (!g.captureNote.empty()) ImGui::TextDisabled("%s", g.captureNote.c_str());
         ApexUi::Tooltip("Shows the ambient occlusion in grey instead of the image: white = no shade (not saved)");
     }
 };
