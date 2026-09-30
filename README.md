@@ -50,7 +50,10 @@ In the base game lamps glow but barely light anything around them. Apex Radiance
 - **Brightness per part:** ground, roads and sidewalks, street lamps, lot lamps, objects, fences, walls, roofs and ponds each have their own slider.
 - **Lamp colors:** from the game's pink to warm white, applied instantly, with an optional separate color for lot lamps.
 - **Moonlight:** choose how much the moon lights the world at night.
-- **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have.
+- **Inside the house (Experimental):** lamps inside shine through stairwells and open floors to the floor above or below, and stop at solid floors and walls; furniture, stairs and curtains take the room's light smoothly.
+- **Rooms at Night (Experimental):** instead of the game's strong blue glow in rooms with every lamp off, a soft background light you set with Brightness and Blue tint, on walls, floors and furniture alike.
+- **Changing floors keeps the light:** every floor of the lot you play is lit in full detail, walls meet at the floor line with no step in the light, and switching floors no longer flickers.
+- **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have. The lighting also refreshes itself after loading and after you change a setting, and a **Refresh the lighting** button and shortcut redo it at any time.
 
 ### Water & Snow
 
@@ -73,7 +76,7 @@ Softly blurs the distant background, like a camera focused on what's near. The f
 
 ### Display
 
-- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp.
+- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K).
 - **Borderless window:** windowed or fullscreen, without a title bar.
 
 ### Performance (experimental)
@@ -81,6 +84,7 @@ Softly blurs the distant background, like a camera focused on what's near. The f
 Apex Radiance goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. Every option has its own switch (System > Performance), so any that misbehaves can be turned off.
 
 On from the start:
+- **Faster room lighting:** rooms light up sooner when you enter a lot or change floors.
 - **Lot lighting while the camera moves:** instead of spending up to 15 ms of one frame on lot lighting, the work is spread over several frames while you pan or zoom (about 80% fewer lighting stutters while moving, in testing). When the camera stops, the game's normal budget comes back.
 - **Wall shading waits while moving:** the shading of a new lot's walls, a 10 to 17 ms hitch, is done once the camera stops.
 - **Fewer big freezes from Night Lights:** lamps that switch or flicker by themselves no longer rebuild the terrain light, and rebuilds never happen while the camera moves.
@@ -97,13 +101,13 @@ Apex Radiance's own shaders are compiled at startup on a background thread, neve
 
 ### The menu
 
-Open it with **Ctrl+Shift+F11** (the key can be changed).
+The first start asks which key opens it (Ctrl+Shift+R, Ctrl+Shift+1 or Ctrl+Shift+F11, or your own), and a note shows that key at every start. The Shortcuts tab sets the other shortcuts, such as **Refresh the lighting**.
 
 - **Four languages:** English, Portuguese, Spanish and French ("Automatic" follows your Windows language).
 - **Search:** find any option by name, with or without accents.
 - **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
 - **Undo** after any change, **per-setting reset**, a dot on everything changed from its default, and **Reset all settings** (Settings > Menu) to start over.
-- Adjustable text size and a short welcome tour.
+- Adjustable text size.
 - A Compatibility page with your game version and the other mods it detects.
 
 ## Requirements
@@ -116,7 +120,7 @@ Open it with **Ctrl+Shift+F11** (the key can be changed).
 
 1. Close the game and the launcher.
 2. Copy `ApexRadiance.asi` into `The Sims 3\Game\Bin\`.
-3. Start the game and press **Ctrl+Shift+F11** to open the menu.
+3. Start the game, pick your menu key when it asks, and press it to open the menu.
 
 Settings are saved in `Documents\Electronic Arts\The Sims 3\Apex Radiance\ApexRadiance.toml`.
 

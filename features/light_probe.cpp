@@ -3,7 +3,10 @@
 #define NOMINMAX
 #endif
 #include "light_probe.h"
+#include "hotkeys.h"
 #include "lot_light_bridge.h"
+#include "level_light_share.h"
+#include "recorder.h"
 #include "d3d9_hooks.h"
 #include "apex_log.h"
 #include "apex_paths.h"
@@ -106,6 +109,25 @@ bool g_keyWasDown = false;
 bool g_hooksRegistered = false;
 bool g_inProbeCall = false;
 POINT g_pixel{};
+std::string g_captureWhy = "requested";  // why this capture was taken (the shortcut, or automatic after a floor change)
+// After a capture by the shortcut: the same pixel is measured again 1 s and 3 s after each change of the camera's story
+// (up to 6 automatic captures within 2 minutes), for a before / after of the same object across floor switches
+struct Watch {
+    bool on = false;
+    POINT pixel{};
+    std::map<uint32_t, int> stories; // the story each loaded lot showed (lot id low half -> story)
+    DWORD until = 0;
+    int left = 0;
+    std::vector<std::pair<DWORD, std::string>> due; // tick, why
+} g_watch;
+std::map<uint32_t, int> ShownStories() {
+    uint32_t lots[256];
+    int stories[256];
+    const int n = LevelLightShare::DisplayLevels(lots, stories, 256);
+    std::map<uint32_t, int> m;
+    for (int i = 0; i < n; i++) m[lots[i]] = stories[i];
+    return m;
+}
 UINT g_bbWidth = 0, g_bbHeight = 0;
 std::vector<DrawRec> g_draws;
 std::vector<IDirect3DQuery9*> g_queryPool;
@@ -738,6 +760,7 @@ void FinishCapture(IDirect3DDevice9* dev) {
     std::ostringstream out; // written to the capture folder and to ApexRadiance_LightProbe.txt (the latest) at the end
     out << std::format("S3SS Light Probe | {} | pixel ({}, {}) | tela {}x{} | desenhos na tela: {} | sem resposta: {}\n", g_capName, g_pixel.x, g_pixel.y, g_bbWidth, g_bbHeight,
         g_draws.size(), pending);
+    out << "Capture: " << g_captureWhy << "\n";
     out << "Estados: z/zwrite/zfunc/blend/src/dst/blendop/atest/cw/stencil/cull/srgb/depthbias/slopebias (bits de float)\n\n";
     int covering = 0, pickRank = -1;
     const DrawRec* pick = nullptr;
@@ -812,6 +835,7 @@ void FinishCapture(IDirect3DDevice9* dev) {
     g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved in LightProbe\\{} (also ApexRadiance_LightProbe.txt).", covering, g_pixel.x,
         g_pixel.y, g_textures.size(), g_capName);
     LOG_INFO("[LightProbe] " + g_status);
+    Recorder::Note(std::format("[probe] {} ({})", g_capName, g_captureWhy));
 }
 
 } // namespace
@@ -830,14 +854,27 @@ void OnPresent(IDirect3DDevice9* dev) {
         g_state = State::Capturing; // draws of the next frame are recorded
     }
 
-    // F7 held now, or pressed and released since the last frame (bit 0: a quick press between two Presents, e.g. while
-    // the previous capture was still being written, was lost before)
-    const SHORT f7 = GetAsyncKeyState(VK_F7);
-    const bool mods = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000);
-    const bool down = mods && (f7 & 0x8000);
-    const bool pressed = mods && (((f7 & 0x8000) && !g_keyWasDown) || ((f7 & 0x0001) && !(f7 & 0x8000)));
-    g_keyWasDown = down;
-    if (pressed && g_state != State::Idle) LOG_INFO("[LightProbe] Ctrl+Shift+F7 while a capture is still running: ignored");
+    // Its shortcut (Hotkeys: Ctrl+Shift+V, 4 or F7 by preset), eaten before the game sees it
+    const bool pressed = Hotkeys::Take(Hotkeys::Action::Probe);
+    if (pressed && g_state != State::Idle) LOG_INFO("[LightProbe] Its shortcut while a capture is still running: ignored");
+    const auto start = [&](POINT pixel, const std::string& why) {
+        IDirect3DSurface9* bb = nullptr;
+        D3DSURFACE_DESC bd{};
+        if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+            bb->GetDesc(&bd);
+            bb->Release();
+        }
+        g_bbWidth = bd.Width;
+        g_bbHeight = bd.Height;
+        g_pixel = pixel;
+        g_captureWhy = why;
+        ReleaseDraws();
+        RegisterHooks();
+        g_state = State::Armed;
+        g_status = std::format("Measuring pixel ({}, {})...", g_pixel.x, g_pixel.y);
+        LOG_INFO("[LightProbe] Capture requested: " + g_status + " (" + why + ")");
+    };
+    const DWORD now = GetTickCount();
     if (pressed && g_state == State::Idle) {
         IDirect3DSurface9* bb = nullptr;
         D3DSURFACE_DESC bd{};
@@ -854,15 +891,35 @@ void OnPresent(IDirect3DDevice9* dev) {
         RECT cr{};
         GetClientRect(wnd, &cr);
         const LONG cw = std::max<LONG>(1, cr.right - cr.left), ch = std::max<LONG>(1, cr.bottom - cr.top);
-        g_bbWidth = bd.Width;
-        g_bbHeight = bd.Height;
-        g_pixel.x = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.x) * bd.Width / cw), 0, static_cast<LONG>(bd.Width) - 1);
-        g_pixel.y = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.y) * bd.Height / ch), 0, static_cast<LONG>(bd.Height) - 1);
-        ReleaseDraws();
-        RegisterHooks();
-        g_state = State::Armed;
-        g_status = std::format("Measuring pixel ({}, {})...", g_pixel.x, g_pixel.y);
-        LOG_INFO("[LightProbe] Capture requested: " + g_status);
+        POINT pixel{};
+        pixel.x = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.x) * bd.Width / cw), 0, static_cast<LONG>(bd.Width) - 1);
+        pixel.y = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.y) * bd.Height / ch), 0, static_cast<LONG>(bd.Height) - 1);
+        start(pixel, "requested by the shortcut; the same pixel is measured again 1 s and 3 s after any lot changes the story it shows, for 2 minutes");
+        g_watch = Watch{true, pixel, ShownStories(), now + 120000, 6, {}};
+        return;
+    }
+    // The automatic captures after a floor change
+    if (!g_watch.on) return;
+    if (static_cast<int32_t>(now - g_watch.until) >= 0 || g_watch.left <= 0) {
+        g_watch.on = false;
+        return;
+    }
+    const std::map<uint32_t, int> shown = ShownStories();
+    std::string change;
+    for (const auto& [lot, story] : shown)
+        if (const auto it = g_watch.stories.find(lot); it != g_watch.stories.end() && it->second != story)
+            change += std::format("{}lot {:08X} story {} -> {}", change.empty() ? "" : ", ", lot, it->second, story);
+    g_watch.stories = shown;
+    if (!change.empty()) {
+        g_watch.due.push_back({now + 1000, "automatic, 1 s after the floor change (" + change + ")"});
+        g_watch.due.push_back({now + 3000, "automatic, 3 s after the floor change (" + change + ")"});
+        Recorder::Note("[probe] floor change (" + change + "): automatic captures in 1 s and 3 s");
+    }
+    if (g_state == State::Idle && !g_watch.due.empty() && static_cast<int32_t>(now - g_watch.due.front().first) >= 0) {
+        const std::string why = g_watch.due.front().second;
+        g_watch.due.erase(g_watch.due.begin());
+        g_watch.left--;
+        start(g_watch.pixel, why);
     }
 }
 

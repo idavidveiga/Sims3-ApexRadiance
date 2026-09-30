@@ -146,4 +146,9 @@ int CurrentMode() {
     return ReadMode(g_rig);
 }
 
+uintptr_t CurrentRig() {
+    if (!g_installed || g_depth <= 0 || __readfsdword(0x24) != g_drawThread.load(std::memory_order_relaxed)) return 0;
+    return g_rig;
+}
+
 } // namespace RigTracker

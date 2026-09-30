@@ -14,15 +14,27 @@ bool MenuNightLevel(float& level);
 // does the same (Apex wrote nothing). Implemented in patches/split_level_ground_light_patch.cpp.
 bool SplitLevelProvidedByS3SS();
 
-// ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings) and Water & Snow page (tabs Water / Snow) ----
+// The "Refresh the lighting" shortcut (Hotkeys): the terrain, every lot and every room light again, the object rigs gather
+// again (what turning Night Lighting off and on did). Nothing while Night Lighting is off. Render thread.
+void RefreshAll(const char* why = "shortcut", bool terrain = true); // terrain false: lots, rooms and rigs only (after a load)
+// The same once the changes rest (1 s after the last call): any lighting setting changed (menu, profile, undo, reset, the
+// upper floors switch). Nothing while Night Lighting is off or no world is loaded when it runs. Render thread.
+void RefreshSoon();
+// The world is on screen after a load (false during load screens; only kept while Night Lighting runs). Render thread.
+bool WorldLive();
+
+// ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings / Stories) and Water & Snow page (tabs Water / Snow) ----
 // Lamps tab, inside the "Night Lights" card, under its on/off switch: the lamp colour slider (luzDasLampadasNatural; a
 // pink-to-warm-white gradient track and a swatch, from the real tint math, and a "Reload save" badge).
 void DrawLampColor();
-// Ground tab. drawUpperFloorRow draws the "Upper floors light the ground" row (the SplitLevelGroundLight feature's own
-// switch, owned by the menu); it is called between the second and the third option of the card.
-void DrawGroundCard(void (*drawUpperFloorRow)());
+// Ground tab
+void DrawGroundCard();
+// Stories tab: lamp light between the floors of a house. drawUpperFloorRow draws the "Upper floors light the ground" row
+// (the SplitLevelGroundLight feature's own switch, owned by the menu), first in the card.
+void DrawStoriesCard(void (*drawUpperFloorRow)());
 void DrawObjectsCard();   // Objects tab (every option shown, in two groups)
 void DrawBuildingsCard(); // Buildings tab (walls and roofs)
+void DrawRoomsCard();     // Buildings tab (rooms with every lamp off)
 void DrawWaterCard();     // Water tab: lamp glow on ponds (not the shore reflection)
 void DrawSnowCard();      // Snow tab
 // Lamps tab, under the Night Lights card: the "Reset Night Lights" button (rows that need a reload carry a "Reload save" badge)

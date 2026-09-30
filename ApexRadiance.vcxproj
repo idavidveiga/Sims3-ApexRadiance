@@ -107,10 +107,15 @@
     <ClCompile Include="features\frame_profiler.cpp" />
     <ClCompile Include="features\level_light_share.cpp" />
     <ClCompile Include="features\light_diag.cpp" />
+    <ClCompile Include="features\recorder.cpp" />
+    <ClCompile Include="hotkeys.cpp" />
     <ClCompile Include="features\light_probe.cpp" />
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
     <ClCompile Include="features\room_map_padding.cpp" />
+    <ClCompile Include="features\unlit_rooms.cpp" />
+    <ClCompile Include="features\lamp_mark_filter.cpp" />
+    <ClCompile Include="features\room_light_queue.cpp" />
     <ClCompile Include="features\lot_lighting_motion.cpp" />
     <ClCompile Include="features\map_view.cpp" />
     <ClCompile Include="features\object_index.cpp" />
@@ -148,6 +153,7 @@
     <ClCompile Include="patches\performance_patches.cpp" />
     <ClCompile Include="patches\split_level_ground_light_patch.cpp" />
     <ClCompile Include="ui\icons.cpp" />
+    <ClCompile Include="ui\logo.cpp" />
     <ClCompile Include="ui\violet_theme.cpp" />
     <ClCompile Include="ui\widgets.cpp" />
     <ClCompile Include="ui\i18n.cpp" />
@@ -174,6 +180,9 @@
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
     <ClInclude Include="features\room_map_padding.h" />
+    <ClInclude Include="features\unlit_rooms.h" />
+    <ClInclude Include="features\lamp_mark_filter.h" />
+    <ClInclude Include="features\room_light_queue.h" />
     <ClInclude Include="features\lot_lighting_motion.h" />
     <ClInclude Include="features\map_view.h" />
     <ClInclude Include="features\object_index.h" />
@@ -219,6 +228,8 @@
     <ClInclude Include="third_party\smaa\SearchTex.h" />
     <ClInclude Include="third_party\smaa\smaa_hlsl.h" />
     <ClInclude Include="ui\icons.h" />
+    <ClInclude Include="ui\logo.h" />
+    <ClInclude Include="ui\logo_data.h" />
     <ClInclude Include="ui\lucide_data.h" />
     <ClInclude Include="ui\violet_theme.h" />
     <ClInclude Include="ui\widgets.h" />

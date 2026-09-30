@@ -58,13 +58,14 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | Street lamps light inside lots | `luzDoPosteNaGramaDoLote` | bool | true | | Main | live (`ApplyLive` -> `LotLightBridge::SetEnabled`) | [lot-light-pass](lot-light-pass.md) |
 | Lot lights light the ground outside the lot | `luzDoLoteNaGrama` | bool | true | | Main (its own switch since 1.5.0; before, it also set `automaticoAoAnoitecer`) | live since 28/09 (read at run time by the always-installed predicates; one rebuild at night) | [terrain-relight](terrain-relight.md) |
 | Outdoor lights reach every story | `luzExternaEntreAndares` | bool | true | | Main | live (`LevelLightShare::Install/Uninstall`) | [level-light-share](level-light-share.md) |
+| Indoor light between floors (Lighting > Stories, under "Outdoor light between floors"; Experimental) | `luzInternaEntreAndares` | bool | true | | Main, disabled while `luzExternaEntreAndares` is off | live (`LevelLightShare::SetIndoor` per frame; the rooms near stair openings gather again) | [level-light-share](level-light-share.md#part-4-indoor-lamps-through-stair-openings) |
 | Lamps light nearby objects | `postesNosObjetos` | bool | true | | Main | live (`ObjectLightBridge::Install/Uninstall`, `SetObjectShadowFix`) | [objects-and-rigs](objects-and-rigs.md), [foliage](foliage.md) |
 | Roofs receive lamp light | `telhadosComLuz` | bool | true | | Main | live (per frame) | [roofs](roofs.md) |
 | Lamp colour (street lamps; also lot lamps unless they have their own) | `luzDasLampadasNatural` | float | 1.0 | 0..1 | Lamps | live since 1.5.0 (on slider release: stock lamps re-coloured, one terrain rebuild, lots re-solved; `ObjectLightBridge::RetintLamps`) | [lamp-colour](lamp-colour.md) |
 | Own color for lot lamps | `corPropriaNoLote` | bool | false | | Lamps | live (as the lamp colour) | [lamp-colour](lamp-colour.md) |
 | Lot lamp colour | `corDasLampadasDoLote` | float | 1.0 | 0..1 | Lamps (when the switch above is on) | live (as the lamp colour) | [lamp-colour](lamp-colour.md) |
 | Moonlight | `luar` | float | 1.0 | 0..2 | Lamps | live: the "Sunlight Scale" float 0x011D0918 = its value x lerp(1, luar, night level) every frame; object rigs regather on release | this file, "Brightness controls" |
-| Smooth indoor light | `bordasDosMapasDeLuz` | bool | true | | Objects > INDOORS (Experimental) | live: instanced objects and stairs read the 4 directional room light maps with a bicubic filter averaged over the house (alpha) texels only (ShaderPatches::PatchBasisSmooth); indoor rig objects (rig mode 0) get those maps per pixel instead of their per-object rig diffuse (PatchIndoorBasis; RoomMapPadding remembers which directional maps go with each room light map). The game's textures are never written (an earlier CPU padding flickered while the game rewrote them) | room_map_padding.cpp, shader_patches.cpp |
+| Smooth indoor light | `bordasDosMapasDeLuz` | bool | true | | Objects > INDOORS (Experimental) | live: instanced objects and stairs read the 4 directional room light maps with a bicubic filter averaged over the house (alpha) texels only (ShaderPatches::PatchBasisSmooth); indoor rig objects (rig mode 0) get those maps per pixel instead of the lamps of their per-object rig diffuse, their unlit-room rig lights kept (PatchIndoorBasis diffuseConst since 30/09, read at the basis maps' own scale, IndoorBasisScale; 64x64 basis maps only; RoomMapPadding remembers which directional maps go with each room light map while the game holds them). The game's textures are never written (an earlier CPU padding flickered while the game rewrote them) | room_map_padding.cpp, shader_patches.cpp |
 | Ground brightness | `brilhoNoChao` | float | 1.0 | 0.25..3 | Ground (needs the bridge) | live (lamp scale constant of the terrain chunk, lot pass c3, snowy lot pass c4, floors; night-weighted) | this file, "Brightness controls" |
 | Roads and sidewalks | `brilhoNasRuas` | float | 1.0 | 0.25..3 | Ground (needs the bridge) | live (x the ground brightness, the road lamp scale `RoadPatch.scaleConst`) | [roads](roads.md) |
 | Street lamps (on the ground) | `forcaDosPostes` | float | 1.0 | 0.25..3 | Ground | terrain rebuild on slider release (`BakeColourStub` at 0xC2950F) | this file, "Brightness controls" |
@@ -79,6 +80,9 @@ UI location codes: **Main** = directly under the Night Lighting header; **Adv/x*
 | Lamps light walls | `paredesComLuz` | bool | true | | Buildings (off = wall gain 1, the game) | live | [walls](walls.md) |
 | Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | 0.25..4 (`SetWallGain` clamps 0.25..8) | Adv/Walls and roofs | live | [walls](walls.md) |
 | Roof light strength | `forcaNosTelhados` | float | 0.6 | 0.05..2 | Adv/Walls and roofs | live | [roofs](roofs.md) |
+| Darker unlit rooms | `comodosEscurosSemLuz` | bool | true | | Buildings > Rooms at Night | live (patches on/off; every room lights again) | [unlit-rooms](unlit-rooms.md) |
+| Brightness (unlit rooms: walls, floors and furniture) | `luzQueSobraNosComodos` | float | 0.35 | 0..1 | Buildings > Rooms at Night | live (relight 0.6 s after the last change) | [unlit-rooms](unlit-rooms.md) |
+| Blue tint (walls, floors and furniture at night) | `azulNosComodos` | float | 0.2 | 0..1 | Buildings > Rooms at Night | live | [unlit-rooms](unlit-rooms.md) |
 | Smooth light on the ground | `mapaDeLuzSuavizado` | bool | true | | Adv/Ground and snow | live | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) |
 | Smooth the ground light maps on the GPU (A/B) | `mapaDeLuzSuavizadoNaGpu` | bool | true | | Dev only (registered in the dev build; public = always GPU when available) | live (next Present: switching drops the smoothed maps, the new path rebuilds them) | [world-atlas-and-smoothed-maps](world-atlas-and-smoothed-maps.md) "GPU path" |
 | Trodden snow on sidewalks | `calcadaComNevePisada` | float | 0.5 | 0..1 | Adv/Ground and snow (needs bridge) | live | [roads](roads.md) |
@@ -346,6 +350,27 @@ Global ones (details in each sub-doc):
   patches must follow native D3D9 rules.
 - Caches keyed by shader pointer without AddRef gave stale classes when addresses were reused -> `g_pinned`.
 - Any menu change used to switch off `automaticoAoAnoitecer` when `luzDoLoteNaGrama` was off (fixed 25/09 10:40).
+- Furniture dark after floor switches (30/09, multi-agent study of F6 015204, F7 087/091/092, F8 01:51): the indoor
+  object path (DrawIndoorObject + PatchIndoorBasis) read the 64x64 directional basis maps with the room light map's uv
+  and texel = uv x basis size. The room light map covers the lot's power-of-two size at 4 texels/m (lot CF2DEA20: 128 x
+  256 = 32 x 64 m, VS uv rows c15 / c16 with |xz| = 1/32, 1/64), the basis maps always 64 x 64 m (the game's basis VS:
+  uv = lot half-metres x 1/128). So x was read at twice the object's position, outside the house plan (alpha 0): basis
+  light 0, and since the path replaces the rig diffuse and zeroes the vertex lights, only the ambient cube was left
+  (091: 0.051 grey; 087: pixel 0.012 with the red lamp at 1.79 in rig slot 0). Fixed: `IndoorBasisScale` sets the size
+  constant's .xy to coverage_m x basis texels / 64, the coverage from the VS constants that make the uv
+  (`ShaderPatches::UvRowConsts`, the lm uv semantic recorded by PatchIndoorBasis), else room light map size / 4. Offline:
+  4 of 12 captured vs_3_0 give TEXCOORD0.xy from two dp4 (c15/c16, one c195/c196); 091's VS gives (32, 64, 1/64, 1/64).
+  Why it followed floor switches: RoomMapPadding released a light map's set after 600 frames (~3 s) without a draw, so a
+  floor out of view lost it and its furniture moved between the game's shader (lit) and the Apex path (dark) as sets were
+  re-learned. Sets are now kept while the game holds the room light map and basis map (reference count checked every
+  300 frames), and the 30-frame look is per (+X basis map, shader), so the floor draws of a story no longer starve its
+  object-map draws (the +X basis map is shared by a story's light maps: the sweep compares with the references Apex holds
+  on it). The verifiers of that study added: with the lamps off the basis maps are ~0 (they hold lamp light only), and the
+  path replaced the rig diffuse, which for furniture carries the moon / fill slots with the Rooms at Night fill, and zeroed
+  the vertex lights, so path A stayed darker than the game's shader; the diffuse is the rig's unlit-room lights (lamps zeroed, diffuseConst) + basis x strength, vertex lights zeroed as
+  before (max(rig, basis) was tried and rejected: it brought the per-object lamp back; see unlit-rooms.md). The new
+  scale is used only with 64x64 basis maps (the only size captured). Offline: PatchIndoorBasis valid on every captured
+  PS it matches. Not tested in game yet.
 
 ## Testing in game
 

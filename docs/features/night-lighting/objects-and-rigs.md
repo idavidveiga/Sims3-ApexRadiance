@@ -8,7 +8,8 @@
 > ground)`), ground facing factor `0.5 + 0.5 N.y` (def cH = 0.5, 0.5, 1, 0), ground strength = `forcaNosObjetos` alone.
 > **Not in the standalone yet (post-0.1.0):** the bake-matched law `W = 0.4 x range` / `SelectPixelLamps`, the rule
 > `max(rig + vertex lights, per-pixel, ground)` (rig kept), `sat(N.y + 1)`, `max(1, forcaNosObjetos)`; they come back one
-> by one after user tests.
+> by one after user tests. **30/09:** `sat(N.y + 1)` was brought back (F7 120-121: an upright object got half the ground light of the
+> fence of the same material beside it; installed 81934361) and undone the same morning at the user's request (`0.5 + 0.5 N.y` again).
 
 > Outdoor objects in The Sims 3 are lit by a per-object "light rig" (sun + the 3 strongest point lights at the object's
 > centre, plus 4 overflow "vertex lights"). Night Lighting fixes this at three levels: (1) CPU: the rig gather gets the

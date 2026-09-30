@@ -5,6 +5,7 @@
 // Zero cost while idle: hooks only format text while a capture is running.
 
 #include "patch_base.h"
+#include "hotkeys.h"
 #include "apex_version.h"
 #include "memory_patch.h"
 #include "apex_log.h"
@@ -408,10 +409,8 @@ void OnEndScene(IDirect3DDevice9* dev) {
     if (!g.active) return;
     EnsureDetours(dev);
 
-    // Hotkey: Ctrl+Shift+F9
-    bool down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState(VK_F9) & 0x8000);
-    if (down && !g.keyWasDown) Arm();
-    g.keyWasDown = down;
+    // Its shortcut (Hotkeys: Ctrl+Shift+F, 7 or F5 by preset)
+    if (Hotkeys::Take(Hotkeys::Action::FrameCapture)) Arm();
 
     if (g.capturing) Event("  ---- Game's EndScene (everything below: the Apex overlay, the Picture pass, other overlays) ----");
 
@@ -502,7 +501,7 @@ class FrameCapturePatch : public ApexPatch {
                            kFramesPerCapture);
         if (ImGui::Button("Capture now")) Arm();
         ImGui::SameLine();
-        ImGui::TextDisabled("(or Ctrl+Shift+F9 in game)");
+        ImGui::TextDisabled("(or %s in game)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
         ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");
     }
 };

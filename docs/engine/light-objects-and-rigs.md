@@ -173,7 +173,12 @@ for terrain, roads, roofs, ceilings, the sea, the lot skirt and objects whose sc
    Modes 0/1: `0x006BBDE0` → `0x006BB2F0`: only the room's list, world-class lights dropped, same room required. Street
    lamps belong to room 0, so a fenced yard (mode 1) never got them.
 3. `0x006BB1F0` sorts by luminance; `0x006BA340` fills slot 0 with the sun (ExteriorLightData, global), slots 1..3 with
-   the 3 strongest, and the vertex-light slots only with lights beyond the first four (so with ≤ 4 lights they stay 0;
+   the 3 strongest (modes 1 and 2 only: `0x006BBDE0` passes the start slot = (mode == 1), so a room-mode rig, mode 0, has
+   no sun and slot 0 holds its strongest room light; in an unlit room `0x006BB3E0` adds the three [NoLight] lights of
+   CustomLightRigging.ini (resource 0xE23C85D8, each x sqrt(1 - sum / [0x11D0BB8]); x0.21 in the captured rooms:
+   (0.0945 0.104 0.170), (0.042 0.042 0.105), (0.021 0.042 0.063), directions PS c0 / c2 / c3) and `0x006B7E70` the fill
+   light (0.8 0.8 1.0) in slot 1 with w = 0.8 x its strength; the ambient cube of room-mode objects is CASDiffuseProbe,
+   flat grey; second multi-agent study, 30/09), and the vertex-light slots only with lights beyond the first four (so with ≤ 4 lights they stay 0;
    with exactly 4 the 4th is dropped by the off-by-one at `0x006BA386`).
 4. `0x006B92A0` caps the rig: the whole rig (sun included) is evaluated along ±X/±Y/±Z and scaled down when the maximum
    exceeds the cap `[0x011D0BA8]`.

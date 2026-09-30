@@ -119,6 +119,8 @@ std::string LotEdgeStatus();
 void OnWorldChanged();
 std::string Status();
 std::string ObjectStatus();
+std::string FurnitureDiag(); // development build: room-mode furniture draws since the last call (F6 recorder)
+void FurnitureTraceReset(); // development build: the F6 furniture tracer writes every object again (a new recording)
 std::string DescribeDraw(); // for the light probe: how the current draw is classified and what the mod did with it
 // keepChunkMaps: a reinstall in the same world keeps the chunk maps, smoothed maps and world atlas (render thread only).
 void Shutdown(bool keepChunkMaps = false);

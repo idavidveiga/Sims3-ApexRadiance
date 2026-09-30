@@ -26,8 +26,10 @@
 #include "shader_patches.h"
 #include "lightmap_smooth.h"
 #include "room_map_padding.h"
+#include "unlit_rooms.h"
 #include "light_probe.h"
 #include "rig_tracker.h"
+#include "recorder.h"
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "d3d9_hooks.h"
@@ -561,6 +563,8 @@ struct VsInfo {
     int snowFloorTc = 7;  // cls 11: where it puts world xz / 2
     FoliageVs patched;    // cls 6: foliage copy (wrap light); cls 10: object copy (+ world xzy in TEXCOORD8, PatchObjectLampVs)
     FloorVs floor;        // copy for the outdoor floors of summer (any class; made at the first such draw)
+    int lmSem = -1;       // DrawIndoorObject: the semantic (usage << 4 | index) lmRow was found for, -1 = not looked yet
+    int lmRow[2] = {-1, -1}; // the VS constants whose dp4 with the position make the room light map uv .x / .y (-1: not found)
 };
 std::unordered_map<IDirect3DVertexShader9*, VsInfo> g_vsInfo;
 VsInfo* g_curVsInfo = nullptr; // entry of g_curVs (null for no shader)
@@ -1503,6 +1507,7 @@ struct PatchedPs {
     ShaderPatches::IndoorBasisPatch indoor;
     ShaderPatches::BasisSmoothPatch smooth;
     DWORD nightConst = 0;
+    int cubeTint = -1; // PatchCubeTint
 };
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
 std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
@@ -1834,8 +1839,9 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
 // side went dark (the maps' edges are padded by RoomMapPadding). DrawBasisSmooth reads them with a bicubic filter
 // instead (ShaderPatches::PatchBasisSmooth). Indoor objects lit by a rig (curtains, furniture: RigTracker mode 0) got
 // one light for the whole object, measured at its centre, so two identical neighbours differed a lot; DrawIndoorObject
-// gives them the same smooth directional maps per pixel (ShaderPatches::PatchIndoorBasis: the rig's diffuse lamps are
-// replaced, its specular kept, its per-object vertex lights zeroed), found from the room light map the draw binds. ----
+// gives them the same smooth directional maps per pixel (ShaderPatches::PatchIndoorBasis: the rig's lamps in the diffuse
+// are replaced by the basis light, its unlit-room lights kept (diffuseConst, 30/09), its specular kept, its per-object
+// vertex lights zeroed), found from the room light map the draw binds; the basis read has its own scale (IndoorBasisScale). ----
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_basisSmoothPs;
 std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs; // per sampler holding the room light map
 std::atomic<bool> g_indoorSmooth{true};
@@ -1874,27 +1880,103 @@ template <typename DrawFn> bool DrawBasisSmooth(IDirect3DDevice9* dev, DrawFn dr
     return true;
 }
 
+// The basis read's scale (DrawIndoorObject). The patched shader reads the basis maps with the room light map's uv
+// (ShaderPatches::PatchIndoorBasis), but the two maps do not cover the same area: the room light map covers the lot's
+// power-of-two size at 4 texels per metre (lot CF2DEA20, 30 x 40 m: 128 x 256 = 32 x 64 m, VS uv rows c15 / c16 with
+// |xz| = 1/32 and 1/64), while the basis maps always cover 64 x 64 m (the game's basis VS: uv = lot half-metres x 1/128,
+// "def c14, 0.0078125 ..." in every captured one). Reading them with texel = uv x 64 sampled x at twice the object's
+// position, outside the house plan (alpha 0), so the basis light was exactly 0 and furniture went dark (F7 091, 30/09:
+// sofa at lot (13, 32.5) read column 26; floor switches made it come and go, RoomMapPadding). The size constant's .xy
+// (uv -> texel; .zw stays texel -> uv) is therefore coverage_m x basis texels / 64, the coverage taken from the VS
+// constants that make the uv (1 / |row.xyz|), else from the room light map at 4 texels per metre.
+// Development tools (F6 furniture tracer): what the last path-A draw bound
+struct TraceA {
+    uintptr_t lightMap = 0, basis0 = 0;
+    float scaleX = 0, scaleY = 0;
+};
+TraceA g_traceA;
+constexpr float kBasisCoverM = 64.0f;
+std::atomic<long> g_indoorUvFromVs{0}, g_indoorUvFallback{0};
+bool IndoorBasisScale(IDirect3DDevice9* dev, const ShaderPatches::IndoorBasisPatch& ip, IDirect3DBaseTexture9* lightMap, IDirect3DTexture9* basis0, float out[4]) {
+    float b[4], lm[4];
+    if (!MapSize(basis0, b) || !MapSize(lightMap, lm)) return false;
+    if (b[0] != kBasisCoverM || b[1] != kBasisCoverM) return false; // only 64x64 basis maps were ever captured: others keep the game's shader
+    float cover[2] = {lm[0] / 4.0f, lm[1] / 4.0f};
+    const int sem = ip.uvUsage >= 0 ? (ip.uvUsage << 4) | ip.uvIndex : -1;
+    if (g_curVsInfo && g_curVs && sem >= 0) {
+        if (g_curVsInfo->lmSem != sem) {
+            g_curVsInfo->lmSem = sem;
+            UINT size = 0;
+            std::vector<DWORD> code;
+            if (SUCCEEDED(g_curVs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+                code.resize(size / 4);
+                if (FAILED(g_curVs->GetFunction(code.data(), &size))) code.clear();
+            }
+            if (!ShaderPatches::UvRowConsts(code, ip.uvUsage, ip.uvIndex, g_curVsInfo->lmRow[0], g_curVsInfo->lmRow[1])) g_curVsInfo->lmRow[0] = g_curVsInfo->lmRow[1] = -1;
+        }
+        float rows[2][4];
+        bool fromVs = g_curVsInfo->lmRow[0] >= 0 && g_curVsInfo->lmRow[1] >= 0;
+        for (int k = 0; k < 2 && fromVs; k++) {
+            fromVs = SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(g_curVsInfo->lmRow[k]), rows[k], 1));
+            const float len = fromVs ? std::sqrt(rows[k][0] * rows[k][0] + rows[k][1] * rows[k][1] + rows[k][2] * rows[k][2]) : 0.0f;
+            fromVs = fromVs && len > 1.0f / 1024.0f && len < 1.0f; // 1 m .. 1 km of uv per 1.0
+            if (fromVs) rows[k][3] = 1.0f / len;
+        }
+        if (fromVs) {
+            cover[0] = rows[0][3];
+            cover[1] = rows[1][3];
+        }
+        (fromVs ? g_indoorUvFromVs : g_indoorUvFallback).fetch_add(1, std::memory_order_relaxed);
+    } else
+        g_indoorUvFallback.fetch_add(1, std::memory_order_relaxed);
+    out[0] = cover[0] * b[0] / kBasisCoverM;
+    out[1] = cover[1] * b[1] / kBasisCoverM;
+    out[2] = b[2];
+    out[3] = b[3];
+    return true;
+}
+
 template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_indoorSmooth.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
     IDirect3DTexture9* basis[4] = {};
+    IDirect3DBaseTexture9* lightMap = nullptr; // held until the scale is read
     int lmS = -1;
     for (DWORD s = 0; s < 8 && lmS < 0; s++) {
         IDirect3DBaseTexture9* t = nullptr;
         if (FAILED(dev->GetTexture(s, &t)) || !t) continue;
-        if (t->GetType() == D3DRTYPE_TEXTURE && RoomMapPadding::BasisFor(static_cast<IDirect3DTexture9*>(t), basis)) lmS = static_cast<int>(s);
-        t->Release();
+        if (t->GetType() == D3DRTYPE_TEXTURE && RoomMapPadding::BasisFor(static_cast<IDirect3DTexture9*>(t), basis)) {
+            lmS = static_cast<int>(s);
+            lightMap = t;
+        } else
+            t->Release();
     }
     if (lmS < 0) return false; // no room light map with known directional maps (other lots, low lighting quality)
     PatchedPs& p = PatchedFor(dev, g_indoorPs[lmS], "Indoor object (smooth room light)",
                               [lmS](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchIndoorBasis(t, static_cast<DWORD>(lmS), pp.indoor); });
-    if (!p.ps) return false;
     float size[4], oldSize[4] = {};
-    if (!MapSize(basis[0], size)) return false;
-    const int vl = g_curVsInfo->patched.vertexLight;
-    float oldVl[4][4] = {}, oldS[4] = {};
+    const bool scaled = p.ps && IndoorBasisScale(dev, p.indoor, lightMap, basis[0], size);
+    const uintptr_t lightMapPtr = reinterpret_cast<uintptr_t>(lightMap);
+    lightMap->Release();
+    if (!scaled) return false;
+    // The rig's lights for the diffuse chain (ShaderPatches::PatchIndoorBasis diffuseConst): its unlit-room lights (fill,
+    // [NoLight], as the furniture guard has just turned them with Brightness and Blue tint) and 0 for its lamps, which
+    // the basis light holds per pixel (so a lamp never counts twice and its light stays smooth across the object). The
+    // vertex lights are zeroed as before: the game moves overflow lamps there, and the basis maps hold those too.
+    float rig[8][4] = {}, unlit[4][4] = {}, oldUnlit[4][4] = {}, oldVl[4][4] = {}, oldS[4] = {};
     const float zero[4][4] = {}, strength[4] = {1.0f, 0, 0, 0};
+    if (SUCCEEDED(dev->GetPixelShaderConstantF(0, &rig[0][0], 8)))
+        for (int k = 0; k < 4; k++)
+            if (UnlitRooms::IsUnlitLight(rig[4 + k], rig[k])) std::memcpy(unlit[k], rig[4 + k], sizeof unlit[k]);
+    const int vl = g_curVsInfo->patched.vertexLight;
     dev->GetPixelShaderConstantF(p.indoor.strengthConst, oldS, 1);
     dev->GetPixelShaderConstantF(p.indoor.sizeConst, oldSize, 1);
+    if (p.indoor.diffuseConst >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.indoor.diffuseConst), &oldUnlit[0][0], 4);
+    float oldTint[4] = {};
+    float cubeColour[3];
+    UnlitRooms::FurnitureCubeColour(cubeColour);
+    // Rooms at Night: the ambient cube towards grey, then x the room's colour (always set: (1, 1, 1, 1) = as it is)
+    const float tint[4] = {UnlitRooms::FurnitureTint(), cubeColour[0], cubeColour[1], cubeColour[2]};
+    if (p.indoor.tintConst >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.indoor.tintConst), oldTint, 1);
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -1902,6 +1984,8 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
         SamplerBind b2(dev, p.indoor.firstSampler + 2, basis[2]), b3(dev, p.indoor.firstSampler + 3, basis[3]);
         SetPsConst(dev, p.indoor.strengthConst, strength, 1);
         SetPsConst(dev, p.indoor.sizeConst, size, 1);
+        if (p.indoor.diffuseConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.diffuseConst), &unlit[0][0], 4);
+        if (p.indoor.tintConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.tintConst), tint, 1);
         if (vl >= 0) {
             dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
             SetVsConst(dev, static_cast<UINT>(vl), &zero[0][0], 4);
@@ -1912,7 +1996,10 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
         if (vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
         SetPsConst(dev, p.indoor.strengthConst, oldS, 1);
         SetPsConst(dev, p.indoor.sizeConst, oldSize, 1);
+        if (p.indoor.diffuseConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.diffuseConst), &oldUnlit[0][0], 4);
+        if (p.indoor.tintConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.tintConst), oldTint, 1);
     }
+    g_traceA = TraceA{lightMapPtr, reinterpret_cast<uintptr_t>(basis[0]), size[0], size[1]};
     g_inOwnCall = false;
     g_indoorDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -2231,7 +2318,7 @@ int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
     return k;
 }
 
-template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice9* dev, DrawFn draw) {
     constexpr auto kSkip = D3D9Hooks::HookAction::Skip;
     constexpr auto kContinue = D3D9Hooks::HookAction::Continue;
     if (g_curPsBasis) RoomMapPadding::NoteDraw(dev, g_curPs); // note the room light maps it binds (edge padding)
@@ -2384,6 +2471,196 @@ void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
     g_curVsIsObject = cls == 10;
     g_curVsIsSnowFloor = cls == 11;
     if (g_curVsIsSnowFloor) g_curSnowFloorTc = info->snowFloorTc;
+}
+
+// Rooms at Night on furniture (unlit_rooms.h, user 30/09: "objects that respond to nothing, mostly on the upper floor"): an
+// indoor object (room-mode rig, RigTracker mode 0) is lit by its rig's four lights plus the ambient cube. Room-mode rigs have no
+// sun (FUN_006bbde0: start slot = (mode == 1)): in an unlit room the lights are the game's three [NoLight] lights and the fill
+// light, the only blue on furniture (the cube, CASDiffuseProbe, is flat grey; second multi-agent study, 30/09). While it
+// draws, through the game's shader or Apex's, those lights (PS c4..c7 of shaders with that chain, recognised by direction /
+// fill w, UnlitRooms::IsUnlitLight; dim bluish vertex lights) and the cube's weight get the room's Brightness and Blue tint;
+// lamps keep their colour and strength. The draw is then made here and every
+// constant put back. The game's own shader draws with a copy whose ambient cube colour is pulled towards its grey by the
+// Blue tint too (PatchCubeTint; user 30/09: "the only thing missing on the furniture that works is the blue tint"), as
+// Apex's indoor-object shader does.
+std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_cubeTintPs;
+std::atomic<long> g_nightFurniture{0}, g_nightFurnitureTinted{0};
+const ShaderPatches::RigPsInfo& RigPsInfoFor(IDirect3DPixelShader9* ps) {
+    auto [it, fresh] = g_rigPsInfo.try_emplace(ps);
+    if (fresh) ShaderPatches::AnalyzeRigPs(ShaderCode(ps), it->second);
+    return it->second;
+}
+// Development build: what happened to room-mode furniture draws (for the F6 recorder, FurnitureDiag)
+std::atomic<long> g_fdMode0{0}, g_fdInactive{0}, g_fdNoChain{0}, g_fdUnlitSlots{0}, g_fdLampSlots{0};
+// The furniture draw with the rig's unlit-room lights, the vertex lights and the cube weight turned (rig = PS c0..c7 or
+// null when the shader has no rig chain)
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice9* dev, DrawFn draw, const ShaderPatches::RigPsInfo& info, const float (*rig)[4]) {
+    float psOld[4][4] = {}, vsOld[4][4] = {}, cubeOld[4] = {}, t[4][4], cube[4];
+    bool psSet = false, vsSet = false, cubeSet = false;
+    // PS c0..c3 = the slots' directions, c4..c7 their colours (each slot tested with its direction: fill and [NoLight]
+    // lights are turned, lamps are not; room-mode rigs have no sun, slot 0 is the strongest room light)
+    if (rig) {
+        std::memcpy(psOld, rig[4], sizeof psOld);
+        std::memcpy(t, psOld, sizeof t);
+        for (int k = 0; k < 4; k++) {
+            const bool turned = UnlitRooms::FurnitureColour(t[k], rig[k]);
+            psSet |= turned;
+            if constexpr (!kPublicBuild)
+                if (psOld[k][0] + psOld[k][1] + psOld[k][2] > 1e-6f) (turned ? g_fdUnlitSlots : g_fdLampSlots).fetch_add(1, std::memory_order_relaxed);
+        }
+        if (psSet) SetPsConst(dev, 4, &t[0][0], 4);
+    }
+    // the vertex lights with their directions (PatchObjectLampVs: direction c(vl-4+k) with colour c(vl+k)); the fill moves
+    // a [NoLight] light there when it takes slot 1 (FUN_006b7e70)
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    float vsDir[4][4] = {};
+    if (vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &vsDir[0][0], 4)) &&
+        SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &vsOld[0][0], 4))) {
+        std::memcpy(t, vsOld, sizeof t);
+        for (int k = 0; k < 4; k++) vsSet |= UnlitRooms::FurnitureColour(t[k], vsDir[k]);
+        if (vsSet) SetVsConst(dev, static_cast<UINT>(vl), &t[0][0], 4);
+    }
+    if (info.cubeWeightConst >= 0 && SUCCEEDED(dev->GetPixelShaderConstantF(static_cast<UINT>(info.cubeWeightConst), cubeOld, 1))) {
+        std::memcpy(cube, cubeOld, sizeof cube);
+        cube[3] *= UnlitRooms::FurnitureAmbient();
+        cubeSet = true;
+        SetPsConst(dev, static_cast<UINT>(info.cubeWeightConst), cube, 1);
+    }
+    D3D9Hooks::HookAction r = OnDrawInnerCore(dev, draw);
+    if (psSet || vsSet || cubeSet) {
+        if (r == D3D9Hooks::HookAction::Continue) { // the game's own draw, made here while the constants are turned
+            const float tint = UnlitRooms::FurnitureTint();
+            float cubeColour[3];
+            UnlitRooms::FurnitureCubeColour(cubeColour);
+            const bool coloured = std::fabs(cubeColour[0] - 1.0f) > 1e-3f || std::fabs(cubeColour[1] - 1.0f) > 1e-3f || std::fabs(cubeColour[2] - 1.0f) > 1e-3f;
+            PatchedPs* tinted = nullptr;
+            if (cubeSet && (std::fabs(tint - 1.0f) > 1e-3f || coloured)) {
+                PatchedPs& p = PatchedFor(dev, g_cubeTintPs, "Indoor object (blue tint)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchCubeTint(t, pp.cubeTint); });
+                if (p.ps && p.cubeTint >= 0) tinted = &p;
+            }
+            IDirect3DPixelShader9* original = g_curPs;
+            float tintOld[4] = {};
+            g_inOwnCall = true;
+            if (tinted) {
+                const float c[4] = {tint, cubeColour[0], cubeColour[1], cubeColour[2]};
+                dev->GetPixelShaderConstantF(static_cast<UINT>(tinted->cubeTint), tintOld, 1);
+                SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), c, 1);
+                SetPs(dev, tinted->ps);
+            }
+            draw();
+            if (tinted) {
+                SetPs(dev, original);
+                SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), tintOld, 1);
+                g_nightFurnitureTinted.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_inOwnCall = false;
+            r = D3D9Hooks::HookAction::Skip;
+        }
+        if (psSet) SetPsConst(dev, 4, &psOld[0][0], 4);
+        if (vsSet) SetVsConst(dev, static_cast<UINT>(vl), &vsOld[0][0], 4);
+        if (cubeSet) SetPsConst(dev, static_cast<UINT>(info.cubeWeightConst), cubeOld, 1);
+        g_nightFurniture.fetch_add(1, std::memory_order_relaxed);
+    }
+    return r;
+}
+
+// ---- Development tools: the F6 furniture tracer. While a recording runs, every room-mode object part (world position +
+// pixel shader) is written once at its first draw and again whenever its drawing changes: the path, the rig lights as the
+// game set them, the vertex lights, the ambient cube weight, the blue kept, and for path A the maps it read. ----
+std::unordered_map<uint64_t, std::vector<uint64_t>> g_traceLast; // object part (rig + pixel shader) -> the states already written (render thread)
+uint64_t TraceHash(uint64_t h, int64_t v) { return (h ^ static_cast<uint64_t>(v)) * 1099511628211ull; }
+int64_t TraceQ(float v) { return std::isfinite(v) ? static_cast<int64_t>(std::llround(static_cast<double>(v) * 10000.0)) : 0x7FFFFFFF; }
+char SlotKind(const float* colour, const float* dir) {
+    if (colour[0] + colour[1] + colour[2] <= 1e-6f && colour[3] <= 1e-6f) return '-';
+    if (colour[3] > 1e-6f) return 'F';
+    return UnlitRooms::IsUnlitLight(colour, dir) ? 'N' : 'L';
+}
+void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChain, int path, bool dark, bool active, float tint, float cubeGame, float cubeDrawn) {
+    const uintptr_t rigPtr = RigTracker::CurrentRig();
+    float w[3][4] = {}, rig[8][4] = {}, vlc[4][4] = {};
+    const int wk = g_curVsInfo ? g_curVsInfo->patched.worldK : -1;
+    if (wk >= 0) dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &w[0][0], 3);
+    const float pos[3] = {w[0][3], w[1][3], w[2][3]};
+    if (rigIn) std::memcpy(rig, rigIn, sizeof rig);
+    else dev->GetPixelShaderConstantF(0, &rig[0][0], 8);
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    float vlSum = 0.0f;
+    if (vl >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &vlc[0][0], 4)))
+        for (const auto& c : vlc) vlSum += c[0] + c[1] + c[2];
+    // the object: its rig (one per object; two objects may stand at the same position) and the part's pixel shader
+    uint64_t key = 1469598103934665603ull;
+    if (rigPtr) key = TraceHash(key, static_cast<int64_t>(rigPtr));
+    else
+        for (float p : pos) key = TraceHash(key, static_cast<int64_t>(std::llround(p * 100.0f)));
+    key = TraceHash(key, static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_curPs)));
+    uint64_t state = 1469598103934665603ull;
+    for (int64_t v : {static_cast<int64_t>(path), static_cast<int64_t>(dark), static_cast<int64_t>(active), TraceQ(tint), TraceQ(cubeGame), TraceQ(cubeDrawn), TraceQ(vlSum),
+                      static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_curVs))})
+        state = TraceHash(state, v);
+    for (int k = 0; k < 4; k++)
+        for (int c = 0; c < 4; c++) state = TraceHash(state, TraceQ(rig[4 + k][c]));
+    if (path == 1) {
+        state = TraceHash(state, static_cast<int64_t>(g_traceA.lightMap));
+        state = TraceHash(state, static_cast<int64_t>(g_traceA.basis0));
+        state = TraceHash(state, TraceQ(g_traceA.scaleX));
+        state = TraceHash(state, TraceQ(g_traceA.scaleY));
+    }
+    if (g_traceLast.size() > 50000) g_traceLast.clear();
+    // a state already written for this part is not written again (a part drawn twice a frame, e.g. by two passes with
+    // different maps, would otherwise alternate every frame)
+    auto [it, fresh] = g_traceLast.try_emplace(key);
+    auto& seen = it->second;
+    if (std::find(seen.begin(), seen.end(), state) != seen.end()) return;
+    if (seen.size() >= 8) seen.erase(seen.begin());
+    seen.push_back(state);
+    std::string rigText = rigChain ? std::string() : std::string(" (this shader has no rig light chain: c4..c7 are other values)");
+    for (int k = 0; k < 4 && rigChain; k++)
+        rigText += std::format(" {}({:.3f} {:.3f} {:.3f})", SlotKind(rig[4 + k], rig[k]), rig[4 + k][0], rig[4 + k][1], rig[4 + k][2]);
+    std::string text = std::format("[furniture] {} rig {:08X} ({:.2f} {:.2f} {:.2f}) PS {:08X} VS {:08X} | path {} | dark {} acting {} | rig{} | vertex lights {:.3f} | cube {:.3f} -> {:.3f} | blue kept {:.3f}",
+                                   fresh ? "new" : "changed", rigPtr, pos[0], pos[1], pos[2], reinterpret_cast<uintptr_t>(g_curPs), reinterpret_cast<uintptr_t>(g_curVs),
+                                   path == 1 ? "A" : path == 2 ? "B" : "game", dark ? 1 : 0, active ? 1 : 0, rigText, vlSum, cubeGame, cubeDrawn, tint);
+    if (path == 1)
+        text += std::format(" | A: light map {:08X}, directional map {:08X}, read scale ({:.2f}, {:.2f})", g_traceA.lightMap, g_traceA.basis0, g_traceA.scaleX, g_traceA.scaleY);
+    Recorder::Note(text);
+}
+
+// Room-mode furniture draws (RigTracker mode 0). The room counts as dark (Rooms at Night acts fully, whatever the night
+// level) when the rig holds a [NoLight] light: the game adds those only to a dark room.
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_curVsIsObject || !g_curPs || g_inOwnCall) return OnDrawInnerCore(dev, draw);
+    if (RigTracker::CurrentMode() != 0) return OnDrawInnerCore(dev, draw);
+    if constexpr (!kPublicBuild) g_fdMode0.fetch_add(1, std::memory_order_relaxed);
+    const ShaderPatches::RigPsInfo& info = RigPsInfoFor(g_curPs);
+    if constexpr (!kPublicBuild)
+        if (!info.rigLights) g_fdNoChain.fetch_add(1, std::memory_order_relaxed);
+    float rig[8][4] = {};
+    const bool haveRig = info.rigLights && SUCCEEDED(dev->GetPixelShaderConstantF(0, &rig[0][0], 8));
+    bool dark = false;
+    for (int k = 0; k < 4 && haveRig && !dark; k++) dark = UnlitRooms::IsDarkRoomLight(rig[4 + k], rig[k]);
+    UnlitRooms::SetDrawDark(dark);
+    // the F6 furniture tracer (development build, only while a recording runs)
+    const bool trace = !kPublicBuild && Recorder::Active();
+    const long aBefore = trace ? static_cast<long>(g_indoorDrawn.load()) : 0, bBefore = trace ? g_nightFurniture.load() : 0;
+    float cubeGame = -1.0f;
+    if (trace && info.cubeWeightConst >= 0) {
+        float c[4] = {};
+        if (SUCCEEDED(dev->GetPixelShaderConstantF(static_cast<UINT>(info.cubeWeightConst), c, 1))) cubeGame = c[3];
+    }
+    const bool active = UnlitRooms::FurnitureActive();
+    const float tint = active ? UnlitRooms::FurnitureTint() : 1.0f, ambient = active ? UnlitRooms::FurnitureAmbient() : 1.0f;
+    D3D9Hooks::HookAction r;
+    if (active) r = OnDrawFurniture(dev, draw, info, haveRig ? rig : nullptr);
+    else {
+        if constexpr (!kPublicBuild) g_fdInactive.fetch_add(1, std::memory_order_relaxed);
+        r = OnDrawInnerCore(dev, draw);
+    }
+    if (trace) {
+        const int path = static_cast<long>(g_indoorDrawn.load()) != aBefore ? 1 : g_nightFurniture.load() != bBefore ? 2 : 0;
+        TraceFurniture(dev, haveRig ? rig : nullptr, info.rigLights, path, dark, active, tint, cubeGame, cubeGame >= 0.0f ? cubeGame * ambient : cubeGame);
+    }
+    UnlitRooms::SetDrawDark(false);
+    return r;
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9* dev, DrawFn draw) {
@@ -2686,7 +2963,8 @@ void SetSoftLotEdges(bool on) { g_softEdges = on; }
 void SetIndoorSmooth(bool on) { g_indoorSmooth = on; }
 
 std::string IndoorSmoothStatus() {
-    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {}", g_indoorSmooth.load() ? "on" : "off", g_basisSmoothDrawn.load(), g_indoorDrawn.load());
+    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {})", g_indoorSmooth.load() ? "on" : "off",
+                       g_basisSmoothDrawn.load(), g_indoorDrawn.load(), g_indoorUvFromVs.load(), g_indoorUvFallback.load());
 }
 
 void SetGroundBrightness(float ground, float roads, float lotLamps) {
@@ -2983,9 +3261,27 @@ std::string DescribeDraw() {
     return s;
 }
 
+void FurnitureTraceReset() { g_traceLast.clear(); }
+
+// Development build (F6 recorder): room-mode furniture draws since the last call (the render thread)
+std::string FurnitureDiag() {
+    static long last[7] = {};
+    const long now[7] = {g_fdMode0.load(), g_fdInactive.load(), g_fdNoChain.load(), g_nightFurniture.load(), static_cast<long>(g_indoorDrawn.load()),
+                         g_fdUnlitSlots.load(), g_fdLampSlots.load()};
+    long d[7];
+    for (int k = 0; k < 7; k++) {
+        d[k] = now[k] - last[k];
+        last[k] = now[k];
+    }
+    return std::format("room-mode draws {} (Rooms at Night not acting {}, no rig chain {}, turned {}; Apex indoor-object shader {}) | rig slots turned {}, "
+                       "lamps kept {} | acting {}, brightness x{:.3f}, blue kept {:.3f}", d[0], d[1], d[2], d[3], d[4], d[5], d[6], UnlitRooms::FurnitureActive() ? "yes" : "no",
+                       UnlitRooms::FurnitureAmbient(), UnlitRooms::FurnitureTint());
+}
+
 std::string ObjectStatus() {
-    return std::format("moon shadow on objects: {} | draws fixed: {} | foliage (wrap light): {} | winter foliage without shadow: {}",
-                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_foliageDrawn.load(), g_leafDrawn.load());
+    return std::format("moon shadow on objects: {} | draws fixed: {} | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
+                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(),
+                       g_nightFurnitureTinted.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -3006,7 +3302,7 @@ void Shutdown(bool keepChunkMaps) {
         g_snowPs = nullptr;
     }
     g_snowTried = false;
-    for (auto* cache : {&g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs}) {
+    for (auto* cache : {&g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();
@@ -3047,6 +3343,7 @@ void Shutdown(bool keepChunkMaps) {
     g_compileTried = false;
     g_classCache.clear();
     g_basisPs.clear();
+    g_rigPsInfo.clear(); // shader addresses are reused after a restart of the feature (review M3)
     g_curPsBasis = false;
     RoomMapPadding::Clear();
     g_worldSamplers.clear();

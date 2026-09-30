@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
+#include "ui/logo.h"
 #include "ui/violet_theme.h"
 #include <atomic>
 #include <cmath>
@@ -92,6 +93,11 @@ LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_eatKeyUp = wp;
         return 0;
     }
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client && g_client->HotkeyDown(wp, (lp & (1 << 30)) != 0)) {
+        g_eatKeyUp = wp;
+        g_eatChar = true; // Ctrl+letter makes a control character
+        return 0;
+    }
     if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && g_eatKeyUp && wp == g_eatKeyUp) {
         g_eatKeyUp = 0;
         return 0;
@@ -149,6 +155,7 @@ void Init(IDirect3DDevice9* device, HWND window) {
         return;
     }
     g_window = window;
+    ApexUi::SetLogoDevice(device);
     g_ready.store(true);
     LOG_INFO("[Overlay] ImGui ready (" + std::string(IMGUI_VERSION) + ")");
 }
@@ -179,7 +186,8 @@ void Frame(IDirect3DDevice9* device) {
         g_bbWidth.store(desc.Width);
         g_bbHeight.store(desc.Height);
     }
-    const bool draw = g_visible.load() || (g_client && g_client->AlwaysDraw());
+    const bool always = g_client && g_client->AlwaysDraw(); // every frame (the client runs its shortcuts there)
+    const bool draw = g_visible.load() || always;
     if (!draw || !g_client) return;
 
     std::lock_guard<std::mutex> lock(g_imguiLock);
@@ -230,6 +238,7 @@ void Shutdown() {
     if (g_wndProcInstalled.exchange(false) && g_window && g_original) SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_original));
     if (g_ready.exchange(false)) {
         std::lock_guard<std::mutex> lock(g_imguiLock);
+        ApexUi::ReleaseLogo();
         ImGui_ImplDX9_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();

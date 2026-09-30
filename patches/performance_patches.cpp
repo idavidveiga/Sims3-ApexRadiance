@@ -33,6 +33,7 @@
 #include "fast_refpack.h"
 #include "scene_budget.h"
 #include "object_index.h"
+#include "room_light_queue.h"
 #include <algorithm>
 #include <atomic>
 #include <format>
@@ -325,6 +326,32 @@ class ObjectLookupIndexPatch : public ApexPatch {
     void RenderDeveloperUI() override { ObjectIndex::RenderDeveloperUI(); }
 };
 
+class RoomLightQueuePatch : public ApexPatch {
+  public:
+    RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!RoomLightQueue::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        RoomLightQueue::Stop();
+        if (RoomLightQueue::Running()) return Fail("Could not put the room lighting code back (see ApexRadiance_LOG.txt)");
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { RoomLightQueue::RenderDeveloperUI(); }
+};
+
 } // namespace
 
 int Performance::LotLightingBudgetMs() {
@@ -354,6 +381,7 @@ std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
 std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
+std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
 
 APEX_REGISTER_FEATURE(ResourceLookupCachePatch,
                       {.displayName = "Faster Game File Lookups",
@@ -485,3 +513,19 @@ APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
                                             "The first 64 answers of each session and then 1 in 64 are checked against the game's walk; a difference turns the feature "
                                             "off."},
                        .gameCodeGroup = "ObjectIndex"});
+
+APEX_REGISTER_FEATURE(RoomLightQueuePatch,
+                      {.displayName = "Faster Room Lighting",
+                       .description = "Rooms light up much sooner when you enter a lot, change floors or switch lamps: the lot you are on and the floor you look at "
+                                      "go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. Part of " APEX_PRODUCT_NAME ". "
+                                      "Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The game relights rooms one at a time for the whole world, one per frame at most: the priority of each room (CALL 0x6A81DF "
+                                            "-> 0x69E770) is raised for the priority lot on and below the camera's story; a finished class-0 solve steps straight to "
+                                            "the target class (0x69EAA2); an invalidated room keeps its class (0x69EF58, 0x69F1C5).",
+                                            "After the scheduler (jmp 0x6C5E39 -> 0x6C5C20), rooms of the priority lot are solved at once and the next one picked, within "
+                                            "4 ms per frame (1 ms while the camera moves), on the render thread only."},
+                       .gameCodeGroup = "RoomLightQueue"});

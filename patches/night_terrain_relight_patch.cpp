@@ -31,6 +31,8 @@
 #include "d3d9_hooks.h"
 #include "depth_share.h"
 #include "light_diag.h"
+#include "recorder.h"
+#include "hotkeys.h"
 #include "light_probe.h"
 #include "lot_light_bridge.h"
 #include "lightmap_smooth.h"
@@ -38,6 +40,8 @@
 #include "render_callbacks.h"
 #include "object_light_bridge.h"
 #include "level_light_share.h"
+#include "unlit_rooms.h"
+#include "lamp_mark_filter.h"
 #include "rig_tracker.h"
 #include "room_map_padding.h"
 #include "build_flavor.h"
@@ -56,6 +60,8 @@
 #include <format>
 #include <string>
 #include <vector>
+
+void RequestRefreshAfterLoad(); // below the patch's helpers: every room and lot once more, a moment after a load
 
 namespace {
 
@@ -161,6 +167,12 @@ float g_sidewalkClear = 0.5f;
 float g_lampTint = 1.0f;
 bool g_fenceGround = true;
 bool g_levelShare = true;
+bool g_indoorShare = true;       // indoor lamps light the story above or below through stair openings (LevelLightShare::SetIndoor)
+bool g_wallAlign = true;         // walls lit where their light is drawn: no step at the floor line (LevelLightShare::SetWallAlign)
+bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
+bool g_unlitOn = true;           // rooms with every lamp off: Apex's light instead of the game's blue glow (UnlitRooms)
+float g_unlitLight = 0.35f;      // how much of the game's unlit-room light stays
+float g_unlitBlue = 0.2f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 1.0f;
@@ -503,6 +515,7 @@ Clock::time_point g_scheduledAt{};
 int g_prevCounter = INT_MIN;
 std::string g_pendingReason;
 bool g_pendingDusk = false; // the armed rebuild is (also) the dusk rebuild
+bool g_pendingLoad = false; // the armed rebuild is the world load's (29/09: no lot relight after it, see below)
 Clock::time_point g_kickAt{};
 std::string g_lastTiming = "none";
 int g_crossUp = 0, g_crossDown = 0;
@@ -625,6 +638,7 @@ void Kick(uintptr_t cells, float level, const std::string& reason, bool dusk = f
     g_kicks.fetch_add(1);
     g_pendingReason = reason;
     g_pendingDusk = dusk;
+    g_pendingLoad = false;
     g_kickAt = Clock::now();
     g_prevCounter = kArmFrames;
     LightmapSmooth::NoteKick(reason.c_str());
@@ -940,6 +954,7 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
 // Runs on the render thread, the same thread as the game's light update and terrain update.
 void OnPresent() {
     if constexpr (!kPublicBuild) LightDiag::OnPresent(); // Ctrl+Shift+F8: development build only
+    if constexpr (!kPublicBuild) Recorder::OnPresent(); // Ctrl+Shift+F6: a few seconds of lighting activity, with the clock time
     LightState s;
     if (!ReadLightState(s)) {
         g_lastCells = 0;
@@ -1015,6 +1030,8 @@ void OnPresent() {
             g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
             if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
             GameAddr::CheckWorldStructs(); // builds other than Steam 1.67.2: once, logs whether the assumed struct offsets hold
+            LevelLightShare::OnWorldLive();
+            RequestRefreshAfterLoad();
         }
     }
 
@@ -1022,6 +1039,8 @@ void OnPresent() {
     if (g_prevCounter >= 0 && c38 == -1) {
         g_rebuilds.fetch_add(1);
         const bool duskRebuild = g_pendingDusk;
+        const bool loadRebuild = g_pendingLoad;
+        g_pendingLoad = false;
         const bool ours = !g_pendingReason.empty();
         const std::string rebuiltBy = ours ? g_pendingReason : std::string("by the game itself");
         g_lastEvent = std::format("Terrain rebuilt ({}; {})", rebuiltBy, LevelText(s.level));
@@ -1051,7 +1070,10 @@ void OnPresent() {
         LotLightBridge::RequestLampRefresh();
         // Relight lots ONLY after the dusk rebuild. Relighting re-registers lot lamps, which re-arms the countdown; doing it
         // after every rebuild made a loop that kept invalidating the (slow, high quality) lot solves.
-        if (night && g_relightLots && duskRebuild) {
+        // Not after a world loaded at night: the game has just solved every lot with its night lamps (29/09: the relight 3 s later
+        // re-solved 5-25 lot stories and started the first wave of room solves after the load; lamps that switch on later
+        // send their own rooms).
+        if (night && g_relightLots && duskRebuild && !loadRebuild) {
             g_lotRelightPending = true;
             g_lotRelightAt = now + std::chrono::seconds(3);
         }
@@ -1081,6 +1103,7 @@ void OnPresent() {
         g_scheduled = false; // a dusk rebuild waiting is covered by this one
         g_loadInfo = std::format("{}; rebuilt {:.1f} s after the world change ({})", g_liveSignal, MsSince(g_worldAt) / 1000.0, LevelText(s.level));
         Kick(s.cells, s.level, night ? "world load (night: also the dusk rebuild)" : "world load", night);
+        g_pendingLoad = true;
     }
     if (g_kickRequested.exchange(false)) Kick(s.cells, s.level, "button");
     if (g_scheduled && now >= g_scheduledAt) {
@@ -1359,6 +1382,26 @@ std::string Missing(std::initializer_list<GameAddr::Id> ids) {
 // that the draw hooks are using, and rewrites code the game runs there. Update() (message-loop thread) only schedules it.
 std::atomic<bool> g_reinstallDue{false};
 void (*g_reinstallFn)() = nullptr;
+// Any lighting setting changed (menu, profile, undo, reset, the upper floors switch; 30/09, user: "whenever any setting of the
+// lights changes, do the F9 refresh automatically"): "Refresh the lighting" runs once, kAutoRefreshDelay after the last change
+// (a slider being dragged keeps pushing it back), on the render thread (Present)
+constexpr DWORD kAutoRefreshDelay = 1000;
+std::atomic<DWORD> g_autoRefreshAt{0};
+// The pending refresh leaves the terrain alone (after a load: the load's own rebuild made it); any setting change clears it
+std::atomic<bool> g_autoRefreshRoomsOnly{false};
+void RequestAutoRefresh() {
+    g_autoRefreshRoomsOnly.store(false);
+    g_autoRefreshAt.store((GetTickCount() + kAutoRefreshDelay) | 1);
+}
+// 30/09, user: "right after loading, apply that refresh" (a room lit only by lamps of another story was black after a load
+// until something solved it again): the lots and every room light again once, kAfterLoadDelay after the world is on screen
+// (the lots have settled by then: at the latest 6 s, level_light_share), and the rigs with them; not the terrain
+constexpr DWORD kAfterLoadDelay = 8000;
+void RequestRefreshAfterLoad() {
+    if (g_autoRefreshAt.load()) return; // a setting change is already pending: that refresh does it all
+    g_autoRefreshRoomsOnly.store(true);
+    g_autoRefreshAt.store((GetTickCount() + kAfterLoadDelay) | 1);
+}
 void DeferredReinstall(IDirect3DDevice9*) {
     if (g_reinstallDue.exchange(false) && g_reinstallFn) g_reinstallFn();
 }
@@ -1418,6 +1461,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
             S3SS_TR("Luminarias externas iluminam as paredes e pisos de todos os andares (a luz nao corta mais na linha do piso).",
                     "Outdoor lights reach the walls and floors of every story (no cut at the floor line)."));
+        RegisterBoolSetting(&g_indoorShare, "luzInternaEntreAndares", true,
+            "Indoor lamps light the story above or below through stairwells, atriums and removed floors (needs \"Outdoor light between floors\").");
+        RegisterBoolSetting(&g_wallAlign, "paredesSemEmendaEntreAndares", true,
+            "Walls are lit at the heights the game draws their light at, so the walls above and below a floor line meet on the same light (needs \"Outdoor light between floors\").");
+        RegisterBoolSetting(&g_allFloors, "todosOsAndaresEmDetalhe", true,
+            "Every floor of the lot being played is lit in full detail, so changing floors keeps the light instead of solving it again (more work when entering a lot).");
         RegisterBoolSetting(&g_objPixel, "objetosDeForaComLuzDoChao", true,
             S3SS_TR("Portas, janelas, balcoes e outros objetos de fora recebem, ponto a ponto, no minimo a luz do chao em volta (sem escurecer nada).",
                     "Outdoor doors, windows, counters and similar objects get at least the ground light around them, point by point."));
@@ -1431,6 +1480,12 @@ class NightTerrainRelightPatch : public ApexPatch {
                     "Roofs receive light from nearby lamps (with softer shadows)."));
         RegisterFloatSetting(&g_roofStrengthSetting, "forcaNosTelhados", SettingWidget::Slider, 0.6f, 0.05f, 2.0f,
             S3SS_TR("Forca da luz das lampadas nos telhados.", "How strongly lamps light roofs."));
+        RegisterBoolSetting(&g_unlitOn, "comodosEscurosSemLuz", true,
+            "Rooms with every lamp off keep only a little light (set below) instead of the game's blue glow.");
+        RegisterFloatSetting(&g_unlitLight, "luzQueSobraNosComodos", SettingWidget::Slider, 0.35f, 0.0f, 1.0f,
+            "How much of the game's light stays in a room with every lamp off, on walls, floors and furniture (1 = the game).");
+        RegisterFloatSetting(&g_unlitBlue, "azulNosComodos", SettingWidget::Slider, 0.2f, 0.0f, 1.0f,
+            "How blue the light left in rooms is, on walls, floors and furniture (1 = the game's blue, 0 = grey).");
         RegisterBoolSetting(&g_water, "lagosRefletemLampadas", true,
             S3SS_TR("A agua dos lagos reflete as lampadas e postes proximos a noite.", "Ponds glow and reflect nearby lamps at night."));
         RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 1.0f, 0.1f, 3.0f,
@@ -1647,6 +1702,18 @@ class NightTerrainRelightPatch : public ApexPatch {
             ObjectLightBridge::SetStrength(g_objStrength);
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();
+            LevelLightShare::SetIndoor(g_indoorShare);
+            LevelLightShare::SetWallAlign(g_wallAlign);
+            LevelLightShare::SetAllFloors(g_allFloors);
+            UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);
+            UnlitRooms::SetNightLevel(std::fmax(g_menuLevel.load(), 0.0f));
+            UnlitRooms::OnPresent();
+            LampMarkFilter::OnPresent(g_menuLevel.load());
+            if (DWORD at = g_autoRefreshAt.load(); at && static_cast<int32_t>(GetTickCount() - at) >= 0 && !g_reinstallDue.load() &&
+                g_autoRefreshAt.compare_exchange_strong(at, 0)) {
+                const bool afterLoad = g_autoRefreshRoomsOnly.exchange(false);
+                NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad);
+            }
             LevelLightShare::OnPresent();
             LotLightBridge::SetNightLevel(g_level);
             LotLightBridge::SetRoofFix(g_roofs, g_roofStrengthSetting);
@@ -1694,6 +1761,14 @@ class NightTerrainRelightPatch : public ApexPatch {
             if (!ObjectLightBridge::Install(objErr)) LOG_WARNING("[NightTerrainRelight] " + objErr);
         }
         if (g_objPixel && !RigTracker::IsInstalled()) RigTracker::Install();
+        {
+            std::string unlitErr;
+            if (!UnlitRooms::Install(unlitErr)) LOG_WARNING("[NightTerrainRelight] " + unlitErr);
+        }
+        if (!LampMarkFilter::IsInstalled()) {
+            std::string markErr;
+            if (!LampMarkFilter::Install(markErr)) LOG_WARNING("[NightTerrainRelight] " + markErr);
+        }
         if (g_levelShare && !LevelLightShare::IsInstalled()) {
             std::string shareErr;
             if (!LevelLightShare::Install(shareErr)) LOG_WARNING("[NightTerrainRelight] " + shareErr);
@@ -1716,6 +1791,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (!reinstalling) LightmapSmooth::Clear();
         ObjectLightBridge::UninstallLampColour();
         ObjectLightBridge::Uninstall();
+        if (!reinstalling) UnlitRooms::Uninstall(); // first: its last retint still queues rooms with the solve deferral (review M5)
+        if (!reinstalling) LampMarkFilter::Uninstall();
         if (!reinstalling) LevelLightShare::Uninstall();
         if (!reinstalling) RigTracker::Uninstall();
         if (!MemPatch::RestoreAll(patchedLocations)) return Fail(S3SS_TR("Falha ao restaurar os bytes originais", "Could not restore the original code"));
@@ -1773,6 +1850,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         reinstalling = true; // Install below: not "turned on again" (no extra rebuild)
         const bool installed = removed && Install();
         reinstalling = false;
+        if (installed) RequestAutoRefresh(); // the options that needed the reinstall show at once
         if (removed && !installed) {
             if (LevelLightShare::IsInstalled()) LevelLightShare::Uninstall();
             RigTracker::Uninstall();
@@ -1812,9 +1890,11 @@ class NightTerrainRelightPatch : public ApexPatch {
     // installed or removed live, like a change in the menu
     void ApplyTableLive(const toml::table& table) override {
         const bool wasEnabled = isEnabled.load();
+        const auto changedBefore = lastSettingChange;
         const bool bridgeBefore = g_bridge, objBefore = g_objLamps, shareBefore = g_levelShare, objPixelBefore = g_objPixel;
         ApexPatch::ApplyTableLive(table);
         if (wasEnabled && isEnabled.load()) ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
+        if (wasEnabled && isEnabled.load() && lastSettingChange != changedBefore) RequestAutoRefresh(); // a profile, look or undo
     }
 
     static void ResetDefaults() {
@@ -1822,6 +1902,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_lotLamps = true;
         g_autoDusk = true;
         g_levelShare = true;
+        g_indoorShare = true;
+        g_wallAlign = true;
+        g_allFloors = true;
+        g_unlitOn = true;
+        g_unlitLight = 0.35f;
+        g_unlitBlue = 0.2f;
         g_smoothMaps = true;
         g_smoothMapsGpu = true;
         g_softLotEdges = true;
@@ -1868,6 +1954,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (body()) {
             ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
             NotifySettingChanged();
+            RequestAutoRefresh();
         }
     }
 
@@ -1945,7 +2032,35 @@ class NightTerrainRelightPatch : public ApexPatch {
     }
 
     // Lighting > Ground
-    void DrawGroundCard(void (*drawUpperFloorRow)()) {
+    // Lighting > Stories: everything about lamp light between the floors of a house (2026-09-29, user: "everything about
+    // stories deserves its own tab")
+    void DrawStoriesCard(void (*drawUpperFloorRow)()) {
+        using ApexUi::IconId;
+        ImGui::PushID("NightStories");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(IconId::Layers, "Stories", "Lamp light between the floors of a house", nullptr, nullptr);
+            ApexUi::CardDivider();
+            if (drawUpperFloorRow) drawUpperFloorRow();
+            Edit([] {
+                bool changed = ApexUi::SwitchRow("Outdoor light between floors", &g_levelShare, "Outdoor lamps light the floors above and below, with no hard edge", true);
+                if (!g_levelShare) ApexUi::IconNote(ApexUi::IconId::Info, "Needs \"Outdoor light between floors\"");
+                ImGui::BeginDisabled(!g_levelShare);
+                changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
+                changed |= ApexUi::SwitchRow("Every floor in full detail", &g_allFloors, "Changing floors keeps the light; entering a lot takes a little longer", true);
+                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+                changed |= ApexUi::SwitchRow("Indoor light between floors", &g_indoorShare, "Lamps inside shine through stairwells and open floors", true);
+                // 30/09 (user): the game solves rooms one after the other (after a load, a change or a lamp switched), so
+                // a room can show its old light for a moment; switching floors solves the rooms shown again
+                if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
+                ImGui::EndDisabled();
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    void DrawGroundCard() {
         using ApexUi::IconId;
         ImGui::PushID("NightGround");
         if (ApexUi::BeginCard("##Card")) {
@@ -1954,11 +2069,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
-                return changed;
-            });
-            if (drawUpperFloorRow) drawUpperFloorRow();
-            Edit([] {
-                bool changed = ApexUi::SwitchRow("Light passes between floors", &g_levelShare, "Lamps light the floors above and below, with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true);
                 return changed;
             });
@@ -2071,6 +2181,37 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::PopID();
     }
 
+    // Lighting > Buildings: rooms with every lamp off (2026-09-29, user: the game leaves them "super blue", S3SS's switch
+    // makes them far too dark; a control in between)
+    void DrawRoomsCard() {
+        ImGui::PushID("NightRooms");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(ApexUi::IconId::Moon, "Rooms at Night", "The soft background light inside rooms", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+                bool changed = ApexUi::SwitchRow("Adjust the background light", &g_unlitOn, "Replaces the game's strong blue glow indoors with the light set below, lamps on or off", true);
+                if (g_unlitOn) {
+                    changed |= ApexUi::SliderPercent("Brightness##Unlit", &g_unlitLight, 0.0f, 1.0f, "How bright that background light is, on walls and furniture; 100% is the game", 0.35f);
+                    changed |= ApexUi::SliderPercent("Blue tint##Unlit", &g_unlitBlue, 0.0f, 1.0f, "0% is neutral grey, 100% is the game's blue, on walls and furniture", 0.2f);
+                }
+                return changed;
+            });
+            // 30/09 (user: "a button to recalculate these lights when they bug"): the "Refresh the lighting" shortcut as a button
+            const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Refresh));
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            if (ApexUi::BeginControlRow("Refresh the lighting", "If a room or its furniture looks wrong: rooms, lots and objects light again",
+                                        ApexUi::ChipSize(key.c_str()).x + gap + ApexUi::ButtonWidth("Refresh##RefreshLighting", true))) {
+                ApexUi::Chip(key.c_str());
+                ImGui::SameLine();
+                if (ApexUi::IconTextButton("Refresh##RefreshLighting", ApexUi::IconId::Lightbulb, "The same as its shortcut")) NightLighting::RefreshAll("button");
+                ApexUi::EndControlRow();
+            }
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
     // Water & Snow > Water (the lamp glow; the shore reflection is the menu's Water Reflections card)
     void DrawWaterCard() {
         ImGui::PushID("NightWater");
@@ -2137,6 +2278,13 @@ class NightTerrainRelightPatch : public ApexPatch {
         const ImU32 iconCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
         ImGui::TextWrapped("Status: %s", g_status.c_str());
         ImGui::Separator();
+        {
+            // Rooms keep their light when their lamps did not change (lamp_mark_filter.cpp; 30/09, on by default, A/B here)
+            bool keep = LampMarkFilter::Enabled();
+            if (ImGui::Checkbox("Rooms keep their light when their lamps did not change (floor switches)", &keep)) LampMarkFilter::SetEnabled(keep);
+            ImGui::TextWrapped("%s", LampMarkFilter::Status().c_str());
+        }
+        ImGui::Separator();
         ApexUi::IconLabel(IconId::ListChecks, "Census", iconCol);
         {
             // Census: which lamp-lit draws no fix claimed
@@ -2153,7 +2301,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ApexUi::IconLabel(IconId::Stethoscope, "Diagnostics", iconCol);
         if (ImGui::Button("Save light diagnostics")) LightDiag::RequestDump();
         ImGui::SameLine();
-        ImGui::TextDisabled("(or Ctrl+Shift+F8)");
+        ImGui::TextDisabled("(or %s)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Diagnostics)).c_str());
         bool storySamples = LevelLightShare::DiagArmed();
         if (ImGui::Checkbox("Record story light samples for the diagnostics", &storySamples)) LevelLightShare::SetDiagArmed(storySamples);
         if (ImGui::IsItemHovered())
@@ -2182,6 +2330,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextDisabled("GPU vs CPU: %s", LightmapSmooth::CompareStatus().c_str());
         ImGui::TextWrapped("Lamp colour: %s", ObjectLightBridge::LampColourStatus().c_str());
         ImGui::TextWrapped("Stories: %s", LevelLightShare::Status().c_str());
+        ImGui::TextWrapped("Rooms at night: %s", UnlitRooms::Status().c_str());
         ImGui::Separator();
         ApexUi::IconLabel(IconId::Crosshair, "Light probe", iconCol);
         LightProbe::RenderUI();
@@ -2275,14 +2424,20 @@ NightTerrainRelightPatch* MenuPatch() { return ImGui::GetCurrentContext() ? Nigh
 void NightLighting::DrawLampColor() {
     if (auto* p = MenuPatch()) p->DrawLampColor();
 }
-void NightLighting::DrawGroundCard(void (*drawUpperFloorRow)()) {
-    if (auto* p = MenuPatch()) p->DrawGroundCard(drawUpperFloorRow);
+void NightLighting::DrawGroundCard() {
+    if (auto* p = MenuPatch()) p->DrawGroundCard();
+}
+void NightLighting::DrawStoriesCard(void (*drawUpperFloorRow)()) {
+    if (auto* p = MenuPatch()) p->DrawStoriesCard(drawUpperFloorRow);
 }
 void NightLighting::DrawObjectsCard() {
     if (auto* p = MenuPatch()) p->DrawObjectsCard();
 }
 void NightLighting::DrawBuildingsCard() {
     if (auto* p = MenuPatch()) p->DrawBuildingsCard();
+}
+void NightLighting::DrawRoomsCard() {
+    if (auto* p = MenuPatch()) p->DrawRoomsCard();
 }
 void NightLighting::DrawWaterCard() {
     if (auto* p = MenuPatch()) p->DrawWaterCard();
@@ -2300,3 +2455,20 @@ float NightLighting::ShoreReflection() { return g_waterReflSetting; }
 void NightLighting::SetShoreReflection(float strength) {
     if (auto* p = NightTerrainRelightPatch::g_self) p->SetShoreReflection(strength);
 }
+
+// The "Refresh the lighting" shortcut (Hotkeys): what the Developer buttons "Rebuild terrain light now" and "Relight lots
+// now" do, plus every room and the object rigs (turning Night Lighting off and on did it before). Only while it runs
+// (g_menuLevel is -1 while it is off or no world is loaded).
+void NightLighting::RefreshAll(const char* why, bool terrain) {
+    if (g_menuLevel.load() < 0.0f) return;
+    if (terrain) g_kickRequested = true;
+    g_relightLotsRequested = true;
+    LevelLightShare::RelightAllRooms(std::format("Refresh the lighting ({})", why).c_str());
+    ObjectLightBridge::RequestRigRefresh();
+    UnlitRooms::RigsAgainIn(2000); // and once the rooms are solved (their lights are what the rigs gather)
+    LOG_INFO(std::format("[NightTerrainRelight] Refresh the lighting ({}): {}lots and rooms light again", why, terrain ? "terrain, " : ""));
+}
+void NightLighting::RefreshSoon() { RequestAutoRefresh(); }
+
+// The world is on screen (its terrain is drawn, or the fallback after the world change); false during load screens
+bool NightLighting::WorldLive() { return g_live; }

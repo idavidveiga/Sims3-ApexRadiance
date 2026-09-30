@@ -78,6 +78,61 @@ enum class Id : uint16_t {
     BatchSamples,       // global vector of the wall sample batch
     WallCullBatchFn,    // FUN_006a30b0
     WallCullCall, WallCull,
+    // ---- indoor lamps through stair openings (optional part of the light between stories) ----
+    LightFilter,        // FUN_006c7820: the registry entry filter of a story's light gather
+    LightBright,        // FUN_006bc520 fastcall(light): the light is bright enough to count
+    AddRoomLight,       // FUN_006a2060 thiscall(room, light) ret 4: adds a light to a room's list
+    RoomUpdatePush,     // push FUN_006c7250 in FUN_006c5e20: the per-story room update, run for every story of every lot
+    RoomUpdate,         // FUN_006c7250 fastcall(treeLevel)
+    ChangedClearCall,   // its call that empties the "changed rooms" set (ecx = treeLevel+8) after walking it
+    ChangedClear,       // FUN_007f3790 thiscall(set, buckets, count) ret 8
+    FloorSet,           // FUN_00a89dd0 thiscall(level floor object, ...): sets a floor quadrant
+    FloorSetCall0, FloorSetCall1, FloorSetCall2, FloorSetCall3,
+    FloorRemove,        // FUN_00a893a0 thiscall(level floor object, ...): removes one
+    FloorRemoveCall,
+    LevelVtable,        // vtable of the level floor object (ctor FUN_00a88790)
+    LevelCtorCall,      // the only CALL of that ctor (after "new 0x350"): every level floor object is made there
+    LevelCtor,          // FUN_00a88790 thiscall(object), returns it, plain ret
+    LodChoice,          // FUN_0069e710 fastcall(room): the lighting LOD class a room should have (high only on the camera's story)
+    LodChoiceCall0, LodChoiceCall1, LodChoiceCall2, LodChoiceCall3,
+    LodMax,             // the int it returns for the camera's story (0x01158B00)
+    RoomSolveStartCall, // the CALL of state 0 of the room solve in FUN_006a3c90
+    RoomSolveStart,     // FUN_006a18b0 thiscall(room): ambient colour, normalisation and ambient ramp of an indoor room
+    WallPassCall,       // the CALL of the wall texel pass (state 2) in FUN_006a3c90
+    WallPass,           // FUN_006a3a30 thiscall(room, int, float) ret 8
+    WallSamplesCall,    // its CALL of FUN_006ac070 thiscall(wall, piece, class, batch) ret 0xC: the samples of one piece of a wall
+    WallSamples,
+    WallBlurCall,       // its CALL of FUN_0069f650 fastcall(room): the wall atlas blur (LOD class 2)
+    WallBlur,
+    WallBlurPasses,     // the dword of blur passes (0x01158B1C)
+    WallBlurMode,       // the byte of blur mode (0x011D02E4; 0 = [1 2 1] per axis)
+    WallSolveCall,      // its CALL of FUN_006a31d0 thiscall(room, batch, {base, pitch}, flags, sampler, char) ret 0x14 for one piece
+    WallSolve,
+    // ---- unlit rooms (features/unlit_rooms.cpp) ----
+    RoomAmbient,        // FUN_006a0f50 fastcall(room): the room's ambient (state 0 of the room solve)
+    UnlitColourA,       // in it: imm32 of "mov ecx, 0x011D0B60" (the colour of a room with no lamp, on some lots)
+    UnlitColourB,       // in it: imm32 of "mov ecx, 0x011D0B40" (the same, other lots)
+    DimAmbient,         // FUN_006a00a0: a dim room's ambient topped up with that colour
+    DimColourA,         // in it: the same two imm32
+    DimColourB,
+    DimAmbientCall0, DimAmbientCall1, // its two calls in FUN_006a0f50 (0x006A13F0: the result goes to room+0x110; 0x006A1410: +0x120)
+    FillGate,           // imm32 of "cmp byte [0x01158D5C], 0" in FUN_006ba340: the fill light added to object rigs
+    FillColour,         // imm32 of "movaps xmm2, [0x011D0E10]" in FUN_006b7e70: the fill light's colour (0.8, 0.8, 1, 0.8)
+    // ---- room lighting queue (features/room_light_queue.cpp) ----
+    RoomPriorityCall,   // the only CALL of the room priority (in FUN_006a8190)
+    RoomPriority,       // FUN_0069e770 fastcall(room) -> float in ST0
+    LodStepSite,        // "mov edi,1; lea ebx,[edi+1]" in FUN_0069ea70: class 0 -> 1 after a solve
+    KeepClassA,         // "jl" in FUN_0069eed0: an invalidated room restarts at class 0 when shown < LodChoice
+    KeepClassB,         // the same "jl" in FUN_0069f160
+    InvalidateFlag,     // FUN_0069f160 thiscall(room, char flag) ret 4: invalidates a room when its +0x19 flag changes (from 0x006A5E00)
+    RoomPickJump,       // "jmp FUN_006c5c20" at the end of FUN_006c5e20 (the per-frame light tree update)
+    RoomPick,           // FUN_006c5c20 fastcall(tree): makes the best pending room current
+    RoomSolveStep,      // FUN_006a3f80 thiscall(room, stopwatch*, float budget) ret 8: the budgeted solve of a room in state 3
+    StopwatchCtor,      // FUN_004f35b0 thiscall(sw, kind, char start) ret 8 (kind 4 = ms)
+    StopwatchStart,     // FUN_00408700 thiscall(sw)
+    StopwatchElapsed,   // FUN_004f33c0 thiscall(sw) -> ST0
+    PriorityLotObject,  // FUN_006fde10: mov eax,[SceneObjectManager]; ret
+    PriorityLotTest,    // FUN_006fdc80 thiscall(som, lotLo, lotHi) ret 8 -> al: one of the two priority lots
     // ---- rig tracker ----
     ModelDraw,          // FUN_006f6250
     BinderCall, Binder,

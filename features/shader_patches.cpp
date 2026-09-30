@@ -1203,7 +1203,10 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
                                      Op(0x07 /* rsq */, 2), Dst(kTemp, B, 0x8), Src(kTemp, A, kSwzW),
                                      Op(kMul, 3), Dst(kTemp, A, 0x7), Src(kTemp, A), Src(kTemp, B, kSwzW),  // normalize
                                      Op(kDp3, 3), Dst(kTemp, B, 0x1, true), Src(kTemp, Nrm), Src(kTemp, A),  // sat(N.l)
-                                     Op(kMad, 4), Dst(kTemp, B, 0x2, true), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
+                                     // sat(1 - d^2 / R^2) in two steps: native D3D9 takes one constant register per
+                                     // instruction (final review 30/09: the single mad made native D3D9 refuse the shader)
+                                     Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW),
+                                     Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
                                      Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
                                      Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
         if (k == 0) ground.insert(ground.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX)});
@@ -1335,7 +1338,9 @@ bool PatchSnowRelief(std::vector<DWORD>& t, SnowCoverPatch& out) {
 // shows as bands and steps on stairs and furniture. A bicubic B-spline read (4 bilinear taps, GPU Gems 2 ch. 20) makes
 // the light change in smooth curves. Shared by both patches below; everything in xy (the map uv), 64 texels. ----
 namespace {
-constexpr DWORD kFrc = 0x13, kRcp = 0x06, kDp2add = 0x5A, kNrm = 0x24;
+constexpr DWORD kFrc = 0x13, kRcp = 0x06, kDp2add = 0x5A, kNrm = 0x24, kMin = 0x0A;
+// PatchIndoorBasis: the basis light is kept under this many times the room light map at the same place (see there)
+constexpr float kBasisCap = 2.0f;
 DWORD Sw(int a, int b, int c, int d) { return static_cast<DWORD>(a | (b << 2) | (c << 4) | (d << 6)); }
 DWORD Neg(DWORD src) { return src | 0x01000000u; }
 
@@ -1347,7 +1352,9 @@ std::vector<DWORD> BicubicSetup(DWORD uvType, DWORD uvNum, DWORD cS, DWORD cK, D
     const DWORD C0 = T + 6, C1 = T + 7, C2 = T + 8, C3 = T + 9;
     const DWORD X = Sw(0, 0, 0, 0), Y = Sw(1, 1, 1, 1), Z = Sw(2, 2, 2, 2), W = Sw(3, 3, 3, 3);
     return {
-        Op(kMad, 4), Dst(kTemp, P, 0x3), Src(uvType, uvNum), Src(kConst, cS, Sw(0, 1, 0, 1)), Src(kConst, cH, X), // p = uv*size - 0.5
+        // p = uv*size - 0.5, in two steps: native D3D9 takes one constant register per instruction (30/09 review)
+        Op(kMul, 3), Dst(kTemp, P, 0x3), Src(uvType, uvNum), Src(kConst, cS, Sw(0, 1, 0, 1)),
+        Op(kAdd, 3), Dst(kTemp, P, 0x3), Src(kTemp, P), Src(kConst, cH, X),
         Op(kFrc, 2), Dst(kTemp, F, 0x3), Src(kTemp, P),                                              // f
         Op(kAdd, 3), Dst(kTemp, P, 0x3), Src(kTemp, P), Neg(Src(kTemp, F)),                          // i = p - f
         Op(kMul, 3), Dst(kTemp, Q, 0x3), Src(kTemp, F), Src(kTemp, F),                               // Q.xy = f^2
@@ -1534,18 +1541,158 @@ bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out) {
     return true;
 }
 
+// The ambient cube read: the first cube texld whose rgb is then multiplied by a constant's .w (the weight; -1 = none).
+// Returns the index of that texld in `ins`, -1 when there is none.
+int CubeWeightRead(const std::vector<DWORD>& t, const std::vector<Ins>& ins, int& weightConst) {
+    weightConst = -1;
+    std::vector<DWORD> cubes;
+    for (const Ins& x : ins)
+        if (x.op == kDcl && x.len == 2 && (t[x.at + 1] & 0x78000000u) == 0x18000000u && Type(t[x.at + 2]) == kSampler) cubes.push_back(Num(t[x.at + 2]));
+    for (size_t i = 0; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        if (x.op != kTexld || x.len < 3 || Type(t[x.at + 3]) != kSampler || std::find(cubes.begin(), cubes.end(), Num(t[x.at + 3])) == cubes.end()) continue;
+        const DWORD C = Num(t[x.at + 1]);
+        for (size_t j = i + 1; j < ins.size(); j++) {
+            const Ins& y = ins[j];
+            if (((y.op == kMad && y.len == 4) || (y.op == kMul && y.len == 3)) && IsReg(t[y.at + 2], kTemp, C) && Type(t[y.at + 3]) == kConst && Swz(t[y.at + 3]) == kSwzW) {
+                weightConst = static_cast<int>(Num(t[y.at + 3]));
+                return static_cast<int>(i);
+            }
+            if (y.len >= 1 && y.op != kDcl && IsReg(t[y.at + 1], kTemp, C) && (WMask(t[y.at + 1]) & 0x7)) break;
+        }
+    }
+    return -1;
+}
+
+bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst) {
+    tintConst = -1;
+    if (t.empty() || t[0] != 0xFFFF0300) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 1 >= 32 || u.maxConst + 2 >= 224) return false;
+    int weight = -1;
+    const int cube = CubeWeightRead(t, ins, weight);
+    if (cube < 0) return false;
+    const Ins& x = ins[static_cast<size_t>(cube)];
+    if (Type(t[x.at + 1]) != kTemp) return false;
+    const DWORD Tmp = static_cast<DWORD>(u.maxTemp + 1), cT = static_cast<DWORD>(u.maxConst + 1), cL = cT + 1, C = Num(t[x.at + 1]);
+    std::vector<Edit> edits;
+    edits.push_back({1, {Op(kDef, 5), Dst(kConst, cL), F(0.2126f), F(0.7152f), F(0.0722f), F(0.0f)}});
+    edits.push_back({End(x), {Op(kDp3, 3), Dst(kTemp, Tmp, 0x1), Src(kTemp, C), Src(kConst, cL),
+                              Op(kLrp, 4), Dst(kTemp, C, 0x7), Src(kConst, cT, Sw(0, 0, 0, 0)), Src(kTemp, C), Src(kTemp, Tmp, Sw(0, 0, 0, 0)),
+                              Op(kMul, 3), Dst(kTemp, C, 0x7), Src(kTemp, C), Src(kConst, cT, Sw(1, 2, 3, 3))}});
+    Apply(t, std::move(edits));
+    tintConst = static_cast<int>(cT);
+    return true;
+}
+
+bool UvRowConsts(const std::vector<DWORD>& t, int usage, int index, int& cX, int& cY) {
+    cX = cY = -1;
+    if (t.empty() || t[0] != 0xFFFE0300 || usage < 0 || index < 0) return false;
+    const auto ins = Parse(t);
+    int out = -1;
+    for (const Ins& x : ins)
+        if (x.op == kDcl && x.len == 2 && Type(t[x.at + 2]) == kOutput && static_cast<int>(t[x.at + 1] & 0x1F) == usage &&
+            static_cast<int>((t[x.at + 1] >> 16) & 0xF) == index)
+            out = static_cast<int>(Num(t[x.at + 2]));
+    if (out < 0) return false;
+    // "dp4 oN.x, rP, cX" / "dp4 oN.y, rP, cY" (either operand order); any other write of .x / .y: not this shape
+    for (const Ins& x : ins) {
+        if (x.op == kDcl || x.len < 1 || !IsReg(t[x.at + 1], kOutput, static_cast<DWORD>(out))) continue;
+        const DWORD m = WMask(t[x.at + 1]) & 0x3;
+        if (!m) continue;
+        int c = -1;
+        if (x.op == kDp4 && x.len == 3 && (m == 0x1 || m == 0x2)) {
+            if (Type(t[x.at + 2]) == kConst && Type(t[x.at + 3]) != kConst) c = static_cast<int>(Num(t[x.at + 2]));
+            else if (Type(t[x.at + 3]) == kConst && Type(t[x.at + 2]) != kConst) c = static_cast<int>(Num(t[x.at + 3]));
+        }
+        if (c < 0) {
+            cX = cY = -1;
+            return false;
+        }
+        (m == 0x1 ? cX : cY) = c;
+    }
+    return cX >= 0 && cY >= 0;
+}
+
+bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out) {
+    out = RigPsInfo{};
+    if (t.empty() || t[0] != 0xFFFF0300) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    // four mul / mad in a row writing rgb, each reading one of c4..c7, together all four (the rig light chain)
+    for (size_t i = 0; i + 3 < ins.size() && !out.rigLights; i++) {
+        int seen = 0;
+        for (size_t k = 0; k < 4; k++) {
+            const Ins& y = ins[i + k];
+            if (!((y.op == kMul && y.len == 3) || (y.op == kMad && y.len == 4))) break;
+            const DWORD d = t[y.at + 1], cst = t[y.at + 3];
+            if (Type(d) != kTemp || (WMask(d) & 0x7) != 0x7 || Type(cst) != kConst || Num(cst) < 4 || Num(cst) > 7) break;
+            seen |= 1 << (Num(cst) - 4);
+        }
+        out.rigLights = seen == 0xF;
+    }
+    // Matte furniture shaders compute the next N.L between the steps ("mul r0.xyz, r0.z, c5 / dp3_sat r0.w, r2, c0 / mad
+    // r0.xyz, r0.w, c4, r0 / ..."): followed through the accumulator instead. Strict (30/09 review): the colour an
+    // unswizzled c4..c7, the multiplier a temp with one replicated component, the accumulator an unswizzled temp without
+    // a modifier; census of the game's SM3 shaders: 60 of 628 match, all real rig chains
+    const auto replicated = [&](DWORD s) {
+        const DWORD w = Swz(s);
+        return Type(s) == kTemp && (w == 0x00 || w == 0x55 || w == 0xAA || w == 0xFF) && !((s >> 24) & 0xF);
+    };
+    const auto rigColour = [&](DWORD s) { return Type(s) == kConst && Num(s) >= 4 && Num(s) <= 7 && Swz(s) == kSwzXYZW && !((s >> 24) & 0xF); };
+    for (size_t i = 0; i < ins.size() && !out.rigLights; i++) {
+        const Ins& x = ins[i];
+        if (x.op != kMul || x.len != 3 || Type(t[x.at + 1]) != kTemp || (WMask(t[x.at + 1]) & 0x7) != 0x7 || !replicated(t[x.at + 2]) || !rigColour(t[x.at + 3])) continue;
+        int seen = 1 << (Num(t[x.at + 3]) - 4);
+        DWORD acc = Num(t[x.at + 1]);
+        for (size_t j = i + 1; j < ins.size() && seen != 0xF; j++) {
+            const Ins& y = ins[j];
+            if (y.op == kDcl || y.op == kDef || y.len < 1) continue;
+            const DWORD d = t[y.at + 1];
+            if (y.op == kMad && y.len == 4 && Type(d) == kTemp && (WMask(d) & 0x7) == 0x7 && replicated(t[y.at + 2]) && rigColour(t[y.at + 3]) &&
+                !(seen & (1 << (Num(t[y.at + 3]) - 4))) && IsReg(t[y.at + 4], kTemp, acc) && Swz(t[y.at + 4]) == kSwzXYZW && !((t[y.at + 4] >> 24) & 0xF)) {
+                seen |= 1 << (Num(t[y.at + 3]) - 4);
+                acc = Num(d);
+                continue;
+            }
+            if (IsReg(d, kTemp, acc) && (WMask(d) & 0x7)) break; // the accumulator's rgb overwritten otherwise: not a chain
+        }
+        out.rigLights = seen == 0xF;
+    }
+    // the ambient cube's weight: the first cube read whose rgb is multiplied by a constant's .w
+    CubeWeightRead(t, ins, out.cubeWeightConst);
+    return out.rigLights || out.cubeWeightConst >= 0;
+}
+
 bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
     if (ins.empty()) return false;
     const Usage u = Scan(t, ins);
-    if (u.maxTemp + 14 >= 32 || u.maxConst + 5 >= 224 || u.maxSampler < 0 || u.maxSampler + 4 > 15 || !u.afterLastSamplerDcl) return false;
+    if (u.maxTemp + 14 >= 32 || u.maxConst + 12 >= 224 || u.maxSampler < 0 || u.maxSampler + 4 > 15 || !u.afterLastSamplerDcl) return false;
     int nrm = -1, lm = -1;
     for (size_t i = 0; i < ins.size(); i++) {
         const Ins& x = ins[i];
         if (nrm < 0 && x.op == kNrm && Type(t[x.at + 2]) == kInput) nrm = static_cast<int>(i);
         if (lm < 0 && x.op == kTexld && IsReg(t[x.at + 3], kSampler, lmSampler) && (Type(t[x.at + 2]) == kInput || Type(t[x.at + 2]) == kTexture) && Swz(t[x.at + 2]) == kSwzXYZW) // its uv, as read (not .zw)
             lm = static_cast<int>(i);
+    }
+    // Normal-mapped furniture (30/09, the sofa of F7 093: "texld r0, v8, s6" ... "nrm_pp r4.xyz, r0" ... "texld_pp r0, r4,
+    // s0"): the world normal is normalised from a temp. Taken when that nrm's result is what the ambient cube is read with
+    // (the last write of the cube coordinate before the cube read), so a view or light vector is never taken for it.
+    if (nrm < 0) {
+        int weight = -1;
+        const int cube = CubeWeightRead(t, ins, weight);
+        const DWORD coord = cube >= 0 ? t[ins[static_cast<size_t>(cube)].at + 2] : 0;
+        if (cube >= 0 && Type(coord) == kTemp)
+            for (int k = cube - 1; k >= 0; k--) {
+                const Ins& z = ins[static_cast<size_t>(k)];
+                if (z.op == kDcl || z.op == kDef || z.len < 1 || !IsReg(t[z.at + 1], kTemp, Num(coord)) || !(WMask(t[z.at + 1]) & 0x7)) continue;
+                if (z.op == kNrm && (WMask(t[z.at + 1]) & 0x7) == 0x7) nrm = k;
+                break;
+            }
     }
     if (nrm < 0 || lm < 0) return false;
     // the diffuse chain: 4 mul/mad into one dest reading c4..c7, multiplier written by a saturated mov (sat N.L)
@@ -1592,16 +1739,58 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     if (chainEnd < 0 || chainEnd <= nrm) return false;
     const DWORD N = Num(t[ins[static_cast<size_t>(nrm)].at + 1]);
     const DWORD uvT = Type(t[ins[static_cast<size_t>(lm)].at + 2]), uvN = Num(t[ins[static_cast<size_t>(lm)].at + 2]);
+    out.uvUsage = out.uvIndex = -1;
+    if (uvT == kInput)
+        for (const Ins& x : ins)
+            if (x.op == kDcl && x.len == 2 && IsReg(t[x.at + 2], kInput, uvN)) {
+                out.uvUsage = static_cast<int>(t[x.at + 1] & 0x1F);
+                out.uvIndex = static_cast<int>((t[x.at + 1] >> 16) & 0xF);
+            }
     const DWORD T = static_cast<DWORD>(u.maxTemp + 1), Wn = T + 11, Acc = T + 12, Tmp = T + 13;
     const DWORD cS = static_cast<DWORD>(u.maxConst + 1), cK = cS + 1, cD = cS + 2, cStr = cS + 3, cH = cS + 4;
     out.sizeConst = cS;
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1);
     out.firstSampler = E;
+    int cubeTex = -1; // the index of that cube read (Rooms at Night tints its colour: tintConst)
+    // The ambient cube's weight (Rooms at Night scales it per draw): the first cube read whose result is multiplied by a
+    // constant's .w ("texld_pp r1, r1, s0 ... mad_pp r6.xyz, r1, c12.w, r2" in the captured shaders)
+    out.cubeWeightConst = -1;
+    {
+        std::vector<DWORD> cubes;
+        for (const Ins& x : ins)
+            if (x.op == kDcl && x.len == 2 && (t[x.at + 1] & 0x78000000u) == 0x18000000u && Type(t[x.at + 2]) == kSampler) cubes.push_back(Num(t[x.at + 2]));
+        for (size_t i = 0; i < ins.size() && out.cubeWeightConst < 0; i++) {
+            const Ins& x = ins[i];
+            if (x.op != kTexld || x.len < 3 || Type(t[x.at + 3]) != kSampler || std::find(cubes.begin(), cubes.end(), Num(t[x.at + 3])) == cubes.end()) continue;
+            const DWORD C = Num(t[x.at + 1]);
+            for (size_t j = i + 1; j < ins.size(); j++) {
+                const Ins& y = ins[j];
+                if (((y.op == kMad && y.len == 4) || (y.op == kMul && y.len == 3)) && IsReg(t[y.at + 2], kTemp, C) && Type(t[y.at + 3]) == kConst &&
+                    Swz(t[y.at + 3]) == kSwzW) {
+                    out.cubeWeightConst = static_cast<int>(Num(t[y.at + 3]));
+                    cubeTex = static_cast<int>(i);
+                    break;
+                }
+                if (y.len >= 1 && y.op != kDcl && IsReg(t[y.at + 1], kTemp, C) && (WMask(t[y.at + 1]) & 0x7)) break; // its rgb overwritten ("mul_pp r1.w, ..." in the captured shaders is fine)
+            }
+        }
+    }
     out.strengthConst = cStr;
+    // The rig diffuse chain reads its own copy of c4..c7 (cU .. cU+3, set per draw by DrawIndoorObject: only the rig's
+    // unlit-room lights, the fill and [NoLight] ones, with the lamps set to 0, since the basis light holds them per pixel).
+    // The specular chain keeps reading c4..c7 (lamp highlights as before). 30/09, second multi-agent study: replacing the
+    // whole diffuse by the basis light left unlit furniture with the grey cube only, so the Blue tint had nothing to act on.
+    const DWORD cU = cS + 7;
+    out.diffuseConst = static_cast<int>(cU);
+    for (int k = chainEnd - 3; k <= chainEnd; k++) {
+        DWORD& c = t[ins[static_cast<size_t>(k)].at + 3];
+        c = (c & ~0x7FFu) | (cU + (Num(c) - 4));
+    }
     std::vector<Edit> edits;
     edits.push_back({1, {Op(kDef, 5), Dst(kConst, cH), F(-0.5f), F(1.5f), F(1.0f / 64.0f), F(0.0f),
                          Op(kDef, 5), Dst(kConst, cK), F(1.0f / 6.0f), F(2.0f / 3.0f), F(0.5f), F(1.0f),
-                         Op(kDef, 5), Dst(kConst, cD), F(0.8944f), F(0.4472f), F(-0.8944f), F(0.0f)}});
+                         Op(kDef, 5), Dst(kConst, cD), F(0.8944f), F(0.4472f), F(-0.8944f), F(0.0f),
+                         Op(kDef, 5), Dst(kConst, cS + 11), F(kBasisCap), F(0.0f), F(0.0f), F(0.0f)}});
     std::vector<DWORD> dcl;
     for (DWORD s = 0; s < 4; s++) dcl.insert(dcl.end(), {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E + s)});
     edits.push_back({u.afterLastSamplerDcl, dcl});
@@ -1622,8 +1811,27 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
             body.insert(body.end(), {Op(kMad, 4), Dst(kTemp, Acc, 0x7), Src(kTemp, Tmp), Src(kTemp, Wn, Sw(c, c, c, c)), Src(kTemp, Acc)});
         }
     }
+    // The basis light never above kBasisCap x the room light map at the same place (30/09, F7 128 + F8 10:45: a TV in a closed
+    // room upstairs took the green lamp of the story below). The room's light list holds lamps of another story near an opening
+    // (the indoor light between floors); the room light map is solved point by point with the floor test (IndoorShadow: black
+    // there), the 4 basis maps are filled by another routine of the game that the test never sees (green there). Where both are
+    // right they agree (captures 096-103: light map 0.239, basis 0.157), so the cap leaves them; where the light map is dark
+    // (behind a floor, a wall) the basis light goes too.
+    const DWORD cG = cS + 11;
+    body.insert(body.end(), {Op(kTexld, 3), Dst(kTemp, Tmp), uvT == kInput ? Src(kInput, uvN) : Src(kTexture, uvN), Src(kSampler, lmSampler),
+                             Op(kMul, 3), Dst(kTemp, Tmp, 0x7), Src(kTemp, Tmp), Src(kConst, cG, Sw(0, 0, 0, 0)),
+                             Op(kMin, 3), Dst(kTemp, Acc, 0x7), Src(kTemp, Acc), Src(kTemp, Tmp)});
     edits.push_back({End(ins[static_cast<size_t>(nrm)]), body});
-    edits.push_back({End(ins[static_cast<size_t>(chainEnd)]), {Op(kMul, 3), Dst(kTemp, D, 0x7), Src(kTemp, Acc), Src(kConst, cStr, Sw(0, 0, 0, 0))}});
+    // diffuse = the unlit-room lights (above) + the basis light x strength (lamps per pixel), as walls take lamp + base
+    edits.push_back({End(ins[static_cast<size_t>(chainEnd)]), {Op(kMad, 4), Dst(kTemp, D, 0x7), Src(kTemp, Acc), Src(kConst, cStr, Sw(0, 0, 0, 0)), Src(kTemp, D)}});
+    if (cubeTex >= 0) { // the cube's colour towards its grey by tintConst.x: lrp(t, cube, luma(cube)), then x tintConst.yzw (the room's colour)
+        const DWORD cT = cS + 5, cL = cS + 6, C = Num(t[ins[static_cast<size_t>(cubeTex)].at + 1]);
+        out.tintConst = static_cast<int>(cT);
+        edits.push_back({1, {Op(kDef, 5), Dst(kConst, cL), F(0.2126f), F(0.7152f), F(0.0722f), F(0.0f)}});
+        edits.push_back({End(ins[static_cast<size_t>(cubeTex)]), {Op(kDp3, 3), Dst(kTemp, Tmp, 0x1), Src(kTemp, C), Src(kConst, cL),
+                                                                  Op(kLrp, 4), Dst(kTemp, C, 0x7), Src(kConst, cT, Sw(0, 0, 0, 0)), Src(kTemp, C), Src(kTemp, Tmp, Sw(0, 0, 0, 0)),
+                                                                  Op(kMul, 3), Dst(kTemp, C, 0x7), Src(kTemp, C), Src(kConst, cT, Sw(1, 2, 3, 3))}});
+    }
     Apply(t, std::move(edits));
     return true;
 }

@@ -45,6 +45,8 @@ const SiteInfo kSiteInfo[kSites] = {
     {"scene node destructor", GameAddr::Id::SceneNodeDtor, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"scene AddNode", GameAddr::Id::SceneAddNode, {0x56, 0x8B, 0x74, 0x24, 0x08}, 5},
     {"scene holder teardown", GameAddr::Id::SceneHolderTeardown, {0x53, 0x55, 0x56, 0x57, 0x8B, 0xF9}, 6},
+    {"room invalidate", GameAddr::Id::InvalidateRoom, {0x56, 0x8B, 0xF1, 0x8B, 0x0E}, 5},
+    {"room invalidate on flag change", GameAddr::Id::InvalidateFlag, {0x8A, 0x44, 0x24, 0x04, 0x56}, 5},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

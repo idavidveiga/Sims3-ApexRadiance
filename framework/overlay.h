@@ -32,6 +32,13 @@ class Client {
         (void)vk;
         return false;
     }
+    // Any key press (menu open or closed): true = one of Apex's other shortcuts (Hotkeys), eaten with its key-up and
+    // character so the game never sees it. repeat = keyboard auto-repeat. Window thread.
+    virtual bool HotkeyDown(WPARAM vk, bool repeat) {
+        (void)vk;
+        (void)repeat;
+        return false;
+    }
 };
 
 void SetClient(Client* client);

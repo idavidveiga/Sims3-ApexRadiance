@@ -1,7 +1,7 @@
 #pragma once
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
-//   [ui]                 toggle_key ("Ctrl+Shift+F11"), font_scale, recommend_s3ss, welcome_done, sidebar_collapsed
+//   [ui]                 toggle_key ("Ctrl+Shift+F11"), font_scale, recommend_s3ss, welcome_done, key_chosen, sidebar_collapsed
 //   [display]            mode (borderless window: "off", "borderless_windowed", "borderless_fullscreen")
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
@@ -32,6 +32,11 @@ struct UiSettings {
     float fontScale = 1.0f;
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool welcomeDone = false;  // the welcome tour was finished or skipped ([ui] welcome_done; missing = false, also for migrated configs)
+    bool keyChosen = false;    // the menu key was picked in the first-start prompt or in Settings ([ui] key_chosen; missing = false: the prompt shows once)
+    int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
+    KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
+    KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)
+    int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
     int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" / "en" / "pt" / "es" / "fr")
 };
@@ -68,6 +73,9 @@ bool SavePending();
 // ---- feature state: looks, profiles and undo (menu, render thread) ----
 // The tables ApexRadiance.toml keeps for the features: [patches.<Name>] (every feature, or only the ones a profile
 // carries: Night Lights, Every-Story Ground Light, Edge Smoothing, Depth Blur), [qol.picture] and [display].
+// While the Compare shortcut has these features off (apex_gui ToggleCompare), saves and profiles store them as on: the
+// comparison is never saved (review 30/09, H2). Empty = none.
+void SetCompareOverride(const std::vector<std::string>& patches, bool picture);
 void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly = false);
 // Applies such a table live, like changes in the menu: only the sections that differ from the current state (feature
 // settings and on / off through ApexPatch::ApplyTableLive, Picture through SetParams, the window mode through
@@ -93,8 +101,9 @@ enum ProfilePart : unsigned {
     kPartEdgeSmoothing = 1u << 3, // Edge Smoothing
     kPartWindow = 1u << 4,        // window mode ([display])
     kPartPerformance = 1u << 5,   // the Performance page's features
+    kPartShortcuts = 1u << 6,     // the keyboard shortcuts ([shortcuts] in a profile: menu key, preset, own keys); not saved by default
 };
-inline constexpr int kProfilePartCount = 6;
+inline constexpr int kProfilePartCount = 7;
 inline constexpr unsigned kProfilePartsAll = (1u << kProfilePartCount) - 1;
 const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
 unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has

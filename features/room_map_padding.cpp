@@ -38,11 +38,25 @@ bool g_enabled = true;
 uint32_t g_frame = 1;
 std::unordered_map<IDirect3DTexture9*, BasisSet> g_basisOf;   // room light map (AddRef'd) -> its basis maps
 std::unordered_map<IDirect3DPixelShader9*, PsInfo> g_psInfo;  // basis-reading PS -> its basis samplers
-std::unordered_map<IDirect3DBaseTexture9*, uint32_t> g_noted; // +X basis map -> frame its draw was last looked at
-int g_sets = 0;
+struct NoteKey {
+    IDirect3DBaseTexture9* basisX; // +X basis map (one set per story and lot)
+    IDirect3DPixelShader9* ps;     // the draw's shader: the story's floor draws and its object-map draws are looked at apart
+    bool operator==(const NoteKey&) const = default;
+};
+struct NoteKeyHash {
+    size_t operator()(const NoteKey& k) const { return std::hash<void*>()(k.basisX) ^ (std::hash<void*>()(k.ps) * 31u); }
+};
+std::unordered_map<NoteKey, uint32_t, NoteKeyHash> g_noted; // -> frame its draw was last looked at (keys never dereferenced)
+int g_sets = 0, g_changes = 0;
+long g_released = 0;
 
-constexpr uint32_t kCheckEvery = 30;   // frames between two looks at the draws of one set (per story and lot)
-constexpr uint32_t kForgetAfter = 600; // frames without a draw binding a set: released
+constexpr uint32_t kCheckEvery = 30;  // frames between two looks at the draws of one set and shader
+constexpr uint32_t kSweepEvery = 300; // frames between two checks for sets the game has let go of
+// 30/09 (floor switches, multi-agent study): sets used to be released after 600 frames (~3 s) without a draw. A floor out
+// of view for that long lost its sets, and its furniture flipped between the game's shader and Apex's indoor-object
+// shader when it came back, depending on which draw re-learned the set first. A set is now kept while the game holds its
+// textures (checked every kSweepEvery frames: a reference count, AddRef + Release, no higher than the references Apex
+// holds on the room light map or on its +X basis map, which the story's light maps share), so a floor switch keeps every set.
 
 void Release(BasisSet& s, IDirect3DTexture9* lm) {
     for (auto* t : s.tex)
@@ -98,11 +112,11 @@ void NoteDraw(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
     const auto& dirs = infoIt->second.dirs;
     const uint16_t declared = infoIt->second.declared;
     if (dirs[0] < 0) return;
-    // one look per set (story and lot) every kCheckEvery frames, keyed by the +X basis map this draw binds
+    // one look per set (story and lot) and shader every kCheckEvery frames, keyed by the +X basis map this draw binds
     {
         IDirect3DBaseTexture9* key = nullptr;
         if (FAILED(dev->GetTexture(static_cast<DWORD>(dirs[0]), &key)) || !key) return;
-        uint32_t& last = g_noted[key];
+        uint32_t& last = g_noted[NoteKey{key, ps}];
         key->Release(); // only a key: never dereferenced
         if (last && g_frame - last < kCheckEvery) return;
         last = g_frame;
@@ -141,6 +155,11 @@ void NoteDraw(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
                                  reinterpret_cast<uintptr_t>(set.tex[0]), reinterpret_cast<uintptr_t>(set.tex[1]), reinterpret_cast<uintptr_t>(set.tex[2]),
                                  reinterpret_cast<uintptr_t>(set.tex[3])));
     } else {
+        if (std::memcmp(it->second.tex, set.tex, sizeof set.tex) != 0 && ++g_changes <= 40)
+            LOG_INFO(std::format("[RoomMapPadding] Room light map {:08X}: directional maps now {:08X} {:08X} {:08X} {:08X} (were {:08X} {:08X} {:08X} {:08X})",
+                                 reinterpret_cast<uintptr_t>(lm), reinterpret_cast<uintptr_t>(set.tex[0]), reinterpret_cast<uintptr_t>(set.tex[1]),
+                                 reinterpret_cast<uintptr_t>(set.tex[2]), reinterpret_cast<uintptr_t>(set.tex[3]), reinterpret_cast<uintptr_t>(it->second.tex[0]),
+                                 reinterpret_cast<uintptr_t>(it->second.tex[1]), reinterpret_cast<uintptr_t>(it->second.tex[2]), reinterpret_cast<uintptr_t>(it->second.tex[3])));
         Release(it->second, nullptr); // the previous set (possibly other textures now)
         it->second = set;
         lm->Release(); // the key already holds one
@@ -150,10 +169,22 @@ void NoteDraw(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
 void OnPresent() {
     g_frame++;
     if (g_noted.size() > 4096) g_noted.clear(); // keys of textures long gone (never dereferenced)
+    if (g_frame % kSweepEvery) return;
+    // one basis set is shared by a story's light maps (floor and objects): Apex holds one reference per entry naming it
+    std::unordered_map<IDirect3DTexture9*, ULONG> ours;
+    for (const auto& [lm, s] : g_basisOf)
+        if (s.tex[0]) ours[s.tex[0]]++;
+    const auto gameLetGo = [&](IDirect3DTexture9* t, ULONG mine) {
+        if (!t) return true;
+        t->AddRef();
+        return t->Release() <= mine;
+    };
     for (auto it = g_basisOf.begin(); it != g_basisOf.end();) {
-        if (g_frame - it->second.lastSeen > kForgetAfter) {
+        if (gameLetGo(it->first, 1) || gameLetGo(it->second.tex[0], ours[it->second.tex[0]])) { // the game let go of the map (lot unloaded, story rebuilt)
+            if (it->second.tex[0]) ours[it->second.tex[0]]--; // one reference fewer for the entries still to check
             Release(it->second, it->first);
             it = g_basisOf.erase(it);
+            g_released++;
         } else
             ++it;
     }
@@ -176,7 +207,8 @@ void Clear() {
 }
 
 std::string Status() {
-    return std::format("{} | room light maps with directional maps: {}", g_enabled ? "on" : "off", g_basisOf.size());
+    return std::format("{} | room light maps with directional maps: {} (directional maps changed {}, released after the game let go {})", g_enabled ? "on" : "off",
+                       g_basisOf.size(), g_changes, g_released);
 }
 
 } // namespace RoomMapPadding

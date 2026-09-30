@@ -123,7 +123,15 @@ struct IndoorBasisPatch {
     DWORD firstSampler = 0;
     DWORD strengthConst = 0;
     DWORD sizeConst = 0;   // set per draw: (w, h, 1/w, 1/h) of the basis maps
+    int cubeWeightConst = -1; // the game's constant whose .w weights the ambient cube (the first cube read times c.w), -1 = none
+    int tintConst = -1;       // set per draw: .x = how much of the cube's own colour stays (1 = all; 0 = its grey), .yzw = a colour
+                              // the cube is then multiplied by (1, 1, 1 = unchanged; MUST be set), -1 = no cube
+    int uvUsage = -1, uvIndex = -1; // the semantic of the room light map uv input (-1: not a declared input)
+    int diffuseConst = -1;    // set per draw: the 4 rig colours the diffuse chain reads instead of c4..c7 (lamps at 0)
 };
+// The two VS constants whose dp4 with the position writes .x and .y of the output with that semantic (the room light map
+// uv: uv.x = dot(pos, cX), uv.y = dot(pos, cY)); false when the uv is not made that way
+bool UvRowConsts(const std::vector<DWORD>& vs, int usage, int index, int& cX, int& cY);
 struct BasisSmoothPatch {
     DWORD sizeConst = 0;   // set per draw: (w, h, 1/w, 1/h) of the basis maps
     DWORD sizeSampler = 0; // a basis map sampler (to read that size)
@@ -131,5 +139,16 @@ struct BasisSmoothPatch {
 bool BasisSamplers(const std::vector<DWORD>& t, int samplers[4]);
 bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out);
 bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out);
+// An object shader lit by the rig (Rooms at Night, lot_light_bridge): whether its diffuse sums the four rig light colours
+// c4..c7 (room-mode rigs have no sun: c4 = the strongest room light), and the constant whose .w weights its ambient cube (-1 = none)
+struct RigPsInfo {
+    bool rigLights = false;
+    int cubeWeightConst = -1;
+};
+bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out);
+// The same object shader with its ambient cube's colour pulled towards its grey (Rooms at Night's Blue tint on the game's
+// own shaders): after that cube read, lrp(tintConst.x, cube, luma(cube)) x tintConst.yzw; tintConst is set per draw
+// ((1, 1, 1, 1) = unchanged; .yzw at 0 would make the cube black)
+bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 
 } // namespace ShaderPatches

@@ -64,6 +64,7 @@ Lighting While Moving" (switches; the names open the page). Search finds the row
 | Row (label / description) | Feature / TOML key | Type | Default | Range | Notes |
 |---|---|---|---|---|---|
 | "Faster game file lookups" / "Fewer small stutters when objects and textures load" | `[patches.ResourceLookupCache] enabled` | bool | **false** | - | Experimental. Off until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. |
+| "Faster room lighting" / "Rooms light up sooner when you enter a lot or change floors" | `[patches.RoomLightQueue] enabled` | bool | **true** | - | Experimental (added 2026-09-29). Overview row "Faster Room Lighting". See "How it works: Faster Room Lighting". |
 | "Spread lot lighting while moving" / "Lots relight in small steps while the camera moves" | `[patches.LotLightingMotion] enabled` | bool | **true** | - | |
 | "Lot lighting time while moving" (shown while the switch is on) / "The current lot's time per frame while moving; 3 ms is the default" | `[patches.LotLightingMotion] budgetWhileMovingMs` | int | **3** | 1-15 | ms; end labels "Smoother" / "Lights sooner"; 15 = the game's own. Applied live (the hook reads it every call; `Update` clears the reinstall request). Never rename the key. |
 | "Remember missing files" (shown while "Faster game file lookups" is on) / "Skips repeated searches for files no package has" | `[patches.ResourceLookupMisses] enabled` | bool | **false** | - | Experimental. Idle ("Waiting: needs Faster game file lookups") while the lookup cache is off. Includes the write epochs. |
@@ -235,6 +236,67 @@ profiler always times every call (answers from memory included) and the cache se
 `ResourceCache::TakeLookupNote()` after each call: an answer from memory adds "from cache" and counts the packages the
 cache asked as "packages probed". The list methods (sites RegisterDb, RegisterDbDerived, SetDbPriority, DbChanged) use
 the same mechanism with only the cache layer.
+
+## How it works: Faster Room Lighting (room lighting queue, 2026-09-29)
+
+Study of 29/09 (5 parallel studies, report in the session scratchpad `plan.md`): from entering a lot to the last room
+solve took 12-36 s, with only 1.2-2.8 s of solve work in it; in 95-98 % of the frames with solve work a single lot story
+was being solved. The cause is the game's queue, not the solve itself.
+
+### The game side (Steam 1.67.2; VERIFIED in full.asm)
+
+- One room at a time for the whole world. The scheduler `0x006C5C20` (fastcall(tree = lightMgr+0xD4), plain `ret`),
+  reached by the tail `jmp` at `0x006C5E39` of the per-frame light tree update `0x006C5E20` (after the rooms' gathers),
+  returns at once while `[tree+0x74]` (the current room) is set; else it asks `0x006A8190` for (room, priority) of every
+  room of every level of every lot, sorts them, and makes the best one current (above 0.001; `0x0069E860`: state 3, the
+  manager's polling set). The current room is cleared only by FinalizePrime (`0x006A0E00 -> 0x006C4870`) or an
+  invalidate. The lot pass (`0x00ADB8F0 -> 0x006A8BA0 -> 0x006A88B0 -> 0x006A3F80`) solves it within its lot's budget
+  (5 / 10 / 15 / 30 ms), and the next room is picked only on the next frame.
+- The priority (`0x0069E770`, fastcall(room), float in ST0; its only call is `0x006A81DF`): 0 unless state 2; class 0:
+  10000 x {1 camera story or outdoor below, 0.8 indoor below, 0.5 above} x (0.5 on a lot not in high quality); class 1:
+  1000; class 2: 100; 0 when the class is above LodChoice. So every pending first solve of every loaded lot goes before
+  any upgrade of the viewed story.
+- The LOD ladder (`0x0069EA70`, at the end of every solve): class 0 -> 1 -> 2, one full solve per step (wall rows 4 / 7 /
+  13). An invalidate (`0x0069EED0`, `0x0069F160`) restarts at class 0 unless the room was solved before (`+0x100 != 4`)
+  AND its shown class is at least LodChoice (the `jl` at `0x0069EF58` / `0x0069F1C5`).
+- An invalidate of the room being solved throws its work away (`0x6C4870`, then `0x69E950(0)`: no commit).
+
+### The patch (`features/room_light_queue.cpp`, feature `RoomLightQueue`)
+
+Each part is checked against the Steam bytes and stays off when they differ; every write goes through
+`MemPatch::WriteCodeSuspended`, and Stop puts the bytes back.
+
+1. Viewed lot first: the CALL at `0x006A81DF` -> `PriorityHook`: the game's value x4000 for rooms of the priority lot on
+   the camera's story, x2000 below it (seen from above); other rooms and 0 unchanged. The priority lot is the one the
+   game gives 15 ms (`0x006FDE10` SceneObjectManager, `0x006FDC80` against its +0x10D0 / +0x10E0), with the story
+   manager's lot id `mgr+0x90` / `+0x94`.
+2. No middle step: `0x0069EAA2` `BF 01 00 00 00 8D 5F 01` -> `8B F8 BB 02 00 00 00 90` (mov edi,eax; mov ebx,2): a
+   finished class-0 solve steps straight to LodChoice.
+3. Requeues keep the class: the two `jl` (`7C 0B`, `7C 02`) -> `90 90`: a room solved before goes straight to its target
+   class.
+4. Several rooms per frame: the `jmp` at `0x006C5E39` -> `PickHook`: the scheduler, then, only on the render thread (id
+   taken at Present) and only when the pick made a new room current that belongs to the priority lot (story built,
+   `mgr+0x280`), the room is solved at once (`0x006A3F80` with a game stopwatch of its own: `0x004F35B0` kind 4 = ms,
+   `0x00408700`, `0x004F33C0`) and the next one picked, until 4 ms (1 ms while the camera moves) or a room that did not
+   finish (the lot pass goes on with it next frame).
+5. A room waiting in state 2 at a class above its LodChoice (its story left the camera's after it was sent at a higher
+   class) gets priority 1 instead of 0 (the game would leave it until the camera comes back): solved last.
+
+Review of 29/09 (adversarial agent): the drain runs only when the room current at the previous pick is done and the new
+one is of that same lot (so the lot pass of that lot ran: not paused by +0x18 / +0x4E) and is the priority lot's; Apex's
+QueueRoom holds back only the requeues after a setting or ambient change (`defer`), never a requeue caused by a lamp list
+change (its list may point to a lamp being deleted), and only while the room update can send it later; a whole-world
+relight asked while the story share is off runs at once.
+
+Apex's own requeues (`features/level_light_share.cpp`, same day): `QueueRoom` never invalidates the room being solved
+(state 3): it is sent again when that solve is over (`FlushDeferred`, from the room update); whole-world relights asked in
+a burst run once, 250 ms after the last ask; the settle requeue is armed once per lot state; the per-point hooks return
+at once for a light the game is about to drop (colour sum under room+0x63C, the game's own sums in the same order).
+Night Lighting no longer relights every lot 3 s after a world loaded at night (the game has just solved them).
+
+Status (Developer > Profiler): "viewed lot first on (N of M priorities raised), no middle step, requeues keep the class,
+several rooms per frame (frames, extra solves, finished, ms)" and the game's own solve time per class
+(`0x011D1200` / `04` / `08`, ms, added by `0x006C2380`).
 
 ## How it works: Lot Lighting While Moving (C7)
 

@@ -19,9 +19,15 @@
 //     on its own floor (level 0 lamps twice, the others once). Each lamp then lights every floor alike. The room's real
 //     floor comes from its manager (room[0] + 0x88); on the lot-load path the gather floor is level 0 and the sharing is
 //     done relative to it, which gives the same weights. Basements (levels < 0) stay as the game has them.
-//  2. FUN_006c7250 at 0x6C73B1: "room 0 of level 0 changed -> refresh room 0 of all levels 0..7" becomes "room 0 of any
-//     level 0..7 changed" (JNZ -> JL on the level test), so turning on, recolouring or moving an upper-floor lamp also
-//     refreshes the floors below.
+//  2. FUN_006c7250 at 0x6C73B0: "room 0 of level 0 changed -> refresh room 0 of all levels 0..7" (the cascade). The
+//     game marks room 0 changed whenever one of its lamp entries is updated, changed or not (an animated lamp: every few
+//     frames), and each cascade restarts the solve of room 0 of every floor. First Apex widened it to any level (JNZ ->
+//     JL): the F8 of 29/09 (invalidate callers) showed room 0 of stories 1-3 of one lot restarted ~140 times each in 70 s
+//     from 0x6C7404, never finishing (shown class 0: coarse, dim outdoor light on every floor until something else
+//     restarted it). Now the cascade never runs ("jne" -> "nop; jmp" to the plain path: each floor refreshes its own room
+//     0, as for any room) and AfterChangedWalk sends room 0 of the other floors 0..7 only when that floor's outdoor lamps
+//     or outside walls really changed (RoomLampSignature of room 0): a lamp added, deleted or moved at once, a switch or
+//     a flicker once the burst calms. The lights are the same as with the cascade once it settles.
 //  3. Walls of the lamp's floor. The light map of a point sums every light of the room's list (LightPointWithAllLights
 //     0x69FD60) and tests each one against the room's 2D wall occluders (FUN_0069fc40 -> FUN_0069d4c0, room+0x30). Those
 //     are only the walls of the room's own floor, and a wall blocks a ray only below its top (FUN_0069aa90). So a sconce on
@@ -31,6 +37,45 @@
 //     from another floor, it is also tested with the game's own FUN_0069fc40 against the walls of room 0 of the lamp's
 //     floor and of the floors in between. The room's own lamps are tested only as the game does (a porch lamp under an
 //     overhang is not blocked by the upper floor's walls).
+//  4. Indoor lamps through stair openings (option "luzInternaEntreAndares", 2026-09-29). An indoor room gathers only the
+//     lamps registered for its own room id (FUN_006c7820 compares entry+0x1C with room+0xC, and room ids are unique in a
+//     lot), so a lamp next to a stairwell on story 2 lit the story-2 wall and stopped at the moulding: the story-1 wall
+//     below belongs to another room (LightProbe andares2: its wall atlas had only the room's ambient). Now:
+//     - Openings: quadrants with no floor in story B's floor grid over an indoor room of story B-1 (the room below:
+//       tile+0x7C+q*0x14 > 0; the landing around a stairwell is often room 0 on B, railings close no room). The lighting
+//       side cannot tell a floor from a hole (it lights stair holes too); the floor grid lives in the world-side level
+//       floor object (vtable 0x01062680; +0x238 = the story's lighting manager, +0x264 = FloorGrid*: +0 data, +0x10
+//       width, +0x14 height, 40-byte tiles, quadrant key at +8+q*8). An opening = a removed floor: a key with bit
+//       0x40000000 of its low dword and other low bits (RemovedFloorKey, measured in game; not the bare 40000000 along
+//       walls, not the never-built empty key 0xFFFFFFF8/0xFFFFFFFF).
+//       Nothing links the manager to that object, so the 5 calls that set or remove a floor
+//       (FUN_00a89dd0 x4, FUN_00a893a0) go through FloorSetThunk / FloorRemoveThunk, which remember the object (ecx).
+//     - Gather: an indoor room of story S takes, from stories S+1 and S-1, the lamps of the rooms near an opening of the
+//       floor between them (kOpeningReach) when the room itself is near it, with the game's own checks of FUN_006c7820
+//       and its adder FUN_006a2060. Object rigs are not affected: their gather (FUN_006bb2f0) takes only lights whose
+//       room (light+8) is the object's room.
+//     - Per point (the light evaluation wrapped for 3.): the ray from the lamp to the point must cross the floor between
+//       the stories through an opening (else no light), and then pass the walls of the lamp's own room, tested from the
+//       lamp to the crossing point with the game's FUN_0069fc40 (the receiving room's walls are tested by the game).
+//     - Updates: the per-story room update FUN_006c7250 (a function pointer pushed at 0x6C5E2A) is wrapped, and so is its
+//       call that empties the "changed rooms" set (0x6C7497): the rooms it found changed (a lamp switched, moved or
+//       recoloured) also send the rooms of the other stories that take their lamps to gather again, and a lot whose
+//       floors changed (or all lots, when the option changes) sends its rooms near openings. Rooms are sent the way the
+//       game's own update does (invalidate + pending set), never as "changed", so nothing loops.
+//  5. Wall light lined up with the wall (option "paredesSemEmendaEntreAndares", 2026-09-29; every wall of every room). The
+//     wall pass FUN_006a3a30 lights each wall piece with FUN_006ac070 -> FUN_006abdd0: row k of the wall's atlas block (N
+//     rows: wall+class*0x10+0x2C; texel y0+N-1-k) at height k*3/N, so the rows cover [0, 3) and the top row sits 3/N
+//     under the top (0.23 m at LOD class 2, 0.43 m at class 1, 0.75 m at class 0). But the wall is drawn (FUN_006ac200,
+//     used by the wall meshes through FUN_006a5600) from the centre of the bottom row at its foot to the centre of the top
+//     row at its top: row k shows at k*3/(N-1). Every row is drawn higher than where it was lit, and at a floor line the
+//     wall below shows the light from 3/N under the line while the wall above shows the light at the line: a step
+//     wherever the light changes with height (a sconce near the line: 1.9x at class 2). F8 of 29/09 (atrium: lower top
+//     row at 46.44 / 46.24 / 45.92 for classes 2 / 1 / 0, upper bottom row at the line 46.67). WallSamplesHook moves
+//     each sample to k*3/(N-1) (after checking it against the game's formula); both walls then end on the light at the
+//     line. The class-2 blur FUN_0069f650 (2 passes of [1 2 1] per axis, clamped to the block) pulled those edge rows
+//     back towards the inside of each wall. In the rooms of an atrium the rows beyond each edge are lit too
+//     (WallSolveHook) and the blur runs across them (BlurWalls), so the walls above and below the line blur as one; other
+//     walls keep their top and bottom rows with their own light, blurred along the wall only.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -40,15 +85,20 @@
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "build_flavor.h"
+#include "entry_chain.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <iterator>
+#include <memory>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -68,7 +118,9 @@ uintptr_t kSetInsert = 0;              // 0x00B7AAD0: thiscall(set, out, const i
 uintptr_t kRoomByIdCall = 0, kInvalidateCall = 0, kSetInsertCall = 0; // 0x006C73F0, 0x006C73FF, 0x006C741B: same, in FUN_006c7250
 uintptr_t kCascadeTest = 0;            // 0x006C73AA: cmp [esi+0x1a0], eax / jnz 0x6C7432
 const BYTE kCascadeBytes[] = {0x39, 0x86, 0xA0, 0x01, 0x00, 0x00, 0x0F, 0x85, 0x7C, 0x00, 0x00, 0x00}; // Steam; other builds: the first 8 (the jnz distance may differ)
-uintptr_t kCascadeJcc = 0;             // 0x006C73B1 (kCascadeTest + 7): 0x85 (jnz) -> 0x8C (jl)
+uintptr_t kCascadeJcc = 0;             // 0x006C73B1 (kCascadeTest + 7): 0x85 (jnz) -> 0x8C (jl): the cascade from any level 0..7
+// With the changed-set hook in (InstallIndoor): 0x006C73B0 "0F 8C" -> "90 E9" (nop; jmp rel32, same target): no cascade, the
+// filtered one of AfterChangedWalk instead (part 2)
 uintptr_t kRootPtr = 0;                // 0x011D1860
 
 uintptr_t kSolvePoint = 0;             // 0x0069FD60: LightPointWithAllLights thiscall(room, out, l2D, l3D, flags, sample) ret 0x14
@@ -91,6 +143,34 @@ struct LightClass {
 // from light_vtables.txt). Their light types (the light factory FUN_006ac590 makes type N with GameAddr::LightVtableN):
 constexpr int kClassTypes[] = {3, 11, 5, 7, 9, 10, 4, 8, 6};
 LightClass kClasses[std::size(kClassTypes)] = {}; // {0, 0} = class not found on this build
+
+// Indoor lamps through stair openings (4.)
+uintptr_t kLightBright = 0;              // 0x006BC520: fastcall(light), al = bright enough to count
+uintptr_t kAddRoomLight = 0;             // 0x006A2060: thiscall(room, light) ret 4
+uintptr_t kRoomUpdatePush = 0;           // 0x006C5E2A: push FUN_006c7250 (68 imm32) in FUN_006c5e20
+uintptr_t kRoomUpdate = 0;               // 0x006C7250: fastcall(treeLevel)
+uintptr_t kChangedClearCall = 0;         // 0x006C7497: in it, the call that empties the "changed rooms" set (ecx = tl+8)
+uintptr_t kChangedClear = 0;             // 0x007F3790: thiscall(set, buckets, count) ret 8
+uintptr_t kFloorSet = 0, kFloorRemove = 0; // 0x00A89DD0, 0x00A893A0: thiscall(level floor object, ...)
+uintptr_t kFloorSetCalls[4] = {};        // 0x00AA0ADB, 0x00AA0CCC, 0x00AA0E4A, 0x00AA0F72
+uintptr_t kFloorRemoveCall = 0;          // 0x00AA05C7
+uintptr_t kLevelVtable = 0;              // 0x01062680
+uintptr_t kLevelCtor = 0, kLevelCtorCall = 0; // 0x00A88790, its only call 0x00AA179E (every level floor object is made there)
+uintptr_t kLodChoice = 0;                // 0x0069E710: fastcall(room) -> the room's lighting LOD class
+uintptr_t kLodChoiceCalls[4] = {};       // 0x0069E82E, 0x0069EA86, 0x0069EF46, 0x0069F1B3
+uintptr_t kLodMax = 0;                   // 0x01158B00: the class it gives the rooms of the camera's story
+uintptr_t kRoomSolveStart = 0;           // 0x006A18B0: thiscall(room), state 0 of the room solve (ambient colour, normalisation, ramp)
+uintptr_t kRoomSolveStartCall = 0;       // 0x006A3D0B: its only call, in the budgeted solve FUN_006a3c90
+uintptr_t kWallPass = 0;                 // 0x006A3A30: thiscall(room, int, float budget) ret 8 -> al done: the wall texel pass (state 2)
+uintptr_t kWallPassCall = 0;             // 0x006A3D4C: its only call
+uintptr_t kWallSamples = 0;              // 0x006AC070: thiscall(wall, piece, class, batch) ret 0xC: the samples of one piece of a wall (5.)
+uintptr_t kWallSamplesCall = 0;          // 0x006A3AF5: its only call, in the wall pass
+uintptr_t kWallBlur = 0;                 // 0x0069F650: fastcall(room): the wall atlas blur of LOD class 2
+uintptr_t kWallBlurCall = 0;             // 0x006A3B62: its only call, at the end of the wall pass
+uintptr_t kWallBlurPasses = 0;           // 0x01158B1C: dword, blur passes (2)
+uintptr_t kWallBlurMode = 0;             // 0x011D02E4: byte, 0 = [1 2 1] along the rows, then down the columns
+uintptr_t kWallSolve = 0;                // 0x006A31D0: thiscall(room, batch, {base, pitch}, char flags[2], sampler, char) ret 0x14
+uintptr_t kWallSolveCall = 0;            // 0x006A3B0A: its call for each wall piece, in the wall pass
 
 void LoadAddresses() {
     static bool loaded = false;
@@ -126,6 +206,34 @@ void LoadAddresses() {
         const uintptr_t vt = at(Id::LightVtable3, kClassTypes[i] - 3), eval = at(Id::LightEval3, kClassTypes[i] - 3);
         kClasses[i] = vt && eval ? LightClass{vt, eval} : LightClass{0, 0};
     }
+    kLightBright = Get(Id::LightBright);
+    kAddRoomLight = Get(Id::AddRoomLight);
+    kRoomUpdatePush = Get(Id::RoomUpdatePush);
+    kRoomUpdate = Get(Id::RoomUpdate);
+    kFloorSet = Get(Id::FloorSet);
+    kFloorRemove = Get(Id::FloorRemove);
+    for (int k = 0; k < 4; k++) kFloorSetCalls[k] = at(Id::FloorSetCall0, k);
+    kFloorRemoveCall = Get(Id::FloorRemoveCall);
+    kLevelVtable = Get(Id::LevelVtable);
+    kLevelCtor = Get(Id::LevelCtor);
+    kLevelCtorCall = Get(Id::LevelCtorCall);
+    kChangedClearCall = Get(Id::ChangedClearCall);
+    kChangedClear = Get(Id::ChangedClear);
+    kLodChoice = Get(Id::LodChoice);
+    for (int k = 0; k < 4; k++) kLodChoiceCalls[k] = at(Id::LodChoiceCall0, k);
+    kLodMax = Get(Id::LodMax);
+    kRoomSolveStart = Get(Id::RoomSolveStart);
+    kRoomSolveStartCall = Get(Id::RoomSolveStartCall);
+    kWallPass = Get(Id::WallPass);
+    kWallPassCall = Get(Id::WallPassCall);
+    kWallSamples = Get(Id::WallSamples);
+    kWallSamplesCall = Get(Id::WallSamplesCall);
+    kWallBlur = Get(Id::WallBlur);
+    kWallBlurCall = Get(Id::WallBlurCall);
+    kWallBlurPasses = Get(Id::WallBlurPasses);
+    kWallBlurMode = Get(Id::WallBlurMode);
+    kWallSolve = Get(Id::WallSolve);
+    kWallSolveCall = Get(Id::WallSolveCall);
 }
 
 using AddWorldLights_t = void(__thiscall*)(void* treeLevel, void* room);
@@ -138,6 +246,9 @@ using LightEval_t = void(__thiscall*)(void* light, const float* sample, const fl
 using WallTest_t = bool(__thiscall*)(void* room, void* indexVec, const float* lightPos, const void* sample, float* transmission);
 using LightPos_t = void(__thiscall*)(void* light, float* out);
 using WallCull_t = void(__thiscall*)(void* walls, void* out, const float* from, const float* lightPos);
+using LightBright_t = char(__fastcall*)(void* light);
+using AddRoomLight_t = void(__thiscall*)(void* room, void* light);
+using RoomUpdate_t = void(__fastcall*)(void* treeLevel);
 struct IntVec { // the game's vector layout {begin, end, capacity}, as FUN_0069dff0 fills it and FUN_0069d4c0 reads it
     int* b;
     int* e;
@@ -157,18 +268,34 @@ std::atomic<int> g_evalClasses{0}; // light classes whose evaluation is wrapped
 std::atomic<long> g_wallTests{0};  // cross-floor light x point tested against the lamp floor's walls
 std::atomic<long> g_wallBlocked{0};
 std::atomic<long> g_otherThread{0};
+std::atomic<long> g_settles{0}, g_settlesEarly{0}; // 4.: lots whose rooms near openings were sent once more after their first solves
+std::atomic<long> g_lotRebuilds{0}; // 4.: lots whose story managers changed (lighting rebuilt): their state started again
+std::atomic<long> g_levelsMade{0};  // 4.: level floor objects seen at their construction
+std::atomic<bool> g_diagArmed{false}; // development build: record samples and gathers for F8 (see the diagnostics below)
 
-// Per outdoor room (room 0 of floors 0..7): the lights of its list that belong to other floors, and their floor.
-// Written by the gather and read by the point solve, both on the light tree thread (g_gatherThread).
+// A light of a room's list that belongs to another floor
+struct Cross {
+    uintptr_t light = 0;
+    int floor = 0;       // the light's story
+    int room = 0;        // indoor rooms (4.): the light's room on that story
+    uintptr_t level = 0; // indoor rooms: the floor object of the story whose floor the light crosses
+    bool operator<(const Cross& o) const { return light < o.light; }
+};
+// Per outdoor room (room 0 of floors 0..7), and per indoor room that takes lamps through a stair opening: the lights of
+// its list that belong to other floors. Written by the gather and read by the point solve, both on the light tree thread
+// (g_gatherThread).
 struct RoomInfo {
     uintptr_t mgr = 0, tracker = 0;
     int level = 0;
-    std::vector<std::pair<uintptr_t, int>> cross; // (light, home floor), sorted by light
+    int id = 0;          // room id (room+0xC)
+    bool indoor = false; // 4.: the lights of `cross` came through a stair opening
+    std::vector<Cross> cross; // sorted by light
 };
 std::unordered_map<uintptr_t, RoomInfo> g_rooms;
 uintptr_t g_evalOrig[std::size(kClasses)] = {};
 
 uintptr_t TreeLevel(uintptr_t tracker, int level) { return tracker + 0x6A0 + static_cast<intptr_t>(level) * 0x1A4; }
+uintptr_t StoryManager(uintptr_t tracker, int level) { return *reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, level)); }
 
 // The calling thread's id from the TEB (ClientId.UniqueThread, what GetCurrentThreadId returns) without the call: the
 // point solve checks it for every point it lights (2026-09-29)
@@ -179,27 +306,87 @@ size_t ListSize(const BYTE* room) {
     return e >= b ? (e - b) / 4 : 0;
 }
 
-// The game's refresh from FUN_006c7250 (0x6C73B6..0x6C7426) for room 0 of floors 0..7. Rooms already waiting for their
-// gather keep their countdown.
-void QueueOutdoorRegather(uintptr_t tracker) {
-    for (int level = 0; level <= 7; level++) {
-        const uintptr_t tl = TreeLevel(tracker, level);
-        void* mgr = *reinterpret_cast<void* const*>(tl);
-        if (!mgr) continue;
-        BYTE* room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, 0));
-        if (!room0) continue;
-        if (*reinterpret_cast<const int*>(room0 + 0xF0) == 1 && *reinterpret_cast<const int*>(room0 + 0x168) != 0) continue;
-        reinterpret_cast<InvalidateRoom_t>(kInvalidateRoom)(room0, 1, 0);
-        alignas(16) BYTE out[16] = {};
-        const int key = 0;
-        reinterpret_cast<SetInsert_t>(kSetInsert)(reinterpret_cast<void*>(tl + 0x28), out, &key, 0);
-        g_queued.fetch_add(1, std::memory_order_relaxed);
+// Rooms sent while the game was solving them (state 3, the one current room): sent once that solve is over
+struct DeferredRoom {
+    uintptr_t tracker;
+    int level, id;
+    DWORD at; // GetTickCount when held back (dropped after 10 s: a lot unloaded meanwhile)
+};
+extern bool g_indoorReady;
+std::mutex g_deferredMx;
+std::vector<DeferredRoom> g_deferred;
+std::atomic<long> g_deferredCount{0};
+std::atomic<DWORD> g_relightAllAt{0}; // a whole-world relight is due at this tick (0 = none)
+std::mutex g_relightWhyMx;
+std::string g_relightWhy; // the reasons merged into it
+
+void NoteSolve(BYTE* room, char event, uintptr_t caller = 0); // development build: the solve journal of the F8 diag
+
+// The game's refresh from FUN_006c7250 (0x6C73B6..0x6C7426) for one room: it gathers and solves again. Rooms already
+// waiting for their gather keep their countdown (false). The room being solved right now (state 3) is not invalidated:
+// that would throw its solve away (0x69EED0 -> 0x6C4870, 0x69E950(0): nothing committed, 29/09 study); it is sent again
+// once the solve is over (FlushDeferred).
+bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false) {
+    const uintptr_t tl = TreeLevel(tracker, level);
+    void* mgr = *reinterpret_cast<void* const*>(tl);
+    if (!mgr) return false;
+    BYTE* room = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, id));
+    if (!room) return false;
+    if (*reinterpret_cast<const int*>(room + 0xF0) == 1 && *reinterpret_cast<const int*>(room + 0x168) != 0) return false;
+    // Only for requeues after a setting or ambient change (defer = true), and only while the room update runs FlushDeferred:
+    // a room whose lamp list lost a lamp must stop its solve now (its list may point to the lamp being deleted).
+    if (defer && g_installed.load(std::memory_order_relaxed) && g_indoorReady && *reinterpret_cast<const int*>(room + 0xF0) == 3) {
+        std::lock_guard<std::mutex> lk(g_deferredMx);
+        const bool known = std::any_of(g_deferred.begin(), g_deferred.end(), [&](const DeferredRoom& d) { return d.tracker == tracker && d.level == level && d.id == id; });
+        if (!known && g_deferred.size() < 1024) {
+            g_deferred.push_back(DeferredRoom{tracker, level, id, GetTickCount()});
+            g_deferredCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        if constexpr (!kPublicBuild)
+            if (!known) NoteSolve(room, 'H');
+        return true;
     }
+    reinterpret_cast<InvalidateRoom_t>(kInvalidateRoom)(room, 1, 0);
+    alignas(16) BYTE out[16] = {};
+    reinterpret_cast<SetInsert_t>(kSetInsert)(reinterpret_cast<void*>(tl + 0x28), out, &id, 0);
+    if constexpr (!kPublicBuild) NoteSolve(room, 'Q');
+    return true;
 }
 
-// Lights registered on a floor for room 0: treeLevel+0x90 hash (buckets +0x98, count +0x9C; node +8 -> {begin, end} of
-// entries, next +0x10; entry +0x1C room id, +0x24 light). Same walk as FUN_006c6990.
-void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<std::pair<uintptr_t, int>>& out) {
+// The rooms of a lot that QueueRoom held back while they were being solved: sent now if that solve is over (a room gone
+// or of another lot at the same address is dropped: RoomById finds nothing, or QueueRoom sends a fresh gather, harmless)
+bool RoomSolving(uintptr_t tracker, int level, int id) {
+    void* mgr = *reinterpret_cast<void* const*>(TreeLevel(tracker, level));
+    const BYTE* room = mgr ? static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, id)) : nullptr;
+    return room && *reinterpret_cast<const int*>(room + 0xF0) == 3;
+}
+void FlushDeferred(uintptr_t tracker) {
+    std::vector<DeferredRoom> now;
+    {
+        std::lock_guard<std::mutex> lk(g_deferredMx);
+        if (g_deferred.empty()) return;
+        const DWORD tick = GetTickCount();
+        for (auto it = g_deferred.begin(); it != g_deferred.end();)
+            if (tick - it->at > 10000) // its lot is gone or never lit again
+                it = g_deferred.erase(it);
+            else if (it->tracker == tracker && !RoomSolving(tracker, it->level, it->id)) {
+                now.push_back(*it);
+                it = g_deferred.erase(it);
+            } else
+                ++it;
+    }
+    for (const DeferredRoom& d : now) QueueRoom(d.tracker, d.level, d.id);
+}
+
+// Room 0 of floors 0..7
+void QueueOutdoorRegather(uintptr_t tracker) {
+    for (int level = 0; level <= 7; level++)
+        if (QueueRoom(tracker, level, 0)) g_queued.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Every light registered on a floor: treeLevel+0x90 hash (buckets +0x98, count +0x9C; node +8 -> {begin, end} of entries,
+// next +0x10; entry +0x1C room id, +0x20 light info, +0x24 light). Same walk as FUN_006c6990.
+template <class F> void WalkRegistry(uintptr_t tl, F&& visit) {
     const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tl + 0x98);
     const uint32_t count = *reinterpret_cast<const uint32_t*>(tl + 0x9C);
     if (!buckets || !count || count >= (1u << 20)) return;
@@ -214,9 +401,7 @@ void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<std::pair<uintptr_t
         const uintptr_t b = *reinterpret_cast<const uintptr_t*>(vec), e = *reinterpret_cast<const uintptr_t*>(vec + 4);
         for (uintptr_t p = b; p < e && p - b < 0x40000; p += 4) {
             const uintptr_t entry = *reinterpret_cast<const uintptr_t*>(p);
-            if (!entry || *reinterpret_cast<const int*>(entry + 0x1C) != 0) continue;
-            const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
-            if (light && out.size() < 4096) out.emplace_back(light, floor);
+            if (entry) visit(entry);
         }
         node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
         int g2 = 0;
@@ -224,14 +409,37 @@ void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<std::pair<uintptr_t
     }
 }
 
-void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
-    if (g_clearRooms.exchange(false) || g_rooms.size() > 8192) {
-        g_rooms.clear(); // never during a point solve: the gather does not run inside it
+// Lights registered on a floor for room 0
+void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<Cross>& out) {
+    WalkRegistry(tl, [&](uintptr_t entry) {
+        if (*reinterpret_cast<const int*>(entry + 0x1C) != 0) return;
+        const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+        if (light && out.size() < 4096) out.push_back(Cross{light, floor});
+    });
+}
+
+std::atomic<long> g_indoorGen{1}; // bumped when every lot's rooms near openings must gather again (4.: option switched, install)
+
+// Forget the rooms of a previous world (or when the map grew too big). Never during a point solve: the gather does not
+// run inside it. Indoor entries (4.) stay: their rooms hold lamps of another story and the point solve must keep testing
+// them (a stale entry is rejected by RoomStillSame and replaced at its room's next gather).
+void MaybeClearRooms() {
+    if (!g_clearRooms.exchange(false) && g_rooms.size() <= 8192) return;
+    std::erase_if(g_rooms, [](const auto& kv) { return !kv.second.indoor; });
+    if (g_rooms.size() > 8192) {
+        g_rooms.clear();
+        g_indoorGen.fetch_add(1); // the rooms holding lamps of another story gather again (QueueOpeningRooms)
     }
+}
+
+void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
+    MaybeClearRooms();
     RoomInfo& info = g_rooms[reinterpret_cast<uintptr_t>(room)];
     info.mgr = mgr;
     info.tracker = tracker;
     info.level = roomLevel;
+    info.id = 0;
+    info.indoor = false;
     info.cross.clear();
     for (int floor = 0; floor <= 7; floor++) {
         if (floor == roomLevel) continue;
@@ -268,11 +476,1753 @@ void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
     RecordRoom(room, rmgr, tracker, roomLevel);
 }
 
+// ---- indoor lamps through stair openings (4.) ----
+constexpr float kOpeningReach = 8.0f; // m, horizontally: rooms and lamps this close to a stair opening take part
+
+std::atomic<bool> g_indoorOn{true}; // the option (SetIndoor)
+bool g_indoorReady = false;         // its hooks are in (Install)
+std::atomic<long> g_indoorAdded{0}, g_indoorTests{0}, g_indoorFloorBlocked{0}, g_indoorWallBlocked{0}, g_indoorQueued{0}, g_floorRefreshes{0};
+
+// Level floor objects seen by the floor set / remove calls; their +0x238 is their story's lighting manager
+std::mutex g_levelsMx;
+std::vector<uintptr_t> g_levels;
+std::vector<std::pair<uintptr_t, int>> g_dirtyLevels; // floors changed: (level floor object, tries left)
+std::vector<uintptr_t> g_dirtyMgrs;                   // their lighting managers, once quiet (OnPresent)
+std::atomic<bool> g_dirtyReady{false};
+std::atomic<uintptr_t> g_lastLevel{0};
+std::atomic<DWORD> g_floorTick{0}; // GetTickCount of the last floor change not handed on yet (0 = none)
+std::atomic<long> g_floorEdits{0};
+uintptr_t g_floorSetTarget = 0, g_floorRemoveTarget = 0; // the thunks' jumps (the game's functions)
+
+// The level floor object's lighting manager, or 0 when it is not (or no longer) one
+uintptr_t LevelManager(uintptr_t level) {
+    __try {
+        if (!level || *reinterpret_cast<const uintptr_t*>(level) != kLevelVtable) return 0;
+        return *reinterpret_cast<const uintptr_t*>(level + 0x238);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+bool LevelAlive(uintptr_t level) {
+    __try {
+        return *reinterpret_cast<const uintptr_t*>(level) == kLevelVtable;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Called by the thunks (any thread) before the game sets or removes a floor
+void __cdecl NoteLevel(uintptr_t level) {
+    g_floorEdits.fetch_add(1, std::memory_order_relaxed);
+    const DWORD now = GetTickCount();
+    g_floorTick.store(now ? now : 1, std::memory_order_relaxed);
+    if (!level || g_lastLevel.exchange(level, std::memory_order_relaxed) == level) return; // a lot sets thousands in a row
+    std::lock_guard<std::mutex> lk(g_levelsMx);
+    if (std::find(g_levels.begin(), g_levels.end(), level) == g_levels.end()) {
+        if (g_levels.size() >= 4096) std::erase_if(g_levels, [](uintptr_t l) { return !LevelAlive(l); });
+        if (g_levels.size() >= 4096) g_levels.erase(g_levels.begin()); // the oldest
+        g_levels.push_back(level);
+    }
+    if (g_dirtyLevels.size() < 256 && std::none_of(g_dirtyLevels.begin(), g_dirtyLevels.end(), [&](const auto& d) { return d.first == level; }))
+        g_dirtyLevels.emplace_back(level, 10);
+}
+
+// A level floor object just made (FUN_00a88790 at its only call): known from now on, whatever fills its floors. Its
+// story's lighting manager (+0x238) is linked later; LevelFor reads it when asked.
+using LevelCtor_t = void*(__thiscall*)(void* level);
+void* __fastcall LevelCtorHook(void* level) {
+    void* made = reinterpret_cast<LevelCtor_t>(kLevelCtor)(level);
+    if (level) {
+        g_levelsMade.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lk(g_levelsMx);
+        const uintptr_t l = reinterpret_cast<uintptr_t>(level);
+        if (std::find(g_levels.begin(), g_levels.end(), l) == g_levels.end()) {
+            if (g_levels.size() >= 4096) std::erase_if(g_levels, [](uintptr_t x) { return !LevelAlive(x); });
+            if (g_levels.size() >= 4096) g_levels.erase(g_levels.begin()); // the oldest
+            g_levels.push_back(l);
+        }
+    }
+    return made;
+}
+
+// ecx = the level floor object; the game's arguments stay on the stack for the jump
+__declspec(naked) void FloorSetThunk() {
+    __asm {
+        push ecx
+        push ecx
+        call NoteLevel
+        add esp, 4
+        pop ecx
+        jmp dword ptr [g_floorSetTarget]
+    }
+}
+__declspec(naked) void FloorRemoveThunk() {
+    __asm {
+        push ecx
+        push ecx
+        call NoteLevel
+        add esp, 4
+        pop ecx
+        jmp dword ptr [g_floorRemoveTarget]
+    }
+}
+
+// The floor object of a story (by its lighting manager), or 0 when no floor was set on it since the mod started
+uintptr_t LevelFor(uintptr_t mgr) {
+    if (!mgr) return 0;
+    std::lock_guard<std::mutex> lk(g_levelsMx);
+    for (auto it = g_levels.rbegin(); it != g_levels.rend(); ++it)
+        if (LevelManager(*it) == mgr) return *it;
+    return 0;
+}
+
+// World -> lot: rows at mgr+0xE0 / +0xF0 / +0x100 / +0x110 (the inverse of the lot matrix, the same on every story)
+struct Xform {
+    float r[4][4];
+};
+bool ReadXform(uintptr_t mgr, Xform& x) {
+    __try {
+        std::memcpy(&x, reinterpret_cast<const void*>(mgr + 0xE0), sizeof x);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void ToLocal(const Xform& x, const float* w, float* l) {
+    for (int k = 0; k < 3; k++) l[k] = w[0] * x.r[0][k] + w[1] * x.r[1][k] + w[2] * x.r[2][k] + x.r[3][k];
+}
+
+// A story's lighting tile (1 m): mgr+0x260 pointers, width +0x264, height +0x268 (FUN_006a42d0); 0 = none
+uintptr_t LightTile(uintptr_t mgr, int ix, int iz) {
+    const uint32_t w = *reinterpret_cast<const uint32_t*>(mgr + 0x264), h = *reinterpret_cast<const uint32_t*>(mgr + 0x268);
+    if (static_cast<uint32_t>(ix) >= w || static_cast<uint32_t>(iz) >= h || w > 1024 || h > 1024) return 0;
+    return reinterpret_cast<const uintptr_t*>(*reinterpret_cast<const uintptr_t*>(mgr + 0x260))[static_cast<size_t>(iz) * w + ix];
+}
+// The room of a tile's quadrant (0 = outside; FUN_006a9760)
+int TileRoom(uintptr_t tile, int q) { return *reinterpret_cast<const int*>(tile + 0x7C + q * 0x14); }
+// Quadrants split the tile along its diagonals (FUN_006aa390): 0 toward -z, 1 +x, 2 +z, 3 -x
+int Quadrant(float fx, float fz) {
+    if (std::fabs(fx - 0.5f) <= std::fabs(fz - 0.5f)) return fz > 0.5f ? 2 : 0;
+    return fx > 0.5f ? 1 : 3;
+}
+// A floor key with a floor in it. Measured in game (F8 maps, 2026-09-29): a quadrant whose floor was removed keeps a key
+// with bit 0x40000000 of its low dword set (the test tower: 4001E000 after its floor was removed; the ground under a
+// foundation 4001BFFE; the stairwell of the house 4000E000; the air next to walls 40000000), and a quadrant never built
+// has the empty key 0xFFFFFFF8 / 0xFFFFFFFF. Floors players place have keys without that bit (0000A007, 00000014, ...).
+// Only a removed floor (the bit AND other bits of the low dword: 4001E000, 4000E000) is an opening: the bare 40000000
+// runs along walls and around the edges of a story's floor, over rooms that keep their ceiling (counting it made the
+// lamps of the story below shine up along the walls, second in-game test), and the empty key is never-built space.
+bool RemovedFloorKey(const uint32_t* key) {
+    return !(key[0] == 0xFFFFFFF8u && key[1] == 0xFFFFFFFFu) && (key[0] & 0x40000000u) && (key[0] & 0x3FFFFFFFu);
+}
+
+// The story's floor grid: 1 = a floor (or anything that is not a removed floor), 0 = a removed floor. What cannot be read
+// (no grid, outside it) counts as a floor: light never passes a floor that was not seen open.
+int FloorAt(uintptr_t level, int ix, int iz, int q) {
+    const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(level + 0x264);
+    if (!grid) return 1;
+    const uintptr_t data = *reinterpret_cast<const uintptr_t*>(grid);
+    const int w = *reinterpret_cast<const int*>(grid + 0x10), h = *reinterpret_cast<const int*>(grid + 0x14);
+    if (!data || ix < 0 || iz < 0 || ix >= w || iz >= h || w > 1024 || h > 1024) return 1;
+    return RemovedFloorKey(reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * w + ix) * 40 + 8 + q * 8)) ? 0 : 1;
+}
+
+// Openings of story B's floor: quadrants with a removed floor above an indoor room of the story below (mgrBelow). The
+// room is read below, not on B: the landing around a stairwell is often not a room on B (railings do not close a room),
+// and the air outside the house has no indoor room under it.
+// OpeningMask: per tile of the lot, bit 1 = it holds an opening quadrant, bit 2 = its centre lies within kOpeningReach
+// of the centre of such a tile. A mask instead of a list: an atrium can have well over a thousand opening quadrants
+// (a player's house: 1356 on one story), and an earlier list capped at 256 dropped the openings near some lamps.
+struct OpeningMask {
+    int w = 0, h = 0, openings = 0; // openings: quadrants
+    std::vector<uint8_t> bits;
+    bool NearTile(int ix, int iz) const { return ix >= 0 && iz >= 0 && ix < w && iz < h && (bits[static_cast<size_t>(iz) * w + ix] & 2); }
+    bool Near(float x, float z) const { return NearTile(static_cast<int>(std::floor(x)), static_cast<int>(std::floor(z))); }
+};
+
+bool ReadGridSize(uintptr_t mgr, int& w, int& h) {
+    __try {
+        w = *reinterpret_cast<const int*>(mgr + 0x264);
+        h = *reinterpret_cast<const int*>(mgr + 0x268);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Marks the opening tiles (bit 1); the number of opening quadrants, -1 on a fault
+int ReadOpenings(uintptr_t mgrBelow, uintptr_t levelB, int w, int h, uint8_t* bits) {
+    int n = 0;
+    __try {
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++) {
+                const uintptr_t below = LightTile(mgrBelow, ix, iz);
+                if (!below) continue;
+                for (int q = 0; q < 4; q++)
+                    if (TileRoom(below, q) > 0 && FloorAt(levelB, ix, iz, q) == 0) {
+                        bits[static_cast<size_t>(iz) * w + ix] |= 1;
+                        n++;
+                    }
+            }
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return -1;
+    }
+}
+
+// False on a fault (the mask is then empty)
+bool BuildOpeningMask(uintptr_t mgrBelow, uintptr_t mgrB, uintptr_t levelB, OpeningMask& m) {
+    m.w = m.h = m.openings = 0;
+    m.bits.clear();
+    if (!mgrBelow || !mgrB || !levelB) return true;
+    int w = 0, h = 0;
+    if (!ReadGridSize(mgrB, w, h)) return false;
+    if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return true;
+    m.bits.assign(static_cast<size_t>(w) * h, 0);
+    const int n = ReadOpenings(mgrBelow, levelB, w, h, m.bits.data());
+    if (n < 0) {
+        m.bits.clear();
+        return false;
+    }
+    m.w = w, m.h = h, m.openings = n;
+    if (!n) return true;
+    const int r = static_cast<int>(kOpeningReach);
+    const int r2 = r * r;
+    for (int iz = 0; iz < h; iz++)
+        for (int ix = 0; ix < w; ix++) {
+            if (!(m.bits[static_cast<size_t>(iz) * w + ix] & 1)) continue;
+            for (int dz = -r; dz <= r; dz++)
+                for (int dx = -r; dx <= r; dx++) {
+                    const int x = ix + dx, z = iz + dz;
+                    if (dx * dx + dz * dz <= r2 && x >= 0 && z >= 0 && x < w && z < h) m.bits[static_cast<size_t>(z) * w + x] |= 2;
+                }
+        }
+    return true;
+}
+
+// Where a room of a story lies (lot space, tile bounds) and whether one of its quadrants is near an opening
+struct RoomSpan {
+    bool any = false, nearOpening = false;
+    float x0 = 0, x1 = 0, z0 = 0, z1 = 0;
+};
+bool ReadRoomSpan(uintptr_t mgr, int id, const OpeningMask& m, RoomSpan& s) {
+    s = RoomSpan{};
+    __try {
+        const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
+        if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return true;
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++) {
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                if (!tile) continue;
+                bool mine = false;
+                for (int q = 0; q < 4; q++) mine |= TileRoom(tile, q) == id;
+                if (!mine) continue;
+                if (!s.any) s.x0 = s.x1 = static_cast<float>(ix), s.z0 = s.z1 = static_cast<float>(iz);
+                s.any = true;
+                s.x0 = std::min(s.x0, static_cast<float>(ix)), s.x1 = std::max(s.x1, static_cast<float>(ix + 1));
+                s.z0 = std::min(s.z0, static_cast<float>(iz)), s.z1 = std::max(s.z1, static_cast<float>(iz + 1));
+                s.nearOpening |= m.NearTile(ix, iz);
+            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+// The rooms (ids > 0) of a story with a quadrant near an opening; how many were written to out
+int RoomsNearOpenings(uintptr_t mgr, const OpeningMask& m, int* out, int max) {
+    int n = 0;
+    __try {
+        const int w = std::min(*reinterpret_cast<const int*>(mgr + 0x264), m.w), h = std::min(*reinterpret_cast<const int*>(mgr + 0x268), m.h);
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++) {
+                if (!m.NearTile(ix, iz)) continue;
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                if (!tile) continue;
+                for (int q = 0; q < 4; q++) {
+                    const int id = TileRoom(tile, q);
+                    if (id <= 0 || n >= max) continue;
+                    int k = 0;
+                    while (k < n && out[k] != id) k++;
+                    if (k == n) out[n++] = id;
+                }
+            }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+    return n;
+}
+
+// Which rooms take the lamps of which: (lot, lamp story, lamp room) -> (story, room) of the rooms that take them.
+// Kept until the world changes (an extra entry only costs one more gather of that room).
+struct DepKey {
+    uintptr_t tracker;
+    int level, room;
+    bool operator==(const DepKey&) const = default;
+};
+struct DepHash {
+    size_t operator()(const DepKey& k) const { return k.tracker ^ (static_cast<size_t>(k.level) * 0x9E3779B1u) ^ (static_cast<size_t>(k.room) * 0x85EBCA6Bu); }
+};
+std::mutex g_depsMx;
+std::unordered_map<DepKey, std::vector<std::pair<int, int>>, DepHash> g_deps;
+
+void NoteDeps(uintptr_t tracker, int lampLevel, const std::vector<int>& lampRooms, int level, int room) {
+    std::lock_guard<std::mutex> lk(g_depsMx);
+    if (g_deps.size() > 8192) g_deps.clear();
+    for (int x : lampRooms) {
+        auto& v = g_deps[DepKey{tracker, lampLevel, x}];
+        const auto p = std::make_pair(level, room);
+        if (v.size() < 64 && std::find(v.begin(), v.end(), p) == v.end()) v.push_back(p);
+    }
+}
+
+// The game's checks of FUN_006c7820 (without its room match) for a registry entry
+bool GameTakesLight(uintptr_t entry, uintptr_t light) {
+    const uintptr_t info = *reinterpret_cast<const uintptr_t*>(entry + 0x20);
+    if (!info) return false;
+    const BYTE flags = *reinterpret_cast<const BYTE*>(info + 0x90);
+    if (!(flags & 2) || !(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)) return false;
+    if (!reinterpret_cast<LightBright_t>(kLightBright)(reinterpret_cast<void*>(light))) return false;
+    const int type = *reinterpret_cast<const int*>(light + 0xB0);
+    return type >= 3 && (!(flags & 4) || type == 0xB);
+}
+// The light's class has its evaluation wrapped (so the point solve tests the floor for it)
+bool EvalWrapped(uintptr_t light) {
+    const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(light);
+    for (size_t i = 0; i < std::size(kClasses); i++)
+        if (kClasses[i].vtable == vt && g_evalOrig[i]) return true;
+    return false;
+}
+bool InList(const BYTE* room, uintptr_t light) {
+    const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+    const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+    for (const uintptr_t* p = b; p < e && p - b < 4096; p++)
+        if (*p == light) return true;
+    return false;
+}
+
+// Development build: what the indoor gathers did, for F8 (always recorded: a gather only runs when a room changes)
+std::unordered_set<uintptr_t> g_crossLamps; // development build: lamps some room of another story took (light tree thread)
+std::mutex g_gatherLogMx;
+std::vector<std::string> g_gatherLog;
+void GatherLog(uintptr_t tracker, const std::string& line) {
+    std::lock_guard<std::mutex> lk(g_gatherLogMx);
+    if (g_gatherLog.size() >= 2000) g_gatherLog.erase(g_gatherLog.begin(), g_gatherLog.begin() + 500); // the latest ones
+    g_gatherLog.push_back(std::format("tracker {:08X} ", tracker) + line);
+}
+
+// The rooms holding lamps of another story, for any thread (Uninstall sends them to gather again: without the wrapped
+// evaluation those lamps would shine through the floor)
+struct IndoorRoom {
+    uintptr_t tracker;
+    int level, id;
+    bool operator==(const IndoorRoom&) const = default;
+};
+std::mutex g_indoorListMx;
+std::vector<IndoorRoom> g_indoorList;
+void NoteIndoorRoom(uintptr_t tracker, int level, int id, bool has) {
+    const IndoorRoom r{tracker, level, id};
+    std::lock_guard<std::mutex> lk(g_indoorListMx);
+    auto it = std::find(g_indoorList.begin(), g_indoorList.end(), r);
+    if (has && it == g_indoorList.end() && g_indoorList.size() < 8192) g_indoorList.push_back(r);
+    else if (!has && it != g_indoorList.end()) g_indoorList.erase(it);
+}
+
+// Rooms whose lighting keeps the LOD of the camera's story although they lie below it. The game gives every room below
+// the camera's story LOD 0 (FUN_0069e710): on walls a light sample every 0.75 m instead of about 0.25 m, fine while the
+// floor above hides it. A room seen through an opening shows it: under a sconce the lower wall's last sample (0.47 m
+// over the lamp, 5.65) was stretched up to the floor line while the finely sampled wall above started at 0.45 (pool
+// room of an atrium house, F8 2026-09-29: rooms 19 "classe 0" and 20 "classe 2"). So the rooms that take lamps through an
+// opening (bit 1) and those whose lamps another story takes (bit 2) get the camera story's class; the game then raises
+// them one step per solve itself (FUN_0069ea70).
+std::mutex g_boostMx;
+struct Boost {
+    int id = 0;
+    uintptr_t mgr = 0, tracker = 0; // a room at a reused address (another id or story manager) is not boosted
+    int level = 0;
+    bool taker = false; // takes lamps through an opening
+    int givers = 0;     // rooms of another story holding its lamps
+};
+std::unordered_map<uintptr_t, Boost> g_boostRooms;
+std::unordered_map<uintptr_t, std::vector<uintptr_t>> g_takerGives; // taking room -> the rooms whose lamps it holds
+
+// Under g_boostMx. The entry of a room, reset when the address now holds another room.
+Boost& BoostEntry(uintptr_t room, int id, uintptr_t mgr) {
+    Boost& b = g_boostRooms[room];
+    if (b.id != id || b.mgr != mgr) b = Boost{id, mgr};
+    return b;
+}
+// Under g_boostMx. What a room held as a taker is released (its gather starts again). Entries stay, dormant (no taker,
+// no giver: not boosted), so a giver released and taken again within one gather is not sent to solve again (a loop).
+void ReleaseTakerLocked(uintptr_t room) {
+    if (auto t = g_takerGives.find(room); t != g_takerGives.end()) {
+        for (uintptr_t giver : t->second)
+            if (auto g = g_boostRooms.find(giver); g != g_boostRooms.end() && --g->second.givers < 0) g->second.givers = 0;
+        g_takerGives.erase(t);
+    }
+    if (auto b = g_boostRooms.find(room); b != g_boostRooms.end()) b->second.taker = false;
+}
+// Every gather of an indoor room starts here, before any early return, so nothing stays boosted that no longer should
+void BeginTaker(uintptr_t room) {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    if (g_boostRooms.size() > 16384 || g_takerGives.size() > 16384) {
+        g_boostRooms.clear();
+        g_takerGives.clear();
+    }
+    ReleaseTakerLocked(room);
+}
+void MarkTaker(uintptr_t room, int id, uintptr_t mgr, uintptr_t tracker, int level) {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    Boost& b = BoostEntry(room, id, mgr);
+    b.tracker = tracker, b.level = level, b.taker = true;
+}
+// True when the giving room was not boosted before (it is then sent to solve again once)
+bool AddGiver(uintptr_t taker, uintptr_t giver, int id, uintptr_t mgr, uintptr_t tracker, int level) {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    auto& held = g_takerGives[taker];
+    if (std::find(held.begin(), held.end(), giver) != held.end()) return false;
+    held.push_back(giver);
+    const bool known = g_boostRooms.count(giver) && g_boostRooms[giver].id == id && g_boostRooms[giver].mgr == mgr;
+    Boost& b = BoostEntry(giver, id, mgr);
+    const bool fresh = !known; // first seen as a giver (a dormant entry was seen before)
+    b.tracker = tracker, b.level = level, b.givers++;
+    return fresh;
+}
+bool Boosted(uintptr_t room, int id, uintptr_t mgr) {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    const auto it = g_boostRooms.find(room);
+    return it != g_boostRooms.end() && it->second.id == id && it->second.mgr == mgr && (it->second.taker || it->second.givers > 0);
+}
+// The boosted rooms of a lot, (story, id): sent to gather again when the option changes (with the option off the hook
+// no longer boosts them, and a room in the middle of its raise would wait at a class the game no longer asks for)
+void BoostedRoomsOf(uintptr_t tracker, std::vector<std::pair<int, int>>& out) {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    for (const auto& [room, b] : g_boostRooms)
+        if (b.tracker == tracker && (b.taker || b.givers > 0)) out.emplace_back(b.level, b.id);
+}
+void ClearBoosts() {
+    std::lock_guard<std::mutex> lk(g_boostMx);
+    g_boostRooms.clear();
+    g_takerGives.clear();
+}
+std::atomic<long> g_lodBoosts{0};
+bool g_lodReady = false; // LodChoiceHook is in (InstallIndoor)
+
+int BoostedLod(BYTE* room) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr) return 0;
+        const int level = *reinterpret_cast<const int*>(mgr + 0x88), cam = *reinterpret_cast<const int*>(mgr + 0x284);
+        // the case FUN_0069e710 gives 0 to: an indoor room (+0x18 clear) below the camera's story, on the active lot (+0x288)
+        if (level >= cam || room[0x18] || *reinterpret_cast<const BYTE*>(mgr + 0x288) != 1) return 0;
+        if (!Boosted(reinterpret_cast<uintptr_t>(room), *reinterpret_cast<const int*>(room + 0xC), mgr)) return 0;
+        g_lodBoosts.fetch_add(1, std::memory_order_relaxed);
+        return *reinterpret_cast<const int*>(kLodMax);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// Every floor in full detail (user 30/09: "switching floors resets the lights every time"): FUN_0069e710 gives the top LOD
+// class only to the rooms on the camera's story of the active lot, so every floor change re-solved the rooms of the floors
+// the camera left and reached. With this on, every room of the active lot (+0x288 == 1) gets the top class on every story:
+// its light maps are solved once and stay when the camera changes floor (more solve work when entering a lot, none after).
+std::atomic<bool> g_allFloors{true};
+std::atomic<long> g_allFloorsRaised{0};
+int AllFloorsLod(BYTE* room) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr || *reinterpret_cast<const BYTE*>(mgr + 0x288) != 1) return 0;
+        g_allFloorsRaised.fetch_add(1, std::memory_order_relaxed);
+        return *reinterpret_cast<const int*>(kLodMax);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+using LodChoice_t = int(__fastcall*)(void* room);
+int __fastcall LodChoiceHook(BYTE* room) {
+    const int lod = reinterpret_cast<LodChoice_t>(kLodChoice)(room);
+    if (lod || !room || !g_installed.load(std::memory_order_relaxed)) return lod;
+    if (g_allFloors.load(std::memory_order_relaxed)) {
+        if (const int all = AllFloorsLod(room)) return all;
+    }
+    if (!g_indoorReady || !g_indoorOn.load(std::memory_order_relaxed)) return lod;
+    return BoostedLod(room);
+}
+
+// ---- one ambient for the rooms stacked through an opening (4., 2026-09-29) ----
+// A double-height room is two rooms, one per story, and its wall two pieces, each lit by its own room. At the start of
+// every room solve (state 0, FUN_006a18b0, its only call at 0x6A3D0B in FUN_006a3c90) the game computes per indoor room:
+//  - the ambient colour room+0x110 (the wall shader adds lightmap.a x c4; the parameter table binds a pointer to it, so a
+//    change shows at once), FUN_006a0f50: the room's lights sampled on its floor tiles and 4 m above, over its area,
+//    already multiplied by the room's normalisation; also copied into the sampler at room+0x640 (+0x650), which the
+//    ceiling pass adds into its texels;
+//  - the normalisation room+0x160 (FUN_006a0230: 1/m below 1, 3/m above 3, m = the strongest light), multiplied into every
+//    texel of the room;
+//  - the ambient weight ramp (1 - k) + 2k (y - base)/3 (FUN_006ab210), base = the story's lowest floor, in the sampler
+//    room+0x640 that the wall pass and the floor, ceiling and object passes all use.
+// So the wall of an atrium changed at the floor line: another ambient colour (Light Probe: c4 0.041 above, 0.058 below),
+// and a weight ramp restarting at (1 - k). For the rooms joined by removed floors into a real atrium (ReadStacked: 16
+// shared quadrants at least and 30% of the smaller room's floor, so a stairwell does not join two rooms), right after
+// state 0: every member gets the same ambient colour (their colours brought to the group's normalisation, averaged by
+// floor quadrants) and the smallest normalisation (what the game's rule gives the group's strongest light), and the WALL
+// pass (0x6A3D4C, FUN_006a3a30) runs with the ramp of the group's lowest story, so the atrium walls read as one tall
+// wall while the floors, ceilings and objects keep their own ramp (review 2026-09-29). A member whose values differ from
+// the group's is sent to solve again from the next room update; its own state 0 then reaches the same values.
+struct RoomAmbient {
+    float c4[4];
+    float norm;
+    float base;
+};
+struct Applied { // what a room was last solved with (its own merge)
+    float c4[4];
+    float norm, wallBase;
+};
+std::mutex g_ambMx;
+std::unordered_map<DepKey, RoomAmbient, DepHash> g_ambOrig;  // (lot, story, room) -> what the game computed last
+std::unordered_map<DepKey, Applied, DepHash> g_ambApplied;   // (lot, story, room) -> what the merge gave it last
+std::unordered_map<DepKey, DWORD, DepHash> g_ambQueuedAt;    // members sent to solve again, when
+std::unordered_map<uintptr_t, uintptr_t> g_mgrTracker;       // story manager -> its lot (filled by the gathers)
+std::vector<DepKey> g_ambToQueue;                           // members to send to solve again (by BeforeRoomUpdate)
+struct WallBase {
+    int id;
+    uintptr_t mgr;
+    float base;
+};
+std::unordered_map<uintptr_t, WallBase> g_wallBase; // room -> the ramp base of its wall pass (light tree thread)
+bool g_ambReady = false;
+std::atomic<long> g_ambMerges{0};
+
+void NoteLotManagers(uintptr_t tracker) {
+    std::lock_guard<std::mutex> lk(g_ambMx);
+    if (g_mgrTracker.size() > 4096) g_mgrTracker.clear();
+    for (int s = -4; s <= 7; s++)
+        if (const uintptr_t m = StoryManager(tracker, s)) g_mgrTracker[m] = tracker;
+}
+uintptr_t MgrTracker(uintptr_t mgr) {
+    std::lock_guard<std::mutex> lk(g_ambMx);
+    const auto it = g_mgrTracker.find(mgr);
+    return it == g_mgrTracker.end() ? 0 : it->second;
+}
+
+// The rooms stacked on a room through removed floors (the story above over its quadrants, the story below under them)
+// with the number of shared quadrants, and the room's own floor quadrants. False on a fault.
+struct Stacked {
+    int level, id, shared;
+};
+bool ReadStacked(uintptr_t tracker, int S, int id, uintptr_t levelS, uintptr_t levelU, Stacked* out, int max, int& n, int& area) {
+    n = 0, area = 0;
+    __try {
+        const uintptr_t mgrS = StoryManager(tracker, S);
+        const uintptr_t mgrU = S < 7 ? StoryManager(tracker, S + 1) : 0, mgrD = S > 0 ? StoryManager(tracker, S - 1) : 0;
+        const int w = std::min(*reinterpret_cast<const int*>(mgrS + 0x264), 1024), h = std::min(*reinterpret_cast<const int*>(mgrS + 0x268), 1024);
+        const auto add = [&](int level, int other) {
+            if (other <= 0) return;
+            for (int k = 0; k < n; k++)
+                if (out[k].level == level && out[k].id == other) {
+                    out[k].shared++;
+                    return;
+                }
+            if (n < max) out[n++] = Stacked{level, other, 1};
+        };
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++) {
+                const uintptr_t tile = LightTile(mgrS, ix, iz);
+                if (!tile) continue;
+                for (int q = 0; q < 4; q++) {
+                    if (TileRoom(tile, q) != id) continue;
+                    area++;
+                    if (mgrU && levelU && FloorAt(levelU, ix, iz, q) == 0)
+                        if (const uintptr_t up = LightTile(mgrU, ix, iz)) add(S + 1, TileRoom(up, q));
+                    if (mgrD && levelS && FloorAt(levelS, ix, iz, q) == 0)
+                        if (const uintptr_t down = LightTile(mgrD, ix, iz)) add(S - 1, TileRoom(down, q));
+                }
+            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+bool ReadAmbient(const BYTE* room, RoomAmbient& a) {
+    __try {
+        std::memcpy(a.c4, room + 0x110, sizeof a.c4);
+        a.norm = *reinterpret_cast<const float*>(room + 0x160);
+        a.base = *reinterpret_cast<const float*>(room + 0x640);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// The group's colour into a room (+0x110 and the copy in its sampler, +0x650), and when `norm` > 0 its normalisation
+// (it takes effect in the texel passes that follow)
+void WriteAmbient(BYTE* room, const float* c4, float norm) {
+    __try {
+        std::memcpy(room + 0x110, c4, 16);
+        std::memcpy(room + 0x650, c4, 16);
+        if (norm > 0.0f) *reinterpret_cast<float*>(room + 0x160) = norm;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+bool Differs(const Applied& a, const float* c4, float norm, float wallBase) {
+    for (int k = 0; k < 4; k++)
+        if (std::fabs(a.c4[k] - c4[k]) > 2e-3f) return true;
+    return std::fabs(a.norm - norm) > 1e-4f || std::fabs(a.wallBase - wallBase) > 1e-3f;
+}
+
+void MergeStackedAmbient(BYTE* room) {
+    if (room[0x18]) return; // outdoor / roofless: the game computes no ambient for it
+    const int id = *reinterpret_cast<const int*>(room + 0xC);
+    const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+    if (id <= 0 || !mgr) return;
+    const int S = *reinterpret_cast<const int*>(mgr + 0x88);
+    const uintptr_t tracker = MgrTracker(mgr);
+    if (S < 0 || S > 7 || !tracker || StoryManager(tracker, S) != mgr) return;
+    const uintptr_t roomKey = reinterpret_cast<uintptr_t>(room);
+    g_wallBase.erase(roomKey);
+    RoomAmbient own{};
+    if (!ReadAmbient(room, own)) return;
+    {
+        std::lock_guard<std::mutex> lk(g_ambMx);
+        if (g_ambOrig.size() > 8192) g_ambOrig.clear();
+        g_ambOrig[DepKey{tracker, S, id}] = own; // what the game computed, before any merge
+    }
+    uintptr_t levels[8] = {};
+    for (int s = 0; s <= 7; s++)
+        if (const uintptr_t m = StoryManager(tracker, s)) levels[s] = LevelFor(m);
+    // the rooms reachable through removed floors (breadth first, 12 at most), with the quadrants they share
+    struct Node {
+        int level, id, area;
+    };
+    struct Edge {
+        int a, b, shared; // node indices
+    };
+    std::vector<Node> nodes{{S, id, 0}};
+    std::vector<Edge> edges;
+    Stacked st[32];
+    for (size_t i = 0; i < nodes.size(); i++) {
+        int n = 0, area = 0;
+        if (!ReadStacked(tracker, nodes[i].level, nodes[i].id, levels[nodes[i].level], nodes[i].level < 7 ? levels[nodes[i].level + 1] : 0, st, 32, n, area)) return;
+        nodes[i].area = area;
+        for (int k = 0; k < n; k++) {
+            if (st[k].shared < 16) continue;
+            size_t j = 0;
+            while (j < nodes.size() && !(nodes[j].level == st[k].level && nodes[j].id == st[k].id)) j++;
+            if (j == nodes.size()) {
+                if (nodes.size() >= 12) continue;
+                nodes.push_back(Node{st[k].level, st[k].id, 0});
+            }
+            if (i < j) edges.push_back(Edge{static_cast<int>(i), static_cast<int>(j), st[k].shared});
+        }
+    }
+    // a real atrium only: the opening is 30% of the smaller room's floor at least (a stairwell is much less)
+    std::vector<int> group{0};
+    for (size_t g = 0; g < group.size(); g++)
+        for (const Edge& e : edges) {
+            const int other = e.a == group[g] ? e.b : e.b == group[g] ? e.a : -1;
+            if (other < 0 || std::find(group.begin(), group.end(), other) != group.end()) continue;
+            const int smaller = std::max(1, std::min(nodes[e.a].area, nodes[e.b].area));
+            if (e.shared * 10 >= smaller * 3) group.push_back(other);
+        }
+    if (group.size() < 2) return;
+    std::sort(group.begin(), group.end(), [&](int x, int y) { return nodes[x].level != nodes[y].level ? nodes[x].level < nodes[y].level : nodes[x].id < nodes[y].id; });
+    // the members the game has solved already
+    struct Known {
+        Node node;
+        RoomAmbient a;
+    };
+    std::vector<Known> known;
+    {
+        std::lock_guard<std::mutex> lk(g_ambMx);
+        for (int g : group)
+            if (const auto it = g_ambOrig.find(DepKey{tracker, nodes[g].level, nodes[g].id}); it != g_ambOrig.end()) known.push_back(Known{nodes[g], it->second});
+    }
+    if (known.size() < 2) return; // the others merge when they are solved
+    float norm = known[0].a.norm, wallBase = known[0].a.base;
+    for (const Known& k : known) {
+        norm = std::min(norm, k.a.norm);
+        wallBase = std::min(wallBase, k.a.base);
+    }
+    float c4[4] = {}, weight = 0.0f;
+    for (const Known& k : known) {
+        // each colour already carries its room's normalisation: bring it to the group's
+        const float scale = k.a.norm > 1e-6f ? norm / k.a.norm : 1.0f, wgt = static_cast<float>(std::max(k.node.area, 1));
+        for (int i = 0; i < 4; i++) c4[i] += k.a.c4[i] * (i < 3 ? scale : 1.0f) * wgt;
+        weight += wgt;
+    }
+    for (float& v : c4) v /= weight;
+    WriteAmbient(room, c4, norm);
+    g_wallBase[roomKey] = WallBase{id, mgr, wallBase};
+    if (g_wallBase.size() > 4096) g_wallBase.clear();
+    g_ambMerges.fetch_add(1, std::memory_order_relaxed);
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_ambMx);
+    Applied& self = g_ambApplied[DepKey{tracker, S, id}];
+    std::memcpy(self.c4, c4, sizeof c4);
+    self.norm = norm, self.wallBase = wallBase;
+    for (int g : group) {
+        const Node& m = nodes[g];
+        if (m.level == S && m.id == id) continue;
+        const DepKey key{tracker, m.level, m.id};
+        const auto applied = g_ambApplied.find(key);
+        if (applied != g_ambApplied.end() && !Differs(applied->second, c4, norm, wallBase)) continue;
+        DWORD& last = g_ambQueuedAt[key];
+        if (last && now - last < 3000) continue;
+        last = now ? now : 1;
+        if (g_ambToQueue.size() < 256) g_ambToQueue.push_back(key); // sent from the next room update, not from inside this solve
+    }
+    if (g_ambQueuedAt.size() > 4096) g_ambQueuedAt.clear();
+    if (g_ambApplied.size() > 8192) g_ambApplied.clear();
+}
+
+void MergeStackedAmbientSafe(BYTE* room) {
+    __try {
+        MergeStackedAmbient(room);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+bool AmbientActive() {
+    return g_ambReady && g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_indoorOn.load(std::memory_order_relaxed);
+}
+
+// ---- F8 (development build): the solves of the rooms that share light through an opening, since the world loaded ----
+// A room lit right after the lot loads can look different from the same room lit again after a lamp moves (user,
+// 29/09): each solve of such a room notes its thread, LOD class, light list, ambient and the wall-pass counters.
+struct SolveNote {
+    DWORD tick;
+    uintptr_t room, mgr;
+    int id, level, cls, shown, state, lights, cross, cam, flag19;
+    uint32_t lot; // the story manager's lot id (low half)
+    char event; // 'S' ambient step done (state 0), 'W' wall pass done, 'Q' sent by Apex, 'H' held by Apex until its solve ends, 'I' / 'F' invalidated (plain / on a flag change) by the caller printed last
+    bool gather, boosted, merged;
+    float norm, c4[3], wallBase;
+    long moved, ghostWalls, odd;
+    uintptr_t caller; // 'I' / 'F': the return address of the invalidate (who restarted the room)
+};
+std::mutex g_journalMx;
+constexpr size_t kJournal = 4096;
+SolveNote g_journal[kJournal];
+size_t g_journalCount = 0; // notes written since the world loaded (the ring keeps the last kJournal)
+bool ReadSolveNote(const BYTE* room, SolveNote& n) {
+    __try {
+        n.mgr = *reinterpret_cast<const uintptr_t*>(room);
+        n.id = *reinterpret_cast<const int*>(room + 0xC);
+        n.level = n.mgr ? *reinterpret_cast<const int*>(n.mgr + 0x88) : -99;
+        n.cam = n.mgr ? *reinterpret_cast<const int*>(n.mgr + 0x284) : -99;
+        n.lot = n.mgr ? *reinterpret_cast<const uint32_t*>(n.mgr + 0x90) : 0;
+        n.flag19 = *reinterpret_cast<const BYTE*>(room + 0x19);
+        n.state = *reinterpret_cast<const int*>(room + 0xF0);
+        n.cls = *reinterpret_cast<const int*>(room + 0xF4);
+        n.shown = *reinterpret_cast<const int*>(room + 0x100);
+        n.norm = *reinterpret_cast<const float*>(room + 0x160);
+        for (int k = 0; k < 3; k++) n.c4[k] = *reinterpret_cast<const float*>(room + 0x110 + k * 4);
+        n.wallBase = *reinterpret_cast<const float*>(room + 0x640);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+using RoomSolveStart_t = void(__thiscall*)(void* room);
+void __fastcall RoomSolveStartHook(BYTE* room) {
+    reinterpret_cast<RoomSolveStart_t>(kRoomSolveStart)(room);
+    if (room && AmbientActive()) {
+        if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
+        else MergeStackedAmbientSafe(room);
+    }
+    if constexpr (!kPublicBuild)
+        if (room) NoteSolve(room, 'S');
+}
+
+// The wall pass of a room with its group's ramp base; the room's own base is back for the floor, ceiling and object passes
+float SwapWallBase(BYTE* room, float base) {
+    __try {
+        const float own = *reinterpret_cast<const float*>(room + 0x640);
+        *reinterpret_cast<float*>(room + 0x640) = base;
+        return own;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return base;
+    }
+}
+using WallPass_t = char(__thiscall*)(void* room, int arg, float budget);
+char __fastcall WallPassHook(BYTE* room, void*, int arg, float budget) {
+    float saved = 0.0f;
+    bool swapped = false;
+    if (room && AmbientActive() && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        const auto it = g_wallBase.find(reinterpret_cast<uintptr_t>(room));
+        if (it != g_wallBase.end() && it->second.id == *reinterpret_cast<const int*>(room + 0xC) &&
+            it->second.mgr == *reinterpret_cast<const uintptr_t*>(room)) {
+            saved = SwapWallBase(room, it->second.base);
+            swapped = true;
+        }
+    }
+    const char done = reinterpret_cast<WallPass_t>(kWallPass)(room, arg, budget);
+    if (swapped) SwapWallBase(room, saved);
+    return done;
+}
+
+void ClearAmbient() {
+    std::lock_guard<std::mutex> lk(g_ambMx);
+    g_ambOrig.clear();
+    g_ambApplied.clear();
+    g_ambQueuedAt.clear();
+    g_mgrTracker.clear();
+    g_ambToQueue.clear();
+}
+
+// ---- 5. Wall light lined up with the wall (every wall; option "paredesSemEmendaEntreAndares") ----
+// Wall object (room+0xD8 list), per LOD class c: +c*0x10+0x28 columns, +0x2C rows (N), +0x30 rows per piece, +0x34
+// columns per piece; atlas block at +c*0x20+0x58 = {x0, y0, x1, y1, .., +0x1C atlas}; +0xF0 run vector, +0x110 origin.
+using WallSamples_t = void(__thiscall*)(void* wall, int piece, int cls, void* batch);
+using WallBlur_t = void(__fastcall*)(void* room);
+using WallSolve_t = void(__thiscall*)(void* room, void* batch, void* atlas, char* flags, void* sampler, char ambient);
+std::atomic<bool> g_alignReady{false}, g_alignOn{true}, g_alignRequeue{false};
+std::atomic<long> g_alignRows{0};   // wall samples moved to the height their row is drawn at
+std::atomic<long> g_alignOdd{0};    // wall pieces left as the game has them (not the layout above)
+std::atomic<long> g_alignEdges{0};  // wall edge rows kept out of the vertical blur
+std::atomic<long> g_ghostWalls{0};  // walls blurred across their edges with the rows lit beyond them
+std::atomic<long> g_ghostPoints{0}; // points lit beyond the edges
+
+struct WallBlock {
+    int x0, y0, x1, y1;
+};
+
+// After FUN_006ac070 filled the batch with one piece of a wall: row k (texel y0 + N-1-k) is lit at k*3/N, but the block
+// is drawn from the centre of its bottom row at the wall's foot to the centre of its top row at the wall's top
+// (FUN_006ac200), so row k shows at k*3/(N-1). Each sample goes to the height its row is drawn at, checked first against
+// the game's own formula (FUN_006abdd0), so a wall laid out any other way is left alone.
+bool AlignWallSamples(uintptr_t wall, int cls, uintptr_t batch, WallBlock& block, int& rowsOut) {
+    __try {
+        if (cls < 0 || cls > 2) return false;
+        const int rows = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x2C), cols = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x28);
+        const WallBlock& r = *reinterpret_cast<const WallBlock*>(wall + cls * 0x20 + 0x58);
+        if (rows < 2 || rows > 4096 || cols < 1 || cols > 65536 || r.y1 - r.y0 + 1 != rows || r.x0 < 0 || r.y0 < 0 || r.x1 < r.x0 || r.x1 - r.x0 >= 4096) return false;
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e < b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return false;
+        const float oy = *reinterpret_cast<const float*>(wall + 0x114), runY = *reinterpret_cast<const float*>(wall + 0xF4);
+        const float lit = 3.0f / static_cast<float>(rows), drawn = 3.0f / static_cast<float>(rows - 1);
+        for (uintptr_t p = b; p < e; p += 0x30) { // the whole piece is checked before anything moves
+            const int k = r.y0 + rows - 1 - *reinterpret_cast<const uint16_t*>(p + 0x22);
+            const int i = *reinterpret_cast<const uint16_t*>(p + 0x20) - r.x0;
+            const float y = *reinterpret_cast<const float*>(p + 4);
+            if (k < 0 || k >= rows || i < 0 || i > r.x1 - r.x0 || std::fabs(y - (oy + k * lit + (i + 0.5f) * runY / cols)) > 1e-3f) return false;
+        }
+        long moved = 0;
+        for (uintptr_t p = b; p < e; p += 0x30) {
+            const int k = r.y0 + rows - 1 - *reinterpret_cast<const uint16_t*>(p + 0x22);
+            *reinterpret_cast<float*>(p + 4) += k * (drawn - lit);
+            moved += k > 0;
+        }
+        g_alignRows.fetch_add(moved, std::memory_order_relaxed);
+        block = r;
+        rowsOut = rows;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The class-2 blur (FUN_0069f650: [0x01158B1C] passes of [1 2 1] along the rows, then down the columns, each clamped to
+// the wall's block) stops at the top and bottom of every wall. Where two walls meet at a floor line (the rooms of an
+// atrium) each side then smooths towards its own inside and the line shows as a crease wherever the light
+// changes fast with height (a sconce under the line). For those walls the rows just beyond the edges are lit too: the
+// game's own solve (FUN_006a31d0) on copies of the edge row moved 1 and 2 rows up (top) or down (bottom), written to a
+// private buffer. The blur then runs over the wall with those rows around it, as if the wall went on, so the wall below
+// and the wall above end on the same smoothed light. Other walls keep their top and bottom rows out of the vertical blur
+// (blurred along the wall only), so they end on the light at their edge.
+struct GhostRows {
+    int x0 = 0, n = 0;          // the block's first column and width
+    int filled[2] = {0, 0};     // columns lit: [0] above the top row, [1] below the bottom row
+    std::vector<uint32_t> px;   // 4 rows of n: 2 above, 1 above, 1 below, 2 below (packed like the atlas)
+};
+std::mutex g_ghostMx;
+std::unordered_map<uintptr_t, GhostRows> g_ghosts; // wall -> the rows beyond its class-2 block (this wall pass)
+struct PieceNote {
+    uintptr_t wall = 0;
+    int rows = 0;
+    WallBlock block{};
+};
+PieceNote g_piece;            // the piece WallSamplesHook just lined up, lit next by the wall pass (light tree thread)
+bool g_ghostSolve = false;    // the game's solve is lighting our rows beyond the edges (light tree thread)
+constexpr int kMaxGhosts = 512;
+alignas(16) BYTE g_ghostSamples[kMaxGhosts * 0x30];
+
+// The rooms of an atrium group: their walls meet the other story's walls in view, and both are lit at LOD class 2 (the
+// camera's story, and the story below it raised by 4.). Room 0 is left out: the outside walls of the stories under the
+// camera are lit at class 0 (no blur), so the wall above must end on the exact light at the line, not on a blurred one.
+bool GhostRoom(const BYTE* room) {
+    const auto it = g_wallBase.find(reinterpret_cast<uintptr_t>(room));
+    return it != g_wallBase.end() && it->second.id == *reinterpret_cast<const int*>(room + 0xC) && it->second.mgr == *reinterpret_cast<const uintptr_t*>(room);
+}
+
+// The game blurs this room's walls in mode 0 (the blur above): its passes, else 0
+uint32_t BlurPassesFor(const BYTE* room) {
+    __try {
+        const uint32_t passes = *reinterpret_cast<const uint32_t*>(kWallBlurPasses);
+        return *reinterpret_cast<const int*>(room + 0xF4) == 2 && passes < 16 && *reinterpret_cast<const BYTE*>(kWallBlurMode) == 0 ? passes : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
+    reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
+    const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
+    if (gather) g_piece = PieceNote{};
+    if (!g_alignOn.load(std::memory_order_relaxed)) return;
+    PieceNote note{reinterpret_cast<uintptr_t>(wall)};
+    if (!AlignWallSamples(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block, note.rows)) {
+        g_alignOdd.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (cls != 2 || !gather) return;
+    g_piece = note;
+    if (piece == 0) { // a new pass over this wall: nothing of the last one is kept
+        std::lock_guard<std::mutex> lk(g_ghostMx);
+        g_ghosts.erase(note.wall);
+    }
+}
+
+// Copies of the piece's top-row samples (k = N-1) one and two rows higher, and of its bottom-row samples (k = 0) one and
+// two rows lower, each on its own texel of the 4 x n buffer. False when the piece has neither edge.
+int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
+    __try {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e < b || (e - b) % 0x30) return 0;
+        const float step = 3.0f / static_cast<float>(p.rows - 1);
+        int n = 0;
+        for (uintptr_t s = b; s < e; s += 0x30) {
+            const int k = p.block.y0 + p.rows - 1 - *reinterpret_cast<const uint16_t*>(s + 0x22);
+            if (k != 0 && k != p.rows - 1) continue;
+            const int i = *reinterpret_cast<const uint16_t*>(s + 0x20) - p.block.x0;
+            for (int g = 1; g <= 2; g++) {
+                if (n >= max) return n;
+                BYTE* d = out + static_cast<size_t>(n++) * 0x30;
+                std::memcpy(d, reinterpret_cast<const void*>(s), 0x30);
+                const bool top = k == p.rows - 1;
+                *reinterpret_cast<float*>(d + 4) += top ? g * step : -g * step;
+                *reinterpret_cast<uint16_t*>(d + 0x20) = static_cast<uint16_t>(i);
+                *reinterpret_cast<uint16_t*>(d + 0x22) = static_cast<uint16_t>(top ? 2 - g : 1 + g); // rows 0, 1 above; 2, 3 below
+            }
+        }
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char* flags, void* sampler, char ambient) {
+    const auto solve = reinterpret_cast<WallSolve_t>(kWallSolve);
+    solve(room, batch, atlas, flags, sampler, ambient);
+    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return;
+    const PieceNote p = g_piece;
+    g_piece = PieceNote{};
+    if (!p.wall || !room || !g_alignOn.load(std::memory_order_relaxed) || !GhostRoom(room) || !BlurPassesFor(room)) return;
+    const int count = MakeGhosts(reinterpret_cast<uintptr_t>(batch), p, g_ghostSamples, kMaxGhosts);
+    if (!count) return;
+    const int n = p.block.x1 - p.block.x0 + 1;
+    std::lock_guard<std::mutex> lk(g_ghostMx);
+    GhostRows& g = g_ghosts[p.wall];
+    if (g.n != n || g.x0 != p.block.x0) g = GhostRows{p.block.x0, n, {0, 0}, std::vector<uint32_t>(static_cast<size_t>(n) * 4)};
+    struct {
+        BYTE *b, *e, *c;
+    } vec{g_ghostSamples, g_ghostSamples + count * 0x30, g_ghostSamples + kMaxGhosts * 0x30};
+    struct {
+        uint32_t* base;
+        int pitch;
+    } desc{g.px.data(), n * 4};
+    g_ghostSolve = true;
+    solve(room, &vec, &desc, flags, sampler, ambient);
+    g_ghostSolve = false;
+    for (int s = 0; s < count; s += 2) g.filled[*reinterpret_cast<const uint16_t*>(g_ghostSamples + s * 0x30 + 0x22) >= 2]++;
+    g_ghostPoints.fetch_add(count, std::memory_order_relaxed);
+}
+
+inline uint32_t Avg4(uint32_t a, uint32_t b) { return (a | b) - (((a ^ b) >> 1) & 0x7F7F7F7Fu); }
+// The game's pass along one row (FUN_0069f650, mode 0)
+void BlurRow(uint32_t* p, uint32_t n) {
+    if (n < 2) return;
+    uint32_t prev = p[0];
+    for (uint32_t j = 0; j + 1 < n; j++) {
+        const uint32_t side = Avg4(p[j + 1], prev);
+        prev = p[j];
+        p[j] = Avg4(prev, side);
+    }
+    const uint32_t last = p[n - 1];
+    p[n - 1] = Avg4(Avg4(last, prev), last);
+}
+// Its pass down one column of `rows` rows (stride n), clamped at both ends
+void BlurColumn(uint32_t* p, int rows, int n) {
+    uint32_t prev = p[0];
+    for (int r = 0; r < rows; r++) {
+        const uint32_t cur = p[static_cast<size_t>(r) * n], next = r + 1 < rows ? p[static_cast<size_t>(r + 1) * n] : cur;
+        p[static_cast<size_t>(r) * n] = Avg4(Avg4(prev, next), cur);
+        prev = cur;
+    }
+}
+
+// The class-2 blocks of a room's walls
+struct WallJob {
+    uintptr_t wall;
+    WallBlock r;
+};
+int ReadWallJobs(const BYTE* room, WallJob* out, int max, uintptr_t& atlas, uint32_t& pitch) {
+    __try {
+        atlas = *reinterpret_cast<const uintptr_t*>(room + 0x680);
+        pitch = *reinterpret_cast<const uint32_t*>(room + 0x684);
+        const uintptr_t wb = *reinterpret_cast<const uintptr_t*>(room + 0xD8), we = *reinterpret_cast<const uintptr_t*>(room + 0xDC);
+        if (!atlas || !pitch || !wb || we < wb || (we - wb) / 4 > 65536) return 0;
+        int n = 0;
+        for (uintptr_t w = wb; w < we && n < max; w += 4) {
+            const uintptr_t wall = *reinterpret_cast<const uintptr_t*>(w);
+            if (!wall) continue;
+            const WallBlock& r = *reinterpret_cast<const WallBlock*>(wall + 2 * 0x20 + 0x58);
+            if (r.x0 < 0 || r.y0 < 0 || r.x1 < r.x0 || r.y1 <= r.y0 || r.x1 - r.x0 >= 4096 || r.y1 - r.y0 >= 4096 || static_cast<uint32_t>(r.x1 + 1) * 4 > pitch) continue;
+            out[n++] = WallJob{wall, r};
+        }
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+// Rows [first, first+count) of a block between the atlas and a buffer (n words per row)
+bool CopyRows(uintptr_t atlas, uint32_t pitch, const WallBlock& r, int first, int count, uint32_t* buf, bool toAtlas) {
+    __try {
+        const size_t n = static_cast<size_t>(r.x1 - r.x0 + 1);
+        for (int k = 0; k < count; k++) {
+            uint32_t* row = reinterpret_cast<uint32_t*>(atlas + static_cast<size_t>(pitch) * (r.y0 + first + k)) + r.x0;
+            if (toAtlas) std::memcpy(row, buf + k * n, n * 4);
+            else std::memcpy(buf + k * n, row, n * 4);
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+constexpr int kMaxWallJobs = 4096;
+WallJob g_wallJobs[kMaxWallJobs];
+std::mutex g_edgeMx; // g_wallJobs and the buffers of one blur at a time
+void BlurWalls(BYTE* room) {
+    const auto blur = reinterpret_cast<WallBlur_t>(kWallBlur);
+    const uint32_t passes = room && g_alignOn.load(std::memory_order_relaxed) ? BlurPassesFor(room) : 0;
+    if (!passes) return blur(room);
+    std::lock_guard<std::mutex> lk(g_edgeMx);
+    uintptr_t atlas = 0;
+    uint32_t pitch = 0;
+    const int jobs = ReadWallJobs(room, g_wallJobs, kMaxWallJobs, atlas, pitch);
+    // Before the game's blur: every block as the solve left it
+    std::vector<std::vector<uint32_t>> before(jobs);
+    for (int j = 0; j < jobs; j++) {
+        const WallBlock& r = g_wallJobs[j].r;
+        before[j].resize(static_cast<size_t>(r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1));
+        if (!CopyRows(atlas, pitch, r, 0, r.y1 - r.y0 + 1, before[j].data(), false)) before[j].clear();
+    }
+    // The rows lit beyond the edges in this wall pass (only walls whose every column got them)
+    std::vector<GhostRows> ghosts(jobs);
+    if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> gk(g_ghostMx);
+        for (int j = 0; j < jobs; j++)
+            if (auto it = g_ghosts.find(g_wallJobs[j].wall); it != g_ghosts.end()) {
+                ghosts[j] = std::move(it->second);
+                g_ghosts.erase(it);
+            }
+    }
+    blur(room);
+    long edges = 0, crossed = 0;
+    for (int j = 0; j < jobs; j++) {
+        if (before[j].empty()) continue;
+        const WallBlock& r = g_wallJobs[j].r;
+        const int n = r.x1 - r.x0 + 1, rows = r.y1 - r.y0 + 1;
+        const GhostRows& g = ghosts[j];
+        const bool fits = g.n == n && g.x0 == r.x0 && g.px.size() == static_cast<size_t>(n) * 4;
+        const bool above = fits && g.filled[0] >= n, below = fits && g.filled[1] >= n;
+        // The wall with the rows beyond it, blurred the game's way: the rows along, then the columns, each pass
+        const int top = above ? 2 : 0, total = top + rows + (below ? 2 : 0);
+        std::vector<uint32_t> ext(static_cast<size_t>(total) * n);
+        if (above) std::memcpy(ext.data(), g.px.data(), static_cast<size_t>(n) * 2 * 4);
+        std::memcpy(ext.data() + static_cast<size_t>(top) * n, before[j].data(), before[j].size() * 4);
+        if (below) std::memcpy(ext.data() + static_cast<size_t>(top + rows) * n, g.px.data() + static_cast<size_t>(n) * 2, static_cast<size_t>(n) * 2 * 4);
+        for (uint32_t pass = 0; pass < passes; pass++) {
+            for (int k = 0; k < total; k++) BlurRow(ext.data() + static_cast<size_t>(k) * n, n);
+            for (int x = 0; x < n; x++) BlurColumn(ext.data() + x, total, n);
+        }
+        // An edge with nothing beyond it keeps its own light, blurred along the wall only
+        for (const int k : {0, rows - 1}) {
+            if (k == 0 ? above : below) continue;
+            uint32_t* row = ext.data() + static_cast<size_t>(top + k) * n;
+            std::memcpy(row, before[j].data() + static_cast<size_t>(k) * n, static_cast<size_t>(n) * 4);
+            for (uint32_t pass = 0; pass < passes; pass++) BlurRow(row, n);
+            edges++;
+        }
+        if (CopyRows(atlas, pitch, r, 0, rows, ext.data() + static_cast<size_t>(top) * n, true) && (above || below)) crossed++;
+    }
+    g_alignEdges.fetch_add(edges, std::memory_order_relaxed);
+    g_ghostWalls.fetch_add(crossed, std::memory_order_relaxed);
+}
+
+void __fastcall WallBlurHook(BYTE* room) {
+    BlurWalls(room);
+    if constexpr (!kPublicBuild)
+        if (room) NoteSolve(room, 'W');
+}
+
+// Development build: one note per solve step of a room that takes or gives light through an opening or is merged
+// with another story's room (a lot's other rooms are left out)
+void NoteSolve(BYTE* room, char event, uintptr_t caller) {
+    SolveNote n{};
+    n.caller = caller;
+    if (!ReadSolveNote(room, n)) return;
+    n.tick = GetTickCount();
+    n.room = reinterpret_cast<uintptr_t>(room);
+    n.event = event;
+    n.gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed);
+    n.boosted = Boosted(n.room, n.id, n.mgr);
+    n.lights = static_cast<int>(ListSize(room));
+    n.cross = -1;
+    if (n.gather) { // g_rooms and g_wallBase belong to that thread
+        if (const auto it = g_rooms.find(n.room); it != g_rooms.end() && it->second.id == n.id && it->second.mgr == n.mgr) n.cross = static_cast<int>(it->second.cross.size());
+        const auto wb = g_wallBase.find(n.room);
+        n.merged = wb != g_wallBase.end() && wb->second.id == n.id && wb->second.mgr == n.mgr;
+    }
+    if (!n.boosted && !n.merged && n.cross <= 0) return;
+    n.moved = g_alignRows.load(std::memory_order_relaxed);
+    n.ghostWalls = g_ghostWalls.load(std::memory_order_relaxed);
+    n.odd = g_alignOdd.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(g_journalMx);
+    g_journal[g_journalCount++ % kJournal] = n;
+}
+// Development build: who restarts rooms. Entry hooks on the game's two invalidates (0x0069EED0, 0x0069F160) note the room with
+// the caller in the journal (29/09: an outdoor room was solved again every ~60 ms for 4.5 s, never shown, and nothing of
+// Apex sent it). Only rooms the journal keeps (boosted, merged or taking other stories' lights).
+using Invalidate_t = void(__thiscall*)(void* room, char full, char keep);
+using InvalidateFlag_t = void(__thiscall*)(void* room, char flag);
+void __fastcall InvalidateNoteHook(BYTE* room, void*, char full, char keep) {
+    if (room && g_installed.load(std::memory_order_relaxed)) NoteSolve(room, 'I', reinterpret_cast<uintptr_t>(_ReturnAddress()));
+    reinterpret_cast<Invalidate_t>(EntryChain::Next(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare))(room, full, keep);
+}
+void __fastcall InvalidateFlagNoteHook(BYTE* room, void*, char flag) {
+    if (room && g_installed.load(std::memory_order_relaxed) && *reinterpret_cast<const char*>(room + 0x19) != flag)
+        NoteSolve(room, 'F', reinterpret_cast<uintptr_t>(_ReturnAddress()));
+    reinterpret_cast<InvalidateFlag_t>(EntryChain::Next(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare))(room, flag);
+}
+
+void ClearJournal() {
+    std::lock_guard<std::mutex> lk(g_journalMx);
+    g_journalCount = 0;
+}
+std::string JournalText() {
+    std::vector<SolveNote> notes;
+    size_t total = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_journalMx);
+        total = g_journalCount;
+        const size_t kept = std::min(total, kJournal);
+        for (size_t k = total - kept; k < total; k++) notes.push_back(g_journal[k % kJournal]);
+    }
+    std::string s = std::format("\n==== SOLVES (rooms sharing light through an opening, since the world loaded: {} notes, the last {} shown) ====\n", total,
+                                std::min<size_t>(notes.size(), 1000));
+    s += "time | thread (G = light tree, O = other) | S = ambient step done, W = wall pass done, Q = sent to gather by Apex, H = held by Apex until its solve "
+         "ends | room id, story | LOD class solving / shown | state | lights (of other stories) | B boosted, M merged | normalisation, ambient, wall ramp base | "
+         "wall samples moved, walls blurred across, pieces left alone (running totals) | lot id (low half), camera story, room flag +0x19 [| caller of an invalidate]\n";
+    if (notes.empty()) return s + "No notes.\n";
+    const DWORD t0 = notes.front().tick;
+    for (size_t k = notes.size() > 1000 ? notes.size() - 1000 : 0; k < notes.size(); k++) {
+        const SolveNote& n = notes[k];
+        s += std::format("{:8.3f} {} {} room {} story {} | class {}/{} st {} | lights {} ({}) | {}{} | norm {:.3f} c4 ({:.3f} {:.3f} {:.3f}) base {:.2f} | {} {} {} | {:08X} {} {}\n",
+                         (n.tick - t0) / 1000.0, n.gather ? 'G' : 'O', n.event, n.id, n.level, n.cls, n.shown, n.state, n.lights, n.cross, n.boosted ? 'B' : '-',
+                         n.merged ? 'M' : '-', n.norm, n.c4[0], n.c4[1], n.c4[2], n.wallBase, n.moved, n.ghostWalls, n.odd, n.lot, n.cam, n.flag19);
+        if (n.caller) s.insert(s.size() - 1, std::format(" | {:08X}", n.caller));
+    }
+    return s;
+}
+
+// Development build: the notes written since fromTick (GetTickCount), each with its tick (the recorder, recorder.cpp)
+std::vector<std::pair<DWORD, std::string>> JournalLinesSince(DWORD fromTick) {
+    std::vector<std::pair<DWORD, std::string>> out;
+    std::lock_guard<std::mutex> lk(g_journalMx);
+    const size_t kept = std::min(g_journalCount, kJournal);
+    for (size_t k = g_journalCount - kept; k < g_journalCount; k++) {
+        const SolveNote& n = g_journal[k % kJournal];
+        if (static_cast<int32_t>(n.tick - fromTick) < 0) continue;
+        std::string s = std::format("{} {} room {} story {} | class {}/{} st {} | lights {} ({}) | {}{} | c4 ({:.3f} {:.3f} {:.3f}) | lot {:08X} cam {} flag {}",
+                                    n.gather ? 'G' : 'O', n.event, n.id, n.level, n.cls, n.shown, n.state, n.lights, n.cross, n.boosted ? 'B' : '-',
+                                    n.merged ? 'M' : '-', n.c4[0], n.c4[1], n.c4[2], n.lot, n.cam, n.flag19);
+        if (n.caller) s += std::format(" | caller {:08X}", n.caller);
+        out.emplace_back(n.tick, std::move(s));
+    }
+    return out;
+}
+
+void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
+    const int id = *reinterpret_cast<const int*>(room + 0xC);
+    const uintptr_t key = reinterpret_cast<uintptr_t>(room);
+    MaybeClearRooms();
+    auto old = g_rooms.find(key); // the list was just rebuilt without the other stories' lamps
+    if (old != g_rooms.end() && (id > 0 || old->second.indoor)) g_rooms.erase(old);
+    if (id > 0) BeginTaker(key); // what it took (and the boosts that came with it) is taken again below, or not
+    if (id <= 0 || !g_indoorReady || !g_indoorOn.load(std::memory_order_relaxed)) return;
+    const uintptr_t rmgr = *reinterpret_cast<const uintptr_t*>(room);
+    if (!rmgr) return;
+    const int S = *reinterpret_cast<const int*>(rmgr + 0x88);
+    const int level = *reinterpret_cast<const int*>(treeLevel + 0x1A0);
+    const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(treeLevel + 4);
+    constexpr bool log = !kPublicBuild;
+    if (S < 0 || S > 7 || level < -4 || level > 7 || !tracker || TreeLevel(tracker, level) != reinterpret_cast<uintptr_t>(treeLevel) || StoryManager(tracker, S) != rmgr) {
+        if (log) GatherLog(tracker, std::format("story {} room {}: gathered through tree level {} of tracker {:08X}, which does not match (skipped)", S, id, level, tracker));
+        return;
+    }
+    g_gatherThread = ThreadId();
+    NoteLotManagers(tracker); // for the ambient of stacked rooms (RoomSolveStartHook knows only the room)
+    Xform xf;
+    if (!ReadXform(rmgr, xf)) return;
+    OpeningMask mask;
+    RoomSpan span;
+    std::vector<int> rooms;
+    struct Candidate {
+        float dist; // horizontal distance from the lamp to this room's tiles, m
+        uintptr_t light;
+        int home;
+    };
+    std::vector<Candidate> cands;
+    // Recorded before the first lamp is added (and each lamp before it goes in), so a fault in the middle of the gather
+    // never leaves a lamp in the list that the point solve does not test
+    RoomInfo* info = nullptr;
+    for (const int U : {S + 1, S - 1}) {
+        if (U < 0 || U > 7) continue;
+        const uintptr_t tlU = TreeLevel(tracker, U);
+        if (!*reinterpret_cast<const uintptr_t*>(tlU)) continue;
+        const int B = std::max(S, U); // the story whose floor lies between them
+        const uintptr_t mgrB = StoryManager(tracker, B), levelB = LevelFor(mgrB);
+        if (!levelB) {
+            if (log) GatherLog(tracker, std::format("story {} room {}: story {} has no known floor object", S, id, B));
+            continue;
+        }
+        if (!BuildOpeningMask(StoryManager(tracker, B - 1), mgrB, levelB, mask) || !mask.openings) {
+            if (log) GatherLog(tracker, std::format("story {} room {}: no opening in the floor of story {}", S, id, B));
+            continue;
+        }
+        if (!ReadRoomSpan(rmgr, id, mask, span) || !span.any) {
+            if (log) GatherLog(tracker, std::format("story {} room {}: no lighting tile quadrant has this room's id", S, id));
+            return;
+        }
+        if (!span.nearOpening) {
+            if (log) GatherLog(tracker, std::format("story {} room {}: none of the {} openings of story {} is within {} m", S, id, mask.openings, B, kOpeningReach));
+            continue;
+        }
+        int ids[256];
+        const int nIds = RoomsNearOpenings(StoryManager(tracker, U), mask, ids, 256);
+        rooms.assign(ids, ids + nIds);
+        if (rooms.empty()) {
+            if (log) GatherLog(tracker, std::format("story {} room {}: near the openings of story {}, but no room of story {} is", S, id, B, U));
+            continue;
+        }
+        NoteDeps(tracker, U, rooms, S, id);
+        std::string lamps;
+        cands.clear();
+        WalkRegistry(tlU, [&](uintptr_t entry) {
+            const int home = *reinterpret_cast<const int*>(entry + 0x1C);
+            const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+            if (!light || std::find(rooms.begin(), rooms.end(), home) == rooms.end()) return;
+            float lp[3];
+            ToLocal(xf, reinterpret_cast<const float*>(light + 0x120), lp);
+            const bool closeBy = mask.Near(lp[0], lp[2]);
+            // distance to the room's tiles, to take the nearest lamps first. No range test: +0x130 is the range only for
+            // some classes (wall lights, type 7, hold 0, 0.1, 1 or garbage there), and testing it dropped the sconces of a
+            // double-height room (in-game test, 2026-09-29); the game's own evaluation fades the light with distance.
+            const float dx = std::max({span.x0 - lp[0], 0.0f, lp[0] - span.x1}), dz = std::max({span.z0 - lp[2], 0.0f, lp[2] - span.z1});
+            const float dist = std::sqrt(dx * dx + dz * dz);
+            const bool reaches = closeBy && dist <= 30.0f;
+            const bool wrapped = reaches && EvalWrapped(light);
+            const bool takes = wrapped && GameTakesLight(entry, light);
+            const bool listed = takes && InList(room, light);
+            if (log)
+                lamps += std::format(" L{:08X}(room {}, near {}, reach {}, class {}, game {}, listed {})", light, home, closeBy ? 1 : 0, reaches ? 1 : 0, wrapped ? 1 : 0,
+                                     takes ? 1 : 0, listed ? 1 : 0);
+            if (takes && !listed) cands.push_back(Candidate{dist, light, home});
+        });
+        // the nearest lamps first, 64 per room at most
+        std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) { return a.dist < b.dist; });
+        for (const Candidate& c : cands) {
+            if (info && info->cross.size() >= 64) break;
+            if (!info) {
+                info = &g_rooms[key];
+                *info = RoomInfo{rmgr, tracker, S, id, true, {}};
+                NoteIndoorRoom(tracker, S, id, true);
+                MarkTaker(key, id, rmgr, tracker, S);
+            }
+            const Cross x{c.light, U, c.home, levelB};
+            info->cross.insert(std::upper_bound(info->cross.begin(), info->cross.end(), x), x);
+            reinterpret_cast<AddRoomLight_t>(kAddRoomLight)(room, reinterpret_cast<void*>(c.light));
+            // the lamp's room is seen through the opening too: the camera story's LOD, and one new solve the first time
+            if (void* mgrU = reinterpret_cast<void*>(StoryManager(tracker, U)))
+                if (void* giver = reinterpret_cast<RoomById_t>(kRoomById)(mgrU, c.home))
+                    if (AddGiver(key, reinterpret_cast<uintptr_t>(giver), c.home, reinterpret_cast<uintptr_t>(mgrU), tracker, U) && QueueRoom(tracker, U, c.home)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+            if constexpr (!kPublicBuild) {
+                if (g_crossLamps.size() > 4096) g_crossLamps.clear();
+                g_crossLamps.insert(c.light);
+            }
+            g_indoorAdded.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (log) {
+            std::string rs;
+            for (int r : rooms) rs += std::format(" {}", r);
+            GatherLog(tracker, std::format("story {} room {}: story {} floor has {} opening quadrants; rooms of story {} near them:{}; {} lamps taken; lamps:{}", S, id, B,
+                                           mask.openings, U, rs, cands.size(), lamps.empty() ? " none" : lamps));
+        }
+    }
+    if (!info) NoteIndoorRoom(tracker, S, id, false);
+}
+
+// Rooms of a lot near a stair opening (receivers on both sides), plus the rooms that took lamps before: they gather again
+void QueueOpeningRooms(uintptr_t tracker, std::vector<std::pair<int, int>>* sent = nullptr) {
+    std::vector<std::pair<int, int>> todo;
+    BoostedRoomsOf(tracker, todo);
+    {
+        std::lock_guard<std::mutex> lk(g_indoorListMx);
+        for (const IndoorRoom& r : g_indoorList)
+            if (r.tracker == tracker) todo.emplace_back(r.level, r.id);
+    }
+    std::string summary; // development build: per story, whether its floor object is known and its openings
+    if (g_indoorOn.load(std::memory_order_relaxed)) {
+        OpeningMask mask;
+        for (int B = 1; B <= 7; B++) {
+            const uintptr_t mgrB = StoryManager(tracker, B), levelB = mgrB ? LevelFor(mgrB) : 0;
+            if (!kPublicBuild && mgrB) summary += levelB ? "" : std::format(" story {}: no floor object;", B);
+            if (!levelB) continue;
+            const bool read = BuildOpeningMask(StoryManager(tracker, B - 1), mgrB, levelB, mask);
+            if (!kPublicBuild) summary += std::format(" story {}: {} openings{};", B, mask.openings, read ? "" : " (fault)");
+            if (!read || !mask.openings) continue;
+            for (const int S : {B - 1, B}) {
+                const uintptr_t mgrS = StoryManager(tracker, S);
+                if (!mgrS) continue;
+                int ids[256];
+                const int n = RoomsNearOpenings(mgrS, mask, ids, 256);
+                for (int i = 0; i < n; i++) todo.emplace_back(S, ids[i]);
+            }
+        }
+    }
+    std::sort(todo.begin(), todo.end());
+    todo.erase(std::unique(todo.begin(), todo.end()), todo.end());
+    if (sent) *sent = todo;
+    int queued = 0;
+    for (const auto& [S, r] : todo)
+        if (QueueRoom(tracker, S, r, true)) queued++;
+    g_indoorQueued.fetch_add(queued, std::memory_order_relaxed);
+    if (!kPublicBuild && (!todo.empty() || !summary.empty()))
+        GatherLog(tracker, std::format("rooms near openings sent to gather again: {} of {} (the others were waiting already) |{}", queued, todo.size(), summary));
+}
+
+// The rooms the game found changed on this story (the treeLevel+0x8 set: buckets +0xC, count +0x10, node {id, next})
+int ChangedRooms(const BYTE* tl, int* ids, int max) {
+    const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tl + 0xC);
+    const uint32_t count = *reinterpret_cast<const uint32_t*>(tl + 0x10);
+    if (!buckets || !count || count >= (1u << 20)) return 0;
+    const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + count * 4);
+    uintptr_t slot = buckets;
+    uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+    int guard = 0, n = 0;
+    while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+    guard = 0;
+    while (node && node != endNode && guard++ < 100000 && n < max) {
+        ids[n++] = *reinterpret_cast<const int*>(node);
+        node = *reinterpret_cast<const uintptr_t*>(node + 4);
+        int g2 = 0;
+        while (node == 0 && g2++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+    }
+    return n;
+}
+
+// Per lot (light thread): the g_indoorGen its rooms near openings were last sent at, and how many of its stories' floor
+// objects were known then. A lot loads its rooms and gathers them before (or while) its floors are set, so the count is
+// checked every 2 s: when it grows, the rooms near openings gather again (in-game test: after a restart the light
+// through the stairwell was gone until a floor was edited).
+struct LotState {
+    long gen = 0;
+    int floorsKnown = 0, openings = -1;
+    DWORD nextCheck = 0;
+    DWORD settleAt = 0; // once more, after the lot's first solves settled: at the latest then (0 = not due)
+    DWORD armedAt = 0, quietSince = 0; // when it was armed; since when none of `watch` waits for a solve (0 = busy)
+    std::vector<std::pair<int, int>> watch; // (story, room) sent by the last QueueOpeningRooms
+    // The lot's story managers when last seen: a lot whose lighting was rebuilt (the camera left it and came back, or
+    // its tracker's address was reused by another lot) is a new lot for this state (user, 29/09: "sometimes I even have
+    // to reload the save for the indoor fix to work": the old counts matched the new lot, so nothing was sent again)
+    uintptr_t mgrs[8] = {};
+};
+std::unordered_map<uintptr_t, LotState> g_lots;
+void FlushDepWaits(uintptr_t tracker);
+bool DepWaitsFor(uintptr_t tracker);
+
+// Whether a lot still has work of the indoor light between stories: a watched room gathering, waiting or being solved
+// (states 1, 2, 3), a room held back while solved, or a lamp burst still waiting
+bool LotBusy(uintptr_t tracker, const std::vector<std::pair<int, int>>& watch) {
+    for (const auto& [S, r] : watch) {
+        void* mgr = *reinterpret_cast<void* const*>(TreeLevel(tracker, S));
+        const BYTE* room = mgr ? static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, r)) : nullptr;
+        if (!room) continue;
+        const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        if (state >= 1 && state <= 3) return true;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_deferredMx);
+        if (std::any_of(g_deferred.begin(), g_deferred.end(), [&](const DeferredRoom& d) { return d.tracker == tracker; })) return true;
+    }
+    return DepWaitsFor(tracker);
+}
+
+int FloorObjectsKnown(uintptr_t tracker) {
+    int n = 0;
+    for (int s = 1; s <= 7; s++) {
+        const uintptr_t mgr = StoryManager(tracker, s);
+        n += mgr && LevelFor(mgr);
+    }
+    return n;
+}
+// The lot's openings over every story (the rooms get their ids after the floors are set, so this can change without a
+// floor edit)
+int OpeningCount(uintptr_t tracker) {
+    static OpeningMask mask; // light thread only
+    int n = 0;
+    for (int B = 1; B <= 7; B++) {
+        const uintptr_t mgrB = StoryManager(tracker, B), levelB = mgrB ? LevelFor(mgrB) : 0;
+        if (levelB && BuildOpeningMask(StoryManager(tracker, B - 1), mgrB, levelB, mask)) n += mask.openings;
+    }
+    return n;
+}
+
+void BeforeRoomUpdate(BYTE* tl) {
+    const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tl);
+    if (!mgr) return;
+    const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(tl + 4);
+    const int L = *reinterpret_cast<const int*>(tl + 0x1A0);
+    if (L < 0 || L > 7 || !tracker || TreeLevel(tracker, L) != reinterpret_cast<uintptr_t>(tl)) return;
+    if (L == 0) { // once per lot and update
+        // stacked rooms whose normalisation or ambient ramp changed in another member's solve (MergeStackedAmbient)
+        std::vector<DepKey> send;
+        {
+            std::lock_guard<std::mutex> lk(g_ambMx);
+            for (auto it = g_ambToQueue.begin(); it != g_ambToQueue.end();)
+                if (it->tracker == tracker) {
+                    send.push_back(*it);
+                    it = g_ambToQueue.erase(it);
+                } else
+                    ++it;
+        }
+        for (const DepKey& k : send)
+            if (QueueRoom(tracker, k.level, k.room, true)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+        FlushDeferred(tracker);
+        FlushDepWaits(tracker);
+        bool due = false;
+        const long gen = g_indoorGen.load(std::memory_order_relaxed);
+        if (g_lots.size() > 4096) g_lots.clear();
+        LotState& lot = g_lots[tracker];
+        uintptr_t mgrs[8];
+        for (int s = 0; s <= 7; s++) mgrs[s] = StoryManager(tracker, s);
+        if (std::memcmp(mgrs, lot.mgrs, sizeof mgrs) != 0) { // rebuilt: count its floors and openings from scratch
+            const long keepGen = lot.gen;
+            lot = LotState{};
+            lot.gen = keepGen;
+            std::memcpy(lot.mgrs, mgrs, sizeof mgrs);
+            due = true;
+            g_lotRebuilds.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (lot.gen != gen) {
+            lot.gen = gen;
+            due = true;
+        }
+        const DWORD now = GetTickCount();
+        if (static_cast<int32_t>(now - lot.nextCheck) >= 0) {
+            lot.nextCheck = now + 2000;
+            const int known = FloorObjectsKnown(tracker);
+            const int openings = known ? OpeningCount(tracker) : 0;
+            if (known > lot.floorsKnown || (openings != lot.openings && lot.openings >= 0)) due = true;
+            lot.floorsKnown = known;
+            lot.openings = openings;
+        }
+        if (g_dirtyReady.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lk(g_levelsMx);
+            for (int s = 0; s <= 7; s++) {
+                const uintptr_t m = StoryManager(tracker, s);
+                auto it = m ? std::find(g_dirtyMgrs.begin(), g_dirtyMgrs.end(), m) : g_dirtyMgrs.end();
+                if (it != g_dirtyMgrs.end()) {
+                    g_dirtyMgrs.erase(it);
+                    due = true;
+                }
+            }
+            if (g_dirtyMgrs.empty()) g_dirtyReady = false;
+        }
+        // A lot that just found its openings sends its rooms near them once more when the boosts, the stacked ambient and
+        // the other story's lamps of the first round are all in place: the rooms are then lit the way a lamp moved by hand
+        // lights them (user, 29/09: "entering the lot it should already be right"). That is as soon as the first round is
+        // over (none of its rooms waits for a solve for kSettleQuiet), at the latest kSettleMax after (atrium house F8,
+        // 29/09: the fixed 6 s came 2.5 s after the last solve of the first round; the lot looked right only then).
+        constexpr DWORD kSettleMin = 500, kSettleQuiet = 400, kSettleMax = 6000;
+        if (due && lot.openings > 0 && !lot.settleAt) { // armed once: later dues do not push it back
+            lot.settleAt = (now + kSettleMax) | 1;
+            lot.armedAt = now;
+            lot.quietSince = 0;
+        } else if (lot.settleAt) {
+            bool fire = static_cast<int32_t>(now - lot.settleAt) >= 0;
+            if (!fire && now - lot.armedAt >= kSettleMin) {
+                if (LotBusy(tracker, lot.watch)) lot.quietSince = 0;
+                else if (!lot.quietSince) lot.quietSince = now | 1;
+                else fire = now - lot.quietSince >= kSettleQuiet;
+            }
+            if (fire) {
+                lot.settleAt = 0;
+                due = true;
+                g_settles.fetch_add(1, std::memory_order_relaxed);
+                if (now - lot.armedAt < kSettleMax - 50) g_settlesEarly.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (due) QueueOpeningRooms(tracker, &lot.watch);
+    }
+}
+
+void __fastcall RoomUpdateHook(BYTE* tl) {
+    if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && tl) {
+        __try {
+            BeforeRoomUpdate(tl);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_faults.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    reinterpret_cast<RoomUpdate_t>(kRoomUpdate)(tl);
+}
+
+// The room update walks the rooms changed on its story (the tl+8 set, filled inside the update itself when a lamp entry
+// is dirty: FUN_006c7160) and then empties the set (0x6C7497). Just before that, the rooms of the other stories that take
+// the lamps of those rooms are sent to gather again (never the story being updated: its pending set is walked next).
+// What the rooms of other stories take from a room: each of its lamps (lit flag +0x100 & 0x20, lit colour +0xE0,
+// intensity +0x10, head +0x120, range +0x130; the cone of spot types 4 and 5 at +0x170..+0x1A0, so turning a sconce in
+// place counts) and its walls (room+0x30: the point test of the other stories tests the lamp's room walls)
+// Where each real lamp is and how far it shines, at the last send (window lights, types 7 and 8, are left out: no range
+// at +0x130, F8: 0, 1122, 3e-4, 1e-19 on RectangleWindowLight, and they follow the sky). A lamp counts as moved when it is
+// more than kMoveMin from where it was at the last send, or its range changed by more than 2%: animated lamps (candles,
+// fires: "animated" in the lot light bridge log) wobble every few frames, and as a move they restarted the rooms taking
+// them without end (29/09 F8: 1028 such sends while the camera stood still; user: "between indoor floors it got worse,
+// some lights dimmer"). A slow drag adds up against the last send, so it is still followed.
+struct LampAt {
+    uintptr_t light;
+    float x, y, z, range;
+};
+constexpr float kMoveMin = 0.10f; // m
+struct DepSig {
+    uint64_t all, shape;
+    std::vector<LampAt> lamps; // sorted by light
+};
+std::unordered_map<DepKey, DepSig, DepHash> g_depSig; // last state sent on (under g_depsMx)
+std::atomic<long> g_lampWobbles{0};                  // lamp values changed without a move worth sending at once
+std::atomic<long> g_depShapeSends{0}; // lamps added, deleted or moved, walls changed: sent at once
+std::atomic<long> g_outdoorQuiet{0};   // outside of a floor marked changed with its lamps and walls as they were: no other floor sent
+bool LampsMoved(const std::vector<LampAt>& was, const std::vector<LampAt>& now) {
+    size_t i = 0;
+    for (const LampAt& n : now) {
+        while (i < was.size() && was[i].light < n.light) i++;
+        if (i == was.size() || was[i].light != n.light) return true;
+        const LampAt& w = was[i];
+        const float dx = n.x - w.x, dy = n.y - w.y, dz = n.z - w.z;
+        if (dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin) return true; // NaN: not a move
+        if (std::fabs(n.range - w.range) > 0.02f * std::max(std::fabs(w.range), 1.0f)) return true;
+    }
+    return false;
+}
+// `shape` = which lamps the room has and its walls; the value hash = that plus every lamp field listed above
+uint64_t RoomLampSignature(uintptr_t tl, int room, uint64_t* shapeOut, std::vector<LampAt>* lampsOut) {
+    uint64_t h = 1469598103934665603ull, shape = h;
+    const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    const auto mixShape = [&](uint64_t v) {
+        mix(v);
+        shape = (shape ^ v) * 1099511628211ull;
+    };
+    const auto dwords = [&mix](uintptr_t at, int n) {
+        for (int k = 0; k < n; k++) mix(*reinterpret_cast<const uint32_t*>(at + k * 4));
+    };
+    lampsOut->clear();
+    WalkRegistry(tl, [&](uintptr_t entry) {
+        if (*reinterpret_cast<const int*>(entry + 0x1C) != room) return;
+        const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+        if (!light) return;
+        mixShape(light);
+        mix(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
+        dwords(light + 0x10, 4);
+        dwords(light + 0xE0, 3);
+        dwords(light + 0x120, 3);
+        dwords(light + 0x130, 1);
+        const int type = *reinterpret_cast<const int*>(light + 0xB0);
+        if (type == 4 || type == 5) dwords(light + 0x170, 13);
+        if (type != 7 && type != 8 && lampsOut->size() < 4096) {
+            const float* p = reinterpret_cast<const float*>(light + 0x120);
+            lampsOut->push_back(LampAt{light, p[0], p[1], p[2], *reinterpret_cast<const float*>(light + 0x130)});
+        }
+    });
+    std::sort(lampsOut->begin(), lampsOut->end(), [](const LampAt& a, const LampAt& b) { return a.light < b.light; });
+    void* mgr = *reinterpret_cast<void* const*>(tl);
+    if (const BYTE* r = mgr ? static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, room)) : nullptr) {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(r + 0x30), e = *reinterpret_cast<const uintptr_t*>(r + 0x34);
+        mixShape(e >= b ? (e - b) / 4 : 0);
+        for (uintptr_t p = b; p < e && p - b < 1024 * 4; p += 4) mixShape(*reinterpret_cast<const uint32_t*>(p));
+    }
+    *shapeOut = shape;
+    return h;
+}
+// Compares a room's lamps with the last send and records the new state: 0 = nothing changed, 1 = values only (switched,
+// dimmed, recoloured, turned, wobbling), 2 = sent at once (first sight, a lamp added / deleted / moved, a wall changed).
+// Caller holds g_depsMx.
+int LampChange(const DepKey& key, uintptr_t tl) {
+    uint64_t shape = 0;
+    std::vector<LampAt> lamps;
+    const uint64_t sig = RoomLampSignature(tl, key.room, &shape, &lamps);
+    if (g_depSig.size() > 8192) g_depSig.clear();
+    auto it = g_depSig.find(key);
+    if (it == g_depSig.end()) {
+        g_depSig.emplace(key, DepSig{sig, shape, std::move(lamps)});
+        return 2;
+    }
+    DepSig& s = it->second;
+    if (s.all == sig) return 0;
+    const bool moved = s.shape != shape || LampsMoved(s.lamps, lamps);
+    s.all = sig;
+    s.shape = shape;
+    if (moved) {
+        s.lamps = std::move(lamps); // else the positions of the last send stay: a slow drag adds up
+        g_depShapeSends.fetch_add(1, std::memory_order_relaxed);
+        return 2;
+    }
+    g_lampWobbles.fetch_add(1, std::memory_order_relaxed);
+    return 1;
+}
+
+// Rooms taking lamps whose values changed: the first change sends them at once (without stopping a solve in progress,
+// QueueRoom's defer), changes within kDepRecent of a send wait until the lamps are quiet for kDepQuiet (at most kDepMaxWait
+// after the first wait), then send them once more (FlushDepWaits, from the room update)
+constexpr DWORD kDepQuiet = 300, kDepRecent = 1000, kDepMaxWait = 1500;
+struct DepWait {
+    DWORD first, due;
+};
+std::unordered_map<DepKey, DepWait, DepHash> g_depWait;  // (lot, story, room) of the taking room (under g_depsMx)
+std::unordered_map<DepKey, DWORD, DepHash> g_depSentAt; // when it was last sent for a value change (under g_depsMx)
+std::atomic<long> g_depCoalesced{0};                     // value changes folded into a later send
+
+void FlushDepWaits(uintptr_t tracker) {
+    std::vector<DepKey> send;
+    {
+        std::lock_guard<std::mutex> lk(g_depsMx);
+        if (g_depWait.empty()) return;
+        const DWORD now = GetTickCount();
+        for (auto it = g_depWait.begin(); it != g_depWait.end();)
+            if (now - it->second.first > 10000) // its lot is gone or never updated again
+                it = g_depWait.erase(it);
+            else if (it->first.tracker == tracker && (static_cast<int32_t>(now - it->second.due) >= 0 || now - it->second.first >= kDepMaxWait)) {
+                send.push_back(it->first);
+                g_depSentAt[it->first] = now;
+                it = g_depWait.erase(it);
+            } else
+                ++it;
+    }
+    for (const DepKey& k : send)
+        if (QueueRoom(k.tracker, k.level, k.room, true)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+}
+bool DepWaitsFor(uintptr_t tracker) {
+    std::lock_guard<std::mutex> lk(g_depsMx);
+    return std::any_of(g_depWait.begin(), g_depWait.end(), [&](const auto& kv) { return kv.first.tracker == tracker; });
+}
+
+void AfterChangedWalk(BYTE* tl) {
+    if (!*reinterpret_cast<const uintptr_t*>(tl)) return;
+    const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(tl + 4);
+    const int L = *reinterpret_cast<const int*>(tl + 0x1A0);
+    if (L < 0 || L > 7 || !tracker || TreeLevel(tracker, L) != reinterpret_cast<uintptr_t>(tl)) return;
+    int ids[512];
+    const int n = ChangedRooms(tl, ids, 512);
+    if (!n) return;
+    std::vector<std::pair<int, int>> now, later; // sent now, stopping a solve in progress / sent now or after the burst
+    {
+        std::lock_guard<std::mutex> lk(g_depsMx);
+        for (int i = 0; i < n; i++) {
+            if (ids[i] < 0) continue;
+            if (ids[i] == 0) { // the outside of this floor: room 0 of the other floors 0..7 take its outdoor lamps (part 2)
+                const int change = LampChange(DepKey{tracker, L, 0}, reinterpret_cast<uintptr_t>(tl));
+                if (!change) {
+                    g_outdoorQuiet.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                auto& out = change == 2 ? now : later;
+                for (int S = 0; S <= 7; S++)
+                    if (S != L && *reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, S))) out.emplace_back(S, 0);
+                continue;
+            }
+            const DepKey key{tracker, L, ids[i]};
+            auto it = g_deps.find(key);
+            if (it == g_deps.end()) continue;
+            // only when what the other stories take from it really changed (RoomLampSignature). The game marks a room
+            // changed for more than a lamp change (the light entry update 0x6C7BA0 does it for any lit lamp whose entry
+            // is updated, changed or not; the exact trigger in the test house is not known), and two rooms taking each
+            // other's lamps then sent each other to gather again without end (atrium house: rooms 19 and 20 of stories 1
+            // and 2, dozens of gathers in a row in the F8, each resetting their lighting LOD to 0)
+            const int change = LampChange(key, reinterpret_cast<uintptr_t>(tl));
+            if (!change) continue;
+            auto& out = change == 2 ? now : later; // first sight, a lamp added / deleted / moved: at once
+            out.insert(out.end(), it->second.begin(), it->second.end());
+        }
+        for (auto* v : {&now, &later}) { // a room taking lamps of several changed rooms: once
+            std::sort(v->begin(), v->end());
+            v->erase(std::unique(v->begin(), v->end()), v->end());
+        }
+        if (!later.empty()) { // value changes: the first one goes now, the rest of the burst waits (FlushDepWaits)
+            const DWORD tick = GetTickCount();
+            if (g_depWait.size() > 8192) g_depWait.clear();
+            if (g_depSentAt.size() > 8192) g_depSentAt.clear();
+            std::erase_if(later, [&](const std::pair<int, int>& p) {
+                const DepKey k{tracker, p.first, p.second};
+                if (p.first == L) return true;
+                if (const auto w = g_depWait.find(k); w != g_depWait.end()) {
+                    w->second.due = tick + kDepQuiet;
+                    g_depCoalesced.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+                if (const auto sent = g_depSentAt.find(k); sent != g_depSentAt.end() && tick - sent->second < kDepRecent) {
+                    g_depWait[k] = DepWait{tick, tick + kDepQuiet};
+                    g_depCoalesced.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+                g_depSentAt[k] = tick;
+                return false;
+            });
+        }
+        for (const auto& [S, r] : now) g_depWait.erase(DepKey{tracker, S, r}); // sent now: nothing left to wait for
+    }
+    for (const auto& [S, r] : now)
+        if (S != L && QueueRoom(tracker, S, r)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+    for (const auto& [S, r] : later)
+        if (QueueRoom(tracker, S, r, true)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+}
+
+using SetClear_t = void(__thiscall*)(void* set, uintptr_t buckets, uintptr_t count);
+void __fastcall ChangedClearHook(BYTE* set, void*, uintptr_t buckets, uintptr_t count) {
+    if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && set) {
+        __try {
+            AfterChangedWalk(set - 8);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_faults.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    reinterpret_cast<SetClear_t>(kChangedClear)(set, buckets, count);
+}
+
 void __fastcall OutdoorGather(BYTE* treeLevel, void*, BYTE* room) {
     reinterpret_cast<AddWorldLights_t>(kAddWorldLights)(treeLevel, room);
     if (!g_installed.load(std::memory_order_relaxed) || !room) return;
     __try {
         ShareOutdoorLights(treeLevel, room);
+        ShareIndoorLights(treeLevel, room);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
     }
@@ -292,6 +2242,7 @@ struct SolveCtx {
     const char* flags = nullptr;    // [0] = test 2D walls, [1] = 3D occluders
     bool batch = false;             // called from FUN_006a31d0: the batch is in kBatchSamples
     BYTE soft = 0;                  // the solving room's +0x639 (FUN_0069fc40 reads it: wall height test / soft shadows of this pass)
+    float thr = 0.0f;               // the solving room's +0x63C: the game drops a light whose r+g+b is under it (0x69FE40)
 };
 SolveCtx g_ctx;
 struct BatchCentre {
@@ -310,7 +2261,6 @@ std::vector<Culled> g_culled; // per batch: (light, floor) -> walls of that floo
 // Development build only, and only while armed (2026-09-29; before, every lit cross-floor evaluation of every solve paid
 // the active-lot test and the distance test): the Developer checkbox "Record story light samples", or the first
 // Ctrl+Shift+F8 / "Save light diagnostics" of a session, arms it; the records then cover the solves that follow.
-std::atomic<bool> g_diagArmed{false};
 struct DiagRec {
     int level, home; // home = -1: the room's own light (or a world light)
     uintptr_t light;
@@ -320,10 +2270,23 @@ struct DiagRec {
     float gameT = 1.0f;
     bool batch = false, culledList = false;
     int type = -1; // light+0xB0 when recorded
+    int room = 0;  // the lit room (0 = outside)
+    // indoor lamps (4.): where the ray crossed the floor between the stories (-1 = not reached), what was there, and why the
+    // light stopped (0 passed, 1 floor, 2 wall of the lamp's room)
+    int why = -1, cx = -1, cz = -1, cq = -1, belowRoom = -2;
+    uint32_t keyHi = 0, keyLo = 0;
+    float ch = 0.0f, ct = -1.0f;
 };
 std::mutex g_diagMx;
 std::vector<DiagRec> g_diag;
 std::atomic<long> g_diagSeen{0};
+int g_diagIndoorUsed = 0, g_diagOutdoorUsed = 0; // records per part since the last dump (under g_diagMx)
+// What IndoorPassImpl met at the floor crossing, for the next Diag record (light tree thread; development build)
+struct PassDebug {
+    int cx = -1, cz = -1, cq = -1, belowRoom = -2;
+    uint32_t keyHi = 0, keyLo = 0;
+    float ch = 0.0f, ct = -1.0f;
+} g_passDbg;
 int g_lastRec = -1; // record of the light evaluated last (the game's wall test for it comes right after)
 
 bool RoomStillSame(const RoomInfo& info, const BYTE* room) {
@@ -335,11 +2298,7 @@ bool RoomStillSame(const RoomInfo& info, const BYTE* room) {
 }
 
 const RoomInfo* SolveInfo(BYTE* room) {
-    if (!g_installed.load(std::memory_order_relaxed) || g_rooms.empty()) return nullptr;
-    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) {
-        g_otherThread.fetch_add(1, std::memory_order_relaxed);
-        return nullptr;
-    }
+    if (!g_installed.load(std::memory_order_relaxed) || g_rooms.empty()) return nullptr; // (SolvePoint: gather thread only)
     auto it = g_rooms.find(reinterpret_cast<uintptr_t>(room));
     if (it == g_rooms.end() || !RoomStillSame(it->second, room)) return nullptr;
     return &it->second;
@@ -366,15 +2325,61 @@ bool BatchCentreFor(const void* sample) {
     }
 }
 
+// Development build, F8 "SEAM": the wall samples of the rooms of an atrium group within 1 m of the floor line between
+// their stories, with the summed light (LightPointWithAllLights, before the solve's normalisation and curve) and what the
+// normalisation and the curve FUN_0069ec40 make of it, to find which stage leaves a step at the line
+struct SeamRec {
+    int room, level, cls; // cls: the room's LOD class (room+0xF4) at that solve
+    float p[3], n[3], sum, norm, fin, base;
+};
+std::mutex g_seamMx;
+std::vector<SeamRec> g_seam;
+bool MakeSeamRec(BYTE* room, const float* out, const float* sample, SeamRec& r) {
+    __try {
+        if (std::fabs(sample[5]) > 0.3f) return false; // walls only (floor and ceiling normals are vertical)
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        const int S = *reinterpret_cast<const int*>(mgr + 0x88);
+        const float base = *reinterpret_cast<const float*>(mgr + 0x98); // this story's lowest floor (world)
+        const float y = sample[1];
+        // near this story's floor (the line with the story below) or 3 m above it (the line with the story above)
+        if (std::fabs(y - base) > 1.0f && std::fabs(y - (base + 3.0f)) > 1.0f) return false;
+        const float norm = *reinterpret_cast<const float*>(room + 0x160);
+        float c[3], lum = 0.0f;
+        for (int k = 0; k < 3; k++) lum += (c[k] = out[k] * norm) / 3.0f;
+        const float curve = lum >= 0.01f ? (2.0f / (1.0f + std::exp(-lum)) - 1.0f) / lum : 1.0f; // FUN_0069ec40
+        r = SeamRec{*reinterpret_cast<const int*>(room + 0xC), S, *reinterpret_cast<const int*>(room + 0xF4), {sample[0], y, sample[2]}, {sample[4], sample[5], sample[6]}, out[0] + out[1] + out[2], norm,
+                    (c[0] + c[1] + c[2]) * curve, base};
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void RecordSeam(BYTE* room, const float* out, const float* sample) {
+    SeamRec r{};
+    if (!MakeSeamRec(room, out, sample, r)) return;
+    std::lock_guard<std::mutex> lk(g_seamMx);
+    if (g_seam.size() < 30000) g_seam.push_back(r);
+}
+
 float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flags, void* sample, bool batch) {
+    // g_ctx belongs to the light tree thread: a solve on any other thread leaves it alone (it would clear the context of a
+    // solve in progress there and let its lamps of another story through the floor)
+    const DWORD gatherThread = g_gatherThread.load(std::memory_order_relaxed);
+    if (ThreadId() != gatherThread) {
+        if (gatherThread && g_installed.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed);
+        return reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
+    }
     const SolveCtx prev = g_ctx;
     g_ctx.info = SolveInfo(room);
     g_ctx.list2D = list2D;
     g_ctx.flags = static_cast<const char*>(flags);
     g_ctx.batch = batch && g_ctx.info && BatchCentreFor(sample);
     g_ctx.soft = room[0x639];
+    g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
     g_lastRec = -1;
     float* r = reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
+    if constexpr (!kPublicBuild)
+        if (batch && !g_ghostSolve && g_diagArmed.load(std::memory_order_relaxed) && g_wallBase.count(reinterpret_cast<uintptr_t>(room))) RecordSeam(room, out, static_cast<const float*>(sample));
     g_ctx = prev;
     return r;
 }
@@ -383,6 +2388,82 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
 }
 float* __fastcall SolvePointSingle(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     return SolvePoint(room, out, list2D, list3D, flags, sample, false);
+}
+
+// ---- Rooms lit only by lamps of another story (30/09, F6 105204; user: "a room did not take the brightness of rooms for a
+// while", mostly right after loading). Rooms 5 and 7 of story 2 took the green lamp of story 1 (rooms near an opening take
+// the lamps of the story below) and the floor test blocked every point of it: ambient (0, 0, 0), normalisation inf, the
+// Brightness slider did nothing to them; room 6, almost all blocked, x98. FUN_006a0230 (thiscall(room, float brightest[4]),
+// its only call 0x006A13B4 in FUN_006a0f50): +0x160 = limit / max(the lamps' vfunc+0x30, the brightest sample x k) when
+// that is under the low limit [0x01158B24] (or over the high one [0x01158B20]). With the lamps all blocked that is limit / 0
+// = inf; the ambient (average x +0x160) is then 0 x inf = NaN, which the clamp (maxps with 0) turns into 0. A room whose
+// lamps are all of another story gets no boost (at most 1): the light coming through an opening is not spread over the
+// whole room, and with none coming the room takes the unlit colour (the top-up), as an empty room does. Any value that is
+// not finite becomes 1. Steam 1.67.2 only (fixed addresses, the call checked).
+constexpr uintptr_t kRoomNorm = 0x006A0230, kRoomNormCall = 0x006A13B4;
+using RoomNorm_t = void(__thiscall*)(BYTE* room, const float* brightest);
+std::atomic<long> g_normNotFinite{0}, g_normCrossOnly{0};
+const Cross* FindCross(const RoomInfo& info, uintptr_t light); // below
+bool CrossOnly(const BYTE* room, const RoomInfo& info) {
+    const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+    const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+    if (!b || e <= b || e - b > 4096) return false;
+    for (const uintptr_t* p = b; p < e; p++)
+        if (!*p || !FindCross(info, *p)) return false;
+    return true;
+}
+void __fastcall RoomNormHook(BYTE* room, void*, const float* brightest) {
+    reinterpret_cast<RoomNorm_t>(kRoomNorm)(room, brightest);
+    __try {
+        float& norm = *reinterpret_cast<float*>(room + 0x160);
+        if (!std::isfinite(norm)) {
+            norm = 1.0f;
+            g_normNotFinite.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (norm > 1.0f && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
+            if (const RoomInfo* info = SolveInfo(room); info && info->indoor && CrossOnly(room, *info)) {
+                norm = 1.0f;
+                g_normCrossOnly.fetch_add(1, std::memory_order_relaxed);
+            }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// ---- The 4 directional basis maps get the floor test too (30/09, third agent study; F7 128 / F8 10:45: a TV in a closed
+// room upstairs took the green lamp of the story below). The story's LightBasisMap0..3 (64x64, 1 texel per metre, locked at
+// room+0x584 + i*0x28 in FUN_0069fa40, gated by room+0x629) are filled by FUN_006a09f0 (from FUN_006a3b80 at 0x006A3C0A,
+// state 7 of the room solve FUN_006a3c90, indoor rooms of high-quality lots): one sample per tile centre, and for each light
+// of the solving room's own list FUN_0069f280 (stdcall(pos, light, float acc[4][4]) ret 0xC; its only call 0x006A0C56,
+// "mov ecx, edi" = the room just before it; pos = the sample 0.5 m up) adds the light's rig colour (vfunc+0x10) weighted
+// towards the 4 basis directions. No threshold, wall or floor test there, and it never goes through LightPointWithAllLights,
+// so the lamps of another story taken near an opening lit the whole room through the floor. A lamp of another story
+// (FindCross) is now tested at that point with IndoorShadow (the floor test only: no 2D wall flags, so it passes or not):
+// blocked, it adds nothing (the game's sum minus that lamp). The shader cap (PatchIndoorBasis: min(basis, 2 x room light
+// map)) stays as a safety net. Steam 1.67.2 only (fixed addresses, the bytes checked).
+constexpr uintptr_t kBasisLight = 0x0069F280, kBasisLightCall = 0x006A0C56;
+using BasisLight_t = void(__stdcall*)(const float* pos, void* light, float* acc);
+std::atomic<long> g_basisTests{0}, g_basisBlocked{0};
+void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float* colour); // below
+void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light, float* acc) {
+    if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
+        if (const RoomInfo* info = SolveInfo(room); info && info->indoor && FindCross(*info, reinterpret_cast<uintptr_t>(light))) {
+            const SolveCtx prev = g_ctx;
+            g_ctx = SolveCtx{};
+            g_ctx.info = info;
+            g_ctx.soft = room[0x639];
+            alignas(16) float s[12] = {pos[0], pos[1], pos[2], pos[3]}; // the sample: position, no normal
+            float pass[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            IndoorShadow(*info, light, s, pass);
+            g_ctx = prev;
+            g_basisTests.fetch_add(1, std::memory_order_relaxed);
+            if (!(pass[0] > 0.0f)) {
+                g_basisBlocked.fetch_add(1, std::memory_order_relaxed);
+                return; // behind the floor: this lamp adds nothing to the texel
+            }
+        }
+    reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, acc);
 }
 
 // Walls of room 0 of `floor` that the game would test for this light in this batch (its own culling), or null = all.
@@ -455,10 +2536,13 @@ float WallPass(uintptr_t tracker, int roomLevel, int home, void* light, const vo
     }
 }
 
+const Cross* FindCross(const RoomInfo& info, uintptr_t light) {
+    auto it = std::lower_bound(info.cross.begin(), info.cross.end(), Cross{light});
+    return it == info.cross.end() || it->light != light ? nullptr : &*it;
+}
 int HomeFloor(const RoomInfo& info, uintptr_t light) {
-    const auto key = std::make_pair(light, -1000);
-    auto it = std::lower_bound(info.cross.begin(), info.cross.end(), key);
-    return it == info.cross.end() || it->first != light ? -1 : it->second;
+    const Cross* c = FindCross(info, light);
+    return c ? c->floor : -1;
 }
 
 bool ActiveLot(uintptr_t mgr) {
@@ -477,10 +2561,18 @@ void Diag(const RoomInfo& info, void* light, const float* sample, const float* c
     if (dx * dx + dy * dy + dz * dz > 3.5f * 3.5f) return;
     g_diagSeen.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lk(g_diagMx);
-    if (g_diag.size() >= 4000) return;
+    // separate budgets: the outdoor lamps of every loaded lot would fill the record before an indoor point is seen
+    int& used = info.indoor ? g_diagIndoorUsed : g_diagOutdoorUsed;
+    if (used >= (info.indoor ? 40000 : 4000)) return;
+    used++;
     DiagRec r{info.level, home, reinterpret_cast<uintptr_t>(light), {lp[0], lp[1], lp[2]}, {sample[0], sample[1], sample[2]},
               {sample[4], sample[5], sample[6]}, colour[0] + colour[1] + colour[2], mine, -1, 1.0f, g_ctx.batch, culledList};
     r.type = *reinterpret_cast<const int*>(static_cast<const BYTE*>(light) + 0xB0);
+    r.room = info.id;
+    if (info.indoor) {
+        r.cx = g_passDbg.cx, r.cz = g_passDbg.cz, r.cq = g_passDbg.cq, r.belowRoom = g_passDbg.belowRoom;
+        r.keyHi = g_passDbg.keyHi, r.keyLo = g_passDbg.keyLo, r.ch = g_passDbg.ch, r.ct = g_passDbg.ct;
+    }
     g_diag.push_back(r);
     g_lastRec = static_cast<int>(g_diag.size()) - 1;
 }
@@ -500,15 +2592,137 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
     }
     if constexpr (!kPublicBuild) {
         if (lit) {
-            if (g_diagArmed.load(std::memory_order_relaxed)) Diag(info, light, sample, before, home, mine, culledList);
+            if (g_diagArmed.load(std::memory_order_relaxed) && !g_ghostSolve) Diag(info, light, sample, before, home, mine, culledList);
             else g_lastRec = -1; // as Diag does first: no record for the game's wall test that follows
+        }
+    }
+}
+
+// 4.: a lamp of the story above or below reaches the point only through a stair opening of the floor between them, and
+// past the walls of its own room (from the lamp to where the ray crosses that floor). Share of the light, 0 = none;
+// why: 1 = a floor is in the way, 2 = a wall of the lamp's room.
+float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why) {
+    const auto blocked = [&why](int reason) {
+        why = reason;
+        return 0.0f;
+    };
+    if constexpr (!kPublicBuild) g_passDbg = PassDebug{};
+    alignas(16) float pos[4];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    const int B = std::max(info.level, c.floor);
+    const uintptr_t mgrB = StoryManager(info.tracker, B), mgrBelow = StoryManager(info.tracker, B - 1);
+    Xform xf;
+    if (!mgrB || LevelManager(c.level) != mgrB || !ReadXform(info.mgr, xf)) return blocked(1);
+    float P[3], Q[3];
+    ToLocal(xf, pos, P);
+    ToLocal(xf, sample, Q);
+    const float dy = Q[1] - P[1];
+    float h = *reinterpret_cast<const float*>(mgrB + 0x98) - *reinterpret_cast<const float*>(mgrB + 0xD4); // the story's lowest floor, lot space
+    if (!(std::fabs(h) < 1000.0f) || std::fabs(dy) < 1e-4f) return blocked(1);
+    float t = -1.0f;
+    for (int pass = 0; pass < 2; pass++) {
+        t = (h - P[1]) / dy;
+        // a point on that floor's plane (the top row of the walls below it, the bottom row of the walls above) is tested
+        // where it is: it gets the lamp only through an opening too
+        if (t >= 1.0f && std::fabs(Q[1] - h) < 0.02f) t = 0.9999f;
+        else if (t <= 0.0f && std::fabs(P[1] - h) < 0.02f) t = 0.0001f;
+        if (!(t > 0.0f && t < 1.0f)) {
+            t = -1.0f; // lamp and point on the same side of that floor: nothing of it in the way
+            break;
+        }
+        const float x = P[0] + t * (Q[0] - P[0]), z = P[2] + t * (Q[2] - P[2]);
+        const int ix = static_cast<int>(std::floor(x)), iz = static_cast<int>(std::floor(z));
+        const uintptr_t tile = LightTile(mgrB, ix, iz);
+        if (!tile) return blocked(1); // outside the story
+        const float th = *reinterpret_cast<const float*>(tile + 0x78); // the floor height of that tile
+        if (pass == 0 && std::fabs(th - h) > 0.01f && std::fabs(th - h) < 50.0f) {
+            h = th;
+            continue;
+        }
+        // an opening: no floor on B there, over an indoor room of the story below (the rule of ReadOpenings)
+        const int q = Quadrant(x - ix, z - iz);
+        const uintptr_t below = mgrBelow ? LightTile(mgrBelow, ix, iz) : 0;
+        if constexpr (!kPublicBuild) {
+            g_passDbg = PassDebug{ix, iz, q, below ? TileRoom(below, q) : -1, 0, 0, h, t};
+            const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(c.level + 0x264);
+            const uintptr_t data = grid ? *reinterpret_cast<const uintptr_t*>(grid) : 0;
+            const int gw = grid ? *reinterpret_cast<const int*>(grid + 0x10) : 0, gh = grid ? *reinterpret_cast<const int*>(grid + 0x14) : 0;
+            if (data && ix >= 0 && iz >= 0 && ix < gw && iz < gh) {
+                const uint32_t* key = reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * gw + ix) * 40 + 8 + q * 8);
+                g_passDbg.keyLo = key[0], g_passDbg.keyHi = key[1];
+            }
+        }
+        if (!below || TileRoom(below, q) <= 0 || FloorAt(c.level, ix, iz, q) != 0) return blocked(1);
+        break;
+    }
+    if (!(g_ctx.flags && g_ctx.flags[0])) return 1.0f; // the game tests no 2D walls in this batch
+    void* mgrU = reinterpret_cast<void*>(StoryManager(info.tracker, c.floor));
+    BYTE* home = mgrU ? static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgrU, c.room)) : nullptr;
+    if (!home) return 1.0f;
+    alignas(16) float s[12]; // the sample moved to where the ray crosses the floor
+    std::memcpy(s, sample, sizeof s);
+    if (t > 0.0f)
+        for (int k = 0; k < 3; k++) s[k] = pos[k] + t * (sample[k] - pos[k]);
+    float keep = 1.0f;
+    g_swapAt = home + 0x639;
+    g_swapSaved = *g_swapAt;
+    *g_swapAt = g_ctx.soft;
+    const bool passed = reinterpret_cast<WallTest_t>(kWallTest)(home, nullptr, pos, s, &keep);
+    *g_swapAt = g_swapSaved;
+    g_swapAt = nullptr;
+    if (!passed) return blocked(2);
+    return keep;
+}
+float IndoorPass(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why) {
+    __try {
+        return IndoorPassImpl(info, c, light, sample, why);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (g_swapAt) {
+            *g_swapAt = g_swapSaved;
+            g_swapAt = nullptr;
+        }
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        why = 1;
+        return 0.0f; // never light through a floor that could not be checked
+    }
+}
+
+void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
+    const bool lit = colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f;
+    if (!lit) return;
+    const Cross* c = FindCross(info, reinterpret_cast<uintptr_t>(light));
+    const float before[3] = {colour[0], colour[1], colour[2]};
+    float mine = -1.0f;
+    int why = 0;
+    if (c) {
+        g_indoorTests.fetch_add(1, std::memory_order_relaxed);
+        mine = IndoorPass(info, *c, light, sample, why);
+        if (why == 1) g_indoorFloorBlocked.fetch_add(1, std::memory_order_relaxed);
+        else if (why == 2) g_indoorWallBlocked.fetch_add(1, std::memory_order_relaxed);
+        if (mine < 1.0f)
+            for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
+    }
+    if constexpr (!kPublicBuild) {
+        g_lastRec = -1;
+        // lamps of another story, and the room's own lamps that another story takes (to compare the game's own evaluation of
+        // a lamp with ours on the other side of the floor; every own lamp would fill the record)
+        if (g_diagArmed.load(std::memory_order_relaxed) && !g_ghostSolve && (c || g_crossLamps.count(reinterpret_cast<uintptr_t>(light)))) {
+            Diag(info, light, sample, before, c ? c->floor : -1, mine, false);
+            std::lock_guard<std::mutex> lk(g_diagMx);
+            if (g_lastRec >= 0 && g_lastRec < static_cast<int>(g_diag.size())) g_diag[g_lastRec].why = why;
         }
     }
 }
 
 template <int I> void __fastcall LightEvalHook(void* light, void*, const float* sample, const float* normal, float* colour) {
     reinterpret_cast<LightEval_t>(g_evalOrig[I])(light, sample, normal, colour);
-    if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn)) CrossFloorShadow(*g_ctx.info, light, sample, colour);
+    if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
+        // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
+        if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) return;
+        if (g_ctx.info->indoor) IndoorShadow(*g_ctx.info, light, sample, colour);
+        else CrossFloorShadow(*g_ctx.info, light, sample, colour);
+    }
 }
 using LightEvalHook_t = void(__fastcall*)(void* light, void* edx, const float* sample, const float* normal, float* colour); // = thiscall ret 0xC
 const LightEvalHook_t kEvalHooks[] = {&LightEvalHook<0>, &LightEvalHook<1>, &LightEvalHook<2>, &LightEvalHook<3>,
@@ -529,15 +2743,14 @@ bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos
     return ok;
 }
 
-// Every loaded lot: room 0 of floors 0..7 gathers again (after turning the option on or off). Render thread only.
 void ClearDiag() {
     std::lock_guard<std::mutex> lk(g_diagMx);
     g_diag.clear();
+    g_diagIndoorUsed = g_diagOutdoorUsed = 0;
 }
 
-void RefreshAllLots() {
-    ClearDiag(); // the records show the solve that follows
-    if (!kRootPtr) return;
+// The trackers of every loaded lot (the light manager's lot hash): room 0 of floors 0..7 and the given indoor rooms
+void RefreshTrackers(const IndoorRoom* indoor, size_t indoorCount) {
     __try {
         const uintptr_t root = *reinterpret_cast<const uintptr_t*>(kRootPtr);
         if (!root) return;
@@ -556,7 +2769,11 @@ void RefreshAllLots() {
         guard = 0;
         while (node && node != endNode && guard++ < 100000) {
             const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
-            if (tracker) QueueOutdoorRegather(tracker);
+            if (tracker) {
+                QueueOutdoorRegather(tracker);
+                for (size_t i = 0; i < indoorCount; i++) // rooms holding lamps of another story (only lots still loaded)
+                    if (indoor[i].tracker == tracker && QueueRoom(tracker, indoor[i].level, indoor[i].id)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+            }
             node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
             int g2 = 0;
             while (node == 0 && g2++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
@@ -564,6 +2781,20 @@ void RefreshAllLots() {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+// Every loaded lot: room 0 of floors 0..7, and the rooms holding lamps of another story, gather again (after turning the
+// option on or off). Render thread only.
+void RefreshAllLots() {
+    ClearDiag(); // the records show the solve that follows
+    if (!kRootPtr) return;
+    std::vector<IndoorRoom> indoor;
+    {
+        std::lock_guard<std::mutex> lk(g_indoorListMx);
+        indoor = g_indoorList;
+        if (!g_installed.load()) g_indoorList.clear();
+    }
+    RefreshTrackers(indoor.data(), indoor.size());
 }
 
 // The return address follows "call reg" (FF D0..FF D7): FF D2 (call edx) on Steam
@@ -576,15 +2807,656 @@ bool CallsTarget(uintptr_t site, uintptr_t target) {
     return *reinterpret_cast<const BYTE*>(site) == 0xE8 && site + 5 + *reinterpret_cast<const int32_t*>(site + 1) == target;
 }
 
-bool Redirect(uintptr_t site, uintptr_t target, const void* thunk) {
+bool Redirect(uintptr_t site, uintptr_t target, const void* thunk, std::vector<MemPatch::PatchLocation>* patches = &g_patches) {
     DWORD orig = static_cast<DWORD>(target - (site + 5));
     const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thunk) - (site + 5));
-    return MemPatch::WriteDWORD(site + 1, rel, &g_patches, &orig);
+    return MemPatch::WriteDWORD(site + 1, rel, patches, &orig);
+}
+
+// 4.: the room update's function pointer and the 5 floor calls. False (nothing left patched) when the game differs.
+std::vector<MemPatch::PatchLocation> g_indoorPatches;
+std::vector<MemPatch::PatchLocation> g_lodPatches; // the 4 LOD choice calls (optional part)
+std::vector<MemPatch::PatchLocation> g_alignPatches; // 5.: the wall samples and wall blur calls (optional part)
+bool InstallIndoor(std::string& why) {
+    using GameAddr::Id;
+    if (!GameAddr::Have({Id::LightBright, Id::AddRoomLight, Id::RoomUpdatePush, Id::RoomUpdate, Id::ChangedClearCall, Id::ChangedClear, Id::FloorSet, Id::FloorSetCall0,
+                         Id::FloorSetCall1, Id::FloorSetCall2, Id::FloorSetCall3, Id::FloorRemove, Id::FloorRemoveCall, Id::LevelVtable},
+                        &why)) {
+        why = GameAddr::NotAvailable(why);
+        return false;
+    }
+    bool ok = *reinterpret_cast<const BYTE*>(kRoomUpdatePush) == 0x68 && *reinterpret_cast<const uint32_t*>(kRoomUpdatePush + 1) == kRoomUpdate &&
+              CallsTarget(kFloorRemoveCall, kFloorRemove) && CallsTarget(kChangedClearCall, kChangedClear) && kChangedClearCall > kRoomUpdate &&
+              kChangedClearCall - kRoomUpdate < 0x400;
+    for (uintptr_t site : kFloorSetCalls) ok = ok && CallsTarget(site, kFloorSet);
+    if (!ok) {
+        why = "the game code differs";
+        return false;
+    }
+    g_floorSetTarget = kFloorSet;
+    g_floorRemoveTarget = kFloorRemove;
+    for (uintptr_t site : kFloorSetCalls) ok = ok && Redirect(site, kFloorSet, reinterpret_cast<const void*>(&FloorSetThunk), &g_indoorPatches);
+    ok = ok && Redirect(kFloorRemoveCall, kFloorRemove, reinterpret_cast<const void*>(&FloorRemoveThunk), &g_indoorPatches);
+    // Every level floor object at its construction too (optional): a lot built again without a floor set or remove call
+    // (the camera left it and came back) still has its floors known. The ctor must be the one that writes the level vtable.
+    if (ok && GameAddr::Have({Id::LevelCtorCall, Id::LevelCtor}) && CallsTarget(kLevelCtorCall, kLevelCtor) &&
+        *reinterpret_cast<const uint16_t*>(kLevelCtor + 0x0D) == 0x06C7 && *reinterpret_cast<const uint32_t*>(kLevelCtor + 0x0F) == kLevelVtable &&
+        !Redirect(kLevelCtorCall, kLevelCtor, reinterpret_cast<const void*>(&LevelCtorHook), &g_indoorPatches))
+        LOG_WARNING("[LevelLightShare] Floor objects at their construction: could not patch the game (the floor set calls still find them)");
+    ok = ok && Redirect(kChangedClearCall, kChangedClear, reinterpret_cast<const void*>(&ChangedClearHook), &g_indoorPatches);
+    // Part 2: the changed-set hook sends room 0 of the other floors itself (filtered): the game's cascade goes (restored
+    // before g_patches puts the jnz back)
+    const std::vector<BYTE> noCascade = {0x90, 0xE9}, cascadeJl = {0x0F, 0x8C};
+    ok = ok && MemPatch::WriteBytes(kCascadeJcc - 1, noCascade, &g_indoorPatches, &cascadeJl);
+    DWORD orig = static_cast<DWORD>(kRoomUpdate);
+    ok = ok && MemPatch::WriteDWORD(kRoomUpdatePush + 1, static_cast<DWORD>(reinterpret_cast<uintptr_t>(&RoomUpdateHook)), &g_indoorPatches, &orig);
+    if (!ok) {
+        MemPatch::RestoreAll(g_indoorPatches);
+        g_indoorPatches.clear();
+        why = "could not patch the game";
+        return false;
+    }
+    // The camera story's LOD for the rooms seen through an opening (optional: without it the lower room keeps its coarse
+    // wall light below the camera's story). FUN_0069e710 ends with "mov eax,[LodMax]; ret" at +0x4B.
+    bool lod = GameAddr::Have({Id::LodChoice, Id::LodChoiceCall0, Id::LodChoiceCall1, Id::LodChoiceCall2, Id::LodChoiceCall3, Id::LodMax}) &&
+               *reinterpret_cast<const BYTE*>(kLodChoice + 0x4B) == 0xA1 && *reinterpret_cast<const uint32_t*>(kLodChoice + 0x4C) == kLodMax;
+    for (uintptr_t site : kLodChoiceCalls) lod = lod && CallsTarget(site, kLodChoice);
+    for (uintptr_t site : kLodChoiceCalls) lod = lod && Redirect(site, kLodChoice, reinterpret_cast<const void*>(&LodChoiceHook), &g_lodPatches);
+    if (!lod) {
+        MemPatch::RestoreAll(g_lodPatches); // all 4 or none
+        g_lodPatches.clear();
+    }
+    g_lodReady = lod;
+    if (!lod) LOG_WARNING("[LevelLightShare] Lighting detail for rooms seen through an opening: the game code differs, left as the game has it");
+    // One ambient for the rooms stacked through an opening (optional too)
+    std::vector<MemPatch::PatchLocation> ambPatches;
+    bool amb = GameAddr::Have({Id::RoomSolveStartCall, Id::RoomSolveStart, Id::WallPassCall, Id::WallPass}) && CallsTarget(kRoomSolveStartCall, kRoomSolveStart) &&
+               CallsTarget(kWallPassCall, kWallPass);
+    amb = amb && Redirect(kRoomSolveStartCall, kRoomSolveStart, reinterpret_cast<const void*>(&RoomSolveStartHook), &ambPatches) &&
+          Redirect(kWallPassCall, kWallPass, reinterpret_cast<const void*>(&WallPassHook), &ambPatches);
+    if (!amb) MemPatch::RestoreAll(ambPatches); // both or none
+    else g_lodPatches.insert(g_lodPatches.end(), ambPatches.begin(), ambPatches.end());
+    g_ambReady = amb;
+    if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
+    // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
+    std::vector<MemPatch::PatchLocation> normPatches;
+    const bool norm = GameAddr::IsFixed() && CallsTarget(kRoomNormCall, kRoomNorm) &&
+                      Redirect(kRoomNormCall, kRoomNorm, reinterpret_cast<const void*>(&RoomNormHook), &normPatches);
+    if (norm) g_lodPatches.insert(g_lodPatches.end(), normPatches.begin(), normPatches.end());
+    else {
+        MemPatch::RestoreAll(normPatches);
+        LOG_WARNING("[LevelLightShare] Rooms lit only by lamps of another story: the game code differs (or not Steam 1.67.2), left as the game has it");
+    }
+    // The floor test in the 4 basis maps (optional; BasisLightHook). 0x006A0C4C: lea edx,[esp+0xC8]; push edx; mov ecx,edi; call
+    std::vector<MemPatch::PatchLocation> basisPatches;
+    const BYTE basisBytes[] = {0x8D, 0x94, 0x24, 0xC8, 0x00, 0x00, 0x00, 0x52, 0x8B, 0xCF};
+    const bool basis = GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kBasisLightCall - sizeof basisBytes), basisBytes, sizeof basisBytes) == 0 &&
+                       CallsTarget(kBasisLightCall, kBasisLight) &&
+                       Redirect(kBasisLightCall, kBasisLight, reinterpret_cast<const void*>(&BasisLightHook), &basisPatches);
+    if (basis) g_lodPatches.insert(g_lodPatches.end(), basisPatches.begin(), basisPatches.end());
+    else {
+        MemPatch::RestoreAll(basisPatches);
+        LOG_WARNING("[LevelLightShare] The floor test in the directional maps: the game code differs (or not Steam 1.67.2), left as the game has it");
+    }
+    return true;
 }
 
 void RefreshSoon() {
     if (ThreadId() == g_renderThread.load()) RefreshAllLots();
     else g_refreshRequested = true; // done by the next OnPresent on the render thread
+}
+
+// ---- F8 (development build): the stories of every loaded lot with rooms, as the indoor part sees them ----
+// The trackers of every loaded lot (up to max)
+int AllTrackers(uintptr_t* out, int max) {
+    int n = 0;
+    __try {
+        const uintptr_t root = kRootPtr ? *reinterpret_cast<const uintptr_t*>(kRootPtr) : 0;
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        const uintptr_t tree = lightMgr ? *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4) : 0;
+        if (!tree) return 0;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return 0;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            if (tracker && n < max) out[n++] = tracker;
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g2 = 0;
+            while (node == 0 && g2++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+uintptr_t SafeStoryManager(uintptr_t tracker, int level) {
+    __try {
+        return StoryManager(tracker, level);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// 5.: every room of one story (the ids its lighting tiles hold, and room 0) lights its walls again
+int RequeueStory(uintptr_t tracker, int level) {
+    int ids[1024], n = 0, queued = 0;
+    __try {
+        const uintptr_t mgr = StoryManager(tracker, level);
+        if (!mgr) return 0;
+        const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
+        if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return 0;
+        ids[n++] = 0;
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++)
+                if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                    for (int q = 0; q < 4; q++)
+                        if (const int id = TileRoom(tile, q); id > 0 && n < static_cast<int>(std::size(ids)) && std::find(ids, ids + n, id) == ids + n) ids[n++] = id;
+        for (int k = 0; k < n; k++) queued += QueueRoom(tracker, level, ids[k], true);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+    return queued;
+}
+// Every room of every loaded lot lights again (after an option that changes them). Render thread. Basements too (stories
+// -4..-1; 30/09: "Refresh the lighting" left them out).
+void RequeueAllRooms(const char* why) {
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    int queued = 0;
+    for (int t = 0; t < lots; t++)
+        for (int level = -4; level <= 7; level++) queued += RequeueStory(trackers[t], level);
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of {} lots light again", why, queued, lots));
+}
+
+// Rooms at Night (unlit_rooms.cpp): every room (id > 0) of every loaded lot, stories -4..7. The list of (lot, story, id)
+// is built from the lighting tiles at most every 3 s (a slider being dragged calls this every frame); each room is looked
+// up again by id, so a room gone meanwhile is skipped. visit returns true to send the room to gather again (held while
+// it is being solved). Render thread.
+struct RoomRef {
+    uintptr_t tracker;
+    int level, id;
+};
+std::vector<RoomRef> g_roomRefs;
+DWORD g_roomRefsAt = 0;
+int CollectStoryRooms(uintptr_t tracker, int level, RoomRef* out, int max) {
+    int n = 0;
+    __try {
+        const uintptr_t mgr = StoryManager(tracker, level);
+        if (!mgr) return 0;
+        const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
+        if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return 0;
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++)
+                if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                    for (int q = 0; q < 4; q++) {
+                        const int id = TileRoom(tile, q);
+                        if (id <= 0 || n >= max) continue;
+                        bool known = false;
+                        for (int k = 0; k < n && !known; k++) known = out[k].id == id;
+                        if (!known) out[n++] = RoomRef{tracker, level, id};
+                    }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+    return n;
+}
+BYTE* SafeRoomById(uintptr_t tracker, int level, int id) {
+    __try {
+        void* mgr = reinterpret_cast<void*>(StoryManager(tracker, level));
+        return mgr ? static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, id)) : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+// QueueRoom under SEH (a lot unloaded between the list and the send)
+bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
+    __try {
+        return QueueRoom(tracker, level, id, true);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+std::vector<uintptr_t> g_roomRefTrackers; // the loaded lots when g_roomRefs was built
+// lazy (the once-a-second scan of switched-off lamps): a change of the loaded lots does not walk the tiles again (lots
+// stream in and out while the camera moves); the rooms of lots gone are skipped, new lots wait for the next walk (maxAge)
+int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued, DWORD maxAge = 3000, bool lazy = false) {
+    LoadAddresses(); // also when the light between stories never installed (Rooms at Night alone; review 30/09, M4)
+    if (!kRootPtr || !kRoomById) return 0;
+    const DWORD now = GetTickCount();
+    // The loaded lots now: a lot gone or rebuilt (its tracker left the tree) drops the cached list at once, so no room of
+    // a freed lot is ever written or sent (review 30/09, H1)
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    std::vector<uintptr_t> nowSet(trackers, trackers + lots);
+    std::sort(nowSet.begin(), nowSet.end());
+    const bool lotsChanged = nowSet != g_roomRefTrackers;
+    if (g_roomRefs.empty() || now - g_roomRefsAt > maxAge || (lotsChanged && !lazy)) {
+        g_roomRefsAt = now;
+        g_roomRefs.clear();
+        g_roomRefTrackers = nowSet;
+        static RoomRef buf[1024];
+        for (int t = 0; t < lots; t++)
+            for (int level = -4; level <= 7; level++) {
+                const int n = CollectStoryRooms(trackers[t], level, buf, 1024);
+                g_roomRefs.insert(g_roomRefs.end(), buf, buf + n);
+            }
+    }
+    const bool filter = nowSet != g_roomRefTrackers; // lazy and the lots changed: only the lots still loaded
+    int visited = 0, sent = 0;
+    for (const RoomRef& r : g_roomRefs) {
+        if (filter && !std::binary_search(nowSet.begin(), nowSet.end(), r.tracker)) continue;
+        BYTE* room = SafeRoomById(r.tracker, r.level, r.id);
+        if (!room) continue;
+        visited++;
+        if (visit(room, ctx) && QueueRoomSafe(r.tracker, r.level, r.id)) sent++;
+    }
+    if (queued) *queued = sent;
+    return visited;
+}
+
+// ---- Rooms still lit by a lamp switched off (30/09) ----
+// A room's light list (room+0xC8..+0xCC) holds the lights its last gather took. The gather's filter (GameTakesLight: the
+// lit flag +0x100 & 0x20 and LightBright, FUN_006bc520: the lit colour +0xE0..+0xE8 summed >= [0x010459E4]) leaves a lamp
+// switched off out. F8 30/09 01:26 (house C49C001BCF2DEA20, every lamp off; the game switches a lamp off by its intensity,
+// the lit flag stays): after the load, room 2 of story 1 still held two of its lamps switched off for ~25 s (lights 4,
+// then 2 once the user switched a lamp on; user: "right after entering the game the background colour was wrong, after a
+// while it fixed itself"). Once a second an indoor room at rest whose list still holds a lamp the filter refuses now is
+// sent to gather again, once per such set of lamps. Left out: room 0 (the outside stays as it is), window lights (types 7
+// and 8 follow the sky) and street lamps (lot 0).
+constexpr DWORD kStaleEvery = 1000;
+constexpr DWORD kStaleRoomsAge = 10000; // the room list (tile walk) is made again at most this often for this scan
+DWORD g_staleAt = 0;
+std::unordered_map<uintptr_t, uint64_t> g_staleSent; // room -> the switched-off lamps it was sent for (render thread)
+std::atomic<long> g_staleSends{0};
+uint64_t StaleLamps(const BYTE* room) {
+    __try {
+        if (*reinterpret_cast<const int*>(room + 0xC) <= 0) return 0;
+        const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        if (state >= 1 && state <= 3) return 0; // gathering or being solved: its list is being made
+        const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+        const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+        uint64_t sig = 0;
+        for (const uintptr_t* p = b; p < e && p - b < 4096; p++) {
+            const uintptr_t L = *p;
+            if (!L) continue;
+            const int type = *reinterpret_cast<const int*>(L + 0xB0);
+            if (type == 7 || type == 8) continue;
+            if (type == 0xB && (*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) == 0) continue;
+            if ((*reinterpret_cast<const BYTE*>(L + 0x100) & 0x20) && reinterpret_cast<LightBright_t>(kLightBright)(reinterpret_cast<void*>(L))) continue;
+            uint64_t h = static_cast<uint64_t>(L) * 0x9E3779B97F4A7C15ull;
+            sig += (h ^ (h >> 29)) | 1;
+        }
+        return sig;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+bool VisitStale(unsigned char* room, void*) {
+    const uint64_t sig = StaleLamps(room);
+    const uintptr_t key = reinterpret_cast<uintptr_t>(room);
+    if (!sig) {
+        g_staleSent.erase(key);
+        return false;
+    }
+    const auto [it, fresh] = g_staleSent.try_emplace(key, sig);
+    if (!fresh && it->second == sig) return false; // sent for these lamps already (the gather kept them: not again)
+    it->second = sig;
+    g_staleSends.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Development tools: the F6 room tracer. While a recording runs, every 100 ms, each indoor room of the loaded lots
+// is written once and again whenever its ambient (+0x110, the walls' colour, and +0x120), normalisation, solve state,
+// LOD class or light count changes (the Rooms at Night retint writes +0x110 without a solve, so it shows here too). ----
+struct RoomSnap {
+    float amb2[4];
+    int lights;
+};
+bool ReadRoomExtra(const BYTE* room, RoomSnap& s) {
+    __try {
+        std::memcpy(s.amb2, room + 0x120, sizeof s.amb2);
+        s.lights = static_cast<int>(ListSize(room));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+std::unordered_map<uint64_t, uint64_t> g_roomTrace; // (lot, story, room) -> hash of the last written state
+std::vector<std::string> TraceRoomsImpl(bool reset) {
+    std::vector<std::string> out;
+    if (reset) g_roomTrace.clear();
+    struct Ctx {
+        std::vector<std::string>* out;
+    } ctx{&out};
+    ForEachRoomImpl(
+        [](unsigned char* room, void* p) {
+            auto& c = *static_cast<Ctx*>(p);
+            SolveNote n{};
+            RoomSnap x{};
+            if (!ReadSolveNote(room, n) || !ReadRoomExtra(room, x)) return false;
+            const auto q = [](float v) { return static_cast<int64_t>(std::llround(static_cast<double>(v) * 100000.0)); };
+            uint64_t key = 1469598103934665603ull, state = 1469598103934665603ull;
+            for (int64_t v : {static_cast<int64_t>(n.lot), static_cast<int64_t>(n.level), static_cast<int64_t>(n.id)}) key = (key ^ static_cast<uint64_t>(v)) * 1099511628211ull;
+            for (int64_t v : {q(n.c4[0]), q(n.c4[1]), q(n.c4[2]), q(x.amb2[0]), q(x.amb2[1]), q(x.amb2[2]), q(n.norm), static_cast<int64_t>(n.state), static_cast<int64_t>(n.cls),
+                              static_cast<int64_t>(n.shown), static_cast<int64_t>(x.lights), static_cast<int64_t>(n.cam)})
+                state = (state ^ static_cast<uint64_t>(v)) * 1099511628211ull;
+            if (g_roomTrace.size() > 20000) g_roomTrace.clear();
+            auto [it, fresh] = g_roomTrace.try_emplace(key, state);
+            if (!fresh && it->second == state) return false;
+            it->second = state;
+            c.out->push_back(std::format("[room] {} lot {:08X} story {} room {} | state {} class {}/{} | lights {} | ambient ({:.4f} {:.4f} {:.4f}) second ({:.4f} {:.4f} {:.4f}) | norm {:.3f} | story shown {}",
+                                         fresh ? "new" : "changed", n.lot, n.level, n.id, n.state, n.cls, n.shown, x.lights, n.c4[0], n.c4[1], n.c4[2], x.amb2[0], x.amb2[1],
+                                         x.amb2[2], n.norm, n.cam));
+            return false;
+        },
+        &ctx, nullptr, 3000, true);
+    return out;
+}
+
+// Half of a lot's id (manager +0x94 high, +0x90 low; the F8 lot list prints them together)
+uint32_t LotIdPart(uintptr_t tracker, int offset) {
+    __try {
+        const uintptr_t mgr = StoryManager(tracker, 0);
+        return mgr ? *reinterpret_cast<const uint32_t*>(mgr + offset) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+struct StoryRow {
+    int lightW = 0, lightH = 0, floorW = -1, floorH = -1; // lighting tile grid; floor grid (-1: no floor grid)
+    int tiles = 0, indoorQuads = 0, floorQuads = 0, openings = 0;
+    float lowest = 0.0f; // the lowest floor, lot space (mgr+0x98 - mgr+0xD4)
+};
+bool ReadStoryRow(uintptr_t mgr, uintptr_t mgrBelow, uintptr_t level, StoryRow& r) {
+    __try {
+        r.lightW = *reinterpret_cast<const int*>(mgr + 0x264);
+        r.lightH = *reinterpret_cast<const int*>(mgr + 0x268);
+        r.lowest = *reinterpret_cast<const float*>(mgr + 0x98) - *reinterpret_cast<const float*>(mgr + 0xD4);
+        const uintptr_t grid = level ? *reinterpret_cast<const uintptr_t*>(level + 0x264) : 0;
+        if (grid) {
+            r.floorW = *reinterpret_cast<const int*>(grid + 0x10);
+            r.floorH = *reinterpret_cast<const int*>(grid + 0x14);
+        }
+        if (r.lightW <= 0 || r.lightH <= 0 || r.lightW > 1024 || r.lightH > 1024) return true;
+        for (int iz = 0; iz < r.lightH; iz++)
+            for (int ix = 0; ix < r.lightW; ix++) {
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                if (!tile) continue;
+                r.tiles++;
+                for (int q = 0; q < 4; q++) {
+                    const bool indoor = TileRoom(tile, q) > 0, floor = level && FloorAt(level, ix, iz, q) != 0;
+                    r.indoorQuads += indoor;
+                    r.floorQuads += floor;
+                    const uintptr_t below = mgrBelow ? LightTile(mgrBelow, ix, iz) : 0;
+                    r.openings += below && TileRoom(below, q) > 0 && level && !floor; // the rule of ReadOpenings
+                }
+            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// A story as two maps side by side (development build, F8): per tile, the room of quadrant 0 in base 36 ('.' = outside,
+// ' ' = no tile, 'L' = a lamp registered on the story) and the class of its floor keys; plus the most
+// common floor key values.
+struct StoryMap {
+    int w = 0, h = 0;
+    char rooms[64][65] = {};
+    char floors[64][65] = {};
+    uint32_t keyLo[12] = {}, keyHi[12] = {}, keyCount[12] = {};
+    int keys = 0, otherKeys = 0;
+    uint32_t head0[12] = {}, head1[12] = {}, headCount[12] = {}; // the record's first two dwords (before the keys)
+    int heads = 0;
+};
+bool ReadStoryMap(uintptr_t tl, uintptr_t mgr, uintptr_t level, const Xform& xf, StoryMap& m) {
+    __try {
+        m.w = std::min(*reinterpret_cast<const int*>(mgr + 0x264), 64);
+        m.h = std::min(*reinterpret_cast<const int*>(mgr + 0x268), 64);
+        if (m.w <= 0 || m.h <= 0) return true;
+        const uintptr_t grid = level ? *reinterpret_cast<const uintptr_t*>(level + 0x264) : 0;
+        const uintptr_t data = grid ? *reinterpret_cast<const uintptr_t*>(grid) : 0;
+        const int gw = grid ? *reinterpret_cast<const int*>(grid + 0x10) : 0, gh = grid ? *reinterpret_cast<const int*>(grid + 0x14) : 0;
+        for (int iz = 0; iz < m.h; iz++) {
+            for (int ix = 0; ix < m.w; ix++) {
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                const int room = tile ? TileRoom(tile, 0) : -1;
+                m.rooms[iz][ix] = room < 0 ? ' ' : room == 0 ? '.' : "0123456789abcdefghijklmnopqrstuvwxyz"[room % 36];
+                // floor per tile: '0' never built, '-' removed (an opening), 'a' / 'B' the bare 40000000 along walls (B: with the
+                // 0x08000000 bit of the high dword), '#' / 'F' a floor (F: with that bit), '*' quadrants that differ
+                char cls = 0;
+                if (data && ix < gw && iz < gh)
+                    for (int q = 0; q < 4; q++) {
+                        const uint32_t* key = reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * gw + ix) * 40 + 8 + q * 8);
+                        const bool empty = key[0] == 0xFFFFFFF8u && key[1] == 0xFFFFFFFFu, flag = (key[1] & 0x08000000u) != 0;
+                        const char c = empty ? '0' : RemovedFloorKey(key) ? '-' : key[0] == 0x40000000u ? (flag ? 'B' : 'a') : (flag ? 'F' : '#');
+                        cls = q == 0 || cls == c ? c : '*';
+                        int k = 0;
+                        while (k < m.keys && (m.keyLo[k] != key[0] || m.keyHi[k] != key[1])) k++;
+                        if (k < m.keys) m.keyCount[k]++;
+                        else if (m.keys < 12) {
+                            m.keyLo[m.keys] = key[0], m.keyHi[m.keys] = key[1], m.keyCount[m.keys] = 1;
+                            m.keys++;
+                        } else
+                            m.otherKeys++;
+                    }
+                if (data && ix < gw && iz < gh) {
+                    const uint32_t* rec = reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * gw + ix) * 40);
+                    int k = 0;
+                    while (k < m.heads && (m.head0[k] != rec[0] || m.head1[k] != rec[1])) k++;
+                    if (k < m.heads) m.headCount[k]++;
+                    else if (m.heads < 12) {
+                        m.head0[m.heads] = rec[0], m.head1[m.heads] = rec[1], m.headCount[m.heads] = 1;
+                        m.heads++;
+                    }
+                }
+                m.floors[iz][ix] = data ? cls : '?';
+            }
+        }
+        WalkRegistry(tl, [&](uintptr_t entry) {
+            const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+            if (!light) return;
+            float lp[3];
+            ToLocal(xf, reinterpret_cast<const float*>(light + 0x120), lp);
+            const int ix = static_cast<int>(std::floor(lp[0])), iz = static_cast<int>(std::floor(lp[2]));
+            if (ix >= 0 && iz >= 0 && ix < m.w && iz < m.h) m.rooms[iz][ix] = 'L';
+        });
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The tiles of a story whose 4 floor quadrants are not all the same, and those around its newest room: per quadrant its
+// key and room, plus the lighting
+// tile's height and its 7 flag words (+0x48). Development build, F8.
+struct MixedTile {
+    int ix, iz;
+    uint32_t hi[4], lo[4];
+    uint32_t head[2];
+    int room[4];
+    float height;
+    uint16_t flags[7];
+};
+int ReadMixedTiles(uintptr_t mgr, uintptr_t level, MixedTile* out, int max) {
+    int n = 0;
+    __try {
+        const int w = std::min(*reinterpret_cast<const int*>(mgr + 0x264), 64), h = std::min(*reinterpret_cast<const int*>(mgr + 0x268), 64);
+        const uintptr_t grid = level ? *reinterpret_cast<const uintptr_t*>(level + 0x264) : 0;
+        const uintptr_t data = grid ? *reinterpret_cast<const uintptr_t*>(grid) : 0;
+        const int gw = grid ? *reinterpret_cast<const int*>(grid + 0x10) : 0, gh = grid ? *reinterpret_cast<const int*>(grid + 0x14) : 0;
+        if (!data) return 0;
+        // the story's newest room (highest id): a test room just built; its tiles and the ring around them are listed too
+        int newest = 0;
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++)
+                if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                    for (int q = 0; q < 4; q++) newest = std::max(newest, TileRoom(tile, q));
+        const auto nearNewest = [&](int ix, int iz) {
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++)
+                    if (const uintptr_t tile = LightTile(mgr, ix + dx, iz + dz))
+                        for (int q = 0; q < 4; q++)
+                            if (newest > 0 && TileRoom(tile, q) == newest) return true;
+            return false;
+        };
+        for (int iz = 0; iz < h && iz < gh; iz++)
+            for (int ix = 0; ix < w && ix < gw; ix++) {
+                const uint32_t* key = reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * gw + ix) * 40 + 8);
+                bool same = true;
+                for (int q = 1; q < 4; q++) same &= key[q * 2] == key[0] && key[q * 2 + 1] == key[1];
+                if ((same && !nearNewest(ix, iz)) || n >= max) continue;
+                MixedTile& t = out[n++];
+                t.ix = ix, t.iz = iz;
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                for (int q = 0; q < 4; q++) {
+                    t.lo[q] = key[q * 2], t.hi[q] = key[q * 2 + 1];
+                    t.room[q] = tile ? TileRoom(tile, q) : -1;
+                }
+                t.head[0] = key[-2], t.head[1] = key[-1];
+                t.height = tile ? *reinterpret_cast<const float*>(tile + 0x78) : 0.0f;
+                for (int k = 0; k < 7; k++) t.flags[k] = tile ? reinterpret_cast<const uint16_t*>(tile + 0x48)[k] : 0;
+            }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+std::string IndoorMaps(uintptr_t tracker) {
+    std::string s;
+    Xform xf;
+    const uintptr_t mgr0 = SafeStoryManager(tracker, 0);
+    if (!mgr0 || !ReadXform(mgr0, xf)) return s;
+    for (int st = 0; st <= 7; st++) {
+        const uintptr_t mgr = SafeStoryManager(tracker, st);
+        if (!mgr) continue;
+        auto m = std::make_unique<StoryMap>();
+        if (!ReadStoryMap(TreeLevel(tracker, st), mgr, LevelFor(mgr), xf, *m)) {
+            s += std::format("  map of story {}: unreadable\n", st);
+            continue;
+        }
+        s += std::format("  map of story {} (rows z 0..{}, columns x 0..{}): rooms | floor (0 never built, - removed = opening, a / B bare 40000000, # / F "
+                         "floor, * mixed); keys:",
+                         st, m->h - 1, m->w - 1);
+        for (int k = 0; k < m->keys; k++) s += std::format(" {:08X}:{:08X} x{}", m->keyHi[k], m->keyLo[k], m->keyCount[k]);
+        s += "; record heads:";
+        for (int k = 0; k < m->heads; k++) s += std::format(" {:08X}:{:08X} x{}", m->head0[k], m->head1[k], m->headCount[k]);
+        s += std::format("{}\n", m->otherKeys ? std::format(" (+{} others)", m->otherKeys) : "");
+        for (int iz = 0; iz < m->h; iz++) s += std::format("  {:2} {} | {}\n", iz, std::string_view(m->rooms[iz], m->w), std::string_view(m->floors[iz], m->w));
+        if (st < 1 || st > 3) continue;
+        auto mixed = std::make_unique<MixedTile[]>(160);
+        const int n = ReadMixedTiles(mgr, LevelFor(mgr), mixed.get(), 160);
+        s += std::format("  mixed tiles of story {} and the tiles around its newest room ({}; quadrants 0 -z, 1 +x, 2 +z, 3 -x: key hi:lo room):\n", st, n);
+        for (int i = 0; i < n; i++) {
+            const MixedTile& t = mixed[i];
+            s += std::format("   ({:2},{:2}) h={:.2f}", t.ix, t.iz, t.height);
+            for (int q = 0; q < 4; q++) s += std::format(" | {:08X}:{:08X} r{}", t.hi[q], t.lo[q], t.room[q]);
+            s += std::format(" | head {:08X}:{:08X}", t.head[0], t.head[1]);
+            s += " | flags";
+            for (int k = 0; k < 7; k++) s += std::format(" {:04X}", t.flags[k]);
+            s += "\n";
+        }
+    }
+    return s;
+}
+
+// Pairs of wall samples at the same place across the floor line of an atrium group: the one just under it (lower room)
+// and the one just over it (upper room), with the summed light, the normalisation and the value after the curve
+std::string SeamDiagText() {
+    std::vector<SeamRec> recs;
+    {
+        std::lock_guard<std::mutex> lk(g_seamMx);
+        recs.swap(g_seam);
+    }
+    std::string s = std::format("\n==== SEAM (atrium walls at the floor line, {} samples) ====\n", recs.size());
+    if (recs.empty()) return s + "No samples (recorded while the diagnostics are armed, from the solves of rooms in an atrium group).\n";
+    s += "latest solves first | lower room sample (just under the line) | upper room sample (just over it): LOD class, y, summed light, normalisation, after the curve\n";
+    int pairs = 0;
+    double sumRatio = 0.0, sumLower = 0.0, sumUpper = 0.0;
+    std::vector<std::pair<int, int>> printed;
+    for (auto lit = recs.rbegin(); lit != recs.rend(); ++lit) { // latest first: the walls as the solves left them
+        const SeamRec& lo = *lit;
+        const float under = lo.base + 3.0f - lo.p[1];
+        if (under < -0.02f || under > 0.45f) continue;
+        const SeamRec* best = nullptr;
+        float bestD = 1e9f;
+        for (auto uit = recs.rbegin(); uit != recs.rend(); ++uit) {
+            const SeamRec& up = *uit;
+            if (up.level != lo.level + 1 || lo.n[0] * up.n[0] + lo.n[1] * up.n[1] + lo.n[2] * up.n[2] < 0.9f) continue;
+            const float over = up.p[1] - up.base;
+            const float dx = up.p[0] - lo.p[0], dz = up.p[2] - lo.p[2];
+            if (over < -0.05f || over > 0.45f || std::fabs(dx) > 0.2f || std::fabs(dz) > 0.2f) continue;
+            const float d = dx * dx + dz * dz + (up.p[1] - lo.p[1]) * (up.p[1] - lo.p[1]);
+            if (d < bestD) bestD = d, best = &up; // on a tie the latest stays
+        }
+        if (!best) continue;
+        const std::pair<int, int> key{static_cast<int>(lo.p[0] * 8), static_cast<int>(lo.p[2] * 8)};
+        if (std::find(printed.begin(), printed.end(), key) != printed.end()) continue;
+        printed.push_back(key);
+        pairs++;
+        sumLower += lo.fin, sumUpper += best->fin;
+        if (lo.fin > 1e-4f) sumRatio += best->fin / lo.fin;
+        if (pairs <= 120)
+            s += std::format("({:.2f} {:.2f}) n({:.2f} {:.2f}) | room {} c{} y={:.2f} sum={:.3f} norm={:.3f} fin={:.3f} | room {} c{} y={:.2f} sum={:.3f} norm={:.3f} fin={:.3f}\n",
+                             lo.p[0], lo.p[2], lo.n[0], lo.n[2], lo.room, lo.cls, lo.p[1], lo.sum, lo.norm, lo.fin, best->room, best->cls, best->p[1], best->sum, best->norm,
+                             best->fin);
+    }
+    s += std::format("{} places | mean after the curve: lower {:.3f}, upper {:.3f} | mean ratio upper/lower {:.3f}\n", pairs, pairs ? sumLower / pairs : 0.0,
+                     pairs ? sumUpper / pairs : 0.0, pairs ? sumRatio / pairs : 0.0);
+    return s;
+}
+
+std::string IndoorDiagText() {
+    std::string s = std::format("\n==== STORIES INDOORS (indoor lamps through stair openings) ====\n{} | floor objects known: {} | floor changes: {}, lots updated after them: {}\n",
+                                !g_indoorReady ? "Not installed" : g_indoorOn ? "On" : "Off", [] {
+                                    std::lock_guard<std::mutex> lk(g_levelsMx);
+                                    return g_levels.size();
+                                }(),
+                                g_floorEdits.load(), g_floorRefreshes.load());
+    s += std::format("Lamps taken through openings: {} | points tested: {}, a floor in the way: {}, a wall of the lamp's room: {} | rooms sent to gather again: {}\n",
+                     g_indoorAdded.load(), g_indoorTests.load(), g_indoorFloorBlocked.load(), g_indoorWallBlocked.load(), g_indoorQueued.load());
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    int shown = 0;
+    for (int t = 0; t < lots; t++) {
+        std::string rows;
+        bool rooms = false;
+        for (int st = 0; st <= 7; st++) {
+            const uintptr_t mgr = SafeStoryManager(trackers[t], st);
+            if (!mgr) continue;
+            const uintptr_t level = LevelFor(mgr);
+            StoryRow r;
+            if (!ReadStoryRow(mgr, st > 0 ? SafeStoryManager(trackers[t], st - 1) : 0, level, r)) {
+                rows += std::format("  story {}: unreadable\n", st);
+                continue;
+            }
+            rooms |= r.indoorQuads > 0;
+            rows += std::format("  story {}: manager {:08X}, floor object {:08X} | lighting tiles {}x{} ({} tiles, {} indoor quadrants) | floor grid {}x{}, {} "
+                                "quadrants with a floor | openings (no floor over an indoor room below): {} | lowest floor {:.2f}\n",
+                                st, mgr, level, r.lightW, r.lightH, r.tiles, r.indoorQuads, r.floorW, r.floorH, r.floorQuads, r.openings, r.lowest);
+        }
+        if (!rooms) continue; // lots without indoor rooms (parks, empty lots) are left out
+        shown++;
+        s += std::format("lot {:08X}{:08X} (tracker {:08X}):\n{}{}", LotIdPart(trackers[t], 0x94), LotIdPart(trackers[t], 0x90), trackers[t], rows, IndoorMaps(trackers[t]));
+    }
+    s += std::format("({} loaded lots, {} with indoor rooms shown)\n", lots, shown);
+    std::vector<std::string> log;
+    {
+        std::lock_guard<std::mutex> lk(g_gatherLogMx);
+        log.swap(g_gatherLog);
+    }
+    s += std::format("-- indoor gathers since the last dump ({}; lamp flags: near an opening, class wrapped, the game takes it, already in the list) --\n", log.size());
+    for (const std::string& l : log) s += l + "\n";
+    return s;
 }
 
 } // namespace
@@ -647,23 +3519,73 @@ bool Install(std::string& error) {
         LOG_WARNING(wallsMissing.empty() ? std::string("[LevelLightShare] Per-point evaluation differs; no shadow from the walls of other stories")
                                          : "[LevelLightShare] Walls of other stories: " + GameAddr::NotAvailable(wallsMissing));
     g_evalClasses = classes;
+    // Indoor lamps through stair openings: optional part, only with the evaluation wrapped (it tests the floor per point)
+    std::string indoorWhy = classes ? "" : "the light evaluation is not wrapped";
+    g_indoorReady = classes && InstallIndoor(indoorWhy);
+    if (!g_indoorReady) LOG_WARNING("[LevelLightShare] Indoor lamps through stair openings: " + indoorWhy);
+    // Wall light lined up with the wall (5.): optional part, both calls or none. The blur must read its passes and mode
+    // where the addresses came from (mov ecx,[passes] at +0x1E, cmp byte [mode],0 at +0x86) and blur class 2 only.
+    std::vector<MemPatch::PatchLocation> alignPatches;
+    bool align = GameAddr::Have({Id::WallSamplesCall, Id::WallSamples, Id::WallBlurCall, Id::WallBlur, Id::WallBlurPasses, Id::WallBlurMode}) &&
+                 CallsTarget(kWallSamplesCall, kWallSamples) && CallsTarget(kWallBlurCall, kWallBlur) &&
+                 std::memcmp(reinterpret_cast<const void*>(kWallBlur + 0x0D), "\x83\xBE\xF4\x00\x00\x00\x02", 7) == 0 &&
+                 std::memcmp(reinterpret_cast<const void*>(kWallBlur + 0x1E), "\x8B\x0D", 2) == 0 && *reinterpret_cast<const uint32_t*>(kWallBlur + 0x20) == kWallBlurPasses &&
+                 std::memcmp(reinterpret_cast<const void*>(kWallBlur + 0x86), "\x80\x3D", 2) == 0 && *reinterpret_cast<const uint32_t*>(kWallBlur + 0x88) == kWallBlurMode;
+    // The batch solve lights the rows beyond the edges too: it must be the function whose LightPointWithAllLights call
+    // the point hooks wrap (0x6A3336 lies 0x166 into it on Steam)
+    align = align && GameAddr::Have({Id::WallSolveCall, Id::WallSolve}) && CallsTarget(kWallSolveCall, kWallSolve) && kBatchSolveCall > kWallSolve &&
+            kBatchSolveCall - kWallSolve < 0x300;
+    align = align && Redirect(kWallSamplesCall, kWallSamples, reinterpret_cast<const void*>(&WallSamplesHook), &alignPatches) &&
+            Redirect(kWallSolveCall, kWallSolve, reinterpret_cast<const void*>(&WallSolveHook), &alignPatches) &&
+            Redirect(kWallBlurCall, kWallBlur, reinterpret_cast<const void*>(&WallBlurHook), &alignPatches);
+    if (!align) MemPatch::RestoreAll(alignPatches);
+    else g_alignPatches = std::move(alignPatches);
+    g_alignReady = align;
+    if (!align) LOG_WARNING("[LevelLightShare] Seamless walls between floors: the game code differs, left as the game has it");
+    else if (g_alignOn) g_alignRequeue = true; // walls lit before this lined up too
+    if constexpr (!kPublicBuild) {
+        std::string why;
+        if (!EntryChain::Install(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateNoteHook), &why) ||
+            !EntryChain::Install(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateFlagNoteHook), &why))
+            LOG_WARNING("[LevelLightShare] Invalidate notes for the F8 journal not installed: " + why);
+    }
+    g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
     RefreshSoon();
-    LOG_INFO(std::format("[LevelLightShare] Installed (walls of the light's story: {} of {} classes)", classes, std::size(kClasses)));
+    LOG_INFO(std::format("[LevelLightShare] Installed (walls of the light's story: {} of {} classes; indoor lamps through stair openings: {}; seamless walls between floors: {})",
+                         classes, std::size(kClasses), g_indoorReady ? "yes" : "no", g_alignReady ? "yes" : "no"));
     return true;
 }
 
 void Uninstall() {
     if (!g_installed) return;
     g_installed = false;
+    g_indoorReady = false;
+    g_lodReady = false;
     g_ctx = {};
+    g_ambReady = false;
+    MemPatch::RestoreAll(g_lodPatches);
+    g_lodPatches.clear();
+    const bool alignWasOn = g_alignReady.exchange(false) && g_alignOn; // the walls as the game lights them, again (below)
+    MemPatch::RestoreAll(g_alignPatches);
+    g_alignPatches.clear();
+    ClearBoosts();
+    ClearAmbient();
+    MemPatch::RestoreAll(g_indoorPatches);
+    g_indoorPatches.clear();
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
     g_evalClasses = 0;
+    if constexpr (!kPublicBuild) {
+        EntryChain::Remove(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare);
+        EntryChain::Remove(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare);
+    }
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_clearRooms = true;
     RefreshSoon(); // the lists drop the other floors' lamps at their next gather
+    // OnPresent (which runs queued relights) stops with Night Lighting: relight now when on the render thread
+    if (alignWasOn && ThreadId() == g_renderThread.load()) RelightAllRooms("Seamless walls between floors off");
     LOG_INFO("[LevelLightShare] Uninstalled");
 }
 
@@ -672,9 +3594,152 @@ bool IsInstalled() { return g_installed.load(); }
 void OnPresent() {
     g_renderThread = ThreadId();
     if (g_refreshRequested.exchange(false)) RefreshAllLots();
+    if (g_alignRequeue.exchange(false)) LevelLightShare::RelightAllRooms(g_alignOn.load() ? "Seamless walls between floors on" : "Seamless walls between floors off");
+    // Whole-world relights asked in a burst (install, options, sliders) run once, 250 ms after the last ask (29/09: 59 + 83 rooms
+    // and 25 lot stories within 4 s at install)
+    if (DWORD at = g_relightAllAt.load(std::memory_order_relaxed); at && static_cast<int32_t>(GetTickCount() - at) >= 0 && g_relightAllAt.compare_exchange_strong(at, 0)) {
+        std::string why;
+        {
+            std::lock_guard<std::mutex> lk(g_relightWhyMx);
+            why.swap(g_relightWhy);
+        }
+        RequeueAllRooms(why.c_str());
+    }
+    // 4.: floors set or removed, then quiet for 1.5 s: their lots' rooms near openings gather again (BeforeRoomUpdate)
+    DWORD ft = g_floorTick.load(std::memory_order_relaxed);
+    if (ft && GetTickCount() - ft > 1500 && g_floorTick.compare_exchange_strong(ft, 0)) {
+        std::lock_guard<std::mutex> lk(g_levelsMx);
+        g_lastLevel = 0; // the next floor change of the same object marks it again
+        for (auto it = g_dirtyLevels.begin(); it != g_dirtyLevels.end();) {
+            const uintptr_t mgr = LevelManager(it->first);
+            if (mgr) {
+                if (g_dirtyMgrs.size() < 256 && std::find(g_dirtyMgrs.begin(), g_dirtyMgrs.end(), mgr) == g_dirtyMgrs.end()) g_dirtyMgrs.push_back(mgr);
+                it = g_dirtyLevels.erase(it);
+            } else if (!LevelAlive(it->first) || --it->second <= 0)
+                it = g_dirtyLevels.erase(it);
+            else
+                ++it; // no lighting manager yet (the lot is still loading): again after the next wait
+        }
+        if (!g_dirtyLevels.empty()) g_floorTick = GetTickCount() | 1;
+        if (!g_dirtyMgrs.empty()) {
+            g_dirtyReady = true;
+            g_floorRefreshes.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // Rooms still holding a lamp switched off: gathered again
+    if (const DWORD now = GetTickCount(); now - g_staleAt >= kStaleEvery && kLightBright) {
+        g_staleAt = now;
+        if (g_staleSent.size() > 4096) g_staleSent.clear();
+        ForEachRoomImpl(&VisitStale, nullptr, nullptr, kStaleRoomsAge, true);
+    }
 }
 
-void OnWorldChanged() { g_clearRooms = true; }
+void OnWorldChanged() {
+    g_clearRooms = true;
+    g_roomRefs.clear(); // Rooms at Night's room list (review H1)
+    g_roomRefTrackers.clear();
+    g_staleSent.clear();
+    ClearBoosts(); // the rooms of the previous world (their addresses get reused)
+    ClearAmbient();
+    ClearJournal();
+    {
+        std::lock_guard<std::mutex> lk(g_deferredMx);
+        g_deferred.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_depsMx); // the lamp bursts of the previous world
+        g_depWait.clear();
+        g_depSentAt.clear();
+    }
+    std::lock_guard<std::mutex> lk(g_ghostMx);
+    g_ghosts.clear();
+}
+
+// A world loaded at night gets no lot relight (NightTerrainRelight, g_pendingLoad), and its lots were solved during the
+// load screen: a lot may find its floors, openings and lamps then in any order, and its settle could fire before the
+// lot was complete (29/09, user: "only when I opened the game some lights failed"; Night Lighting off and on fixed it).
+// One more round of the rooms near openings once the world is drawn (only those rooms, not the whole lots).
+// Development tools: the story each loaded lot shows (story 0 manager +0x284, the "cam" of the solve journal: it follows
+// the floor switches of the lot being played; +0x288 is set on more than one lot, so no single lot is picked here)
+bool DisplayLevelRaw(uintptr_t tracker, int& story) {
+    __try {
+        const uintptr_t mgr = StoryManager(tracker, 0);
+        if (!mgr) return false;
+        story = *reinterpret_cast<const int*>(mgr + 0x284);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+std::vector<std::string> TraceRooms(bool reset) { return TraceRoomsImpl(reset); }
+
+int DisplayLevels(uint32_t* lots, int* stories, int max) {
+    LoadAddresses();
+    if (!kRootPtr) return 0;
+    uintptr_t trackers[256];
+    const int count = AllTrackers(trackers, 256);
+    int n = 0;
+    for (int t = 0; t < count && n < max; t++) {
+        int story = 0;
+        if (!DisplayLevelRaw(trackers[t], story)) continue;
+        lots[n] = LotIdPart(trackers[t], 0x90);
+        stories[n++] = story;
+    }
+    return n;
+}
+
+void OnWorldLive() {
+    g_indoorGen.fetch_add(1);
+    if constexpr (!kPublicBuild) LOG_INFO("[LevelLightShare] World live: the rooms near stair openings of every lot gather once more");
+}
+
+void SetIndoor(bool on) {
+    if (g_indoorOn.exchange(on) != on) g_indoorGen.fetch_add(1); // every lot's rooms near openings gather again
+}
+
+void SetAllFloors(bool on) {
+    if (g_allFloors.exchange(on) != on && g_lodReady) RelightAllRooms(on ? "Every floor in full detail on" : "Every floor in full detail off");
+}
+
+void SetWallAlign(bool on) {
+    if (g_alignOn.exchange(on) != on && g_alignReady) g_alignRequeue = true; // every room lights its walls again
+}
+
+std::vector<std::pair<unsigned long, std::string>> JournalSince(unsigned long fromTick) {
+    std::vector<std::pair<unsigned long, std::string>> out;
+    for (auto& [t, s] : JournalLinesSince(fromTick)) out.emplace_back(t, std::move(s));
+    return out;
+}
+
+int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued) { return ForEachRoomImpl(visit, ctx, queued); }
+
+// Every room of one loaded lot (stories -4..7, room 0 too) lights again: a lamp of it switched or moved (lamp_mark_filter.cpp,
+// 30/09). Render thread. Returns the rooms sent, -1 when the lot is no longer loaded.
+int RelightLot(uintptr_t tracker, const char* why) {
+    LoadAddresses();
+    if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert || !tracker) return -1;
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    if (std::find(trackers, trackers + lots, tracker) == trackers + lots) return -1;
+    int queued = 0;
+    for (int level = -4; level <= 7; level++) queued += RequeueStory(tracker, level);
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again", why, queued, LotIdPart(tracker, 0x90)));
+    return queued;
+}
+
+void RelightAllRooms(const char* why) {
+    LoadAddresses();
+    if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert) return;
+    if (!g_installed) { // nothing would run the coalesced relight (OnPresent runs only while Night Lighting is on): now
+        RequeueAllRooms(why);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_relightWhyMx);
+        if (g_relightWhy.find(why) == std::string::npos) g_relightWhy += (g_relightWhy.empty() ? "" : " + ") + std::string(why);
+    }
+    g_relightAllAt.store((GetTickCount() + 250) | 1, std::memory_order_relaxed);
+}
 
 void SetDiagArmed(bool on) { g_diagArmed = on; }
 bool DiagArmed() { return g_diagArmed.load(); }
@@ -685,11 +3750,13 @@ std::string DiagText() {
     {
         std::lock_guard<std::mutex> lk(g_diagMx);
         recs.swap(g_diag);
+        g_diagIndoorUsed = g_diagOutdoorUsed = 0;
     }
     if (!wasArmed && recs.empty())
         return std::format("\n==== ANDARES (luz externa entre andares) ====\n{}\nNo samples: recording them was off (it costs time in every light solve). It is on "
                            "now: let the lot relight (or use \"Relight lots now\") and save the diagnostics again.\n",
-                           Status());
+                           Status()) +
+               IndoorDiagText() + SeamDiagText() + JournalText();
     std::sort(recs.begin(), recs.end(), [](const DiagRec& a, const DiagRec& b) {
         if (a.light != b.light) return a.light < b.light;
         if (a.level != b.level) return a.level < b.level;
@@ -723,16 +3790,34 @@ std::string DiagText() {
                          m.gameBlock, m.gameNone, m.mineTested, m.mineBlock);
     s += "\n-- pontos --\n";
     for (const DiagRec& r : recs)
-        s += std::format("A{} L{:08X} tipo{} casa{} luz({:.2f} {:.2f} {:.2f}) p({:.2f} {:.2f} {:.2f}) n({:.2f} {:.2f} {:.2f}) cor={:.3f} jogo={} t={:.2f} nosso={:.2f} lote={} filtro={}\n",
+        s += std::format("A{} L{:08X} tipo{} casa{} luz({:.2f} {:.2f} {:.2f}) p({:.2f} {:.2f} {:.2f}) n({:.2f} {:.2f} {:.2f}) cor={:.3f} jogo={} t={:.2f} nosso={:.2f} lote={} filtro={} comodo={}{}\n",
                          r.level, r.light, r.type, r.home, r.lpos[0], r.lpos[1], r.lpos[2], r.p[0], r.p[1], r.p[2], r.n[0], r.n[1], r.n[2], r.lum, r.game, r.gameT, r.mine,
-                         r.batch ? 1 : 0, r.culledList ? 1 : 0);
-    return s;
+                         r.batch ? 1 : 0, r.culledList ? 1 : 0, r.room,
+                         r.why < 0 ? std::string() : std::format(" | cruza=({},{},q{}) h={:.2f} t={:.3f} chave={:08X}:{:08X} baixo=comodo{} motivo={}", r.cx, r.cz, r.cq, r.ch, r.ct, r.keyHi, r.keyLo, r.belowRoom, r.why));
+    return s + IndoorDiagText() + SeamDiagText() + JournalText();
 }
 
 std::string Status() {
-    return std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked{}{}",
+    return std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
+                       "lamps through stair openings: {} | seamless walls between floors: {}{}{}{}{}",
                        g_installed ? "Active" : "Off", g_shared.load(), g_queued.load(), g_evalClasses.load(), std::size(kClasses), g_wallTests.load(), g_wallBlocked.load(),
+                       !g_indoorReady ? std::string("not installed")
+                                      : std::format("{}, {} taken, {} points tested ({} behind a floor, {} behind a wall), {} rooms updated, lighting detail {} ({} raised)",
+                                                    g_indoorOn ? "on" : "off", g_indoorAdded.load(), g_indoorTests.load(), g_indoorFloorBlocked.load(),
+                                                    g_indoorWallBlocked.load(), g_indoorQueued.load(), g_lodReady ? "on" : "not installed", g_lodBoosts.load()) +
+                                          std::format(", stacked rooms ambient {} ({} merges), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
+                                                      "one update {} (lamps added, moved or removed, sent at once {}; lamp values changed without a move {}; outside of a floor marked changed without a change {}), lots rebuilt {}, floor objects made {}, rooms held until their solve ended {}, rooms still holding a lamp switched off gathered again {}",
+                                                      g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()),
+                       !g_alignReady ? std::string("not installed")
+                                     : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
+                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",
+                                                   g_alignOn ? "on" : "off", g_alignRows.load(), g_alignOdd.load(), g_ghostWalls.load(), g_ghostPoints.load(),
+                                                   g_alignEdges.load()),
                        g_otherThread.load() ? std::format(" | on another thread: {}", g_otherThread.load()) : "",
+                       g_normCrossOnly.load() || g_normNotFinite.load()
+                           ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
+                           : "",
+                       g_basisTests.load() ? std::format(" | directional maps: lamps of another story tested {}, behind a floor {}", g_basisTests.load(), g_basisBlocked.load()) : "",
                        g_faults.load() ? std::format(" | failures: {}", g_faults.load()) : "");
 }
 

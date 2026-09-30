@@ -41,8 +41,8 @@ from the combined build.
 |---|---|---|---|---|---|
 | (feature toggle) | `enabled` | bool | false | | Install / uninstall the patch |
 | Method | `metodo` | enum int | 1 | 0 FXAA, 1 SMAA | "SMAA: smoother long edges and sharp textures (3 passes). FXAA: lighter, a little blurrier." |
-| Quality (shown when SMAA) | `qualidadeSmaa` | enum int | 2 | 0 Low, 1 Medium, 2 High, 3 Ultra | The reference SMAA presets (table below). "High and Ultra also handle diagonals and corners; Ultra catches fainter edges (good at night)." |
-| Quality (shown when FXAA) | `qualidade` | enum int | 1 | 0 Fast, 1 Balanced, 2 High | FXAA edge-search length |
+| Quality (shown when SMAA) | `qualidadeSmaa` | enum int | 2 | 0 Low, 1 Medium, 2 High, 3 Ultra, 4 Extreme | The reference SMAA presets and Extreme (table below). "High and above also handle diagonals and corners; Ultra catches fainter edges (good at night); Extreme follows very long edges (4K) and colour edges." |
+| Quality (shown when FXAA) | `qualidade` | enum int | 1 | 0 Fast, 1 Balanced, 2 High, 3 Extreme | FXAA edge-search length |
 | Advanced > Softness | `suavidade` | float | 0.5 | 0 .. 1 | FXAA sub-pixel amount (`cParams.x`). Disabled (greyed) with SMAA |
 | Advanced > Sensitivity | `sensibilidade` | float | 0.125 | 0.063 .. 0.333 | FXAA edge threshold (`cParams.y`); the minimum threshold is `sensitivity / 3` (`cParams.z`). Disabled with SMAA |
 | Advanced > Reset to defaults | | button | | | `g.p = Params{}` (all fields, including `debugView`) |
@@ -62,6 +62,16 @@ for SMAA", "ERROR: SMAA did not compile (see S3SS_LOG.txt)", "ERROR: the shader 
 | 1 Medium | 0.10 | 8 | off | off |
 | 2 High (default) | 0.10 | 16 | 8 | 25 |
 | 3 Ultra | 0.05 | 32 | 16 | 25 |
+| 4 Extreme (30/09) | 0.05 | 112 (the reference's maximum) | 20 (its maximum) | 25; **colour** edge detection (`SMAAColorEdgeDetectionPS`, macro `APEX_SMAA_COLOR_EDGES`) |
+
+**Extreme (30/09, user: "the anti-aliasing still does not leave things perfectly straight, even on Ultra, in both
+modes"; built 31ab53c8, not tested in game yet).** At 4K one step of a nearly horizontal edge (a roof, a floor line) can
+be longer than Ultra's reach (32 steps x 2 pixels per side), and SMAA then leaves it jagged; Extreme searches up to 112
+steps and 20 diagonal steps, and detects edges on every colour channel (edges between colours of the same brightness,
+which luma detection misses). FXAA got an Extreme level too (16 steps: 1, 1, 1, 1, 1.5, 2 x6, 4, 4, 8, 8, 16 = 57.5 texels
+each way, against High's 30.5). Offline fxc (ps_3_0, /O3): SMAA edges 35 -> 43 slots (colour), weights 442 (the search is a
+loop: unchanged), blend 62; FXAA Extreme 694 slots (High 538). Not solved by any post-process AA: detail thinner than a
+pixel (wires, thin rails) and shimmer in motion; that needs supersampling (rendering at a higher resolution).
 
 Each preset is a separate compile of the three entry points (macros per preset, `SmaaShaders`), compiled on first use
 and cached for the session. **Standalone, 2026-09-28:** all 12 SMAA variants and the 3 FXAA qualities are compiled at
@@ -262,3 +272,5 @@ draws, then the first depth-off back-buffer draw) and on the game's back buffer 
 - Whether the Picture copy / PostScene same-draw race happens in practice (frames without a bloom strip).
 - Whether the game's in-game screenshot contains the smoothed image (it is taken from the back buffer at an unknown
   point).
+
+**Supersampling note (30/09, user: players at 1080p found the game very jagged with Edge Smoothing on).** At 1200 lines or fewer the card shows "Smoothest at 1080p: NVIDIA DSR or AMD VSR with a higher game resolution" (tooltip: where to turn it on; it costs more and the game's interface gets smaller). The driver renders at a higher resolution and scales down to the screen: the only thing that smooths detail thinner than a pixel. DLSS / DLAA / FSR 2+ are temporal (jittered camera, motion vectors) and have no D3D9 path; see NOTAS / the conversation of 30/09.

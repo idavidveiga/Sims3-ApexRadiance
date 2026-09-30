@@ -14,7 +14,7 @@ colour tracks and keyboard use (sections below).
 
 ## Files
 - `apex_gui.cpp`: window, header, sidebar, pages, search results, Profiles, welcome tour, undo toast, status
-  bar, first-launch hint. Header: logo tile, name and tagline (centred on the tile), the search field, Night/Day pill
+  bar, first-launch hint. Header: the logo (ui/logo.h: ui/apex_logo.png as a 128x128 texture with mips, ui/logo_data.h; the old violet tile with `APEX_LOGO_LETTER` only if the texture cannot be made), name and tagline (centred on the logo), the search field, Night/Day pill
   (moon / sun), frame-time pill, close (x); all vertically centred on the 32 px tile (narrow windows drop the Night/Day
   pill, then the frame-time pill, to keep the search field at least 110 px). Sidebar 170 px at scale 1 (or the 44 px
   icon rail) with group labels and, at the bottom, the collapse button and the version; the page in a scrolling child;
@@ -37,8 +37,8 @@ not saved; `Go(page, &tab, n)` opens a page on a tab).
 
 | Page (sidebar icon) | Content |
 |---|---|
-| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing, Faster File Lookups (gauge; `ResourceLookupCache`), Lot Lighting While Moving (gauge; `LotLightingMotion`); both open the Performance page. |
-| WORLD > Lighting (moon-star) | Tabs **Lamps** (Night Lights card: master switch `NightTerrainRelight` + "Lamp color" Pink ... Warm white with a colour track, swatch and "Reload save" badge; then "Reset Night Lights"), **Ground** (Ground & Lots: street lamps light lots, lot lamps light the street, "Upper floors light the ground" = the separate `SplitLevelGroundLight` feature, shown on and disabled with "Already handled by Sims3SettingsSetter ..." when S3SS's own fix is on; light passes between floors; smooth ground light), **Objects** (every option shown, groups LAMP LIGHT and DOORS, COUNTERS AND FENCES; "Light stairs, railings, columns" has the "Reload save" badge; the DOORS group needs two Ground options: a note naming the missing one(s) and a primary "Turn it on" / "Turn both on"), **Buildings** (groups WALLS and ROOFS). While Night Lights is off, the other tabs show a note and a primary "Turn on Night Lights" button. |
+| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing, Faster File Lookups (gauge; `ResourceLookupCache`), Faster Room Lighting (gauge; `RoomLightQueue`, since 2026-09-29), Lot Lighting While Moving (gauge; `LotLightingMotion`); the three open the Performance page. |
+| WORLD > Lighting (moon-star) | Tabs **Lamps** (Night Lights card: master switch `NightTerrainRelight` + "Lamp color" Pink ... Warm white with a colour track, swatch and "Reload save" badge; then "Reset Night Lights"), **Ground** (Ground & Lots: street lamps light lots, lot lamps light the street, smooth ground light, BRIGHTNESS), **Objects** (every option shown, groups LAMP LIGHT and DOORS, COUNTERS AND FENCES; "Light stairs, railings, columns" has the "Reload save" badge; the DOORS group needs two Ground options: a note naming the missing one(s) and a primary "Turn it on" / "Turn both on"), **Buildings** (Buildings card: groups WALLS and ROOFS; Rooms at Night card (moon, since 2026-09-29): "Darker unlit rooms" + Light left, Blue tint, Soft light on furniture), **Stories** (since 2026-09-29, the user asked for everything about stories in its own tab; Stories card (layers): "Upper floors light the ground" = the separate `SplitLevelGroundLight` feature, shown on and disabled with "Already handled by Sims3SettingsSetter ..." when S3SS's own fix is on; "Outdoor light between floors"; "Seamless walls between floors" and "Indoor light between floors" (Experimental), both disabled with a "Needs ..." note while "Outdoor light between floors" is off). While Night Lights is off, the other tabs show a note and a primary "Turn on Night Lights" button. |
 | WORLD > Water & Snow (waves-horizontal) | Tabs **Water** (Lamp Glow card while Night Lights is on, else "Lamp glow on ponds needs Night Lights" + "Turn on Night Lights"; Water Reflections card = `reflexoNoLago`, with "Needs Night Lights (Lighting page)" / "Needs Depth Blur (Depth Blur page)" and primary "Turn on ..." buttons) and **Snow** (walked-on sidewalks; needs Night Lights; needs "Street lamps light lots": note + "Turn it on"). |
 | IMAGE > Color (palette) | The Picture card header above the tabs (switch = `[qol.picture] enabled`; GPU cost chip; hold to compare (eye) and before / after (columns-2) buttons, disabled while Picture is off, never saved). Tabs **Basic** (brightness, contrast, saturation, temperature, sharpness, smooth gradients), **Tones** (midtones, shadows, highlights, blacks), **Color** (tint, vibrance; FILM TONES = split toning, hue sliders on a hue-circle track with a swatch; COLOR MIXER + "Reset mixer"), **Detail** (clarity, vignette, vignette size); each tab ends with "Reset Picture". Rows stay visible, greyed out, while Picture is off. |
 | IMAGE > Depth Blur (aperture) | Note: turn off the game's own Edge Smoothing. Depth Blur card (GPU cost chip): Focus Auto / Fixed (segmented), Blur amount (%); Auto: Sharp area Small / Medium / Large; Fixed: Distance Near / Medium / Far + "Fine-tune distance" (0-100% of 0..0.5) + Transition; Sharp in map view; Advanced (rare knobs): Strength, Quality, Focus speed (Auto only, "0.3 s"), Blur the sky, Glowing lights; "Reset Depth Blur". Mode-specific rows are drawn (and searchable) only in their mode. |
@@ -226,10 +226,34 @@ option, so it stays a plain note.
 The first time the menu opens in a session while `[ui] welcome_done` is false, the content area shows the tour (a card
 with step dots; the sidebar and the search field are disabled meanwhile): 1) "Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 2) "Your menu key" (the key +
 Change). Buttons: Skip (link, step 1), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
-"Show the welcome tour again". The menu is never opened automatically: instead, once features run at a launch where the
-tour was never done and the menu has not been opened, a small non-blocking hint (no input, no focus) shows in the top-right
-corner for 10 s: "Apex Radiance is ready · press <menu key>" (it fades out; `Client::AlwaysDraw` keeps ImGui frames going
-meanwhile).
+"Show the welcome tour again". The menu is never opened automatically: instead, at every launch (30/09: it used to be only
+while the tour was never done), once features run and 3 s after the world is on screen (Night Lighting's signal; at once
+without it), a small non-blocking note (no input, no focus) with the logo shows in the top-right corner for 10 s or until
+the menu is opened: "Apex Radiance is ready · press <menu key>" (it fades out; `Client::AlwaysDraw` keeps ImGui frames
+going meanwhile).
+
+**Shortcuts and the first-start prompt (30/09).** Every Apex shortcut is eaten by the overlay's window procedure before
+the game sees it (the menu chord as before; the others through `Client::HotkeyDown` -> `Hotkeys::OnKeyDown`), so no game
+key can clash. They come in presets (`hotkeys.h`, `[ui] hotkey_preset`; missing = the F keys, as earlier versions):
+
+| | Letters (recommended) | Numbers | F keys |
+|---|---|---|---|
+| Menu (`toggle_key`) | Ctrl+Shift+R | Ctrl+Shift+1 | Ctrl+Shift+F11 |
+| Compare with the game | Ctrl+Shift+T | Ctrl+Shift+2 | Ctrl+Shift+F10 |
+| Refresh the lighting | Ctrl+Shift+G | Ctrl+Shift+3 | Ctrl+Shift+F9 |
+| Dev: Light Probe / Light Diag / recorder / Frame Capture | V / B / X / F | 4 / 5 / 6 / 7 | F7 / F8 / F6 / F5 |
+
+Letters: left-hand keys next to each other, in the same place on QWERTY, ABNT2, AZERTY and QWERTZ, no Fn (A Q W Z move
+on some layouts; C is the cheat console; D S E move the camera; M is the map). Numbers: easiest to remember. F keys: the
+earlier keys. Compare turns Night Lighting, Depth Blur, Edge Smoothing and the picture filters off and back (not saved;
+a note shows at the top while off). Refresh does what the Developer buttons "Rebuild terrain light now" and "Relight lots
+now" do plus every room and the object rigs (NightLighting::RefreshAll). `compare_key` / `refresh_key` hold the player's
+own keys (none yet in the menu: reserved).
+While `[ui] key_chosen` is false (missing = false: every existing config sees it once), a centred window shows the three
+presets with their keys (Letters marked recommended) and "Customize…" (an own menu key, the rest on Letters). A choice
+sets the preset, the menu key and `key_chosen`, closes the window and starts the 10 s "press <key>" hint; pressing the
+current menu key closes it keeping that key (F keys preset). Settings > Menu: "Shortcuts" (the preset) and the keys of
+the quick actions, then "Menu key" (Change: any key).
 
 ### Status bar
 A thin footer under the sidebar and page (hairline, then one line of small text): left "All changes saved" (circle-check,
@@ -275,7 +299,7 @@ Developer page stay English.
 - Sentence case for labels, tabs and buttons ("Street lamps light lots"); Title Case only for page and card titles
   ("Ground & Lots", "Lamp Glow").
 - Labels: at most ~32 characters, no final period, positive (a switch says what turning it on does: "Sharp in map
-  view", "Light passes between floors", not "Off in ..." / "... aren't cut").
+  view", "Outdoor light between floors", not "Off in ..." / "... aren't cut").
 - Descriptions, notes, button and segment tooltips: one short sentence, ideally at most 60 characters (never more than
   ~90), **no final period**; join two ideas with a semicolon ("How bright lit roofs get; 60% is the default").
 - Defaults are written "100% is the default" / "0% is off" / "100% is unchanged".
@@ -326,3 +350,9 @@ sims3fiend (Sims3SettingsSetter, the model for the rewritten framework), FXAA 3.
 first shared by Arro.", and "Apex Radiance by @loinyx". Do not mention Arro or the Split-Level fix anywhere else
 (feature descriptions, tooltips, release notes, promo text); functional notices about official S3SS's own fix being on
 ("Already handled by Sims3SettingsSetter (its Split-Level Lighting Fix is on)") stay.
+- Brand note: removed 30/09 (the faint name in the bottom-right corner was drawn with the terrain, often still under the load screen, and the user did not see it); the "is ready" note above now shows at every start instead.
+- Recommendations (30/09): DXVK (detected by the loaded d3d9.dll: not in the Windows folder and "dxvk" inside the file)
+  and official Sims3SettingsSetter. Only the missing ones are listed, each with Download (GitHub releases): at every start
+  a note in the top-left corner (before the shortcuts note; "Not now" = this session, "Don't show again" = `[ui]
+  recommend_s3ss = false`, now for both), the Overview card "Recommended for Apex Radiance", and Settings > Compatibility
+  (DXVK and Sims3SettingsSetter rows with Installed / Not installed, the RECOMMENDED group while one is missing).

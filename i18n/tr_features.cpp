@@ -95,6 +95,18 @@ const I18n::Entry kEntries[] = {
      "Retient où le jeu a trouvé chaque terrain quand il le cherche par son ID, au lieu de parcourir tout le monde à chaque fois. Moins de "
      "saccades quand l'éclairage des terrains se met à jour et moins de travail pour les scripts du jeu. Fait partie d'" APEX_PRODUCT_NAME
      ". Crédits : @loinyx"},
+    {"Rooms light up much sooner when you enter a lot, change floors or switch lamps: the lot you are on and the floor you look at "
+     "go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. Part of " APEX_PRODUCT_NAME ". "
+     "Credits: @loinyx",
+     "Os cômodos acendem bem mais rápido quando você entra num lote, troca de andar ou mexe nas luzes: o lote onde você está e o andar "
+     "que você olha vêm primeiro, os cômodos chegam ao visual final em menos etapas e vários cômodos pequenos são iluminados por quadro. "
+     "Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Las habitaciones se iluminan mucho antes al entrar en un solar, cambiar de piso o tocar las lámparas: el solar donde estás y el piso "
+     "que miras van primero, las habitaciones llegan a su aspecto final en menos pasos y se iluminan varias habitaciones pequeñas por "
+     "fotograma. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Les pièces s'éclairent bien plus vite quand vous entrez sur un terrain, changez d'étage ou touchez aux lampes : le terrain où vous "
+     "êtes et l'étage que vous regardez passent en premier, les pièces atteignent leur aspect final en moins d'étapes et plusieurs petites "
+     "pièces sont éclairées par image. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
 
     // ---- "Not available" note of a feature (ApexPatch::UnavailableReason) ----
     {"Not available on {}", "Não disponível em {}", "No disponible en {}", "Non disponible sur {}"},

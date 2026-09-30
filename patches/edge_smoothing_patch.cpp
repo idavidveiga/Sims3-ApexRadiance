@@ -141,10 +141,14 @@ struct QualityLevel {
     const char* steps;
     const char* sizes;
 };
-constexpr QualityLevel kQualities[3] = {
+// Extreme (30/09, user: "the anti-aliasing still does not leave things perfectly straight, even on Ultra, in both modes"):
+// finer first steps and a longer reach (57.5 texels each way against High's 30.5), for long, nearly straight edges at 4K.
+constexpr int kFxaaLevels = 4;
+constexpr QualityLevel kQualities[kFxaaLevels] = {
     {"5", "1.0, 1.5, 2.0, 4.0, 12.0"},
     {"8", "1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0"},
     {"12", "1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0"},
+    {"16", "1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 16.0"},
 };
 
 // ---- SMAA 1x (Jimenez, Echevarria, Masia, Navarro, Gutierrez 2012; reference code, MIT license, in third_party/smaa) ----
@@ -170,7 +174,11 @@ float4 SmaaEdgePS(float2 uv : TEXCOORD0) : COLOR0
 {
     float4 offset[3];
     SMAAEdgeDetectionVS(uv, offset);
+#ifdef APEX_SMAA_COLOR_EDGES
+    return float4(SMAAColorEdgeDetectionPS(uv, offset, colorTex), 0, 0); // every channel: also edges of equal brightness
+#else
     return float4(SMAALumaEdgeDetectionPS(uv, offset, colorTex), 0, 0);
+#endif
 }
 float4 SmaaWeightPS(float2 uv : TEXCOORD0) : COLOR0
 {
@@ -198,8 +206,15 @@ struct SmaaPreset {
     float threshold;
     const char* steps;
     const char* stepsDiag; // nullptr = diagonal and corner detection off
+    bool colorEdges;       // the reference's colour edge detection instead of luma
 };
-constexpr SmaaPreset kSmaaPresets[4] = {{0.15f, "4", nullptr}, {0.1f, "8", nullptr}, {0.1f, "16", "8"}, {0.05f, "32", "16"}};
+// Extreme (30/09, beyond the reference presets, within its ranges): at 4K one step of a nearly horizontal edge (a roof, a
+// floor line) can be longer than Ultra's reach (32 search steps, 2 pixels each, per side), and SMAA then leaves it jagged;
+// 112 steps (the reference's maximum) and 20 diagonal steps (its maximum) follow such edges, and the colour edge detection
+// also catches edges between colours of the same brightness, which the luma detection misses
+constexpr int kSmaaLevels = 5;
+constexpr SmaaPreset kSmaaPresets[kSmaaLevels] = {{0.15f, "4", nullptr, false}, {0.1f, "8", nullptr, false}, {0.1f, "16", "8", false},
+                                                  {0.05f, "32", "16", false}, {0.05f, "112", "20", true}};
 
 // ---- every variant compiled at start-up on a background thread (framework/shader_cache.h) ----
 // The render thread only creates the shader objects from the kept bytecode (first use, and after ReleaseShaders).
@@ -233,21 +248,24 @@ ShaderCache::Id AddSmaa(int q, int pass, const char* tag) {
         d.macros.emplace_back("SMAA_DISABLE_DIAG_DETECTION", "1");
         d.macros.emplace_back("SMAA_DISABLE_CORNER_DETECTION", "1");
     }
+    if (kSmaaPresets[q].colorEdges) d.macros.emplace_back("APEX_SMAA_COLOR_EDGES", "1");
     d.priority = q == 2 ? 0 : 1;
     return ShaderCache::Add(std::move(d));
 }
-const ShaderCache::Id kFxaaPsId[3] = {AddFxaa(0, "EdgeSmoothing FXAA (Fast)"), AddFxaa(1, "EdgeSmoothing FXAA (Balanced)"), AddFxaa(2, "EdgeSmoothing FXAA (High)")};
-const ShaderCache::Id kSmaaPsId[4][3] = {
+const ShaderCache::Id kFxaaPsId[kFxaaLevels] = {AddFxaa(0, "EdgeSmoothing FXAA (Fast)"), AddFxaa(1, "EdgeSmoothing FXAA (Balanced)"), AddFxaa(2, "EdgeSmoothing FXAA (High)"),
+                                                AddFxaa(3, "EdgeSmoothing FXAA (Extreme)")};
+const ShaderCache::Id kSmaaPsId[kSmaaLevels][3] = {
     {AddSmaa(0, 0, "EdgeSmoothing SMAA edges (Low)"), AddSmaa(0, 1, "EdgeSmoothing SMAA weights (Low)"), AddSmaa(0, 2, "EdgeSmoothing SMAA blend (Low)")},
     {AddSmaa(1, 0, "EdgeSmoothing SMAA edges (Medium)"), AddSmaa(1, 1, "EdgeSmoothing SMAA weights (Medium)"), AddSmaa(1, 2, "EdgeSmoothing SMAA blend (Medium)")},
     {AddSmaa(2, 0, "EdgeSmoothing SMAA edges (High)"), AddSmaa(2, 1, "EdgeSmoothing SMAA weights (High)"), AddSmaa(2, 2, "EdgeSmoothing SMAA blend (High)")},
     {AddSmaa(3, 0, "EdgeSmoothing SMAA edges (Ultra)"), AddSmaa(3, 1, "EdgeSmoothing SMAA weights (Ultra)"), AddSmaa(3, 2, "EdgeSmoothing SMAA blend (Ultra)")},
+    {AddSmaa(4, 0, "EdgeSmoothing SMAA edges (Extreme)"), AddSmaa(4, 1, "EdgeSmoothing SMAA weights (Extreme)"), AddSmaa(4, 2, "EdgeSmoothing SMAA blend (Extreme)")},
 };
 
 struct Params {
     int method = 1;           // 0 FXAA, 1 SMAA
     int quality = 1;          // FXAA: 0 fast, 1 balanced, 2 high
-    int smaaQuality = 2;      // SMAA: 0 low, 1 medium, 2 high, 3 ultra
+    int smaaQuality = 2;      // SMAA: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme
     float subpix = 0.5f;      // sub-pixel smoothing (thin lines, texture detail): 0 = off, 1 = soft
     float sensitivity = 0.125f; // edge threshold: lower = more edges smoothed
     bool debugView = false;
@@ -261,13 +279,13 @@ struct AaState {
     UINT width = 0, height = 0;
     IDirect3DTexture9* copyTex = nullptr;
     IDirect3DSurface9* copySurf = nullptr;
-    IDirect3DPixelShader9* ps[3] = {};
-    bool compileTried[3] = {};
+    IDirect3DPixelShader9* ps[kFxaaLevels] = {};
+    bool compileTried[kFxaaLevels] = {};
     // SMAA
     IDirect3DTexture9 *edgesTex = nullptr, *blendTex = nullptr, *areaTex = nullptr, *searchTex = nullptr;
     IDirect3DSurface9 *edgesSurf = nullptr, *blendSurf = nullptr;
-    IDirect3DPixelShader9* smaaPs[4][3] = {};
-    bool smaaTried[4] = {};
+    IDirect3DPixelShader9* smaaPs[kSmaaLevels][3] = {};
+    bool smaaTried[kSmaaLevels] = {};
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
@@ -308,11 +326,11 @@ void ReleaseResources() {
 }
 
 void ReleaseShaders() {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < kFxaaLevels; i++) {
         SafeRelease(g.ps[i]);
         g.compileTried[i] = false;
     }
-    for (int q = 0; q < 4; q++) {
+    for (int q = 0; q < kSmaaLevels; q++) {
         for (auto& ps : g.smaaPs[q]) SafeRelease(ps);
         g.smaaTried[q] = false;
     }
@@ -320,7 +338,7 @@ void ReleaseShaders() {
 
 // The three SMAA passes of one preset (created on first use from the precompiled bytecode)
 bool SmaaShaders(IDirect3DDevice9* dev, int q) {
-    q = std::clamp(q, 0, 3);
+    q = std::clamp(q, 0, kSmaaLevels - 1);
     if (g.smaaTried[q]) return g.smaaPs[q][0] && g.smaaPs[q][1] && g.smaaPs[q][2];
     g.smaaTried[q] = true;
     const char* entries[3] = {"SmaaEdgePS", "SmaaWeightPS", "SmaaBlendPS"};
@@ -357,7 +375,7 @@ bool CreateSmaaLookups(IDirect3DDevice9* dev) {
 }
 
 IDirect3DPixelShader9* ShaderFor(IDirect3DDevice9* dev, int q) {
-    q = q < 0 ? 0 : q > 2 ? 2 : q;
+    q = std::clamp(q, 0, kFxaaLevels - 1);
     if (g.ps[q] || g.compileTried[q]) return g.ps[q];
     g.compileTried[q] = true;
     std::string msg;
@@ -522,7 +540,7 @@ void DrawQuad(IDirect3DDevice9* dev) {
 
 // SMAA's three passes. Saves and restores what they touch (render target, samplers 0..4, shaders, constants c0..c1).
 void RunSmaa(IDirect3DDevice9* dev) {
-    const int q = std::clamp(g.p.smaaQuality, 0, 3);
+    const int q = std::clamp(g.p.smaaQuality, 0, kSmaaLevels - 1);
     if (!SmaaShaders(dev, q)) return;
     IDirect3DSurface9 *bb = nullptr, *oldRt = nullptr;
     if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
@@ -704,11 +722,12 @@ class EdgeSmoothingPatch : public ApexPatch {
         RegisterEnumSetting(&g.p.method, "metodo", 1, "SMAA: smoother long edges and sharp textures (3 passes). FXAA: lighter, a little blurrier.",
                             {"FXAA", "SMAA"});
         RegisterEnumSetting(&g.p.smaaQuality, "qualidadeSmaa", 2,
-                            "SMAA: the reference presets. High and Ultra also handle diagonals and corners; Ultra catches fainter edges (good at night).",
-                            {"Low", "Medium", "High", "Ultra"});
+                            "SMAA: the reference presets, and Extreme. High and above also handle diagonals and corners; Ultra catches fainter edges "
+                            "(good at night); Extreme follows very long edges (4K) and colour edges.",
+                            {"Low", "Medium", "High", "Ultra", "Extreme"});
         RegisterEnumSetting(&g.p.quality, "qualidade", 1,
                             "FXAA: how far each edge is followed. Higher = smoother long, nearly straight edges, costs a little more.",
-                            {"Fast", "Balanced", "High"});
+                            {"Fast", "Balanced", "High", "Extreme"});
         RegisterFloatSetting(&g.p.subpix, "suavidade", SettingWidget::Slider, 0.5f, 0.0f, 1.0f,
                              "Also smooths thin lines and sub-pixel detail. Higher = smoother, but textures get slightly softer.");
         RegisterFloatSetting(&g.p.sensitivity, "sensibilidade", SettingWidget::Slider, 0.125f, 0.063f, 0.333f,
@@ -777,14 +796,14 @@ class EdgeSmoothingPatch : public ApexPatch {
             changed = true;
         }
         if (g.p.method == 1) {
-            static const char* const kSmaa[] = {"Low", "Medium", "High", "Ultra"};
+            static const char* const kSmaa[] = {"Low", "Medium", "High", "Ultra", "Extreme"};
             static const char* const kSmaaTips[] = {"Fastest; smooths the clearest edges", "A good balance", "Also smooths diagonals and corners",
-                                                    "Catches faint edges too, great at night; costs the most"};
-            changed |= ApexUi::SegmentedRow("Quality##Smaa", "Higher smooths more edges and costs a bit more", "##SmaaQuality", &g.p.smaaQuality, kSmaa, 4, kSmaaTips, nullptr, kDefaults.smaaQuality);
+                                                    "Catches faint edges too, great at night", "Straightest long edges, best at 4K; costs the most"};
+            changed |= ApexUi::SegmentedRow("Quality##Smaa", "Higher smooths more edges and costs a bit more", "##SmaaQuality", &g.p.smaaQuality, kSmaa, 5, kSmaaTips, nullptr, kDefaults.smaaQuality);
         } else {
-            static const char* const kFxaa[] = {"Fast", "Balanced", "High"};
-            static const char* const kFxaaTips[] = {"Fastest", "A good balance", "Smoother long edges; costs a little more"};
-            changed |= ApexUi::SegmentedRow("Quality##Fxaa", "Higher smooths more edges and costs a bit more", "##FxaaQuality", &g.p.quality, kFxaa, 3, kFxaaTips, nullptr, kDefaults.quality);
+            static const char* const kFxaa[] = {"Fast", "Balanced", "High", "Extreme"};
+            static const char* const kFxaaTips[] = {"Fastest", "A good balance", "Smoother long edges; costs a little more", "Straightest long edges, best at 4K; costs the most"};
+            changed |= ApexUi::SegmentedRow("Quality##Fxaa", "Higher smooths more edges and costs a bit more", "##FxaaQuality", &g.p.quality, kFxaa, 4, kFxaaTips, nullptr, kDefaults.quality);
             // FXAA's own tuning (SMAA uses its reference presets), shown with FXAA only
             changed |= ApexUi::SliderPercent("Softness", &g.p.subpix, 0.0f, 1.0f, "Also smooths thin lines; higher softens textures a bit", kDefaults.subpix);
             // Shown as 0-100% (higher catches fainter edges); stored as the edge threshold (lower catches more)
@@ -794,6 +813,14 @@ class EdgeSmoothingPatch : public ApexPatch {
                 g.p.sensitivity = kHi - sensitivity * (kHi - kLo);
                 changed = true;
             }
+        }
+        // 30/09 (user: "many players at 1080p showed the game very jagged", with this on): at 1200 lines or fewer, the driver's
+        // own supersampling (render at a higher resolution, shown on the same screen) smooths what no post-process AA can
+        // (thin rails, wires, leaves)
+        if (g.height > 0 && g.height <= 1200) {
+            ApexUi::IconNote(IconId::Info, "Smoothest at 1080p: NVIDIA DSR or AMD VSR with a higher game resolution");
+            ApexUi::Tooltip("Turn it on in the NVIDIA Control Panel (DSR) or AMD Software (VSR), then pick 1440p or 4K in the game; "
+                            "it costs more and the game's interface gets smaller");
         }
         if (ApexUi::IconTextButton("Reset Edge Smoothing##EdgeSmoothing", IconId::RotateCcw, "Back to SMAA, High quality")) {
             ApexUi::ReportChange("Edge Smoothing reset");

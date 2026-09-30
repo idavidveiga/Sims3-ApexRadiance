@@ -201,8 +201,23 @@ const I18n::Entry kEntries[] = {
      "La plus rapide ; lisse les bords les plus visibles"},
     {"A good balance", "Um bom equilíbrio", "Un buen equilibrio", "Un bon compromis"},
     {"Also smooths diagonals and corners", "Também suaviza diagonais e cantos", "También suaviza diagonales y esquinas", "Lisse aussi les diagonales et les coins"},
-    {"Catches faint edges too, great at night; costs the most", "Pega até bordas fracas, ótima à noite; custa mais", "Detecta también bordes tenues, ideal de noche; cuesta más",
-     "Détecte aussi les bords faibles, idéal la nuit ; la plus coûteuse"},
+    {"Catches faint edges too, great at night", "Pega até bordas fracas, ótima à noite", "Detecta también bordes tenues, ideal de noche",
+     "Détecte aussi les bords faibles, idéal la nuit"},
+    {"Extreme", "Extrema", "Extrema", "Extrême"},
+    {"Smoothest at 1080p: NVIDIA DSR or AMD VSR with a higher game resolution",
+     "Mais suave em 1080p: DSR (NVIDIA) ou VSR (AMD) com uma resolução maior no jogo",
+     "Más suave en 1080p: DSR (NVIDIA) o VSR (AMD) con una resolución mayor en el juego",
+     "Plus lisse en 1080p : DSR (NVIDIA) ou VSR (AMD) avec une résolution de jeu plus élevée"},
+    {"Turn it on in the NVIDIA Control Panel (DSR) or AMD Software (VSR), then pick 1440p or 4K in the game; "
+     "it costs more and the game's interface gets smaller",
+     "Ligue no Painel de Controle NVIDIA (DSR) ou no AMD Software (VSR) e escolha 1440p ou 4K no jogo; "
+     "pesa mais e a interface do jogo fica menor",
+     "Actívalo en el Panel de control de NVIDIA (DSR) o en AMD Software (VSR) y elige 1440p o 4K en el juego; "
+     "cuesta más y la interfaz del juego se ve más pequeña",
+     "Activez-le dans le Panneau de configuration NVIDIA (DSR) ou AMD Software (VSR), puis choisissez 1440p ou 4K dans le jeu ; "
+     "cela coûte plus et l'interface du jeu devient plus petite"},
+    {"Straightest long edges, best at 4K; costs the most", "Bordas longas mais retas, ideal em 4K; custa mais",
+     "Bordes largos más rectos, ideal en 4K; cuesta más", "Longs bords les plus droits, idéal en 4K ; la plus coûteuse"},
     {"Fast", "Rápida", "Rápida", "Rapide"},
     {"Balanced", "Equilibrada", "Equilibrada", "Équilibrée"},
     {"Fastest", "A mais rápida", "La más rápida", "La plus rapide"},

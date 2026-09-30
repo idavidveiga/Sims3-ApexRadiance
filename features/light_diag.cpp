@@ -1,5 +1,6 @@
 // Light Diagnostics (part of Night Lighting)
 #include "light_diag.h"
+#include "hotkeys.h"
 // One button (or Ctrl+Shift+F8) writes Documents\...\Apex Radiance\ApexRadiance_LightDiag.txt with:
 //  - every light in the world (FUN_006acf70 enumerator): type, lot id, room, flags, on/off, colour, intensity, position
 //  - every loaded lot lighting manager (light update tree walk) and every room in it (room hash at mgr+0x230):
@@ -271,9 +272,7 @@ bool Init() {
 void RequestDump() { g_requested = true; }
 void OnPresent() {
     if (!g_rootPtrAddr) return;
-    const bool down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState(VK_F8) & 0x8000);
-    const bool pressed = down && !g_keyWasDown;
-    g_keyWasDown = down;
+    const bool pressed = Hotkeys::Take(Hotkeys::Action::Diagnostics); // Ctrl+Shift+B, 5 or F8 by preset
     if (pressed || g_requested.exchange(false)) WriteDiag();
 }
 const std::string& Status() { return g_status; }

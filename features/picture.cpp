@@ -514,6 +514,14 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const PictureParams q = GetParams();
     if (!dev || !q.enabled) {
         m_gpuMs = -1.0f;
+        // Off: the scene-copy hooks go too (they counted every back buffer draw each frame while off; registered again at
+        // the next frame it is on, which reads the current render target)
+        if (gpu.hooks) {
+            D3D9Hooks::UnregisterAll(kHookName);
+            gpu.hooks = false;
+            gpu.curRT0 = nullptr;
+            gpu.frameReady = false;
+        }
         return;
     }
     RegisterHooks(dev);

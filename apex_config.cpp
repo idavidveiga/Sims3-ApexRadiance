@@ -20,6 +20,10 @@
 #include <sstream>
 
 namespace ApexConfig {
+
+// Features the Compare shortcut has off right now: saved as on (SetCompareOverride)
+std::vector<std::string> g_compareOff;
+bool g_comparePictureOff = false;
 namespace {
 
 std::mutex g_fileLock; // one reader/writer of ApexRadiance.toml at a time
@@ -221,6 +225,7 @@ constexpr NamedKey kNamedKeys[] = {
     {VK_INSERT, "Insert"},   {VK_DELETE, "Delete"},    {VK_HOME, "Home"},          {VK_END, "End"},           {VK_PRIOR, "PageUp"},       {VK_NEXT, "PageDown"},
     {VK_PAUSE, "Pause"},     {VK_SCROLL, "ScrollLock"}, {VK_OEM_3, "Backtick"},     {VK_OEM_MINUS, "Minus"},   {VK_OEM_PLUS, "Equals"},    {VK_OEM_4, "LeftBracket"},
     {VK_OEM_6, "RightBracket"}, {VK_OEM_5, "Backslash"}, {VK_OEM_1, "Semicolon"},   {VK_OEM_7, "Quote"},       {VK_OEM_COMMA, "Comma"},    {VK_OEM_PERIOD, "Period"},
+    {VK_RETURN, "Enter"},    {VK_SPACE, "Space"},
     {VK_OEM_2, "Slash"},     {VK_MULTIPLY, "NumpadMultiply"}, {VK_ADD, "NumpadPlus"}, {VK_SUBTRACT, "NumpadMinus"}, {VK_DIVIDE, "NumpadDivide"},
 };
 
@@ -323,6 +328,13 @@ void LoadSettings() {
         u.fontScale = std::clamp(static_cast<float>((*ui)["font_scale"].value_or(1.0)), 0.5f, 3.0f);
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // missing (first start, migrated configs): the tour shows
+        u.keyChosen = (*ui)["key_chosen"].value_or(false);
+        const std::string preset = (*ui)["hotkey_preset"].value_or(std::string());
+        u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
+        u.minePresetBase = static_cast<int>((*ui)["mine_base"].value_or(int64_t{0}));
+        KeyChord own;
+        if (ParseKeyChord((*ui)["compare_key"].value_or(std::string()), own)) u.compareKey = own;
+        if (ParseKeyChord((*ui)["refresh_key"].value_or(std::string()), own)) u.refreshKey = own;
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
         u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
@@ -362,6 +374,12 @@ bool Save(std::string* error) {
         ui.insert("font_scale", static_cast<double>(u.fontScale));
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("welcome_done", u.welcomeDone);
+        ui.insert("key_chosen", u.keyChosen);
+        static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
+        if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) ui.insert("hotkey_preset", kPresetKeys[u.hotkeyPreset]);
+        if (u.hotkeyPreset == 3) ui.insert("mine_base", static_cast<int64_t>(u.minePresetBase));
+        if (u.compareKey.vk) ui.insert("compare_key", KeyChordText(u.compareKey));
+        if (u.refreshKey.vk) ui.insert("refresh_key", KeyChordText(u.refreshKey));
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
         static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
         ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
@@ -372,6 +390,8 @@ bool Save(std::string* error) {
         toml::table qol;
         if (const toml::table* old = root["qol"].as_table()) qol = *old; // e.g. [qol.frame_profiler] in a public build
         Picture::Get().SaveToToml(qol);
+        if (g_comparePictureOff)
+            if (toml::table* pic = qol["picture"].as_table()) pic->insert_or_assign("enabled", true);
         if constexpr (!kPublicBuild) {
             qol.erase("frame_profiler"); // FrameProfiler::SaveToToml inserts (it does not replace)
             FrameProfiler::SaveToToml(qol);
@@ -379,6 +399,9 @@ bool Save(std::string* error) {
         root.insert_or_assign("qol", std::move(qol));
 
         PatchManager::Get().SaveToToml(root);
+        if (toml::table* saved = root["patches"].as_table()) // compared features: saved as on (review H2)
+            for (const std::string& n : g_compareOff)
+                if (toml::table* pt = (*saved)[n].as_table()) pt->insert_or_assign("enabled", true);
 
         std::string err;
         bool ok;
@@ -445,6 +468,11 @@ bool ParseDisplayMode(const std::string& text, Borderless::Mode& out) {
 
 } // namespace
 
+void SetCompareOverride(const std::vector<std::string>& patches, bool picture) {
+    g_compareOff = patches;
+    g_comparePictureOff = picture;
+}
+
 void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly) {
     out = toml::table{};
     toml::table patches;
@@ -452,6 +480,7 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly) {
         if (profileFeaturesOnly && !IsProfileFeature(p->GetName())) continue;
         toml::table t;
         p->SaveToToml(t);
+        if (std::find(g_compareOff.begin(), g_compareOff.end(), p->GetName()) != g_compareOff.end()) t.insert_or_assign("enabled", true);
         patches.insert_or_assign(p->GetName(), std::move(t));
     }
     out.insert_or_assign("patches", std::move(patches));
@@ -477,6 +506,18 @@ void DefaultFeatureState(toml::table& out) {
 }
 
 void ApplyFeatureState(const toml::table& state) {
+    if (const toml::table* sc = state["shortcuts"].as_table()) { // a profile's shortcuts (only when that part was picked)
+        UiSettings u = GetUi();
+        KeyChord k;
+        if (ParseKeyChord((*sc)["menu_key"].value_or(std::string()), k)) u.toggle = k;
+        const std::string preset = (*sc)["preset"].value_or(std::string());
+        u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
+        u.compareKey = ParseKeyChord((*sc)["compare_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.refreshKey = ParseKeyChord((*sc)["refresh_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.keyChosen = true;
+        SetUi(u);
+        LOG_INFO("[Config] Shortcuts taken from the profile: menu key " + KeyChordText(u.toggle));
+    }
     bool any = false;
     if (const toml::table* patches = state["patches"].as_table()) {
         for (const auto& p : PatchManager::Get().GetPatches()) {
@@ -526,7 +567,7 @@ void ApplyFeatureState(const toml::table& state) {
 // ---- profiles ----
 
 const char* ProfilePartName(int index) {
-    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance"};
+    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance", "Shortcuts"};
     return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
 }
 
@@ -536,6 +577,7 @@ unsigned ProfilePartsOf(const toml::table& state) {
         for (auto&& [key, value] : *patches) parts |= FeaturePart(std::string(key.str()));
     if (const toml::table* qol = state["qol"].as_table(); qol && !qol->empty()) parts |= kPartColor;
     if (state["display"].as_table()) parts |= kPartWindow;
+    if (state["shortcuts"].as_table()) parts |= kPartShortcuts;
     return parts;
 }
 
@@ -548,6 +590,7 @@ void KeepProfileParts(toml::table& state, unsigned parts) {
     }
     if (!(parts & kPartColor)) state.erase("qol");
     if (!(parts & kPartWindow)) state.erase("display");
+    if (!(parts & kPartShortcuts)) state.erase("shortcuts");
 }
 
 namespace {
@@ -613,6 +656,16 @@ bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
     try {
         toml::table root;
         CaptureFeatureState(root, true);
+        { // the shortcuts (the menu's [ui] keys), removed below unless picked
+            const UiSettings u = GetUi();
+            toml::table sc;
+            sc.insert("menu_key", KeyChordText(u.toggle));
+            static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
+            if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) sc.insert("preset", kPresetKeys[u.hotkeyPreset]);
+            if (u.compareKey.vk) sc.insert("compare_key", KeyChordText(u.compareKey));
+            if (u.refreshKey.vk) sc.insert("refresh_key", KeyChordText(u.refreshKey));
+            root.insert_or_assign("shortcuts", std::move(sc));
+        }
         KeepProfileParts(root, parts);
         toml::table meta;
         meta.insert("written_by", APEX_PRODUCT_NAME " " APEX_VERSION_STRING);
