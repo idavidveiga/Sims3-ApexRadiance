@@ -1023,7 +1023,10 @@ void OnPresent() {
         // as live, or the load rebuild runs during it at night level 0 (lamps off in the bake). 120 s covers a bridge that
         // could not start.
         if (LotLightBridge::ChunkCount() > 0) signal = "world terrain drawn";
-        else if (now - g_worldAt >= (g_bridge ? kLiveFallback * 4 : kLiveFallback)) signal = "fallback after the world change (no terrain draw seen)";
+        // 30/09: the fallback also needs a loaded lot (a session that sat 2 minutes at the main menu went "live" there: the
+        // start note showed and the after-load refresh ran on 0 lots before the save was even loaded)
+        else if (now - g_worldAt >= (g_bridge ? kLiveFallback * 4 : kLiveFallback) && LevelLightShare::LoadedLots() > 0)
+            signal = "fallback after the world change (no terrain draw seen)";
         if (signal) {
             g_live = true;
             g_liveAt = now;

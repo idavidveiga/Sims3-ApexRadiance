@@ -3673,6 +3673,13 @@ bool DisplayLevelRaw(uintptr_t tracker, int& story) {
 }
 std::vector<std::string> TraceRooms(bool reset) { return TraceRoomsImpl(reset); }
 
+int LoadedLots() {
+    LoadAddresses();
+    if (!kRootPtr) return 0;
+    uintptr_t trackers[256];
+    return AllTrackers(trackers, 256);
+}
+
 int DisplayLevels(uint32_t* lots, int* stories, int max) {
     LoadAddresses();
     if (!kRootPtr) return 0;

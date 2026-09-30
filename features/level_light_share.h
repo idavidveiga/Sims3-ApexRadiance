@@ -13,6 +13,8 @@ void OnPresent();      // render thread, every frame (runs the refresh asked by 
 void OnWorldChanged(); // forget the rooms of the previous world
 // The world is on screen after its load: every lot's rooms near openings gather once more (then settle)
 void OnWorldLive();
+// Render thread: how many lots are loaded now (0 at the main menu and during most of a load)
+int LoadedLots();
 // Development tools (render thread): the story each loaded lot shows (low half of its id, story); returns the count
 int DisplayLevels(uint32_t* lots, int* stories, int max);
 // Development tools (F6 recorder, render thread): "[room]" lines for the indoor rooms whose ambient, state, class or light
