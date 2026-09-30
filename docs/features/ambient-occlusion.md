@@ -5,8 +5,9 @@
 > resolution, deterministic (a still camera never changes it), with a composite that keeps lamp-lit and bright surfaces
 > and their colour. Brought back on the user's request on 30/09/2026 after the earlier AO lines were removed (history in
 > [../removed-features.md](../removed-features.md)).
-> Status: flagged `experimental`, off by default. Patch name `AmbientOcclusion`, menu page Image > Ambient Occlusion,
-> settings in `[patches.AmbientOcclusion]`. Stage 1 of the plan below; **first in-game test pending** (build 488f01a7).
+> Status: released in 2.1.0 (user in game: "ficou incrível"); off by default. Since 30/09 afternoon no longer flagged
+> experimental: the page shows a performance note instead. Patch name `AmbientOcclusion`, menu page Image > Ambient
+> Occlusion, settings in `[patches.AmbientOcclusion]`.
 
 ## Purpose
 
@@ -28,8 +29,8 @@ six saved frames of the game (depth dumps `Documents\...\S3SS\Profundidade\profu
 | Strength | `forca` | float | 1.0 | 0 - 2 | multiplies the contact and large strengths (1 = the lab's set); 0 = no GPU work |
 | Advanced > Reach | `alcance` | float | 1.0 | 0.5 - 2 | scales the three radii |
 | Advanced > Keep lamp light | `protegerLuz` | float | 0.5 | 0 - 1 | share of light kept by bright pixels (luma 0.35 -> 0.75) |
-| Advanced > Quality | `qualidade` | enum | 2 (High) | Low / Medium / High | 4 / 6 / 8 slices per pixel |
-| Developer > Show the shade alone | `debugView` | bool | false | | the shade in grey; kept by "Reset Ambient Occlusion" |
+| Quality (visible) | `qualidade` | enum | 2 (High) | stored 0 Low, 1 Medium, 2 High, 3 Ultra, 4 Very Low | 4 / 6 / 8 / 12 / 2 slices; the menu shows Very Low .. Ultra (`kQualityShown`), stored indices kept from 2.1.0 |
+| Advanced > Show the shade alone | (not saved) | bool | false | | the shade in grey (also on the Developer page) |
 
 All live (read every frame). The old combined build's keys (`intensidade`, `raioM`, `visualizar`) are not read.
 
@@ -47,7 +48,7 @@ Passes per frame (W x H = the back buffer):
 4. `GtaoPS` (full resolution, G16R16F out: R = visibility, G = 1/z for the blur). Per pixel: normal from the neighbour with
    the smaller depth step per axis; SLICES slices at angle `(s + b1) pi / SLICES`, 4 geometric steps per side from 2 px
    (at 4K, scaled with the height) to the large radius (at most 30% of the height), each step reads the pyramid
-   trilinearly at the level of its spacing minus 2; step offset `b2` plus a golden-ratio phase per half-slice; `b1`, `b2`
+   bilinearly within the nearest level to its spacing minus 2 (sampler s2 MIPFILTER POINT; trilinear until 30/09); step offset `b2` plus a golden-ratio phase per half-slice; `b1`, `b2`
    from a 4x4 Bayer. Two horizons per side from the same samples: contact (0.6 m, strength 1.2) and large (2.0 m near /
    2.5 m far, strength 0.5 near / 0.8 far, only what the contact one does not cover; near -> far between 20 and 40 m).
    XeGTAO falloff (full to 38.5% of R, 0 at R) on a distance whose depth part counts 1.3x. Cosine-weighted arcs with the
@@ -97,3 +98,23 @@ CompositePS 35, DownPS 25, LinearizePS 8.
 See [../removed-features.md](../removed-features.md) (Ambient Occlusion): half resolution (the root of every "micro
 dots" report), per-frame noise with temporal accumulation (twinkling on leaves), radii in near units (shade breathing with
 zoom), HBAO with a plain multiply (dirty and grey, weak once toned down). Do not bring any of those back.
+
+## Cost and quality levels (30/09, `scratchpad\aonew\aotime.cpp`)
+
+The in-game shaders on this machine's GPU (RTX 4070 Ti SUPER, native D3D9, 3840x2160, scenes 1 / 2 / 6 of the lab; in game
+DXVK: compare the levels, not the absolute ms). "Image" = mean difference of the final picture from the 2.1.0 High, in
+levels of 255; "shift" = AO change when the image moves 1 px (the stability metric of the lab).
+
+| Level | Slices | Total ms | Image vs 2.1.0 High | Shift |
+|---|---|---|---|---|
+| 2.1.0 High (trilinear) | 8 | 3.9 - 4.3 | 0 | 0.28 - 0.51 |
+| Very Low | 2 | 1.3 | 0.10 - 0.22 | 0.57 - 1.07 |
+| Low | 4 | 1.8 - 2.0 | 0.08 - 0.17 | 0.39 - 0.73 |
+| Medium | 6 | 2.5 - 2.65 | 0.07 - 0.13 | 0.33 - 0.59 |
+| High (default) | 8 | 3.0 - 3.2 | 0.03 - 0.05 | 0.28 - 0.50 |
+| Ultra | 12 | 4.1 - 4.5 | 0.06 - 0.11 | 0.23 - 0.41 |
+
+Fixed part about 0.55 ms (scene copy + pyramid 0.26, blur 0.2, composite 0.09). Tried and dropped: fewer steps (3: the
+look moves 3-4 levels), box-only blur (saves 0.1 ms, less stable), a coarser (mip 1) or finer (mip 3) read level (no
+gain), the fast acos (no gain), an R16F copy of the pyramid for the march (no gain). The cost was the trilinear R32F
+filtering (two bilinear lookups per tap, 64 taps per pixel), not the arithmetic.
