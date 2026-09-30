@@ -83,7 +83,7 @@ bool g_menuEverOpened = false;    // this session (the first-launch hint stops)
 bool g_tourChecked = false;       // the welcome tour was considered at the first open of this session
 bool g_tourActive = false;
 int g_tourStep = 0;
-std::atomic<unsigned long long> g_hintUntil{0}; // the "is ready" corner note of each start shows until this tick (GetTickCount64)
+
 bool g_keySetup = false, g_keySetupShown = false, g_keySetupWaiting = false; // the first-start menu key prompt (KeySetupWindow)
 bool g_recNoteShow = false, g_recNoteShown = false; // the first note of a start: DXVK / Sims3SettingsSetter when missing
 int g_recRow = -1; // Shortcuts: the row whose key is being recorded (-1 = none)
@@ -1906,20 +1906,37 @@ void Banner() {
 }
 
 // ---- The start note (user's pick 30/09, "A · compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
-// menu key in light violet, in a dark rounded pill with a faint violet border, top-left corner, 8 s at every start (never
-// takes input; fades out). 30/09, user: "it should always show when the game opens": it waits for the world on screen
-// (NightLighting::WorldLive, which since 6e1cee4 needs a loaded lot: the old fallback went live at the main menu, showed
-// it there and never again), then kHintDelayMs; it shows even when the menu was opened before (at the main menu), and
-// opening the menu ends it. ----
-constexpr unsigned long long kHintMs = 8000;
+// menu key in light violet, in a dark rounded pill with a faint violet border, top-left corner, at every start (never
+// takes input; fades out). 30/09, user: "it should show on the first loading screen already": kHintStartMs after the
+// features run (the game's first loading screen), for kHintMs of time on screen (each frame counts at most 100 ms, so a
+// loading stall does not use it up); opening the menu ends it. The other start notes (DXVK / S3SS recommendation, the
+// first-start key choice) still wait for the world on screen. ----
+constexpr int kHintMs = 8000;
+constexpr unsigned long long kHintStartMs = 2000;
 constexpr unsigned long long kHintDelayMs = 3000;
+int g_hintLeftMs = 0;                  // time on screen left (render thread)
+bool g_hintStarted = false;            // started once this start
+unsigned long long g_runningAt = 0;    // when the features were first seen running (GetTickCount64)
+unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
 
-// Render thread, every frame (Client::AlwaysDraw): starts the note once per start, when the features run and the world shows
+// Render thread, every frame (Client::AlwaysDraw)
 void UpdateHint() {
-    if (g_hintConsidered.load() || g_startup.load() != Startup::Running) return;
-    // The notes wait for the world on screen (features start during the load screen, where nobody sees them), then a moment
-    // more (the load screen fades); without Night Lighting there is no such signal: at once, as before
+    if (g_startup.load() != Startup::Running) return;
     const unsigned long long now = GetTickCount64();
+    if (!g_hintStarted) {
+        if (!g_runningAt) g_runningAt = now;
+        if (now - g_runningAt >= kHintStartMs) {
+            g_hintStarted = true;
+            // the first start ever picks the menu key first (KeySetupWindow); an open menu needs no note
+            if (ApexConfig::GetUi().keyChosen && !Overlay::IsVisible()) {
+                g_hintLeftMs = kHintMs;
+                g_hintLastDraw = 0;
+            }
+        }
+    }
+    if (g_hintConsidered.load()) return;
+    // The other notes wait for the world on screen (features start during the load screen, where nobody sees them), then a
+    // moment more (the load screen fades); without Night Lighting there is no such signal: at once, as before
     if (ApexPatch* nl = Find("NightTerrainRelight"); nl && nl->IsEnabled()) {
         if (!NightLighting::WorldLive()) return;
         if (!g_hintReadyAt) g_hintReadyAt = now;
@@ -1927,19 +1944,16 @@ void UpdateHint() {
     }
     g_hintConsidered.store(true);
     g_recNoteShow = ApexConfig::GetUi().recommendS3SS && AnythingRecommended(); // every start until "Don't show again"
-    if (!ApexConfig::GetUi().keyChosen) {
-        g_keySetup = true; // the menu key first (the hint follows once it is picked)
-        return;
-    }
-    if (!Overlay::IsVisible()) g_hintUntil.store(now + kHintMs); // every start
+    if (!ApexConfig::GetUi().keyChosen) g_keySetup = true;
 }
 
-bool HintVisible() { return GetTickCount64() < g_hintUntil.load(); }
+bool HintVisible() { return g_hintLeftMs > 0; }
 
 void Hint() {
-    const unsigned long long now = GetTickCount64(), until = g_hintUntil.load();
-    const float left = static_cast<float>(until > now ? until - now : 0) / 1000.0f;
-    const float fade = std::fmin(1.0f, left / 0.8f); // fades out over the last 0.8 s
+    const unsigned long long now = GetTickCount64();
+    if (g_hintLastDraw) g_hintLeftMs -= static_cast<int>(std::min<unsigned long long>(now - g_hintLastDraw, 100));
+    g_hintLastDraw = now;
+    const float fade = std::clamp(static_cast<float>(g_hintLeftMs) / 800.0f, 0.0f, 1.0f); // fades out over the last 0.8 s
     const std::string ready = I18n::Tr(APEX_PRODUCT_NAME " is ready");
     const std::string press = I18n::Tr("press");
     const std::string key = ApexConfig::KeyChordText(ApexConfig::GetUi().toggle);
@@ -2406,7 +2420,7 @@ class GuiClient final : public Overlay::Client {
             return;
         }
         g_menuEverOpened = true;
-        g_hintUntil.store(0); // opening the menu ends the start note
+        g_hintLeftMs = 0; // opening the menu ends the start note
         // The welcome tour was removed (user, 30/09): the shortcuts note of the first start and Settings cover it
         if (!g_tourChecked) { // the first open ends the "press <key>" corner hint for good
             g_tourChecked = true;

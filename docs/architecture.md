@@ -484,10 +484,12 @@ for equal priorities. What differs from 3.1-3.5:
 ### 4.5 The post-scene trigger chain (`post_scene.*`) and the INTZ depth share (`depth_share.h`)
 This is one shared trigger for effects that work on the finished 3D scene, before any game UI. Details are in
 [features/depth-blur.md](features/depth-blur.md), [features/edge-smoothing.md](features/edge-smoothing.md) and
-[removed-features.md](removed-features.md) (Ambient Occlusion, combined build only; the standalone chain is Edge Smoothing 20 then Depth Blur 30).
+[features/ambient-occlusion.md](features/ambient-occlusion.md) (the chain is Ambient Occlusion 10, Edge Smoothing 20, Depth Blur 30).
 
-- `PostScene::Add(order, fn)` sorts the effects with `stable_sort` on `order`: `kEdgeSmoothing = 20`, `kDepthBlur = 30`
-  (the combined build also had `kAmbientOcclusion = 10`).
+- `PostScene::Add(order, fn)` sorts the effects with `stable_sort` on `order`: `kAmbientOcclusion = 10`, `kEdgeSmoothing = 20`,
+  `kDepthBlur = 30`. `PostScene::WantCamera` (reference counted, AO) turns on the camera votes: near, A and the
+  view-projection from the vertex constants of the first 24 scene draws of each frame (`CameraNear`, `CameraDepthA`,
+  `CameraViewProj`).
   - The first `Add` registers the hooks under `"PostScene"`: Present, SetRenderTarget, DIP and DP, all at `First`.
   - `Remove` of the last effect unregisters them.
 - **Trigger:**
