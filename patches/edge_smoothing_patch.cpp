@@ -306,7 +306,8 @@ float4 ResolvePS(float2 uv : TEXCOORD0) : COLOR0
         float4 s = float4(tex2Dlod(sLogPrev, float4(prevUv + float2(-h.x, -h.y), 0, 0)).r, tex2Dlod(sLogPrev, float4(prevUv + float2(h.x, -h.y), 0, 0)).r,
                           tex2Dlod(sLogPrev, float4(prevUv + float2(-h.x, h.y), 0, 0)).r, tex2Dlod(sLogPrev, float4(prevUv + float2(h.x, h.y), 0, 0)).r);
         float4 e = abs(s - expect);
-        if (min(min(e.x, e.y), min(e.z, e.w)) > cRes2.x) w = 0.0;
+        // the tolerance grows with the slope of the surface there (far ground seen at a grazing angle changes distance fast)
+        if (min(min(e.x, e.y), min(e.z, e.w)) > cRes2.x + 1.5 * (max(max(s.x, s.y), max(s.z, s.w)) - min(min(s.x, s.y), min(s.z, s.w)))) w = 0.0;
     }
     // the 3x3 neighbourhood of the current frame bounds the previous colour
     float3 mn = cur, mx = cur;
@@ -478,6 +479,7 @@ struct AaState {
     bool historyValid = false;   // the previous frame left a usable history (its SMAA output, depth and camera)
     double prevVp[4][4] = {};
     int jitterIndex = -1;        // the jitter the scene of this frame was drawn with (0 / 1), -1 none
+    unsigned stillFrames = 0;    // frames in a row the camera did not move
     bool ranThisFrame = false;
     unsigned framesBlended = 0, historyResets = 0;
     // GPU cost (timestamp queries, read a few frames later)
@@ -1188,6 +1190,12 @@ void TemporalStep(IDirect3DDevice9* dev, bool haveVp, const float vpNow[4][4]) {
         const double qx = M[0][2] * 0.5 + M[0][3], qy = M[1][2] * 0.5 + M[1][3], qw = M[3][2] * 0.5 + M[3][3];
         if (qw <= 1e-9 || std::abs(qx / qw) > kCutNdc || std::abs(qy / qw) > kCutNdc) blend = false;
     }
+    // the camera did not move since the last frame (M = identity): the jitter stops (see FxaaEffect)
+    bool still = blend;
+    for (int r = 0; r < 4 && still; r++)
+        for (int k = 0; k < 4 && still; k++) still = std::abs(M[r][k] - (r == k ? 1.0 : 0.0)) < 1e-5;
+    g.stillFrames = still ? g.stillFrames + 1 : 0;
+    if (still && g.jitterIndex < 0) blend = false; // still and not moved: the frame is SMAA 1x as it is (nothing to blend, no ghosts)
     StoreHistory(dev); // this frame's SMAA output, before the blend writes the back buffer
     if (blend) {
         RunResolve(dev, M);
@@ -1252,7 +1260,9 @@ void FxaaEffect(IDirect3DDevice9* dev) {
     if (t2x) TemporalStep(dev, haveVp, vp);
     else g.historyValid = false;
     // the next frame's jitter: only while the blend can run (else the image would shake)
-    if (t2x && haveVp) {
+    // ... and only while the camera moves: still, SMAA 1x alone is already stable, and a still image must never shake
+    // (30/09, user: "at a distance it seems to keep moving even when still")
+    if (t2x && haveVp && g.stillFrames < 2) {
         g.jitterIndex = j == 0 ? 1 : 0;
         SceneBinder::SetFrameJitter(true, 2.0f * kT2xJitter[g.jitterIndex][0] / static_cast<float>(g.width),
                                     2.0f * kT2xJitter[g.jitterIndex][1] / static_cast<float>(g.height));
