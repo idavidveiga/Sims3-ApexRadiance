@@ -1,5 +1,7 @@
 # Light Diag (Ctrl+Shift+F8)
 
+> **30/09:** now in both builds as a player capture of the Report a problem page, written to `Captures\<date time> <kind>\` (never overwritten); see [../bug-reports.md](../bug-reports.md). Older output paths below are historical.
+
 > Read-only dump of the game's lighting state to `S3SS_LightDiag.txt`: every light object the game knows (enumerated
 > with the game's own light enumerator), every loaded lot lighting manager per story with every room and the lights in
 > that room's light list, the Level Light Share diagnostics (which lamps each story sees and what the wall tests

@@ -75,6 +75,7 @@ stay, as an SDR-only module.
 ### Developer tools (dev build only)
 | Document | Tool |
 |---|---|
+| [features/bug-reports.md](features/bug-reports.md) | Report a problem: the player captures (F6 / F7 / F8, sessions), Captures\ folders, on-screen notes |
 | [features/dev-tools/light-probe.md](features/dev-tools/light-probe.md) | Light Probe, Ctrl+Shift+F7 |
 | [features/dev-tools/light-diag.md](features/dev-tools/light-diag.md) | Light Diag, Ctrl+Shift+F8 |
 | [features/dev-tools/frame-capture.md](features/dev-tools/frame-capture.md) | Frame Capture, Ctrl+Shift+F9 |

@@ -82,6 +82,7 @@
 #define NOMINMAX
 #endif
 #include "level_light_share.h"
+#include "recorder.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
@@ -343,14 +344,14 @@ bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false) {
             g_deferred.push_back(DeferredRoom{tracker, level, id, GetTickCount()});
             g_deferredCount.fetch_add(1, std::memory_order_relaxed);
         }
-        if constexpr (!kPublicBuild)
+        if (Recorder::Verbose())
             if (!known) NoteSolve(room, 'H');
         return true;
     }
     reinterpret_cast<InvalidateRoom_t>(kInvalidateRoom)(room, 1, 0);
     alignas(16) BYTE out[16] = {};
     reinterpret_cast<SetInsert_t>(kSetInsert)(reinterpret_cast<void*>(tl + 0x28), out, &id, 0);
-    if constexpr (!kPublicBuild) NoteSolve(room, 'Q');
+    if (Recorder::Verbose()) NoteSolve(room, 'Q');
     return true;
 }
 
@@ -1333,7 +1334,7 @@ void __fastcall RoomSolveStartHook(BYTE* room) {
         if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
         else MergeStackedAmbientSafe(room);
     }
-    if constexpr (!kPublicBuild)
+    if (Recorder::Verbose())
         if (room) NoteSolve(room, 'S');
 }
 
@@ -1666,7 +1667,7 @@ void BlurWalls(BYTE* room) {
 
 void __fastcall WallBlurHook(BYTE* room) {
     BlurWalls(room);
-    if constexpr (!kPublicBuild)
+    if (Recorder::Verbose())
         if (room) NoteSolve(room, 'W');
 }
 

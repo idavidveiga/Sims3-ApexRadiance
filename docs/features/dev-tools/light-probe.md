@@ -1,5 +1,7 @@
 # Light Probe (Ctrl+Shift+F7)
 
+> **30/09:** now in both builds as a player capture of the Report a problem page, written to `Captures\<date time> <kind>\` (never overwritten); see [../bug-reports.md](../bug-reports.md). Older output paths below are historical.
+
 > GPU probe of one screen pixel. With the mouse over a pixel, Ctrl+Shift+F7 records, for the next frame, every draw
 > call that touches that pixel (found with a 1x1 scissored occlusion-query copy of each draw), and writes
 > `S3SS_LightProbe.txt` with each draw's shaders (bytecode + disassembly), 14 render states, the 16 samplers' textures

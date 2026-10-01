@@ -1,5 +1,7 @@
 # Recorder (F6) and the furniture tracer (development build)
 
+> **30/09:** now in both builds as a player capture of the Report a problem page, written to `Captures\<date time> <kind>\` (never overwritten); see [../bug-reports.md](../bug-reports.md). Older output paths below are historical.
+
 `features/recorder.cpp`. The shortcut (Ctrl+Shift+X / 6 / F6 by preset) starts a recording, again stops it; it stops by
 itself after 20 s and writes `Documents\...\Apex Radiance\ApexRadiance_Recording_<hhmmss>.txt`, every line with its clock
 time, sorted:

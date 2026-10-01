@@ -1,7 +1,8 @@
 // Light Diagnostics (part of Night Lighting)
 #include "light_diag.h"
 #include "hotkeys.h"
-// One button (or Ctrl+Shift+F8) writes Documents\...\Apex Radiance\ApexRadiance_LightDiag.txt with:
+// One button (or its shortcut, F8 with the F-key set) writes the lighting snapshot,
+// Captures\<date time> Lighting snapshot\Lighting snapshot.txt (features/captures.h), with:
 //  - every light in the world (FUN_006acf70 enumerator): type, lot id, room, flags, on/off, colour, intensity, position
 //  - every loaded lot lighting manager (light update tree walk) and every room in it (room hash at mgr+0x230):
 //    solve state, LOD class, outdoor flag and the lights in the room's light list (+0xC8..+0xCC)
@@ -14,6 +15,8 @@
 #include "d3d9_hooks.h"
 #include "apex_paths.h"
 #include "level_light_share.h"
+#include "captures.h"
+#include "ui/i18n.h"
 #include "imgui.h"
 #include <windows.h>
 #include <atomic>
@@ -163,17 +166,18 @@ std::string PixelLampDiag(const std::unordered_map<uintptr_t, size_t>& index) {
 }
 
 void WriteDiag() {
-    std::filesystem::path path = std::filesystem::path(ApexPaths::ApexDirectory()) / L"ApexRadiance_LightDiag.txt";
-    std::ofstream out(path, std::ios::out | std::ios::trunc);
     const uintptr_t root = Rd<uintptr_t>(g_rootPtrAddr);
     const uintptr_t lightMgr = root ? Rd<uintptr_t>(root + 0x1C0) : 0;
     if (!lightMgr) {
-        out << "Nenhum mundo carregado.\n";
         g_status = "No world loaded";
+        Captures::Notify(I18n::Tr("Lighting snapshot: load a world first"), 4);
         return;
     }
+    // its own folder in Captures\ (never overwritten), with the log and settings (features/captures.h)
+    const std::filesystem::path folder = Captures::NewFolder("Lighting snapshot");
+    std::ofstream out(folder / L"Lighting snapshot.txt", std::ios::out | std::ios::trunc);
     const uintptr_t cells = Rd<uintptr_t>(lightMgr + 0x104);
-    out << std::format("S3SS Light Diagnostics\nnivel de noite={:.2f} lightMgr={:08X} cells={:08X} contador={} / {}\n\n", Rd<float>(lightMgr + 0xF0), lightMgr, cells,
+    out << std::format("Apex Radiance lighting snapshot\nnight level={:.2f} lightMgr={:08X} cells={:08X} counter={} / {}\n\n", Rd<float>(lightMgr + 0xF0), lightMgr, cells,
         cells ? Rd<int>(cells + 0x38) : 0, cells ? Rd<int>(cells + 0x3C) : 0);
 
     // ---- all lights ----
@@ -252,9 +256,11 @@ void WriteDiag() {
     }
     out << LevelLightShare::DiagText();
     out << PixelLampDiag(index);
-    out << std::format("\nFim: {} luzes, {} andares de lotes, {} comodos\n", g_lights.size(), managers, rooms);
+    out << std::format("\nEnd: {} lights, {} lot stories, {} rooms\n", g_lights.size(), managers, rooms);
     g_status = std::format("Saved: {} lights, {} lot stories, {} rooms", g_lights.size(), managers, rooms);
     LOG_INFO("[LightDiag] " + g_status);
+    out.close();
+    Captures::Finish(folder, std::format("a snapshot of every light and room ({} lights, {} lot stories, {} rooms)", g_lights.size(), managers, rooms));
 }
 
 } // namespace

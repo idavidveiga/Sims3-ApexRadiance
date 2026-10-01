@@ -743,7 +743,7 @@ void FinishEdit(const std::string& outcome) {
     g_editKickPending = false;
     g_editWait = EditWait::None;
     g_lastEditOutcome = outcome;
-    if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + outcome);
+    if (Recorder::Verbose()) LOG_INFO("[NightTerrainRelight] Lamp change: " + outcome);
 }
 
 // Deferred: logged once per state (dev build), the change stays pending and is decided again every frame.
@@ -754,7 +754,7 @@ void WaitEdit(EditWait state, const std::string& text) {
     if (state == EditWait::Rate || state == EditWait::Interval || state == EditWait::LampRate) g_decDeferRate++;
     if (state == EditWait::Snapshot || state == EditWait::Relight) return; // at most a few seconds, not worth a line
     g_lastEditOutcome = std::format("{}: {}", g_editReason, text);
-    if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
+    if (Recorder::Verbose()) LOG_INFO("[NightTerrainRelight] Lamp change: " + g_lastEditOutcome);
 }
 
 const char* EditKind() { return g_editForce ? "switch" : (g_editUser ? "user-driven" : "automatic"); }
@@ -874,7 +874,7 @@ void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool du
         const float eyeXZ[2] = {eye[0], eye[2]};
         std::string why, info;
         if (const int id = ChunkRelight::QueueSweep(haveEye ? eyeXZ : nullptr, why, info)) return StartSweep(id, reason, info, now);
-        if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Paced sweep not possible ({}): {}; full rebuild instead", reason, why));
+        if (Recorder::Verbose()) LOG_INFO(std::format("[NightTerrainRelight] Paced sweep not possible ({}): {}; full rebuild instead", reason, why));
     }
     Kick(cells, level, reason, dusk);
 }
@@ -926,7 +926,7 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
         g_editLocalRefused = true;
         g_decLocalRefused++;
         g_lastLocalRefusal = why;
-        if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Lamp change: {}: local relight not possible ({}): full rebuild path", g_editReason, why));
+        if (Recorder::Verbose()) LOG_INFO(std::format("[NightTerrainRelight] Lamp change: {}: local relight not possible ({}): full rebuild path", g_editReason, why));
         diffText += "; local relight not possible: " + why;
     }
     if (!CameraAllowsEdit(now)) return WaitEdit(EditWait::Camera, std::format("deferred: camera moving ({})", diffText));
@@ -956,8 +956,8 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
 
 // Runs on the render thread, the same thread as the game's light update and terrain update.
 void OnPresent() {
-    if constexpr (!kPublicBuild) LightDiag::OnPresent(); // Ctrl+Shift+F8: development build only
-    if constexpr (!kPublicBuild) Recorder::OnPresent(); // Ctrl+Shift+F6: a few seconds of lighting activity, with the clock time
+    LightDiag::OnPresent(); // the lighting snapshot (F8 with the F-key set; Report a problem page)
+    Recorder::OnPresent(); // the recording (F6): a few seconds of lighting activity, with the clock time
     LightState s;
     if (!ReadLightState(s)) {
         g_lastCells = 0;
@@ -1704,7 +1704,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                                          caps.MaxVertexShader30InstructionSlots, caps.PixelShaderVersion & 0xFFFF));
             }
             OnPresent();
-            if constexpr (!kPublicBuild) LightProbe::OnPresent(ctx.device); // Ctrl+Shift+F7: development build only
+            LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
             ObjectLightBridge::SetStrength(g_objStrength);
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();

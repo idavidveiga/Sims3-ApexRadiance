@@ -3,6 +3,8 @@
 #define NOMINMAX
 #endif
 #include "light_probe.h"
+#include "captures.h"
+#include "ui/i18n.h"
 #include "hotkeys.h"
 #include "lot_light_bridge.h"
 #include "level_light_share.h"
@@ -159,51 +161,17 @@ IDirect3DTexture9* g_whiteTex = nullptr;
 
 std::filesystem::path OutDir() { return std::filesystem::path(ApexPaths::ApexDirectory()); }
 
-// Every capture gets its own folder LightProbe\Capture_NNN_HHMMSS (report, textures, shaders), so a capture never
-// overwrites the previous one; ApexRadiance_LightProbe.txt is a copy of the latest report. The newest kKeepCaptures
-// folders are kept (a render target dump can be 70+ MB): older Capture_* folders are removed.
-constexpr int kKeepCaptures = 20;
-std::filesystem::path g_capDir;   // the capture being written (empty: none yet)
+// Every capture gets its own folder in Captures\ ("<date time> Light capture", features/captures.h: the report, the
+// textures and shaders, the log and settings), so a capture never overwrites another one; nothing is deleted by itself.
+std::filesystem::path g_capDir; // the capture being written (empty: none yet)
 std::string g_capName;
-int g_capNumber = 0;              // last number used (0 = not scanned yet)
 
-std::filesystem::path CapDir() { return g_capDir.empty() ? OutDir() / "LightProbe" : g_capDir; }
-
-int CaptureNumberOf(const std::string& folder) {
-    if (!folder.starts_with("Capture_") || folder.size() < 11) return -1;
-    try {
-        return std::stoi(folder.substr(8, 3));
-    } catch (...) {
-        return -1;
-    }
-}
+std::filesystem::path CapDir() { return g_capDir.empty() ? Captures::Root() : g_capDir; }
 
 void StartCaptureFolder() {
-    namespace fs = std::filesystem;
-    const fs::path root = OutDir() / "LightProbe";
-    std::error_code ec;
-    fs::create_directories(root, ec);
-    std::vector<std::pair<int, fs::path>> existing;
-    for (const auto& e : fs::directory_iterator(root, ec))
-        if (e.is_directory(ec))
-            if (const int n = CaptureNumberOf(e.path().filename().string()); n >= 0) existing.emplace_back(n, e.path());
-    if (g_capNumber == 0)
-        for (const auto& [n, p] : existing) g_capNumber = std::max(g_capNumber, n);
-    g_capNumber = g_capNumber >= 999 ? 1 : g_capNumber + 1;
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    g_capName = std::format("Capture_{:03}_{:02}{:02}{:02}", g_capNumber, st.wHour, st.wMinute, st.wSecond);
-    g_capDir = root / g_capName;
-    fs::create_directories(g_capDir, ec);
-    // keep the newest kKeepCaptures - 1 old ones (by date, so the numbering can wrap)
-    std::sort(existing.begin(), existing.end(), [](const auto& a, const auto& b) {
-        std::error_code e1, e2;
-        return fs::last_write_time(a.second, e1) > fs::last_write_time(b.second, e2);
-    });
-    for (size_t i = kKeepCaptures - 1; i < existing.size(); i++) {
-        fs::remove_all(existing[i].second, ec);
-        LOG_INFO("[LightProbe] Removed an old capture: " + existing[i].second.filename().string());
-    }
+    const bool automatic = g_captureWhy.rfind("automatic", 0) == 0;
+    g_capDir = Captures::NewFolder(automatic ? "Light capture (automatic)" : "Light capture");
+    g_capName = g_capDir.filename().string();
 }
 
 const char* FmtName(D3DFORMAT f) {
@@ -827,15 +795,16 @@ void FinishCapture(IDirect3DDevice9* dev) {
         out << std::format("T{} {}: {}\n", i + 1, g_textures[i].desc, stats);
     }
     const std::string report = out.str();
-    for (const auto& path : {CapDir() / "LightProbe.txt", OutDir() / "ApexRadiance_LightProbe.txt"}) {
-        std::ofstream f(path, std::ios::trunc | std::ios::binary);
+    {
+        std::ofstream f(CapDir() / "Light capture.txt", std::ios::trunc | std::ios::binary);
         f.write(report.data(), static_cast<std::streamsize>(report.size()));
     }
     ReleaseDraws();
-    g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved in LightProbe\\{} (also ApexRadiance_LightProbe.txt).", covering, g_pixel.x,
-        g_pixel.y, g_textures.size(), g_capName);
+    g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved in Captures\\{}.", covering, g_pixel.x, g_pixel.y, g_textures.size(), g_capName);
     LOG_INFO("[LightProbe] " + g_status);
     Recorder::Note(std::format("[probe] {} ({})", g_capName, g_captureWhy));
+    Captures::Finish(g_capDir, std::format("a light capture of the pixel ({}, {}) under the mouse: the {} draws that paint it and their textures ({})", g_pixel.x,
+                                           g_pixel.y, covering, g_captureWhy));
 }
 
 } // namespace
@@ -895,6 +864,7 @@ void OnPresent(IDirect3DDevice9* dev) {
         pixel.x = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.x) * bd.Width / cw), 0, static_cast<LONG>(bd.Width) - 1);
         pixel.y = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.y) * bd.Height / ch), 0, static_cast<LONG>(bd.Height) - 1);
         start(pixel, "requested by the shortcut; the same pixel is measured again 1 s and 3 s after any lot changes the story it shows, for 2 minutes");
+        Captures::Notify(I18n::Tr("Capturing the light under the mouse\xE2\x80\xA6"), 3);
         g_watch = Watch{true, pixel, ShownStories(), now + 120000, 6, {}};
         return;
     }

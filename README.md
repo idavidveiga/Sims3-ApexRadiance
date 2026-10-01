@@ -130,7 +130,15 @@ The first start asks which key opens it (Ctrl+Shift+R, Ctrl+Shift+1 or Ctrl+Shif
 
 Settings are saved in `Documents\Electronic Arts\The Sims 3\Apex Radiance\ApexRadiance.toml`.
 
-If the game crashes, Apex Radiance writes `ApexRadiance_Crash.txt` in that same folder: please attach it when you report the problem.
+**Reporting a problem:** open the menu's **Report a problem** page. It explains the steps and saves what helps fix a bug, each in its own dated folder under `Documents\Electronic Arts\The Sims 3\Apex Radiance\Captures\` (never overwritten):
+
+- **Save a report**: the log and your settings (any problem, and after a crash: it includes `ApexRadiance_Crash.txt`);
+- **Record a few seconds** (F6): what the lighting does while you make the problem happen;
+- **Capture the light at a spot** (F7, mouse over the spot): what paints that spot, with its textures;
+- **Lighting snapshot** (F8): every lamp and room of the loaded lots;
+- **Capture session**: puts several captures in one folder until you end it.
+
+A note in the top-left corner shows when a capture starts and when it is saved. Zip the folder and attach it to a post in the Bugs tab on Nexus Mods or a GitHub issue. The keys follow your shortcut set (Settings › Shortcuts); saved captures can be opened or deleted on the same page.
 
 If you used the older combined build (Sims3SettingsSetter with Apex inside) or `S3SSApex.asi`, delete it from `Game\Bin` and keep the official `Sims3SettingsSetter.asi`. Apex Radiance copies your old settings on its first start.
 

@@ -1,8 +1,9 @@
 #pragma once
-// GPU light probe used by Night Lighting.
-// Ctrl+Shift+F7 with the mouse over a pixel: finds every draw call that covers that pixel in the next frame (occlusion
-// query on a 1x1 scissored copy of each draw), writes ApexRadiance_LightProbe.txt, saves the textures those draws use as BMP
-// files in Apex Radiance\LightProbe\, and lets the user replace any of them with black or white to see what it does on screen.
+// GPU light probe used by Night Lighting ("light capture" on the Report a problem page, both builds).
+// Its shortcut (F7 with the F-key set) with the mouse over a pixel: finds every draw call that covers that pixel in the
+// next frame (occlusion query on a 1x1 scissored copy of each draw), writes Captures\<date time> Light capture\Light
+// capture.txt with the textures those draws use as BMP files beside it (features/captures.h), and (Developer page) lets the
+// user replace any of them with black or white to see what it does on screen.
 #include <d3d9.h>
 
 namespace LightProbe {

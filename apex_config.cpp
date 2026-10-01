@@ -327,6 +327,7 @@ void LoadSettings() {
         if (ParseKeyChord((*ui)["toggle_key"].value_or(std::string()), chord)) u.toggle = chord;
         u.fontScale = std::clamp(static_cast<float>((*ui)["font_scale"].value_or(1.0)), 0.5f, 3.0f);
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
+        u.startNote = (*ui)["start_note"].value_or(true);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // missing (first start, migrated configs): the tour shows
         u.keyChosen = (*ui)["key_chosen"].value_or(false);
         const std::string preset = (*ui)["hotkey_preset"].value_or(std::string());
@@ -373,6 +374,7 @@ bool Save(std::string* error) {
         ui.insert("toggle_key", KeyChordText(u.toggle));
         ui.insert("font_scale", static_cast<double>(u.fontScale));
         ui.insert("recommend_s3ss", u.recommendS3SS);
+        ui.insert("start_note", u.startNote);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("key_chosen", u.keyChosen);
         static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};

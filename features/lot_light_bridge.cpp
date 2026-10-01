@@ -963,7 +963,7 @@ void TrackLotLampEdits() {
                 Change& c = changes[s.lot];
                 c.added++;
                 total++;
-                if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: added", L, s.type));
+                if (Recorder::Verbose()) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: added", L, s.type));
             }
             continue;
         }
@@ -1005,7 +1005,7 @@ void TrackLotLampEdits() {
             if (++s.autoChanges >= kAnimatedChanges && !s.animated) {
                 s.animated = true;
                 g_lampsAnimated++;
-                if constexpr (!kPublicBuild)
+                if (Recorder::Verbose())
                     LOG_INFO(std::format("[LotLightBridge] Lamp L{:08X} (type {}) on lot {:016X} switches or dims by itself ({} changes within {} s): its changes no longer "
                                          "rebuild the terrain (the next rebuild takes its state)",
                                          L, s.type, s.lot, s.autoChanges, kAnimatedWindow.count()));
@@ -1027,8 +1027,8 @@ void TrackLotLampEdits() {
             c.edited++;
             if (moved) c.moved++;
             total++;
-            if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, LampChangeText(L, p, s));
-        } else if constexpr (!kPublicBuild) {
+            if (Recorder::Verbose()) AddDetail(c.detail, c.details, LampChangeText(L, p, s));
+        } else if (Recorder::Verbose()) {
             Quiet& q = quiet[s.lot];
             AddDetail(q.detail, q.details, LampChangeText(L, p, s) + " (" + why + ")");
         }
@@ -1042,7 +1042,7 @@ void TrackLotLampEdits() {
             Change& c = changes[p.lot];
             c.removed++;
             total++;
-            if constexpr (!kPublicBuild) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: removed", L, p.type));
+            if (Recorder::Verbose()) AddDetail(c.detail, c.details, std::format("L{:08X} type {}: removed", L, p.type));
         }
     }
     g_lotLampSig.swap(cur); // g_lotLampCur keeps the old list's memory for the next read
@@ -1113,13 +1113,13 @@ void TrackLotLampEdits() {
             g_lotLampUserEdits.fetch_add(1, std::memory_order_relaxed);
         }
         g_lotLampEdits.fetch_add(1, std::memory_order_relaxed);
-        if constexpr (!kPublicBuild) LOG_INFO("[LotLightBridge] Lot lamp change: " + what);
+        if (Recorder::Verbose()) LOG_INFO("[LotLightBridge] Lot lamp change: " + what);
     } else if (ignored > 0) {
-        if constexpr (!kPublicBuild)
+        if (Recorder::Verbose())
             LOG_DEBUG(std::format("[LotLightBridge] Lot lamp changes ignored ({} lots; {}): streaming, lots still loading or lamps switching together", ignored,
                                   bulk ? "bulk" : "not settled"));
     }
-    if constexpr (!kPublicBuild) {
+    if (Recorder::Verbose()) {
         // what changed but does not rebuild (at most once a minute per lot): the diagnosis of lamps that keep changing
         for (const auto& [lot, q] : quiet) {
             auto& at = g_quietLogAt[lot];
@@ -2656,7 +2656,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     for (int k = 0; k < 4 && haveRig && !dark; k++) dark = UnlitRooms::IsDarkRoomLight(rig[4 + k], rig[k]);
     UnlitRooms::SetDrawDark(dark);
     // the F6 furniture tracer (development build, only while a recording runs)
-    const bool trace = !kPublicBuild && Recorder::Active();
+    const bool trace = Recorder::Active();
     const long aBefore = trace ? static_cast<long>(g_indoorDrawn.load()) : 0, bBefore = trace ? g_nightFurniture.load() : 0;
     float cubeGame = -1.0f;
     if (trace && info.cubeWeightConst >= 0) {

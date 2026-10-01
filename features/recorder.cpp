@@ -1,7 +1,10 @@
-// Development build: a recording of a few seconds of lighting activity, every line with its clock time (2026-09-30).
+// A recording of a few seconds of lighting activity, every line with its clock time (2026-09-30; for players too since the
+// Report a problem page, 30/09 evening: features/captures.h).
 //
-// Ctrl+Shift+F6 starts, again stops (an on-screen note shows it, apex_gui.cpp); it stops by itself after kMaxMs. The file
-// Documents\...\Apex Radiance\ApexRadiance_Recording_<hhmmss>.txt (one per recording) then holds, sorted by time:
+// Its shortcut (F6 with the F-key set) starts, again stops (an on-screen note shows it, apex_gui.cpp); it stops by itself
+// after kMaxMs. While it runs, the lighting modules write their detailed log lines in the public build too
+// (Recorder::Verbose). The file Captures\<date time> Recording\Recording.txt (with the log, settings and "About this
+// capture.txt" beside it) then holds, sorted by time:
 //  - the log lines written meanwhile (ApexRadiance_LOG.txt, read from where it was at the start);
 //  - the solve journal's notes (rooms solved, sent, held, invalidated with their caller: level_light_share.cpp);
 //  - the status lines of the indoor light between stories, Rooms at Night, Faster Room Lighting, the indoor object maps
@@ -12,6 +15,7 @@
 //    [probe] lines from light_probe.cpp (captures, also the automatic ones after a floor change);
 //  - at the end, ApexRadiance.toml as it was when the recording started (every setting).
 #include "recorder.h"
+#include "captures.h"
 #include "hotkeys.h"
 #include "apex_log.h"
 #include "apex_paths.h"
@@ -24,6 +28,7 @@
 #include "lamp_mark_filter.h"
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -50,6 +55,7 @@ constexpr size_t kMaxNotes = 40000;
 // and the room tracer stopped before the room that went wrong)
 size_t g_roomNotes = 0;
 constexpr size_t kMaxRoomNotes = 20000;
+std::atomic<bool> g_toggleRequest{false}; // the Report a problem page asked to start / stop
 std::string g_saved; // the file just written (the on-screen note)
 DWORD g_savedAt = 0;
 
@@ -151,8 +157,10 @@ void Stop() {
     for (auto& [tick, text] : LevelLightShare::JournalSince(g_startTick)) all.emplace_back(Clock(static_cast<DWORD>(tick)), "[solve] " + text);
     for (auto& l : logLines) all.emplace_back(l.first, "[log] " + l.second);
     std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    const std::string name = std::format("ApexRadiance_Recording_{:02}{:02}{:02}.txt", g_startClock.wHour, g_startClock.wMinute, g_startClock.wSecond);
-    const auto path = Dir() / name;
+    const std::filesystem::path folder = Captures::NewFolder("Recording");
+    const std::string name = folder.filename().string();
+    const auto path = folder / L"Recording.txt";
+
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (out) {
         out << std::format("Apex Radiance recording: {} to {} ({:.1f} s), {} lines\n", Clock(g_startTick), Clock(end), (end - g_startTick) / 1000.0, all.size());
@@ -171,7 +179,9 @@ void Stop() {
         for (const auto& [clock, text] : all) out << clock << ' ' << text << '\n';
         out << "\n==== ApexRadiance.toml at the start of the recording ====\n" << g_settingsAtStart << '\n';
     }
-    LOG_INFO(std::format("[Recorder] Saved {} lines to {}", all.size(), name));
+    out.close();
+    LOG_INFO(std::format("[Recorder] Saved {} lines to Captures\\{}", all.size(), name));
+    Captures::Finish(folder, std::format("a recording of {:.0f} s of the lighting", (end - g_startTick) / 1000.0));
     g_saved = name;
     g_savedAt = GetTickCount();
 }
@@ -186,9 +196,10 @@ void Note(const std::string& text) {
     g_lines.push_back({GetTickCount(), text});
 }
 int SecondsRecorded() { return g_on ? static_cast<int>((GetTickCount() - g_startTick) / 1000) : -1; }
+void RequestToggle() { g_toggleRequest = true; }
 const char* JustSaved() { return !g_saved.empty() && GetTickCount() - g_savedAt < 4000 ? g_saved.c_str() : ""; }
 void OnPresent() {
-    const bool pressed = Hotkeys::Take(Hotkeys::Action::Recorder); // Ctrl+Shift+X, 6 or F6 by preset
+    const bool pressed = Hotkeys::Take(Hotkeys::Action::Recorder) || g_toggleRequest.exchange(false); // X, 6 or F6 by preset, or the menu
     if (pressed) {
         if (g_on) Stop();
         else Start();

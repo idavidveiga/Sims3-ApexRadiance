@@ -69,16 +69,16 @@ const char* ActionName(Action a) {
     switch (a) {
     case Action::Compare: return "Compare with the game";
     case Action::Refresh: return "Refresh the lighting";
-    case Action::Probe: return "Light Probe";
-    case Action::Diagnostics: return "Light Diag";
-    case Action::Recorder: return "Lighting recorder";
+    case Action::Probe: return "Light capture";
+    case Action::Diagnostics: return "Lighting snapshot";
+    case Action::Recorder: return "Recording";
     default: return "Frame Capture";
     }
 }
 
 bool OnKeyDown(WPARAM vk, bool repeat) {
     const bool ctrl = Held(VK_CONTROL), shift = Held(VK_SHIFT), alt = Held(VK_MENU);
-    const int last = kPublicBuild ? static_cast<int>(Action::Refresh) : kActions - 1;
+    const int last = kPublicBuild ? static_cast<int>(Action::Recorder) : kActions - 1; // the capture keys (Report a problem) in both builds
     for (int i = 0; i <= last; i++) {
         const KeyChord c = Key(static_cast<Action>(i));
         if (!c.vk || c.vk != vk || c.ctrl != ctrl || c.shift != shift || c.alt != alt) continue;

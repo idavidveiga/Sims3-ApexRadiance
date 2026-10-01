@@ -15,6 +15,8 @@
 #include "performance.h"
 #include "picture.h"
 #include "recorder.h"
+#include "captures.h"
+#include "light_diag.h"
 #include "hotkeys.h"
 #include "s3ss_detect.h"
 #include "shader_cache.h"
@@ -57,7 +59,7 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings, PageReport };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
 enum WaterSnowTab : int { WaterTab, SnowTab };
 enum DisplayTab : int { DisplayWindow, DisplayAntiAliasing };
@@ -730,6 +732,185 @@ void PerformancePage() {
     PerformanceCard();
 }
 
+// ---- System > Report a problem (30/09): the captures players send with a bug report (features/captures.h) ----
+// Everything a player needs on one page, in plain words: how to report, the capture buttons with their keys, capture
+// sessions that gather several captures in one folder, and the list of saved captures with Open / Delete.
+
+struct ReportState {
+    std::vector<Captures::Entry> list;
+    unsigned long long scannedAt = 0;
+    std::string confirmDelete; // the folder whose Delete was clicked once ("*" = Delete all)
+    unsigned long long confirmAt = 0;
+};
+ReportState g_report;
+
+std::string SizeText(uint64_t bytes) {
+    if (bytes >= (1ull << 30)) return std::format("{:.1f} GB", static_cast<double>(bytes) / (1ull << 30));
+    if (bytes >= (1ull << 20)) return std::format("{:.1f} MB", static_cast<double>(bytes) / (1ull << 20));
+    return std::format("{} KB", (bytes + 1023) / 1024);
+}
+
+// The key of a capture action, as text ("F6")
+std::string CaptureKey(Hotkeys::Action a) { return ApexConfig::KeyChordText(Hotkeys::Key(a)); }
+
+// A Delete button that asks for a second click within 4 s (id = the folder, "*" = all); true on the confirming click
+bool ConfirmDelete(const char* label, const std::string& id, const char* tooltip) {
+    const unsigned long long now = GetTickCount64();
+    const bool armed = g_report.confirmDelete == id && now - g_report.confirmAt < 4000;
+    const std::string text = armed ? std::string(I18n::Tr("Click again to delete")) + "##" + id : std::string(I18n::Tr(label)) + "##" + id;
+    if (!ApexUi::IconTextButton(text.c_str(), IconId::Trash2, tooltip)) return false;
+    if (armed) {
+        g_report.confirmDelete.clear();
+        return true;
+    }
+    g_report.confirmDelete = id;
+    g_report.confirmAt = now;
+    return false;
+}
+
+void ReportHowCard() {
+    ImGui::PushID("ReportHow");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Info, "How to report a problem", "Three steps, about a minute", nullptr, nullptr);
+        ApexUi::CardDivider();
+        ApexUi::MutedText("1. Make the problem happen in the game (or keep it on screen).");
+        ApexUi::MutedText("2. Save a capture below, or press its key with the menu closed. A note in the top-left corner says when it starts and when it is saved.");
+        ApexUi::MutedText("3. Open the captures folder, right-click the capture's folder, Send to \xE2\x80\xBA Compressed (zipped) folder, and send the .zip with a few "
+                          "words on what you saw: the Bugs tab on Nexus Mods, or GitHub.");
+        ApexUi::Gap(ApexUi::kSpace1);
+        const std::string tip = I18n::Trf("Not sure it is Apex Radiance? Press {} (Compare with the game): if the problem goes away, it comes from the mod.",
+                                          CaptureKey(Hotkeys::Action::Compare));
+        ApexUi::IconNote(IconId::Lightbulb, tip.c_str());
+        const std::string crash = Captures::RecentCrash();
+        if (!crash.empty()) {
+            const std::string note = I18n::Trf("The game crashed on {}: \"Save a report\" includes the crash details.", crash);
+            ApexUi::IconNote(IconId::TriangleAlert, note.c_str(), VioletTheme::kWarning);
+        }
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void ReportCaptureCard() {
+    ImGui::PushID("ReportCapture");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Camera, "Save a capture", "Each one goes into its own dated folder; nothing is ever overwritten", nullptr, nullptr);
+        ApexUi::CardDivider();
+        const float u = ApexUi::Unit();
+        // a row: name, plain explanation (with its key), one button
+        const auto row = [&](const char* label, const std::string& description, const char* button, IconId icon, ApexUi::ButtonKind kind) {
+            if (!ApexUi::BeginControlRow(label, description.c_str(), ApexUi::ButtonWidth(I18n::Tr(button), true))) return false;
+            const bool clicked = ApexUi::IconTextButton(button, icon, nullptr, kind);
+            ApexUi::EndControlRow();
+            return clicked;
+        };
+        if (row("Save a report", I18n::Tr("The log and your settings. Good for any problem, and after a crash."), "Save##Report", IconId::Save,
+                ApexUi::ButtonKind::Secondary)) {
+            Captures::SaveReport();
+            g_report.scannedAt = 0;
+        }
+        const int secs = Recorder::SecondsRecorded();
+        const std::string recDesc =
+            I18n::Trf("Writes down what the lighting does for up to 20 seconds while you make the problem happen: lights that turn on late, flicker or "
+                      "light the wrong room. Key: {}",
+                      CaptureKey(Hotkeys::Action::Recorder));
+        if (row("Record a few seconds", recDesc, secs >= 0 ? "Stop##Rec" : "Start##Rec", IconId::Activity, secs >= 0 ? ApexUi::ButtonKind::Primary : ApexUi::ButtonKind::Secondary)) {
+            Recorder::RequestToggle();
+            g_report.scannedAt = 0;
+        }
+        const std::string probeKey = CaptureKey(Hotkeys::Action::Probe);
+        const std::string probeDesc = I18n::Trf("Close the menu, point the mouse at the spot that looks wrong and press {}: saves what paints that spot, with its "
+                                                "textures. Good for a wrong color, a dark patch or a light in the wrong place.",
+                                                probeKey);
+        if (ApexUi::BeginControlRow("Capture the light at a spot", probeDesc.c_str(), ImGui::CalcTextSize(probeKey.c_str()).x + 16.0f * u)) {
+            ApexUi::Chip(probeKey.c_str(), VioletTheme::kAccentLight);
+            ApexUi::EndControlRow();
+        }
+        const std::string snapDesc = I18n::Trf("Every lamp and room of the loaded lots, as they are now. Good when a room or a lamp has the wrong light. Key: {}",
+                                               CaptureKey(Hotkeys::Action::Diagnostics));
+        if (row("Lighting snapshot", snapDesc, "Save##Snapshot", IconId::Lightbulb, ApexUi::ButtonKind::Secondary)) {
+            LightDiag::RequestDump();
+            g_report.scannedAt = 0;
+        }
+        ApexPatch* nl = Find("NightTerrainRelight");
+        if (!nl || !nl->IsEnabled()) CardNote("The recording and the two lighting captures need Night Lights on");
+
+        // capture sessions
+        ApexUi::GroupLabel("SESSION");
+        const bool open = Captures::SessionActive();
+        const std::string sessDesc = open ? I18n::Trf("Open: {} captures so far. End it to add the log and settings, ready to send.", Captures::SessionCaptures())
+                                          : std::string(I18n::Tr("Puts every capture you save into one folder, until you end it. Handy when one problem needs several captures."));
+        if (row("Capture session", sessDesc, open ? "End session##Sess" : "Start session##Sess", IconId::Layers, open ? ApexUi::ButtonKind::Primary : ApexUi::ButtonKind::Secondary)) {
+            if (open) Captures::EndSession();
+            else Captures::BeginSession();
+            g_report.scannedAt = 0;
+        }
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void ReportListCard() {
+    ImGui::PushID("ReportList");
+    const unsigned long long now = GetTickCount64();
+    if (!g_report.scannedAt || now - g_report.scannedAt > 2000) { // the folder is read again every 2 s while the page is open
+        g_report.list = Captures::List();
+        g_report.scannedAt = now;
+    }
+    if (ApexUi::BeginCard("##Card")) {
+        uint64_t total = 0;
+        for (const auto& e : g_report.list) total += e.bytes;
+        const std::string sub = g_report.list.empty() ? std::string(I18n::Tr("None yet"))
+                                                      : I18n::Trf("{} saved, {} in all; newest first", g_report.list.size(), SizeText(total));
+        ApexUi::CardHeader(IconId::Bookmark, "Your captures", sub.c_str(), nullptr, nullptr);
+        ApexUi::CardDivider();
+        const std::string openSession = Captures::SessionFolder();
+        for (const auto& e : g_report.list) {
+            ImGui::PushID(e.folder.c_str());
+            std::string kind = I18n::Tr(e.kind.c_str());
+            if (e.kind.rfind("Session", 0) == 0) kind = I18n::Trf("Session ({} captures)", e.items) + (e.folder == openSession ? std::string(" \xC2\xB7 ") + I18n::Tr("open") : "");
+            const std::string label = e.date.empty() ? kind : std::format("{} \xC2\xB7 {} \xC2\xB7 {}", e.date, e.time, kind);
+            const std::string size = SizeText(e.bytes);
+            const float w = ImGui::CalcTextSize(size.c_str()).x + ApexUi::ButtonWidth(I18n::Tr("Open"), true) + ApexUi::ButtonWidth(I18n::Tr("Click again to delete"), true) +
+                            24.0f * ApexUi::Unit();
+            ApexUi::SetNextRowUntranslated();
+            if (ApexUi::BeginControlRow(label.c_str(), nullptr, w)) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", size.c_str());
+                ImGui::SameLine();
+                if (ApexUi::IconTextButton("Open", IconId::ExternalLink, "Shows this capture's folder")) Captures::Open(e.folder);
+                ImGui::SameLine();
+                if (e.folder != openSession && ConfirmDelete("Delete", e.folder, "Deletes this capture for good")) {
+                    Captures::Delete(e.folder);
+                    g_report.scannedAt = 0;
+                }
+                ApexUi::EndControlRow();
+            }
+            ImGui::PopID();
+        }
+        ApexUi::Gap(ApexUi::kSpace1);
+        if (ApexUi::IconTextButton("Open the captures folder", IconId::ExternalLink, "Opens Apex Radiance \xE2\x80\xBA Captures in your Documents folder"))
+            Captures::OpenFolder();
+        if (!g_report.list.empty()) {
+            ImGui::SameLine();
+            if (ConfirmDelete("Delete all", "*", "Deletes every saved capture for good")) {
+                Captures::DeleteAll();
+                g_report.scannedAt = 0;
+            }
+        }
+        ApexUi::MutedText("Captures are never overwritten or deleted by themselves; delete the ones you no longer need here.");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void ReportPage() {
+    ApexUi::PageTitle("Report a problem", "Save what helps fix a bug, then send it");
+    ReportHowCard();
+    ReportCaptureCard();
+    ReportListCard();
+}
+
 // ---- System > Developer (development build) ----
 
 // A developer card: header, then body() (or "Off" while the feature is off)
@@ -1053,6 +1234,11 @@ void MenuTab() {
         ApexUi::CardDivider();
         LanguageRow();
         TextSizeRow();
+        {
+            ApexConfig::UiSettings ui = ApexConfig::GetUi();
+            if (ApexUi::SwitchRow("Start note", &ui.startNote, "The small note in the top-left corner at every start, with the key that opens this menu", true))
+                ApexConfig::SetUi(ui); // [ui] start_note
+        }
         SaveRow();
         ResetAllRow();
     }
@@ -1626,6 +1812,7 @@ void Sidebar(bool collapsed) {
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageDisplay, IconId::Monitor, "Display", "SYSTEM"},
         {PagePerformance, IconId::Gauge, "Performance", nullptr},
+        {PageReport, IconId::Bug, "Report a problem", nullptr},
         {PageDeveloper, IconId::Wrench, "Developer", nullptr},
         {PageSettings, IconId::Settings, "Settings", nullptr},
     };
@@ -1682,6 +1869,7 @@ void DrawPage() {
         }
         break;
     case PageSettings: SettingsPage(); break;
+    case PageReport: ReportPage(); break;
     default: OverviewPage(); break;
     }
 }
@@ -1958,7 +2146,7 @@ void UpdateHint() {
         if (now - g_runningAt >= kHintStartMs) {
             g_hintStarted = true;
             // the first start ever picks the menu key first (KeySetupWindow); an open menu needs no note
-            if (ApexConfig::GetUi().keyChosen && !Overlay::IsVisible()) {
+            if (ApexConfig::GetUi().keyChosen && ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
                 g_hintLeftMs = kHintMs;
                 g_hintLastDraw = 0;
             }
@@ -2232,10 +2420,13 @@ void ShortcutsContent(bool compact) {
     info("Search the settings", "Ctrl+F");
     info("Peek at the game behind the menu", "Hold Alt");
     info("Compare the picture without its filters", "Hold B");
+    // the bug-report captures (Report a problem page): their keys follow the shortcut set
+    ApexUi::GroupLabel("REPORT A PROBLEM");
+    for (const Hotkeys::Action a : {Hotkeys::Action::Recorder, Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics})
+        info(Hotkeys::ActionName(a), ApexConfig::KeyChordText(Hotkeys::Key(a)).c_str());
     if constexpr (!kPublicBuild) {
         ApexUi::GroupLabel("DEVELOPER TOOLS");
-        for (const Hotkeys::Action a : {Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics, Hotkeys::Action::Recorder, Hotkeys::Action::FrameCapture})
-            info(Hotkeys::ActionName(a), ApexConfig::KeyChordText(Hotkeys::Key(a)).c_str());
+        info(Hotkeys::ActionName(Hotkeys::Action::FrameCapture), ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
     }
     ApexUi::Gap(ApexUi::kSpace2);
     if (ApexUi::TextButton("Show the note again##Shortcuts", "Shows the shortcuts note in the top-left corner at the next start")) {
@@ -2396,24 +2587,58 @@ void RunShortcuts() {
     if (Hotkeys::Take(Hotkeys::Action::Refresh)) NightLighting::RefreshAll();
 }
 
-// Development build: the lighting recorder's note (Ctrl+Shift+F6), top left, drawn over everything
-void RecorderNote() {
+// The capture notes (Report a problem, both builds): a pill in the top-left corner in the start note's style, below it when
+// both show, never taking input. While a recording runs: a red dot, its seconds and the key to stop; then "Saved ..." (or
+// the other captures' start / saved notes, Captures::Notify) for a few seconds; while a capture session is open and
+// nothing else shows: the session and its count, so it is not forgotten.
+void CaptureNote() {
     const int secs = Recorder::SecondsRecorded();
-    const char* saved = Recorder::JustSaved();
-    if (secs < 0 && !*saved) return;
-    const std::string text = secs >= 0 ? std::format("REC {} s  ({} to stop)", secs, ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Recorder))) : std::format("Saved {}", saved);
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    const ImVec2 at(16.0f, 16.0f), size = ImGui::CalcTextSize(text.c_str());
-    const float dot = secs >= 0 ? ImGui::GetFontSize() * 0.9f : 0.0f;
-    dl->AddRectFilled(ImVec2(at.x - 8.0f, at.y - 6.0f), ImVec2(at.x + dot + size.x + 8.0f, at.y + size.y + 6.0f), IM_COL32(20, 20, 24, 220), 6.0f);
-    if (secs >= 0) dl->AddCircleFilled(ImVec2(at.x + dot * 0.35f, at.y + size.y * 0.5f), dot * 0.3f, IM_COL32(230, 60, 60, 255));
-    dl->AddText(ImVec2(at.x + dot, at.y), IM_COL32(240, 240, 240, 255), text.c_str());
+    const Captures::Note note = Captures::CurrentNote();
+    std::string text;
+    bool dot = false;
+    if (secs >= 0) {
+        text = I18n::Trf("Recording {} s \xC2\xB7 press {} to stop", secs, ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Recorder)));
+        dot = true;
+    } else if (note.visible) {
+        text = note.text; // translated when it was made (Captures::Notify callers)
+    } else if (Captures::SessionActive()) {
+        text = I18n::Trf("Capture session open \xC2\xB7 {} captures \xC2\xB7 end it on the Report a problem page", Captures::SessionCaptures());
+    } else {
+        return;
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float u = ApexUi::Unit();
+    const float lineH = ImGui::GetTextLineHeight();
+    const float padY = 7.0f * u, padX = 12.0f * u;
+    const float y = 20.0f * u + (HintVisible() ? std::round(lineH * 1.6f) + 2.0f * padY + 10.0f * u : 0.0f);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 20.0f * u, vp->Pos.y + y), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, (lineH + 2.0f * padY) * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(VioletTheme::kWindowBg, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(dot ? VioletTheme::kError : VioletTheme::kAccentLight, 0.35f));
+    if (ImGui::Begin("##ApexCaptureNote", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                                   ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
+        if (dot) { // a red recording dot, pulsing once a second
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float r = lineH * 0.28f;
+            const float a = 0.6f + 0.4f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f));
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + r, p.y + lineH * 0.5f), r, ImGui::GetColorU32(Col(VioletTheme::kError, a)));
+            ImGui::Dummy(ImVec2(2.0f * r, lineH));
+            ImGui::SameLine(0.0f, 8.0f * u);
+        }
+        ImGui::TextColored(Col(VioletTheme::kText), "%s", text.c_str());
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(4);
 }
 
 class GuiClient final : public Overlay::Client {
   public:
     void Draw() override {
-        if constexpr (!kPublicBuild) RecorderNote();
+        CaptureNote();
         CompareNote();
         if (BannerNeeded()) Banner();
         if (g_recNoteShow) {
