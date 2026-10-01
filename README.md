@@ -36,42 +36,6 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 
 </div>
 
-
-## 🆕 New in 2.4
-
-- 📐 **Edges from depth:** SMAA and FXAA also find the edges of objects in the scene depth, so faint edges (walls against walls of the same color, night scenes) are smoothed too while textures stay sharp. On by default.
-- 🔎 **Sharpen textures:** a new Edge Smoothing slider sharpens textures and leaves the smoothed edges alone (off by default).
-- 🎞️ **Temporal smoothing (SMAA, Experimental):** while the camera moves, each frame is blended with the last one, so thin lines, fences and far edges shimmer much less (off by default).
-- 🧠 **Faster memory handling (Experimental):** less waiting when the game hands out and frees memory (off until you turn it on).
-- 💡 **Night Lights:** a lot whose lamps all switch together (a town square at night) now lights the ground within seconds, and a lamp change waits at most 2 seconds for the camera to stop.
-
-## 🆕 New in 2.3
-
-- 🏠 **Light between floors fixed:** double-height rooms and open floors now light the floor above as soon as the lot loads (no more leaving and entering the lot).
-- ⚡ **Faster cache compression, 3x:** big Sim caches are split over several processor cores and never compressed twice.
-- 🧍 **Faster Sim building (new, Experimental):** the game's slowest step when it builds a Sim's hair and clothing, many times faster with exactly the same result.
-
-## 🌈 New in 2.2
-
-**Banding Fix (Experimental):** no more color steps (banding) in lamp light, shadows and other smooth gradients. Light now fades smoothly across walls, floors, the ground and objects.
-
-- ✨ An invisible, fixed grain where the game rounds its colors, on **every surface of the 3D world**; menus are untouched.
-- 🎚️ New **Color › Banding** tab: the grain's Strength (0-100%), an optional **Moving grain** for high frame rates, and **Smooth gradients**, which now works with Picture off too and also helps the sky.
-
-**Ambient Occlusion, lighter and more flexible:**
-
-- ⚡ About **25-30% lighter** at the same look (4K, in testing).
-- 🎚️ **Five qualities**, from Very Low to Ultra, right on the card.
-- 🗺️ **Also in map view:** soft shade around houses and trees when the map is open.
-- 👁️ **Show the shade alone** (Advanced) to see what it does while you adjust it.
-
-> [!NOTE]
-> Ambient Occlusion needs the game's own Edge Smoothing off (Options › Graphics). Apex's anti-aliasing works with it.
-
-📥 **Download:** [Nexus Mods](https://www.nexusmods.com/thesims3/mods/247) · [GitHub release](https://github.com/loinyx/Sims3-ApexRadiance/releases/latest). Every version's notes are on the [Releases](https://github.com/loinyx/Sims3-ApexRadiance/releases) page.
-
-## Features
-
 ### Night Lights
 
 In the base game lamps glow but barely light anything around them. Apex Radiance rebuilds night lighting so they really light their surroundings:
