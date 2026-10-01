@@ -469,6 +469,11 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
             else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
             else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
             else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
+            else if (IsShader(kLakePs2, code.data(), size)) {
+                c = PsClass::Lake;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
+            }
             else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
             else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
             else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
@@ -1286,7 +1291,12 @@ bool g_waterCompileTried = false;
 std::atomic<int> g_waterDrawn{0};
 
 template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
-    if (!g_waterFix.load(std::memory_order_relaxed) || !g_curVsIsLake) return false;
+    if (!g_waterFix.load(std::memory_order_relaxed)) return false;
+    if (!g_curVsIsLake) {
+        static bool logged = false; // the lake pixel shader with another vertex shader: the pass reads the lake one's outputs
+        if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: lake pixel shader drawn with another vertex shader, skipped"); }
+        return false;
+    }
     if (!g_waterPs && !g_waterCompileTried) {
         g_waterCompileTried = true;
         const std::string err = CompilePs(dev, kWaterPsId, &g_waterPs);

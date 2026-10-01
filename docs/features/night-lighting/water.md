@@ -125,7 +125,7 @@ standalone, see [../../removed-features.md](../../removed-features.md).)
 | `depth_share.h` | `DepthShare::Texture()`, `Surface()`, `SetInternalPass()` | depth from Depth Blur |
 | `d3d9_extra_hooks.cpp` | `ExtraHooks::RawGetDepthStencilSurface`, `RawSetDepthStencilSurface` | unhooked depth-stencil calls |
 | `patches/night_terrain_relight_patch.cpp` | `ApexRenderReflectionsUI`, `ResetReflectionDefaults`, settings | UI and TOML |
-| `shader_ids.h` | `kLakePs`, `kLakeVs` | ids |
+| `shader_ids.h` | `kLakePs`, `kLakePs2`, `kLakeVs` | ids |
 
 ## Game addresses and patterns
 

@@ -14,7 +14,9 @@ struct ShaderId {
 constexpr ShaderId kLotLightPs = {568, 0xFDAD274Bu};   // lot terrain light pass
 constexpr ShaderId kObjectRigPs = {600, 0x0A2D0BE4u};  // instanced outdoor objects (fences, shrubs)
 constexpr ShaderId kRoofPs = {1136, 0x6EC87E3Bu};      // roofs
-constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water
+constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water (sun shadow read with a hardware depth compare, texldp)
+constexpr ShaderId kLakePs2 = {1308, 0xB21E05D4u};     // the same lake water with the sun shadow compared by hand (texld + cmp): the
+                                                       // game uses it in other weather (2.5.1 report: reflections gone when not sunny)
 constexpr ShaderId kSnowLotPs = {1852, 0x08DF01E8u};   // snowy lot light pass
 constexpr ShaderId kRoofSnowPs = {4992, 0x3CEB025Eu};  // snowy roofs
 // vertex shaders
