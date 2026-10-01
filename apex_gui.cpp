@@ -2792,7 +2792,9 @@ class GuiClient final : public Overlay::Client {
     bool AlwaysDraw() override {
         RunShortcuts();
         UpdateHint();
-        return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing;
+        // the capture notes (recording, saved, an open session) show with the menu closed too
+        return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
+               Captures::SessionActive();
     }
 
     bool IsToggleKey(WPARAM vk) override {
