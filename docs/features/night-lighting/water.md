@@ -51,6 +51,10 @@ reflection no longer depends on the glow switch (see [../reflections.md](../refl
 
 - Exact ids (`shader_ids.h`): PS `kLakePs` {1344 bytes, FNV-1a `0x4F52846A`} (`PsClass::Lake`) and VS `kLakeVs` {1088,
   `0x23CCB61B`} (VS class 2). They replaced the byte arrays of the old `lake_ref.h`.
+- A second lake PS, `kLakePs2` {1308, `0xB21E05D4`}, is also `PsClass::Lake`: the same water, only the sun shadow is
+  compared by hand (`texld` + `cmp` against v5.z, `dcl_texcoord6`) instead of the hardware `texldp`. The game uses it in
+  other weather; until 30/09 (2.5.1) it was not recognised, so the glow and shore reflection vanished when it was not
+  sunny. Both pair with `kLakeVs` (the precomp has only these two PS with the lake constants `c8 = 5, 1.25, 0.15, 0.1`).
 - In `OnDrawInner` the lake branch runs before the Night Lighting bridge gate, so water works even with "Street lamps light
   inside lots" off. The replacement PS is precreated when the game creates the lake PS (`PrecreatePs`).
 
@@ -154,6 +158,9 @@ No game code is patched; recognition by exact shader id; lamps from `FUN_006acf7
 
 ## Pitfalls and failed approaches
 
+- Lake water has two pixel shaders (sunny and other weather, see How it works). Recognising only one made the
+  reflections vanish in cloudy or rainy weather (player report on 2.5.1). When a game pass stops being patched, first
+  search the precomp for a sibling shader with the same constants.
 - First test (24/09): the whole lake pinkish white. Cause: radius from the light bounds (`+0x134`, ~50 m) and two lights
   per street lamp at the same place (`+0x130` = 97 and 40), so 16 lamps covered the lake. Fix: visual radius
   `clamp(sqrt(range) x 1.2, 2, 25)` (7-12 m), glow x 0.08, spec `x2 / (1 + d^2/(16 R^2))`, sum clamped to 0.8. (Real data
