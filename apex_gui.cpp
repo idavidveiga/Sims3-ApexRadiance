@@ -835,16 +835,11 @@ void ReportCaptureCard() {
         ApexPatch* nl = Find("NightTerrainRelight");
         if (!nl || !nl->IsEnabled()) CardNote("The recording and the two lighting captures need Night Lights on");
 
-        // capture sessions
-        ApexUi::GroupLabel("SESSION");
-        const bool open = Captures::SessionActive();
-        const std::string sessDesc = open ? I18n::Trf("Open: {} captures so far. End it to add the log and settings, ready to send.", Captures::SessionCaptures())
-                                          : std::string(I18n::Tr("Puts every capture you save into one folder, until you end it. Handy when one problem needs several captures."));
-        if (row("Capture session", sessDesc, open ? "End session##Sess" : "Start session##Sess", IconId::Layers, open ? ApexUi::ButtonKind::Primary : ApexUi::ButtonKind::Secondary)) {
-            if (open) Captures::EndSession();
-            else Captures::BeginSession();
-            g_report.scannedAt = 0;
-        }
+        // a picture of the screen with every capture ([ui] capture_screenshot)
+        ApexConfig::UiSettings ui = ApexConfig::GetUi();
+        if (ApexUi::SwitchRow("Include a screenshot", &ui.captureScreenshot,
+                              "Every capture also saves a picture of the screen (without this menu), so the problem can be seen", true))
+            ApexConfig::SetUi(ui);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -904,11 +899,116 @@ void ReportListCard() {
     ImGui::PopID();
 }
 
+// The capture session, first on the page and drawn apart (user, 30/09: "the sessions part should be higher up, clearer,
+// a bit different from the others with a nicer UI"): a violet-edged card with a big icon, the three steps as numbered
+// bubbles and one large button; while a session is open, a pulsing dot, its time and count, the captures so far and the
+// End button.
+void SessionHeroCard() {
+    ImGui::PushID("ReportSession");
+    const float u = ApexUi::Unit();
+    const bool open = Captures::SessionActive();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(open ? VioletTheme::kAccentDark : VioletTheme::kCardBg, open ? 0.28f : 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(VioletTheme::kAccent, open ? 0.9f : 0.55f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14.0f * u);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * 1.25f * u, ApexUi::kSpace4 * u));
+    const bool visible = ImGui::BeginChild("##Hero", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+                                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+    if (visible) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float lineH = ImGui::GetTextLineHeight();
+        // the icon in a violet circle, the title and the state
+        const float disc = std::round(lineH * 2.6f);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddCircleFilled(ImVec2(p.x + disc * 0.5f, p.y + disc * 0.5f), disc * 0.5f, ImGui::GetColorU32(Col(VioletTheme::kAccent, open ? 0.95f : 0.25f)));
+        const float is = ApexUi::kIconMedium * 1.3f * u;
+        ApexUi::DrawIcon(dl, IconId::Layers, ImVec2(p.x + (disc - is) * 0.5f, p.y + (disc - is) * 0.5f), is,
+                         ImGui::GetColorU32(Col(open ? 0xFFFFFF : VioletTheme::kAccentLight)));
+        ImGui::Dummy(ImVec2(disc, disc));
+        ImGui::SameLine(0.0f, ApexUi::kSpace4 * u);
+        ImGui::BeginGroup();
+        if (VioletTheme::BoldFont()) ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * 1.25f);
+        ImGui::TextColored(Col(VioletTheme::kText), "%s", I18n::Tr("Capture session"));
+        if (VioletTheme::BoldFont()) ImGui::PopFont();
+        if (open) {
+            const int s = Captures::SessionSeconds();
+            const std::string state = I18n::Trf("Recording a session \xC2\xB7 {}:{:02} \xC2\xB7 {} captures", s / 60, s % 60, Captures::SessionCaptures());
+            const ImVec2 q = ImGui::GetCursorScreenPos();
+            const float r = lineH * 0.25f;
+            const float a = 0.55f + 0.45f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f));
+            dl->AddCircleFilled(ImVec2(q.x + r, q.y + lineH * 0.5f), r, ImGui::GetColorU32(Col(VioletTheme::kError, a)));
+            ImGui::Dummy(ImVec2(2.0f * r, lineH));
+            ImGui::SameLine(0.0f, ApexUi::kSpace2 * u);
+            ImGui::TextColored(Col(VioletTheme::kAccentLight), "%s", state.c_str());
+        } else {
+            ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Tr("The best way to report a problem: everything you capture goes into one folder"));
+        }
+        ImGui::EndGroup();
+        ApexUi::Gap(ApexUi::kSpace3);
+        if (!open) {
+            // the three steps as numbered bubbles
+            static const char* const kSteps[3] = {"Start a session here", "Make the problem happen and save captures, with the buttons below or their keys",
+                                                  "End it: one folder with the captures, the log and your settings, ready to send"};
+            for (int i = 0; i < 3; i++) {
+                const ImVec2 b = ImGui::GetCursorScreenPos();
+                const float br = lineH * 0.62f;
+                dl->AddCircleFilled(ImVec2(b.x + br, b.y + lineH * 0.5f), br, ImGui::GetColorU32(Col(VioletTheme::kAccentDark)));
+                const std::string n = std::to_string(i + 1);
+                const ImVec2 ns = ImGui::CalcTextSize(n.c_str());
+                dl->AddText(ImVec2(b.x + br - ns.x * 0.5f, b.y), ImGui::GetColorU32(Col(VioletTheme::kAccentLight)), n.c_str());
+                ImGui::Dummy(ImVec2(2.0f * br, lineH));
+                ImGui::SameLine(0.0f, ApexUi::kSpace3 * u);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(Col(VioletTheme::kText, 0.9f), "%s", I18n::Tr(kSteps[i]));
+                ImGui::PopTextWrapPos();
+            }
+            ApexUi::Gap(ApexUi::kSpace3);
+            if (ApexUi::IconTextButton("Start a session##Sess", IconId::Layers, "Every capture you save goes into this session's folder until you end it",
+                                       ApexUi::ButtonKind::Primary)) {
+                Captures::BeginSession();
+                g_report.scannedAt = 0;
+            }
+        } else {
+            const std::vector<std::string> items = Captures::SessionItems();
+            if (items.empty()) {
+                ApexUi::MutedText("No captures yet: make the problem happen, then save captures with the buttons below or their keys.");
+            } else {
+                const size_t from = items.size() > 6 ? items.size() - 6 : 0;
+                if (from) ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Trf("\xE2\x80\xA6 and {} more", from).c_str());
+                for (size_t i = from; i < items.size(); i++) {
+                    // "HH-MM-SS kind" -> "HH:MM:SS  kind"
+                    std::string line = items[i];
+                    if (line.size() > 9 && line[2] == '-' && line[5] == '-') line = line.substr(0, 2) + ":" + line.substr(3, 2) + ":" + line.substr(6, 2) + "  " + I18n::Tr(line.substr(9).c_str());
+                    ApexUi::DrawIcon(dl, IconId::Check, ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + (lineH - ApexUi::kIconSmall * u) * 0.5f), ApexUi::kIconSmall * u,
+                                     ImGui::GetColorU32(Col(VioletTheme::kSuccess)));
+                    ImGui::Dummy(ImVec2(ApexUi::kIconSmall * u, lineH));
+                    ImGui::SameLine(0.0f, ApexUi::kSpace2 * u);
+                    ImGui::TextColored(Col(VioletTheme::kText, 0.9f), "%s", line.c_str());
+                }
+            }
+            ApexUi::Gap(ApexUi::kSpace3);
+            if (ApexUi::IconTextButton("End and save the session##Sess", IconId::Check, "Adds the log, your settings and a list of the captures, ready to zip and send",
+                                       ApexUi::ButtonKind::Primary)) {
+                Captures::EndSession();
+                g_report.scannedAt = 0;
+            }
+            ImGui::SameLine();
+            if (ApexUi::IconTextButton("Open its folder##Sess", IconId::ExternalLink, "Shows this session's folder")) Captures::Open(Captures::SessionFolder());
+        }
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace2 * u));
+    ImGui::PopID();
+}
+
 void ReportPage() {
     ApexUi::PageTitle("Report a problem", "Save what helps fix a bug, then send it");
-    ReportHowCard();
+    SessionHeroCard();
     ReportCaptureCard();
     ReportListCard();
+    ReportHowCard();
 }
 
 // ---- System > Developer (development build) ----
@@ -2638,7 +2738,8 @@ void CaptureNote() {
 class GuiClient final : public Overlay::Client {
   public:
     void Draw() override {
-        CaptureNote();
+        Captures::SetScreenshots(ApexConfig::GetUi().captureScreenshot); // [ui] capture_screenshot
+        if (!Captures::ScreenshotPending()) CaptureNote(); // never in the capture's own screenshot
         CompareNote();
         if (BannerNeeded()) Banner();
         if (g_recNoteShow) {

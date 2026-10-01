@@ -32,6 +32,7 @@ struct UiSettings {
     float fontScale = 1.0f;
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool startNote = true;     // the "Apex Radiance is ready, press <key>" note at every start ([ui] start_note)
+    bool captureScreenshot = true; // the Report a problem captures also save Screenshot.png ([ui] capture_screenshot)
     bool welcomeDone = false;  // the welcome tour was finished or skipped ([ui] welcome_done; missing = false, also for migrated configs)
     bool keyChosen = false;    // the menu key was picked in the first-start prompt or in Settings ([ui] key_chosen; missing = false: the prompt shows once)
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)

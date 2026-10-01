@@ -58,3 +58,19 @@ no lighting behaviour depends on them.
 
 `hotkeys.cpp`: the public build now takes Recorder, Probe and Diagnostics (Frame Capture stays development-only). Action
 names for players: "Recording", "Light capture", "Lighting snapshot".
+
+## Revision (30/09, after the first test)
+
+- **Crash fixed:** Open / Open the captures folder called ShellExecuteW inside the menu frame; it pumped the game window's
+  messages, the overlay's window procedure ran again inside the frame and its std::mutex threw (resource deadlock,
+  crash report 22:10:22, `Overlay::ApexWndProc` -> `std::_Throw_Cpp_error`). Explorer is now opened on a short-lived
+  thread with COM (`ShowInExplorer`), like the Profiles folder button. Never call ShellExecute from the menu frame.
+- **Layout (user: sessions higher, clearer, a nicer look):** the page is now Session (a violet-edged card of its own:
+  big icon, three numbered steps and "Start a session"; while open, a pulsing dot with its time and count, the captures
+  so far with check marks, "End and save the session" and "Open its folder") -> Save a capture -> Your captures -> How
+  to report a problem.
+- **Screenshots:** every capture also gets `Screenshot.png` (switch "Include a screenshot", `[ui] capture_screenshot`,
+  default on). Taken on the next frame: menu closed = at Present (the picture as shown, Color filters included; the
+  capture notes are not drawn that frame), menu open = at `endSceneBeforeOverlay` (before the Apex menu; the Color pass
+  comes after the menu, so it is not in that one). Back buffer -> SYSTEMMEM (GetRenderTargetData, a resolve first if it
+  were multisampled), BGR 24-bit, encoded with WIC on a short-lived thread. 8-bit back buffers only.

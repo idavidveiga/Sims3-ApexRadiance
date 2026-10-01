@@ -20,6 +20,11 @@ std::filesystem::path NewFolder(const char* kind);
 // The folder is complete: copies the log, the settings and the crash report into it, writes "About this capture.txt"
 // (what = one line on what was captured) and shows "Saved" on screen
 void Finish(const std::filesystem::path& folder, const std::string& what);
+// Every capture also gets Screenshot.png, the picture of the next frame (menu closed: as shown, Color filters included;
+// menu open: the picture before the Apex menu draws). On by default ([ui] capture_screenshot, set by the menu).
+void SetScreenshots(bool on);
+bool Screenshots();
+bool ScreenshotPending(); // render thread: a screenshot is taken at the next Present (the capture notes are not drawn)
 // "<date time> Report": only the log, the settings and the crash report (for any problem, crashes included)
 void SaveReport();
 // ApexRadiance_Crash.txt was written in the last 7 days: its date and time ("2026-09-30 21:50"), else ""
@@ -50,6 +55,8 @@ void EndSession();
 bool SessionActive();
 int SessionCaptures();       // captures saved in the open session
 std::string SessionFolder(); // its folder name ("" when none)
+std::vector<std::string> SessionItems(); // the captures saved in it so far, oldest first ("22-10-06 Recording")
+int SessionSeconds();        // how long it has been open
 
 // One capture (or session) folder, for the list on the Report a problem page (newest first)
 struct Entry {
