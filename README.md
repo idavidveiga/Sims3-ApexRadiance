@@ -37,6 +37,14 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 </div>
 
 
+## 🆕 New in 2.4
+
+- 📐 **Edges from depth:** SMAA and FXAA also find the edges of objects in the scene depth, so faint edges (walls against walls of the same color, night scenes) are smoothed too while textures stay sharp. On by default.
+- 🔎 **Sharpen textures:** a new Edge Smoothing slider sharpens textures and leaves the smoothed edges alone (off by default).
+- 🎞️ **Temporal smoothing (SMAA, Experimental):** while the camera moves, each frame is blended with the last one, so thin lines, fences and far edges shimmer much less (off by default).
+- 🧠 **Faster memory handling (Experimental):** less waiting when the game hands out and frees memory (off until you turn it on).
+- 💡 **Night Lights:** a lot whose lamps all switch together (a town square at night) now lights the ground within seconds, and a lamp change waits at most 2 seconds for the camera to stop.
+
 ## 🆕 New in 2.3
 
 - 🏠 **Light between floors fixed:** double-height rooms and open floors now light the floor above as soon as the lot loads (no more leaving and entering the lot).
@@ -108,7 +116,7 @@ Softly blurs the distant background, like a camera focused on what's near. The f
 
 ### Display
 
-- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K).
+- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K), with edges found from the scene depth too, an optional texture sharpening and an experimental temporal smoothing for SMAA (less shimmer while the camera moves).
 - **Borderless window:** windowed or fullscreen, without a title bar.
 
 ### Performance (experimental)
@@ -127,6 +135,7 @@ Off until you turn them on:
 - **Faster texture compression:** the game's texture encoder rewritten with the exact same output, split over several processor cores for large textures (a 2048×2048 texture: about 35 ms down to about 6 ms).
 - **Faster cache compression:** a faster compressor for what the game stores in its caches, in the game's own format; large Sim caches are split over several processor cores (the ~300 ms freezes when Sims are stored drop to ~100 ms, in testing).
 - **Faster Sim building:** hair and see-through clothing layers are sorted many times faster, with exactly the same result: fewer hitches in Create a Sim and when Sims change outfits.
+- **Faster memory handling:** the game's memory manager waits a few microseconds before sleeping, and big blocks are handed back to Windows in the background.
 - **Faster object lookups:** less work when lot lights update and for scripts.
 - **Spread new objects over frames:** while the camera moves, new objects join the scene over a few frames instead of all at once (fewer hitches when a lot streams in).
 
@@ -184,7 +193,7 @@ The development build adds measuring and diagnostic tools. How every feature wor
 - Sims3SettingsSetter by sims3fiend
 - Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from [Arro](https://arro-now.tumblr.com/)'s Split-Level Lighting Fix.
 - Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).
-- Third-party code: [Dear ImGui](https://github.com/ocornut/imgui) (MIT), [Microsoft Detours](https://github.com/microsoft/Detours) (MIT), [toml++](https://github.com/marzer/tomlplusplus) (MIT), [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al. (see `third_party/smaa/LICENSE.txt`), [Lucide](https://lucide.dev) icons (ISC, see `third_party/lucide/LICENSE`).
+- Third-party code: [Dear ImGui](https://github.com/ocornut/imgui) (MIT), [Microsoft Detours](https://github.com/microsoft/Detours) (MIT), [toml++](https://github.com/marzer/tomlplusplus) (MIT), [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al. (see `third_party/smaa/LICENSE.txt`), the texture sharpening after [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT), [Lucide](https://lucide.dev) icons (ISC, see `third_party/lucide/LICENSE`).
 
 The Sims is a trademark of Electronic Arts Inc. This is a fan-made mod, not affiliated with or endorsed by Electronic Arts.
 

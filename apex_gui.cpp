@@ -1308,6 +1308,7 @@ void AboutTab() {
         CreditLine("Sims3SettingsSetter by sims3fiend: " APEX_PRODUCT_NAME " began as a fork of it, and its framework is still based on its "
                    "design. Huge thanks to sims3fiend! I recommend using both.");
         CreditLine("Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).");
+        CreditLine("Edge Smoothing's texture sharpening follows AMD FidelityFX CAS (MIT).");
         CreditLine("Third-party code: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA by Jorge Jimenez et al. (MIT-style, "
                    "see third_party/smaa/LICENSE.txt), Lucide icons (ISC, see third_party/lucide/LICENSE).");
         CreditLine("Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from Arro's Split-Level Lighting Fix.");

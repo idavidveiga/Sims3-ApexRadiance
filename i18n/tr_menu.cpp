@@ -380,6 +380,8 @@ const I18n::Entry kEntries[] = {
      "la conception de Sims3SettingsSetter. Un grand merci à sims3fiend ! Je recommande d'utiliser les deux."},
     {"Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).", "O modo FXAA da Suavização de Bordas segue o FXAA 3.11 de Timothy Lottes (NVIDIA).",
      "El modo FXAA del Suavizado de Bordes sigue FXAA 3.11 de Timothy Lottes (NVIDIA).", "Le mode FXAA du Lissage des Bords suit FXAA 3.11 de Timothy Lottes (NVIDIA)."},
+    {"Edge Smoothing's texture sharpening follows AMD FidelityFX CAS (MIT).", "A nitidez de texturas da Suavização de Bordas segue o AMD FidelityFX CAS (MIT).",
+     "La nitidez de texturas del Suavizado de Bordes sigue AMD FidelityFX CAS (MIT).", "La netteté des textures du Lissage des Bords suit AMD FidelityFX CAS (MIT)."},
     {"Third-party code: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA by Jorge Jimenez et al. (MIT-style, "
      "see third_party/smaa/LICENSE.txt), Lucide icons (ISC, see third_party/lucide/LICENSE).",
      "Código de terceiros: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA de Jorge Jimenez et al. (estilo MIT, "
