@@ -499,3 +499,10 @@ None: this part only changes game code and triggers. Its output (chunk light map
 - 29/09 local terrain relight and paced sweep (developer toggles, off): the in-game checks listed in "Local terrain
   relight"; roads after a local relight (the `+0x54` path does not set the road partition mark); then decide the
   defaults.
+
+### Test005 after-load refresh (2026-10-01)
+
+The rooms/lots refresh no longer necessarily waits a fixed 8 s. From 500 ms after world-live, a cached-room readiness check polls every 200 ms; 250 ms quiet with a fresh post-load enumeration and no room/ambient work allows it to run early. The original 8 s upper bound remains for incomplete or continuously busy loads. The setting-change refresh and terrain trigger rules are unchanged. This readiness is a bounded heuristic for loaded cached rooms, not proof that every future streamed lot is already loaded.
+
+### Release 2.5.3 paced terrain updates
+The user-approved test007 paced sweep defaults to true in both dev and public builds. Developer-only toggles remain hidden in public; the initial world-load rebuild remains full. Lamp-change and dusk rebuilds may run one chunk at a time, nearest first, with a full-rebuild fallback. This is independent of the immediate room/floor corrections.

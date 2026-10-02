@@ -669,3 +669,148 @@ wall or floor test. `BasisLightHook` (redirect of that call, bytes 8D 94 24 C8 0
 a lamp of another story (FindCross in the room's RoomInfo) is tested with IndoorShadow at pos (no 2D wall flags: pass or
 not); blocked, it adds nothing. Status "directional maps: lamps of another story tested N, behind a floor M". The shader cap
 in PatchIndoorBasis stays as a safety net. The maps change only when a room is solved again (a refresh, a lamp change).
+
+## Pending Group Ambient Updates (2026-10-01)
+
+Candidate `2.5.2-room-sync-pending-test` retains the latest group ambient target per room instead of dropping it when
+another member solves during the 3 s requeue cooldown. `BeforeRoomUpdate` checks the deadline on each lot update, even
+without a new lamp event. Dispatch leaves the target pending until a merge confirms convergence; a failed/already-waiting
+queue attempt can retry after the cooldown. Further merges replace the target or cancel it if the room already agrees.
+Pending ambient work now participates in `LotBusy`, so the existing post-load quiet/settle pass includes it (the 6 s
+maximum is unchanged). World/topology/uninstall resets clear the pending map together with the other ambient caches.
+
+Evidence: session `2026-10-01 14-48-54`, lot `27D24720`, recognises 540/1356/4 openings throughout the three snapshots.
+Before the lamp toggle, the solve journal ends with rooms 19/20/3 near 0.017 and room 23 near 0.012; after switching lamps
+off, the last solves for all four agree near 0.012. Lamp changes at 14:49:04.965 and 14:49:13.433 requeue 31 rooms. The
+old cooldown branch discarded differing group updates outright. This supports the candidate but is not runtime proof.
+
+Offline policy tests cover the deadline, first dispatch, overdue updates and DWORD tick wrap. The candidate still needs
+in-game validation: load/enter the affected lot without toggling lamps, wait for the bounded group reconciliation, switch
+stories and verify the result remains stable. Do not replace this with a repeating world-wide lighting refresh.
+
+## Live Group Background (2026-10-01)
+
+Candidate `2.5.2-room-sync-live-test`: the 15-06-08 recording in session `2026-10-01 15-03-22` shows lot 27D24720
+rooms 19/20 holding their merged ambient while the slider changes, although both are idle (state 5). Their merged
+colour no longer matches the original BaseHook result, so MoveBase previously refused the direct update until rest.
+
+StageAmbientBaseChange validates the cached original, applied group colour, second ambient and idle state before
+updating only the background delta in the original room colour. Lamp contributions remain intact. Unlit members use
+StageUnlitAmbientChange with the same ownership checks and a verified empty lamp list. After the full room traversal,
+ApplyAmbientBaseChanges recomputes cached groups using the same area/normalisation rule as the solver merge. It writes
+the merged colour and sampler copy together, without changing map normalisation or wall ramps. Busy, unknown or
+incompatible members retain the existing pending-solve fallback. Cached groups clear on world/topology resets.
+
+The live path uses cached group membership instead of scanning floor tiles on each slider update, and unchanged unlit
+colours do not trigger a rig refresh. Offline tests cover background delta preservation, round trips, weighted merging,
+normalisation and zero brightness (51 checks total). Build succeeds; in-game validation remains required.
+Window-light initial activation is a separate observed issue and is not modified by this candidate.
+
+## Window Activation Recheck (2026-10-01)
+
+Candidate `2.5.2-window-sync-test` retains the live background change. Session 15-26-42 confirms rooms 23/19/3/20
+of lot 27D24720 change their merged ambient during the slider drag (15:28:39 onward). The residual bright room is
+not evidence that this group colour is frozen: the 15-30-33 snapshot has all ordinary lamps in room 20 at zero
+intensity, but RectangleWindowLight L3ACB0300 (#2326) is lit with effective white (1,1,1,1). After the user removes
+and restores a wall, the 15-37-13 snapshot shows the same light, position and room with flag 0x20 cleared and
+effective colour zero. The background setting also differs slightly, so this is not a pixel-identical comparison.
+
+RE: FUN_006c7ba0 is the light registry entry's vfunc +8. It resolves the room at the window sample, obtains the
+room's roofless flag through FUN_006c7b20 / FUN_0069e620, checks its paired entry and the tree's state, then passes
+the computed lit boolean to FUN_006bdca0 and marks affected rooms through FUN_006c7160. FUN_006bdca0 alone only
+sets the flag/effective colour; calling it without the computed boolean is not an activation refresh.
+
+BeforeRoomUpdate now runs a bounded window-only reevaluation on the light thread, before iterating changed rooms:
+on a new lot/manager, world-live generation, geometry refresh or displayed-story change, then at 2 s and 6 s.
+The registry is snapshotted before invoking callbacks because paired entries may move during reevaluation.
+Each entry must still belong to its tree, have type 7/8, and have the validated evaluator at vfunc +8. The game
+decides whether it should be lit; there is no blanket night-time disable, no room/roof flag rewrite, and no forced
+wall edit. Existing sky updates continue unchanged. Changed entries use the game's own room invalidation.
+
+LightEntryUpdate has two signatures; the offline checker on the installed TS3W.exe found one match for each,
+resolving to 006C7BA0 (229 address IDs checked, zero mismatches). Development logs record evaluated/changed counts
+per lot/pass. Scheduling tests include delay boundaries, bounded completion and tick wrap (58 checks total).
+Compilation succeeds. Runtime confirmation is still required: this cannot prove whether a particular stale
+roof/topology classification itself needs a separate reconstruction beyond window reevaluation.
+
+## Test 001: Faster Switch Reconciliation (2026-10-01)
+
+Version `2.5.2-test001-fast-switch`, baseline `2.5.2-window-sync-test`. Session 15-43-24, recording 15-44-07:
+room 20 finishes at 15:43:58.042, but the delayed whole-lot reconciliation sends 31 rooms at 15:43:58.513.
+After switching on, it finishes again at 15:44:03.042 before another whole-lot reconciliation at 15:44:03.190.
+These are opportunities to remove repeated work, not proof of the candidate's runtime performance.
+
+LampMarkFilter batches pure on/off changes for 120 ms instead of 700 ms. Movement/room changes, including mixed
+switch-and-movement batches, retain 700 ms. The 2 s minimum gap per lot, dusk/dawn guard and self-switching guard
+are unchanged. This removes 580 ms of the first-switch debounce; it does not promise a 580 ms visual gain.
+
+OutdoorGather records the start tick and room identity only after the original gather and both sharing steps
+return successfully. The switch-only lot reconciliation may retain a room only in completed state 5, with matching
+manager/id, a gather strictly newer than the final switch, and no pending ambient, dependent-room or deferred work.
+Equal ticks, unknown ownership, incomplete solves and moves take the original queue path. The stamp cache is bounded
+and clears on world change. Full manual/setting refreshes retain their original behavior. Logs show both sent and
+retained room counts. No shader/solver budget, group retry cooldown or window recheck timing is increased or removed.
+
+65 offline policy checks pass, covering short/drag debounce and gather ordering including tick wrap. Build succeeds.
+Actual settle time and frame-time impact remain unmeasured until an in-game comparison with the baseline. The rig
+fallback timer remains unchanged in this candidate; optimizing it is a separate step after measuring this change.
+
+## Test 002: Fresh Group Sources (2026-10-01)
+
+**Rejected and reverted after runtime testing.** Recording `2026-10-01 16-37-06` confirms this build was installed
+and shows repeated solves with inconsistent group colours over several seconds. After a lamp change at 16:36:59,
+room 20 solves without a merge at 59.856 and again at 16:37:00.028. At 16:37:04.497 rooms 19 and 20 are both in
+state 5 but hold different ambient RGB (0.0512, 0.0532, 0.0486) and (0.0525, 0.0543, 0.0515). The user also reports
+poorer responsiveness. Clearing sources on each gather while requiring all sources creates missing-member windows
+and more reconciliation through the existing 3 s retry cooldown. Do not repeat this design as a speed optimization.
+The six readiness-policy tests only tested the gating rule, not convergence of the asynchronous scheduler; their
+success did not validate this design. Runtime behavior is authoritative. Source behavior/version restored to Test 001;
+the original Test 001 binary remains the rollback artifact. The following candidate notes are historical, not approval.
+
+Version `2.5.2-test002-fresh-ambient`, baseline Test 001. Session 16-11-41 ends with room 20 having no lights
+at 16:11:58.747 but merged RGB (0.0422, 0.0402, 0.0384), while its second ambient is (0.0287, 0.0287, 0.0287).
+The merge reaches the latter value at 58.856. This supports removing old source contributions during a new gather;
+it does not prove that the entire delay, or the furniture delay, comes from the ambient merge.
+
+After a successful gather/sharing pass, the room's cached original ambient is erased, with current manager/story
+identity checks. The native ambient calculation restores that source at RoomSolveStart. A connected group is merged
+only when all its sources are available. Until then the native own result is recorded as applied, and its outdated
+pending target is removed. The last available source reconciles the group through the existing pending queue.
+Live slider recomputation also refuses a group with missing sources. No busy-room map write is added, and map
+normalisation, wall ramp, solver/drain budgets, cooldowns, window checks and rig fallback timing remain unchanged.
+
+71 offline policy checks pass. In-game comparison against Test 001 is still required, especially repeated switches,
+initial lot loads, slider changes during a solve, and unequal lamp contributions across an atrium.
+
+Separate wall investigation, session 16-18-44: the lower-wall probe at 16:18:48 and upper-wall probe at 16:18:51 use
+the same native wall shader and PS c4 (0.05354, 0.05010, 0.05087, 0.05263). The upper probe samples near the top of
+the open atrium. Shared ambient is therefore a possible explanation for its background brightness; these probes
+alone do not establish a ray crossing a solid balcony slab. No wall/floor occlusion behavior is changed in Test 002.
+
+Performance follow-up: Test 001 reportedly feels laggier during ordinary play/camera movement, not just switches.
+The existing profiler run at 16:16:36-16:17:05 does not coincide with the 16:11 recording's switches.
+Hitch frame #2562 takes 33.95 ms, with texture creation 27.20 ms and lot lighting update 0.01 ms; #2571 takes
+24.79 ms, with driver Present 19.67 ms and lighting 0.02 ms. Other sampled hitches are dominated by texture
+creation/resource loading. This does not establish a lighting regression or exclude a performance regression.
+A paired baseline/Test 002 run on the same camera/lot is required. Do not raise solver budgets or change unrelated
+streaming features based on this sample. Test 002 does not claim to fix the reported camera slowdown.
+
+### 2.5.2-test004-reviewed-sync (2026-10-01, development test)
+
+Recovered the unfinished test003 work and retained test001's use of cached stacked-room ambient sources. Test002's all-members-ready gate remains rejected. Fresh post-switch gathers may complete without being restarted; furniture refresh waits for the tracked rooms, with a bounded fallback. Development diagnostics stop doing collection work after their capacity is reached.
+
+Test004 additionally applies compatible colour-only ambient updates before scheduling another native room solve. Scale or wall-ramp changes, busy rooms and failed identity/ambient validation continue through the native solve path. Pending idle updates resume from a key-based cursor (128 visits and 16 writes per 50 ms poll), avoiding starvation behind busy rooms and keeping the cursor valid after erase/rehash. The stale switched-off-lamp scan preserves its sent signature during states 1-3, so a busy solve does not rearm an unchanged stale set every scan.
+
+Validation: Release/Win32 development build; 89 room-ambient policy checks; extracted production pending-loop harness with 4,500 ready entries behind 500 busy entries, cursor removal, rehash and empty queue; extracted production stale visitor harness with busy-state transitions and changed/cleared lamp signatures. All passed. Native thread interactions, visual convergence and FPS remain unverified in-game. Available test001 hitch samples also contain texture creation and Present/driver waits, so no overall performance improvement is claimed from these offline checks.
+
+### 2.5.2-test005-coordinated-floors (2026-10-01; development test)
+
+Compatible colour-only changes of an already coherent atrium group retain its previous ambient while native solves continue. Latest targets are staged for every member. Before the lot's native room update, the complete group is checked for identity, finite target, matching target revision, unchanged normalization/ramp and idle ambient ownership; all colours are written in that update, then checked. Failed writes restore still-owned previous colours and return to ordinary reconciliation. There is no all-sources-ready gate on native solves or on initial group discovery. Unavailable/incompatible groups use the native path. The presentation wait is bounded to 1.5 s from first staging; new gathers do not extend it. Normal group publication shares a global allowance of 16 members per 50 ms; object-rig refresh is requested at Present after publication. This coordinates ambient colour, not an atomic replacement of all native directional textures and furniture rigs.
+
+Streaming now forgets ambient/group caches only for removed lots or lots whose story managers changed. Valid other lots keep their own colours and group history. Fresh, manager-checked cached room ids are reused for complete relights; missing, stale or overflowing lists retain the tile-walk fallback. The scheduler boosts every floor of the priority lot when the existing full-detail-all-floors policy is active; its 1/4 ms drain limits and the configured lot budgets are unchanged. Native priority differences remain within those boosted floors.
+
+Startup refresh checks from 500 ms after world-live: a fresh room enumeration, no cached busy room or pending ambient, and 250 ms of quiet allow early refresh. It polls at 200 ms and retains the original 8 s upper bound. Room enumeration is expired at world-live to avoid treating load-screen ids as an authoritative completed list. This does not promise an 0.5 s complete load.
+
+Session `2026-10-01 17-58-56 Session` shows unlit room 22 following a brightness drag while atrium members 23/19/20 lag, plus inconsistent ambient during the later drag. Code review found a retry gap for busy/unknown rooms and global streaming cache eviction. Rooms at Night recovery, stale identity, merged-base ownership and queue acknowledgement are fixed in the same candidate (see unlit-rooms.md). The installed capture binary SHA256 is 677D742EB3DD9EDB5D02C7A0072184BD3055BF77EC4BAD8E72525C2510AAC1D3; it differs from this chat's test004 baseline. The capture does not uniquely prove every cause of the visual issue.
+
+Validation: 89 existing policy checks; 36 group/startup/priority/cache checks using the extracted production group publisher and cache forgetting function; extracted production pending loop, stale lamp visitor, Rooms at Night visitor/acknowledgement and SEH MoveBase checks. Busy members, inconsistent targets, identity loss, map incompatibility, write failure/rollback, publication allowance, deadline wrap, stale manager entries, retry after busy/queue failure, unchanged merged ownership and disabling the option are covered. In-game appearance, full native thread interactions, convergence after repeated switches and FPS remain unverified.

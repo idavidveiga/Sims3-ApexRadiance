@@ -84,6 +84,7 @@ enum class Id : uint16_t {
     AddRoomLight,       // FUN_006a2060 thiscall(room, light) ret 4: adds a light to a room's list
     RoomUpdatePush,     // push FUN_006c7250 in FUN_006c5e20: the per-story room update, run for every story of every lot
     RoomUpdate,         // FUN_006c7250 fastcall(treeLevel)
+    LightEntryUpdate,   // FUN_006c7ba0 thiscall(entry): recomputes window room/sky activation
     ChangedClearCall,   // its call that empties the "changed rooms" set (ecx = treeLevel+8) after walking it
     ChangedClear,       // FUN_007f3790 thiscall(set, buckets, count) ret 8
     FloorSet,           // FUN_00a89dd0 thiscall(level floor object, ...): sets a floor quadrant

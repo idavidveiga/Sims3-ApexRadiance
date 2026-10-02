@@ -9,8 +9,10 @@ void Uninstall();                 // the game's own colours again
 // furniture alike), blue = how much of its blue tint (0 = grey; furniture too)
 void Set(bool on, float light, float blue);
 void OnPresent(); // render thread: relights the rooms and objects a moment after a change
+void OnWorldChanged(); // render thread: discard room/lot identities from the previous world
+void OnRoomsChanged(); // render thread: a loaded lot or story manager changed
 // Any thread: the weight of the ambient cube on furniture drawn by Apex's indoor-object shader (lot_light_bridge): the
-// square root of the Brightness (x the night level) while on, 1 while off (their lamp light comes from the room maps, not this)
+// Brightness (blended by the night level) while on, 1 while off (their lamp light comes from the room maps, not this)
 float FurnitureAmbient();
 // Any thread: whether Rooms at Night changes furniture now (on, at night or in a dark room)
 bool FurnitureActive();

@@ -27,6 +27,7 @@
 #include "level_light_share.h"
 #include "object_light_bridge.h"
 #include "unlit_rooms.h"
+#include "room_ambient_policy.h"
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
@@ -75,15 +76,16 @@ struct LampState {
 std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the lamp at its last mark
 
 // A lamp switched on or off, or moved (30/09, user: "also refresh the lighting whenever a lamp is moved, switched off or on,
-// if it costs no performance"): its lot lights again once, kLotDelay after its last such change (a drag: once, when it
-// stops), at most once per kLotGap per lot; never while the night level moves (dusk and dawn switch every lamp at once).
+// if it costs no performance"): a switch waits 120 ms; a move still waits 700 ms after its last change (a drag:
+// once when it stops). At most once per kLotGap per lot; never while dusk/dawn switches every lamp at once.
 // Not the whole world as the shortcut: only the rooms of that lot (every story), on the light tree thread, and the rigs.
-constexpr DWORD kLotDelay = 700, kLotGap = 2000;
+constexpr DWORD kLotGap = 2000;
 constexpr float kMoveMin = 0.10f; // m: animated lamps wobble less
 constexpr DWORD kSelfWindow = 10000; // ms
 constexpr int kSelfMax = 3;          // more switches on or off than this within kSelfWindow: a light switching itself, left out
 struct LotDue {
-    DWORD due, last;
+    DWORD due = 0, last = 0, changed = 0;
+    bool switchOnly = false;
 };
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
@@ -165,7 +167,11 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
         if (const uintptr_t tracker = selfSwitching ? 0 : TrackerOf(tl)) {
             if (g_lotDue.size() > 1024) g_lotDue.clear();
-            g_lotDue[tracker].due = (GetTickCount() + kLotDelay) | 1;
+            LotDue& pending = g_lotDue[tracker];
+            const bool switchOnly = was.on != on && !moved && was.room == room;
+            pending.switchOnly = pending.due ? pending.switchOnly && switchOnly : switchOnly;
+            pending.changed = tick;
+            pending.due = (tick + RoomAmbientPolicy::LampRefreshDelay(pending.switchOnly)) | 1;
         }
         was.on = on;
         std::memcpy(was.pos, pos, sizeof was.pos); // a slow drag: each 10 cm step counts, the refresh waits for the last
@@ -280,7 +286,7 @@ bool IsInstalled() { return g_installed; }
 void OnPresent(float nightLevel) {
     if (!g_installed) return;
     const DWORD now = GetTickCount();
-    std::vector<uintptr_t> run;
+    std::vector<std::pair<uintptr_t, DWORD>> run;
     {
         std::lock_guard<std::mutex> lk(g_mx);
         for (auto& [tracker, d] : g_lotDue) {
@@ -295,14 +301,14 @@ void OnPresent(float nightLevel) {
                 continue;
             }
             d.last = now | 1;
-            run.push_back(tracker);
+            run.emplace_back(tracker, d.switchOnly ? d.changed : 0);
         }
     }
-    for (uintptr_t t : run)
-        if (LevelLightShare::RelightLot(t, "a lamp switched or moved") >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
+    for (const auto& [t, changed] : run)
+        if (LevelLightShare::RelightLot(t, "a lamp switched or moved", changed) >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
     if (!run.empty()) {
         ObjectLightBridge::RequestRigRefresh();
-        UnlitRooms::RigsAgainIn(1500); // and once its rooms are solved
+        // RelightLot watches completion and retains its own bounded fallback.
     }
 }
 void SetEnabled(bool on) { g_on.store(on, std::memory_order_relaxed); }

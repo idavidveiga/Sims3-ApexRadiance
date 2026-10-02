@@ -30,6 +30,7 @@
 #include "render_callbacks.h"
 #include "shader_patches.h"
 #include "scene_dither.h"
+#include "shader_lookup_cache.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
@@ -63,6 +64,8 @@ struct Copy {
 std::unordered_map<IDirect3DPixelShader9*, Copy> g_copies; // game pixel shader -> its copy
 // game vertex shader -> its copies writing the clip position to TEXCOORDk (null = cannot), key = pointer * 8 + k
 std::unordered_map<uint64_t, IDirect3DVertexShader9*> g_vsCopies;
+ShaderLookupCache<Copy> g_pixelLookup;
+ShaderLookupCache<IDirect3DVertexShader9*> g_vertexLookup;
 float g_strength = 1.0f;                  // the grain in 8-bit steps (triangular, peak): 1 = +-1 step
 bool g_moving = false;                    // a new grain pattern every frame (high frame rates average it away)
 unsigned g_frameIndex = 0;                // counts frames for the moving grain
@@ -162,6 +165,7 @@ IDirect3DVertexShader9* MakeVsCopy(IDirect3DDevice9* dev, std::vector<DWORD> t, 
 
 void Remember(IDirect3DPixelShader9* game, const Copy& copy) {
     std::lock_guard<std::mutex> lock(g_lock);
+    g_pixelLookup.Clear();
     auto [it, fresh] = g_copies.try_emplace(game, copy);
     if (!fresh) { // an address the game reused for a new shader
         if (it->second.ps) it->second.ps->Release();
@@ -171,6 +175,7 @@ void Remember(IDirect3DPixelShader9* game, const Copy& copy) {
 
 void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
     std::lock_guard<std::mutex> lock(g_lock);
+    g_vertexLookup.Clear();
     auto [it, fresh] = g_vsCopies.try_emplace(key, copy);
     if (!fresh) {
         if (it->second) it->second->Release();
@@ -181,6 +186,7 @@ void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
 // A new game vertex shader at an address: its old copies (every k) go
 void ForgetVs(IDirect3DVertexShader9* vs) {
     std::lock_guard<std::mutex> lock(g_lock);
+    g_vertexLookup.Clear();
     for (int j = 0; j < 2; j++)
         for (int k = -1; k < 8; k++) {
             const auto it = g_vsCopies.find(VsKey(vs, k, j != 0));
@@ -192,6 +198,7 @@ void ForgetVs(IDirect3DVertexShader9* vs) {
 
 void ReleaseCopies() {
     std::lock_guard<std::mutex> lock(g_lock);
+    g_pixelLookup.Clear(); g_vertexLookup.Clear();
     for (auto& [game, copy] : g_copies)
         if (copy.ps) copy.ps->Release();
     g_copies.clear();
@@ -204,8 +211,11 @@ void ReleaseCopies() {
 Copy CopyOf(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
     {
         std::lock_guard<std::mutex> lock(g_lock);
+        Copy cached;
+        const auto key = reinterpret_cast<std::uintptr_t>(ps);
+        if (g_pixelLookup.Find(key, cached)) return cached;
         const auto it = g_copies.find(ps);
-        if (it != g_copies.end()) return it->second;
+        if (it != g_copies.end()) { g_pixelLookup.Store(key, it->second); return it->second; }
     }
     const Copy copy = MakeCopy(dev, ReadCode(ps));
     Remember(ps, copy);
@@ -217,8 +227,10 @@ IDirect3DVertexShader9* VsCopyOf(IDirect3DDevice9* dev, IDirect3DVertexShader9* 
     const uint64_t key = VsKey(vs, k, jitter);
     {
         std::lock_guard<std::mutex> lock(g_lock);
+        IDirect3DVertexShader9* cached = nullptr;
+        if (g_vertexLookup.Find(key, cached)) return cached;
         const auto it = g_vsCopies.find(key);
-        if (it != g_vsCopies.end()) return it->second;
+        if (it != g_vsCopies.end()) { g_vertexLookup.Store(key, it->second); return it->second; }
     }
     IDirect3DVertexShader9* copy = MakeVsCopy(dev, ReadCode(vs), k, jitter);
     RememberVs(key, copy);

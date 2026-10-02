@@ -395,3 +395,11 @@ wall family (baked light, see [walls.md](walls.md)).
   COLOR1 packing for the 34 full-input PS.
 - One lamp model for all surfaces (roofs and water still use `clamp(1.2 sqrt(range), 2, 25)` and `(1 - d^2/R^2)^2`).
 - Sims under street lamps (roadmap phase 7).
+
+## 2026-10-01: test008, objects inheriting furniture floor shadows
+
+The 20-37-31 session shows a wall painting darkening when a chair is placed below it. The four directional maps are byte-identical, while the floor-map texel near its origin changes from RGB 30 to 1. The indoor object's min(basis, 2 * floor map) transfers this floor-height shadow to the painting.
+
+Test008 omits that shader cap only while LevelLightShare reports its validated BasisLightHook installed and indoor sharing ready; otherwise the original cap remains. Separate cached variants preserve fallback during feature changes. This does not establish full height-aware object occlusion: maps remain 2D, and removing the cap may expose directional-map limitations near walls. Cross-story floor blocking, closed rooms, stair openings, other objects, night controls and performance must be validated in game before promoting it. The 007 RC package is preserved.
+
+Offline: 84 captured pixel shaders examined, 3 matching shader/sampler combinations; fallback byte-identical to 007 and both variants assemble. The corrected variant removes exactly the 12 tokens (three instructions) of the cap. Release x86 builds; prior policy/queue/night/cache tests pass. No in-game result claimed yet.
