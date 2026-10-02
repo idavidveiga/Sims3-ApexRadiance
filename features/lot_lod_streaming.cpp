@@ -3,78 +3,276 @@
 #include "game_addresses.h"
 #include "game_version.h"
 #include "memory_patch.h"
+#include "s3ss_detect.h"
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace LotLodStreaming {
 namespace {
 
-bool g_started = false;
-bool g_worldLogged = false;
+std::mutex g_lock;
+bool g_running = false;
+bool g_externalOwner = false;
+
+uintptr_t g_throttleFlag = 0;
 uintptr_t g_worldManagerGlobal = 0;
 
-std::string Addr(uintptr_t a) {
-    return a ? std::format("{:#010x}", a) : std::string("not found");
+bool g_throttleOriginalValid = false;
+bool g_throttleWritten = false;
+uint8_t g_throttleOriginal = 0;
+
+uintptr_t g_worldManager = 0;
+bool g_thresholdOriginalValid = false;
+bool g_thresholdWritten = false;
+float g_thresholdOriginal = 0.0f;
+
+template <typename T> bool Read(uintptr_t address, T& out) {
+    return address && MemPatch::ReadBytes(address, &out, sizeof(T));
+}
+
+template <typename T> std::vector<BYTE> Bytes(const T& value) {
+    const BYTE* p = reinterpret_cast<const BYTE*>(&value);
+    return std::vector<BYTE>(p, p + sizeof(T));
+}
+
+template <typename T> bool WriteExpected(uintptr_t address, const T& value, const T& expected) {
+    const std::vector<BYTE> bytes = Bytes(value);
+    const std::vector<BYTE> old = Bytes(expected);
+    return MemPatch::WriteBytes(address, bytes, nullptr, &old);
+}
+
+bool S3SSOwnsStreamingSettings() {
+    return S3SSDetect::S3SSPatchBoolSettingEnabled("LotStreamingOptimizations", "streamingSettings", true);
+}
+
+void ClearWorldState() {
+    g_worldManager = 0;
+    g_thresholdOriginalValid = false;
+    g_thresholdWritten = false;
+    g_thresholdOriginal = 0.0f;
+}
+
+bool ApplyThrottle(std::string* error) {
+    uint8_t current = 0xFF;
+    if (!Read(g_throttleFlag, current)) {
+        if (error) *error = "Could not read the native Lot LoD throttle flag";
+        return false;
+    }
+    if (current > 1) {
+        if (error) *error = std::format("Native Lot LoD throttle has an unexpected value ({})", static_cast<unsigned>(current));
+        return false;
+    }
+
+    g_throttleOriginal = current;
+    g_throttleOriginalValid = true;
+    if (current == 1) {
+        LOG_INFO("[LotLod] Native transition throttle was already on; Apex leaves it on without taking ownership of that byte");
+        return true;
+    }
+
+    const uint8_t enabled = 1;
+    if (!WriteExpected(g_throttleFlag, enabled, current)) {
+        if (error) *error = "Could not enable the native Lot LoD transition throttle";
+        g_throttleOriginalValid = false;
+        return false;
+    }
+    g_throttleWritten = true;
+    LOG_INFO(std::format("[LotLod] Native transition throttle: {} -> 1 at {:#010x}", static_cast<unsigned>(current), g_throttleFlag));
+    return true;
+}
+
+bool ApplyCurrentWorld(std::string* error) {
+    uintptr_t world = 0;
+    if (!Read(g_worldManagerGlobal, world) || !world) return true; // no world yet: Tick() retries
+
+    if (world == g_worldManager) return true;
+
+    // A different WorldManager means the previous world is gone or being replaced. Never write back through a stale
+    // pointer: the new manager gets its own original value and restoration state.
+    ClearWorldState();
+    g_worldManager = world;
+
+    float current = 0.0f;
+    if (!Read(world + 0xEC, current)) {
+        if (error) *error = "Could not read WorldManager+0xEC (camera speed threshold)";
+        ClearWorldState();
+        return false;
+    }
+    if (!std::isfinite(current) || current < 0.0f || current > 100.0f) {
+        if (error) *error = std::format("WorldManager+0xEC is not a plausible camera speed threshold ({})", current);
+        ClearWorldState();
+        return false;
+    }
+
+    g_thresholdOriginal = current;
+    g_thresholdOriginalValid = true;
+    LOG_INFO(std::format("[LotLod] WorldManager {:#010x}: camera speed threshold is {:.3f}", world, current));
+
+    if (current == kCameraThreshold) {
+        LOG_INFO("[LotLod] Camera speed threshold already equals 5.0; no write needed");
+        return true;
+    }
+
+    if (!WriteExpected(world + 0xEC, kCameraThreshold, current)) {
+        if (error) *error = "Could not apply camera speed threshold 5.0";
+        ClearWorldState();
+        return false;
+    }
+
+    g_thresholdWritten = true;
+    LOG_INFO(std::format("[LotLod] Camera speed threshold: {:.3f} -> {:.3f}", current, kCameraThreshold));
+    return true;
+}
+
+void RestoreWorldIfOwned() {
+    if (!g_thresholdWritten || !g_thresholdOriginalValid || !g_worldManager) {
+        ClearWorldState();
+        return;
+    }
+
+    uintptr_t liveWorld = 0;
+    if (!Read(g_worldManagerGlobal, liveWorld) || liveWorld != g_worldManager) {
+        LOG_INFO("[LotLod] Camera threshold restore skipped: the WorldManager changed");
+        ClearWorldState();
+        return;
+    }
+
+    float current = 0.0f;
+    if (!Read(g_worldManager + 0xEC, current)) {
+        LOG_WARNING("[LotLod] Camera threshold restore skipped: current value is unreadable");
+        ClearWorldState();
+        return;
+    }
+
+    if (current != kCameraThreshold) {
+        LOG_INFO(std::format("[LotLod] Camera threshold restore skipped: another owner changed {:.3f} to {:.3f}", kCameraThreshold, current));
+        ClearWorldState();
+        return;
+    }
+
+    if (WriteExpected(g_worldManager + 0xEC, g_thresholdOriginal, current))
+        LOG_INFO(std::format("[LotLod] Camera speed threshold restored to {:.3f}", g_thresholdOriginal));
+    else
+        LOG_WARNING("[LotLod] Camera threshold restore failed; current value was left unchanged");
+
+    ClearWorldState();
+}
+
+void RestoreThrottleIfOwned() {
+    if (!g_throttleWritten || !g_throttleOriginalValid) {
+        g_throttleWritten = false;
+        g_throttleOriginalValid = false;
+        return;
+    }
+
+    uint8_t current = 0xFF;
+    if (!Read(g_throttleFlag, current)) {
+        LOG_WARNING("[LotLod] Throttle restore skipped: current value is unreadable");
+    } else if (current != 1) {
+        LOG_INFO(std::format("[LotLod] Throttle restore skipped: another owner changed it to {}", static_cast<unsigned>(current)));
+    } else if (WriteExpected(g_throttleFlag, g_throttleOriginal, current)) {
+        LOG_INFO(std::format("[LotLod] Native transition throttle restored to {}", static_cast<unsigned>(g_throttleOriginal)));
+    } else {
+        LOG_WARNING("[LotLod] Throttle restore failed; current value was left unchanged");
+    }
+
+    g_throttleWritten = false;
+    g_throttleOriginalValid = false;
 }
 
 } // namespace
 
-void StartProbe() {
-    if (g_started) return;
-    g_started = true;
+bool Start(std::string* error) {
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (g_running) return true;
 
-    const uintptr_t scoring = GameAddr::Get(GameAddr::Id::LotLodScoring);
-    const uintptr_t throttleTest = GameAddr::Get(GameAddr::Id::LotLodThrottleTest);
-    const uintptr_t throttleFlag = GameAddr::Get(GameAddr::Id::LotLodThrottleFlag);
+    g_throttleFlag = GameAddr::Get(GameAddr::Id::LotLodThrottleFlag);
     g_worldManagerGlobal = GameAddr::Get(GameAddr::Id::WorldManagerPtr);
-
-    LOG_INFO("[LotLod] === Lot LoD Streaming Probe v1 (READ-ONLY) ===");
-    LOG_INFO(std::format("[LotLod] Game: {}", GetGameVersionName()));
-    LOG_INFO(std::format("[LotLod] LotLodScoring: {}", Addr(scoring)));
-    LOG_INFO(std::format("[LotLod] Throttle test: {}", Addr(throttleTest)));
-    LOG_INFO(std::format("[LotLod] Throttle flag: {}", Addr(throttleFlag)));
-    LOG_INFO(std::format("[LotLod] WorldManager global: {}", Addr(g_worldManagerGlobal)));
 
     std::string missing;
     if (!GameAddr::GroupAvailable("LotLodStreaming", &missing)) {
-        LOG_WARNING("[LotLod] Probe addresses incomplete: " + missing);
-        LOG_WARNING("[LotLod] Probe: WAIT/FAIL (read-only; nothing changed)");
-        return;
+        if (error) *error = "Lot LoD streaming addresses are incomplete: " + missing;
+        return false;
     }
 
-    uint8_t throttle = 0xFF;
-    if (!MemPatch::ReadBytes(throttleFlag, &throttle, sizeof throttle)) {
-        LOG_WARNING("[LotLod] Throttle value: unreadable");
-    } else {
-        LOG_INFO(std::format("[LotLod] Throttle value: {}", static_cast<unsigned>(throttle)));
-        if (throttle > 1)
-            LOG_WARNING("[LotLod] Throttle value is not a plausible bool (expected 0 or 1); nothing will be changed");
+    LOG_INFO(std::format("[LotLod] Starting Smooth Lot Streaming on {}", GetGameVersionName()));
+    LOG_INFO(std::format("[LotLod] Throttle flag {:#010x}; WorldManager global {:#010x}", g_throttleFlag, g_worldManagerGlobal));
+
+    if (S3SSOwnsStreamingSettings()) {
+        g_externalOwner = true;
+        g_running = true;
+        LOG_INFO("[LotLod] Official Sims3SettingsSetter owns LotStreamingOptimizations.streamingSettings; Apex makes no streaming-setting writes");
+        return true;
     }
 
-    TickProbe();
+    g_externalOwner = false;
+    if (!ApplyThrottle(error)) return false;
+
+    std::string worldError;
+    if (!ApplyCurrentWorld(&worldError)) {
+        // The throttle was already changed: put it back if the second half cannot be validated.
+        RestoreThrottleIfOwned();
+        if (error) *error = worldError;
+        return false;
+    }
+
+    g_running = true;
+    LOG_INFO("[LotLod] Smooth Lot Streaming active");
+    return true;
 }
 
-void TickProbe() {
-    if (!g_started || g_worldLogged || !g_worldManagerGlobal) return;
+void Stop() {
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (!g_running) return;
 
-    uintptr_t worldManager = 0;
-    if (!MemPatch::ReadBytes(g_worldManagerGlobal, &worldManager, sizeof worldManager) || !worldManager) return;
+    if (g_externalOwner) {
+        LOG_INFO("[LotLod] Smooth Lot Streaming off in Apex; Sims3SettingsSetter remains the owner");
+    } else {
+        RestoreWorldIfOwned();
+        RestoreThrottleIfOwned();
+        LOG_INFO("[LotLod] Smooth Lot Streaming stopped");
+    }
 
-    float cameraThreshold = 0.0f;
-    if (!MemPatch::ReadBytes(worldManager + 0xEC, &cameraThreshold, sizeof cameraThreshold)) return;
+    g_externalOwner = false;
+    g_running = false;
+    g_throttleFlag = 0;
+    g_worldManagerGlobal = 0;
+    ClearWorldState();
+}
 
-    LOG_INFO(std::format("[LotLod] WorldManager: {:#010x}", worldManager));
-    LOG_INFO(std::format("[LotLod] Camera speed threshold (+0xEC): {:.6f}", cameraThreshold));
+void Tick() {
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (!g_running || g_externalOwner) return;
 
-    const bool plausible = std::isfinite(cameraThreshold) && cameraThreshold >= 0.0f && cameraThreshold <= 100.0f;
-    if (plausible)
-        LOG_INFO("[LotLod] Probe: PASS (read-only; nothing changed)");
-    else
-        LOG_WARNING("[LotLod] Probe: FAIL: WorldManager+0xEC is not a plausible camera speed threshold (read-only; nothing changed)");
+    std::string error;
+    if (!ApplyCurrentWorld(&error) && !error.empty()) {
+        // Fail closed for this world. Do not keep trying to write an implausible field every 10 ms.
+        LOG_WARNING("[LotLod] " + error + "; camera threshold left unchanged for this world");
+        uintptr_t world = 0;
+        if (Read(g_worldManagerGlobal, world)) g_worldManager = world;
+    }
+}
 
-    g_worldLogged = true;
+bool Running() {
+    std::lock_guard<std::mutex> guard(g_lock);
+    return g_running;
+}
+
+bool HandledByS3SS() {
+    std::lock_guard<std::mutex> guard(g_lock);
+    return g_running && g_externalOwner;
+}
+
+std::string StatusText() {
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (!g_running) return "Off";
+    if (g_externalOwner) return "Handled by Sims3SettingsSetter";
+    if (!g_worldManager) return "On; waiting for a world";
+    return "On; native lot transitions throttled, camera threshold 5.0";
 }
 
 } // namespace LotLodStreaming
