@@ -41,11 +41,12 @@ struct Lamp {
 
 // Cheap check (flags only, no game memory read): the prerequisites that do not change frame to frame hold.
 bool LikelyAvailable();
+bool Editing(); // resolved WorldManager mode 2 (editInGameMode); unknown modes return false
 // Queues the chunks whose bake rect overlaps a lamp rect (+1 m), each lamp's own chunk first, then its neighbours.
 // Returns a batch id > 0, or 0 with `why` when the caller must use the full rebuild: terrain or grid layout not as
 // studied, the world's first rebuild not seen yet, a chunk without a rebuilt light map, more than 16 chunks (or a
 // quarter of the world), the terrain not ready. `chunks` lists "(ix,iz) ..." for the log.
-int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks);
+int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent = false);
 // Phase 2: queues every chunk, nearest to (x, z) first (eye = nullptr: grid order); drops a pending local queue (the
 // sweep covers it). 0 with `why` when not possible (as above, and any chunk without a rebuilt light map).
 int QueueSweep(const float* eyeXZ, std::string& why, std::string& info);
@@ -63,7 +64,8 @@ struct FrameResult {
     std::string why;     // and the local path is off for this world; the caller falls back to the full rebuild
 };
 // Per frame (render thread, after the lamp-change decisions): completion of the chunk in flight, timeout, release of the
-// next chunk (at most one per frame, never two frames in a row, at most 8 per second, never while any chunk has +0x55 /
+// next chunk (at most one per frame, never two frames in a row, 8 per second with up to 4 reserved priority releases
+// when measured chunk cost is <= 12 ms, never while any chunk has +0x55 /
 // +0x56 set or the render would return early).
 void OnPresent(FrameResult& out);
 

@@ -188,6 +188,10 @@ under `...\S3SS\Apex\` (left in place, not migrated).
 
 ## 5. Release process
 
+### Current standalone releases (2.5.4)
+
+The standalone repository is `loinyx/Sims3-ApexRadiance`; the combined-build information below is historical. Use the maintainer's `apex-release` skill for current versioning, English notes and GitHub/Nexus steps. Releases ship only `Public/ApexRadiance.asi`, built with `/p:ApexPublic=true`; the user's development binary stays private. Build both configurations and check translations. Release notes use a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`; the Nexus workflow derives its changelog from that body. Update source documentation and retain the user's requested description approval before publication. Internal provenance notes are excluded from Git and source archives. The maintainer's 2.5.4 lighting-response acceptance is documented in `features/night-lighting/terrain-relight.md`; it is a user report rather than an instrumented latency/FPS measurement.
+
 Repository: https://github.com/loinyx/Sims3SettingsSetter-Apex (public fork of sims3fiend/Sims3SettingsSetter; renamed
 from `Sims3SettingsSetter-NightRemake` on 2026-09-28, old links redirect). It holds the **combined** build until the
 standalone ships; the standalone may get its own repo (plan suggests e.g. `loinyx/S3SS-Apex`, not decided).

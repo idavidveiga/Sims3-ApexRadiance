@@ -1,5 +1,7 @@
 # Menu UI (Violet design)
 
+Private update, 2026-10-02: on-screen startup, recording, capture and comparison notices now share the same top-center position and Violet pill style. See [bug-reports.md](features/bug-reports.md#one-click-selection-and-centered-notices-private-2026-10-02) for priority, click confirmation and return-to-Report behavior. The simpler recording/saving layout is still a design proposal, not a replacement of the native Report page.
+
 The in-game menu of Apex Radiance (window id `###ApexWindow`, default key Ctrl+Shift+F11; layout saved in
 `Documents\...\Apex Radiance\apex_radiance_imgui.ini`). Visible names come from `apex_version.h` (`APEX_PRODUCT_NAME` =
 "Apex Radiance", `APEX_PRODUCT_TAGLINE` = "for The Sims 3", `APEX_LOGO_LETTER`); internal names keep "Apex". Write
@@ -366,3 +368,33 @@ first shared by Arro.", and "Apex Radiance by @loinyx". Do not mention Arro or t
 
 ## Performance grouping (2.5.3)
 Four Violet cards keep main controls visible: Camera and lighting (room queue, moving lot budget, wall shading, scene setup); Files and objects (resource cache, missing resources, file lists, object index); Textures and Sims (DXT, several cores, cache compression, Sim sorting); Memory handling. Existing feature descriptions remain on hover; no setting keys or defaults changed. Experimental badges removed at the user's request.
+
+## Guided development diagnosis (development build, pending release)
+The Developer page starts with a Violet guide card: select rooms/floors, camera stutters,
+dark objects, visual effects or missing translations, then follow Prepare / Reproduce /
+Save evidence. Selection opens the relevant existing tool tab without enabling diagnostics
+or modifying settings. Open relevant tools returns to that tab at any time.
+Capture-session controls stay visible in the guide: Begin, Save report and End, plus Open
+captures folder. Reports reuse the existing capture APIs and current session folder.
+Profiler measurements retain their separate report control; a capture report does not
+export profiler results. Lighting, Profiler, Capture, Debug views and Language retain all
+existing tools. Debug-view guidance asks for one view at a time; it does not enforce mutual
+exclusion. Guide selection is session-only presentation state and is not saved to TOML.
+The public build still hides Developer. No game hooks or lighting policies change.
+Profiler performance counters are grouped as Files and objects, Camera and lighting,
+and Textures and compression; all original controls are retained. The Language tab
+uses a Translation checks card. Lighting and Debug views include visible test guidance.
+
+### Defaults available to every user
+The shared public/development menu has a reset entry point on every page. Feature pages reset their entire page, including its internal tabs, after confirmation. Water & Snow resets only its four registered water/snow settings and preserves lighting and upper-floor settings. Display resets edge smoothing and the Apex-managed window mode; externally managed window modes remain under their owner's control. Settings resets menu preferences and shortcuts while preserving the Report screenshot preference. Report resets its screenshot preference without deleting any files. Overview and Developer link to the whole-mod reset in Settings > Menu because their contents span features and runtime diagnostics.
+The whole-mod reset restores registered feature defaults, Picture, Apex window mode and UI preferences/shortcuts. Welcome/key setup completion flags are retained to avoid repeating onboarding. Undo restores feature/window state and UI preferences. Captures, reports and saved profiles are never deleted. These controls are translated into English, Portuguese, Spanish and French. Runtime-only developer diagnostics are outside the persisted feature reset scope.
+
+### Guided Report page
+Report a problem uses a primary choice/capture/finish card, with all original tools and saved captures in advanced sections. Object capture uses a temporary Violet target at the mouse, the configured key and Esc cancellation. It measures a pixel rather than identifying an entire object. The shared public/private UI preserves existing capture APIs and filenames; see features/bug-reports.md.
+
+### Consolidated private development workspace
+The private Developer page now uses horizontal Start here, Lighting, Performance, Captures, Visual effects and Translations tabs. Each task has its own explanatory card and retains the existing diagnostic renderers. There is no second sidebar. This replaces the earlier guided tab arrangement described above. Developer stays excluded from the public build. Technical diagnostic output retains engine terminology.
+
+### 2.5.4 public interface scope
+
+The public hotfix includes the shared page/whole-mod default controls, Report capture controls and one-click object-point selection with centered notices. Developer tabs, profiler tools and private diagnostic controls remain excluded by `kPublicBuild`. The simpler recording/saving prototype has not replaced the native Report page and is not a release feature. The four-language translation checks passed; broader gameplay capture/cancel and display-scale testing remains useful.

@@ -20,6 +20,7 @@
 // always mark. Left as they are: the mark of the room a lamp left (0x006C7CCA), the occluder entries (0x006C7939: objects
 // that fade or hide block light differently, their rooms must be solved again), room creation and object removal marks.
 #include "lamp_mark_filter.h"
+#include "lot_light_bridge.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
@@ -72,6 +73,7 @@ struct LampState {
     int room;
     DWORD eventsFrom = 0; // switches on or off seen since this tick (a light that keeps switching itself is left out)
     int events = 0;
+    float editable[5] = {}; // base RGB, intensity, enabled; excludes animated fade
 };
 std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the lamp at its last mark
 
@@ -89,6 +91,7 @@ struct LotDue {
 };
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
+std::atomic<bool> g_editRefresh{false};
 
 inline void Mix(uint64_t& h, uint32_t v) { h = (h ^ v) * 1099511628211ull; }
 inline void MixDwords(uint64_t& h, uintptr_t at, int n) {
@@ -96,9 +99,10 @@ inline void MixDwords(uint64_t& h, uintptr_t at, int n) {
 }
 // The lamp as the room solve takes it: its room, the lit bit (+0x100 & 0x20) and the object's flags (entry+0x20 record,
 // +0x90), the values +0x10 (4), the type +0xB0, +0xC0..+0xDC, the lit colour +0xE0..+0xEC (FUN_006bdca0 has just written
-// it), the fade +0xF0, the position +0x120 (3) and range +0x130, the cone of spot lights (types 4 and 5: +0x170, 13
-// dwords). False when it cannot be read.
-bool Signature(uintptr_t entry, uintptr_t light, int room, uint64_t& h, int& type, bool& on, float* pos) {
+// it), the first base-colour component +0xF0, the position +0x120 (3) and range +0x130, the cone of spot lights
+// (types 4 and 5: +0x170, 13 dwords). The separate editable sample wakes terrain reconciliation without changing
+// this room-mark signature; animated fade +0x20 does not wake it. False when it cannot be read.
+bool Signature(uintptr_t entry, uintptr_t light, int room, uint64_t& h, int& type, bool& on, float* pos, float* editable) {
     __try {
         h = 1469598103934665603ull;
         const float* lit = reinterpret_cast<const float*>(light + 0xE0); // the lit colour: 0 when the game switched it off
@@ -108,6 +112,11 @@ bool Signature(uintptr_t entry, uintptr_t light, int room, uint64_t& h, int& typ
         Mix(h, *reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
         if (const uintptr_t info = *reinterpret_cast<const uintptr_t*>(entry + 0x20)) Mix(h, *reinterpret_cast<const BYTE*>(info + 0x90) & 0x6);
         type = *reinterpret_cast<const int*>(light + 0xB0);
+        if ((type >= 3 && type <= 6) || type == 11) {
+            std::memcpy(editable, reinterpret_cast<const void*>(light + 0xF0), 3 * sizeof(float));
+            editable[3] = *reinterpret_cast<const float*>(light + 0x10);
+            editable[4] = (*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40) ? 1.0f : 0.0f;
+        }
         Mix(h, static_cast<uint32_t>(type));
         MixDwords(h, light + 0x10, 4);
         MixDwords(h, light + 0xC0, 8);
@@ -136,7 +145,8 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     int type = 0;
     bool on = false;
     float pos[3] = {};
-    if (!entry || !light || !Signature(entry, light, room, h, type, on, pos)) {
+    float editable[5] = {};
+    if (!entry || !light || !Signature(entry, light, room, h, type, on, pos, editable)) {
         g_unread.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -149,10 +159,16 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     const LampState now{h, on, {pos[0], pos[1], pos[2]}, room, 0, 0};
     const auto [it, fresh] = g_sig.try_emplace(Key{tl, light}, now);
     if (fresh) {
+        std::memcpy(it->second.editable, editable, sizeof editable);
+        if ((type >= 3 && type <= 6) || type == 11) g_editRefresh.store(true, std::memory_order_relaxed);
         g_first.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
     LampState& was = it->second;
+    if (std::memcmp(was.editable, editable, sizeof editable) != 0) {
+        std::memcpy(was.editable, editable, sizeof editable);
+        g_editRefresh.store(true, std::memory_order_relaxed);
+    }
     const bool same = was.sig == h;
     const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
     const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin; // NaN: not a move
@@ -279,12 +295,14 @@ void Uninstall() {
     std::lock_guard<std::mutex> lk(g_mx);
     g_sig.clear(); // lamps freed while it was out would leave stale keys
     g_lotDue.clear();
+    g_editRefresh.store(false, std::memory_order_relaxed);
 }
 
 bool IsInstalled() { return g_installed; }
 
 void OnPresent(float nightLevel) {
     if (!g_installed) return;
+    if (g_editRefresh.exchange(false, std::memory_order_relaxed)) LotLightBridge::RequestLampEditRefresh();
     const DWORD now = GetTickCount();
     std::vector<std::pair<uintptr_t, DWORD>> run;
     {

@@ -50,7 +50,7 @@ In the base game lamps glow but barely light anything around them. Apex Radiance
 - **Inside the house:** lamps inside shine through stairwells and open floors to the floor above or below, and stop at solid floors and walls; furniture, stairs and curtains take the room's light smoothly.
 - **Rooms at Night:** instead of the game's strong blue glow in rooms with every lamp off, a soft background light you set with Brightness and Blue tint, on walls, floors and furniture alike.
 - **Changing floors keeps the light:** every floor of the lot you play is lit in full detail, walls meet at the floor line with no step in the light, and switching floors no longer flickers.
-- **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have. The lighting also refreshes itself after loading and after you change a setting, and a **Refresh the lighting** button and shortcut redo it at any time.
+- **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly. Switching known lamps on or off, changing their colors and adjusting their intensity on a visible lot prioritize the affected terrain areas, including small intensity adjustments. Newly visible lots also request a local refresh. The lighting refreshes itself after loading and after you change a setting, and a **Refresh the lighting** button and shortcut redo it at any time.
 
 ### Water & Snow
 
@@ -114,7 +114,7 @@ The first start asks which key opens it (Ctrl+Shift+R, Ctrl+Shift+1 or Ctrl+Shif
 - **Four languages:** English, Portuguese, Spanish and French ("Automatic" follows your Windows language).
 - **Search:** find any option by name, with or without accents.
 - **Profiles:** save your setup, choose which parts go into each profile (Night Lights, Color, Ambient Occlusion, Depth Blur, Edge Smoothing, window mode, Performance) and which parts to apply when you load one. Share them by copying the files from the Profiles folder.
-- **Undo** after any change, **per-setting reset**, a dot on everything changed from its default, and **Reset all settings** (Settings > Menu) to start over.
+- **Undo** after any change, **per-setting reset**, a dot on everything changed from its default, access to **page defaults** on every page, and **Reset all settings** (Settings > Menu) to start over. Reset actions preserve saved captures, reports and profiles.
 - Adjustable text size.
 - A Compatibility page with your game version and the other mods it detects.
 
@@ -140,7 +140,7 @@ Settings are saved in `Documents\Electronic Arts\The Sims 3\Apex Radiance\ApexRa
 - **Lighting snapshot** (F8): every lamp and room of the loaded lots;
 - **Capture session**: puts several captures in one folder until you end it.
 
-A note in the top-left corner shows when a capture starts and when it is saved. Zip the folder and attach it to a post in the Bugs tab on Nexus Mods or a GitHub issue. The keys follow your shortcut set (Settings › Shortcuts); saved captures can be opened or deleted on the same page.
+A note at the top center shows when a capture starts and when it is saved. For an appearance capture, click the point you want to inspect: the target disappears and the Report panel returns after capture completion. Zip the folder and attach it to a post in the Bugs tab on Nexus Mods or a GitHub issue. The keys follow your shortcut set (Settings › Shortcuts); saved captures can be opened or deleted on the same page.
 
 If you used the older combined build (Sims3SettingsSetter with Apex inside) or `S3SSApex.asi`, delete it from `Game\Bin` and keep the official `Sims3SettingsSetter.asi`. Apex Radiance copies your old settings on its first start.
 

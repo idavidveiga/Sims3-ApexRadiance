@@ -283,8 +283,8 @@ const I18n::Entry kEntries[] = {
     {"Compare the picture without its filters", "Comparar a imagem sem os filtros", "Comparar la imagen sin sus filtros", "Comparer l'image sans ses filtres"},
     {"Hold B", "Segurar B", "Mantener B", "Maintenir B"},
     {"Show the note again", "Mostrar o aviso de novo", "Mostrar el aviso otra vez", "Montrer l'avis à nouveau"},
-    {"Shows the shortcuts note in the top-left corner at the next start", "Mostra o aviso de atalhos no canto superior esquerdo na próxima abertura",
-     "Muestra el aviso de atajos en la esquina superior izquierda en el próximo inicio", "Montre l'avis des raccourcis en haut à gauche au prochain démarrage"},
+    {"Shows the shortcuts note at the top center of the screen at the next start", "Mostra o aviso de atalhos no alto, ao centro da tela, na próxima abertura",
+     "Muestra el aviso de atajos arriba, en el centro de la pantalla, en el próximo inicio", "Affiche l'avis des raccourcis en haut au centre de l'écran au prochain démarrage"},
     {"Menu: {} \xC2\xB7 customize the shortcuts?", "Menu: {} \xC2\xB7 personalizar os atalhos?", "Menú: {} \xC2\xB7 ¿personalizar los atajos?",
      "Menu : {} \xC2\xB7 personnaliser les raccourcis ?"},
     {"Customize", "Personalizar", "Personalizar", "Personnaliser"},
@@ -476,10 +476,10 @@ const I18n::Entry kEntries[] = {
     {"Three steps, about a minute", "Três passos, cerca de um minuto", "Tres pasos, alrededor de un minuto", "Trois étapes, environ une minute"},
     {"1. Make the problem happen in the game (or keep it on screen).", "1. Faça o problema acontecer no jogo (ou deixe-o na tela).",
      "1. Haz que el problema ocurra en el juego (o déjalo en pantalla).", "1. Faites apparaître le problème dans le jeu (ou gardez-le à l'écran)."},
-    {"2. Save a capture below, or press its key with the menu closed. A note in the top-left corner says when it starts and when it is saved.",
-     "2. Salve uma captura abaixo, ou aperte a tecla dela com o menu fechado. Um aviso no canto superior esquerdo mostra quando ela começa e quando é salva.",
-     "2. Guarda una captura abajo, o pulsa su tecla con el menú cerrado. Un aviso en la esquina superior izquierda indica cuándo empieza y cuándo se guarda.",
-     "2. Enregistrez une capture ci-dessous, ou appuyez sur sa touche menu fermé. Une note en haut à gauche indique quand elle commence et quand elle est enregistrée."},
+    {"2. Save a capture below, or use its shortcut in the game. A note at the top center confirms the capture and saving.",
+     "2. Salve uma captura abaixo ou use o atalho no jogo. Um aviso no alto, ao centro, confirma a captura e o salvamento.",
+     "2. Guarda una captura abajo o usa su atajo en el juego. Un aviso arriba, en el centro, confirma la captura y el guardado.",
+     "2. Enregistrez une capture ci-dessous ou utilisez son raccourci en jeu. Un avis en haut au centre confirme la capture et son enregistrement."},
     {"3. Open the captures folder, right-click the capture's folder, Send to \xE2\x80\xBA Compressed (zipped) folder, and send the .zip with a few words on what "
      "you saw: the Bugs tab on Nexus Mods, or GitHub.",
      "3. Abra a pasta das capturas, clique com o botão direito na pasta da captura, Enviar para \xE2\x80\xBA Pasta compactada, e envie o .zip com algumas palavras "
@@ -599,11 +599,62 @@ const I18n::Entry kEntries[] = {
      "Cada captura también guarda una imagen de la pantalla (sin este menú), para que se vea el problema",
      "Chaque capture enregistre aussi une image de l'écran (sans ce menu), pour que le problème se voie"},
     {"Start note", "Aviso de inicialização", "Aviso al iniciar", "Note au démarrage"},
-    {"The small note in the top-left corner at every start, with the key that opens this menu",
-     "O pequeno aviso no canto superior esquerdo a cada início, com a tecla que abre este menu",
-     "El pequeño aviso en la esquina superior izquierda en cada inicio, con la tecla que abre este menú",
-     "La petite note en haut à gauche à chaque démarrage, avec la touche qui ouvre ce menu"},
+    {"The small note at the top center of the screen at every start, with the key that opens this menu",
+     "O pequeno aviso no alto, ao centro da tela, a cada início, com o atalho que abre este menu",
+     "El pequeño aviso arriba, en el centro de la pantalla, en cada inicio, con el atajo que abre este menú",
+     "Le petit avis en haut au centre de l'écran à chaque démarrage, avec le raccourci qui ouvre ce menu"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 
 } // namespace
+
+#ifndef S3SS_PUBLIC
+#include "tr_developer.inc"
+#endif
+
+namespace {
+const I18n::Entry kResetEntries[] = {
+{"Restore the whole mod", "Restaurar todo o mod", "Restaurar todo el mod", "Réinitialiser tout le mod"},
+{"Restore page defaults", "Restaurar padrões da página", "Restaurar valores de la página", "Réinitialiser cette page"},
+{"Confirm page reset", "Confirmar restauração", "Confirmar restauración", "Confirmer la réinitialisation"},
+{"Page defaults restored", "Padrões da página restaurados", "Valores de la página restaurados", "Page réinitialisée"},
+{"Restore this page without changing other pages. Saved files stay.", "Restaura esta página sem alterar as outras. Os arquivos salvos são mantidos.", "Restaura esta página sin cambiar las demás. Conserva los archivos guardados.", "Réinitialise cette page sans modifier les autres. Les fichiers enregistrés sont conservés."},
+{"Restore the whole mod? Captures, reports and saved profiles will stay", "Restaurar todo o mod? Capturas, relatórios e perfis salvos serão mantidos", "¿Restaurar todo el mod? Se conservarán capturas, informes y perfiles guardados", "Réinitialiser tout le mod ? Les captures, rapports et profils enregistrés seront conservés"},
+{"Restore features, colors, window mode, menu preferences and shortcuts. Saved files stay", "Restaura recursos, cores, modo de janela, menu e atalhos. Mantém os arquivos salvos", "Restaura funciones, colores, ventana, menú y atajos. Conserva los archivos guardados", "Restaure les fonctions, couleurs, fenêtre, menu et raccourcis. Conserve les fichiers enregistrés"},
+};
+const I18n::Table kResetTable(kResetEntries, std::size(kResetEntries));
+}
+namespace {
+const I18n::Entry kGuidedCaptureEntries[] = {
+{"Choose the problem. We will guide the capture", "Escolha o problema. Vamos orientar a captura", "Elige el problema. Te guiaremos para capturarlo", "Choisissez le problème. Nous guidons la capture"},
+{"What went wrong?", "O que deu errado?", "¿Qué salió mal?", "Que s'est-il passé ?"},
+{"Capture the problem", "Capturar o problema", "Capturar el problema", "Capturer le problème"},
+{"Choose, capture, then prepare the files to send", "Escolha, capture e prepare os arquivos para enviar", "Elige, captura y prepara los archivos para enviar", "Choisissez, capturez et préparez les fichiers à envoyer"},
+{"Choose", "Escolher", "Elegir", "Choisir"},
+{"Lights or rooms look wrong", "Luzes ou cômodos estranhos", "Luces o habitaciones extrañas", "Lumières ou pièces anormales"},
+{"Lights flicker, update late or light the wrong room", "Luzes piscam, demoram a atualizar ou iluminam o cômodo errado", "Las luces parpadean, tardan en actualizarse o iluminan otra habitación", "Les lumières clignotent, se mettent à jour tard ou éclairent la mauvaise pièce"},
+{"An object looks wrong", "Um objeto está estranho", "Un objeto se ve extraño", "Un objet semble anormal"},
+{"A dark painting, a wrong color or an unexpected patch", "Um quadro escuro, uma cor errada ou uma mancha inesperada", "Un cuadro oscuro, un color incorrecto o una mancha inesperada", "Un tableau sombre, une mauvaise couleur ou une tache inattendue"},
+{"The game closed by itself", "O jogo fechou sozinho", "El juego se cerró solo", "Le jeu s'est fermé tout seul"},
+{"Gather the available records without causing another crash", "Reúna os registros disponíveis sem causar outro travamento", "Reúne los registros disponibles sin provocar otro cierre", "Rassemblez les données disponibles sans provoquer un autre plantage"},
+{"Another problem / not sure", "Outro problema / não sei", "Otro problema / no sé", "Autre problème / je ne sais pas"},
+{"Start with the mod log and your settings", "Comece com os registros do mod e suas configurações", "Empieza con los registros del mod y tus ajustes", "Commencez avec les journaux du mod et vos réglages"},
+{"Choose another problem", "Escolher outro problema", "Elegir otro problema", "Choisir un autre problème"},
+{"Repeat the action that causes the lighting problem. Record up to 20 seconds; this is not a video", "Repita a ação que causa o problema de luz. Registre até 20 segundos; não é um vídeo", "Repite la acción que causa el problema de luz. Registra hasta 20 segundos; no es un vídeo", "Répétez l'action qui cause le problème de lumière. Enregistrez jusqu'à 20 secondes ; ce n'est pas une vidéo"},
+{"Stop recording", "Parar registro", "Detener registro", "Arrêter l'enregistrement"},
+{"Start lighting recording", "Iniciar registro de luz", "Iniciar registro de luz", "Enregistrer l'éclairage"},
+{"Point at the part that looks wrong. The capture measures that point, not the whole object", "Aponte para a parte com problema. A captura mede esse ponto, não o objeto inteiro", "Apunta a la parte con el problema. La captura mide ese punto, no todo el objeto", "Pointez la partie anormale. La capture mesure ce point, pas l'objet entier"},
+{"Capture a point on the object", "Capturar um ponto do objeto", "Capturar un punto del objeto", "Capturer un point de l'objet"},
+{"Save the available crash records. You do not need to crash the game again", "Salve os registros disponíveis do erro. Não precisa fazer o jogo fechar de novo", "Guarda los registros disponibles del error. No necesitas provocar otro cierre", "Enregistrez les données disponibles du plantage. Inutile de faire planter le jeu à nouveau"},
+{"Keep the problem visible and save a report with the log and your settings", "Deixe o problema visível e salve um relatório com os registros e suas configurações", "Mantén el problema visible y guarda un informe con los registros y tus ajustes", "Gardez le problème visible et enregistrez un rapport avec les journaux et vos réglages"},
+{"Capture saved. You can capture again before finishing", "Captura salva. Você pode capturar novamente antes de concluir", "Captura guardada. Puedes capturar otra vez antes de terminar", "Capture enregistrée. Vous pouvez en faire d'autres avant de terminer"},
+{"Finish and open the folder", "Concluir e abrir a pasta", "Terminar y abrir la carpeta", "Terminer et ouvrir le dossier"},
+{"After capturing, reopen this menu to finish and find your files", "Após capturar, reabra este menu para concluir e encontrar os arquivos", "Después de capturar, abre este menú para terminar y encontrar los archivos", "Après la capture, rouvrez ce menu pour terminer et retrouver les fichiers"},
+{"Files saved. Nothing has been sent automatically", "Arquivos salvos. Nada foi enviado automaticamente", "Archivos guardados. Nada se ha enviado automáticamente", "Fichiers enregistrés. Rien n'a été envoyé automatiquement"},
+{"Compress this folder as a ZIP and send it with a short description on Nexus Mods or GitHub", "Compacte esta pasta em ZIP e envie com uma breve descrição no Nexus Mods ou GitHub", "Comprime esta carpeta en ZIP y envíala con una breve descripción en Nexus Mods o GitHub", "Compressez ce dossier en ZIP et envoyez-le avec une brève description sur Nexus Mods ou GitHub"},
+{"All capture tools", "Todas as ferramentas de captura", "Todas las herramientas de captura", "Tous les outils de capture"},
+{"Point at the problem and press {}. Esc cancels", "Aponte para o problema e pressione {}. Esc cancela", "Apunta al problema y pulsa {}. Esc cancela", "Pointez le problème et appuyez sur {}. Échap annule"},
+{"Click the problem to capture it, or press {}. Esc cancels", "Clique no problema para capturar ou pressione {}. Esc cancela", "Haz clic en el problema para capturarlo o pulsa {}. Esc cancela", "Cliquez sur le problème pour le capturer ou appuyez sur {}. Échap annule"},
+};
+const I18n::Table kGuidedCaptureTable(kGuidedCaptureEntries, std::size(kGuidedCaptureEntries));
+}

@@ -26,6 +26,7 @@
 #include "floor_atlas_table.h"
 #include "shader_patches.h"
 #include "lightmap_smooth.h"
+#include "terrain_chunk_relight.h"
 #include "room_map_padding.h"
 #include "level_light_share.h"
 #include "unlit_rooms.h"
@@ -219,7 +220,7 @@ const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl,
 const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -317,6 +318,23 @@ bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table 
 int g_lotRectFrame = 0;
 LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
 bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
 
 // Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
 constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
@@ -468,6 +486,10 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
             if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
+            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight;
+                g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+            }
             else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
             else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
             else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
@@ -564,6 +586,7 @@ bool g_curVsIsObject = false;
 // the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
 // so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
 struct VsInfo {
+    bool worldMultiLight = false; // exact captured summer multi-pass light VS
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -592,6 +615,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
         std::vector<BYTE> code(size);
         if (SUCCEEDED(vs->GetFunction(code.data(), &size))) {
             auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
+            info.worldMultiLight = is(kWorldMultiLightVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -673,6 +697,10 @@ bool ReadLamp(uintptr_t L, float out[8]) {
     __try {
         const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
         if (!(f & 0x01) || !(f & 0x20)) return false; // alive and lit
+        // A disabled lot lamp must leave the direct roof/water/object pool too,
+        // rather than remaining there until the game's fade reaches zero.
+        const bool lotOwned = (*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) != 0;
+        if (lotOwned && !(f & 0x40)) return false;
         const int type = *reinterpret_cast<const int*>(L + 0xB0);
         const int room = *reinterpret_cast<const int*>(L + 0x08);
         if (type != 0xB && !((f & 0x04) && room == 0)) return false; // world lamp or outdoor lot lamp
@@ -713,13 +741,15 @@ uint32_t g_lampMemoGen = 1; // generation of the SelectLamps memo (see LampMemo)
 //    than 5 cm, or its light (colour x intensity x range) changes by more than 5 % in a channel. Lamps the bake never
 //    takes (window lights 7/8, type 9, disabled or unlit lamps) never count. 29/09 (ApexRadiance_LOG + LightDiag): the
 //    repeated "7 edited" of lot 7D6F0019FAF78910 were its 7 DISABLED type-3 lamps (flags 0x35 / 0xB5), never baked;
-//  - automatic changes (on / off, dimming, recolouring) of a lamp that already changed 3 times within 60 s are ignored:
+//  - automatic changes (lit state, dimming, recolouring) of a lamp that already changed 3 times within 60 s are ignored:
 //    the lamp is "animated" (motion or timer lights, colour-cycling lights) and its current state goes into the next
 //    rebuild made for any other reason; after 2 min with no automatic change it is a plain lamp again (30/09);
-//  - its lot is settled: seen in every enumeration for at least 10 s, and no uncounted change on it for 5 s (a lot that
+//    Confirmed ordinary enable switches and type-11 edits bypass that filter (private 02/10 follow-up).
+//  - unless this is a value-only edit of observed lamps, its lot is settled: seen in every enumeration for at least 10 s,
+//    and no uncounted change on it for 5 s (a lot that
 //    is still loading keeps adding lamps and so never becomes settled while it trickles in);
 //  - at most 8 changes in the enumeration (more = lamps switching at dusk / dawn, or streaming in bulk), unless they are
-//    all switches of one lot (30/09: a town square's 57 lamps);
+//    all switches of one lot (30/09: a town square's 57 lamps); confirmed value-only edits also bypass bulk suppression;
 //  - removals: the lot is still there in the NEXT enumeration and lost no more lamps (a lot unloading lamp by lamp, or
 //    vanishing, is streaming out). The removal of a lot's last lamp is therefore never counted (the lot vanishes).
 // Lots streaming in and out must never look like edits (NOTAS 1c: a rebuild every ~30 s from streaming lamps).
@@ -743,6 +773,7 @@ struct LotLampState {
 struct LotSeen {
     Clock::time_point firstSeen{}, lastUncounted{};
     bool removalPending = false;
+    bool explicitEdit = false; // value edit of an already observed lamp, not a streaming addition
 };
 // Tracked lot lamps, sorted by the light's address (unique): the previous enumeration and the one being read. Two
 // vectors reused (swapped) at every refresh instead of a std::map rebuilt node by node (2026-09-29); iterated in the same
@@ -759,6 +790,8 @@ std::map<uint64_t, Clock::time_point> g_quietLogAt; // dev log throttle of the c
 LotLightBridge::BakeSnapshot g_bakeSnap;
 int g_lampEnumerations = 0;
 bool g_lampRefreshNow = false;
+bool g_lampEditRefresh = false;
+DWORD g_lampReadTick = 0;
 std::vector<uint64_t> g_lastUserLots; // lots of the last counted user-driven changes
 
 constexpr float kMoveTol = 0.05f;   // metres
@@ -770,6 +803,16 @@ constexpr auto kAnimatedExpire = std::chrono::seconds(120); // an animated lamp 
 constexpr auto kQuietLogEvery = std::chrono::seconds(60);
 
 bool IsPlainType(int type) { return type >= 3 && type <= 6; }
+
+// The captured 02:03 session toggles 0x40 on ordinary lot lamps (types 3..6).
+// Do not confuse that discrete enable switch with an animated colour/intensity.
+// Both observations must identify the same lamp on the same lot; first sights,
+// pointer reuse on another lot and streaming additions are never fast edits.
+bool ObservedEnableSwitch(const LotLampState& before, const LotLampState& after) {
+    return before.lot == after.lot && before.type == after.type
+        && IsPlainType(after.type) && (((before.flags ^ after.flags) & 0x40) != 0
+            || ((before.inten <= 1e-3f) != (after.inten <= 1e-3f)));
+}
 
 // Lot light of a type the bake can take (3..6 or the street-lamp class 0xB), alive, outdoors (room known, room 0)
 bool ReadLotLamp(uintptr_t L, LotLampState& out) {
@@ -798,12 +841,12 @@ bool ReadLotLamp(uintptr_t L, LotLampState& out) {
 float LampLight(const LotLampState& s, int c) { return s.col[c] * s.inten * s.range; }
 
 // The terrain bake takes this lamp now (see the block comment). Lot lamps 3..6: TerrainLightTest (enabled 0x40, lit
-// 0x20). Street-lamp class: the game's vfunc+0x20 test is assumed to need the lit flag too (unverified,
-// terrain-and-light-bake.md section 10; a save loaded by day keeps a lamps-off terrain light, which fits). A lamp whose
+// 0x20). The private follow-up also filters lot-owned type-11 lamps by those flags before the
+// original always-true vfunc+0x20 accepts them (captured disabled lamp, 2026-10-02). A lamp whose
 // light is zero (intensity or range 0, black colour) draws nothing.
 bool InBake(const LotLampState& s) {
     if (!(s.flags & 0x20)) return false;
-    if (s.plain && !(s.flags & 0x40)) return false;
+    if (!(s.flags & 0x40)) return false;
     const float w = s.inten * s.range;
     if (!std::isfinite(w) || !(w > 1e-3f)) return false;
     return std::max({s.col[0], s.col[1], s.col[2]}) > 1e-3f;
@@ -819,6 +862,14 @@ bool LightDiffers(const float* a, const float* b) {
         const float tol = std::max(kLightAbs, kLightRel * std::max(std::fabs(a[c]), std::fabs(b[c])));
         if (!(std::fabs(a[c] - b[c]) <= tol)) return true;
     }
+    return false;
+}
+
+// The user can adjust a visible lamp by less than the automatic 5% threshold.
+// Compare its effective values exactly; edit debounce and the bounded chunk
+// queue coalesce the resulting notices. Animated fade is not part of this value.
+bool LightChanged(const float* a, const float* b) {
+    for (int c = 0; c < 3; ++c) if (a[c] != b[c]) return true;
     return false;
 }
 
@@ -939,6 +990,7 @@ void ReadEnumeratedLamps(bool rebuildAll) {
 // Compares g_lotLampCur (just read) with g_lotLampSig (the previous enumeration), then keeps the new one.
 void TrackLotLampEdits() {
     const auto now = Clock::now();
+    const bool editing = ChunkRelight::Editing();
     std::vector<LampSig>& cur = g_lotLampCur;
     g_lotsNow.clear();
     for (const auto& [L, s] : cur) g_lotsNow.push_back(s.lot);
@@ -951,6 +1003,7 @@ void TrackLotLampEdits() {
     // per lot: counted additions / edits / removals in this enumeration, and (dev) what changed
     struct Change {
         int added = 0, edited = 0, moved = 0, removed = 0;
+        bool userEdited = false;
         std::string detail;
         int details = 0;
     };
@@ -966,6 +1019,7 @@ void TrackLotLampEdits() {
         while (prev != g_lotLampSig.end() && prev->first < L) ++prev;
         if (prev == g_lotLampSig.end() || prev->first != L) {
             snapDirty = true;
+            if (VisibleLot(s.lot)) g_lotArrivals.insert(s.lot); // late lamp registration on a drawn lot
             if (s.baked) {
                 Change& c = changes[s.lot];
                 c.added++;
@@ -996,6 +1050,19 @@ void TrackLotLampEdits() {
         }
         if (p.baked && s.baked && MovedApart(p.pos, s.pos)) {
             counts = moved = true; // user-driven (Build mode)
+        } else if ((editing || (s.type == 11 && p.type == 11 && p.lot == s.lot) || ObservedEnableSwitch(p, s)
+                    || (p.lot == s.lot && p.type == s.type && IsPlainType(s.type) && VisibleLot(s.lot))) &&
+                   (p.baked != s.baked || (p.baked && s.baked && LightChanged(pl, sl)))) {
+            // Known enable/zero-intensity switches, visible ordinary value edits and type-11 edits
+            // take the bounded local path, including a switch just after lot entry.
+            // Repeated manual switches must not become ignored "animated" lights.
+            // Engine editInGameMode (2) is not assumed to identify every Build/Buy UI state.
+            if (s.animated && g_lampsAnimated > 0) g_lampsAnimated--;
+            s.animated = false;
+            s.autoChanges = 0;
+            s.autoWindow = now;
+            counts = true;
+            changes[s.lot].userEdited = true;
         } else if (p.baked != s.baked || (p.baked && s.baked && LightDiffers(pl, sl))) {
             // automatic: switched on / off, dimmed, recoloured
             if (s.animated && now - s.lastAuto > kAnimatedExpire) { // quiet long enough: a switch again (30/09: lamps toggled while testing stayed ignored)
@@ -1095,7 +1162,11 @@ void TrackLotLampEdits() {
         }
         LotSeen& seen = s->second;
         const bool settled = now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5);
-        if (!settled || bulk) {
+        const bool observedValueEdit = c.userEdited && c.added == 0 && c.removed == 0;
+        // Streaming on another lot must not hide a real edit of this lot's known
+        // lamps. Additions/removals on this lot still require the streaming guards.
+        if (observedValueEdit) seen.explicitEdit = true;
+        if ((!settled || bulk) && !observedValueEdit) {
             seen.lastUncounted = now;
             seen.removalPending = false;
             ignored++;
@@ -1104,7 +1175,7 @@ void TrackLotLampEdits() {
         if (c.removed > 0) seen.removalPending = true; // confirmed at the next enumeration
         if (c.added > 0 || c.edited > 0) {
             counted++;
-            const bool user = c.added > 0 || c.moved > 0;
+            const bool user = c.added > 0 || c.moved > 0 || c.userEdited;
             userDriven |= user;
             if (user) userLots.push_back(lot);
             what = std::format("lot {:016X}: {} added, {} edited ({} moved), {} removed ({})", lot, c.added, c.edited, c.moved, c.removed, user ? "user-driven" : "automatic");
@@ -1158,7 +1229,7 @@ void TrackLotLampEdits() {
     }
     g_bakeSnap.settledLots.clear(); // time-dependent: every refresh
     for (const auto& [lot, seen] : g_lotSeen)
-        if (now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5)) g_bakeSnap.settledLots.push_back(lot);
+        if (seen.explicitEdit || (now - seen.firstSeen >= std::chrono::seconds(10) && now - seen.lastUncounted >= std::chrono::seconds(5))) g_bakeSnap.settledLots.push_back(lot);
     g_lampEnumerations++;
 }
 
@@ -2278,11 +2349,11 @@ template <typename DrawFn> bool DrawObjectRig(IDirect3DDevice9* dev, DrawFn draw
 
 // Returns the sampler that holds the chunk light map (0 = not a terrain chunk draw), the chunk key and its g_chunks entry
 // (std::map: the reference stays valid; the caller no longer looks the key up a second time).
-DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex*& chunk) {
+DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex*& chunk, UINT mapConst = 15) {
     float c[16];
     if (FAILED(dev->GetVertexShaderConstantF(8, c, 3))) return 0; // c8..c10 = world matrix rows
     float m[4];
-    if (FAILED(dev->GetVertexShaderConstantF(15, m, 1)) || !Near(m[0], 1.0f / 256.0f) || !Near(m[1], 1.0f / 256.0f) || !Near(m[2], 0.5f) || !Near(m[3], 0.5f)) return 0;
+    if (FAILED(dev->GetVertexShaderConstantF(mapConst, m, 1)) || !Near(m[0], 1.0f / 256.0f) || !Near(m[1], 1.0f / 256.0f) || !Near(m[2], 0.5f) || !Near(m[3], 0.5f)) return 0;
     // The terrain light map is the 256x256 texture with few mips: the world file's map and a rebuilt one are both DXT5 with
     // 4 mips (the rebuild reads the render target back and CPU-encodes 4 mips into the same texture, 0x00C29AB6 ->
     // 0x00618CD0; research\perf2\chunkrelight.md 1.3, 512 DXT calls = 128 textures x 4 mips). Which sampler holds it
@@ -2376,10 +2447,12 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::WorldCandidate) {
+    if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) {
+        const bool multi = g_curClass == PsClass::WorldMultiLight;
+        if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
         std::pair<int, int> key;
         ChunkTex* chunk = nullptr;
-        const DWORD s = RecordWorldChunk(dev, key, chunk);
+        const DWORD s = RecordWorldChunk(dev, key, chunk, multi ? 13 : 15);
         if (!s) {
             // not a world terrain chunk: the snow-on-floor pixel shaders (m69, m71) also declare s6+ and land here
             if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
@@ -2388,13 +2461,14 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
         // "Ground brightness": the chunk map's lamp scale times the gain, with or without the smoothed map
         const float gain = GroundGain();
-        const int k = gain != 1.0f ? TerrainLampConst(g_curPs, s) : -1;
+        const int k = gain != 1.0f ? (multi ? 3 : TerrainLampConst(g_curPs, s)) : -1;
         if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
         if (smooth) dev->GetTexture(s, &old);
         g_inOwnCall = true;
         {
-            ConstGain lampGain(dev, k, gain);
+            // Captured multi-pass PS squares c3.x before multiplying lamp RGB.
+            ConstGain lampGain(dev, k, multi ? std::sqrt(gain) : gain);
             if (smooth) SetTex(dev, s, smooth);
             draw();
             if (smooth) SetTex(dev, s, old);
@@ -2432,9 +2506,10 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     float edge[12];
     float lotM[12] = {};
     const LotRect* rect = nullptr;
-    if (g_softEdges.load(std::memory_order_relaxed) && SUCCEEDED(dev->GetVertexShaderConstantF(8, lotM, 3))) {
+    if (SUCCEEDED(dev->GetVertexShaderConstantF(8, lotM, 3))) {
         rect = FindLotRect(&lotM[0], &lotM[8]);
         if (!rect) g_lotRectMiss = true;
+        else NoteLotDraw((static_cast<uint64_t>(rect->lotHi) << 32) | rect->lotLo);
     }
     const bool feather = LotEdgeConstants(atlas ? atlasMap : v, &v[4], &lotM[0], &lotM[8], rect, edge);
     if (feather) {
@@ -2992,6 +3067,9 @@ void OnWorldChanged() {
     g_bakeSnap = LotLightBridge::BakeSnapshot{};
     g_lastUserLots.clear();
     g_lotRects.clear(); // soft lot edges: the next Present reads the new world's lots
+    g_lotDrawSeen.clear();
+    g_lotArrivals.clear();
+    g_lampEditRefresh = false;
     g_lotRectMiss = true;
     g_haveLastEdgeRect = false;
 }
@@ -3068,13 +3146,15 @@ void RequestCensus() {
 std::string CensusStatus() { return g_censusPending ? "writing..." : "ready"; }
 
 void OnPresent() {
+    g_lotDrawTick = GetTickCount();
+    if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
         WriteCensus();
         g_censusPending = false;
     }
     // Lot rectangles for the soft lot edges: every 20 frames, or 5 frames after a lot pass found none (a lot that
     // streamed in) so a new lot gets its feather within a few frames.
-    if (g_softEdges.load(std::memory_order_relaxed) && g_enabled.load(std::memory_order_relaxed)) {
+    if (g_enabled.load(std::memory_order_relaxed)) {
         ++g_lotRectFrame;
         if (g_lotRectFrame >= 20 || (g_lotRectMiss && g_lotRectFrame >= 5)) {
             g_lotRectFrame = 0;
@@ -3082,9 +3162,12 @@ void OnPresent() {
             RefreshLotRects();
         }
     }
-    if (++g_lampFrame < 20 && !g_lampRefreshNow) return;
+    const bool editReady = g_lampEditRefresh && g_lotDrawTick - g_lampReadTick >= 50;
+    if (++g_lampFrame < 20 && !g_lampRefreshNow && !editReady) return;
     g_lampFrame = 0;
     g_lampRefreshNow = false;
+    g_lampEditRefresh = false;
+    g_lampReadTick = g_lotDrawTick;
     FrameProfiler::ModTimeScope timed(FrameProfiler::ModTime::LampRefresh); // development build: "Lamp refresh (mod)"
     // As before 2026-09-29: with roofs / water / per-pixel object lamps on, the lit lamp list is rebuilt from a successful
     // enumeration, and the lot lamps are tracked even when the enumeration failed (over what it left in g_enumLights);
@@ -3111,6 +3194,15 @@ const BakeSnapshot& CurrentBakeLamps() { return g_bakeSnap; }
 int LampEnumerations() { return g_lampEnumerations; }
 const std::vector<uint64_t>& LastUserChangeLots() { return g_lastUserLots; }
 void RequestLampRefresh() { g_lampRefreshNow = true; }
+void RequestLampEditRefresh() { g_lampEditRefresh = true; }
+
+std::vector<uint64_t> TakeLotArrivals() {
+    std::vector<uint64_t> out(g_lotArrivals.begin(), g_lotArrivals.end());
+    g_lotArrivals.clear();
+    std::sort(out.begin(), out.end());
+    return out;
+}
+bool LotVisible(uint64_t lot) { return VisibleLot(lot); }
 
 bool EnumerateAllLights(std::vector<uintptr_t>& out) {
     if (!EnumerateLights()) return false;
@@ -3127,7 +3219,7 @@ static std::pair<std::vector<BakeLamp>::const_iterator, std::vector<BakeLamp>::c
 
 bool BakeTakes(const BakeLamp& b, bool plainLamps) { return b.baked && (plainLamps || !IsPlainType(b.type)); }
 
-BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps) {
+BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps, const std::vector<uint64_t>& priorityLots) {
     BakeDiff d;
     auto inBake = [plainLamps](const BakeLamp& b) { return BakeTakes(b, plainLamps); };
     // one listed change: old = the lamp as baked (a, if it was in the bake), new = as it is now (b, if it is in the bake)
@@ -3179,7 +3271,8 @@ BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plain
                     (ib ? d.switchedOn : d.switchedOff)++;
                     note(ia ? &*a : nullptr, ib ? &*m : nullptr, false);
                 }
-            } else if (ia && LightDiffers(a->light, m->light)) {
+            } else if (ia && (std::find(priorityLots.begin(), priorityLots.end(), lot) != priorityLots.end()
+                                ? LightChanged(a->light, m->light) : LightDiffers(a->light, m->light))) {
                 if (m->animated) d.animated++;
                 else {
                     d.light++;
@@ -3205,10 +3298,13 @@ std::vector<uint64_t> BakeDiff::Lots() const {
     return lots;
 }
 
-int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now) {
+int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now, const std::vector<uint64_t>& editedLots) {
     std::vector<uint64_t> add;
-    for (uint64_t lot : now.settledLots)
-        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)) add.push_back(lot);
+    // Keep the first observed lamp state before an early user switch can be lost to
+    // the 10 s streaming settle delay. This does not request any streaming rebuild.
+    for (uint64_t lot : now.lots)
+        if (!std::binary_search(baked.lots.begin(), baked.lots.end(), lot)
+            && std::find(editedLots.begin(), editedLots.end(), lot) == editedLots.end()) add.push_back(lot);
     if (add.empty()) return 0;
     for (uint64_t lot : add) {
         const auto [first, last] = LotLamps(now, lot);

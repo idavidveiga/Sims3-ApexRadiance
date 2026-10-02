@@ -12,6 +12,8 @@ struct ShaderId {
 
 // pixel shaders
 constexpr ShaderId kLotLightPs = {568, 0xFDAD274Bu};   // lot terrain light pass
+constexpr ShaderId kWorldMultiLightPs = {756, 0xEC3141ABu}; // summer multi-pass WORLD terrain, F7 2026-10-02
+constexpr ShaderId kWorldMultiLightVs = {656, 0x5882F972u}; // s2 lamp UV from c13; chunk matrix c8/c10
 constexpr ShaderId kObjectRigPs = {600, 0x0A2D0BE4u};  // instanced outdoor objects (fences, shrubs)
 constexpr ShaderId kRoofPs = {1136, 0x6EC87E3Bu};      // roofs
 constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water (sun shadow read with a hardware depth compare, texldp)

@@ -32,12 +32,12 @@ struct BakeLamp {
     float pos[3] = {};      // +0x120
     float light[3] = {};    // what the bake draws: base colour +0xF0 x intensity +0x10 x range +0x130 (the bake also x 0.2)
     float rect[4] = {};     // light rect +0x134 {minX, minZ, maxX, maxZ}: the bake draws the lamp into the chunks it overlaps
-    bool baked = false;     // the bake takes it now: lit, (types 3..6) enabled, and its light is not zero
+    bool baked = false;     // the bake takes it now: lit, enabled, and its light is not zero
     bool animated = false;  // switches / dims by itself (3+ automatic changes within 60 s): its changes never trigger
 };
 struct BakeSnapshot {
     std::vector<BakeLamp> lamps;       // lamps of type 3..6 or 0xB on lots (outdoors, alive), sorted by lot
-    std::vector<uint64_t> settledLots; // lots seen for 10 s without uncounted changes for 5 s (sorted)
+    std::vector<uint64_t> settledLots; // settled lots or those with an explicit existing-lamp value edit (sorted)
     std::vector<uint64_t> lots;        // every lot with a tracked lamp (sorted)
 };
 const BakeSnapshot& CurrentBakeLamps();
@@ -64,7 +64,7 @@ struct BakeDiff {
     std::vector<uint64_t> Lots() const; // lots of `changes` (sorted, unique)
     std::string Text() const;
 };
-BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps);
+BakeDiff DiffBake(const BakeSnapshot& baked, const BakeSnapshot& now, bool plainLamps, const std::vector<uint64_t>& priorityLots = {});
 // The bake takes this lamp (in the snapshot's state); plainLamps false: "Lot lamps light the street" is off (types 3..6 out)
 bool BakeTakes(const BakeLamp& b, bool plainLamps);
 // The lamps of `lots` (sorted, unique) in a snapshot, sorted by lot
@@ -73,15 +73,19 @@ std::vector<BakeLamp> LampsOfLots(const BakeSnapshot& s, const std::vector<uint6
 // state in `lamps` (taken with LampsOfLots when the relight was decided), so the next DiffBake compares against it. The
 // lots' other lamps keep their baked state.
 void CoverLots(BakeSnapshot& baked, const std::vector<BakeChange>& changes, const std::vector<BakeLamp>& lamps);
-// Lots settled in `now` that `baked` does not have (they finished loading after the last rebuild) join it with their lamps as
-// they are now, so a later switch on them is compared with something (before, such a lot answered "no change" until the
-// next full rebuild: lamps switched off by Sims stayed lit on the ground). Returns how many lots joined.
-int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now);
+// Newly observed lots join with their first lamp state, without requesting a streaming rebuild.
+// Do not adopt a missing baseline from the already-edited state of a pending priority lot.
+// Other lots may join while a change waits, so their first switch is not lost on entry.
+int AdoptNewLots(BakeSnapshot& baked, const BakeSnapshot& now, const std::vector<uint64_t>& editedLots = {});
 int LampEnumerations(); // light enumerations done (the snapshot changes only when this does)
 // Lots of the latest counted user-driven change (LotLampUserEdits went up with it)
 const std::vector<uint64_t>& LastUserChangeLots();
 // The next OnPresent enumerates the lights at once (a rebuild was just consumed: its snapshot one frame later)
 void RequestLampRefresh();
+void RequestLampEditRefresh(); // lamp-entry event; burst reads capped at one per 50 ms
+// Confirmed lot-pass draws and late lamp registrations on those lots, render thread only.
+std::vector<uint64_t> TakeLotArrivals();
+bool LotVisible(uint64_t lot); // a verified lot light pass drew within 500 ms
 int ChunkCount();            // world terrain chunks whose light map was seen in a draw (0 until the world is drawn)
 std::string RoofStatus();
 void SetWaterFix(bool on, float strength, float reflection);

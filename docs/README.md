@@ -96,3 +96,7 @@ When these docs and the code disagree, the code is right; fix the doc.
 
 ## Release 2.5.3 documentation
 The candidate sources incorporate test007/test008 lighting work and the approved grouped Performance menu. See ui.md and features/performance.md for menu organization, features/night-lighting/level-light-share.md and unlit-rooms.md for coordinated room updates, terrain-relight.md for paced terrain updates, and objects-and-rigs.md for the painting correction and its remaining gameplay checks. Public distributions omit Developer tools. Removing Experimental labels was a user decision, not an additional safety or gameplay verdict.
+
+## 2.5.4 hotfix
+
+The hotfix includes the verified summer multi-pass terrain correction for consistent lighting across lot/world boundaries, prioritized visible-lamp activation/colour/intensity changes and bounded visible-lot arrival refreshes. The user accepted the latest private lighting-response build and reported improved perceived performance; measured gameplay latency/FPS were not supplied. See [terrain-relight.md](features/night-lighting/terrain-relight.md#254-hotfix-validation) for validation and limits, [lot-light-pass.md](features/night-lighting/lot-light-pass.md) for the shader variant, [ui.md](ui.md) for page/whole-mod defaults, and [bug-reports.md](features/bug-reports.md) for one-click capture and centered notices. Public binaries exclude Developer tools.

@@ -54,7 +54,7 @@ constexpr uint32_t kCell = 256;
 constexpr float kMargin = 1.0f;         // metres around each lamp rect, on top of the game's own inclusive test
 constexpr size_t kMaxBatchChunks = 16;  // a local relight that would hit more takes the full rebuild
 constexpr size_t kMaxQueued = 32;       // local chunks waiting at once
-constexpr size_t kMaxPerSecond = 8;     // releases within any 1 s
+constexpr size_t kMaxPerSecond = 8;     // baseline releases within any 1 s; measured cheap priority work has a small reserve
 constexpr uint32_t kIdleTimeout = 120;  // frames in flight while no other chunk had sweep / rebuild work pending
 constexpr uint32_t kHardTimeout = 1200; // frames in flight whatever else was pending
 constexpr float kMaxRectSize = 4096.0f; // a lamp rect wider than this (or not finite, or inverted) is not trusted
@@ -80,6 +80,7 @@ struct Entry {
     uint32_t slot = 0;
     int ix = 0, iz = 0;
     std::vector<int> batches;
+    bool urgent = false;
 };
 struct Batch {
     int id = 0;
@@ -323,18 +324,28 @@ bool Queued(uintptr_t chunk) {
 }
 
 // Attaches `id` to the entry of `e.chunk` (in flight or queued), or queues `e` for it. Returns false when it was attached.
-bool Attach(Entry e, int id) {
-    if (g_haveFlight && g_flight.chunk == e.chunk) {
+bool Attach(Entry e, int id, bool urgent = false) {
+    // An edit may arrive after the in-flight bake read its lamps. Urgent work must run again,
+    // rather than being declared complete when that older bake finishes.
+    if (!urgent && g_haveFlight && g_flight.chunk == e.chunk) {
         g_flight.batches.push_back(id);
         return false;
     }
-    for (Entry& q : g_queue)
-        if (q.chunk == e.chunk) {
-            q.batches.push_back(id);
+    for (auto it = g_queue.begin(); it != g_queue.end(); ++it)
+        if (it->chunk == e.chunk) {
+            it->batches.push_back(id);
+            if (urgent) {
+                Entry moved = std::move(*it);
+                moved.urgent = true;
+                g_queue.erase(it);
+                g_queue.push_front(std::move(moved));
+            }
             return false;
         }
     e.batches = {id};
-    g_queue.push_back(std::move(e));
+    e.urgent = urgent;
+    if (urgent) g_queue.push_front(std::move(e));
+    else g_queue.push_back(std::move(e));
     return true;
 }
 
@@ -477,6 +488,7 @@ void OnWorldChanged() {
     g_timeoutsThisWorld = 0;
     g_seenTerrain.store(0, std::memory_order_release);
     g_releases.clear();
+    g_lastMs = -1.0; // the priority reserve needs a measurement from this world
 }
 
 bool Drop() {
@@ -492,9 +504,23 @@ bool OnFullRebuild() {
 
 bool LikelyAvailable() { return g_resolved && g_hooked && g_rebuiltThisWorld && !g_offThisWorld; }
 
+bool Editing() {
+    __try {
+        if (!g_wmPtr) return false;
+        const uintptr_t wm = *reinterpret_cast<const uintptr_t*>(g_wmPtr);
+        return wm && *reinterpret_cast<const uint32_t*>(wm + 0x1B4) == 2;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 bool Busy() { return g_haveFlight || !g_queue.empty() || !g_batches.empty(); }
 
-int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks) {
+size_t ReleaseLimit(bool urgent, double recentMs) {
+    // Small reserve for an interactive edit behind a sweep, only after measured
+    // chunk costs are low. Unknown/expensive chunks retain the original limit.
+    return urgent && recentMs >= 0.0 && recentMs <= 12.0 ? kMaxPerSecond + 4 : kMaxPerSecond;
+}
+
+int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent) {
     View v;
     if (!Check(v, why)) return Refuse(why);
     std::vector<Entry> hits; // relight order: each lamp's own chunk, then its other chunks nearest first
@@ -548,8 +574,13 @@ int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& ch
     if (hits.size() > kMaxBatchChunks || hits.size() * 4 > v.n)
         return Refuse(why = std::format("{} chunks would be relit (at most {} and a quarter of the world's {})", hits.size(), kMaxBatchChunks, v.n));
     size_t fresh = 0;
-    for (const Entry& h : hits) fresh += Queued(h.chunk) ? 0 : 1;
-    if (g_queue.size() + fresh > kMaxQueued) return Refuse(why = std::format("the local queue is full ({} chunks waiting)", g_queue.size()));
+    for (const Entry& h : hits) {
+        const bool inQueue = std::any_of(g_queue.begin(), g_queue.end(), [&](const Entry& e) { return e.chunk == h.chunk; });
+        fresh += (urgent ? inQueue : Queued(h.chunk)) ? 0 : 1;
+    }
+    const bool sweep = std::any_of(g_batches.begin(), g_batches.end(), [](const Batch& b) { return b.sweep; });
+    const size_t limit = urgent && sweep ? static_cast<size_t>(v.n) + kMaxBatchChunks : kMaxQueued;
+    if (g_queue.size() + fresh > limit) return Refuse(why = std::format("the local queue is full ({} chunks waiting)", g_queue.size()));
     if (!g_haveFlight && g_queue.empty()) {
         g_queueTerrain = v.terrain;
         g_queueBegin = v.begin;
@@ -560,10 +591,12 @@ int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& ch
     b.startFrame = g_frame;
     g_batches.push_back(b);
     chunks.clear();
-    for (Entry& h : hits) {
+    for (const Entry& h : hits) {
         chunks += std::format("{}({},{})", chunks.empty() ? "" : " ", h.ix, h.iz);
-        Attach(std::move(h), b.id);
     }
+    // push_front reverses insertion order: queue the farthest first to keep the lamp's own chunk first.
+    if (urgent) for (auto it = hits.rbegin(); it != hits.rend(); ++it) Attach(std::move(*it), b.id, true);
+    else for (Entry& h : hits) Attach(std::move(h), b.id);
     if (chunks.empty()) chunks = "none overlaps";
     g_statLocal++;
     return b.id;
@@ -654,12 +687,13 @@ void OnPresent(FrameResult& out) {
     FlushDone(out);
     if (g_haveFlight || g_queue.empty()) return;
 
-    // 2. Release the next chunk: never in the frame right after a render (a free frame in between), at most 8 per second,
+    // 2. Release the next chunk: never in the frame right after a render (a free frame in between), baseline 8 per second,
+    //    with four extra slots only for urgent work after a measured render of at most 12 ms;
     //    never while a full rebuild's +0x55 / +0x56 work is pending, never when the render would return early.
     if (g_frame <= g_lastDoneFrame) return;
     const auto now = Clock::now();
     while (!g_releases.empty() && now - g_releases.front() >= std::chrono::seconds(1)) g_releases.pop_front();
-    if (g_releases.size() >= kMaxPerSecond) {
+    if (g_releases.size() >= ReleaseLimit(g_queue.front().urgent, g_lastMs)) {
         g_waitRate++;
         return;
     }

@@ -11,4 +11,9 @@ void OnPresent(IDirect3DDevice9* device); // call every frame from the Present h
 void RenderUI();                          // ImGui section
 void Shutdown();                          // unregister hooks and release references
 bool Capturing();                        // the draws of this frame are being recorded (other modules add detail only then)
+bool Busy();                             // armed or recording: do not finalize the containing session yet
+void Aim();                              // one-shot capture; click a point or use the existing Probe shortcut
+bool Aiming();                           // thread-safe, for the overlay and Esc handling
+void CancelAim();                        // cancels only selection, not a capture already running
+bool ConfirmAim(POINT clientPixel);       // window thread: remember the clicked client pixel, finish selection at once
 }

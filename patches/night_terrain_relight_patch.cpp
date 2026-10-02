@@ -53,6 +53,7 @@
 #include "overlay.h"
 #include <windows.h>
 #include <algorithm>
+#include <map>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -306,6 +307,9 @@ std::string g_lastLocal = "none", g_lastLocalRefusal = "none";
 int g_sweepId = 0;
 std::string g_sweepReason;
 Clock::time_point g_sweepAt{};
+struct LotArrival { Clock::time_point first{}, last{}, retry{}; };
+std::map<uint64_t, LotArrival> g_arrivals;
+std::map<uint64_t, Clock::time_point> g_arrivalRelit;
 
 // Camera eye [[root]+camera]+eye, the read WorldManager::Update does (0x00C6D5BD..0x00C6D5C9 on Steam; offsets parsed from
 // the code: root getter "A1 imm32 C3", camera getter "8B 41 disp8 C3", "0F 28 40 disp8" after the getter's call;
@@ -571,6 +575,13 @@ bool __stdcall ArmTest(BYTE* light) {
 
 // Replaces the vfunc+0x20 test in the terrain light bake collector. Lot lamps only while switched on.
 bool __stdcall TerrainLightTest(BYTE* light) {
+    // Type-11 vfunc+0x20 is FUN_007EAEA0 (always true). For a lot-owned outdoor
+    // lamp, respect the observed enabled/lit state before accepting that original test.
+    // World-owned lights and other classes keep their original behavior.
+    if (*reinterpret_cast<const int*>(light + 0xB0) == 11 &&
+        (*reinterpret_cast<const uint32_t*>(light + 0xC0) | *reinterpret_cast<const uint32_t*>(light + 0xC4)) != 0 &&
+        (light[0x100] & 0x04) && *reinterpret_cast<const int*>(light + 0x08) == 0 &&
+        (light[0x100] & 0x61) != 0x61) return false;
     if (OriginalWorldLightTest(light)) return true;
     if (!g_lotLamps || !IsOutdoorLotLamp(light)) return false;
     if (!(light[0x100] & 0x20)) {
@@ -823,7 +834,7 @@ int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const 
                 }
     }
     std::string chunks;
-    const int id = ChunkRelight::QueueLocal(lamps, why, chunks);
+    const int id = ChunkRelight::QueueLocal(lamps, why, chunks, user);
     if (!id) return 0;
     LocalBatch b;
     b.id = id;
@@ -845,6 +856,81 @@ int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const 
     FinishEdit(std::format("{} ({}): relit locally ({}; {})", g_editReason, EditKind(), diffText, b.what));
     g_localBatches.push_back(std::move(b));
     return 1;
+}
+
+// A newly drawn lot can register its outdoor lamps after the world's load bake.
+// Refresh the union of the old and current footprints, even when the baseline
+// adopted the first observed state and therefore cannot report a difference.
+// Remove old entries then add the complete current set when the batch finishes.
+bool ArrivalFootprint(const std::vector<LotLightBridge::BakeLamp>& old, const std::vector<LotLightBridge::BakeLamp>& current,
+                      bool plain, std::vector<ChunkRelight::Lamp>& footprints, std::vector<LotLightBridge::BakeChange>& changes) {
+    for (int pass = 0; pass < 2; ++pass)
+        for (const auto& b : pass == 0 ? old : current) {
+            if (!plain && b.type >= 3 && b.type <= 6) continue;
+            const auto* r = b.rect;
+            for (int k = 0; k < 4; ++k) if (!std::isfinite(r[k])) return false;
+            if (!(r[0] < r[2] && r[1] < r[3])) {
+                if (b.baked) return false;
+                continue; // an inactive zero-range lamp has no footprint to clear
+            }
+            if (!(r[0] <= b.pos[0] + 1 && b.pos[0] - 1 <= r[2]
+                && r[1] <= b.pos[2] + 1 && b.pos[2] - 1 <= r[3])) return false;
+            ChunkRelight::Lamp l;
+            l.x = b.pos[0]; l.z = b.pos[2]; l.rects = 1;
+            std::memcpy(l.rect[0], r, sizeof b.rect);
+            footprints.push_back(l);
+            LotLightBridge::BakeChange c;
+            c.lot = b.lot; c.type = b.type; c.user = true;
+            std::memcpy(c.pos, b.pos, sizeof b.pos);
+            c.hasOld = pass == 0; c.hasNew = pass == 1;
+            std::memcpy(pass == 0 ? c.oldRect : c.newRect, r, sizeof b.rect);
+            changes.push_back(c);
+        }
+    return !footprints.empty();
+}
+
+void RefreshArrivingLots(Clock::time_point now, bool night) {
+    for (uint64_t lot : LotLightBridge::TakeLotArrivals()) {
+        if (!night || !LotLightBridge::LotVisible(lot)) continue;
+        if (g_arrivals.size() >= 64 && !g_arrivals.contains(lot)) continue;
+        auto [it, first] = g_arrivals.try_emplace(lot);
+        if (first) it->second.first = now;
+        it->second.last = now;
+    }
+    std::erase_if(g_arrivals, [now, night](const auto& item) {
+        return !night || !LotLightBridge::LotVisible(item.first) || now - item.second.first > std::chrono::seconds(8);
+    });
+    std::erase_if(g_arrivalRelit, [now](const auto& item) { return now - item.second > std::chrono::seconds(10); });
+    // Real edits have priority. Arrival work never triggers a synchronous full
+    // rebuild on refusal, and stays behind another local batch already running.
+    if (!night || !g_haveBaked || g_bakedDue || g_loadKickPending || (g_editKickPending && (g_editUser || g_editForce))
+        || (ChunkRelight::Busy() && g_sweepId == 0) || !ChunkRelight::LikelyAvailable()) return;
+    for (auto it = g_arrivals.begin(); it != g_arrivals.end(); ++it) {
+        auto& pending = it->second;
+        const auto last = g_arrivalRelit.find(it->first);
+        if (now < pending.retry || (last != g_arrivalRelit.end() && now - last->second < std::chrono::milliseconds(500))) continue;
+        if (now - pending.last < std::chrono::milliseconds(150) && now - pending.first < std::chrono::milliseconds(500)) continue;
+        const std::vector<uint64_t> lot{it->first};
+        auto current = LotLightBridge::LampsOfLots(LotLightBridge::CurrentBakeLamps(), lot);
+        const auto old = LotLightBridge::LampsOfLots(g_baked, lot);
+        std::vector<ChunkRelight::Lamp> footprints;
+        LocalBatch b;
+        std::string why, chunks;
+        if (!ArrivalFootprint(old, current, g_lotLamps, footprints, b.changes)) { pending.retry = now + std::chrono::milliseconds(500); continue; }
+        b.id = ChunkRelight::QueueLocal(footprints, why, chunks, true);
+        if (!b.id) {
+            pending.retry = now + std::chrono::milliseconds(500);
+            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Visible lot {:016X}: local entry update postponed ({})", it->first, why));
+            continue;
+        }
+        b.lamps = std::move(current);
+        b.what = std::format("visible lot {:016X}, {} lamp footprints, chunks {}", it->first, footprints.size(), chunks);
+        if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Entry relight queued: " + b.what);
+        g_arrivalRelit[it->first] = now;
+        g_localBatches.push_back(std::move(b));
+        g_arrivals.erase(it);
+        break; // at most one bounded arrival batch per frame
+    }
 }
 
 // A paced sweep started (relightPacedSweep): like a consumed rebuild, the lamps as they are now go into the snapshot (the
@@ -880,6 +966,11 @@ void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool du
     Kick(cells, level, reason, dusk);
 }
 
+bool EditReady(Clock::time_point now, Clock::time_point first, Clock::time_point last, bool priority) {
+    return now - last >= (priority ? std::chrono::milliseconds(80) : kEditQuiet)
+        || (priority && now - first >= std::chrono::milliseconds(500));
+}
+
 // The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).
 void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_point now) {
     if (!night && g_autoDusk) // lamps are off by day and not in the bake; the dusk rebuild takes the change
@@ -890,14 +981,15 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
     if (g_bakedDue) return WaitEdit(EditWait::Snapshot, "waiting for the snapshot of the rebuild that just ran");
     // a local relight or paced sweep in progress: its lamps go into the snapshot when it ends, then this change is
     // compared with it (so the same lamps are never queued twice)
-    if (ChunkRelight::Busy()) return WaitEdit(EditWait::Relight, "waiting for the terrain relight in progress");
+    // A user edit can promote its affected chunks ahead of a background sweep. Other local batches stay serialized.
+    if (ChunkRelight::Busy() && !(g_editUser && g_sweepId != 0)) return WaitEdit(EditWait::Relight, "waiting for the terrain relight in progress");
     std::string diffText = "no snapshot of the last rebuild: rebuilt to be safe";
     std::vector<uint64_t> newLots; // user-driven changes on lots the last rebuild did not have (sorted, unique)
     if (g_editForce)
         diffText = "switch";
     else if (g_haveBaked) {
         if (g_editDiffEnum != LotLightBridge::LampEnumerations()) {
-            g_editDiff = LotLightBridge::DiffBake(g_baked, LotLightBridge::CurrentBakeLamps(), g_lotLamps);
+            g_editDiff = LotLightBridge::DiffBake(g_baked, LotLightBridge::CurrentBakeLamps(), g_lotLamps, g_editUserLots);
             g_editDiffEnum = LotLightBridge::LampEnumerations();
         }
         diffText = g_editDiff.Text();
@@ -921,7 +1013,7 @@ void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_p
     // Local terrain relight: only the chunks under the changed lamps (not for switches, which change every lot lamp, nor
     // without a snapshot to compare with). Refused (layout, more than 16 chunks, no rebuilt light map, ...): the full path
     // below, with its own limits, until the next change comes in.
-    if (g_localRelight && g_haveBaked && !g_editForce && !g_editLocalRefused) {
+    if ((g_localRelight || g_editUser) && g_haveBaked && !g_editForce && !g_editLocalRefused) {
         std::string why;
         if (TryLocal(now, newLots, diffText, why) != 0) return;
         g_editLocalRefused = true;
@@ -993,6 +1085,8 @@ void OnPresent() {
         g_editDiffEnum = -1;
         ChunkRelight::OnWorldChanged(); // the local relight waits for this world's first rebuild again
         g_localBatches.clear();
+        g_arrivals.clear();
+        g_arrivalRelit.clear();
         g_relitLamps.clear();
         g_sweepId = 0;
         LOG_INFO(std::format("[NightTerrainRelight] World loaded ({}): the terrain rebuild waits until the world is drawn and the night level is steady",
@@ -1161,7 +1255,7 @@ void OnPresent() {
         const bool userDriven = user != g_lastUserEdits;
         g_lastLampEdits = edits;
         g_lastUserEdits = user;
-        NoteEdit(now, userDriven, false, userDriven ? "lot lamps placed, moved or removed" : "lot lamps switched, dimmed or recoloured");
+        NoteEdit(now, userDriven, false, userDriven ? "observed lot lamps switched or edited" : "lot lamps switched, dimmed or recoloured");
         if (userDriven)
             for (uint64_t lot : LotLightBridge::LastUserChangeLots()) g_editUserLots.push_back(lot);
     }
@@ -1169,13 +1263,14 @@ void OnPresent() {
         g_lotLampsSeen = g_lotLamps;
         NoteEdit(now, true, true, g_lotLamps ? "lot lamps on the ground turned on" : "lot lamps on the ground turned off", true);
     }
-    // (after the lamp edit notice above: a change seen in this very enumeration stays a change) Lots that finished loading after the last rebuild (the active lot loads after the dusk rebuild when a save loads at
-    // night) join the snapshot with their lamps as they are, once settled and while no lamp change is pending, so a
-    // later switch on them is seen (before: "no change" until the next full rebuild; user report 29/09).
+    // Keep the first observed baseline of new lots even while another lot's edit waits.
+    // Exclude new lots whose priority edit was just seen: their already-changed state
+    // cannot establish the missing old baseline (the full path remains the fallback).
     static int adoptEnum = -1;
-    if (g_haveBaked && !g_bakedDue && !g_editKickPending && LotLightBridge::LampEnumerations() != adoptEnum) {
+    if (g_haveBaked && !g_bakedDue && LotLightBridge::LampEnumerations() != adoptEnum) {
         adoptEnum = LotLightBridge::LampEnumerations();
-        if (const int n = LotLightBridge::AdoptNewLots(g_baked, LotLightBridge::CurrentBakeLamps()); n > 0) {
+        const std::vector<uint64_t> noEdits;
+        if (const int n = LotLightBridge::AdoptNewLots(g_baked, LotLightBridge::CurrentBakeLamps(), g_editKickPending ? g_editUserLots : noEdits); n > 0) {
             g_editDiffEnum = -1;
             if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Snapshot: {} lot(s) loaded after the last rebuild joined it", n));
         }
@@ -1231,10 +1326,12 @@ void OnPresent() {
     } else
         g_stuckFrames = 0;
 
-    if (g_editKickPending && now - g_editLastAt >= kEditQuiet) DecideEdit(s.cells, s.level, night, c38, now);
+    // A continuous colour drag cannot postpone its final-state reconciliation forever.
+    if (g_editKickPending && EditReady(now, g_editFirstAt, g_editLastAt, g_editUser || g_editForce)) DecideEdit(s.cells, s.level, night, c38, now);
+    RefreshArrivingLots(now, night);
 
     // Local terrain relight / paced sweep: completion of the chunk in flight, release of the next one (at most one per
-    // frame, a free frame in between, at most 8 per second). A finished local batch puts its lamps into the snapshot; a
+    // frame, a free frame in between, 8 per second plus a measured cheap-chunk priority reserve). A finished local batch puts its lamps into the snapshot; a
     // failure (a chunk never rendered, the terrain changed) falls back to the full rebuild, once (the local path stays
     // off for this world).
     {
@@ -1271,7 +1368,7 @@ void OnPresent() {
     // can wait up to 30 s and are often skipped. Nor for lamp changes the local relight will take (it re-renders only a
     // few chunks, which are smoothed at once).
     const bool armed = !g_pendingReason.empty() && c38 >= 0 && now - g_kickAt < std::chrono::seconds(5);
-    const bool localLikely = g_localRelight && g_haveBaked && !g_editForce && !g_editLocalRefused && ChunkRelight::LikelyAvailable();
+    const bool localLikely = (g_localRelight || g_editUser) && g_haveBaked && !g_editForce && !g_editLocalRefused && ChunkRelight::LikelyAvailable();
     const bool editSoon = g_editKickPending && (night || !g_autoDusk) && (g_editUser || g_editForce) && !localLikely;
     if (g_loadKickPending || (g_scheduled && night) || editSoon || armed) LightmapSmooth::ExpectRebuild(30);
 
@@ -1826,6 +1923,10 @@ class NightTerrainRelightPatch : public ApexPatch {
         ChunkRelight::Drop();
         g_localBatches.clear();
         g_sweepId = 0;
+        if (!reinstalling) {
+            g_arrivals.clear();
+            g_arrivalRelit.clear();
+        }
         if (sweepPending) NoteEdit(Clock::now(), true, true, "paced terrain sweep interrupted", true);
         else if (localPending) NoteEdit(Clock::now(), true, false, "local terrain relight interrupted", true);
         g_lotRelightPending = false;

@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -32,6 +33,9 @@
 namespace {
 
 constexpr const char* kHookName = "LightProbe";
+std::atomic<bool> g_aiming{false};
+// Valid bit plus signed Win32 client coordinates. Only the render thread starts a GPU capture.
+std::atomic<uint64_t> g_aimClick{0};
 constexpr size_t kMaxDraws = 4000;
 constexpr int kPsConsts = 224; // ps_3_0
 constexpr int kVsConsts = 256; // vs_3_0 (skinned objects keep the world matrix and vertex lights at c184..c199)
@@ -812,6 +816,16 @@ void FinishCapture(IDirect3DDevice9* dev) {
 namespace LightProbe {
 
 bool Capturing() { return g_state == State::Capturing; }
+bool Busy() { return g_state != State::Idle || g_aiming.load() || g_aimClick.load() != 0; }
+void Aim() { g_watch = Watch{}; g_aimClick.store(0); g_aiming.store(true); }
+bool Aiming() { return g_aiming.load(); }
+void CancelAim() { g_aiming.store(false); g_aimClick.store(0); }
+bool ConfirmAim(POINT clientPixel) {
+    if (!g_aiming.exchange(false)) return false;
+    const uint32_t xy = static_cast<uint16_t>(clientPixel.x) | (static_cast<uint32_t>(static_cast<uint16_t>(clientPixel.y)) << 16);
+    g_aimClick.store((uint64_t{1} << 32) | xy);
+    return true;
+}
 
 void OnPresent(IDirect3DDevice9* dev) {
     if (!dev) return;
@@ -825,6 +839,7 @@ void OnPresent(IDirect3DDevice9* dev) {
 
     // Its shortcut (Hotkeys: Ctrl+Shift+V, 4 or F7 by preset), eaten before the game sees it
     const bool pressed = Hotkeys::Take(Hotkeys::Action::Probe);
+    const uint64_t click = g_aimClick.exchange(0);
     if (pressed && g_state != State::Idle) LOG_INFO("[LightProbe] Its shortcut while a capture is still running: ignored");
     const auto start = [&](POINT pixel, const std::string& why) {
         IDirect3DSurface9* bb = nullptr;
@@ -844,7 +859,7 @@ void OnPresent(IDirect3DDevice9* dev) {
         LOG_INFO("[LightProbe] Capture requested: " + g_status + " (" + why + ")");
     };
     const DWORD now = GetTickCount();
-    if (pressed && g_state == State::Idle) {
+    if ((pressed || click) && g_state == State::Idle) {
         IDirect3DSurface9* bb = nullptr;
         D3DSURFACE_DESC bd{};
         if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
@@ -854,18 +869,22 @@ void OnPresent(IDirect3DDevice9* dev) {
         D3DDEVICE_CREATION_PARAMETERS cp{};
         dev->GetCreationParameters(&cp);
         POINT p{};
-        GetCursorPos(&p);
         HWND wnd = cp.hFocusWindow ? cp.hFocusWindow : GetForegroundWindow();
-        ScreenToClient(wnd, &p);
+        if (click) {
+            p.x = static_cast<short>(click & 0xFFFF);
+            p.y = static_cast<short>((click >> 16) & 0xFFFF);
+        } else if (!GetCursorPos(&p) || !ScreenToClient(wnd, &p)) return;
         RECT cr{};
-        GetClientRect(wnd, &cr);
+        if (!GetClientRect(wnd, &cr) || !bd.Width || !bd.Height) return;
+        if ((click || g_aiming.load()) && (!PtInRect(&cr, p) || GetForegroundWindow() != wnd)) return;
         const LONG cw = std::max<LONG>(1, cr.right - cr.left), ch = std::max<LONG>(1, cr.bottom - cr.top);
         POINT pixel{};
         pixel.x = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.x) * bd.Width / cw), 0, static_cast<LONG>(bd.Width) - 1);
         pixel.y = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.y) * bd.Height / ch), 0, static_cast<LONG>(bd.Height) - 1);
-        start(pixel, "requested by the shortcut; the same pixel is measured again 1 s and 3 s after any lot changes the story it shows, for 2 minutes");
+        const bool guided = g_aiming.exchange(false) || click != 0;
+        start(pixel, guided ? "guided one-shot capture under the mouse" : "requested by the shortcut; the same pixel is measured again 1 s and 3 s after any lot changes the story it shows, for 2 minutes");
         Captures::Notify(I18n::Tr("Capturing the light under the mouse\xE2\x80\xA6"), 3);
-        g_watch = Watch{true, pixel, ShownStories(), now + 120000, 6, {}};
+        g_watch = guided ? Watch{} : Watch{true, pixel, ShownStories(), now + 120000, 6, {}};
         return;
     }
     // The automatic captures after a floor change
@@ -914,6 +933,7 @@ void RenderUI() {
 }
 
 void Shutdown() {
+    CancelAim();
     UnregisterHooks();
     ReleaseDraws();
     ClearTextures();
