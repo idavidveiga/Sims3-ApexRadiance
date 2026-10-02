@@ -1,4 +1,4 @@
-name: Build Lot LoD Probe
+name: Build Smooth Lot Streaming
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: windows-2022
     steps:
-      - name: Checkout probe branch
+      - name: Checkout streaming branch
         uses: actions/checkout@v4
 
       - name: Add MSBuild to PATH
@@ -27,20 +27,20 @@ jobs:
           & $vcpkg install --triplet x86-windows-static --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE\vcpkg_installed"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build ApexRadiance probe
+      - name: Build ApexRadiance streaming test
         shell: pwsh
         run: |
           msbuild ApexRadiance.sln /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
 
-      - name: Rename diagnostic build
+      - name: Rename streaming test build
         shell: pwsh
         run: Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodProbe_v1.asi"
 
-      - name: Upload probe
+      - name: Upload streaming test
         uses: actions/upload-artifact@v4
         with:
-          name: ApexRadiance-LotLod-Probe-v1
-          path: ApexRadiance_LotLodProbe_v1.asi
+          name: ApexRadiance-SmoothLotStreaming-TEST
+          path: ApexRadiance_SmoothLotStreaming_TEST.asi
           if-no-files-found: error
