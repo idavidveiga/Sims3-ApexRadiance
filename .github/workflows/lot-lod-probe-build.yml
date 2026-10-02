@@ -1,0 +1,43 @@
+name: Build Lot LoD Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout probe branch
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Prepare vcpkg dependencies
+        shell: pwsh
+        run: |
+          $vcpkg = "C:\vcpkg\vcpkg.exe"
+          if (!(Test-Path $vcpkg)) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
+            & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+          & $vcpkg install --triplet x86-windows-static --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE\vcpkg_installed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build ApexRadiance probe
+        shell: pwsh
+        run: |
+          msbuild ApexRadiance.sln /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
+
+      - name: Rename diagnostic build
+        shell: pwsh
+        run: Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodProbe_v1.asi"
+
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: ApexRadiance-LotLod-Probe-v1
+          path: ApexRadiance_LotLodProbe_v1.asi
+          if-no-files-found: error
