@@ -33,6 +33,7 @@
 #include "performance.h"
 #include "resource_cache.h"
 #include "lot_lighting_motion.h"
+#include "lot_lod_streaming.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
@@ -199,6 +200,36 @@ class LotLightingMotionPatch : public ApexPatch {
 
   private:
     int budgetMs_ = Performance::kLotLightingBudgetDefault;
+};
+
+class LotLodStreamingPatch : public ApexPatch {
+  public:
+    LotLodStreamingPatch() : ApexPatch(Performance::kLotLodStreamingName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotLodStreaming::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotLodStreaming::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void Update() override {
+        pendingReinstall = false;
+        LotLodStreaming::Tick();
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override {}
 };
 
 class FastTextureCompressionPatch;
@@ -437,6 +468,8 @@ std::string Performance::LookupMissesStatus() { return ResourceCache::MissesStat
 std::string Performance::FileListStatus() { return ResourceCache::KeyListStatusText(); }
 std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusText(); }
 std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoStatusText(); }
+std::string Performance::LotLodStreamingStatus() { return LotLodStreaming::StatusText(); }
+bool Performance::LotLodStreamingHandledByS3SS() { return LotLodStreaming::HandledByS3SS(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
@@ -513,6 +546,22 @@ APEX_REGISTER_FEATURE(LotLightingMotionPatch,
                                             "the budget is scaled so the current lot gets the chosen ms and every other lot the same fraction of its own.",
                                             "Tool mode (1000 ms) is never changed; nothing is skipped, the room solves resume next frame."},
                        .gameCodeGroup = "LotLightingMotion"});
+
+APEX_REGISTER_FEATURE(LotLodStreamingPatch,
+                      {.displayName = "Smooth Lot Streaming",
+                       .description = "Loads nearby lots into full detail gradually instead of letting several lot-detail transitions start together. Uses the game's own "
+                                      "native Lot LoD throttle and a 5.0 camera-speed threshold; no lot loader is replaced. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"Enables the game's native 'Throttle Lot LoD Transitions' byte. On Steam the test is 0xC6C695 and the byte is 0x11ECBC0; "
+                                            "EA 1.69.47 was verified in-game at 0xC6BA15 / 0x1246C50.",
+                                            "For each live WorldManager, +0xEC (Camera speed threshold) is validated as a finite value in 0..100 and set to 5.0. "
+                                            "Apex restores only values it changed, and only if they still equal Apex's applied value.",
+                                            "If official Sims3SettingsSetter has LotStreamingOptimizations.streamingSettings enabled, Apex makes no writes and reports "
+                                            "the setting as handled by Sims3SettingsSetter."},
+                       .gameCodeGroup = "LotLodStreaming"});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                       {.displayName = "Faster Texture Compression",
