@@ -212,6 +212,10 @@ enum class Id : uint16_t {
     // ---- Object lookup index (features/object_index.cpp; group "ObjectIndex" = ObjectById + these two) ----
     ObjectTreeWalk,           // FUN_00c60d30 thiscall(idLo, idHi, int* visited), ret 0xC: walks the root vector [this+0x9C, this+0xA0)
     ObjectTreeSearch,         // FUN_00c5fa60 cdecl(node, idLo, idHi, int* visited): recursive depth-first search (id at +0x48/+0x4C)
+    // ---- Lot LoD streaming probe (features/lot_lod_streaming.cpp; group "LotLodStreaming") ----
+    LotLodScoring,            // FUN_00c6c290: scores nearby lots and requests Detailed View transitions
+    LotLodThrottleTest,       // Steam 0x00c6c695: cmp byte [Throttle Lot LoD Transitions],0 inside LotLodScoring
+    LotLodThrottleFlag,       // global byte tested above; Steam 0x011ecbc0
     // ---- Local terrain relight (features/terrain_chunk_relight.cpp; optional part of Night Lights: without them lamp
     //      changes keep the full terrain rebuild) ----
     WorldManagerPtr,          // the WorldManager global 0x011ECBC4 (FUN_00c6cf80 stores the manager there at 0x00C6D0CC)
@@ -259,7 +263,7 @@ std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
 // "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache",
-// "SceneNodeBudget", "ObjectIndex"
+// "SceneNodeBudget", "ObjectIndex", "LotLodStreaming"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1
