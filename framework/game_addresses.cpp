@@ -239,6 +239,9 @@ constexpr Info kInfo[] = {
     {"SceneHolderTeardown", 0x006E4DE0},
     {"ObjectTreeWalk", 0x00C60D30},
     {"ObjectTreeSearch", 0x00C5FA60},
+    {"LotLodScoring", 0x00C6C290},
+    {"LotLodThrottleTest", 0x00C6C695},
+    {"LotLodThrottleFlag", 0x011ECBC0},
     {"WorldManagerPtr", 0x011ECBC4},
     {"TerrainUpdateCall", 0x00C6D68C},
     {"BakeColourSite", 0x00C2950F},
@@ -508,6 +511,13 @@ const Entry kTable[] = {
     // ---- Object lookup index (docs/features/performance.md): the tree walk behind ObjectById ----
     {Id::ObjectTreeWalk, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 08 55 8B 6C 24 10 56 8B F1 8B CB 33 C0 0B CD 74 ?? 8B 96 A0 00 00 00 2B 96 9C 00 00 00 57 33 FF C1 FA 02", 0, M::At}, {"8B 44 24 0C 52 50 E8 ?? ?? ?? ?? 8B F0 85 F6 74 14 8B 16 8B 42 40 8B CE FF D0 83 F8 01", 6, M::Call}}},
     {Id::ObjectTreeSearch, K::Sig, W::Text, None, 0, {{"53 55 56 8B 74 24 10 85 F6 0F 84 ?? ?? ?? ?? 8B 46 48 8B 5C 24 14 3B C3 8B 6C 24 18 75 ?? 8B 4E 4C 3B CD 74", 0, M::At}, {"8B 04 B8 51 55 53 50 E8 ?? ?? ?? ?? 83 C4 10 85 C0 75", 7, M::Call}}},
+    // ---- Lot LoD streaming probe (docs/engine/lot-loading-and-streaming.md) ----
+    // Find the scoring function by its prologue. Then, only inside that function, locate the byte-global test used by
+    // "Throttle Lot LoD Transitions". If the test is not unique the resolver deliberately returns 0 and the probe
+    // writes nothing; the [Addr] log contains the matches needed to refine the EA signature.
+    {Id::LotLodScoring, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 84 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C 0F 28 8B A0 03 00 00", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C", 0, M::At}}},
+    {Id::LotLodThrottleTest, K::InRange, W::Text, Id::LotLodScoring, 0x700, {{"80 3D ?? ?? ?? ?? 00", 0, M::At}, NOSIG}},
+    {Id::LotLodThrottleFlag, K::Deref, W::Image, Id::LotLodThrottleTest, 2, {NOSIG, NOSIG}},
     // ---- Local terrain relight (docs/features/night-lighting/terrain-relight.md): the WorldManager global from the store in
     //      FUN_00c6cf80 ("lea ecx,[ebp+9Ch]; mov [global],ebp; call"), alternate: the clear in FUN_00c6b500; the terrain link ----
     {Id::WorldManagerPtr, K::Sig, W::Image, None, 0, {{"8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8", 8, M::Dword}, {"51 53 56 33 DB 8B F1 89 1D ?? ?? ?? ?? 8B 8E 6C 01 00 00", 9, M::Dword}}},
@@ -552,6 +562,7 @@ const Group kGroups[] = {
     {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::SceneNodeDtor,
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
+    {"LotLodStreaming", {Id::LotLodScoring, Id::LotLodThrottleTest, Id::LotLodThrottleFlag, Id::WorldManagerPtr}},
     {"FastCasSort", {Id::CasTriSort}},
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
