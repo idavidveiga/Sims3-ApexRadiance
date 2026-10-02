@@ -713,10 +713,23 @@ void PerformanceCard() {
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
         FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
+    ImGui::PushID("PerformanceStreaming");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Streaming", "Loads lots and new objects in smaller steps", nullptr, nullptr);
+        ApexUi::CardDivider();
+        const bool streamingOn = FeatureSwitchRow(Performance::kLotLodStreamingName, "Smooth lot streaming",
+                                                  "Loads nearby lots into full detail gradually to reduce stutters while moving around the world", true);
+        if (streamingOn && Performance::LotLodStreamingHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the same streaming settings untouched");
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
     ImGui::PopID();
+
     ImGui::PushID("PerformanceFiles");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Search, "Files and objects", "Less repeated searching as content loads", nullptr, nullptr);
