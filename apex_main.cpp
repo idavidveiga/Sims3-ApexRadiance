@@ -27,7 +27,6 @@
 #include "frame_profiler.h"
 #include "game_addresses.h"
 #include "game_version.h"
-#include "lot_lod_streaming.h"
 #include "overlay.h"
 #include "patch_base.h"
 #include "s3ss_detect.h"
@@ -182,7 +181,6 @@ DWORD WINAPI InitThread(LPVOID) {
     } else {
         // Game-code addresses: fixed on Steam 1.67.2, found by signature on other builds (game code decrypted by now)
         GameAddr::Resolve();
-        LotLodStreaming::StartProbe(); // v1 is read-only: validates the Steam/EA addresses and current values
         try {
             ApexConfig::LoadFeatures();
         } catch (const std::exception& e) {
@@ -196,10 +194,7 @@ DWORD WINAPI InitThread(LPVOID) {
     // Pump: features' periodic work (deferred reinstalls, lamp scans scheduled off the render thread) and autosave.
     ULONGLONG lastGuardTick = 0;
     while (!Stopping(kPumpIntervalMs)) {
-        if (ApexGui::GetStartup() == ApexGui::Startup::Running) {
-            PatchManager::Get().UpdateAll();
-            LotLodStreaming::TickProbe();
-        }
+        if (ApexGui::GetStartup() == ApexGui::Startup::Running) PatchManager::Get().UpdateAll();
         ApexConfig::PumpAutosave();
         const ULONGLONG now = GetTickCount64();
         if (now - lastGuardTick >= 1000) {
