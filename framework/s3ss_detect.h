@@ -43,6 +43,9 @@ Instance AcquireInstanceMutex();
 
 // S3SS.toml (read-only): [patches.<name>].enabled, and whether S3SS's borderless window is configured.
 bool S3SSPatchEnabled(const char* patchName);
+// True when [patches.<patchName>] is enabled and its boolean <settingName> is true. If the setting is absent,
+// defaultValue is used (matching S3SS settings that default to on).
+bool S3SSPatchBoolSettingEnabled(const char* patchName, const char* settingName, bool defaultValue = true);
 bool S3SSBorderlessConfigured();
 bool S3SSOverlayDisabled();
 // S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
