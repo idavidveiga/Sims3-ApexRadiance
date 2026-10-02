@@ -403,3 +403,6 @@ The 20-37-31 session shows a wall painting darkening when a chair is placed belo
 Test008 omits that shader cap only while LevelLightShare reports its validated BasisLightHook installed and indoor sharing ready; otherwise the original cap remains. Separate cached variants preserve fallback during feature changes. This does not establish full height-aware object occlusion: maps remain 2D, and removing the cap may expose directional-map limitations near walls. Cross-story floor blocking, closed rooms, stair openings, other objects, night controls and performance must be validated in game before promoting it. The 007 RC package is preserved.
 
 Offline: 84 captured pixel shaders examined, 3 matching shader/sampler combinations; fallback byte-identical to 007 and both variants assemble. The corrected variant removes exactly the 12 tokens (three instructions) of the cap. Release x86 builds; prior policy/queue/night/cache tests pass. No in-game result claimed yet.
+
+### Release 2.5.3 packaging
+The test008 painting shader correction is included in both build flavors. Public compilation and captured shader checks pass. Broader gameplay validation around walls, floors and stairs remains open; removing UI Experimental badges does not resolve the 2D occlusion limitation. The published RC remains available as a reference.

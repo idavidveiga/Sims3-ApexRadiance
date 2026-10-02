@@ -47,8 +47,8 @@ In the base game lamps glow but barely light anything around them. Apex Radiance
 - **Brightness per part:** ground, roads and sidewalks, street lamps, lot lamps, objects, fences, walls, roofs and ponds each have their own slider.
 - **Lamp colors:** from the game's pink to warm white, applied instantly, with an optional separate color for lot lamps.
 - **Moonlight:** choose how much the moon lights the world at night.
-- **Inside the house (Experimental):** lamps inside shine through stairwells and open floors to the floor above or below, and stop at solid floors and walls; furniture, stairs and curtains take the room's light smoothly.
-- **Rooms at Night (Experimental):** instead of the game's strong blue glow in rooms with every lamp off, a soft background light you set with Brightness and Blue tint, on walls, floors and furniture alike.
+- **Inside the house:** lamps inside shine through stairwells and open floors to the floor above or below, and stop at solid floors and walls; furniture, stairs and curtains take the room's light smoothly.
+- **Rooms at Night:** instead of the game's strong blue glow in rooms with every lamp off, a soft background light you set with Brightness and Blue tint, on walls, floors and furniture alike.
 - **Changing floors keeps the light:** every floor of the lot you play is lit in full detail, walls meet at the floor line with no step in the light, and switching floors no longer flickers.
 - **Fast, correct updates:** placing, moving or deleting a lamp updates the light quickly, without the big freezes the game used to have. The lighting also refreshes itself after loading and after you change a setting, and a **Refresh the lighting** button and shortcut redo it at any time.
 
@@ -83,9 +83,11 @@ Softly blurs the distant background, like a camera focused on what's near. The f
 - **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K), with edges found from the scene depth too, an optional texture sharpening and an experimental temporal smoothing for SMAA (less shimmer while the camera moves).
 - **Borderless window:** windowed or fullscreen, without a title bar.
 
-### Performance (experimental)
+### Performance
 
 Apex Radiance goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. Every option has its own switch (System > Performance), so any that misbehaves can be turned off.
+
+The controls are grouped into **Camera and lighting**, **Files and objects**, **Textures and Sims**, and **Memory handling**. Switches stay visible; hover a feature for its detailed explanation. Your existing settings and defaults are kept.
 
 On from the start:
 - **Faster room lighting:** rooms light up sooner when you enter a lot or change floors.
