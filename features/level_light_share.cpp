@@ -82,6 +82,10 @@
 #define NOMINMAX
 #endif
 #include "level_light_share.h"
+#include "apex_version.h"
+#include "room_ambient_policy.h"
+#include "unlit_rooms.h"
+#include "object_light_bridge.h"
 #include "recorder.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
@@ -151,6 +155,7 @@ uintptr_t kLightBright = 0;              // 0x006BC520: fastcall(light), al = br
 uintptr_t kAddRoomLight = 0;             // 0x006A2060: thiscall(room, light) ret 4
 uintptr_t kRoomUpdatePush = 0;           // 0x006C5E2A: push FUN_006c7250 (68 imm32) in FUN_006c5e20
 uintptr_t kRoomUpdate = 0;               // 0x006C7250: fastcall(treeLevel)
+uintptr_t kLightEntryUpdate = 0;
 uintptr_t kChangedClearCall = 0;         // 0x006C7497: in it, the call that empties the "changed rooms" set (ecx = tl+8)
 uintptr_t kChangedClear = 0;             // 0x007F3790: thiscall(set, buckets, count) ret 8
 uintptr_t kFloorSet = 0, kFloorRemove = 0; // 0x00A89DD0, 0x00A893A0: thiscall(level floor object, ...)
@@ -212,6 +217,7 @@ void LoadAddresses() {
     kAddRoomLight = Get(Id::AddRoomLight);
     kRoomUpdatePush = Get(Id::RoomUpdatePush);
     kRoomUpdate = Get(Id::RoomUpdate);
+    kLightEntryUpdate = Get(Id::LightEntryUpdate);
     kFloorSet = Get(Id::FloorSet);
     kFloorRemove = Get(Id::FloorRemove);
     for (int k = 0; k < 4; k++) kFloorSetCalls[k] = at(Id::FloorSetCall0, k);
@@ -1082,7 +1088,14 @@ std::unordered_map<DepKey, RoomAmbient, DepHash> g_ambOrig;  // (lot, story, roo
 std::unordered_map<DepKey, Applied, DepHash> g_ambApplied;   // (lot, story, room) -> what the merge gave it last
 std::unordered_map<DepKey, DWORD, DepHash> g_ambQueuedAt;    // members sent to solve again, when
 std::unordered_map<uintptr_t, uintptr_t> g_mgrTracker;       // story manager -> its lot (filled by the gathers)
-std::vector<DepKey> g_ambToQueue;                           // members to send to solve again (by BeforeRoomUpdate)
+std::unordered_map<DepKey, Applied, DepHash> g_ambToQueue; // latest group target; retained until the room's merge agrees
+struct AmbientMember { DepKey key; int area; };
+std::unordered_map<DepKey, std::vector<AmbientMember>, DepHash> g_ambGroups;
+std::unordered_set<DepKey, DepHash> g_ambDirty;
+std::unordered_map<DepKey, DWORD, DepHash> g_ambGroupAt; // stable colour group, first staging tick
+std::atomic<long> g_groupCommits{0}, g_groupFallbacks{0};
+std::atomic<bool> g_groupRigsPending{false};
+DWORD g_groupBudgetAt = 0; unsigned g_groupBudget = 16; // under g_ambMx, shared by every lot
 struct WallBase {
     int id;
     uintptr_t mgr;
@@ -1226,7 +1239,12 @@ void MergeStackedAmbient(BYTE* room) {
             const int smaller = std::max(1, std::min(nodes[e.a].area, nodes[e.b].area));
             if (e.shared * 10 >= smaller * 3) group.push_back(other);
         }
-    if (group.size() < 2) return;
+    if (group.size() < 2) {
+        std::lock_guard<std::mutex> lk(g_ambMx);
+        g_ambToQueue.erase(DepKey{tracker, S, id}); // no longer connected: its own solve is authoritative
+        g_ambGroups.erase(DepKey{tracker, S, id});
+        return;
+    }
     std::sort(group.begin(), group.end(), [&](int x, int y) { return nodes[x].level != nodes[y].level ? nodes[x].level < nodes[y].level : nodes[x].id < nodes[y].id; });
     // the members the game has solved already
     struct Known {
@@ -1248,31 +1266,64 @@ void MergeStackedAmbient(BYTE* room) {
     float c4[4] = {}, weight = 0.0f;
     for (const Known& k : known) {
         // each colour already carries its room's normalisation: bring it to the group's
-        const float scale = k.a.norm > 1e-6f ? norm / k.a.norm : 1.0f, wgt = static_cast<float>(std::max(k.node.area, 1));
-        for (int i = 0; i < 4; i++) c4[i] += k.a.c4[i] * (i < 3 ? scale : 1.0f) * wgt;
+        const float wgt = static_cast<float>(std::max(k.node.area, 1));
+        RoomAmbientPolicy::AccumulateAmbient(c4, k.a.c4, k.a.norm, norm, wgt);
         weight += wgt;
     }
     for (float& v : c4) v /= weight;
-    WriteAmbient(room, c4, norm);
-    g_wallBase[roomKey] = WallBase{id, mgr, wallBase};
-    if (g_wallBase.size() > 4096) g_wallBase.clear();
-    g_ambMerges.fetch_add(1, std::memory_order_relaxed);
-    const DWORD now = GetTickCount();
     std::lock_guard<std::mutex> lk(g_ambMx);
-    Applied& self = g_ambApplied[DepKey{tracker, S, id}];
-    std::memcpy(self.c4, c4, sizeof c4);
-    self.norm = norm, self.wallBase = wallBase;
-    for (int g : group) {
-        const Node& m = nodes[g];
-        if (m.level == S && m.id == id) continue;
-        const DepKey key{tracker, m.level, m.id};
-        const auto applied = g_ambApplied.find(key);
-        if (applied != g_ambApplied.end() && !Differs(applied->second, c4, norm, wallBase)) continue;
-        DWORD& last = g_ambQueuedAt[key];
-        if (last && now - last < 3000) continue;
-        last = now ? now : 1;
-        if (g_ambToQueue.size() < 256) g_ambToQueue.push_back(key); // sent from the next room update, not from inside this solve
+    std::vector<AmbientMember> members;
+    if (g_ambGroups.size() > 8192) g_ambGroups.clear();
+    for (int g : group) members.push_back({{tracker, nodes[g].level, nodes[g].id}, nodes[g].area});
+    for (const auto& member : members) g_ambGroups[member.key] = members;
+    const DepKey selfKey{tracker, S, id};
+    const auto previous = g_ambApplied.find(selfKey);
+    bool stableMaps = previous != g_ambApplied.end();
+    bool changed = false;
+    for (const auto& member : members) {
+        const auto old = g_ambApplied.find(member.key);
+        if (old == g_ambApplied.end()
+            || !RoomAmbientPolicy::AmbientMapsCompatible(old->second.norm, norm, old->second.wallBase, wallBase)
+            || (previous != g_ambApplied.end() && Differs(previous->second, old->second.c4, old->second.norm, old->second.wallBase))) {
+            stableMaps = false;
+            break;
+        }
+        changed |= Differs(old->second, c4, norm, wallBase);
     }
+    // Never gate the native solve on unavailable sources. Only stage a colour change
+    // when a complete, compatible previous presentation already exists for the group.
+    if (stableMaps && changed) {
+        WriteAmbient(room, previous->second.c4, norm);
+        g_wallBase[roomKey] = WallBase{id, mgr, wallBase};
+        for (const auto& member : members) {
+            Applied& wanted = g_ambToQueue[member.key];
+            std::memcpy(wanted.c4, c4, sizeof c4);
+            wanted.norm = norm;
+            wanted.wallBase = wallBase;
+        }
+        g_ambGroupAt.try_emplace(members.front().key, GetTickCount()); // newer gathers do not postpone the bound
+    } else {
+        g_ambGroupAt.erase(members.front().key);
+        WriteAmbient(room, c4, norm);
+        g_wallBase[roomKey] = WallBase{id, mgr, wallBase};
+        Applied& self = g_ambApplied[selfKey];
+        std::memcpy(self.c4, c4, sizeof c4);
+        self.norm = norm; self.wallBase = wallBase;
+        g_ambToQueue.erase(selfKey);
+        for (const auto& member : members) {
+            if (member.key == selfKey) continue;
+            const auto applied = g_ambApplied.find(member.key);
+            if (applied != g_ambApplied.end() && !Differs(applied->second, c4, norm, wallBase)) {
+                g_ambToQueue.erase(member.key);
+                continue;
+            }
+            Applied& wanted = g_ambToQueue[member.key];
+            std::memcpy(wanted.c4, c4, sizeof c4);
+            wanted.norm = norm; wanted.wallBase = wallBase;
+        }
+    }
+    g_ambMerges.fetch_add(1, std::memory_order_relaxed);
+    if (g_ambGroupAt.size() > 8192) g_ambGroupAt.clear();
     if (g_ambQueuedAt.size() > 4096) g_ambQueuedAt.clear();
     if (g_ambApplied.size() > 8192) g_ambApplied.clear();
 }
@@ -1365,13 +1416,29 @@ char __fastcall WallPassHook(BYTE* room, void*, int arg, float budget) {
     return done;
 }
 
+void ForgetAmbientLot(uintptr_t tracker) {
+    std::lock_guard<std::mutex> lock(g_ambMx);
+    const auto belongs = [tracker](const auto& entry) { return entry.first.tracker == tracker; };
+    std::erase_if(g_ambOrig, belongs);
+    std::erase_if(g_ambApplied, belongs);
+    std::erase_if(g_ambQueuedAt, belongs);
+    std::erase_if(g_ambToQueue, belongs);
+    std::erase_if(g_ambGroups, belongs);
+    std::erase_if(g_ambGroupAt, belongs);
+    std::erase_if(g_ambDirty, [tracker](const DepKey& key) { return key.tracker == tracker; });
+    std::erase_if(g_mgrTracker, [tracker](const auto& entry) { return entry.second == tracker; });
+}
 void ClearAmbient() {
     std::lock_guard<std::mutex> lk(g_ambMx);
+    g_groupBudgetAt = 0; g_groupBudget = 16;
     g_ambOrig.clear();
     g_ambApplied.clear();
     g_ambQueuedAt.clear();
     g_mgrTracker.clear();
     g_ambToQueue.clear();
+    g_ambGroups.clear();
+    g_ambDirty.clear();
+    g_ambGroupAt.clear();
 }
 
 // ---- 5. Wall light lined up with the wall (every wall; option "paredesSemEmendaEntreAndares") ----
@@ -1947,6 +2014,9 @@ struct LotState {
     DWORD nextCheck = 0;
     DWORD settleAt = 0; // once more, after the lot's first solves settled: at the latest then (0 = not due)
     DWORD armedAt = 0, quietSince = 0; // when it was armed; since when none of `watch` waits for a solve (0 = busy)
+    DWORD windowsArmed = 0;
+    unsigned windowPass = 3;
+    int windowStory = -99;
     std::vector<std::pair<int, int>> watch; // (story, room) sent by the last QueueOpeningRooms
     // The lot's story managers when last seen: a lot whose lighting was rebuilt (the camera left it and came back, or
     // its tracker's address was reused by another lot) is a new lot for this state (user, 29/09: "sometimes I even have
@@ -1971,6 +2041,10 @@ bool LotBusy(uintptr_t tracker, const std::vector<std::pair<int, int>>& watch) {
         std::lock_guard<std::mutex> lk(g_deferredMx);
         if (std::any_of(g_deferred.begin(), g_deferred.end(), [&](const DeferredRoom& d) { return d.tracker == tracker; })) return true;
     }
+    {
+        std::lock_guard<std::mutex> lk(g_ambMx);
+        if (std::any_of(g_ambToQueue.begin(), g_ambToQueue.end(), [&](const auto& entry) { return entry.first.tracker == tracker; })) return true;
+    }
     return DepWaitsFor(tracker);
 }
 
@@ -1994,6 +2068,63 @@ int OpeningCount(uintptr_t tracker) {
     return n;
 }
 
+bool AmbientRoomExists(const DepKey& key) {
+    __try {
+        void* mgr = reinterpret_cast<void*>(StoryManager(key.tracker, key.level));
+        const BYTE* room = mgr ? static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, key.room)) : nullptr;
+        return room && !room[0x18];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Called on the light thread before the changed-room set is walked. Take a snapshot first:
+// the game's evaluator may move a paired window entry to another room's registry.
+bool RecheckWindowEntry(uintptr_t entry, uintptr_t tl, bool& changed) {
+    changed = false;
+    __try {
+        if (*reinterpret_cast<const uintptr_t*>(entry + 0x14) != tl) return false;
+        const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+        if (!light) return false;
+        const int type = *reinterpret_cast<const int*>(light + 0xB0);
+        if (type != 7 && type != 8) return false;
+        const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(entry);
+        if (!vt || *reinterpret_cast<const uintptr_t*>(vt + 8) != kLightEntryUpdate) return false;
+        const int room = *reinterpret_cast<const int*>(entry + 0x1C);
+        const BYTE lit = *reinterpret_cast<const BYTE*>(light + 0x100) & 0x20;
+        reinterpret_cast<void(__thiscall*)(void*)>(kLightEntryUpdate)(reinterpret_cast<void*>(entry));
+        changed = room != *reinterpret_cast<const int*>(entry + 0x1C)
+            || lit != (*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+void RecheckLotWindows(uintptr_t tracker, unsigned pass) {
+    if (!kLightEntryUpdate) return;
+    std::vector<std::pair<uintptr_t, uintptr_t>> entries;
+    std::unordered_set<uintptr_t> seen;
+    for (int story = -4; story <= 7; story++) {
+        const uintptr_t tl = TreeLevel(tracker, story);
+        if (!*reinterpret_cast<const uintptr_t*>(tl)) continue;
+        WalkRegistry(tl, [&](uintptr_t entry) {
+            if (seen.insert(entry).second) entries.emplace_back(entry, tl);
+        });
+    }
+    int checked = 0, changed = 0;
+    for (const auto& [entry, tl] : entries) {
+        bool edited = false;
+        if (RecheckWindowEntry(entry, tl, edited)) { checked++; changed += edited; }
+    }
+    if constexpr (!kPublicBuild)
+        LOG_INFO(std::format("[LevelLightShare] Window activation recheck: lot {:08X}, pass {}, {} evaluated, {} changed", *reinterpret_cast<const uint32_t*>(tracker + 0x90), pass + 1, checked, changed));
+}
+
+enum class GroupApply { None, Waiting, Applied };
+GroupApply ApplyGroupAmbient(const DepKey& key, unsigned& budget);
+bool GroupColourPending(const DepKey& key);
+bool ApplyIdleAmbient(const DepKey& key, const Applied& wanted);
 void BeforeRoomUpdate(BYTE* tl) {
     const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tl);
     if (!mgr) return;
@@ -2005,12 +2136,41 @@ void BeforeRoomUpdate(BYTE* tl) {
         std::vector<DepKey> send;
         {
             std::lock_guard<std::mutex> lk(g_ambMx);
+            const DWORD now = GetTickCount();
+            DepKey attempted[128]; unsigned attempts = 0;
+            if (now - g_groupBudgetAt >= 50) { g_groupBudgetAt = now; g_groupBudget = 16; }
             for (auto it = g_ambToQueue.begin(); it != g_ambToQueue.end();)
-                if (it->tracker == tracker) {
-                    send.push_back(*it);
-                    it = g_ambToQueue.erase(it);
-                } else
-                    ++it;
+                if (it->first.tracker == tracker) {
+                    if (!AmbientRoomExists(it->first)) {
+                        g_ambQueuedAt.erase(it->first);
+                        it = g_ambToQueue.erase(it);
+                        continue;
+                    }
+                    if (GroupColourPending(it->first)) {
+                        const DepKey root = g_ambGroups.find(it->first)->second.front().key;
+                        if (std::find(attempted, attempted + attempts, root) != attempted + attempts) { ++it; continue; }
+                        if (attempts < std::size(attempted)) attempted[attempts++] = root;
+                    }
+                    const GroupApply coordinated = ApplyGroupAmbient(it->first, g_groupBudget);
+                    if (coordinated == GroupApply::Waiting) { ++it; continue; }
+                    const auto applied = g_ambApplied.find(it->first);
+                    const Applied& wanted = it->second;
+                    if (applied != g_ambApplied.end() && !Differs(applied->second, wanted.c4, wanted.norm, wanted.wallBase)) {
+                        it = g_ambToQueue.erase(it);
+                        continue;
+                    }
+                    if (ApplyIdleAmbient(it->first, wanted)) {
+                        g_ambQueuedAt.erase(it->first);
+                        it = g_ambToQueue.erase(it);
+                        continue;
+                    }
+                    DWORD& last = g_ambQueuedAt[it->first];
+                    if (RoomAmbientPolicy::AmbientUpdateDue(now, last)) {
+                        send.push_back(it->first);
+                        last = now ? now : 1;
+                    }
+                    ++it; // a queued/busy room remains pending until a solve confirms convergence
+                } else ++it;
         }
         for (const DepKey& k : send)
             if (QueueRoom(tracker, k.level, k.room, true)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
@@ -2035,6 +2195,8 @@ void BeforeRoomUpdate(BYTE* tl) {
             due = true;
         }
         const DWORD now = GetTickCount();
+        const uintptr_t ground = StoryManager(tracker, 0);
+        const int shown = ground ? *reinterpret_cast<const int*>(ground + 0x284) : -99;
         if (static_cast<int32_t>(now - lot.nextCheck) >= 0) {
             lot.nextCheck = now + 2000;
             const int known = FloorObjectsKnown(tracker);
@@ -2078,6 +2240,15 @@ void BeforeRoomUpdate(BYTE* tl) {
                 g_settles.fetch_add(1, std::memory_order_relaxed);
                 if (now - lot.armedAt < kSettleMax - 50) g_settlesEarly.fetch_add(1, std::memory_order_relaxed);
             }
+        }
+        if (due || lot.windowStory != shown) {
+            lot.windowStory = shown;
+            lot.windowsArmed = now;
+            lot.windowPass = 0;
+        }
+        if (RoomAmbientPolicy::WindowRecheckDue(now, lot.windowsArmed, lot.windowPass)) {
+            RecheckLotWindows(tracker, lot.windowPass);
+            ++lot.windowPass;
         }
         if (due) QueueOpeningRooms(tracker, &lot.watch);
     }
@@ -2314,12 +2485,24 @@ void __fastcall ChangedClearHook(BYTE* set, void*, uintptr_t buckets, uintptr_t 
     reinterpret_cast<SetClear_t>(kChangedClear)(set, buckets, count);
 }
 
+struct GatherStamp { uintptr_t mgr; int id; DWORD started; };
+std::mutex g_gatherStampMx;
+std::unordered_map<uintptr_t, GatherStamp> g_gatherStamps;
+void NoteGatherStamp(BYTE* room, DWORD started) {
+    const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+    const int id = *reinterpret_cast<const int*>(room + 0xC);
+    std::lock_guard<std::mutex> lock(g_gatherStampMx);
+    if (g_gatherStamps.size() > 8192) g_gatherStamps.clear();
+    g_gatherStamps[reinterpret_cast<uintptr_t>(room)] = {mgr, id, started};
+}
 void __fastcall OutdoorGather(BYTE* treeLevel, void*, BYTE* room) {
+    const DWORD started = GetTickCount();
     reinterpret_cast<AddWorldLights_t>(kAddWorldLights)(treeLevel, room);
     if (!g_installed.load(std::memory_order_relaxed) || !room) return;
     __try {
         ShareOutdoorLights(treeLevel, room);
         ShareIndoorLights(treeLevel, room);
+        NoteGatherStamp(room, started);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
     }
@@ -2378,6 +2561,7 @@ std::mutex g_diagMx;
 std::vector<DiagRec> g_diag;
 std::atomic<long> g_diagSeen{0};
 int g_diagIndoorUsed = 0, g_diagOutdoorUsed = 0; // records per part since the last dump (under g_diagMx)
+std::atomic<bool> g_diagFull[2]{};
 // What IndoorPassImpl met at the floor crossing, for the next Diag record (light tree thread; development build)
 struct PassDebug {
     int cx = -1, cz = -1, cq = -1, belowRoom = -2;
@@ -2431,6 +2615,7 @@ struct SeamRec {
 };
 std::mutex g_seamMx;
 std::vector<SeamRec> g_seam;
+std::atomic<bool> g_seamFull{false};
 bool MakeSeamRec(BYTE* room, const float* out, const float* sample, SeamRec& r) {
     __try {
         if (std::fabs(sample[5]) > 0.3f) return false; // walls only (floor and ceiling normals are vertical)
@@ -2452,10 +2637,12 @@ bool MakeSeamRec(BYTE* room, const float* out, const float* sample, SeamRec& r) 
     }
 }
 void RecordSeam(BYTE* room, const float* out, const float* sample) {
+    if (g_seamFull.load(std::memory_order_relaxed)) return;
     SeamRec r{};
     if (!MakeSeamRec(room, out, sample, r)) return;
     std::lock_guard<std::mutex> lk(g_seamMx);
     if (g_seam.size() < 30000) g_seam.push_back(r);
+    if (g_seam.size() >= 30000) g_seamFull.store(true, std::memory_order_relaxed);
 }
 
 float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flags, void* sample, bool batch) {
@@ -2537,11 +2724,12 @@ void __fastcall RoomNormHook(BYTE* room, void*, const float* brightest) {
 // towards the 4 basis directions. No threshold, wall or floor test there, and it never goes through LightPointWithAllLights,
 // so the lamps of another story taken near an opening lit the whole room through the floor. A lamp of another story
 // (FindCross) is now tested at that point with IndoorShadow (the floor test only: no 2D wall flags, so it passes or not):
-// blocked, it adds nothing (the game's sum minus that lamp). The shader cap (PatchIndoorBasis: min(basis, 2 x room light
-// map)) stays as a safety net. Steam 1.67.2 only (fixed addresses, the bytes checked).
+// blocked, it adds nothing (the game's sum minus that lamp). Test008 uses these guarded maps without the
+// floor-map shader cap; the cap remains the fallback if this validated hook is unavailable. Steam 1.67.2 only.
 constexpr uintptr_t kBasisLight = 0x0069F280, kBasisLightCall = 0x006A0C56;
 using BasisLight_t = void(__stdcall*)(const float* pos, void* light, float* acc);
 std::atomic<long> g_basisTests{0}, g_basisBlocked{0};
+std::atomic<bool> g_basisGuardReady{false};
 void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float* colour); // below
 void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light, float* acc) {
     if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
@@ -2652,6 +2840,7 @@ bool ActiveLot(uintptr_t mgr) {
 
 void Diag(const RoomInfo& info, void* light, const float* sample, const float* colour, int home, float mine, bool culledList) {
     g_lastRec = -1;
+    if (g_diagFull[info.indoor ? 1 : 0].load(std::memory_order_relaxed)) return;
     if (!ActiveLot(info.mgr)) return;
     const float* lp = reinterpret_cast<const float*>(static_cast<const BYTE*>(light) + 0x120);
     const float dx = sample[0] - lp[0], dy = sample[1] - lp[1], dz = sample[2] - lp[2];
@@ -2660,8 +2849,10 @@ void Diag(const RoomInfo& info, void* light, const float* sample, const float* c
     std::lock_guard<std::mutex> lk(g_diagMx);
     // separate budgets: the outdoor lamps of every loaded lot would fill the record before an indoor point is seen
     int& used = info.indoor ? g_diagIndoorUsed : g_diagOutdoorUsed;
-    if (used >= (info.indoor ? 40000 : 4000)) return;
+    const int limit = info.indoor ? 40000 : 4000;
+    if (used >= limit) return;
     used++;
+    if (used == limit) g_diagFull[info.indoor ? 1 : 0].store(true, std::memory_order_relaxed);
     DiagRec r{info.level, home, reinterpret_cast<uintptr_t>(light), {lp[0], lp[1], lp[2]}, {sample[0], sample[1], sample[2]},
               {sample[4], sample[5], sample[6]}, colour[0] + colour[1] + colour[2], mine, -1, 1.0f, g_ctx.batch, culledList};
     r.type = *reinterpret_cast<const int*>(static_cast<const BYTE*>(light) + 0xB0);
@@ -2805,8 +2996,10 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
         // a lamp with ours on the other side of the floor; every own lamp would fill the record)
         if (g_diagArmed.load(std::memory_order_relaxed) && !g_ghostSolve && (c || g_crossLamps.count(reinterpret_cast<uintptr_t>(light)))) {
             Diag(info, light, sample, before, c ? c->floor : -1, mine, false);
-            std::lock_guard<std::mutex> lk(g_diagMx);
-            if (g_lastRec >= 0 && g_lastRec < static_cast<int>(g_diag.size())) g_diag[g_lastRec].why = why;
+            if (g_lastRec >= 0) {
+                std::lock_guard<std::mutex> lk(g_diagMx);
+                if (g_lastRec < static_cast<int>(g_diag.size())) g_diag[g_lastRec].why = why;
+            }
         }
     }
 }
@@ -2844,6 +3037,7 @@ void ClearDiag() {
     std::lock_guard<std::mutex> lk(g_diagMx);
     g_diag.clear();
     g_diagIndoorUsed = g_diagOutdoorUsed = 0;
+    g_diagFull[0] = g_diagFull[1] = false;
 }
 
 // The trackers of every loaded lot (the light manager's lot hash): room 0 of floors 0..7 and the given indoor rooms
@@ -2990,6 +3184,7 @@ bool InstallIndoor(std::string& why) {
     const bool basis = GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kBasisLightCall - sizeof basisBytes), basisBytes, sizeof basisBytes) == 0 &&
                        CallsTarget(kBasisLightCall, kBasisLight) &&
                        Redirect(kBasisLightCall, kBasisLight, reinterpret_cast<const void*>(&BasisLightHook), &basisPatches);
+    g_basisGuardReady.store(basis, std::memory_order_relaxed);
     if (basis) g_lodPatches.insert(g_lodPatches.end(), basisPatches.begin(), basisPatches.end());
     else {
         MemPatch::RestoreAll(basisPatches);
@@ -3042,7 +3237,49 @@ uintptr_t SafeStoryManager(uintptr_t tracker, int level) {
 }
 
 // 5.: every room of one story (the ids its lighting tiles hold, and room 0) lights its walls again
-int RequeueStory(uintptr_t tracker, int level) {
+struct RigRoomWatch { DepKey key; uintptr_t mgr; };
+struct RigWait { std::vector<RigRoomWatch> rooms; DWORD armed; bool fallbackSent = false; };
+std::unordered_map<uintptr_t, RigWait> g_rigWait; // render thread, only after a lamp-driven lot refresh
+DWORD g_rigPollAt = 0, g_ambientPollAt = 0;
+unsigned g_rigCursor = 0;
+bool FreshLampSolveImpl(BYTE* room, DWORD changed) {
+    const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+    const int id = *reinterpret_cast<const int*>(room + 0xC);
+    {
+        std::lock_guard<std::mutex> lock(g_gatherStampMx);
+        const auto stamp = g_gatherStamps.find(reinterpret_cast<uintptr_t>(room));
+        if (stamp == g_gatherStamps.end() || stamp->second.mgr != mgr || stamp->second.id != id
+            || !RoomAmbientPolicy::GatherAfterChange(stamp->second.started, changed)) return false;
+    }
+    const uintptr_t tracker = MgrTracker(mgr);
+    if (!tracker) return false;
+    const int level = *reinterpret_cast<const int*>(mgr + 0x88);
+    if (StoryManager(tracker, level) != mgr) return false;
+    const DepKey key{tracker, level, id};
+    {
+        std::lock_guard<std::mutex> lock(g_ambMx);
+        if (g_ambToQueue.contains(key)) return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_depsMx);
+        if (g_depWait.contains(key)) return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_deferredMx);
+        if (std::any_of(g_deferred.begin(), g_deferred.end(), [&](const DeferredRoom& d) {
+            return d.tracker == tracker && d.level == key.level && d.id == id;
+        })) return false;
+    }
+    return true;
+}
+bool FreshLampSolve(BYTE* room, DWORD changed) {
+    __try {
+        if (!RoomAmbientPolicy::RetainFreshSolve(*reinterpret_cast<const int*>(room + 0xF0))) return false;
+        return FreshLampSolveImpl(room, changed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+int CachedStoryRooms(uintptr_t tracker, int level, int* ids, int max);
+int RequeueStory(uintptr_t tracker, int level, DWORD changed = 0, int* skipped = nullptr, std::vector<RigRoomWatch>* watch = nullptr) {
     int ids[1024], n = 0, queued = 0;
     __try {
         const uintptr_t mgr = StoryManager(tracker, level);
@@ -3050,12 +3287,22 @@ int RequeueStory(uintptr_t tracker, int level) {
         const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
         if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return 0;
         ids[n++] = 0;
-        for (int iz = 0; iz < h; iz++)
+        const int cached = CachedStoryRooms(tracker, level, ids + n, static_cast<int>(std::size(ids)) - n);
+        if (cached >= 0) n += cached;
+        else for (int iz = 0; iz < h; iz++)
             for (int ix = 0; ix < w; ix++)
                 if (const uintptr_t tile = LightTile(mgr, ix, iz))
                     for (int q = 0; q < 4; q++)
                         if (const int id = TileRoom(tile, q); id > 0 && n < static_cast<int>(std::size(ids)) && std::find(ids, ids + n, id) == ids + n) ids[n++] = id;
-        for (int k = 0; k < n; k++) queued += QueueRoom(tracker, level, ids[k], true);
+        for (int k = 0; k < n; k++) {
+            BYTE* room = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), ids[k]));
+            if (watch && room) watch->push_back({{tracker, level, ids[k]}, mgr});
+            if (changed && room && FreshLampSolve(room, changed)) {
+                if (skipped) ++*skipped;
+                continue;
+            }
+            queued += QueueRoom(tracker, level, ids[k], true);
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
     }
@@ -3113,6 +3360,212 @@ BYTE* SafeRoomById(uintptr_t tracker, int level, int id) {
     }
 }
 // QueueRoom under SEH (a lot unloaded between the list and the send)
+bool AmbientNear(const float* a, const float* b) {
+    for (int k = 0; k < 4; k++) if (!std::isfinite(a[k]) || !std::isfinite(b[k]) || std::fabs(a[k] - b[k]) > 1e-5f) return false;
+    return true;
+}
+bool AmbientIdentity(BYTE* room, uintptr_t& mgr, int& level, int& id) {
+    __try {
+        mgr = *reinterpret_cast<const uintptr_t*>(room);
+        level = *reinterpret_cast<const int*>(mgr + 0x88);
+        id = *reinterpret_cast<const int*>(room + 0xC);
+        return id > 0 && level >= 0 && level <= 7 && !room[0x18];
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool AmbientHeld(BYTE* room, const Applied& old, const float* second, bool unlit) {
+    __try {
+        const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        if ((state != 4 && state != 5) || room[0x18]) return false;
+        if (unlit && *reinterpret_cast<const uintptr_t*>(room + 0xCC) > *reinterpret_cast<const uintptr_t*>(room + 0xC8)) return false;
+        return AmbientNear(reinterpret_cast<const float*>(room + 0x110), old.c4)
+            && (!second || AmbientNear(reinterpret_cast<const float*>(room + 0x120), second))
+            && std::fabs(*reinterpret_cast<const float*>(room + 0x160) - old.norm) <= 1e-5f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool WriteSecondAmbient(BYTE* room, const float* second) {
+    __try { std::memcpy(room + 0x120, second, 16); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// Called with g_ambMx held, from the native room-update hook. No other-member
+// source-readiness gate: only the already solved, compatible colour presentation waits.
+bool GroupColourPending(const DepKey& key) {
+    const auto group = g_ambGroups.find(key);
+    if (group == g_ambGroups.end() || group->second.empty()) return false;
+    const auto armed = g_ambGroupAt.find(group->second.front().key);
+    return armed != g_ambGroupAt.end() && !RoomAmbientPolicy::GroupWaitExpired(GetTickCount(), armed->second);
+}
+GroupApply ApplyGroupAmbient(const DepKey& key, unsigned& budget) {
+    const auto group = g_ambGroups.find(key);
+    if (group == g_ambGroups.end() || group->second.size() < 2 || group->second.size() > 12) return GroupApply::None;
+    const DepKey root = group->second.front().key;
+    const auto armed = g_ambGroupAt.find(root);
+    if (armed == g_ambGroupAt.end()) return GroupApply::None;
+    const auto fallback = [&]() {
+        g_ambGroupAt.erase(root);
+        g_groupFallbacks.fetch_add(1, std::memory_order_relaxed);
+        return GroupApply::None;
+    };
+    if (RoomAmbientPolicy::GroupWaitExpired(GetTickCount(), armed->second)) return fallback();
+    if (group->second.size() > budget) return GroupApply::Waiting;
+    struct Prepared { BYTE* room; DepKey key; Applied previous, wanted; };
+    Prepared ready[12]{};
+    unsigned count = 0;
+    for (const auto& member : group->second) {
+        const auto old = g_ambApplied.find(member.key);
+        const auto next = g_ambToQueue.find(member.key);
+        if (old == g_ambApplied.end() || next == g_ambToQueue.end()
+            || !RoomAmbientPolicy::AmbientMapsCompatible(old->second.norm, next->second.norm, old->second.wallBase, next->second.wallBase)) return fallback();
+        for (float value : next->second.c4) if (!std::isfinite(value)) return fallback();
+        if (count && (Differs(ready[0].wanted, next->second.c4, next->second.norm, next->second.wallBase)
+            || !AmbientNear(ready[0].wanted.c4, next->second.c4))) return fallback();
+        BYTE* room = SafeRoomById(member.key.tracker, member.key.level, member.key.room);
+        uintptr_t mgr = 0; int level = 0, id = 0;
+        if (!room || !AmbientIdentity(room, mgr, level, id) || level != member.key.level || id != member.key.room
+            || SafeStoryManager(member.key.tracker, level) != mgr) return fallback();
+        if (!AmbientHeld(room, old->second, nullptr, false)) return GroupApply::Waiting;
+        ready[count++] = Prepared{room, member.key, old->second, next->second};
+    }
+    // Validate the complete group before the first write; native room solves continue
+    // freely while waiting. Scale, ramp and light-map textures are never replaced here.
+    for (unsigned i = 0; i < count; ++i)
+        if (!AmbientHeld(ready[i].room, ready[i].previous, nullptr, false)) return GroupApply::Waiting;
+    for (unsigned i = 0; i < count; ++i) WriteAmbient(ready[i].room, ready[i].wanted.c4, 0);
+    bool valid = true;
+    for (unsigned i = 0; i < count; ++i) valid &= AmbientHeld(ready[i].room, ready[i].wanted, nullptr, false);
+    if (!valid) {
+        for (unsigned i = 0; i < count; ++i)
+            if (AmbientHeld(ready[i].room, ready[i].wanted, nullptr, false)) WriteAmbient(ready[i].room, ready[i].previous.c4, 0);
+        return fallback();
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        g_ambApplied.find(ready[i].key)->second = ready[i].wanted;
+        g_ambQueuedAt.erase(ready[i].key);
+    }
+    budget -= count;
+    g_ambGroupAt.erase(root);
+    g_groupCommits.fetch_add(1, std::memory_order_relaxed);
+    g_groupRigsPending.store(true, std::memory_order_relaxed);
+    return GroupApply::Applied; // callers retire converged pending entries without invalidating their iterators
+}
+// Called with g_ambMx held. Change RGB only: map scale and wall ramp remain authoritative.
+bool ApplyIdleAmbient(const DepKey& key, const Applied& wanted) {
+    if (GroupColourPending(key)) return false;
+    const auto old = g_ambApplied.find(key);
+    if (old == g_ambApplied.end()
+        || !RoomAmbientPolicy::AmbientMapsCompatible(old->second.norm, wanted.norm, old->second.wallBase, wanted.wallBase)) return false;
+    BYTE* room = SafeRoomById(key.tracker, key.level, key.room);
+    uintptr_t mgr = 0; int level = 0, id = 0;
+    if (!room || !AmbientIdentity(room, mgr, level, id) || level != key.level || id != key.room
+        || SafeStoryManager(key.tracker, level) != mgr || !AmbientHeld(room, old->second, nullptr, false)) return false;
+    for (float value : wanted.c4) if (!std::isfinite(value)) return false;
+    WriteAmbient(room, wanted.c4, 0);
+    if (!AmbientHeld(room, wanted, nullptr, false)) return false;
+    old->second = wanted;
+    return true;
+}
+DepKey g_ambientCursorKey{};
+bool g_ambientCursorValid = false;
+void ApplyPendingAmbient() {
+    const DWORD now = GetTickCount();
+    if (static_cast<int32_t>(now - g_ambientPollAt) < 0) return;
+    g_ambientPollAt = now + 50;
+    size_t visited = 0; int changed = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_ambMx);
+        auto it = g_ambientCursorValid ? g_ambToQueue.find(g_ambientCursorKey) : g_ambToQueue.end();
+        if (it == g_ambToQueue.end()) it = g_ambToQueue.begin();
+        const size_t limit = std::min<size_t>(128, g_ambToQueue.size());
+        while (!g_ambToQueue.empty() && visited++ < limit && changed < 16) {
+            if (ApplyIdleAmbient(it->first, it->second)) {
+                g_ambQueuedAt.erase(it->first);
+                it = g_ambToQueue.erase(it);
+                ++changed;
+            } else ++it;
+            if (it == g_ambToQueue.end()) it = g_ambToQueue.begin();
+        }
+        g_ambientCursorValid = it != g_ambToQueue.end();
+        if (g_ambientCursorValid) g_ambientCursorKey = it->first;
+    }
+    // Furniture is refreshed by the lot-completion watcher, not once per member.
+}
+int WatchedRoomState(const RigRoomWatch& watch) {
+    __try {
+        if (StoryManager(watch.key.tracker, watch.key.level) != watch.mgr) return -1;
+        const BYTE* room = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(watch.mgr), watch.key.room));
+        if (!room || *reinterpret_cast<const uintptr_t*>(room) != watch.mgr
+            || *reinterpret_cast<const int*>(room + 0xC) != watch.key.room) return -1;
+        return *reinterpret_cast<const int*>(room + 0xF0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+bool RigWorkPending(uintptr_t tracker) {
+    {
+        std::lock_guard<std::mutex> lock(g_ambMx);
+        if (std::any_of(g_ambToQueue.begin(), g_ambToQueue.end(), [tracker](const auto& item) { return item.first.tracker == tracker; })) return true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_deferredMx);
+        if (std::any_of(g_deferred.begin(), g_deferred.end(), [tracker](const DeferredRoom& item) { return item.tracker == tracker; })) return true;
+    }
+    return DepWaitsFor(tracker);
+}
+void RefreshCompletedLotRigs() {
+    const DWORD now = GetTickCount();
+    if (g_rigWait.empty() || static_cast<int32_t>(now - g_rigPollAt) < 0) return;
+    g_rigPollAt = now + 50;
+    bool refresh = false;
+    uintptr_t lots[256];
+    unsigned count = 0;
+    for (const auto& item : g_rigWait) if (count < std::size(lots)) lots[count++] = item.first;
+    const unsigned start = g_rigCursor % count, visit = std::min(count, 4u);
+    g_rigCursor = (start + visit) % count;
+    for (unsigned n = 0; n < visit; ++n) {
+        auto it = g_rigWait.find(lots[(start + n) % count]);
+        if (it == g_rigWait.end()) continue;
+        RigWait& wait = it->second;
+        bool complete = !wait.rooms.empty(), valid = true;
+        for (const auto& room : wait.rooms) {
+            const int state = WatchedRoomState(room);
+            if (state < 0) { valid = false; break; }
+            if (state != 4 && state != 5) complete = false;
+        }
+        if (!valid) { g_rigWait.erase(it); continue; }
+        complete = complete && !RigWorkPending(it->first);
+        if (complete) {
+            refresh = true;
+            g_rigWait.erase(it);
+            continue;
+        }
+        if (RoomAmbientPolicy::RigFallbackDue(now, wait.armed, wait.fallbackSent)) {
+            refresh = true;
+            wait.fallbackSent = true;
+        }
+        if (now - wait.armed >= 6000) g_rigWait.erase(it);
+    }
+    if (refresh) ObjectLightBridge::RequestRigRefresh();
+}
+bool StageAmbient(BYTE* room, const float* oldOwn, const float* newOwn, const float* oldSecond, const float* newSecond, bool& changed) {
+    changed = false;
+    if (!AmbientActive()) return false;
+    uintptr_t mgr = 0; int level = 0, id = 0;
+    if (!AmbientIdentity(room, mgr, level, id)) return false;
+    const uintptr_t tracker = MgrTracker(mgr);
+    if (!tracker || StoryManager(tracker, level) != mgr) return false;
+    const DepKey key{tracker, level, id};
+    std::lock_guard<std::mutex> lock(g_ambMx);
+    const auto own = g_ambOrig.find(key);
+    const auto applied = g_ambApplied.find(key);
+    if (own == g_ambOrig.end() || applied == g_ambApplied.end() || !g_ambGroups.contains(key)) return false;
+    const bool unlit = !oldOwn;
+    if (oldOwn && !AmbientNear(own->second.c4, oldOwn)) return false;
+    if (!AmbientHeld(room, applied->second, unlit ? own->second.c4 : oldSecond, unlit)) return false;
+    if (AmbientNear(own->second.c4, newOwn) && unlit) return true;
+    if (!WriteSecondAmbient(room, newSecond)) return false;
+    std::memcpy(own->second.c4, newOwn, 16);
+    g_ambDirty.insert(key);
+    changed = true;
+    return true;
+}
+
 bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
     __try {
         return QueueRoom(tracker, level, id, true);
@@ -3122,9 +3575,23 @@ bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
     }
 }
 std::vector<uintptr_t> g_roomRefTrackers; // the loaded lots when g_roomRefs was built
+std::vector<uintptr_t> g_roomRefManagers; // story managers can change while the lot tracker survives
+int CachedStoryRooms(uintptr_t tracker, int level, int* ids, int max) {
+    if (level < -4 || level > 7 || GetTickCount() - g_roomRefsAt > 3000) return -1;
+    const auto lot = std::lower_bound(g_roomRefTrackers.begin(), g_roomRefTrackers.end(), tracker);
+    if (lot == g_roomRefTrackers.end() || *lot != tracker) return -1;
+    const size_t manager = static_cast<size_t>(lot - g_roomRefTrackers.begin()) * 12 + level + 4;
+    if (manager >= g_roomRefManagers.size() || g_roomRefManagers[manager] != SafeStoryManager(tracker, level)) return -1;
+    int count = 0;
+    for (const auto& ref : g_roomRefs) if (ref.tracker == tracker && ref.level == level) {
+        if (count >= max) return -1;
+        ids[count++] = ref.id;
+    }
+    return count;
+}
 // lazy (the once-a-second scan of switched-off lamps): a change of the loaded lots does not walk the tiles again (lots
 // stream in and out while the camera moves); the rooms of lots gone are skipped, new lots wait for the next walk (maxAge)
-int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued, DWORD maxAge = 3000, bool lazy = false) {
+int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued, DWORD maxAge = 3000, bool lazy = false, void (*ack)(unsigned char*, bool, void*) = nullptr) {
     LoadAddresses(); // also when the light between stories never installed (Rooms at Night alone; review 30/09, M4)
     if (!kRootPtr || !kRoomById) return 0;
     const DWORD now = GetTickCount();
@@ -3135,10 +3602,31 @@ int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, in
     std::vector<uintptr_t> nowSet(trackers, trackers + lots);
     std::sort(nowSet.begin(), nowSet.end());
     const bool lotsChanged = nowSet != g_roomRefTrackers;
-    if (g_roomRefs.empty() || now - g_roomRefsAt > maxAge || (lotsChanged && !lazy)) {
+    std::vector<uintptr_t> managers;
+    managers.reserve(nowSet.size() * 12);
+    for (uintptr_t tracker : nowSet)
+        for (int level = -4; level <= 7; level++) managers.push_back(SafeStoryManager(tracker, level));
+    const bool managersChanged = managers != g_roomRefManagers;
+    if (RoomAmbientPolicy::RebuildRoomList(g_roomRefs.empty(), now - g_roomRefsAt > maxAge, lotsChanged, managersChanged, lazy)) {
+        if (lotsChanged || managersChanged) {
+            // Streaming another lot must not discard valid colours/groups in this lot.
+            for (size_t i = 0; i < g_roomRefTrackers.size(); ++i) {
+                const uintptr_t previous = g_roomRefTrackers[i];
+                const auto current = std::lower_bound(nowSet.begin(), nowSet.end(), previous);
+                bool changed = current == nowSet.end() || *current != previous;
+                if (!changed) {
+                    const size_t j = static_cast<size_t>(current - nowSet.begin());
+                    changed = g_roomRefManagers.size() < (i + 1) * 12 || managers.size() < (j + 1) * 12
+                        || !std::equal(g_roomRefManagers.begin() + i * 12, g_roomRefManagers.begin() + (i + 1) * 12, managers.begin() + j * 12);
+                }
+                if (changed) ForgetAmbientLot(previous);
+            }
+            UnlitRooms::OnRoomsChanged();
+        }
         g_roomRefsAt = now;
         g_roomRefs.clear();
         g_roomRefTrackers = nowSet;
+        g_roomRefManagers = managers;
         static RoomRef buf[1024];
         for (int t = 0; t < lots; t++)
             for (int level = -4; level <= 7; level++) {
@@ -3153,7 +3641,11 @@ int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, in
         BYTE* room = SafeRoomById(r.tracker, r.level, r.id);
         if (!room) continue;
         visited++;
-        if (visit(room, ctx) && QueueRoomSafe(r.tracker, r.level, r.id)) sent++;
+        if (visit(room, ctx)) {
+            const bool queued = QueueRoomSafe(r.tracker, r.level, r.id);
+            if (queued) sent++;
+            if (ack) ack(room, queued, ctx);
+        }
     }
     if (queued) *queued = sent;
     return visited;
@@ -3173,11 +3665,12 @@ constexpr DWORD kStaleRoomsAge = 10000; // the room list (tile walk) is made aga
 DWORD g_staleAt = 0;
 std::unordered_map<uintptr_t, uint64_t> g_staleSent; // room -> the switched-off lamps it was sent for (render thread)
 std::atomic<long> g_staleSends{0};
-uint64_t StaleLamps(const BYTE* room) {
+uint64_t StaleLamps(const BYTE* room, bool& busy) {
+    busy = false;
     __try {
         if (*reinterpret_cast<const int*>(room + 0xC) <= 0) return 0;
         const int state = *reinterpret_cast<const int*>(room + 0xF0);
-        if (state >= 1 && state <= 3) return 0; // gathering or being solved: its list is being made
+        if (RoomAmbientPolicy::SolverOwnsAmbient(state)) { busy = true; return 0; } // preserve the last sent signature while the list is being made
         const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
         const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
         uint64_t sig = 0;
@@ -3197,7 +3690,9 @@ uint64_t StaleLamps(const BYTE* room) {
     }
 }
 bool VisitStale(unsigned char* room, void*) {
-    const uint64_t sig = StaleLamps(room);
+    bool busy = false;
+    const uint64_t sig = StaleLamps(room, busy);
+    if (busy) return false; // a solve is not evidence that the previously seen off lamps disappeared
     const uintptr_t key = reinterpret_cast<uintptr_t>(room);
     if (!sig) {
         g_staleSent.erase(key);
@@ -3473,6 +3968,7 @@ std::string SeamDiagText() {
     {
         std::lock_guard<std::mutex> lk(g_seamMx);
         recs.swap(g_seam);
+        g_seamFull = false;
     }
     std::string s = std::format("\n==== SEAM (atrium walls at the floor line, {} samples) ====\n", recs.size());
     if (recs.empty()) return s + "No samples (recorded while the diagnostics are armed, from the solves of rooms in an atrium group).\n";
@@ -3596,9 +4092,68 @@ std::string IndoorDiagText() {
 } // namespace
 
 namespace LevelLightShare {
+bool StageAmbientBaseChange(unsigned char* room, const float* oldOwn, const float* newOwn, const float* oldSecond, const float* newSecond) {
+    bool changed = false;
+    return StageAmbient(room, oldOwn, newOwn, oldSecond, newSecond, changed);
+}
+bool HoldsAmbientBase(unsigned char* room, const float* ownColour, const float* second) {
+    uintptr_t mgr = 0; int level = 0, id = 0;
+    if (!AmbientActive() || !AmbientIdentity(room, mgr, level, id)) return false;
+    const uintptr_t tracker = MgrTracker(mgr);
+    if (!tracker || SafeStoryManager(tracker, level) != mgr) return false;
+    std::lock_guard<std::mutex> lock(g_ambMx);
+    const DepKey key{tracker, level, id};
+    const auto own = g_ambOrig.find(key);
+    const auto applied = g_ambApplied.find(key);
+    return own != g_ambOrig.end() && applied != g_ambApplied.end() && g_ambGroups.contains(key)
+        && AmbientNear(own->second.c4, ownColour) && AmbientHeld(room, applied->second, second, false);
+}
+bool StageUnlitAmbientChange(unsigned char* room, const float* target, bool& changed) {
+    return StageAmbient(room, nullptr, target, nullptr, target, changed);
+}
+void ApplyAmbientBaseChanges() {
+    std::lock_guard<std::mutex> lock(g_ambMx);
+    std::unordered_set<DepKey, DepHash> done;
+    for (const auto& dirty : g_ambDirty) {
+        if (done.contains(dirty)) continue;
+        const auto group = g_ambGroups.find(dirty);
+        if (group == g_ambGroups.end()) continue;
+        float norm = INFINITY, base = INFINITY, colour[4] = {}, weight = 0;
+        for (const auto& member : group->second) {
+            const auto own = g_ambOrig.find(member.key);
+            if (own == g_ambOrig.end()) continue;
+            norm = std::min(norm, own->second.norm);
+            base = std::min(base, own->second.base);
+        }
+        if (!std::isfinite(norm) || !std::isfinite(base)) continue;
+        for (const auto& member : group->second) {
+            const auto own = g_ambOrig.find(member.key);
+            if (own == g_ambOrig.end()) continue;
+            const float w = static_cast<float>(std::max(member.area, 1));
+            RoomAmbientPolicy::AccumulateAmbient(colour, own->second.c4, own->second.norm, norm, w);
+            weight += w;
+        }
+        if (weight <= 0) continue;
+        for (float& value : colour) value /= weight;
+        Applied wanted{}; std::memcpy(wanted.c4, colour, 16); wanted.norm = norm; wanted.wallBase = base;
+        bool compatible = group->second.size() >= 2 && group->second.size() <= 12;
+        for (const auto& member : group->second) {
+            const auto previous = g_ambApplied.find(member.key);
+            compatible &= previous != g_ambApplied.end()
+                && RoomAmbientPolicy::AmbientMapsCompatible(previous->second.norm, norm, previous->second.wallBase, base);
+        }
+        for (const auto& member : group->second) {
+            done.insert(member.key);
+            g_ambToQueue[member.key] = wanted;
+        }
+        if (compatible) g_ambGroupAt.try_emplace(group->second.front().key, GetTickCount());
+        else if (!group->second.empty()) g_ambGroupAt.erase(group->second.front().key);
+    }    g_ambDirty.clear();
+}
 
 bool Install(std::string& error) {
     if (g_installed) return true;
+    g_basisGuardReady.store(false, std::memory_order_relaxed);
     LoadAddresses();
     using GameAddr::Id;
     std::string missing;
@@ -3694,7 +4249,9 @@ bool Install(std::string& error) {
 
 void Uninstall() {
     if (!g_installed) return;
+    g_rigWait.clear();
     g_installed = false;
+    g_basisGuardReady.store(false, std::memory_order_relaxed);
     g_indoorReady = false;
     g_lodReady = false;
     g_ctx = {};
@@ -3724,9 +4281,15 @@ void Uninstall() {
 }
 
 bool IsInstalled() { return g_installed.load(); }
+bool BasisFloorGuardReady() {
+    return g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_basisGuardReady.load(std::memory_order_relaxed);
+}
 
 void OnPresent() {
+    if (g_groupRigsPending.exchange(false, std::memory_order_relaxed)) ObjectLightBridge::RequestRigRefresh();
     g_renderThread = ThreadId();
+    ApplyPendingAmbient();
+    RefreshCompletedLotRigs();
     if (g_refreshRequested.exchange(false)) RefreshAllLots();
     if (g_alignRequeue.exchange(false)) LevelLightShare::RelightAllRooms(g_alignOn.load() ? "Seamless walls between floors on" : "Seamless walls between floors off");
     // Whole-world relights asked in a burst (install, options, sliders) run once, 250 ms after the last ask (29/09: 59 + 83 rooms
@@ -3769,9 +4332,18 @@ void OnPresent() {
 }
 
 void OnWorldChanged() {
+    g_groupRigsPending = false;
+    g_rigWait.clear();
+    g_rigCursor = 0;
+    g_rigPollAt = g_ambientPollAt = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_gatherStampMx);
+        g_gatherStamps.clear();
+    }
     g_clearRooms = true;
     g_roomRefs.clear(); // Rooms at Night's room list (review H1)
     g_roomRefTrackers.clear();
+    g_roomRefManagers.clear();
     g_staleSent.clear();
     ClearBoosts(); // the rooms of the previous world (their addresses get reused)
     ClearAmbient();
@@ -3829,15 +4401,30 @@ int DisplayLevels(uint32_t* lots, int* stories, int max) {
     return n;
 }
 
+bool LoadedRoomsBusy() {
+    if (g_roomRefs.empty() || GetTickCount() - g_roomRefsAt > 3000) return true;
+    {
+        std::lock_guard<std::mutex> lock(g_ambMx);
+        if (!g_ambToQueue.empty()) return true;
+    }
+    for (const auto& ref : g_roomRefs) {
+        const uintptr_t mgr = SafeStoryManager(ref.tracker, ref.level);
+        if (!mgr) continue;
+        if (const int state = WatchedRoomState({{ref.tracker, ref.level, ref.id}, mgr}); state >= 1 && state <= 3) return true;
+    }
+    return false;
+}
 void OnWorldLive() {
+    g_roomRefsAt = 0; // require a fresh enumeration after the load screen before an early refresh
     g_indoorGen.fetch_add(1);
-    if constexpr (!kPublicBuild) LOG_INFO("[LevelLightShare] World live: the rooms near stair openings of every lot gather once more");
+    if constexpr (!kPublicBuild) LOG_INFO("[LevelLightShare] " APEX_VERSION_STRING ": World live, the rooms near stair openings of every lot gather once more");
 }
 
 void SetIndoor(bool on) {
     if (g_indoorOn.exchange(on) != on) g_indoorGen.fetch_add(1); // every lot's rooms near openings gather again
 }
 
+bool AllFloorsDetailed() { return g_installed.load(std::memory_order_relaxed) && g_lodReady && g_allFloors.load(std::memory_order_relaxed); }
 void SetAllFloors(bool on) {
     if (g_allFloors.exchange(on) != on && g_lodReady) RelightAllRooms(on ? "Every floor in full detail on" : "Every floor in full detail off");
 }
@@ -3852,19 +4439,28 @@ std::vector<std::pair<unsigned long, std::string>> JournalSince(unsigned long fr
     return out;
 }
 
-int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued) { return ForEachRoomImpl(visit, ctx, queued); }
+int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued, void (*ack)(unsigned char*, bool, void*)) {
+    return ForEachRoomImpl(visit, ctx, queued, 3000, false, ack);
+}
 
 // Every room of one loaded lot (stories -4..7, room 0 too) lights again: a lamp of it switched or moved (lamp_mark_filter.cpp,
 // 30/09). Render thread. Returns the rooms sent, -1 when the lot is no longer loaded.
-int RelightLot(uintptr_t tracker, const char* why) {
+int RelightLot(uintptr_t tracker, const char* why, unsigned long switchChangedAt) {
     LoadAddresses();
     if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert || !tracker) return -1;
     uintptr_t trackers[256];
     const int lots = AllTrackers(trackers, 256);
     if (std::find(trackers, trackers + lots, tracker) == trackers + lots) return -1;
-    int queued = 0;
-    for (int level = -4; level <= 7; level++) queued += RequeueStory(tracker, level);
-    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again", why, queued, LotIdPart(tracker, 0x90)));
+    int queued = 0, skipped = 0;
+    RigWait wait{{}, GetTickCount(), false};
+    for (int level = -4; level <= 7; level++) queued += RequeueStory(tracker, level, switchChangedAt, &skipped, &wait.rooms);
+    if (!wait.rooms.empty() && wait.rooms.size() <= 128 && (g_rigWait.size() < 256 || g_rigWait.contains(tracker)))
+        g_rigWait[tracker] = std::move(wait);
+    else {
+        g_rigWait.erase(tracker);
+        UnlitRooms::RigsAgainIn(1500);
+    }
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished)", why, queued, LotIdPart(tracker, 0x90), skipped));
     return queued;
 }
 
@@ -3892,6 +4488,7 @@ std::string DiagText() {
         std::lock_guard<std::mutex> lk(g_diagMx);
         recs.swap(g_diag);
         g_diagIndoorUsed = g_diagOutdoorUsed = 0;
+        g_diagFull[0] = g_diagFull[1] = false;
     }
     if (!wasArmed && recs.empty())
         return std::format("\n==== ANDARES (luz externa entre andares) ====\n{}\nNo samples: recording them was off (it costs time in every light solve). It is on "
@@ -3939,7 +4536,7 @@ std::string DiagText() {
 }
 
 std::string Status() {
-    return std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
+    return std::format("Colour groups committed {} ({} native fallbacks) | ", g_groupCommits.load(), g_groupFallbacks.load()) + std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
                        "lamps through stair openings: {} | seamless walls between floors: {}{}{}{}{}",
                        g_installed ? "Active" : "Off", g_shared.load(), g_queued.load(), g_evalClasses.load(), std::size(kClasses), g_wallTests.load(), g_wallBlocked.load(),
                        !g_indoorReady ? std::string("not installed")

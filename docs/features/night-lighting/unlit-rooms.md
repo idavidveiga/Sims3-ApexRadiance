@@ -264,3 +264,32 @@ differed (profiles, looks, undo), `ReinstallNow` and the "Upper floors light the
 the Present hook runs `NightLighting::RefreshAll("a setting changed")` once, 1 s after the last change (a dragged slider keeps
 pushing it back; never while a reinstall is due). Same work as the shortcut: terrain rebuild, lot stories, every room of the
 loaded lots (basements too), object rigs now and 2 s later.
+
+## Room Synchronisation Candidate (2026-10-01)
+
+`2.5.2-room-sync-test` supersedes the square-root furniture rule above: furniture's background light now uses the same
+linear Brightness as room ambient. Day/night interpolation and the dark-room override remain; lamps retain their own
+colour and strength. Equal multipliers do not guarantee identical pixel brightness across different materials/shaders.
+
+The 14:06 recording holds room ambient at 0.0317 after Brightness reaches 0.105 (target about 0.0169), until the global
+refresh completes. A no-lamp ambient absent from the 64-colour history previously never requested a solve. Unknown or
+merged ambient now requests one after a change settles, including when disabling the option. Busy rooms go through the
+existing queue/deferred-solve path rather than being retinted in the middle of a solve. Outdoor/roofless rooms are excluded.
+Lit-room ownership is validated before the unchanged-base shortcut, so an externally changed result can be rebuilt.
+
+Room enumeration compares the loaded story-manager pointers as well as lot trackers. A topology change discards merged
+ambient caches and rearms a settled refresh. A once-per-second known-colour reconciliation catches streamed rooms and rooms
+previously busy; unchanged scans do not request object-rig refreshes. World changes clear room-base and lot-family records.
+
+Offline checks in `tools/room_ambient_test` exercise the production policy: linear background factors, finite RGB matching,
+unknown/busy-room solve decisions, and manager/lot cache invalidation. These are not in-game integration tests. Floor
+switches, initial night loads, open stairwells, lots without lamps, enabling/disabling, and rapid slider drags still require
+runtime validation. No new binary hooks, map dimensions, or sampler assumptions were introduced by this candidate.
+
+### Test005 recovery and coordinated controls (2026-10-01)
+
+Recording session 17-58-56 shows some rooms following the slider while connected lit rooms lag. A room skipped in states 1-3 now keeps the recovery pending without invalidating its active solve. Once the target settles, periodic reconciliation retries unknown or unbased idle rooms, once per target and (address, manager, id). Failed queue requests remove their provisional sent record, allowing a later retry. Retarget and world-change reset the sent records. Disabling Rooms at Night retains a base record until its restoring solve can actually be requested; recovery also runs while disabled if work remains.
+
+Reused room addresses with a mismatching manager/id discard their old base record. An unchanged merged base is accepted only when the original source, actual merged ambient and second ambient still match validated cache ownership; external changes retain the native-solve fallback. A failed live movement keeps recovery armed even before the control settles. Connected slider changes stage the whole compatible ambient group instead of writing its members individually (level-light-share.md). No colour-family inference or lamp-contribution guessing is introduced.
+
+Offline production-code harnesses pass the busy-to-idle transition, per-target deduplication, failed queue acknowledgement, identity reuse, stale-record removal, disabling during a deferred change, merged ownership and background deltas. Runtime confirmation remains required; tests use controlled native-state fixtures, not a running TS3W process.

@@ -1,3 +1,4 @@
+#include "shader_lookup_cache.h"
 // Lot light bridge (part of Night Lighting)
 //
 // Why lot grass has a hard edge next to street lamps (measured with light_probe.cpp):
@@ -26,6 +27,7 @@
 #include "shader_patches.h"
 #include "lightmap_smooth.h"
 #include "room_map_padding.h"
+#include "level_light_share.h"
 #include "unlit_rooms.h"
 #include "light_probe.h"
 #include "rig_tracker.h"
@@ -1869,7 +1871,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
 // are replaced by the basis light, its unlit-room lights kept (diffuseConst, 30/09), its specular kept, its per-object
 // vertex lights zeroed), found from the room light map the draw binds; the basis read has its own scale (IndoorBasisScale). ----
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_basisSmoothPs;
-std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs; // per sampler holding the room light map
+std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs; // sampler 0..7, +8 for guarded maps without floor cap
 std::atomic<bool> g_indoorSmooth{true};
 std::atomic<int> g_basisSmoothDrawn{0}, g_indoorDrawn{0};
 
@@ -1977,8 +1979,13 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
             t->Release();
     }
     if (lmS < 0) return false; // no room light map with known directional maps (other lots, low lighting quality)
-    PatchedPs& p = PatchedFor(dev, g_indoorPs[lmS], "Indoor object (smooth room light)",
-                              [lmS](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchIndoorBasis(t, static_cast<DWORD>(lmS), pp.indoor); });
+    const bool capToFloorMap = !LevelLightShare::BasisFloorGuardReady();
+    // Separate cache entries: live disable/re-enable must never reuse the unguarded variant.
+    const int shaderVariant = lmS + (capToFloorMap ? 0 : 8);
+    PatchedPs& p = PatchedFor(dev, g_indoorPs[shaderVariant], "Indoor object (smooth room light)",
+                              [lmS, capToFloorMap](std::vector<DWORD>& t, PatchedPs& pp) {
+                                  return ShaderPatches::PatchIndoorBasis(t, static_cast<DWORD>(lmS), pp.indoor, capToFloorMap);
+                              });
     float size[4], oldSize[4] = {};
     const bool scaled = p.ps && IndoorBasisScale(dev, p.indoor, lightMap, basis[0], size);
     const uintptr_t lightMapPtr = reinterpret_cast<uintptr_t>(lightMap);
@@ -2509,12 +2516,17 @@ void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
 // constant put back. The game's own shader draws with a copy whose ambient cube colour is pulled towards its grey by the
 // Blue tint too (PatchCubeTint; user 30/09: "the only thing missing on the furniture that works is the blue tint"), as
 // Apex's indoor-object shader does.
+ShaderLookupCache<const ShaderPatches::RigPsInfo*> g_rigLookup;
 std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_cubeTintPs;
 std::atomic<long> g_nightFurniture{0}, g_nightFurnitureTinted{0};
 const ShaderPatches::RigPsInfo& RigPsInfoFor(IDirect3DPixelShader9* ps) {
+    const auto key = reinterpret_cast<std::uintptr_t>(ps);
+    const ShaderPatches::RigPsInfo* cached = nullptr;
+    if (g_rigLookup.Find(key, cached)) return *cached;
     auto [it, fresh] = g_rigPsInfo.try_emplace(ps);
     if (fresh) ShaderPatches::AnalyzeRigPs(ShaderCode(ps), it->second);
+    g_rigLookup.Store(key, &it->second);
     return it->second;
 }
 // Development build: what happened to room-mode furniture draws (for the F6 recorder, FurnitureDiag)
@@ -3369,6 +3381,7 @@ void Shutdown(bool keepChunkMaps) {
     g_compileTried = false;
     g_classCache.clear();
     g_basisPs.clear();
+    g_rigLookup.Clear();
     g_rigPsInfo.clear(); // shader addresses are reused after a restart of the feature (review M3)
     g_curPsBasis = false;
     RoomMapPadding::Clear();

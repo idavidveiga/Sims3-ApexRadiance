@@ -29,6 +29,7 @@
 #include "apex_log.h"
 #include "level_light_share.h"
 #include "object_light_bridge.h"
+#include "room_ambient_policy.h"
 #include <windows.h>
 #include <cmath>
 #include <cstring>
@@ -71,10 +72,8 @@ float g_night = 0.0f;
 // says (user 30/09: "sometimes the brightness stops working on the objects" at dawn / by day, while walls follow it)
 bool g_drawDark = false;
 float NightNow() { return g_drawDark ? 1.0f : std::fmin(std::fmax(g_night, 0.0f), 1.0f); }
-// Furniture follows the Brightness by its square root (30/09, user's choice "medium": at 33.9% the sofa, lit mostly by the
-// grey cube and three directional [NoLight] lights, was far darker than the rug next to it): 100% = the game, 34% -> 58%,
-// 8.6% -> 29%, 0% -> 0
-float FurnitureShareNow() { return 1.0f + (std::sqrt(g_light) - 1.0f) * NightNow(); }
+// The same linear brightness controls room ambient and furniture's background light.
+float FurnitureShareNow() { return RoomAmbientPolicy::BackgroundShare(g_light, NightNow()); }
 float FurnitureTintNow() { return 1.0f + (g_blue - 1.0f) * NightNow(); }
 bool g_relightDue = false;
 // The colours rooms may hold for each of the two slots: the game's and those Apex set (newest last)
@@ -84,6 +83,10 @@ bool g_retintDue = false, g_restDue = false;
 DWORD g_lastRetint = 0, g_lastRig = 0, g_rigAgainAt = 0;
 long g_retinted = 0, g_dimSent = 0;
 DWORD g_changedAt = 0, g_nextBaseCheck = 0;
+DWORD g_nextReconcile = 0;
+bool g_retryRetint = false;
+struct RetintSent { uintptr_t mgr; int id; };
+std::unordered_map<uintptr_t, RetintSent> g_retintSent; // render thread, once per target and room identity
 long g_relights = 0;
 
 float Luma(const float* c) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; }
@@ -114,9 +117,7 @@ bool ReadBases() {
 }
 
 bool Same(const float* a, const float* b) {
-    for (int k = 0; k < 3; k++)
-        if (std::fabs(a[k] - b[k]) > 2e-4f) return false;
-    return true;
+    return RoomAmbientPolicy::SameRgb(a, b);
 }
 void Remember(int slot, const Vec4& c) {
     auto& v = g_known[slot];
@@ -127,6 +128,8 @@ void Remember(int slot, const Vec4& c) {
 }
 // A new target: the rooms holding a known colour get it now (Retint), the others once the change rests
 void Retarget() {
+    g_retintSent.clear();
+    g_retryRetint = true;
     for (int i = 0; i < 2; i++) {
         Remember(i, g_base[i]);
         g_target[i] = g_on ? g_colour[i] : g_base[i];
@@ -235,16 +238,28 @@ struct VisitCtx {
 // A lit room given the base by BaseHook: moved to the new colour (1), sent for a new solve (2) or left (0). Caller holds g_baseMx.
 int MoveBase(BYTE* room, BaseRec& rec, const VisitCtx& ctx) {
     __try {
-        if (*reinterpret_cast<const uintptr_t*>(room) != rec.mgr || *reinterpret_cast<const int*>(room + 0xC) != rec.id) return 0;
+        if (*reinterpret_cast<const uintptr_t*>(room) != rec.mgr || *reinterpret_cast<const int*>(room + 0xC) != rec.id) return 3;
         if (!ctx.baseOn) return 2; // Rooms at Night off: the game's own top-up again, by a new solve
         float ce[4];
         for (int k = 0; k < 4; k++) ce[k] = g_target[rec.slot].v[k] * ctx.scale;
-        if (Near(ce, rec.ce, 1e-7f)) return 0;
         float* at[2] = {reinterpret_cast<float*>(room + 0x110), reinterpret_cast<float*>(room + 0x120)};
         bool held = true;
         for (int w = 0; w < 2; w++)
             if (rec.has[w] && !Near(at[w], rec.res[w], 1e-5f)) held = false;
-        if (!held) return ctx.rest ? 2 : 0; // changed after BaseHook (stacked rooms merged): a new solve
+        if (rec.has[0] && rec.has[1] && !Near(ce, rec.ce, 1e-7f)) {
+            float next[2][4];
+            for (int w = 0; w < 2; w++)
+                for (int k = 0; k < 4; k++) next[w][k] = RoomAmbientPolicy::MoveBackground(rec.res[w][k], rec.ce[k], ce[k]);
+            if (LevelLightShare::StageAmbientBaseChange(room, rec.res[0], next[0], rec.res[1], next[1])) {
+                std::memcpy(rec.res, next, sizeof next);
+                std::memcpy(rec.ce, ce, sizeof ce);
+                return 1;
+            }
+        }
+        if (!held && rec.has[0] && rec.has[1] && Near(ce, rec.ce, 1e-7f)
+            && LevelLightShare::HoldsAmbientBase(room, rec.res[0], rec.res[1])) return 0;
+        if (!held) { g_retryRetint = true; return ctx.rest ? 2 : 0; } // changed after BaseHook (stacked rooms merged): a new solve
+        if (Near(ce, rec.ce, 1e-7f)) return 0;
         for (int w = 0; w < 2; w++) {
             if (!rec.has[w]) continue;
             for (int k = 0; k < 4; k++) rec.res[w][k] += ce[k] - rec.ce[k];
@@ -304,6 +319,16 @@ int SlotOfRoom(const unsigned char* room) {
 // room with lamps is moved by MoveBase or solved again once the change rests.
 bool RetintUnlit(unsigned char* room, int& state, int slot) {
     __try {
+        if (*reinterpret_cast<const int*>(room + 0xC) <= 0 || *reinterpret_cast<const BYTE*>(room + 0x18)) {
+            state = -1;
+            return false;
+        }
+        // Do not change ambient while the solver owns this room.
+        const int solve = *reinterpret_cast<const int*>(room + 0xF0);
+        if (RoomAmbientPolicy::SolverOwnsAmbient(solve)) {
+            state = -2;
+            return false;
+        }
         float* amb = reinterpret_cast<float*>(room + 0x110);
         float* amb2 = reinterpret_cast<float*>(room + 0x120);
         const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room + 0xC8), e = *reinterpret_cast<const uintptr_t*>(room + 0xCC);
@@ -311,6 +336,11 @@ bool RetintUnlit(unsigned char* room, int& state, int slot) {
         if (e > b && !roofless) { // an indoor room with lamps (roofless ones never get the base: matched as before)
             state = 2;
             return false;
+        }
+        bool changed = false;
+        if (slot >= 0 && LevelLightShare::StageUnlitAmbientChange(room, g_target[slot].v, changed)) {
+            state = changed ? 1 : 0;
+            return true;
         }
         for (int i = 0; i < 2; i++) {
             const int to = slot >= 0 ? slot : i; // the room's own family (lot test); without it, the list that matched
@@ -330,6 +360,20 @@ bool RetintUnlit(unsigned char* room, int& state, int slot) {
         return true;
     }
 }
+// A skipped/unknown room remains eligible after the slider settles. The same
+// identity is sent only once per target, so the recovery scan cannot form a loop.
+bool RequestRetintSolve(unsigned char* room, bool rest) {
+    g_retryRetint = true;
+    if (!rest) return false;
+    uintptr_t mgr = 0; int id = 0;
+    if (!RoomKey(room, mgr, id) || !mgr || id <= 0) return false;
+    const uintptr_t key = reinterpret_cast<uintptr_t>(room);
+    const auto old = g_retintSent.find(key);
+    if (old != g_retintSent.end() && old->second.mgr == mgr && old->second.id == id) return false;
+    if (g_retintSent.size() > 16384) return false;
+    g_retintSent[key] = RetintSent{mgr, id};
+    return true;
+}
 bool VisitRoom(unsigned char* room, void* p) {
     auto& ctx = *static_cast<VisitCtx*>(p);
     int state = 0;
@@ -337,6 +381,10 @@ bool VisitRoom(unsigned char* room, void* p) {
         ctx.retinted += state == 1;
         return false;
     }
+    // A merged ambient or an old colour evicted from g_known must still follow
+    // the controls. Let the game's solver rebuild it instead of guessing its RGB.
+    if (state == -2) { g_retryRetint = true; return false; } // do not invalidate an active solve
+    if (state == 0) return RequestRetintSolve(room, ctx.rest);
     if (state != 2) return false;
     {
         std::lock_guard<std::mutex> lk(g_baseMx);
@@ -344,25 +392,38 @@ bool VisitRoom(unsigned char* room, void* p) {
         if (it != g_baseRooms.end()) {
             const int r = MoveBase(room, it->second, ctx);
             if (r == 1) ctx.moved++;
-            if (r == 2) g_baseRooms.erase(it);
-            return r == 2;
+            if (r == 2) {
+                const bool send = RequestRetintSolve(room, ctx.rest);
+                if (send) g_baseRooms.erase(it);
+                return send;
+            }
+            if (r == 3) g_baseRooms.erase(it);
+            if (r != 3) return false;
         }
     }
     // Lit without the base (solved before Rooms at Night was on): a new solve once the change rests
-    return ctx.rest && ctx.baseOn;
+    return ctx.baseOn ? RequestRetintSolve(room, ctx.rest) : false;
 }
-void Retint(bool rest) {
+void RetintQueueResult(unsigned char* room, bool queued, void*) {
+    if (!queued) {
+        g_retintSent.erase(reinterpret_cast<uintptr_t>(room));
+        g_retryRetint = true;
+    }
+}
+bool Retint(bool rest) {
     VisitCtx ctx{rest, g_on && g_patched && g_baseReady, 1.0f, 0, 0};
     __try {
         if (g_scalePtr) ctx.scale = *reinterpret_cast<const float*>(g_scalePtr);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     int sent = 0;
-    LevelLightShare::ForEachRoom(&VisitRoom, &ctx, &sent);
+    LevelLightShare::ForEachRoom(&VisitRoom, &ctx, &sent, &RetintQueueResult);
+    LevelLightShare::ApplyAmbientBaseChanges();
     for (int i = 0; i < 2; i++) Remember(i, g_target[i]);
     g_retinted += ctx.retinted;
     g_baseMoved.fetch_add(ctx.moved, std::memory_order_relaxed);
     g_dimSent += sent;
+    return ctx.retinted != 0 || ctx.moved != 0 || sent != 0;
 }
 
 void Compute() {
@@ -501,6 +562,14 @@ void Set(bool on, float light, float blue) {
 void OnPresent() {
     if (!g_ready) return;
     const DWORD now = GetTickCount();
+    // Floor/lot streaming can replace rooms without changing either slider.
+    // Retry known colours, including rooms skipped while their solve was active.
+    if ((g_on || g_retryRetint) && static_cast<int32_t>(now - g_nextReconcile) >= 0) {
+        g_nextReconcile = now + 1000;
+        const bool retry = g_retryRetint && !g_retintDue && now - g_changedAt > 400;
+        g_retryRetint = false;
+        if (Retint(retry)) ObjectLightBridge::RequestRigRefresh();
+    }
     // The game may set its colours after Apex started (a world load): follow them
     if (static_cast<int32_t>(now - g_nextBaseCheck) >= 0) {
         g_nextBaseCheck = now + 2000;
@@ -534,6 +603,27 @@ void OnPresent() {
         g_lastRig = now;
         ObjectLightBridge::RequestRigRefresh();
     }
+}
+
+void OnWorldChanged() {
+    g_retintSent.clear();
+    g_retryRetint = true;
+    {
+        std::lock_guard<std::mutex> lk(g_baseMx);
+        g_baseRooms.clear();
+    }
+    g_slotOfLot.clear();
+    g_slotCacheAt = 0;
+    g_nextBaseCheck = g_nextReconcile = 0;
+    g_rigAgainAt = 0;
+    g_drawDark = false;
+    if (g_ready) Retarget();
+}
+
+void OnRoomsChanged() {
+    if (!g_ready || !g_on) return;
+    g_retintDue = g_restDue = true;
+    g_changedAt = GetTickCount();
 }
 
 float FurnitureAmbient() { return g_patched && g_on ? FurnitureShareNow() : 1.0f; }
@@ -588,7 +678,7 @@ bool FurnitureColour(float* rgb, const float* dir) {
 std::string SettingsText() {
     return std::format("on {} (code patched {}) | Brightness {:.3f} | Blue tint {:.3f} | night level {:.2f} | furniture outside a dark room: "
                        "acting {}, brightness x{:.3f}, blue kept {:.3f} | in a dark room ([NoLight] in the rig): brightness x{:.3f}, blue kept {:.3f}",
-                       g_on, g_patched, g_light, g_blue, g_night, FurnitureActive(), FurnitureShareNow(), FurnitureTint(), std::sqrt(g_light), g_blue);
+                       g_on, g_patched, g_light, g_blue, g_night, FurnitureActive(), FurnitureShareNow(), FurnitureTint(), g_light, g_blue);
 }
 
 std::string Status() {

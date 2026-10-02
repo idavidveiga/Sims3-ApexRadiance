@@ -689,17 +689,14 @@ bool FeatureSwitchRow(const char* patchName, const char* label, const char* text
     return patch->IsEnabled() || ApexUi::FilterActive();
 }
 
-// One card for the performance features (patches/performance.h): the switches and the lot lighting time
+// Performance controls grouped with the existing Violet cards; feature state and keys are unchanged.
 void PerformanceCard() {
-    ImGui::PushID("Performance");
+    ImGui::PushID("PerformanceLighting");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Gauge, "Performance", "Fewer stutters while you play", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Gauge, "Camera and lighting", "Smoother movement while rooms and lots update", nullptr, nullptr);
         ApexUi::CardDivider();
-        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load", true))
-            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has", true);
-        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes", true);
-        FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors", true);
-        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves", true)) {
+        FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors");
+        if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());
             char value[16];
             std::snprintf(value, sizeof value, "%d ms", Performance::LotLightingBudgetMs());
@@ -711,17 +708,41 @@ void PerformanceCard() {
             o.defaultValue = static_cast<float>(Performance::kLotLightingBudgetDefault);
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
-        FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop", true);
-        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures", true)) {
+        FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
+        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceFiles");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Search, "Files and objects", "Less repeated searching as content loads", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load"))
+            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has");
+        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes");
+        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceTextures");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Textures and Sims", "Fewer pauses when textures and Sims are built", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures")) {
             bool cores = Performance::FastTextureSeveralCores();
-            if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result", true))
+            if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result"))
                 Performance::SetFastTextureSeveralCores(cores);
         }
-        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches", true);
-        FeatureSwitchRow(Performance::kFastCasName, "Faster Sim building", "Fewer hitches when Sims are edited or change outfits", true);
-        FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory", true);
-        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves", true);
-        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work", true);
+        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+        FeatureSwitchRow(Performance::kFastCasName, "Faster Sim building", "Fewer hitches when Sims are edited or change outfits");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceMemory");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory");
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -838,7 +859,7 @@ void ReportCaptureCard() {
         // a picture of the screen with every capture ([ui] capture_screenshot)
         ApexConfig::UiSettings ui = ApexConfig::GetUi();
         if (ApexUi::SwitchRow("Include a screenshot", &ui.captureScreenshot,
-                              "Every capture also saves a picture of the screen (without this menu), so the problem can be seen", true))
+                              "Each capture saves a screenshot without this menu to show the problem", true))
             ApexConfig::SetUi(ui);
     }
     ApexUi::EndCard();
@@ -2225,10 +2246,9 @@ void Banner() {
 
 // ---- The start note (user's pick 30/09, "A · compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-left corner, at every start (never
-// takes input; fades out). 30/09, user: "it should show on the first loading screen already": kHintStartMs after the
-// features run (the game's first loading screen), for kHintMs of time on screen (each frame counts at most 100 ms, so a
-// loading stall does not use it up); opening the menu ends it. The other start notes (DXVK / S3SS recommendation, the
-// first-start key choice) still wait for the world on screen. ----
+// takes input; fades out). Wait for the world-live signal and its fade-out delay before starting any launch note.
+// Without Night Lighting that signal is unavailable, so the existing startup-time fallback is retained.
+// Each frame counts at most 100 ms so a stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 8000;
 constexpr unsigned long long kHintStartMs = 2000;
 constexpr unsigned long long kHintDelayMs = 3000;
@@ -2241,8 +2261,18 @@ unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
 void UpdateHint() {
     if (g_startup.load() != Startup::Running) return;
     const unsigned long long now = GetTickCount64();
+    if (!g_runningAt) g_runningAt = now;
+    if (!g_hintStarted || !g_hintConsidered.load()) {
+        if (ApexPatch* nl = Find("NightTerrainRelight"); nl && nl->IsEnabled()) {
+            if (!NightLighting::WorldLive()) {
+                g_hintReadyAt = 0; // the world must remain live throughout the delay
+                return;
+            }
+            if (!g_hintReadyAt) g_hintReadyAt = now;
+            if (now - g_hintReadyAt < kHintDelayMs) return;
+        }
+    }
     if (!g_hintStarted) {
-        if (!g_runningAt) g_runningAt = now;
         if (now - g_runningAt >= kHintStartMs) {
             g_hintStarted = true;
             // the first start ever picks the menu key first (KeySetupWindow); an open menu needs no note
@@ -2253,13 +2283,6 @@ void UpdateHint() {
         }
     }
     if (g_hintConsidered.load()) return;
-    // The other notes wait for the world on screen (features start during the load screen, where nobody sees them), then a
-    // moment more (the load screen fades); without Night Lighting there is no such signal: at once, as before
-    if (ApexPatch* nl = Find("NightTerrainRelight"); nl && nl->IsEnabled()) {
-        if (!NightLighting::WorldLive()) return;
-        if (!g_hintReadyAt) g_hintReadyAt = now;
-        if (now - g_hintReadyAt < kHintDelayMs) return;
-    }
     g_hintConsidered.store(true);
     g_recNoteShow = ApexConfig::GetUi().recommendS3SS && AnythingRecommended(); // every start until "Don't show again"
     if (!ApexConfig::GetUi().keyChosen) g_keySetup = true;

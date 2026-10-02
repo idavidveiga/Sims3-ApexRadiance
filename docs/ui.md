@@ -229,12 +229,15 @@ The first time the menu opens in a session while `[ui] welcome_done` is false, t
 with step dots; the sidebar and the search field are disabled meanwhile): 1) "Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 2) "Your menu key" (the key +
 Change). Buttons: Skip (link, step 1), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
 "Show the welcome tour again". The menu is never opened automatically: instead, at every launch (30/09: it used to be only
-while the tour was never done), 2 s after the features run (on the game's first loading screen, the user's wish of 30/09), a
+while the tour was never done), 3 s after Night Lighting reports the world live (changed 01/10 to avoid the first load), a
 small non-blocking note (no input, no focus) shows in the top-left corner: the user's pick "A · compact pill" (logo,
 **Apex Radiance is ready** in bold, a dot, "press" and the menu key in light violet; dark pill #15161a at 92%, border
 #CECBF6 at 18%). It stays 8 s of time on screen (each frame counts at most 100 ms, so a loading stall does not use it up)
 or until the menu is opened, and fades out over the last 0.8 s; `Client::AlwaysDraw` keeps ImGui frames going meanwhile.
 Not shown while the first-start key choice is pending.
+The ready delay resets if the world stops being live before it expires. With Night Lighting disabled, its world-live
+signal is unavailable and the previous 2 s startup-time fallback remains. This changes display timing, not feature
+installation or shader/font initialisation, and does not establish that the note caused the reported startup hitch.
 
 **Shortcuts and the first-start prompt (30/09).** Every Apex shortcut is eaten by the overlay's window procedure before
 the game sees it (the menu chord as before; the others through `Client::HotkeyDown` -> `Hotkeys::OnKeyDown`), so no game
@@ -360,3 +363,6 @@ first shared by Arro.", and "Apex Radiance by @loinyx". Do not mention Arro or t
   a note in the top-left corner (before the shortcuts note; "Not now" = this session, "Don't show again" = `[ui]
   recommend_s3ss = false`, now for both), the Overview card "Recommended for Apex Radiance", and Settings > Compatibility
   (DXVK and Sims3SettingsSetter rows with Installed / Not installed, the RECOMMENDED group while one is missing).
+
+## Performance grouping (2.5.3)
+Four Violet cards keep main controls visible: Camera and lighting (room queue, moving lot budget, wall shading, scene setup); Files and objects (resource cache, missing resources, file lists, object index); Textures and Sims (DXT, several cores, cache compression, Sim sorting); Memory handling. Existing feature descriptions remain on hover; no setting keys or defaults changed. Experimental badges removed at the user's request.

@@ -40,6 +40,7 @@
 #include "render_callbacks.h"
 #include "object_light_bridge.h"
 #include "level_light_share.h"
+#include "room_ambient_policy.h"
 #include "unlit_rooms.h"
 #include "lamp_mark_filter.h"
 #include "rig_tracker.h"
@@ -203,7 +204,7 @@ bool g_lotPassNoTerrainMap = false;
 //  - relightPacedSweep: Apex's own dusk and lamp-change full rebuilds become a paced sweep of every chunk, nearest to the
 //    camera first (the world-load rebuild and the button stay full rebuilds).
 bool g_localRelight = false;
-bool g_pacedSweep = false;
+bool g_pacedSweep = true; // test007: user-approved gradual external terrain updates
 
 // FUN_00c7f750(chunk, lot, out) builds the per-chunk light/fog pass. For the LOT pass (lot=1, [ebp+0Ch]) it binds the
 // rebuilt terrain lightmap chunk+0xD8 when it exists; that texture has no street-lamp light inside lot footprints, so
@@ -998,6 +999,7 @@ void OnPresent() {
                              LevelText(s.level)));
         LotLightBridge::OnWorldChanged(); // drop the previous world's chunk maps, smoothed maps and atlas
         LevelLightShare::OnWorldChanged();
+        UnlitRooms::OnWorldChanged();
         // Rebuild the terrain light maps once after loading: the ones baked into the world file miss the part of a lamp's
         // light that crosses into the neighbouring 256 m chunk (straight cut on world grass at chunk borders). Not during
         // the loading screen (a kick there was consumed at the first world update with the night level still 0.00: a
@@ -1402,9 +1404,12 @@ void RequestAutoRefresh() {
 // 30/09, user: "right after loading, apply that refresh" (a room lit only by lamps of another story was black after a load
 // until something solved it again): the lots and every room light again once, kAfterLoadDelay after the world is on screen
 // (the lots have settled by then: at the latest 6 s, level_light_share), and the rigs with them; not the terrain
-constexpr DWORD kAfterLoadDelay = 8000;
+constexpr DWORD kAfterLoadDelay = 500, kAfterLoadMax = 8000;
+DWORD g_afterLoadStarted = 0; std::uint32_t g_afterLoadQuiet = 0;
 void RequestRefreshAfterLoad() {
     if (g_autoRefreshAt.load()) return; // a setting change is already pending: that refresh does it all
+    g_afterLoadStarted = GetTickCount();
+    g_afterLoadQuiet = 0;
     g_autoRefreshRoomsOnly.store(true);
     g_autoRefreshAt.store((GetTickCount() + kAfterLoadDelay) | 1);
 }
@@ -1536,11 +1541,11 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", false,
             S3SS_TR("Depois de refazer o terreno a noite, recalcula a luz de todos os lotes como quando um poste e movido no modo construcao.",
                     "Experimental: after the dusk terrain rebuild, re-solve the light of every lot."));
-        if constexpr (!kPublicBuild) { // developer only until tested in game (off by default; the public build keeps the full rebuilds)
+        if constexpr (!kPublicBuild) { // Developer controls only; public uses the approved paced sweep default without exposing diagnostic toggles.
             RegisterBoolSetting(&g_localRelight, "relightNearbyChunks", false,
                 "Developer: a lamp change re-renders only the terrain chunks under the changed lamps, one per frame through the game's own "
                 "chunk sweep, instead of rebuilding every chunk at once (~240 ms). Falls back to the full rebuild when it cannot.");
-            RegisterBoolSetting(&g_pacedSweep, "relightPacedSweep", false,
+            RegisterBoolSetting(&g_pacedSweep, "relightPacedSweep", true,
                 "Developer: the dusk rebuild and lamp-change rebuilds re-render every terrain chunk one at a time, nearest to the camera "
                 "first, instead of all at once. The rebuild after loading a world stays a full rebuild.");
         }
@@ -1717,8 +1722,14 @@ class NightTerrainRelightPatch : public ApexPatch {
             LampMarkFilter::OnPresent(g_menuLevel.load());
             if (DWORD at = g_autoRefreshAt.load(); at && static_cast<int32_t>(GetTickCount() - at) >= 0 && !g_reinstallDue.load() &&
                 g_autoRefreshAt.compare_exchange_strong(at, 0)) {
-                const bool afterLoad = g_autoRefreshRoomsOnly.exchange(false);
-                NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad);
+                const bool afterLoad = g_autoRefreshRoomsOnly.load();
+                const DWORD tick = GetTickCount();
+                const bool busy = afterLoad && tick - g_afterLoadStarted < kAfterLoadMax && LevelLightShare::LoadedRoomsBusy();
+                const bool ready = !afterLoad || RoomAmbientPolicy::AfterLoadRefreshReady(tick, g_afterLoadStarted, busy, g_afterLoadQuiet);
+                if (ready) {
+                    g_autoRefreshRoomsOnly.store(false);
+                    NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad);
+                } else g_autoRefreshAt.store((tick + 200) | 1);
             }
             LevelLightShare::OnPresent();
             LotLightBridge::SetNightLevel(g_level);
@@ -1948,7 +1959,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_lotPassNoTerrainMap = false;
         g_relightLots = false;
         g_localRelight = false;
-        g_pacedSweep = false;
+        g_pacedSweep = true;
     }
 
     // ---- menu (see night_lighting.h): the Night Lights page draws these pieces card by card ----
@@ -2053,7 +2064,6 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ImGui::BeginDisabled(!g_levelShare);
                 changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
                 changed |= ApexUi::SwitchRow("Every floor in full detail", &g_allFloors, "Changing floors keeps the light; entering a lot takes a little longer", true);
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
                 changed |= ApexUi::SwitchRow("Indoor light between floors", &g_indoorShare, "Lamps inside shine through stairwells and open floors", true);
                 // 30/09 (user): the game solves rooms one after the other (after a load, a change or a lamp switched), so
                 // a room can show its old light for a moment; switching floors solves the rooms shown again
@@ -2195,7 +2205,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             ApexUi::CardHeader(ApexUi::IconId::Moon, "Rooms at Night", "The soft background light inside rooms", nullptr, nullptr);
             ApexUi::CardDivider();
             Edit([] {
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
                 bool changed = ApexUi::SwitchRow("Adjust the background light", &g_unlitOn, "Replaces the game's strong blue glow indoors with the light set below, lamps on or off", true);
                 if (g_unlitOn) {
                     changed |= ApexUi::SliderPercent("Brightness##Unlit", &g_unlitLight, 0.0f, 1.0f, "How bright that background light is, on walls and furniture; 100% is the game", 0.35f);

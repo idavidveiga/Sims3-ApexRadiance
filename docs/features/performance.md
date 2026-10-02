@@ -1491,3 +1491,10 @@ Faster Object Lookups (development build):
 - Object lookup index (C8): the Layer mutators (AddChild / RemoveChild* / RemoveAll / Clear / SetId) could be hooked
   through their vtable slots as an extra "something changed" signal, and the eight WorldManager root writers through
   their entries; not done (the validation already covers removals; only an earlier duplicate id is not covered).
+
+### Test005 all-floor priority (2026-10-01)
+
+While LevelLightShare's installed full-detail-all-floors policy is active, PriorityHook applies the existing x4000 boost to all floors of the priority lot, including those above the camera. Disabling that policy keeps the original camera-floor x4000 / below x2000 rule. Other lots and zero native priority are unchanged. Native priority differences still remain within the boosted floors. The extra solve drain stays at 4 ms still / 1 ms moving, and configured LotLightingMotion budgets are unchanged. Ambient publication is coordinated separately; no FPS improvement is inferred from these policy checks.
+
+## Release 2.5.3 UI
+The single Performance card is split into four cards documented in docs/ui.md. Main switches remain visible, dependent controls retain their previous behavior, and existing translated descriptions remain available on hover. Experimental badges are removed by explicit user request; this labeling change does not establish additional gameplay validation.

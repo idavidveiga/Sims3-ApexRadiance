@@ -138,7 +138,7 @@ struct BasisSmoothPatch {
 };
 bool BasisSamplers(const std::vector<DWORD>& t, int samplers[4]);
 bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out);
-bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out);
+bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out, bool capToFloorMap = true);
 // An object shader lit by the rig (Rooms at Night, lot_light_bridge): whether its diffuse sums the four rig light colours
 // c4..c7 (room-mode rigs have no sun: c4 = the strongest room light), and the constant whose .w weights its ambient cube (-1 = none)
 struct RigPsInfo {

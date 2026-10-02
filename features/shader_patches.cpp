@@ -1666,7 +1666,7 @@ bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out) {
     return out.rigLights || out.cubeWeightConst >= 0;
 }
 
-bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out) {
+bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out, bool capToFloorMap) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
     if (ins.empty()) return false;
@@ -1818,7 +1818,9 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     // right they agree (captures 096-103: light map 0.239, basis 0.157), so the cap leaves them; where the light map is dark
     // (behind a floor, a wall) the basis light goes too.
     const DWORD cG = cS + 11;
-    body.insert(body.end(), {Op(kTexld, 3), Dst(kTemp, Tmp), uvT == kInput ? Src(kInput, uvN) : Src(kTexture, uvN), Src(kSampler, lmSampler),
+    // The 2D map includes furniture shadows at floor height. It must not cap elevated objects when
+    // the directional-map solver already checks cross-story floors. Retain the old path as fallback.
+    if (capToFloorMap) body.insert(body.end(), {Op(kTexld, 3), Dst(kTemp, Tmp), uvT == kInput ? Src(kInput, uvN) : Src(kTexture, uvN), Src(kSampler, lmSampler),
                              Op(kMul, 3), Dst(kTemp, Tmp, 0x7), Src(kTemp, Tmp), Src(kConst, cG, Sw(0, 0, 0, 0)),
                              Op(kMin, 3), Dst(kTemp, Acc, 0x7), Src(kTemp, Acc), Src(kTemp, Tmp)});
     edits.push_back({End(ins[static_cast<size_t>(nrm)]), body});

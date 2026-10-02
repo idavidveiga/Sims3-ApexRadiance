@@ -37,6 +37,8 @@
 #include "d3d9_hooks.h"
 #include "game_addresses.h"
 #include "lot_lighting_motion.h"
+#include "level_light_share.h"
+#include "room_ambient_policy.h"
 #include "memory_patch.h"
 #include "imgui.h"
 #include <windows.h>
@@ -90,9 +92,10 @@ float Factor(const BYTE* room) {
         const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
         if (!mgr) return 1.0f;
         const int level = *reinterpret_cast<const int*>(mgr + 0x88), cam = *reinterpret_cast<const int*>(mgr + 0x284);
-        if (level > cam || !PriorityLot(mgr)) return 1.0f;
+        const float factor = RoomAmbientPolicy::FloorPriorityFactor(PriorityLot(mgr), LevelLightShare::AllFloorsDetailed(), level, cam);
+        if (factor == 1.0f) return factor;
         g_prioBoosted.fetch_add(1, std::memory_order_relaxed);
-        return level == cam ? 4000.0f : 2000.0f;
+        return factor;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 1.0f;
     }

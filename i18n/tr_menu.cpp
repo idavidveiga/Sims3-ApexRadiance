@@ -11,6 +11,17 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"Sims3SettingsSetter", "Sims3SettingsSetter", "Sims3SettingsSetter", "Sims3SettingsSetter"},
+    {"+", "+", "+", "+"},
+    {"-", "-", "-", "-"},
+    {"Camera and lighting", "Câmera e iluminação", "Cámara e iluminación", "Caméra et éclairage"},
+    {"Smoother movement while rooms and lots update", "Movimento mais suave enquanto cômodos e lotes atualizam", "Movimiento más fluido mientras se actualizan habitaciones y solares", "Déplacements plus fluides pendant la mise à jour des pièces et terrains"},
+    {"Files and objects", "Arquivos e objetos", "Archivos y objetos", "Fichiers et objets"},
+    {"Less repeated searching as content loads", "Menos buscas repetidas ao carregar conteúdo", "Menos búsquedas repetidas al cargar contenido", "Moins de recherches répétées au chargement du contenu"},
+    {"Textures and Sims", "Texturas e Sims", "Texturas y Sims", "Textures et Sims"},
+    {"Fewer pauses when textures and Sims are built", "Menos pausas ao preparar texturas e Sims", "Menos pausas al preparar texturas y Sims", "Moins de pauses lors de la préparation des textures et Sims"},
+    {"Memory handling", "Gerenciamento de memória", "Gestión de memoria", "Gestion de la mémoire"},
+    {"Less overhead when the game creates temporary data", "Menos trabalho ao criar dados temporários do jogo", "Menos trabajo al crear datos temporales del juego", "Moins de travail lors de la création de données temporaires"},
     // ---- sidebar, page titles and tabs ----
     {"Overview", "Visão geral", "Resumen", "Vue d'ensemble"},
     {"Everything at a glance; click a name to open its page", "Tudo num relance; clique num nome para abrir a página",
@@ -583,7 +594,7 @@ const I18n::Entry kEntries[] = {
     {"Open its folder", "Abrir a pasta dela", "Abrir su carpeta", "Ouvrir son dossier"},
     {"Shows this session's folder", "Mostra a pasta desta sessão", "Muestra la carpeta de esta sesión", "Affiche le dossier de cette session"},
     {"Include a screenshot", "Incluir um print da tela", "Incluir una captura de pantalla", "Inclure une capture d'écran"},
-    {"Every capture also saves a picture of the screen (without this menu), so the problem can be seen",
+    {"Each capture saves a screenshot without this menu to show the problem",
      "Cada captura também salva uma imagem da tela (sem este menu), para o problema poder ser visto",
      "Cada captura también guarda una imagen de la pantalla (sin este menú), para que se vea el problema",
      "Chaque capture enregistre aussi une image de l'écran (sans ce menu), pour que le problème se voie"},
