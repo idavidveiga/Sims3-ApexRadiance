@@ -46,6 +46,10 @@ template <typename T> bool WriteExpected(uintptr_t address, const T& value, cons
 }
 
 bool S3SSOwnsStreamingSettings() {
+    // A stale S3SS.toml may remain in Game\\Bin after the ASI is removed. Configuration alone does not make S3SS an
+    // active owner: only defer when the official S3SS module is actually loaded in this process.
+    const S3SSDetect::Info info = S3SSDetect::Scan();
+    if (!info.s3ssLoaded) return false;
     return S3SSDetect::S3SSPatchBoolSettingEnabled("LotStreamingOptimizations", "streamingSettings", true);
 }
 
