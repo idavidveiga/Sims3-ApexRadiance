@@ -93,3 +93,6 @@ stay, as an SDR-only module.
 - `README.md` of the combined build (user-facing feature list).
 
 When these docs and the code disagree, the code is right; fix the doc.
+
+## Release 2.5.3 documentation
+The candidate sources incorporate test007/test008 lighting work and the approved grouped Performance menu. See ui.md and features/performance.md for menu organization, features/night-lighting/level-light-share.md and unlit-rooms.md for coordinated room updates, terrain-relight.md for paced terrain updates, and objects-and-rigs.md for the painting correction and its remaining gameplay checks. Public distributions omit Developer tools. Removing Experimental labels was a user decision, not an additional safety or gameplay verdict.
