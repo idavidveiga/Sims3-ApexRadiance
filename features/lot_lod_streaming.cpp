@@ -23,11 +23,13 @@ uintptr_t g_worldManagerGlobal = 0;
 
 bool g_throttleOriginalValid = false;
 bool g_throttleWritten = false;
+bool g_throttleMaintainLogged = false;
 uint8_t g_throttleOriginal = 0;
 
 uintptr_t g_worldManager = 0;
 bool g_thresholdOriginalValid = false;
 bool g_thresholdWritten = false;
+bool g_thresholdMaintainLogged = false;
 float g_thresholdOriginal = 0.0f;
 
 template <typename T> bool Read(uintptr_t address, T& out) {
@@ -57,6 +59,7 @@ void ClearWorldState() {
     g_worldManager = 0;
     g_thresholdOriginalValid = false;
     g_thresholdWritten = false;
+    g_thresholdMaintainLogged = false;
     g_thresholdOriginal = 0.0f;
 }
 
@@ -89,46 +92,84 @@ bool ApplyThrottle(std::string* error) {
     return true;
 }
 
+bool MaintainThrottle(std::string* error) {
+    uint8_t current = 0xFF;
+    if (!Read(g_throttleFlag, current)) {
+        if (error) *error = "Could not read the native Lot LoD throttle flag while maintaining it";
+        return false;
+    }
+    if (current > 1) {
+        if (error) *error = std::format("Native Lot LoD throttle drifted to an unexpected value ({})", static_cast<unsigned>(current));
+        return false;
+    }
+    if (current == 1) return true;
+
+    const uint8_t enabled = 1;
+    if (!WriteExpected(g_throttleFlag, enabled, current)) {
+        if (error) *error = "Could not maintain the native Lot LoD transition throttle at 1";
+        return false;
+    }
+
+    // Even if the byte was already 1 when Start() first saw it, Apex becomes an owner once it has to reassert 1.
+    // Keep the first observed value in g_throttleOriginal so Stop() can restore that baseline safely.
+    g_throttleWritten = true;
+    if (!g_throttleMaintainLogged) {
+        LOG_INFO(std::format("[LotLod] Native transition throttle drifted {} -> 1; maintained at 1", static_cast<unsigned>(current)));
+        g_throttleMaintainLogged = true;
+    }
+    return true;
+}
+
 bool ApplyCurrentWorld(std::string* error) {
     uintptr_t world = 0;
     if (!Read(g_worldManagerGlobal, world) || !world) return true; // no world yet: Tick() retries
 
-    if (world == g_worldManager) return true;
-
-    // A different WorldManager means the previous world is gone or being replaced. Never write back through a stale
-    // pointer: the new manager gets its own original value and restoration state.
-    ClearWorldState();
-    g_worldManager = world;
+    const bool newWorld = world != g_worldManager;
+    if (newWorld) {
+        // A different WorldManager means the previous world is gone or being replaced. Never write back through a stale
+        // pointer: the new manager gets its own original value and restoration state.
+        ClearWorldState();
+        g_worldManager = world;
+    }
 
     float current = 0.0f;
     if (!Read(world + 0xEC, current)) {
         if (error) *error = "Could not read WorldManager+0xEC (camera speed threshold)";
-        ClearWorldState();
+        if (newWorld) ClearWorldState();
         return false;
     }
     if (!std::isfinite(current) || current < 0.0f || current > 100.0f) {
         if (error) *error = std::format("WorldManager+0xEC is not a plausible camera speed threshold ({})", current);
-        ClearWorldState();
+        if (newWorld) ClearWorldState();
         return false;
     }
 
-    g_thresholdOriginal = current;
-    g_thresholdOriginalValid = true;
-    LOG_INFO(std::format("[LotLod] WorldManager {:#010x}: camera speed threshold is {:.3f}", world, current));
+    if (newWorld) {
+        // Preserve the first value Apex sees for this WorldManager. Maintenance writes below must never replace this
+        // baseline, otherwise Stop() would restore a drifted value instead of the pre-Apex value.
+        g_thresholdOriginal = current;
+        g_thresholdOriginalValid = true;
+        LOG_INFO(std::format("[LotLod] WorldManager {:#010x}: camera speed threshold is {:.3f}", world, current));
+    }
 
     if (current == kCameraThreshold) {
-        LOG_INFO("[LotLod] Camera speed threshold already equals 5.0; no write needed");
+        if (newWorld) LOG_INFO("[LotLod] Camera speed threshold already equals 5.0; no write needed");
         return true;
     }
 
     if (!WriteExpected(world + 0xEC, kCameraThreshold, current)) {
-        if (error) *error = "Could not apply camera speed threshold 5.0";
-        ClearWorldState();
+        if (error) *error = newWorld ? "Could not apply camera speed threshold 5.0" : "Could not maintain camera speed threshold at 5.0";
+        if (newWorld) ClearWorldState();
         return false;
     }
 
     g_thresholdWritten = true;
-    LOG_INFO(std::format("[LotLod] Camera speed threshold: {:.3f} -> {:.3f}", current, kCameraThreshold));
+    if (newWorld) {
+        LOG_INFO(std::format("[LotLod] Camera speed threshold: {:.3f} -> {:.3f}", current, kCameraThreshold));
+    } else if (!g_thresholdMaintainLogged) {
+        LOG_INFO(std::format("[LotLod] Camera speed threshold drifted {:.3f} -> {:.3f}; maintained at {:.3f}", current, kCameraThreshold, kCameraThreshold));
+        g_thresholdMaintainLogged = true;
+    }
     return true;
 }
 
@@ -186,6 +227,7 @@ void RestoreThrottleIfOwned() {
 
     g_throttleWritten = false;
     g_throttleOriginalValid = false;
+    g_throttleMaintainLogged = false;
 }
 
 } // namespace
@@ -252,12 +294,18 @@ void Tick() {
     std::lock_guard<std::mutex> guard(g_lock);
     if (!g_running || g_externalOwner) return;
 
+    // Match S3SS live-setting semantics for the two settings this Stage owns: while enabled, the game's own runtime
+    // writes are allowed to happen, but Apex reasserts the requested values on the next patch-manager tick.
+    std::string throttleError;
+    if (!MaintainThrottle(&throttleError) && !throttleError.empty()) {
+        LOG_WARNING("[LotLod] " + throttleError);
+    }
+
     std::string error;
     if (!ApplyCurrentWorld(&error) && !error.empty()) {
-        // Fail closed for this world. Do not keep trying to write an implausible field every 10 ms.
-        LOG_WARNING("[LotLod] " + error + "; camera threshold left unchanged for this world");
-        uintptr_t world = 0;
-        if (Read(g_worldManagerGlobal, world)) g_worldManager = world;
+        // Fail closed on an unreadable/implausible field. Keep the original baseline for an already-known world so a
+        // transient read failure cannot destroy safe restoration state; a new invalid world is cleared by ApplyCurrentWorld().
+        LOG_WARNING("[LotLod] " + error + "; camera threshold left unchanged on this tick");
     }
 }
 
