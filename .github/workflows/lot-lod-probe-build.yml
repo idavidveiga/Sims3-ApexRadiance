@@ -1,6 +1,9 @@
 name: Build Lot LoD Probe
 
 on:
+  push:
+    branches:
+      - feature/lot-lod-streaming
   workflow_dispatch:
 
 jobs:
