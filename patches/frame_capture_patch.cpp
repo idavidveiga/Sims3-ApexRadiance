@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 // Frame Capture (diagnostic)
 // Records every render-target switch, depth-stencil switch, clear, StretchRect and draw call of a few
 // consecutive frames into Documents\...\Apex Radiance\ApexRadiance_FrameCapture.txt. Used to find where the game finishes the
@@ -501,7 +502,7 @@ class FrameCapturePatch : public ApexPatch {
         ImGui::Text("Status: %s", g.status.c_str());
         ImGui::TextWrapped("Records everything the game draws in %d consecutive frames, to find the point between the 3D scene and the interface.",
                            kFramesPerCapture);
-        if (ImGui::Button("Capture now")) Arm();
+        if (ApexUi::TextButton("Capture now")) Arm();
         ImGui::SameLine();
         ImGui::TextDisabled("(or %s in game)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
         ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");

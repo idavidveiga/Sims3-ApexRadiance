@@ -160,7 +160,7 @@ void HairlineAt(float localY) {
     ImGuiWindow* w = ImGui::GetCurrentWindow();
     const float y = std::floor(w->Pos.y - w->Scroll.y + localY);
     const float x0 = w->Pos.x - w->Scroll.x + ImGui::GetCursorPosX();
-    const float x1 = x0 + ImGui::GetContentRegionAvail().x;
+    const float x1 = w->WorkRect.Max.x;
     w->DrawList->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + 1.0f), U32(VioletTheme::kCardBorder));
 }
 
@@ -209,8 +209,25 @@ struct LabelInfo {
     float lineH = 0.0f;
 };
 
-// A row's label (kText) and its description under it, wrapped at wrapX (the label at labelWrapX when >= 0, which leaves
-// room for the decorations after it); one group. Returns the block's height.
+// Single-line action text is centred by its visible glyph bounds, including translated accents.
+float CenteredTextY(std::string_view shown, float cy) {
+    float inkTop = ImGui::GetFontSize(), inkBottom = 0.0f;
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const float fontScale = ImGui::GetFontSize() / baked->Size;
+    for (const char* at = shown.data(), *end = at + shown.size(); at < end;) {
+        unsigned codepoint = 0;
+        const int bytes = ImTextCharFromUtf8(&codepoint, at, end);
+        if (bytes <= 0) break;
+        at += bytes;
+        const ImFontGlyph* glyph = baked->FindGlyph(static_cast<ImWchar>(codepoint));
+        if (glyph && glyph->Visible) {
+            inkTop = std::fmin(inkTop, glyph->Y0 * fontScale);
+            inkBottom = std::fmax(inkBottom, glyph->Y1 * fontScale);
+        }
+    }
+    return std::round(inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ImGui::GetTextLineHeight() * 0.5f);
+}
+
 float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr, float minimumHeight = 0.0f) {
     const float top = ImGui::GetCursorScreenPos().y;
     const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
@@ -801,22 +818,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         DrawIcon(dl, icon, ImVec2(x, cy - is * 0.5f), is, iconCol);
         x += is + gap;
     }
-    // Centre the visible glyph bounds, rather than the font line box (Segoe has asymmetric blank space).
-    float inkTop = ImGui::GetFontSize(), inkBottom = 0.0f;
-    ImFontBaked* baked = ImGui::GetFontBaked();
-    const float fontScale = ImGui::GetFontSize() / baked->Size;
-    for (const char* at = shown.data(), *end = at + shown.size(); at < end;) {
-        unsigned codepoint = 0;
-        const int bytes = ImTextCharFromUtf8(&codepoint, at, end);
-        if (bytes <= 0) break;
-        at += bytes;
-        const ImFontGlyph* glyph = baked->FindGlyph(static_cast<ImWchar>(codepoint));
-        if (glyph && glyph->Visible) {
-            inkTop = std::fmin(inkTop, glyph->Y0 * fontScale);
-            inkBottom = std::fmax(inkBottom, glyph->Y1 * fontScale);
-        }
-    }
-    const float textY = inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ts.y * 0.5f;
+    const float textY = CenteredTextY(shown, cy);
     dl->AddText(ImVec2(x, std::round(textY)), textCol, shown.data(), shown.data() + shown.size());
     ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
@@ -993,7 +995,7 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
             DrawIcon(dl, icons[i], ImVec2(tx, a.y + (b.y - a.y - is) * 0.5f), is, textCol);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, a.y + (b.y - a.y - ts.y) * 0.5f), textCol, T(labels[i]));
+        dl->AddText(ImVec2(tx, CenteredTextY(T(labels[i]), (a.y + b.y) * 0.5f)), textCol, T(labels[i]));
     };
 
     if (compact) {

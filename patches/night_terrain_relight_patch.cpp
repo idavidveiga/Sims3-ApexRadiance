@@ -2417,16 +2417,16 @@ class NightTerrainRelightPatch : public ApexPatch {
             // Census: which lamp-lit draws no fix claimed
             bool falseColor = LotLightBridge::FalseColor();
             if (ApexUi::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
-            if (ImGui::Button("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
+            if (ApexUi::TextButton("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
         }
-        if (ImGui::Button("Rebuild terrain light now")) g_kickRequested = true;
+        if (ApexUi::TextButton("Rebuild terrain light now")) g_kickRequested = true;
         ImGui::SameLine();
-        if (ImGui::Button("Relight lots now")) g_relightLotsRequested = true;
+        if (ApexUi::TextButton("Relight lots now")) g_relightLotsRequested = true;
         ImGui::Separator();
         ApexUi::IconLabel(IconId::Stethoscope, "Diagnostics", iconCol);
-        if (ImGui::Button("Save light diagnostics")) LightDiag::RequestDump();
+        if (ApexUi::TextButton("Save light diagnostics")) LightDiag::RequestDump();
         ImGui::SameLine();
         ImGui::TextDisabled("(or %s)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Diagnostics)).c_str());
         bool storySamples = LevelLightShare::DiagArmed();
@@ -2455,7 +2455,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
         if (ApexUi::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
         ImGui::SameLine();
-        if (ImGui::Button("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
+        if (ApexUi::TextButton("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
         ImGui::TextDisabled("GPU vs CPU: %s", LightmapSmooth::CompareStatus().c_str());
         ImGui::TextWrapped("Lamp colour: %s", ObjectLightBridge::LampColourStatus().c_str());
         ImGui::TextWrapped("Stories: %s", LevelLightShare::Status().c_str());

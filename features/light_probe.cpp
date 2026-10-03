@@ -923,7 +923,7 @@ void RenderUI() {
     }
     if (AnyBlank()) RegisterHooks();
     else if (g_state == State::Idle) UnregisterHooks();
-    if (ImGui::Button("Untick all")) {
+    if (ApexUi::TextButton("Untick all")) {
         for (auto& t : g_textures) t.blank = false;
         if (g_state == State::Idle) UnregisterHooks();
     }

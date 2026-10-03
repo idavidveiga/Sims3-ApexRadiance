@@ -4854,22 +4854,22 @@ void RenderUI(bool showEnable) {
     }
     if (on || g_stats.frames) {
         if (showEnable) ImGui::SameLine();
-        if (ImGui::Button("Clear##FrameProfiler")) Clear();
+        if (ApexUi::TextButton("Clear##FrameProfiler")) Clear();
         Hint("Forget the collected frames and hitches (ApexRadiance_Hitches.txt keeps what was written).");
         ImGui::SameLine();
-        if (ImGui::Button("Save report now")) SaveReport();
+        if (ApexUi::TextButton("Save report now")) SaveReport();
         Hint("Append a full report (percentiles, totals, the last hitches, hook status) to ApexRadiance_Hitches.txt.");
     }
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Measurement preset:");
     ImGui::SameLine();
-    if (ImGui::Button("Timing run##FpPreset")) ApplyPreset(false);
+    if (ApexUi::TextButton("Timing run##FpPreset")) ApplyPreset(false);
     Hint("Recommended settings for the 60-second measurement, run type A (research\\perf2\\plan.md section 9):\n"
          "hitch multiplier 2.0, floor 8 ms, count state calls on, write the file on, sampling off, Mutex::Lock not timed,\n"
          "per-hook registry timing and lot object building off. Turns the profiler on.\n"
          "Then press Clear right before the run and Save report now right after it.");
     ImGui::SameLine();
-    if (ImGui::Button("Sampling run##FpPreset")) ApplyPreset(true);
+    if (ApexUi::TextButton("Sampling run##FpPreset")) ApplyPreset(true);
     Hint("Recommended settings for the attribution run, run type B: the same as the timing run, plus sampling of the\n"
          "render and simulation threads at 2000 Hz. Turns the profiler on.\n"
          "Then press Clear right before the run and Save report now right after it.");

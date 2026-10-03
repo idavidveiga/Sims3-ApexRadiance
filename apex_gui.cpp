@@ -621,6 +621,7 @@ void ColorPage() {
 
 // Depth Blur and Edge Smoothing both need the game's own (multisampled) Edge Smoothing off
 void GameEdgeSmoothingNote(const char* forWhat) {
+    if (!g_menuGameAaOn) return; // Show the prerequisite only while the conflict actually exists.
     const std::string note = I18n::Trf("For {}, turn off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics)", I18n::Tr(forWhat));
     ApexUi::IconNote(IconId::Info, note.c_str());
     ApexUi::Gap(ApexUi::kSpace1);
@@ -984,8 +985,12 @@ void ReportListCard() {
             const std::string label = !e.title.empty() && e.title != e.folder ? e.title :
                 e.date.empty() ? kind : std::format("{} \xC2\xB7 {} \xC2\xB7 {}", e.date, e.time, kind);
             const std::string size = SizeText(e.bytes);
-            const float w = ImGui::CalcTextSize(size.c_str()).x + ApexUi::ButtonWidth(I18n::Tr("Open"), true) + ApexUi::ButtonWidth(I18n::Tr("Click again to delete"), true) +
-                            24.0f * ApexUi::Unit();
+            const bool deleteArmed = g_report.confirmDelete == e.folder && now - g_report.confirmAt < 4000;
+            const char* deleteLabel = deleteArmed ? "Click again to delete" : "Delete";
+            const bool canDelete = e.folder != openSession;
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            const float w = ImGui::CalcTextSize(size.c_str()).x + gap + ApexUi::ButtonWidth("Open", true) +
+                            (canDelete ? gap + ApexUi::ButtonWidth(deleteLabel, true) : 0.0f);
             ApexUi::SetNextRowUntranslated();
             if (ApexUi::BeginControlRow(label.c_str(), nullptr, w)) {
                 ImGui::AlignTextToFramePadding();
@@ -1502,7 +1507,7 @@ void DeveloperConfirmation() {
 void MenuTab() {
     ImGui::PushID("Menu");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Settings, "Menu", "Language, menu key, text size and saving", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Settings, "Menu", "Language, text size and startup notice", nullptr, nullptr);
         ApexUi::CardDivider();
         LanguageRow();
         TextSizeRow();
@@ -1511,12 +1516,17 @@ void MenuTab() {
             if (ApexUi::SwitchRow("Start note", &ui.startNote, "The small note at the top center of the screen at every start, with the key that opens this menu", true))
                 ApexConfig::SetUi(ui); // [ui] start_note
         }
-        DeveloperModeRow();
-        SaveRow();
-        ResetAllRow();
     }
     ApexUi::EndCard();
     ScreenshotCaptureCard();
+    if (ApexUi::BeginCard("##Maintenance")) {
+        ApexUi::CardHeader(IconId::Wrench, "Settings and maintenance", "Saving, reset and optional developer tools", nullptr, nullptr);
+        ApexUi::CardDivider();
+        SaveRow();
+        DeveloperModeRow();
+        ResetAllRow();
+    }
+    ApexUi::EndCard();
     ImGui::PopID();
 }
 
@@ -2977,20 +2987,26 @@ void ApplyPreset(int preset) {
     LOG_INFO(std::format("[Menu] Shortcut preset: {}", Hotkeys::PresetName(static_cast<Hotkeys::Preset>(preset))));
 }
 
+std::string KeyChipText(int row) {
+    return g_recRow == row ? std::string(I18n::Tr("Press the keys\xE2\x80\xA6")) : ApexConfig::KeyChordText(RowKey(row));
+}
+float KeyChipWidth(int row) {
+    const std::string text = KeyChipText(row);
+    return std::fmax(ImGui::CalcTextSize(text.c_str()).x + 2.0f * ImGui::GetStyle().FramePadding.x, 150.0f * ApexUi::Unit());
+}
+
 // The key chip of a row: its keys, or the recording prompt; a click starts recording
 void KeyChip(int row) {
     ImGui::PushID(row);
     const bool rec = g_recRow == row;
-    const std::string text = rec ? std::string(I18n::Tr("Press the keys\xE2\x80\xA6")) : ApexConfig::KeyChordText(RowKey(row));
-    const float w = std::fmax(ImGui::CalcTextSize(text.c_str()).x + 24.0f * ApexUi::Unit(), 150.0f * ApexUi::Unit());
-    if (rec) ImGui::PushStyleColor(ImGuiCol_Button, Col(VioletTheme::kAccentDark));
-    if (ImGui::Button((text + "##Chip").c_str(), ImVec2(w, 0.0f))) {
+    const std::string text = KeyChipText(row);
+    const float w = KeyChipWidth(row);
+    if (ApexUi::TextButton((text + "##Chip").c_str(), nullptr, rec ? ButtonKind::Primary : ButtonKind::Secondary, w)) {
         g_recRow = rec ? -1 : row;
         g_recWaitRelease = true;
         g_recNote.clear();
         g_recHeldVk = 0;
     }
-    if (rec) ImGui::PopStyleColor();
     if (ImGui::IsItemHovered() && !rec) ImGui::SetTooltip("%s", I18n::Tr("Click, then press the new combination (Esc cancels)"));
     ImGui::PopID();
 }
@@ -3015,7 +3031,7 @@ void ShortcutsContent(bool compact) {
     }
     if (sel < 3) ApexUi::MutedText(I18n::Tr(Hotkeys::PresetDescription(static_cast<Hotkeys::Preset>(sel))));
     for (int row : {RowMenu, RowCompare, RowRefresh}) {
-        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
+        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
         KeyChip(row);
         ApexUi::EndControlRow();
     }
@@ -3024,19 +3040,19 @@ void ShortcutsContent(bool compact) {
     if (compact) return;
     ApexUi::GroupLabel("IN THE MENU");
     for (int row : {RowSearch, RowPeek, RowPictureCompare}) {
-        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
+        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
         KeyChip(row);
         ApexUi::EndControlRow();
     }
     ApexUi::GroupLabel("REPORT A PROBLEM");
     for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
-        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
+        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
         KeyChip(row);
         ApexUi::EndControlRow();
     }
     if (!kPublicBuild) {
         ApexUi::GroupLabel("DEVELOPER TOOLS");
-        if (ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 150.0f * u)) {
+        if (ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), KeyChipWidth(RowFrameCapture))) {
             KeyChip(RowFrameCapture);
             ApexUi::EndControlRow();
         }
@@ -3059,7 +3075,7 @@ void ScreenshotCaptureCard() {
         if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
                               I18n::Trf("Replaces {} with one filtered screenshot; no duplicate photo", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Screenshot))).c_str())) ApexConfig::SetUi(ui);
         if (ui.screenshotShortcutEnabled) {
-            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 180.0f * ApexUi::Unit())) {
+            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), KeyChipWidth(RowScreenshot))) {
                 KeyChip(RowScreenshot);
                 ApexUi::EndControlRow();
             }
@@ -3118,7 +3134,7 @@ void ShortcutsTab() {
         }
         for (int row : {RowMenu, RowCompare, RowRefresh, RowScreenshot}) {
             ImGui::BeginDisabled(row == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled);
-            if (ApexUi::BeginControlRow(RowName(row), nullptr, 180.0f * ApexUi::Unit())) {
+            if (ApexUi::BeginControlRow(RowName(row), nullptr, KeyChipWidth(row))) {
                 KeyChip(row);
                 ApexUi::EndControlRow();
             }
@@ -3136,11 +3152,11 @@ void ShortcutsTab() {
         ApexUi::CardHeader(IconId::ListChecks, "Report a problem", "Shortcuts for recording and lighting captures", nullptr, nullptr);
         ApexUi::CardDivider();
         for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
-            if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 180.0f * ApexUi::Unit())) continue;
+            if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
             KeyChip(row);
             ApexUi::EndControlRow();
         }
-        if (!kPublicBuild && ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 180.0f * ApexUi::Unit())) {
+        if (!kPublicBuild && ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), KeyChipWidth(RowFrameCapture))) {
             KeyChip(RowFrameCapture);
             ApexUi::EndControlRow();
         }
@@ -3158,7 +3174,7 @@ void ShortcutsTab() {
             ApexUi::CardHeader(IconId::AppWindow, "While Apex is open", "Quick ways to navigate and compare", nullptr, nullptr);
             ApexUi::CardDivider();
             for (int row : {RowSearch, RowPeek, RowPictureCompare}) {
-                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
+                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
                 KeyChip(row);
                 ApexUi::EndControlRow();
             }

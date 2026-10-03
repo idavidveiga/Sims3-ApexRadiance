@@ -930,6 +930,9 @@ const I18n::Entry kDirectReportEntries[] = {
     {"Records lighting for up to 20 seconds while you reproduce the problem. Key: {}", "Grava a iluminação por até 20 segundos enquanto você reproduz o problema. Tecla: {}", "Graba la iluminación hasta 20 segundos mientras reproduces el problema. Tecla: {}", "Enregistre l’éclairage pendant 20 secondes au maximum pendant que vous reproduisez le problème. Touche : {}"},
     {"Close the menu, point at the problem and press {} to capture that spot and its textures.", "Feche o menu, aponte para o problema e pressione {} para capturar o ponto e suas texturas.", "Cierra el menú, apunta al problema y pulsa {} para capturar el punto y sus texturas.", "Fermez le menu, pointez le problème et appuyez sur {} pour capturer ce point et ses textures."},
     {"Saves the current lamps and rooms to investigate incorrect lighting. Key: {}", "Salva as lâmpadas e os cômodos atuais para investigar erros de iluminação. Tecla: {}", "Guarda las lámparas y habitaciones actuales para investigar errores de iluminación. Tecla: {}", "Enregistre les lampes et pièces actuelles pour examiner un éclairage incorrect. Touche : {}"},
+    {"Language, text size and startup notice", "Idioma, tamanho do texto e aviso inicial", "Idioma, tamaño del texto y aviso inicial", "Langue, taille du texte et message de démarrage"},
+    {"Settings and maintenance", "Configurações e manutenção", "Ajustes y mantenimiento", "Réglages et maintenance"},
+    {"Saving, reset and optional developer tools", "Salvamento, restauração e ferramentas opcionais de desenvolvimento", "Guardado, restablecimiento y herramientas opcionales de desarrollo", "Enregistrement, réinitialisation et outils de développement facultatifs"},
 };
 const I18n::Table kDirectReportTable(kDirectReportEntries, std::size(kDirectReportEntries));
 }

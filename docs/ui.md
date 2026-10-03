@@ -541,3 +541,11 @@ Validation: the native control fixture passed 40 multi-frame cases across EN/PT/
 Shared menu polish: control rows accept an optional measured control height for smaller chips while retaining the normal row minimum, correcting the report probe shortcut position. Custom text/icon buttons and switches repaint the keyboard focus cursor above their own fills; disabled state and hit areas remain unchanged. Report capture descriptions are shorter in all four languages. These shared widget changes apply throughout the feature pages; no settings/profile persistence changes.
 
 Current refinement after player feedback: compact controls are 30 reference units, with 18-unit icons, a 6-unit icon/text gap and 10-unit horizontal padding. Primary groups are 36 units with 14-unit padding, reserved for profile saving, capture completion, session start/end and developer activation confirmation. Both measured button widths and profile icon selector widths follow the active group padding. This supersedes the interim 34/40 sizing; diagnostics, feature tuning and saved-profile row actions use compact controls.
+
+Capture-list right edge: action widths use the current Delete/confirmation label and actual item spacing. Active-session rows omit the unavailable Delete width. Hairlines explicitly end at the window/card work rectangle, independent of the previous action cluster.
+
+Shortcut buttons and their control rows share `KeyChipWidth`, including translated recording prompts; the former 180-unit reservation around a 150-unit button is removed.
+
+### Cross-page design polish
+
+Settings > Menu keeps language/text/start-note controls first, screenshot capture second, then a separate Settings and maintenance card for saving, developer mode and reset. Game Edge Smoothing prerequisite notes on AO/Depth Blur/Edge Smoothing appear only while the actual game AA conflict is active. Remaining raw diagnostic action buttons across feature files and shortcut key buttons use the shared compact action renderer. Segmented choices share visible-glyph vertical centring with buttons; settings keys, defaults, profile bits and renderer behavior are unchanged. Overview, Lighting, Water/Snow, Color, AO, Depth Blur, Edge Smoothing, Performance, Report, Developer and Settings retain their established page/card hierarchy, with common control geometry applied throughout.
