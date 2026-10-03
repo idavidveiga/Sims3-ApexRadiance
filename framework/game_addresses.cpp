@@ -242,6 +242,14 @@ constexpr Info kInfo[] = {
     {"LotLodScoring", 0x00C6C290},
     {"LotLodThrottleTest", 0x00C6C695},
     {"LotLodThrottleFlag", 0x011ECBC0},
+    // No fixed Steam addresses are claimed for these six yet. Their signatures are verified first on EA 1.69.47;
+    // the feature metadata therefore advertises only that exact EA build until Steam is probed.
+    {"LotAddObjectsToScene", 0},
+    {"LotUpdateObjectSceneNode", 0},
+    {"ScriptMessageScopeCtor", 0},
+    {"ScriptMessageScopeDtor", 0},
+    {"PostRemoteMethodCall", 0},
+    {"IsObjectLargeOrFlora", 0},
     {"WorldManagerPtr", 0x011ECBC4},
     {"TerrainUpdateCall", 0x00C6D68C},
     {"BakeColourSite", 0x00C2950F},
@@ -518,6 +526,13 @@ const Entry kTable[] = {
     {Id::LotLodScoring, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 84 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C 0F 28 8B A0 03 00 00", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C", 0, M::At}}},
     {Id::LotLodThrottleTest, K::InRange, W::Text, Id::LotLodScoring, 0x700, {{"80 3D ?? ?? ?? ?? 00", 0, M::At}, NOSIG}},
     {Id::LotLodThrottleFlag, K::Deref, W::Image, Id::LotLodThrottleTest, 2, {NOSIG, NOSIG}},
+    // ---- Per-lot object streaming throttle (S3SS LotStreamingOptimizations objectThrottle, frozen 5eb2c65) ----
+    {Id::LotAddObjectsToScene, K::Sig, W::Text, None, 0, {{"83 EC 08 57 8B F9 80 BF C9 00 00 00 00 74 0E C6 87 C1 00 00 00 00 5F 83 C4 08 C2 08", 0, M::At}, NOSIG}},
+    {Id::LotUpdateObjectSceneNode, K::Sig, W::Text, None, 0, {{"83 EC 0C 83 B9 64 03 00 00 00 89 4C 24 04 0F 84 ?? ?? ?? ?? 83 B9 08 04 00 00 01", 0, M::At}, NOSIG}},
+    {Id::ScriptMessageScopeCtor, K::Sig, W::Text, None, 0, {{"8B 44 24 08 56 8B F1 8B 4C 24 10 57 8B 7C 24 0C 85 FF 89 06 89 4E 04 74 19", 0, M::At}, NOSIG}},
+    {Id::ScriptMessageScopeDtor, K::Sig, W::Text, None, 0, {{"56 8B F1 83 3E 00 74 1B E8 ?? ?? ?? ?? 85 C0 74 12 8B 4E 04 8B 10 8B 52 18 6A 00 51", 0, M::At}, NOSIG}},
+    {Id::PostRemoteMethodCall, K::Sig, W::Text, None, 0, {{"53 56 6A 00 6A 00 6A 00 6A 00 68 ?? ?? ?? ?? 6A 20 E8 ?? ?? ?? ?? 83 C4 18 85 C0 74 ?? C7 00 ?? ?? ?? ?? 33 C9 8D 50 04 87 0A 8B 4C 24 10 8B 54 24 14 89 48 0C 8B 4C 24 18 89 48 14 8A 4C 24 20", 0, M::At}, NOSIG}},
+    {Id::IsObjectLargeOrFlora, K::Sig, W::Text, None, 0, {{"8B 0D ?? ?? ?? ?? 56 8B 74 24 08 83 C6 18 56 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 80 98 00 00 00 8B C8 C1 E9 12 F6 C1 01 75 ?? C1 E8 07 A8 01 75 ??", 0, M::At}, NOSIG}},
     // ---- Local terrain relight (docs/features/night-lighting/terrain-relight.md): the WorldManager global from the store in
     //      FUN_00c6cf80 ("lea ecx,[ebp+9Ch]; mov [global],ebp; call"), alternate: the clear in FUN_00c6b500; the terrain link ----
     {Id::WorldManagerPtr, K::Sig, W::Image, None, 0, {{"8D 8D 9C 00 00 00 89 2D ?? ?? ?? ?? E8", 8, M::Dword}, {"51 53 56 33 DB 8B F1 89 1D ?? ?? ?? ?? 8B 8E 6C 01 00 00", 9, M::Dword}}},
@@ -563,6 +578,8 @@ const Group kGroups[] = {
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
     {"LotLodStreaming", {Id::LotLodScoring, Id::LotLodThrottleTest, Id::LotLodThrottleFlag, Id::WorldManagerPtr}},
+    {"LotObjectThrottle", {Id::LotAddObjectsToScene, Id::LotUpdateObjectSceneNode, Id::ScriptMessageScopeCtor, Id::ScriptMessageScopeDtor,
+                            Id::PostRemoteMethodCall, Id::IsObjectLargeOrFlora}},
     {"FastCasSort", {Id::CasTriSort}},
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
