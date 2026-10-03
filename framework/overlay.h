@@ -23,7 +23,8 @@ class Client {
     virtual bool AlwaysDraw() = 0;            // draw even with the menu closed (a warning banner)
     virtual bool IsToggleKey(WPARAM vk) = 0;  // the toggle chord's key, with its modifiers held
     virtual float FontScale() = 0;
-    // Before anything else sees the message (borderless window); true = handled, *result is returned to Windows
+    virtual bool CanOpen() { return true; } // cached readiness; called on the window thread too
+    // Before other clients see the message; true = handled, *result is returned to Windows
     virtual bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result) = 0;
     // While the menu is open, a key press (WM_KEYDOWN / WM_SYSKEYDOWN, after ImGui saw it) that the game must not see
     // even though ImGui does not capture the keyboard (e.g. Alt or B while the mouse is over the menu). Its key-up and

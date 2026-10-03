@@ -2,7 +2,6 @@
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
 //   [ui]                 toggle_key ("Ctrl+Shift+F11"), font_scale, recommend_s3ss, welcome_done, key_chosen, sidebar_collapsed
-//   [display]            mode (borderless window: "off", "borderless_windowed", "borderless_fullscreen")
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
 //   [patches.<Name>]     one table per feature: enabled + its settings (same keys as before the split)
@@ -29,6 +28,7 @@ struct KeyChord {
 
 struct UiSettings {
     KeyChord toggle;       // opens / closes the Apex menu (default Ctrl+Shift+F11; S3SS uses a bare Insert)
+    bool developerMode = false; // applies next game start; enabling requires UI confirmation
     float fontScale = 1.0f;
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool startNote = true;     // the "Apex Radiance is ready, press <key>" note at every start ([ui] start_note)
@@ -59,7 +59,8 @@ void SetUi(const UiSettings& ui); // and saves (debounced)
 void EnsureMigrated();
 std::string MigrationNote(); // what the migration did, for the log and the Settings page (Status > Settings)
 
-// [ui], [display], [qol.*] (no feature is installed here)
+// [ui], [qol.*] (no feature is installed here)
+void LoadDeveloperMode(); // before feature construction; chooses startup-only runtime gates
 void LoadSettings();
 // [patches.*]: installs the enabled features, then the ones on by default that the file does not mention
 void LoadFeatures();
@@ -74,14 +75,13 @@ bool SavePending();
 
 // ---- feature state: looks, profiles and undo (menu, render thread) ----
 // The tables ApexRadiance.toml keeps for the features: [patches.<Name>] (every feature, or only the ones a profile
-// carries: Night Lights, Every-Story Ground Light, Edge Smoothing, Depth Blur), [qol.picture] and [display].
+// carries: Night Lights, Every-Story Ground Light, Edge Smoothing, Depth Blur), [qol.picture]. Legacy [display] values are ignored.
 // While the Compare shortcut has these features off (apex_gui ToggleCompare), saves and profiles store them as on: the
 // comparison is never saved (review 30/09, H2). Empty = none.
 void SetCompareOverride(const std::vector<std::string>& patches, bool picture);
 void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly = false);
 // Applies such a table live, like changes in the menu: only the sections that differ from the current state (feature
-// settings and on / off through ApexPatch::ApplyTableLive, Picture through SetParams, the window mode through
-// Borderless::SetMode); sections the table does not have stay as they are. Marks unsaved changes and requests a save.
+// settings and on / off through ApexPatch::ApplyTableLive, Picture through SetParams); sections the table does not have stay as they are. Marks unsaved changes and requests a save.
 void ApplyFeatureState(const toml::table& state);
 // Every feature at its defaults, as a CaptureFeatureState table: each setting's default and its default on / off, and
 // Color at its defaults. The window mode and the menu's own preferences (language, key, text size) are not included.
@@ -101,13 +101,14 @@ enum ProfilePart : unsigned {
     kPartColor = 1u << 1,         // Color ([qol] picture)
     kPartDepthBlur = 1u << 2,     // Depth Blur
     kPartEdgeSmoothing = 1u << 3, // Edge Smoothing
-    kPartWindow = 1u << 4,        // window mode ([display])
+    // Bit 4 is reserved for retired window profiles; other category bits do not shift.
     kPartPerformance = 1u << 5,   // the Performance page's features
     kPartShortcuts = 1u << 6,     // the keyboard shortcuts ([shortcuts] in a profile: menu key, preset, own keys); not saved by default
+    kPartDeveloper = 1u << 8, // advanced settings, opt-in and hidden in normal mode
     kPartAmbientOcclusion = 1u << 7, // Ambient Occlusion (after Shortcuts: older saved part masks keep their bits)
 };
-inline constexpr int kProfilePartCount = 8;
-inline constexpr unsigned kProfilePartsAll = (1u << kProfilePartCount) - 1;
+inline constexpr int kProfilePartCount = 9;
+inline constexpr unsigned kProfilePartsAll = ((1u << kProfilePartCount) - 1) & ~(1u << 4);
 const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
 unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has
 void KeepProfileParts(toml::table& state, unsigned parts); // removes the other parts from a profile table

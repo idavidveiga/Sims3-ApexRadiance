@@ -8,6 +8,25 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"Choose the intensity", "Escolha a intensidade", "Elige la intensidad", "Choisissez l’intensité"},
+    {"Ground, objects and buildings are already balanced together", "Chão, objetos e construções já estão equilibrados entre si", "El suelo, los objetos y los edificios ya están equilibrados", "Le sol, les objets et les bâtiments sont déjà équilibrés ensemble"},
+    {"Less light, more contrast at night", "Menos luz, mais contraste à noite", "Menos luz, más contraste por la noche", "Moins de lumière, plus de contraste la nuit"},
+    {"Gentle, balanced lighting", "Luz delicada e equilibrada", "Luz suave y equilibrada", "Une lumière douce et équilibrée"},
+    {"The original Apex lighting balance", "O equilíbrio padrão de iluminação do Apex", "El equilibrio de iluminación original de Apex", "L’équilibre d’éclairage d’origine d’Apex"},
+    {"Custom lighting balance", "Equilíbrio personalizado", "Equilibrio personalizado", "Équilibre personnalisé"},
+    {"Current balance: {}", "Equilíbrio atual: {}", "Equilibrio actual: {}", "Équilibre actuel : {}"},
+    {"What does this choice change?", "O que essa escolha altera?", "¿Qué cambia esta elección?", "Que modifie ce choix ?"},
+    {"Changes lamp intensity on ground, objects, walls, roofs and water. Lamp colors and room background light stay as they are.", "Muda a intensidade da luz no chão, nos objetos, nas paredes, nos telhados e na água. As cores das lâmpadas e a luz ambiente dos cômodos são mantidas.", "Cambia la intensidad en el suelo, los objetos, las paredes, los tejados y el agua. Los colores de las lámparas y la luz ambiental se mantienen.", "Modifie l’intensité sur le sol, les objets, les murs, les toits et l’eau. La couleur des lampes et la lumière ambiante des pièces sont conservées."},
+    {"Undo choice", "Desfazer escolha", "Deshacer elección", "Annuler le choix"},
+    {"Lighting balance changed", "Equilíbrio da iluminação alterado", "Equilibrio de iluminación cambiado", "Équilibre de l’éclairage modifié"},
+    {"Lighting balance restored", "Equilíbrio da iluminação restaurado", "Equilibrio de iluminación restaurado", "Équilibre de l’éclairage rétabli"},
+    {"Want to adjust one part?", "Quer ajustar uma parte?", "¿Quieres ajustar una parte?", "Vous souhaitez ajuster une partie ?"},
+    {"Use the tabs above. Your combination is shown as Custom.", "Use as abas acima. Sua combinação aparece como Personalizada.", "Usa las pestañas de arriba. Tu combinación aparece como Personalizada.", "Utilisez les onglets ci-dessus. Votre combinaison apparaît comme Personnalisée."},
+    {"Lamps light your neighborhood at night", "Lâmpadas iluminam seu bairro à noite", "Las lámparas iluminan tu barrio de noche", "Les lampes éclairent votre quartier la nuit"},
+    {"Stabilize lamp sparkles on water", "Estabilizar os brilhos das lâmpadas na água", "Estabilizar los destellos de las lámparas en el agua", "Stabiliser les scintillements des lampes sur l’eau"},
+    {"Preserve bright lamp colors on water", "Preservar as cores das lâmpadas fortes na água", "Conservar los colores de las lámparas intensas en el agua", "Préserver les couleurs des lampes intenses sur l’eau"},
+    {"Filters tiny highlights without temporal smoothing. Turn off to compare the original", "Filtra brilhos muito pequenos sem suavização temporal. Desative para comparar com o original", "Filtra destellos muy pequeños sin suavizado temporal. Desactívalo para comparar con el original", "Filtre les petits reflets sans lissage temporel. Désactivez pour comparer avec l’original"},
+    {"Softens excessive lamp brightness while keeping its color. Turn off to compare the original", "Suaviza o brilho excessivo das lâmpadas preservando a cor. Desative para comparar com o original", "Suaviza el brillo excesivo conservando el color. Desactívalo para comparar con el original", "Atténue la luminosité excessive en préservant la couleur. Désactivez pour comparer avec l’original"},
     // ---- features (names and hover descriptions) ----
     {"Night Lights", "Luzes Noturnas", "Luces Nocturnas", "Lumières Nocturnes"},
     {"At night, street lamps and lot lamps light the ground, objects, fences, walls, roofs, ponds and "
@@ -70,6 +89,14 @@ const I18n::Entry kEntries[] = {
     {"STYLE", "ESTILO", "ESTILO", "STYLE"},
     {"COLOR", "COR", "COLOR", "COULEUR"},
     {"MOON", "LUA", "LUNA", "LUNE"},
+    {"Subtle", "Discreta", "Discreta", "Discrète"},
+    {"Soft Plus", "Suave reforçado", "Suave reforzado", "Douce renforcée"},
+    {"Balanced", "Equilibrada", "Equilibrada", "Équilibrée"},
+    {"10% dimmer than Soft", "10% menos intenso que Suave", "10% menos intenso que Suave", "10 % moins intense que Douce"},
+    {"The approved soft lighting balance", "O equilíbrio suave aprovado", "El equilibrio suave aprobado", "L’équilibre doux approuvé"},
+    {"10% brighter than Soft", "10% mais intenso que Suave", "10% más intenso que Suave", "10 % plus intense que Douce"},
+    {"20% brighter than Soft", "20% mais intenso que Suave", "20% más intenso que Suave", "20 % plus intense que Douce"},
+    {"The original default intensities", "As intensidades padrão originais", "Las intensidades originales", "Les intensités par défaut d’origine"},
     {"Soft", "Suave", "Suave", "Douce"},
     {"Natural", "Natural", "Natural", "Naturelle"},
     {"Bright", "Forte", "Intensa", "Intense"},
@@ -242,8 +269,8 @@ const I18n::Entry kEntries[] = {
     {"Ponds glow and sparkle near lamps at night", "Lagos brilham e cintilam perto das lâmpadas à noite",
      "Los estanques brillan y destellan cerca de las lámparas de noche", "Les étangs luisent et scintillent près des lampes la nuit"},
     {"Glow brightness", "Intensidade do brilho", "Intensidad del resplandor", "Intensité de la lueur"},
-    {"How bright the glow and sparkles are; 100% is the default", "Força do brilho e dos reflexos; 100% é o padrão",
-     "Intensidad del resplandor y los destellos; 100% es el predeterminado", "Intensité de la lueur et des reflets ; 100% par défaut"},
+    {"Brightness of lamp glow and sparkles on water; 10% to 40%, with 40% as the default", "Intensidade do brilho das lâmpadas na água; de 10% a 40%, com 40% como padrão",
+     "Intensidad del brillo de las lámparas en el agua; del 10% al 40%, con 40% por defecto", "Intensité des lueurs des lampes sur l'eau ; de 10 % à 40 %, avec 40 % par défaut"},
 
     // ---- Water & Snow > Snow ----
     {"Snow", "Neve", "Nieve", "Neige"},

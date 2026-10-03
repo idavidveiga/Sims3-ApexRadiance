@@ -5,13 +5,13 @@
 // Direct3DCreate9. The first call that passes through it (the game's, or S3SS's hook thread's) installs, once and on
 // that same thread, Apex's detour of IDirect3D9::CreateDevice. Every later hook on CreateDevice (S3SS's, its Resolution
 // Spoofer's) is then installed after Apex's, in sequence: never two Detours transactions on the same function at once.
-// CreateDevice (HAL): borderless present parameters, then EndScene and Reset of the created device are detoured.
+// CreateDevice (HAL): unchanged game present parameters, then EndScene and Reset of the created device are detoured.
 // First EndScene: the D3D9Hooks registry and the ImGui overlay; first Present: the window procedure subclass.
 // Every attach logs who already hooked the target (clean / E9 into which module).
 //
 // Per frame (inside the game's EndScene): RenderCallbacks::endSceneBeforeOverlay, Picture's end-of-scene copy, the Apex
 // overlay (once per frame), the Picture pass, then the game's EndScene. Reset: overlay and features release their
-// D3DPOOL_DEFAULT resources, borderless parameters, the game's Reset, then recreate.
+// D3DPOOL_DEFAULT resources, the game's unchanged parameters and Reset, then recreate.
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdint>

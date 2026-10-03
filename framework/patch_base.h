@@ -82,6 +82,8 @@ class ApexPatch {
     void DefaultsToToml(toml::table& table) const;
     // GPU time of the feature per frame in ms, measured with timestamp queries; < 0 = not measured (or off)
     virtual float GpuCostMs() const { return -1.0f; }
+    // Cheap read-only menu summary; never allocates resources or serializes settings.
+    virtual const char* OverviewSummary() const { return nullptr; }
 
     // A setting changed in the menu: reinstall after SETTING_CHANGE_DEBOUNCE (see Update) and save the config.
     void NotifySettingChanged();

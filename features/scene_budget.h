@@ -34,7 +34,7 @@ bool Start(std::string* error);
 void Stop();
 bool Running();
 
-// Development build tuning (not saved): nodes / ms per frame while the camera moves, and the longest a node may wait
+// Developer mode preferences (saved): nodes / ms per frame while the camera moves, and the longest a node may wait
 void SetNodesPerFrame(int n);
 void SetMsPerFrame(float ms);
 void SetMaxDeferMs(int ms);

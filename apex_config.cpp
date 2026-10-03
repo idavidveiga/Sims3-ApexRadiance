@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 #include "apex_config.h"
 #include "apex_version.h"
 #include "apex_log.h"
@@ -6,7 +7,6 @@
 #include "build_flavor.h"
 #include "patch_base.h"
 #include "picture.h"
-#include "borderless.h"
 #include "frame_profiler.h"
 #include "performance.h"
 #include "ui/i18n.h"
@@ -29,6 +29,7 @@ namespace {
 std::mutex g_fileLock; // one reader/writer of ApexRadiance.toml at a time
 std::mutex g_uiLock;
 UiSettings g_ui;
+toml::table g_importedDeveloper; // pending preferences imported while restart is required
 std::atomic<bool> g_saveRequested{false};
 std::atomic<std::chrono::steady_clock::time_point> g_saveRequestedAt{};
 std::once_flag g_migrateOnce;
@@ -314,6 +315,13 @@ bool ReadRoot(toml::table& out) {
     return false;
 }
 
+void LoadDeveloperMode() {
+    toml::table root;
+    ReadRoot(root);
+    const auto* ui = root["ui"].as_table();
+    kPublicBuild.store(!(ui && (*ui)["developer_mode"].value_or(false)), std::memory_order_relaxed);
+}
+
 void LoadSettings() {
     I18n::SetChoice(-1); // Windows' language until [ui] language says otherwise
     toml::table root;
@@ -329,6 +337,8 @@ void LoadSettings() {
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
         u.startNote = (*ui)["start_note"].value_or(true);
         u.captureScreenshot = (*ui)["capture_screenshot"].value_or(true);
+        u.developerMode = (*ui)["developer_mode"].value_or(false);
+        kPublicBuild.store(!u.developerMode, std::memory_order_relaxed);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // missing (first start, migrated configs): the tour shows
         u.keyChosen = (*ui)["key_chosen"].value_or(false);
         const std::string preset = (*ui)["hotkey_preset"].value_or(std::string());
@@ -344,12 +354,30 @@ void LoadSettings() {
         std::lock_guard<std::mutex> lock(g_uiLock);
         g_ui = u;
     }
-    Borderless::LoadFromToml(root);
+    { std::lock_guard<std::mutex> lock(g_uiLock);
+        if (const auto* d = root["developer"].as_table()) g_importedDeveloper = *d;
+    }
     if (const toml::table* qol = root["qol"].as_table()) {
         Picture::Get().LoadFromToml(*qol);
-        FrameProfiler::LoadFromToml(*qol);
+        toml::table profilerPreferences = *qol;
+        if (auto* p = profilerPreferences["frame_profiler"].as_table()) p->insert_or_assign("enabled", false);
+        FrameProfiler::LoadFromToml(profilerPreferences); // always start measurements manually
     }
     LOG_INFO("[Config] Settings loaded from ApexRadiance.toml");
+}
+
+void ApplyDeveloperPreferences(const toml::table& d) {
+    if (kPublicBuild) return;
+    if (const auto* controls = d["controls"].as_table()) DeveloperSettings::Apply(*controls);
+    if (const auto* patches = d["patches"].as_table()) {
+        for (const auto& p : PatchManager::Get().GetPatches()) {
+            if (p->GetName() == "FrameCapture") continue;
+            if (const auto* t = (*patches)[p->GetName()].as_table()) {
+                toml::table preferences = *t; preferences.erase("enabled");
+                p->ApplyTableLive(preferences);
+            }
+        }
+    }
 }
 
 void LoadFeatures() {
@@ -357,6 +385,7 @@ void LoadFeatures() {
     ReadRoot(root);
     PatchManager::Get().LoadFromToml(root);
     PatchManager::Get().EnableDefaults();
+    if (const auto* d = root["developer"].as_table()) ApplyDeveloperPreferences(*d);
     PatchManager::Get().SetUnsavedChanges(false);
 }
 
@@ -377,6 +406,7 @@ bool Save(std::string* error) {
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("start_note", u.startNote);
         ui.insert("capture_screenshot", u.captureScreenshot);
+        ui.insert("developer_mode", u.developerMode);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("key_chosen", u.keyChosen);
         static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
@@ -389,19 +419,33 @@ bool Save(std::string* error) {
         ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
         root.insert_or_assign("ui", std::move(ui));
 
-        Borderless::SaveToToml(root);
 
         toml::table qol;
         if (const toml::table* old = root["qol"].as_table()) qol = *old; // e.g. [qol.frame_profiler] in a public build
         Picture::Get().SaveToToml(qol);
         if (g_comparePictureOff)
             if (toml::table* pic = qol["picture"].as_table()) pic->insert_or_assign("enabled", true);
-        if constexpr (!kPublicBuild) {
+        if (!kPublicBuild) {
             qol.erase("frame_profiler"); // FrameProfiler::SaveToToml inserts (it does not replace)
             FrameProfiler::SaveToToml(qol);
         }
         root.insert_or_assign("qol", std::move(qol));
 
+        {
+            toml::table imported;
+            { std::lock_guard<std::mutex> lock(g_uiLock); imported = g_importedDeveloper; }
+            if (!imported.empty()) {
+                root.insert_or_assign("developer", imported);
+                if (auto* p = imported["frame_profiler"].as_table()) {
+                    auto* q = root["qol"].as_table();
+                    if (q) { q->insert_or_assign("frame_profiler", *p); (*q)["frame_profiler"].as_table()->insert_or_assign("enabled", false); }
+                }
+            }
+            if (!kPublicBuild && u.developerMode) {
+                toml::table d; d.insert("controls", DeveloperSettings::Capture());
+                root.insert_or_assign("developer", std::move(d));
+            }
+        }
         PatchManager::Get().SaveToToml(root);
         if (toml::table* saved = root["patches"].as_table()) // compared features: saved as on (review H2)
             for (const std::string& n : g_compareOff)
@@ -464,14 +508,6 @@ unsigned FeaturePart(const std::string& name) {
 
 bool IsProfileFeature(const std::string& name) { return FeaturePart(name) != 0; }
 
-bool ParseDisplayMode(const std::string& text, Borderless::Mode& out) {
-    if (text == "off") out = Borderless::Mode::Off;
-    else if (text == "borderless_windowed") out = Borderless::Mode::Windowed;
-    else if (text == "borderless_fullscreen") out = Borderless::Mode::Fullscreen;
-    else return false;
-    return true;
-}
-
 } // namespace
 
 void SetCompareOverride(const std::vector<std::string>& patches, bool picture) {
@@ -493,7 +529,30 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly) {
     toml::table qol;
     Picture::Get().SaveToToml(qol);
     out.insert_or_assign("qol", std::move(qol));
-    Borderless::SaveToToml(out);
+    if (!profileFeaturesOnly || !kPublicBuild || GetUi().developerMode) {
+        toml::table d;
+        if (kPublicBuild) {
+            std::lock_guard<std::mutex> lock(g_uiLock);
+            d = g_importedDeveloper;
+        }
+        d.insert_or_assign("enabled", GetUi().developerMode);
+        if (!kPublicBuild) {
+        d.insert_or_assign("controls", DeveloperSettings::Capture());
+        toml::table diagnosticPatches;
+        for (const auto& p : PatchManager::Get().GetPatches()) {
+            if (p->GetName() == "FrameCapture") continue;
+            toml::table preferences; p->SaveToToml(preferences); preferences.erase("enabled");
+            diagnosticPatches.insert(p->GetName(), std::move(preferences));
+        }
+        d.insert("patches", std::move(diagnosticPatches));
+        toml::table profiler; FrameProfiler::SaveToToml(profiler);
+        if (auto* p = profiler["frame_profiler"].as_table()) {
+            p->insert_or_assign("enabled", false); // importing never starts a measurement
+            d.insert("frame_profiler", *p);
+        }
+        }
+        out.insert_or_assign("developer", std::move(d));
+    }
 }
 
 void DefaultFeatureState(toml::table& out) {
@@ -512,6 +571,28 @@ void DefaultFeatureState(toml::table& out) {
 }
 
 void ApplyFeatureState(const toml::table& state) {
+    if (const auto* d = state["developer"].as_table()) {
+        UiSettings u = GetUi();
+        const bool wanted = (*d)["enabled"].value_or(true);
+        // Activation must already have been confirmed by the UI. Undo/deactivation remains allowed.
+        if (!wanted || u.developerMode) {
+            u.developerMode = wanted;
+            SetUi(u);
+            if (!kPublicBuild && wanted) {
+                ApplyDeveloperPreferences(*d);
+                if (const auto* p = (*d)["frame_profiler"].as_table()) {
+                    toml::table q; q.insert("frame_profiler", *p);
+                    q["frame_profiler"].as_table()->insert_or_assign("enabled", false);
+                    FrameProfiler::LoadFromToml(q);
+                }
+            }
+            { std::lock_guard<std::mutex> lock(g_uiLock);
+                g_importedDeveloper = *d;
+                if (!kPublicBuild) g_importedDeveloper.erase("patches");
+            }
+            RequestSave();
+        }
+    }
     if (const toml::table* sc = state["shortcuts"].as_table()) { // a profile's shortcuts (only when that part was picked)
         UiSettings u = GetUi();
         KeyChord k;
@@ -557,13 +638,6 @@ void ApplyFeatureState(const toml::table& state) {
             }
         }
     }
-    if (const toml::table* display = state["display"].as_table()) {
-        Borderless::Mode mode;
-        if (!Borderless::HandledByS3SS() && ParseDisplayMode((*display)["mode"].value_or(std::string()), mode) && mode != Borderless::GetMode()) {
-            Borderless::SetMode(mode);
-            any = true;
-        }
-    }
     if (any) {
         PatchManager::Get().SetUnsavedChanges(true);
         RequestSave();
@@ -573,7 +647,7 @@ void ApplyFeatureState(const toml::table& state) {
 // ---- profiles ----
 
 const char* ProfilePartName(int index) {
-    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "Window mode", "Performance", "Shortcuts", "Ambient Occlusion"};
+    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "", "Performance", "Shortcuts", "Ambient Occlusion", "Development"};
     return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
 }
 
@@ -582,8 +656,8 @@ unsigned ProfilePartsOf(const toml::table& state) {
     if (const toml::table* patches = state["patches"].as_table())
         for (auto&& [key, value] : *patches) parts |= FeaturePart(std::string(key.str()));
     if (const toml::table* qol = state["qol"].as_table(); qol && !qol->empty()) parts |= kPartColor;
-    if (state["display"].as_table()) parts |= kPartWindow;
     if (state["shortcuts"].as_table()) parts |= kPartShortcuts;
+    if (state["developer"].as_table()) parts |= kPartDeveloper;
     return parts;
 }
 
@@ -595,8 +669,9 @@ void KeepProfileParts(toml::table& state, unsigned parts) {
         for (const std::string& k : drop) patches->erase(k);
     }
     if (!(parts & kPartColor)) state.erase("qol");
-    if (!(parts & kPartWindow)) state.erase("display");
+    state.erase("display"); // obsolete controller table is never applied/exported
     if (!(parts & kPartShortcuts)) state.erase("shortcuts");
+    if (!(parts & kPartDeveloper)) state.erase("developer");
 }
 
 namespace {

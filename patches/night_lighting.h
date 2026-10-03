@@ -24,9 +24,8 @@ void RefreshSoon();
 bool WorldLive();
 
 // ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings / Stories) and Water & Snow page (tabs Water / Snow) ----
-// Lamps tab, inside the "Night Lights" card, under its on/off switch: the lamp colour slider (luzDasLampadasNatural; a
-// pink-to-warm-white gradient track and a swatch, from the real tint math, and a "Reload save" badge).
-void DrawLampColor();
+// Overview tab: three balanced intensity choices, custom status and explicit choice undo.
+void DrawLightingBalance();
 // Ground tab
 void DrawGroundCard();
 // Stories tab: lamp light between the floors of a house. drawUpperFloorRow draws the "Upper floors light the ground" row
@@ -37,8 +36,6 @@ void DrawBuildingsCard(); // Buildings tab (walls and roofs)
 void DrawRoomsCard();     // Buildings tab (rooms with every lamp off)
 void DrawWaterCard();     // Water tab: lamp glow on ponds (not the shore reflection)
 void DrawSnowCard();      // Snow tab
-// Lamps tab, under the Night Lights card: the "Reset Night Lights" button (rows that need a reload carry a "Reload save" badge)
-void DrawFooter();
 
 // ---- menu: Water & Snow page, Water tab (Water Reflections card) ----
 // Shore reflection strength (reflexoNoLago, 0..3, default 1; 0 = off). It is drawn in the lake pass of Night Lighting,

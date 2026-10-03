@@ -41,9 +41,8 @@ enum class Instance {
 // mutex name, so an old S3SSApex.asi that loads after it finds it taken and stays idle by its own duplicate check.
 Instance AcquireInstanceMutex();
 
-// S3SS.toml (read-only): [patches.<name>].enabled, and whether S3SS's borderless window is configured.
+// S3SS.toml (read-only): [patches.<name>].enabled and overlay configuration.
 bool S3SSPatchEnabled(const char* patchName);
-bool S3SSBorderlessConfigured();
 bool S3SSOverlayDisabled();
 // S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
 // elsewhere: game_addresses.h) no longer holds its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.

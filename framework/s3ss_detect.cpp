@@ -214,13 +214,6 @@ bool S3SSPatchEnabled(const char* patchName) {
     return (*root)["patches"][patchName]["enabled"].value_or(false);
 }
 
-bool S3SSBorderlessConfigured() {
-    const auto root = ReadS3SSConfig();
-    if (!root) return false;
-    const std::string mode = (*root)["qol"]["borderless_window"]["mode"].value_or(std::string("disabled"));
-    return !mode.empty() && mode != "disabled";
-}
-
 bool S3SSOverlayDisabled() {
     const auto root = ReadS3SSConfig();
     if (!root) return false;

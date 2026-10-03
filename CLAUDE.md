@@ -1,3 +1,5 @@
+> Version 2.5.5: one unified build; developer mode is optional in Settings. Edge Smoothing is the only System display page. Apex does not control window mode, V-Sync or FPS pacing. Night Lighting offers Subtle, Soft and Natural without overwriting existing settings. Report a problem uses the v2.5.3 layout with optional capture titles and descriptions.
+
 # CLAUDE.md: Apex Radiance
 
 ## What this is
@@ -12,7 +14,7 @@ macros, `apex_*` source files).
 Features: Night Lighting (rebuilt night lamp light on ground, roads, floors, walls, roofs, water, foliage, objects,
 fences, snow; key `NightTerrainRelight`), Every-Story Ground Light (`SplitLevelGroundLight`, lot lamps on any story
 light the ground; part of Night Lighting), Reflections, Picture filters (SDR), Edge Smoothing
-(SMAA/FXAA), Depth Blur, Borderless window, Performance (Faster Game File Lookups `ResourceLookupCache`, off by default
+(SMAA/FXAA), Depth Blur, Performance (Faster Game File Lookups `ResourceLookupCache`, off by default
 until tested, with Remember Missing Files `ResourceLookupMisses` (negative entries + write epochs) and Faster File Lists
 `FileListCache` (GetKeyList cache), both off by default until tested; Lot Lighting While Moving `LotLightingMotion`;
 Wall Shading While Moving `WallShadingWhileMoving` (defers the wall AO pass while moving, on by default); Faster Texture
@@ -51,17 +53,17 @@ bring them back without the user asking.
 MSBuild: `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe`, v143,
 Release|Win32, C++20, static CRT, vcpkg triplet `x86-windows-static` (always `/p:VcpkgEnableManifest=false`).
 
-Apex Radiance (this folder; `ApexRadiance.sln` / `ApexRadiance.vcxproj`, `TargetName` `ApexRadiance`). The user
-compiles; do not build unless asked:
-```
-MSBuild ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false                     -> Release\ApexRadiance.asi (dev)
-MSBuild ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexPublic=true  -> Public\ApexRadiance.asi (public)
-```
-`/p:ApexPublic=true` defines `S3SS_PUBLIC` (objects in `Public\obj\`). Combined tree (frozen, for reference):
-`MSBuild Sims3SettingsSetter.sln ... [/p:S3SSPublic=true]` -> `Release\` / `Public\S3SSApex.asi`.
-
-Flavours (`build_flavor.h`): dev = everything plus dev tools and "Developer" UI sections; public = `S3SS_PUBLIC` /
-`kPublicBuild`, dev tools compiled out. The user plays the dev build; releases ship the public build.
+Apex Radiance has one unified binary from 2026-10-02 (user decision): `Release\ApexRadiance.asi`.
+Build once with `ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false`.
+`ApexPublic` is a legacy no-op; never produce separate player/developer assets.
+Developer mode is off by default, chosen from `[ui] developer_mode` at startup before feature construction.
+It is enabled in Settings > Menu after an explicit confirmation. Restart required for both directions.
+The legacy `kPublicBuild` name now means normal runtime mode, not a compile-time flavor.
+Developer instruments/threads/checks remain gated; the unified ASI includes their code.
+Profiles can optionally include Development. Show that save checkbox only when mode is requested/active;
+show it on import when the profile contains it. Importing activation requires the same confirmation.
+Profiles restore diagnostic preferences, never start recording/capture/profiling actions automatically.
+See `docs/features/developer-mode.md` for persistence and verification details.
 
 ## Install (only with the game closed)
 1. `TS3W.exe` and `Sims3LauncherW.exe` must both be closed (`tasklist | findstr /i "TS3W Sims3Launcher"`). Never kill
@@ -143,3 +145,6 @@ and needs the user's explicit OK.
   function entries and `framework/call_chain.h` CALL instructions with the Frame Profiler.
 - `docs/removed-features.md`: HDR, Native HDR, AO, Smooth Streaming, Script GC Scheduler, Service Frame Budget
   (revival notes).
+
+## Local UI attribution decision (2026-10-02)
+The user requested less Sims3SettingsSetter prominence. Do not restore its global footer detection label or the long promotional About paragraph. About leads with @loinyx and keeps only a compact sims3fiend framework-design credit. Compatibility detection remains in its own page; project historical attribution and licenses are retained.

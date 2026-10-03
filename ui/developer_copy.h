@@ -50,8 +50,6 @@ inline const char* English(const char* original) {
  {"Also run the game's compressor on 1 stream in N (0 = never; adds its time)","Compare with the game every N streams; zero disables"},
  {"Search depth (candidates per position)","Compression search depth"},
  {"Show smoothed pixels in red","Highlight smoothed pixels in red"},
- {"Show the temporal blend (green = blended, magenta = history dropped)","Show temporal blend: green kept, magenta discarded"},
- {"Swap jitter and subsample pairing","Test the alternative temporal sample pairing"},
  {"Show blur amount","Show where and how strongly blur is applied"},
  {"Far plane","Far-plane distance for fixed focus"},
  {"Show the shade alone","Show only the added ambient shadow"},

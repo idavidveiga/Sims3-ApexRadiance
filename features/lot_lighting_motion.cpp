@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Lot lighting while the camera moves (see lot_lighting_motion.h and docs/features/performance.md).
 //
 // ---- The game side (Steam 1.67.2, TS3W.exe; research\engine_map\full.asm; addresses through framework/game_addresses.h) ----
@@ -499,7 +500,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     ImGui::TextUnformatted(("Lot lighting while moving: " + StatusText()).c_str());
     const uint64_t last = g_lastMoveTick.load();
@@ -577,7 +578,7 @@ std::string WallAoStatusText() {
 }
 
 void RenderWallAoDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     ImGui::TextUnformatted(("Wall shading while moving: " + WallAoStatusText()).c_str());
     ImGui::TextDisabled("Step %#010x (slot %#010x), driver %#010x (return %#010x); camera %s", static_cast<unsigned>(g_aoStep), static_cast<unsigned>(g_aoSlot),
@@ -593,4 +594,11 @@ void RenderWallAoDeveloperUI() {
     if (ImGui::SliderInt("Longest wait of a pass while moving (ms)##AoWait", &wait, 0, 10000)) g_firstPassWaitMs.store(wait);
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("wall_max_wait_ms", g_firstPassWaitMs.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["wall_max_wait_ms"].value<int64_t>()) { const int v = static_cast<int>(*n); g_firstPassWaitMs.store(std::clamp(v, 0, 10000)); }
+}
 } // namespace LotLightingMotion

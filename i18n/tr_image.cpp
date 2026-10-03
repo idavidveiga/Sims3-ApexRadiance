@@ -8,6 +8,10 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"FXAA is recommended for lower GPU cost; SMAA is an alternative", "FXAA é recomendado por exigir menos da placa de vídeo; SMAA é uma alternativa", "Se recomienda FXAA porque exige menos a la tarjeta gráfica; SMAA es una alternativa", "FXAA est recommandé pour moins solliciter la carte graphique ; SMAA est une alternative"},
+    {"could not copy the scene for SMAA", "não foi possível copiar a cena para o SMAA", "no se pudo copiar la escena para SMAA", "impossible de copier la scène pour SMAA"},
+    {"Also finds edges between different colors of similar brightness", "Também encontra bordas entre cores diferentes com brilho parecido", "También detecta bordes entre colores distintos de brillo parecido", "Détecte aussi les bords entre couleurs différentes de luminosité similaire"},
+    {"Finds faint color edges too, useful at night", "Encontra também bordas de cor sutis, útil à noite", "Detecta también bordes de color sutiles, útil de noche", "Détecte aussi les bords de couleur subtils, utile la nuit"},
     // ---- Color page: Picture card header (apex_gui.cpp) and tabs ----
     // ---- Color page: Banding Fix card (scene_dither.cpp; also the Overview row) ----
     {"Banding Fix", "Correção de Faixas", "Corrección de Bandas", "Correction des Bandes"},
@@ -218,7 +222,7 @@ const I18n::Entry kEntries[] = {
     {"Method", "Método", "Método", "Méthode"},
     {"SMAA looks cleanest, FXAA is the lightest", "O SMAA fica mais limpo, o FXAA é o mais leve", "SMAA se ve más limpio, FXAA es el más ligero",
      "SMAA est le plus net, FXAA le plus léger"},
-    {"SMAA (recommended)", "SMAA (recomendado)", "SMAA (recomendado)", "SMAA (recommandé)"},
+    {"FXAA (recommended)", "FXAA (recomendado)", "FXAA (recomendado)", "FXAA (recommandé)"},
     {"FXAA", "FXAA", "FXAA", "FXAA"},
     {"Clean, smooth edges while textures stay sharp", "Bordas limpas e suaves com texturas nítidas", "Bordes limpios y suaves con texturas nítidas",
      "Des bords nets et lisses, textures bien nettes"},
@@ -372,6 +376,7 @@ const I18n::Entry kEntries[] = {
      "Une ombre douce là où les choses se rencontrent : sous les meubles, dans les coins, là où les murs touchent le sol et autour "
      "des maisons et des arbres. Calculée en pleine résolution et sans bruit, elle reste immobile quand la caméra l'est. "
      "Fonctionne avec le Lissage des Bords du jeu désactivé. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"How dark the shade gets where things meet", "Intensidade das sombras onde os objetos se encontram", "Intensidad de las sombras donde se encuentran los objetos", "Intensité des ombres aux points de contact"},
     {"How dark the shade gets where things meet; 100% is the recommended look",
      "Quão escura a sombra fica onde as coisas se encontram; 100% é o visual recomendado",
      "Qué tan oscura queda la sombra donde las cosas se juntan; 100% es el aspecto recomendado",

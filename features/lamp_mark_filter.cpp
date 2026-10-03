@@ -267,7 +267,7 @@ bool Install(std::string& why) {
         return false;
     }
     g_flagsCounted = false;
-    if constexpr (!kPublicBuild) { // which messages flag the entries (the floor switch's trigger): all five or none
+    if (!kPublicBuild) { // which messages flag the entries (the floor switch's trigger): all five or none
         bool all = true;
         for (uintptr_t s : kFlagSites) all = all && CallsTarget(s, kEntryFlag);
         std::vector<MemPatch::PatchLocation> before = g_patches;

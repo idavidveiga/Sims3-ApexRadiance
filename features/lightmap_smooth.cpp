@@ -626,7 +626,7 @@ void NoteChange(const LightmapSmooth::Key& key, const Entry& e, const char* via)
         if (g_sweepChanges++ == 0) g_sweepFirstMs = ms;
         g_sweepLastMs = ms;
     }
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         if (e.lastUse + 2 >= g_frame) // chunks in view only (a full rebuild re-renders every chunk of the world)
             LOG_DEBUG(std::format("[LightmapSmooth] Chunk ({}, {}) changed ({}), {:.0f} ms after the last kick", key.first, key.second, via,
                                   g_lastChangeSinceKickMs));
@@ -970,7 +970,7 @@ void EndSweepIfDone() {
     for (auto& [k, e] : g_entries) e.awaiting = false;
     g_lastSweep = std::format("kick -> rebuild {:.0f} ms, rebuild -> first chunk {:.0f} ms, -> last chunk {:.0f} ms ({} chunks changed, {} not re-rendered)",
                               g_kickToConsumeMs, g_sweepFirstMs, g_sweepLastMs, g_sweepChanges, awaiting);
-    if constexpr (!kPublicBuild) LOG_INFO("[LightmapSmooth] Rebuild sweep done: " + g_lastSweep);
+    if (!kPublicBuild) LOG_INFO("[LightmapSmooth] Rebuild sweep done: " + g_lastSweep);
 }
 
 // =====================================================================================================================
@@ -2106,7 +2106,7 @@ std::string Status() {
                                     g_msLastBatch >= 0 ? std::format("{:.3f} ms", g_msLastBatch) : std::string("-"), g_msBatchMax, g_timedBatches, g_changes, g_notices,
                                     g_sameMapNotices, g_gpuHashChecks, g_atlasW, g_atlasH, g_atlasChunks, g_atlasGrowths);
         AppendTimingStatus(s, awaiting);
-        if constexpr (!kPublicBuild) s += " | GPU vs CPU: " + g_compareResult;
+        if (!kPublicBuild) s += " | GPU vs CPU: " + g_compareResult;
         return s;
     }
     int ready = 0, pending = 0, awaiting = 0;
@@ -2141,7 +2141,7 @@ void SetGpuPreferred(bool on) { g_gpuPreferred = on; } // applied at the next On
 bool GpuActive() { return g_gpuActive; }
 
 void RequestCompare() {
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         if (!g_gpuActive) {
             g_compareResult = "only on the GPU path";
             return;

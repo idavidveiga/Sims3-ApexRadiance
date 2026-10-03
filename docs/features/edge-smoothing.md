@@ -1,9 +1,11 @@
+> Current 2.5.5 behavior: FXAA is first and recommended; SMAA is spatial only. Temporal smoothing is removed. The feature defaults on for new configurations; existing choices are preserved. One unified build offers optional Developer mode in Settings. Older baseline details below are historical.
+
 # Edge Smoothing (SMAA 1x / FXAA)
 
 > Post-process anti-aliasing of the finished 3D scene, applied **before the game draws any UI**, so pie menus,
 > tooltips, the HUD and both overlays stay sharp. Two methods: **SMAA 1x** (the unmodified reference `SMAA.hlsl` by
 > Jimenez et al., MIT, in its `SMAA_HLSL_3` path; default) and a single-pass **FXAA 3.11-style "quality"** shader written
-> for ps_3_0. It only works with the **game's own Edge Smoothing (MSAA) off**. Status: working, used in game by the user
+> for ps_3_0. By default it runs with the **game's own Edge Smoothing (MSAA) off**. Status: working, used in game by the user
 > (log `[EdgeSmoothing] Resources ready (3840x2160)`, SMAA Ultra in the user's config), flagged `experimental`. Present
 > in both build flavours; the Developer subsection is dev-only.
 
@@ -48,7 +50,7 @@ from the combined build.
 | Advanced > Reset to defaults | | button | | | `g.p = Params{}` (all fields, including `debugView`) |
 | Edges from depth (both methods, 30/09) | `depthEdges` | bool | true | | Requests the INTZ depth swap (DepthShare::Request) and, when the scene depth is the bound depth-stencil at the trigger (as AO checks), runs a pass writing log2 of the view distance (R32F, `LogDepthPS`: 1/z = (A - d)/(near A) from PostScene) that the edge passes read at s5 (point). SMAA: the reference predication (`SMAA_PREDICATION` 1, threshold 0.02 log2 = a 1.4% distance step, scale 1.0, strength 0.6 = the threshold x 0.4 where the depth steps; textures keep the preset threshold). FXAA: its contrast test x 0.4 where any of the 4 neighbours' log-depth differs by more than 0.02. Without the depth (swap off, reflection pass bound) the plain variants run; the card notes it |
 | Sharpen textures (both methods, 30/09) | `sharpen` | float | 0 | 0 .. 1 | Contrast-adaptive sharpening (after AMD FidelityFX CAS, MIT: 4 neighbours, weight -amp/lerp(8, 5, amount), amp = sqrt(min(mn, 1 - mx)/mx)) of the pixels the smoothing left as they were (SMAA: no blend weight around the pixel; FXAA: its early-out), so the smoothed edges are never sharpened again. 0 = off (no visual change). Independent of Color > Sharpness |
-| Temporal smoothing (SMAA only, experimental, 30/09) | `temporal` | bool | false | | SMAA T2x. The scene draws (render target 0 = back buffer, depth test on) are drawn with vertex-shader copies moved in clip space by c252 (`ShaderPatches::AddJitterVs`, bound by the shared scene-draw binder in scene_dither.cpp, `SceneBinder`), alternating (+0.25, -0.25) and (-0.25, +0.25) pixels; SMAA runs with the matching subsample indices (1,1,1,0) / (2,2,2,0); then `ResolvePS` blends 50/50 with the previous frame's SMAA output fetched through M = VP_prev x inverse(VP_cur) (PostScene camera, double precision on the CPU) from the current device depth, clamped to the current 3x3 min/max and dropped where the previous log2 depth (2x2 around the point) differs by more than 0.03 log2 or the point left the screen; camera cut (screen centre moved > 0.3 NDC), no camera, no depth or no scene in a frame: no blend and no jitter. Needs the INTZ depth (requested). Offline: vs_3_0 3323/3323 and vs_2_0 4312/4338 game vertex shaders patched and accepted by a native device; one-pixel shift verified. Developer: blend view (green / magenta), jitter pairing swap, coverage counts |
+| Removed historical option: Temporal smoothing (30/09) | `temporal` | bool | false | | SMAA T2x. The scene draws (render target 0 = back buffer, depth test on) are drawn with vertex-shader copies moved in clip space by c252 (`ShaderPatches::AddJitterVs`, bound by the shared scene-draw binder in scene_dither.cpp, `SceneBinder`), alternating (+0.25, -0.25) and (-0.25, +0.25) pixels; SMAA runs with the matching subsample indices (1,1,1,0) / (2,2,2,0); then `ResolvePS` blends 50/50 with the previous frame's SMAA output fetched through M = VP_prev x inverse(VP_cur) (PostScene camera, double precision on the CPU) from the current device depth, clamped to the current 3x3 min/max and dropped where the previous log2 depth (2x2 around the point) differs by more than 0.03 log2 or the point left the screen; camera cut (screen centre moved > 0.3 NDC), no camera, no depth or no scene in a frame: no blend and no jitter. Needs the INTZ depth (requested). Offline: vs_3_0 3323/3323 and vs_2_0 4312/4338 game vertex shaders patched and accepted by a native device; one-pixel shift verified. Developer: blend view (green / magenta), jitter pairing swap, coverage counts |
 | Developer > Show smoothed pixels in red (dev) | `debugView` | bool | false | | Tints every pixel the AA changed 60% red |
 
 Status line on the card: `Status: <text>` and, once timings arrive, `GPU cost: x.xx ms per frame`. Developer also shows
@@ -277,3 +279,38 @@ draws, then the first depth-off back-buffer draw) and on the game's back buffer 
   point).
 
 **Supersampling note (30/09, user: players at 1080p found the game very jagged with Edge Smoothing on).** At 1200 lines or fewer the card shows "Smoothest at 1080p: NVIDIA DSR or AMD VSR with a higher game resolution" (tooltip: where to turn it on; it costs more and the game's interface gets smaller). The driver renders at a higher resolution and scales down to the screen: the only thing that smooths detail thinner than a pixel. DLSS / DLAA / FSR 2+ are temporal (jittered camera, motion vectors) and have no D3D9 path; see NOTAS / the conversation of 30/09.
+
+
+## Private RC test: temporal pool protection (2026-10-02)
+
+Version `2.5.4-rc-temporal-pool-test` preserves the cumulative RC UI work. The user reports large triangles over pool water only when temporal SMAA is enabled and the camera rotates nearby. The 15:33:46 recording confirms temporal=true, method SMAA, Extreme, sharpen about 0.249. The supplied 2.88 s video shows geometric-looking strips rather than ordinary trails; point captures at 15:40:35 and 15:42:03 identify the same vs_2_0 pool shader. They also contain a screen-composition draw with depth enabled and ZFUNC=ALWAYS. The old crash file copied into these reports belongs to test006 on 2026-10-01; it is not evidence of a crash in this RC.
+
+Candidate protection: AddJitterVs refuses the specifically identified pool family (compressed position decode constants 256/7.96875/-200 and 63.75/0/1 plus projected oT3.xy). Refusal leaves bytecode untouched; the existing unjittered game/grain path is retained. SceneBinder also excludes ZFUNC=ALWAYS composition draws from jitter. Identification occurs in shader-copy creation/caching, not by scanning shaders per draw. Other geometry retains temporal jitter. This avoids applying the main-scene jitter to that pool projection path; it is a targeted fallback, not proof of the underlying corruption mechanism. Unknown water variants are not guaranteed covered. Pool temporal edge quality may be reduced where it no longer receives jitter; the temporal resolve still runs globally.
+
+Temporal quality: history reprojection now includes the actual current/previous quarter-pixel phases, while camera stillness remains based on unjittered camera matrices. History-copy failures invalidate reuse. The shader returns the current color for invalid/behind-camera/off-screen projections and caps slope tolerance at an additional 0.06 log2 units, so a depth discontinuity cannot make the rejection threshold unbounded. Existing 50/50 weight, SMAA presets, neighborhood clamp and stationary-camera behavior remain. No extra render pass, full-resolution target, readback or persisted setting was added. Shader/CPU cost and visual performance still require gameplay measurement.
+
+Offline: captured pool original and grain fallback accepted by native D3D9, ordinary jitter retained, resolve ps_3_0 compiled and accepted, 108 phase/inverse/reprojection cases passed. These checks do not reproduce the pool artifacts. Test the same camera rotation/zoom near the pool with temporal on/off, then solid edges, moving Sims, shoreline/reflections and stationary camera. No installation or publication.
+
+Primary references: [SMAA implementation](https://github.com/iryoku/smaa/blob/master/SMAA.hlsl) and [AMD temporal transparency guidance](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/super-resolution-temporal/). The latter discusses temporal failure on composited surfaces; this candidate does not implement FSR or an FSR reactive mask.
+
+
+## RC decision: remove temporal smoothing (2026-10-02)
+
+At the user's request SMAA T2x is removed from the Edge Smoothing feature. SMAA 1x and FXAA retain their existing spatial presets, depth edge detection and sharpening. The temporal setting and player/developer controls are no longer registered; legacy `temporal=true` in configuration or profiles cannot activate it. Configuration storage may retain unknown keys, but there is no bound temporal setting.
+
+Removed: temporal resolve shader registration and implementation, history color/depth allocations, history copies, reprojection, camera requests and scene jitter acquisition/update. Previously the three full-resolution history targets were allocated even with the temporal option off. This removal avoids those allocations. Shared scene/shader helpers remain for reference; Edge Smoothing no longer calls them. The pool candidate above is historical and is superseded by this decision. No new AA algorithm, installation or publication is part of this change. Gameplay and performance remain to be validated.
+
+Possible future spatial options: improve the existing SMAA presets/predication first; evaluate CMAA2 only after a D3D9 feasibility study (its reference implementation relies on a newer rendering API); combine native MSAA and SMAA only after supporting multisampled targets and the depth path explicitly. Supersampling is higher-cost and is not a low-FPS-cost replacement. No temporal technique is being introduced under a different name.
+
+
+## Private RC: spatial SMAA only (2026-10-02)
+
+High and Ultra use color edge detection to catch boundaries between different colors of similar brightness. Low/Medium retain luma detection; Extreme already used color. Thresholds, search lengths, diagonal handling and the three-pass pipeline are unchanged. Temporal smoothing remains removed.
+
+The experimental native MSAA combination has been removed at the user's request. The game’s own Edge Smoothing must be off. Both SMAA and FXAA pause when a multisampled backbuffer is detected, preserving compatibility with Depth Blur and other depth-based effects. The old `combineMsaa` setting is no longer registered or read; retained configuration keys cannot enable it.
+
+SMAA retains depth-stencil detach/restore around intermediate targets, saved render states and the screen-copy failure guard. No new pass, temporal history or CPU readback is introduced.
+
+Offline checks cover five spatial presets, flat/diagonal fields, alpha and state restoration, equal-brightness color detection, and rejection of native MSAA targets. Gameplay and FPS still require validation. This is a private candidate, not installed or published.
+
+FXAA is now labeled recommended in EN/PT/ES/FR for its lower GPU cost. This is a recommendation label change, not a forced migration of saved settings or a change to the registered default. SMAA remains selectable.

@@ -464,7 +464,7 @@ void Init() {
     }
     LARGE_INTEGER f{};
     g_ticksPerMs = QueryPerformanceFrequency(&f) && f.QuadPart > 0 ? static_cast<double>(f.QuadPart) / 1000.0 : 0.0;
-    if constexpr (!kPublicBuild) LOG_INFO("[ChunkRelight] " + g_resolveInfo);
+    if (!kPublicBuild) LOG_INFO("[ChunkRelight] " + g_resolveInfo);
 }
 
 void SetHooked(bool hooked) { g_hooked = hooked; }

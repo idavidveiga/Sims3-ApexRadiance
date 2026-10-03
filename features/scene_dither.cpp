@@ -266,7 +266,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     const int k = useDither ? copy.texcoord : -1; // ps_2_x copies: the vertex shader must carry the position
     // the vertex copy: TEXCOORDk and / or the temporal jitter
     IDirect3DVertexShader9 *vs = nullptr, *vsCopy = nullptr;
-    bool useJitter = jitter;
+    DWORD zfunc = D3DCMP_LESSEQUAL;
+    if (jitter) dev->GetRenderState(D3DRS_ZFUNC, &zfunc);
+    // Depth enabled + ALWAYS is also used by screen-space composition draws;
+    // ZENABLE alone does not identify a projected 3D surface (pool capture #202).
+    bool useJitter = jitter && zfunc != D3DCMP_ALWAYS;
     if (useJitter || k >= 0) {
         dev->GetVertexShader(&vs);
         if (vs) vs->Release();
@@ -322,7 +326,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     g_last = g_frame;
     g_frame = {};
     // Development build: the coverage in the log now and then (the first 12 times, every 20 s of scene)
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         const unsigned long long now = GetTickCount64();
         const unsigned total = g_last.dithered3 + g_last.dithered2 + g_last.ps2NoPair + g_last.ps2Refused + g_last.ps3Refused + g_last.other;
         if (total > 50 && g_logs < 12 && now - g_lastLog >= 20000) {

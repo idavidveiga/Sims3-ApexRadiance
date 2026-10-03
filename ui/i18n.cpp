@@ -66,7 +66,7 @@ bool IsLiteral(const void* p) {
 }
 
 void NoteMissing(std::string_view key) {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (key.empty() || !IsLiteral(key.data())) return;
     // Values ("12 ms", "~0.4 ms", "80%"), numbers and single symbols are not texts to translate
     if ((key[0] >= '0' && key[0] <= '9') || key[0] == '~' || key[0] == '+' || key[0] == '-') return;

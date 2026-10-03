@@ -10,7 +10,7 @@ float4 c1 : register(c1);
 float4 c5 : register(c5);
 float4 lampPos[16] : register(c20); // xyz = lamp head, w = visual radius
 float4 lampCol[16] : register(c36); // rgb = colour x intensity x night fade
-float4 params : register(c52);      // x = lamp strength
+float4 params : register(c52);      // x = lamp strength, y = count, z = filter specular, w = preserve bright lamp colors
 float4 wvp[4] : register(c53);      // local -> clip of the water mesh
 float4 worldT : register(c57);      // xyz = world translation of the water mesh
 float4 reflParams : register(c58);  // x = reflection strength
@@ -36,12 +36,21 @@ float EdgeFade(float2 uv) { float2 e = saturate(min(uv, 1 - uv) * 8); e = e * e 
 float4 main(PSIn i) : COLOR0 {
     const bool haveDepth = depthParams.z > 0.5;
     float4 cp = Project(i.pos.xyz);
-    // Depth test in the shader (the depth-stencil is unbound during this pass so its texture can be read)
-    if (haveDepth && cp.w > SceneW(ClipToUv(cp)) + 0.3 + cp.w * 0.01) return 0;
-
     float4 a = tex2D(sWave0, i.uv.xy);
     float4 b = tex2D(sWave1, i.uv.zw);
     float3 n = normalize(float3(a.x * c5.x + b.x * c5.y, a.z + b.z, a.y * c5.x + b.y * c5.y));
+    // Derivatives must be evaluated before depth rejection / divergent reflection marching.
+    // Filter only the lamp lobe; the scenery reflection keeps its original normals and Fresnel.
+    float exponent = 250.0;
+    float peakScale = 1.0;
+    if (params.z > 0.5) {
+        float3 dx = ddx(n), dy = ddy(n);
+        float variance = min(0.25 * (dot(dx, dx) + dot(dy, dy)), 0.016);
+        exponent = 2.0 / (2.0 / 252.0 + variance) - 2.0;
+        peakScale = (exponent + 2.0) / 252.0;
+    }
+    // Depth test in the shader (the depth-stencil is unbound during this pass so its texture can be read).
+    if (haveDepth && cp.w > SceneW(ClipToUv(cp)) + 0.3 + cp.w * 0.01) return 0;
     float3 v = normalize(c1.xyz - i.pos.xyz);
     float fres = 0.25 + 0.75 * pow(1 - saturate(dot(n, v)), 5);
     float fogKeep = 1 - saturate(i.fog.w);
@@ -91,12 +100,21 @@ float4 main(PSIn i) : COLOR0 {
         float d2 = dot(l, l);
         float rr = lampPos[k].w * lampPos[k].w + 1e-3;
         float3 h = normalize(l * rsqrt(d2 + 1e-4) + v);
-        float sp = pow(saturate(dot(n, h)), 250) * 2 / (1 + d2 / (rr * 16));
+        float sp = pow(saturate(dot(n, h)), exponent) * (2 * peakScale) / (1 + d2 / (rr * 16));
         float g = saturate(1 - d2 / rr);
         spec += lampCol[k].rgb * sp;
         glow += lampCol[k].rgb * (g * g);
     }
-    float3 lamps = min((spec * fres + glow * 0.08) * params.x * fogKeep, 0.8);
+    float3 lamps = (spec * fres + glow * 0.08) * params.x * fogKeep;
+    if (params.w > 0.5) {
+        // Identity below the knee, bounded smoothly above it. One common RGB scale preserves hue ratios.
+        float peak = max(lamps.r, max(lamps.g, lamps.b));
+        float excess = max(peak - 0.7, 0.0);
+        float compressedPeak = 0.7 + 0.1 * excess / (0.1 + excess);
+        lamps *= peak > 0.7 ? compressedPeak / max(peak, 1e-5) : 1.0;
+    } else {
+        lamps = min(lamps, 0.8); // original A/B reference
+    }
     return float4(refl * alpha + lamps, alpha);
 }
 )RAW";

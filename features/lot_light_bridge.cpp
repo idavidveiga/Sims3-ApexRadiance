@@ -220,7 +220,7 @@ const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl,
 const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -490,6 +490,10 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 c = PsClass::WorldMultiLight;
                 g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
             }
+            else if (IsShader(kWorldCompactPs, code.data(), size)) {
+                c = PsClass::WorldCompact;
+                g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
+            }
             else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
             else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
             else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
@@ -587,6 +591,7 @@ bool g_curVsIsObject = false;
 // so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
 struct VsInfo {
     bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -616,6 +621,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
         if (SUCCEEDED(vs->GetFunction(code.data(), &size))) {
             auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
             info.worldMultiLight = is(kWorldMultiLightVs);
+            info.worldCompact = is(kWorldCompactVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -1359,6 +1365,7 @@ template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw) {
 std::atomic<bool> g_waterFix{false};
 std::atomic<float> g_waterStrength{1.0f};
 std::atomic<float> g_waterRefl{1.0f};
+std::atomic<bool> g_waterFilter{true}, g_waterColorCompression{true};
 IDirect3DPixelShader9* g_waterPs = nullptr;
 bool g_waterCompileTried = false;
 std::atomic<int> g_waterDrawn{0};
@@ -1384,6 +1391,8 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
     {
         g_lampData[32][0] = g_waterStrength.load(std::memory_order_relaxed);
         g_lampData[32][1] = static_cast<float>(picked);
+        g_lampData[32][2] = g_waterFilter.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        g_lampData[32][3] = g_waterColorCompression.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         float consts[40][4] = {};
         std::memcpy(consts, g_lampData, sizeof(float) * 4 * 33);
         dev->GetVertexShaderConstantF(4, &consts[33][0], 4); // world-view-projection of the water mesh
@@ -1629,7 +1638,7 @@ std::vector<DWORD> ShaderCode(IDirect3DPixelShader9* ps) {
 // Development build: keeps the bytecode of every shader pair a fix refused, in Apex Radiance\ShadersRecusados, so it can be
 // studied offline (the log only has the shader's address, which changes between sessions).
 void SaveRefused(const char* what, const std::vector<DWORD>& ps) {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     try {
         std::string tag;
         for (const char* c = what; *c; ++c) tag += std::isalnum(static_cast<unsigned char>(*c)) ? *c : '_';
@@ -2447,9 +2456,10 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) {
+    if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight || g_curClass == PsClass::WorldCompact) {
         const bool multi = g_curClass == PsClass::WorldMultiLight;
         if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
+        if (g_curClass == PsClass::WorldCompact && (!g_curVsInfo || !g_curVsInfo->worldCompact)) return kContinue;
         std::pair<int, int> key;
         ChunkTex* chunk = nullptr;
         const DWORD s = RecordWorldChunk(dev, key, chunk, multi ? 13 : 15);
@@ -2465,6 +2475,9 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
         if (smooth) dev->GetTexture(s, &old);
+        if (LightProbe::Capturing())
+            g_objDrawInfo = std::format("mod draw: world terrain | compact {} | multi-pass {} | lamp sampler s{} | gain {:.3f} | smoothed {}",
+                                       g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr);
         g_inOwnCall = true;
         {
             // Captured multi-pass PS squares c3.x before multiplying lamp RGB.
@@ -2474,6 +2487,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
             if (smooth) SetTex(dev, s, old);
         }
         g_inOwnCall = false;
+        g_objDrawInfo.clear();
         if (old) old->Release();
         return D3D9Hooks::HookAction::Skip;
     }
@@ -2619,7 +2633,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice
         for (int k = 0; k < 4; k++) {
             const bool turned = UnlitRooms::FurnitureColour(t[k], rig[k]);
             psSet |= turned;
-            if constexpr (!kPublicBuild)
+            if (!kPublicBuild)
                 if (psOld[k][0] + psOld[k][1] + psOld[k][2] > 1e-6f) (turned ? g_fdUnlitSlots : g_fdLampSlots).fetch_add(1, std::memory_order_relaxed);
         }
         if (psSet) SetPsConst(dev, 4, &t[0][0], 4);
@@ -2743,9 +2757,9 @@ void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChai
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_curVsIsObject || !g_curPs || g_inOwnCall) return OnDrawInnerCore(dev, draw);
     if (RigTracker::CurrentMode() != 0) return OnDrawInnerCore(dev, draw);
-    if constexpr (!kPublicBuild) g_fdMode0.fetch_add(1, std::memory_order_relaxed);
+    if (!kPublicBuild) g_fdMode0.fetch_add(1, std::memory_order_relaxed);
     const ShaderPatches::RigPsInfo& info = RigPsInfoFor(g_curPs);
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         if (!info.rigLights) g_fdNoChain.fetch_add(1, std::memory_order_relaxed);
     float rig[8][4] = {};
     const bool haveRig = info.rigLights && SUCCEEDED(dev->GetPixelShaderConstantF(0, &rig[0][0], 8));
@@ -2765,7 +2779,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     D3D9Hooks::HookAction r;
     if (active) r = OnDrawFurniture(dev, draw, info, haveRig ? rig : nullptr);
     else {
-        if constexpr (!kPublicBuild) g_fdInactive.fetch_add(1, std::memory_order_relaxed);
+        if (!kPublicBuild) g_fdInactive.fetch_add(1, std::memory_order_relaxed);
         r = OnDrawInnerCore(dev, draw);
     }
     if (trace) {
@@ -3046,7 +3060,9 @@ void SetRoofFix(bool on, float strength) {
     }
 }
 
-void SetWaterFix(bool on, float strength, float reflection) {
+void SetWaterFix(bool on, float strength, float reflection, bool filter, bool preserveColors) {
+    g_waterFilter = filter;
+    g_waterColorCompression = preserveColors;
     g_waterStrength = strength;
     g_waterRefl = reflection;
     if (g_waterFix.load() != on) {
@@ -3135,6 +3151,7 @@ std::string WaterStatus() {
 }
 
 void SetFalseColor(bool on) { g_falseColor = on; }
+bool FalseColor() { return g_falseColor.load(); }
 
 void RequestCensus() {
     if (g_censusPending) return;
@@ -3357,14 +3374,14 @@ std::string BakeDiff::Text() const {
 std::string RoofStatus() {
     std::string s = std::format("roofs: {} | lamps on: {} | draws fixed: {} | with snow: {}", g_roofFix.load() ? (g_roofPs ? "fixed" : "waiting") : "off",
                                 g_lampCount, g_roofDrawn.load(), g_roofSnowDrawn.load());
-    if constexpr (!kPublicBuild) s += std::format(" | lamp choice memo: {} reused, {} computed", g_lampMemoHits, g_lampMemoMisses);
+    if (!kPublicBuild) s += std::format(" | lamp choice memo: {} reused, {} computed", g_lampMemoHits, g_lampMemoMisses);
     return s;
 }
 
 std::string Status() {
     std::string s = std::format("{} | terrain chunks seen: {} | lot light fixed: {} draws (snow: {}, roads: {}, floors: {}, outdoor floors (summer): {}, snow on floors: {}, fences/stairs: {}, snow on objects: {}, snow with relief: {}, outdoor objects: {}) | without terrain texture: {}", g_status,
         g_chunks.size(), g_lotDrawn.load(), g_snowDrawn.load(), g_roadDrawn.load(), g_floorDrawn.load(), g_floorAtlasDrawn.load(), g_snowFloorDrawn.load(), g_fenceDrawn.load(), g_snowCoverDrawn.load(), g_snowReliefDrawn.load(), g_objLampDrawn.load(), g_lotMissing.load());
-    if constexpr (!kPublicBuild) s += std::format(" | leftover textures skipped when looking for chunk light maps: {}", g_chunkStraySkipped.load());
+    if (!kPublicBuild) s += std::format(" | leftover textures skipped when looking for chunk light maps: {}", g_chunkStraySkipped.load());
     return s;
 }
 

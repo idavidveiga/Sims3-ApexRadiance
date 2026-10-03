@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Resource lookup cache, "Remember missing files" and "Faster file lists" (see resource_cache.h and
 // docs/features/performance.md).
 //
@@ -741,7 +742,7 @@ uint32_t VtableOf(uint32_t db) {
 
 // Development build: the game's own answer for the same question, compared with the cache's
 bool ShouldVerify(uint32_t& counter) {
-    if constexpr (kPublicBuild) return false;
+    if (kPublicBuild) return false;
     if (GetTickCount64() < g_verifyAllUntil.load(std::memory_order_relaxed)) return true;
     const int every = g_verifyEvery.load(std::memory_order_relaxed);
     return every > 0 && (++counter % static_cast<uint32_t>(every)) == 0;
@@ -811,7 +812,7 @@ uint32_t __fastcall Hook_FindProvider(void* self, void* edx, const uint32_t* key
             c_probes.Add(probes);
             if (!a.provider) c_negHits.Add();
             if (byEpoch) c_epochHits.Add();
-            if constexpr (!kPublicBuild) {
+            if (!kPublicBuild) {
                 g_hitTicks.fetch_add(Qpc() - t0, std::memory_order_relaxed);
                 if (ShouldVerify(t_verifyCount)) return Verify(next, self, edx, key, priorityOut, a, gen); // returns (and writes) the game's answer
             }
@@ -832,7 +833,7 @@ uint32_t __fastcall Hook_FindProvider(void* self, void* edx, const uint32_t* key
     const bool roBefore = g_negOn.load(std::memory_order_acquire) && ReadOnlyAboveReliable(mgr, kAllAbove);
     const uint64_t t1 = kPublicBuild ? 0 : Qpc();
     const uint32_t r = next(self, edx, key, priorityOut);
-    if constexpr (!kPublicBuild) g_missTicks.fetch_add(Qpc() - t1, std::memory_order_relaxed);
+    if (!kPublicBuild) g_missTicks.fetch_add(Qpc() - t1, std::memory_order_relaxed);
     if (!r) c_notFound.Add();
     if (!r && !g_negOn.load(std::memory_order_acquire)) return r;
     if (m0 == 0 && g_mutating.load(std::memory_order_acquire) == 0 && g_gen.load(std::memory_order_acquire) == g0)
@@ -1790,7 +1791,7 @@ std::string ReportLine() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     // per-second rates from the previous call (render thread only)
@@ -1851,4 +1852,11 @@ void RenderDeveloperUI() {
     if (!s.klLastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last file list difference: %s", s.klLastMismatch.c_str());
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("verify_every", g_verifyEvery.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["verify_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_verifyEvery.store(std::clamp(v, 0, 1024)); }
+}
 } // namespace ResourceCache

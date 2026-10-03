@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Faster Sim building: the CAS model builder's triangle sort answered by features/cas_tri_sort.h (see fast_cas.h and
 // docs/features/performance.md).
 //
@@ -345,7 +346,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     ImGui::TextUnformatted(("Faster Sim building: " + StatusText()).c_str());
@@ -358,4 +359,11 @@ void RenderDeveloperUI() {
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("verify_every", g_verifyEvery.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["verify_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_verifyEvery.store(std::clamp(v, 0, 1024)); }
+}
 } // namespace FastCas

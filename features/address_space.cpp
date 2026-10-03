@@ -195,7 +195,7 @@ DWORD WINAPI Proc(LPVOID) {
 } // namespace
 
 void Start() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (g_thread) return;
     g_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (g_stop) g_thread = CreateThread(nullptr, 64 * 1024, Proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);

@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // The Apex menu (see apex_gui.h).
 #include "apex_gui.h"
 #include "apex_config.h"
@@ -6,10 +7,10 @@
 #include "apex_paths.h"
 #include "apex_util.h"
 #include "build_flavor.h"
-#include "borderless.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
 #include "game_version.h"
+#include "game_addresses.h"
 #include "night_lighting.h"
 #include "patch_base.h"
 #include "performance.h"
@@ -60,17 +61,15 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageDisplay, PagePerformance, PageDeveloper, PageSettings, PageReport };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
 enum WaterSnowTab : int { WaterTab, SnowTab };
-enum DisplayTab : int { DisplayWindow, DisplayAntiAliasing };
 enum SettingsTab : int { SettingsMenu, SettingsShortcuts, SettingsProfiles, SettingsCompatibility, SettingsAbout };
 int g_page = PageOverview;
 int g_lightingTab = LightingLamps;
 int g_waterSnowTab = WaterTab;
 int g_colorTab = Picture::TabBasic;
 constexpr int kColorBandingTab = Picture::TabCount; // Color > Banding: the Banding Fix and Smooth gradients
-int g_displayTab = DisplayWindow;
 int g_settingsTab = SettingsMenu;
 
 // ---- menu state (render thread, inside the overlay's ImGui frame) ----
@@ -94,7 +93,6 @@ int g_recRow = -1; // Shortcuts: the row whose key is being recorded (-1 = none)
 void ShortcutsContent(bool compact);
 void ShortcutsTab();
 std::atomic<bool> g_hintConsidered{false};
-unsigned long long g_hintReadyAt = 0; // when the world was first seen on screen this start (the note waits kHintDelayMs after it)
 
 // Undo: the feature state at the last click / key activation in the menu (before any widget saw it), and the toast
 toml::table g_clickSnapshot;
@@ -129,8 +127,6 @@ void Go(int page, int* tabOfPage = nullptr, int tab = 0) {
 // Descriptions (hover) of the cards that are not ApexPatch features (the patches carry theirs in their metadata)
 constexpr const char* kPictureDescription = "Fine-tune how the world looks: brightness, contrast, color, sharpness and smoother skies, plus film-style "
                                             "tones and a vignette. Menus and text keep their normal look. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx";
-constexpr const char* kBorderlessDescription = "Play in a window with no title bar or frame, at the game's resolution or filling the whole screen. Part of "
-                                               APEX_PRODUCT_NAME ". Credits: @loinyx";
 constexpr const char* kShoreDescription = "Ponds and lakes mirror the trees, houses and lamps along their shore, on top of the game's sky reflection. "
                                           "Needs Night Lights and Depth Blur, with the game's own Edge Smoothing off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx";
 constexpr const char* kProfilerDescription = "Measures every frame and breaks down each hitch. Writes ApexRadiance_Hitches.txt. Development build only. Part of "
@@ -169,7 +165,7 @@ void NotAvailableNote(const ApexPatch* patch) { CardNote(patch->UnavailableReaso
 // Whether StateNotes draws anything
 bool HasStateNotes(const ApexPatch* patch) { return !patch->IsCompatibleWithCurrentVersion() || Loading() || !patch->GetLastError().empty(); }
 
-// "Not available on <version>", "Starting…" and the red error of a feature
+// "Not available on <version>", "StartingÃ¢â‚¬Â¦" and the red error of a feature
 void StateNotes(const ApexPatch* patch) {
     if (!patch->IsCompatibleWithCurrentVersion()) NotAvailableNote(patch);
     else if (Loading()) CardNote("Starting\xE2\x80\xA6");
@@ -189,7 +185,7 @@ template <typename Body> void FeatureCardWith(const char* patchName, IconId icon
     if (ApexUi::BeginCard("##Card")) {
         bool on = patch->IsEnabled();
         char chipBuf[24];
-        const char* chip = CostChip(patch->GpuCostMs(), chipBuf);
+        const char* chip = on ? CostChip(patch->GpuCostMs(), chipBuf) : nullptr;
         if (ApexUi::CardHeader(icon, title, subtitle, Description(patch), &on, Switchable(patch), nullptr, chip)) SetPatch(patch, on);
         const bool enabled = patch->IsEnabled();
         if (enabled || HasStateNotes(patch)) ApexUi::CardDivider();
@@ -339,14 +335,8 @@ void RecommendS3SSCard() {
 
 // ---- Overview ----
 
-const char* BorderlessModeText() {
-    if (Borderless::HandledByS3SS()) return "Sims3SettingsSetter";
-    switch (Borderless::GetMode()) {
-    case Borderless::Mode::Windowed: return "Window";
-    case Borderless::Mode::Fullscreen: return "Fullscreen";
-    default: return "Off";
-    }
-}
+bool g_menuGameAaOn = false;
+void OverviewDefaults();
 
 void OverviewPatchRow(const char* patchName, IconId icon, const char* name, const char* phrase, int page, int* tabOfPage = nullptr, int tab = 0) {
     ApexPatch* patch = Find(patchName);
@@ -354,26 +344,58 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
     bool on = patch->IsEnabled(), nameClicked = false;
     char chipBuf[24];
     const char* chip = CostChip(patch->GpuCostMs(), chipBuf);
-    if (ApexUi::OverviewRow(patchName, icon, name, phrase, Description(patch), &on, Switchable(patch), nullptr, &nameClicked, chip)) SetPatch(patch, on);
+    const bool blocked = on && g_menuGameAaOn &&
+        (std::strcmp(patchName, "EdgeSmoothing") == 0 || std::strcmp(patchName, "DepthBlur") == 0 || std::strcmp(patchName, "AmbientOcclusion") == 0);
+    const char* summary = blocked ? "Waiting for game settings" : on ? patch->OverviewSummary() : nullptr;
+    if (ApexUi::OverviewRow(patchName, icon, name, phrase, Description(patch), &on, Switchable(patch), nullptr, &nameClicked, blocked ? nullptr : chip, summary, blocked)) SetPatch(patch, on);
     if (nameClicked) Go(page, tabOfPage, tab);
     CardError(patch->GetLastError());
 }
 
 void OverviewPage() {
-    ApexUi::PageTitle("Overview", "Everything at a glance; click a name to open its page");
+    const ImVec2 titlePos = ImGui::GetCursorPos();
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float resetSize = 28.0f * ApexUi::Unit();
+    ImGui::SetCursorPosX(titlePos.x + std::max(0.0f, available - resetSize));
+    const bool resetClicked = ApexUi::IconButton("##OverviewReset", IconId::RotateCcw, "Restore page defaults", false, 28.0f);
+    ImGui::SetCursorPos(titlePos);
+    ImGui::PushTextWrapPos(titlePos.x + std::max(40.0f * ApexUi::Unit(), available - resetSize - ApexUi::kSpace2 * ApexUi::Unit()));
+    ApexUi::PageTitle("Overview", "See what is in use; click a resource to open its settings");
+    ImGui::PopTextWrapPos();
+    static bool resetConfirm = false;
+    if (resetClicked) resetConfirm = !resetConfirm;
+    if (resetConfirm) {
+        CardNote("Restore the controls shown here? Other settings and saved files stay.");
+        ImGui::BeginDisabled(Loading());
+        if (ApexUi::TextButton("Cancel##OverviewReset")) resetConfirm = false;
+        ImGui::SameLine();
+        if (ApexUi::IconTextButton("Restore page defaults##Overview", IconId::RotateCcw)) {
+            OverviewDefaults();
+            resetConfirm = false;
+        }
+        ImGui::EndDisabled();
+    }
     RecommendS3SSCard();
     ImGui::PushID("Overview");
-    if (ApexUi::BeginCard("##Card")) {
+    ApexUi::GroupLabel("Lighting");
+    if (ApexUi::BeginCard("##Lighting")) {
         bool nameClicked = false;
         OverviewPatchRow(kNightLighting, IconId::MoonStar, "Night Lights", "Lamps light up your neighborhood at night", PageLighting, &g_lightingTab, LightingLamps);
         if (ApexPatch* ntr = Find(kNightLighting)) {
             ApexPatch* blur = Find("DepthBlur");
             const char* phrase = !ntr->IsEnabled() ? "Needs Night Lights" : (blur && !blur->IsEnabled()) ? "Needs Depth Blur" : "Ponds mirror their shore";
             bool on = ShoreOn();
-            if (ApexUi::OverviewRow("WaterReflections", IconId::MirrorRound, "Water Reflections", phrase, kShoreDescription, &on, !Loading(), nullptr, &nameClicked))
+            if (ApexUi::OverviewRow("WaterReflections", IconId::MirrorRound, "Water Reflections", phrase, kShoreDescription, &on, !Loading(), nullptr, &nameClicked, nullptr, on && g_menuGameAaOn ? "Waiting for game settings" : nullptr, on && g_menuGameAaOn))
                 SetShore(on);
             if (nameClicked) Go(PageWaterSnow, &g_waterSnowTab, WaterTab);
         }
+        OverviewPatchRow(Performance::kRoomLightQueueName, IconId::Lightbulb, "Faster Room Lighting", "Rooms light up sooner on lots and floors", PagePerformance);
+        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
+    }
+    ApexUi::EndCard();
+    ApexUi::GroupLabel("IMAGE");
+    if (ApexUi::BeginCard("##Image")) {
+        bool nameClicked = false;
         {
             PictureParams p = Picture::Get().GetParams();
             bool on = p.enabled;
@@ -388,16 +410,40 @@ void OverviewPage() {
         OverviewPatchRow("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade where things meet", PageAmbientOcclusion);
         OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageColor, &g_colorTab, kColorBandingTab);
         OverviewPatchRow("DepthBlur", IconId::Aperture, "Depth Blur", "Softly blurs the distant background", PageDepthBlur);
-        ApexUi::OverviewRow("Borderless", IconId::AppWindow, "Borderless", "Play without a window frame", kBorderlessDescription, nullptr, true, BorderlessModeText(),
-                            &nameClicked);
-        if (nameClicked) Go(PageDisplay, &g_displayTab, DisplayWindow);
-        OverviewPatchRow("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean, smooth edges on the world", PageDisplay, &g_displayTab, DisplayAntiAliasing);
+        OverviewPatchRow("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean, smooth edges on the world", PageEdgeSmoothing);
+    }
+    ApexUi::EndCard();
+    ApexUi::GroupLabel("Performance");
+    if (ApexUi::BeginCard("##PerformanceScreen")) {
         OverviewPatchRow(Performance::kResourceCacheName, IconId::Gauge, "Faster File Lookups", "Fewer small stutters when things load", PagePerformance);
-        OverviewPatchRow(Performance::kRoomLightQueueName, IconId::Gauge, "Faster Room Lighting", "Rooms light up sooner on lots and floors", PagePerformance);
-        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
+
     }
     ApexUi::EndCard();
     ImGui::PopID();
+}
+
+void OverviewDefaults() {
+    toml::table before, defaults, changes, switches;
+    ApexConfig::CaptureFeatureState(before);
+    ApexConfig::DefaultFeatureState(defaults);
+    static const char* const names[] = {kNightLighting, "AmbientOcclusion", "SceneDither", "DepthBlur", "EdgeSmoothing",
+        Performance::kResourceCacheName, Performance::kRoomLightQueueName, Performance::kLotLightingName};
+    for (const char* name : names) {
+        if (const auto* t = defaults["patches"][name].as_table()) {
+            toml::table values;
+            if (const auto value = (*t)["enabled"].value<bool>()) values.insert("enabled", *value);
+            if (std::strcmp(name, kNightLighting) == 0) {
+                if (const auto value = (*t)["reflexoNoLago"].value<float>()) values.insert("reflexoNoLago", *value);
+            }
+            switches.insert(name, std::move(values));
+        }
+    }
+    changes.insert("patches", std::move(switches));
+    if (const auto enabled = defaults["qol"]["picture"]["enabled"].value<bool>())
+        changes.insert("qol", toml::table{{"picture", toml::table{{"enabled", *enabled}}}});
+
+    ApexConfig::ApplyFeatureState(changes);
+    ShowToast(I18n::Tr("Page defaults restored"), std::move(before), "Page defaults restored");
 }
 
 // ---- World > Lighting ----
@@ -431,12 +477,18 @@ void UpperFloorRow() {
 }
 
 void LampsTabContent() {
-    FeatureCardWith(kNightLighting, IconId::MoonStar, "Night Lights", "Lamps light the ground, objects, walls, roofs, water and snow",
-                    [](ApexPatch*) { NightLighting::DrawLampColor(); });
+    FeatureCardWith(kNightLighting, IconId::MoonStar, "Night Lights", "Lamps light your neighborhood at night", [](ApexPatch*) {});
     ApexPatch* ntr = Find(kNightLighting);
     if (!ntr) return;
-    if (ntr->IsEnabled()) NightLighting::DrawFooter();
-    else if (ntr->IsCompatibleWithCurrentVersion() && !Loading()) CardNote("Turn on Night Lights, then fine-tune each part in the tabs above");
+    if (!ntr->IsEnabled()) {
+        if (ntr->IsCompatibleWithCurrentVersion() && !Loading()) CardNote("Turn on Night Lights, then fine-tune each part in the tabs above");
+        return;
+    }
+    if (ApexUi::BeginCard("##NightBalance")) NightLighting::DrawLightingBalance();
+    ApexUi::EndCard();
+    if (ApexUi::BeginCard("##NightFineTuning"))
+        ApexUi::CardHeader(IconId::SlidersHorizontal, "Want to adjust one part?", "Use the tabs above. Your combination is shown as Custom.", nullptr, nullptr);
+    ApexUi::EndCard();
 }
 
 void GroundTabContent() {
@@ -459,7 +511,7 @@ void BuildingsTabContent() {
 
 void LightingPage() {
     ApexUi::PageTitle("Lighting", "Warm lamp light around your lots at night");
-    static const char* const kTabs[] = {"Lamps", "Ground", "Objects", "Buildings", "Stories"};
+    static const char* const kTabs[] = {"Overview", "Ground", "Objects", "Buildings", "Stories"};
     ApexUi::TabBar("##LightingTabs", &g_lightingTab, kTabs, IM_COUNTOF(kTabs));
     switch (g_lightingTab) {
     case LightingGround: GroundTabContent(); break;
@@ -646,15 +698,15 @@ void DepthBlurPage() {
 
 // ---- System > Display ----
 
-void BorderlessCard() {
-    ImGui::PushID("Borderless");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::AppWindow, "Borderless", "Play without a title bar or frame", kBorderlessDescription, nullptr);
-        ApexUi::CardDivider();
-        Borderless::RenderUI();
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
+bool HasConfirmedConflicts() {
+    if (!g_menuGameAaOn) return false;
+    const auto active = [](const char* name) { auto* p = Find(name); return p && p->IsEnabled(); };
+    return active("EdgeSmoothing") || active("DepthBlur") || active("AmbientOcclusion") ||
+        (active(kNightLighting) && NightLighting::ShoreReflection() > 0.0f);
+}
+void ConflictsPage() {
+    ApexUi::PageTitle("Conflicts", "Enabled settings that prevent an Apex effect from working");
+    if (!HasConfirmedConflicts()) ApexUi::IconNote(IconId::CircleCheck, "No active conflicts detected");
 }
 
 void AntiAliasingContent() {
@@ -662,12 +714,9 @@ void AntiAliasingContent() {
     FeatureCard("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean edges on the world; menus stay sharp");
 }
 
-void DisplayPage() {
-    ApexUi::PageTitle("Display", "The game window and smooth edges");
-    static const char* const kTabs[] = {"Window", "Anti-aliasing"};
-    ApexUi::TabBar("##DisplayTabs", &g_displayTab, kTabs, IM_COUNTOF(kTabs));
-    if (g_displayTab == DisplayAntiAliasing) AntiAliasingContent();
-    else BorderlessCard();
+void EdgeSmoothingPage() {
+    ApexUi::PageTitle("Edge Smoothing", "Clean edges on the world; menus stay sharp");
+    AntiAliasingContent();
 }
 
 // ---- System > Performance ----
@@ -766,8 +815,74 @@ struct ReportState {
     unsigned long long scannedAt = 0;
     std::string confirmDelete; // the folder whose Delete was clicked once ("*" = Delete all)
     unsigned long long confirmAt = 0;
+    bool receiptInitialized = false;
+    uint64_t receiptSeen = 0;
+    std::string notesFolder;
+    Captures::Description fallbackNote;
+    char optionalTitle[256]{};
+    char optionalDescription[3072]{};
+    bool notesError = false;
 };
 ReportState g_report;
+
+// Shared action alignment is also used by the developer-mode confirmation.
+bool ReportDialogActions(const char* first, bool firstIcon, const char* last, bool lastIcon) {
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float firstWidth = ApexUi::ButtonWidth(first, firstIcon);
+    const float total = firstWidth + ImGui::GetStyle().ItemSpacing.x + ApexUi::ButtonWidth(last, lastIcon);
+    const bool oneRow = total <= available;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, available - (oneRow ? total : firstWidth)));
+    return oneRow;
+}
+void ReportDialogLastAction(const char* label, bool withIcon, bool oneRow) {
+    if (oneRow) ImGui::SameLine();
+    else ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - ApexUi::ButtonWidth(label, withIcon)));
+}
+
+void ReportOptionalNotes() {
+    const auto saved = Captures::LastSave();
+    if (saved.serial != g_report.receiptSeen && !saved.saving && !Captures::Saving() && !Recorder::Active()) {
+        g_report.receiptSeen = saved.serial;
+        if (saved.serial && !saved.failed && !Captures::SessionActive()) {
+            g_report.notesFolder = saved.folder;
+            g_report.fallbackNote = Captures::ReadDescription(saved.folder);
+            g_report.optionalTitle[0] = g_report.optionalDescription[0] = 0;
+            g_report.notesError = false;
+            ImGui::OpenPopup("OptionalCaptureNotes");
+        }
+    }
+    ImGui::SetNextWindowSize(ImVec2(std::min(500.0f * ApexUi::Unit(), ImGui::GetIO().DisplaySize.x - 32.0f), 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("OptionalCaptureNotes", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ApexUi::CardHeader(IconId::Check, "Capture saved", "Give it a name to find it more easily", nullptr, nullptr);
+        ApexUi::CardDivider();
+        ImGui::TextUnformatted(I18n::Tr("Title (optional)"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##OptionalCaptureTitle", g_report.optionalTitle, sizeof(g_report.optionalTitle));
+        ApexUi::Gap(ApexUi::kSpace2);
+        ImGui::TextUnformatted(I18n::Tr("Description (optional)"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextMultiline("##OptionalCaptureDescription", g_report.optionalDescription, sizeof(g_report.optionalDescription), ImVec2(-1, 100 * ApexUi::Unit()));
+        ApexUi::MutedText("Blank fields use the capture type and diagnostic information. Your files are already saved.");
+        if (g_report.notesError) ApexUi::IconNote(IconId::TriangleAlert, "Could not save the description. Check free space and folder access");
+        ApexUi::Gap(ApexUi::kSpace2);
+        const bool oneRow = ReportDialogActions("Keep automatic details", false, "Save capture", true);
+        if (ApexUi::TextButton("Keep automatic details")) ImGui::CloseCurrentPopup();
+        ReportDialogLastAction("Save capture", true, oneRow);
+        ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
+        if (ApexUi::IconTextButton("Save capture", IconId::Save, nullptr, ButtonKind::Primary)) {
+            const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
+            const std::string title = filled(g_report.optionalTitle) ? g_report.optionalTitle : g_report.fallbackNote.title;
+            const std::string text = filled(g_report.optionalDescription) ? g_report.optionalDescription : g_report.fallbackNote.text;
+            if (Captures::SaveFolderDescription(g_report.notesFolder, title, text)) {
+                g_report.scannedAt = 0;
+                ImGui::CloseCurrentPopup();
+            } else g_report.notesError = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+}
 
 std::string SizeText(uint64_t bytes) {
     if (bytes >= (1ull << 30)) return std::format("{:.1f} GB", static_cast<double>(bytes) / (1ull << 30));
@@ -825,7 +940,10 @@ void ReportCaptureCard() {
         // a row: name, plain explanation (with its key), one button
         const auto row = [&](const char* label, const std::string& description, const char* button, IconId icon, ApexUi::ButtonKind kind) {
             if (!ApexUi::BeginControlRow(label, description.c_str(), ApexUi::ButtonWidth(I18n::Tr(button), true))) return false;
+            const bool stopping = Recorder::Active() && std::string_view(button).starts_with("Stop");
+            ImGui::BeginDisabled(!stopping && (Loading() || Captures::Saving() || LightProbe::Busy() || Recorder::Active()));
             const bool clicked = ApexUi::IconTextButton(button, icon, nullptr, kind);
+            ImGui::EndDisabled();
             ApexUi::EndControlRow();
             return clicked;
         };
@@ -864,7 +982,7 @@ void ReportCaptureCard() {
         ApexConfig::UiSettings ui = ApexConfig::GetUi();
         if (ApexUi::SwitchRow("Include a screenshot", &ui.captureScreenshot,
                               "Each capture saves a screenshot without this menu to show the problem", true))
-            ApexConfig::SetUi(ui);
+            { ApexConfig::SetUi(ui); Captures::SetScreenshots(ui.captureScreenshot); }
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -889,7 +1007,8 @@ void ReportListCard() {
             ImGui::PushID(e.folder.c_str());
             std::string kind = I18n::Tr(e.kind.c_str());
             if (e.kind.rfind("Session", 0) == 0) kind = I18n::Trf("Session ({} captures)", e.items) + (e.folder == openSession ? std::string(" \xC2\xB7 ") + I18n::Tr("open") : "");
-            const std::string label = e.date.empty() ? kind : std::format("{} \xC2\xB7 {} \xC2\xB7 {}", e.date, e.time, kind);
+            const std::string label = !e.title.empty() && e.title != e.folder ? e.title :
+                e.date.empty() ? kind : std::format("{} \xC2\xB7 {} \xC2\xB7 {}", e.date, e.time, kind);
             const std::string size = SizeText(e.bytes);
             const float w = ImGui::CalcTextSize(size.c_str()).x + ApexUi::ButtonWidth(I18n::Tr("Open"), true) + ApexUi::ButtonWidth(I18n::Tr("Click again to delete"), true) +
                             24.0f * ApexUi::Unit();
@@ -900,10 +1019,12 @@ void ReportListCard() {
                 ImGui::SameLine();
                 if (ApexUi::IconTextButton("Open", IconId::ExternalLink, "Shows this capture's folder")) Captures::Open(e.folder);
                 ImGui::SameLine();
+                ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
                 if (e.folder != openSession && ConfirmDelete("Delete", e.folder, "Deletes this capture for good")) {
                     Captures::Delete(e.folder);
                     g_report.scannedAt = 0;
                 }
+                ImGui::EndDisabled();
                 ApexUi::EndControlRow();
             }
             ImGui::PopID();
@@ -913,11 +1034,13 @@ void ReportListCard() {
             Captures::OpenFolder();
         if (!g_report.list.empty()) {
             ImGui::SameLine();
+            ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
             if (ConfirmDelete("Delete all", "*", "Deletes every saved capture for good")) {
                 Captures::DeleteAll();
                 g_report.scannedAt = 0;
             }
         }
+        if (!g_report.list.empty()) ImGui::EndDisabled();
         ApexUi::MutedText("Captures are never overwritten or deleted by themselves; delete the ones you no longer need here.");
     }
     ApexUi::EndCard();
@@ -990,11 +1113,13 @@ void SessionHeroCard() {
                 ImGui::PopTextWrapPos();
             }
             ApexUi::Gap(ApexUi::kSpace3);
+            ImGui::BeginDisabled(Loading() || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
             if (ApexUi::IconTextButton("Start a session##Sess", IconId::Layers, "Every capture you save goes into this session's folder until you end it",
                                        ApexUi::ButtonKind::Primary)) {
                 Captures::BeginSession();
                 g_report.scannedAt = 0;
             }
+            ImGui::EndDisabled();
         } else {
             const std::vector<std::string> items = Captures::SessionItems();
             if (items.empty()) {
@@ -1014,11 +1139,13 @@ void SessionHeroCard() {
                 }
             }
             ApexUi::Gap(ApexUi::kSpace3);
+            ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
             if (ApexUi::IconTextButton("End and save the session##Sess", IconId::Check, "Adds the log, your settings and a list of the captures, ready to zip and send",
                                        ApexUi::ButtonKind::Primary)) {
                 Captures::EndSession();
                 g_report.scannedAt = 0;
             }
+            ImGui::EndDisabled();
             ImGui::SameLine();
             if (ApexUi::IconTextButton("Open its folder##Sess", IconId::ExternalLink, "Shows this session's folder")) Captures::Open(Captures::SessionFolder());
         }
@@ -1028,110 +1155,23 @@ void SessionHeroCard() {
     ImGui::PopID();
 }
 
-int g_captureChoice = -1; // 0 lighting, 1 appearance, 2 crash, 3 other; presentation only
-int g_captureBaseline = 0;
-std::string g_captureReadyFolder;
-
 void ReportPage() {
-    ApexUi::PageTitle("Report a problem", "Choose the problem. We will guide the capture");
-    if (ApexUi::BeginCard("##CaptureGuide")) {
-        ApexUi::CardHeader(IconId::Camera, g_captureChoice < 0 ? "What went wrong?" : "Capture the problem",
-                           "Choose, capture, then prepare the files to send", nullptr, nullptr);
-        ApexUi::CardDivider();
-        if (g_captureChoice < 0) {
-            const auto choice = [&](int value, const char* label, const char* desc, IconId icon) {
-                if (!ApexUi::BeginControlRow(label, desc, ApexUi::ButtonWidth("Choose", true))) return;
-                ImGui::PushID(value);
-                if (ApexUi::IconTextButton("Choose", icon)) {
-                    g_captureChoice = value;
-                    g_captureReadyFolder.clear();
-                    if (!Captures::SessionActive()) Captures::BeginSession();
-                    g_captureBaseline = Captures::SessionCaptures();
-                }
-                ImGui::PopID();
-                ApexUi::EndControlRow();
-            };
-            ImGui::BeginDisabled(Loading());
-            choice(0, "Lights or rooms look wrong", "Lights flicker, update late or light the wrong room", IconId::Lightbulb);
-            choice(1, "An object looks wrong", "A dark painting, a wrong color or an unexpected patch", IconId::Image);
-            choice(2, "The game closed by itself", "Gather the available records without causing another crash", IconId::TriangleAlert);
-            choice(3, "Another problem / not sure", "Start with the mod log and your settings", IconId::CircleDashed);
-            ImGui::EndDisabled();
-        } else {
-            const auto ensureSession = [] {
-                if (!Captures::SessionActive()) {
-                    Captures::BeginSession();
-                    g_captureBaseline = Captures::SessionCaptures();
-                    g_captureReadyFolder.clear();
-                }
-            };
-            if (ApexUi::TextButton("Choose another problem")) {
-                LightProbe::CancelAim();
-                g_captureChoice = -1;
-            }
-            const bool recorded = Captures::SessionActive() && Captures::SessionCaptures() > g_captureBaseline;
-            if (g_captureChoice == 0) {
-                ApexUi::MutedText("Repeat the action that causes the lighting problem. Record up to 20 seconds; this is not a video");
-                ImGui::BeginDisabled(Loading() || !(Find(kNightLighting) && Find(kNightLighting)->IsEnabled()));
-                if (ApexUi::IconTextButton(Recorder::SecondsRecorded() >= 0 ? "Stop recording" : "Start lighting recording", IconId::Activity, nullptr, ButtonKind::Primary)) {
-                    ensureSession();
-                    Recorder::RequestToggle();
-                    if (Recorder::SecondsRecorded() < 0) Overlay::SetVisible(false);
-                }
-                ImGui::EndDisabled();
-                if (!(Find(kNightLighting) && Find(kNightLighting)->IsEnabled())) CardNote("The recording and the two lighting captures need Night Lights on");
-            } else if (g_captureChoice == 1) {
-                ApexUi::MutedText("Point at the part that looks wrong. The capture measures that point, not the whole object");
-                ImGui::BeginDisabled(Loading() || !(Find(kNightLighting) && Find(kNightLighting)->IsEnabled()));
-                if (ApexUi::IconTextButton("Capture a point on the object", IconId::Crosshair, nullptr, ButtonKind::Primary)) {
-                    ensureSession();
-                    LightProbe::Aim();
-                    Overlay::SetVisible(false);
-                }
-                ImGui::EndDisabled();
-                if (!(Find(kNightLighting) && Find(kNightLighting)->IsEnabled())) CardNote("The recording and the two lighting captures need Night Lights on");
-            } else {
-                ApexUi::MutedText(g_captureChoice == 2 ? "Save the available crash records. You do not need to crash the game again" : "Keep the problem visible and save a report with the log and your settings");
-                ImGui::BeginDisabled(Loading());
-                if (ApexUi::IconTextButton("Save a report", IconId::Save, nullptr, ButtonKind::Primary)) {
-                    ensureSession();
-                    Captures::SaveReport();
-                }
-                ImGui::EndDisabled();
-            }
-            ApexConfig::UiSettings ui = ApexConfig::GetUi();
-            if (ApexUi::SwitchRow("Include a screenshot", &ui.captureScreenshot, "Each capture saves a screenshot without this menu to show the problem", true)) ApexConfig::SetUi(ui);
-            ApexUi::CardDivider();
-            if (recorded) {
-                ApexUi::IconNote(IconId::CircleCheck, "Capture saved. You can capture again before finishing");
-                ImGui::BeginDisabled(Recorder::SecondsRecorded() >= 0 || LightProbe::Busy() || Captures::ScreenshotPending());
-                if (ApexUi::IconTextButton("Finish and open the folder", IconId::ExternalLink, nullptr, ButtonKind::Primary)) {
-                    g_captureReadyFolder = Captures::SessionFolder();
-                    Captures::EndSession();
-                    Captures::Open(g_captureReadyFolder);
-                    g_report.scannedAt = 0;
-                }
-                ImGui::EndDisabled();
-            } else if (g_captureReadyFolder.empty()) {
-                ApexUi::MutedText("After capturing, reopen this menu to finish and find your files");
-            }
-            if (!g_captureReadyFolder.empty()) {
-                ApexUi::IconNote(IconId::CircleCheck, "Files saved. Nothing has been sent automatically");
-                ApexUi::MutedText("Compress this folder as a ZIP and send it with a short description on Nexus Mods or GitHub");
-                if (ApexUi::IconTextButton("Open its folder", IconId::ExternalLink)) Captures::Open(g_captureReadyFolder);
-            }
-        }
+    if (!g_report.receiptInitialized) {
+        g_report.receiptSeen = Captures::LastSave().serial;
+        g_report.receiptInitialized = true;
     }
-    ApexUi::EndCard();
-    if (ApexUi::BeginAdvanced("CaptureTools", "All capture tools")) {
-        SessionHeroCard();
-        ReportCaptureCard();
-        ReportHowCard();
-        ApexUi::EndAdvanced();
-    }
-    if (ApexUi::BeginAdvanced("CaptureHistory", "Your captures")) {
-        ReportListCard();
-        ApexUi::EndAdvanced();
+    ApexUi::PageTitle("Report a problem", "Save what helps fix a bug, then send it");
+    SessionHeroCard();
+    ReportCaptureCard();
+    ReportListCard();
+    ReportHowCard();
+    ReportOptionalNotes();
+    const auto saved = Captures::LastSave();
+    if (saved.failed) {
+        ApexUi::IconNote(IconId::TriangleAlert, "Some files could not be saved");
+        ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
+        if (ApexUi::IconTextButton("Retry saving", IconId::RotateCcw)) Captures::RetrySave();
+        ImGui::EndDisabled();
     }
 }
 
@@ -1198,7 +1238,7 @@ void DevProfilerTab() {
     inspect(Performance::kWallShadingName, "Wall shading", "Check which lighting passes were delayed, how long they waited and whether the camera was read correctly.", "DevWallShading");
     inspect(Performance::kSceneBudgetName, "Objects spread across frames", "Balance the amount of object work per frame against the longest allowed wait. Review the pending queue and object-lifetime checks.", "DevSceneObjects");
     inspect(Performance::kFastTextureName, "Texture compression and processor cores", "Compare compressed textures with the game. Worker limits depend on the processor; zero workers means one core.", "DevTextures");
-    inspect(Performance::kFastCacheName, "Compressed game data", "Check that compressed data decompresses correctly. Running the game’s compressor too adds its processing time to the test.", "DevCompression");
+    inspect(Performance::kFastCacheName, "Compressed game data", "Check that compressed data decompresses correctly. Running the gameÃ¢â‚¬â„¢s compressor too adds its processing time to the test.", "DevCompression");
 }
 
 void DevDebugViewsTab() {
@@ -1215,13 +1255,15 @@ void DevDebugViewsTab() {
 }
 
 void DeveloperPage() {
+    const toml::table preferencesBefore = DeveloperSettings::Capture();
+    toml::table profilerBefore; FrameProfiler::SaveToToml(profilerBefore);
     ApexUi::PageTitle("Developer", "Choose a test and keep its tools together");
     static int tab = 0;
     constexpr const char* labels[] = {"Start here", "Lighting", "Performance", "Captures", "Visual effects", "Translations"};
     constexpr IconId icons[] = {IconId::LayoutDashboard, IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type};
     ApexUi::TabBar("##DeveloperTabs", &tab, labels, 6, icons);
     if (tab == 0) {
-        DevCard("DevStart", IconId::Wrench, "Developer", "This design is for the private development build. Public releases keep Developer hidden.", true, [&] {
+        DevCard("DevStart", IconId::Wrench, "Developer", "Developer mode is optional. Turn it off in Settings when you have finished testing.", true, [&] {
             constexpr const char* purpose[] = {
                 "Keep the camera fixed. Save the correct state, cause the problem and save again. Refresh only after capturing the incorrect state.",
                 "Clear the previous data, reproduce the stutter, then stop and save. High FPS can still hide short pauses.",
@@ -1242,7 +1284,7 @@ void DeveloperPage() {
         ApexUi::MutedText("A session keeps related captures together. Reports save the log and settings; lighting recording lasts up to 20 seconds. The Profiler saves a separate measurement report.");
         SessionHeroCard();
         ReportCaptureCard();
-        FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save the game’s drawing operations to a text file. This is detailed evidence for rendering problems.");
+        FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save the gameÃ¢â‚¬â„¢s drawing operations to a text file. This is detailed evidence for rendering problems.");
         ReportListCard();
     } else if (tab == 4) DevDebugViewsTab();
     else {
@@ -1260,6 +1302,8 @@ void DeveloperPage() {
             ImGui::TextWrapped("%s", I18n::MissingList(200).c_str());
         });
     }
+    toml::table profilerAfter; FrameProfiler::SaveToToml(profilerAfter);
+    if (preferencesBefore != DeveloperSettings::Capture() || profilerBefore != profilerAfter) ApexConfig::RequestSave();
 }
 
 
@@ -1358,7 +1402,7 @@ void TextSizeRow() {
     ApexUi::EndControlRow();
 }
 
-// Menu language: Automatic (Windows' display language), English, Português, Español, Français (each in its own words)
+// Menu language: Automatic (Windows' display language), English, PortuguÃƒÂªs, EspaÃƒÂ±ol, FranÃƒÂ§ais (each in its own words)
 void LanguageRow() {
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
     const std::string automatic = I18n::Trf("Automatic ({})", I18n::NativeName(I18n::SystemLanguage()));
@@ -1411,7 +1455,6 @@ void ResetAllRow() {
             ApexConfig::CaptureFeatureState(before);
             ApexConfig::DefaultFeatureState(defaults);
             const auto previousUi = ApexConfig::GetUi();
-            defaults.insert_or_assign("display", toml::table{{"mode", "off"}});
             ApexConfig::ApplyFeatureState(defaults);
             ApexConfig::UiSettings uiDefaults;
             uiDefaults.welcomeDone = previousUi.welcomeDone;
@@ -1463,6 +1506,49 @@ void CreditLine(const char* text) {
     ApexUi::MutedText(text);
 }
 
+bool g_developerConfirmRequested = false;
+toml::table g_developerPendingProfile;
+std::string g_developerPendingProfileName;
+void DeveloperModeRow() {
+    auto ui = ApexConfig::GetUi();
+    bool enabled = ui.developerMode;
+    if (ApexUi::SwitchRow("Enable developer mode", &enabled, "Advanced tools for testing and diagnostics. Requires restarting the game", false)) {
+        if (enabled) { g_developerPendingProfile = {}; g_developerPendingProfileName.clear(); g_developerConfirmRequested = true; }
+        else { ui.developerMode = false; ApexConfig::SetUi(ui); }
+    }
+    if (ui.developerMode != !kPublicBuild.load(std::memory_order_relaxed))
+        ApexUi::IconNote(IconId::Info, "Restart the game to apply the developer mode change");
+}
+void DeveloperConfirmation() {
+    if (g_developerConfirmRequested) {
+        ImGui::OpenPopup("DeveloperModeConfirmation");
+        g_developerConfirmRequested = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(500.0f * ApexUi::Unit(), 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("DeveloperModeConfirmation", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ApexUi::CardHeader(IconId::TriangleAlert, "Enable developer mode?", "Use these tools only when you need to investigate a problem", nullptr, nullptr);
+        ApexUi::CardDivider();
+        ApexUi::MutedText("Diagnostic views can temporarily change the image. Measurements and extra checks can reduce performance while running.");
+        ApexUi::MutedText("Captures and reports may contain your settings, local file paths and details about the current game session. Review them before sharing. Nothing is sent automatically.");
+        ApexUi::MutedText("Restart the game after confirming. Measurements and recordings will not start automatically when you load a profile.");
+        ApexUi::Gap(ApexUi::kSpace2);
+        const bool oneRow = ReportDialogActions("Cancel", false, "Enable developer mode", true);
+        if (ApexUi::TextButton("Cancel")) { g_developerPendingProfile = {}; ImGui::CloseCurrentPopup(); }
+        ReportDialogLastAction("Enable developer mode", true, oneRow);
+        if (ApexUi::IconTextButton("Enable developer mode", IconId::Wrench, nullptr, ButtonKind::Primary)) {
+            toml::table before; ApexConfig::CaptureFeatureState(before);
+            auto ui = ApexConfig::GetUi(); ui.developerMode = true; ApexConfig::SetUi(ui);
+            if (!g_developerPendingProfile.empty()) {
+                ApexConfig::ApplyFeatureState(g_developerPendingProfile);
+                ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + g_developerPendingProfileName);
+                g_developerPendingProfile = {};
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void MenuTab() {
     ImGui::PushID("Menu");
     if (ApexUi::BeginCard("##Card")) {
@@ -1475,6 +1561,7 @@ void MenuTab() {
             if (ApexUi::SwitchRow("Start note", &ui.startNote, "The small note at the top center of the screen at every start, with the key that opens this menu", true))
                 ApexConfig::SetUi(ui); // [ui] start_note
         }
+        DeveloperModeRow();
         SaveRow();
         ResetAllRow();
     }
@@ -1574,6 +1661,12 @@ void LoadProfileNow(const std::string& name, unsigned parts) {
         return;
     }
     ApexConfig::KeepProfileParts(state, parts);
+    if (const auto* d = state["developer"].as_table(); d && (*d)["enabled"].value_or(true) && !ApexConfig::GetUi().developerMode) {
+        g_developerPendingProfile = std::move(state);
+        g_developerPendingProfileName = name;
+        g_developerConfirmRequested = true;
+        return;
+    }
     toml::table before;
     ApexConfig::CaptureFeatureState(before);
     ApexConfig::ApplyFeatureState(state);
@@ -1601,7 +1694,9 @@ void ProfilesTab() {
         ApexUi::CardDivider();
         ApexUi::GroupLabel("SAVE CURRENT SETUP");
         ApexUi::MutedText("What to save");
-        if (!ApexUi::FilterActive()) ProfilePartChecks("SaveParts", &s.saveParts, ApexConfig::kProfilePartsAll);
+        const unsigned saveAvailable = ApexConfig::kProfilePartsAll & (ApexConfig::GetUi().developerMode ? ~0u : ~ApexConfig::kPartDeveloper);
+        s.saveParts &= saveAvailable;
+        if (!ApexUi::FilterActive()) ProfilePartChecks("SaveParts", &s.saveParts, saveAvailable);
         ApexUi::Gap(ApexUi::kSpace1);
         const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
         const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -1668,7 +1763,7 @@ void ProfilesTab() {
                     ImGui::BeginDisabled(Loading() || item.parts == 0);
                     if (ApexUi::IconTextButton("Load", IconId::Download, "Pick which parts of this profile to apply")) {
                         s.loading = name;
-                        s.loadParts = item.parts & ~ApexConfig::kPartShortcuts; // shortcuts only when picked (they belong to the keyboard)
+                        s.loadParts = item.parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper); // shortcuts only when picked (they belong to the keyboard)
                         s.confirmDelete.clear();
                     }
                     ImGui::EndDisabled();
@@ -1722,19 +1817,17 @@ void CompatibilityTab() {
 void AboutTab() {
     ImGui::PushID("About");
     if (ApexUi::BeginCard("##Card")) {
-        const std::string versionLine = kPublicBuild ? I18n::Trf("Version {} \xC2\xB7 Public build", APEX_VERSION_STRING)
-                                                     : "Version " APEX_VERSION_STRING " \xC2\xB7 Development build, with developer tools";
+        const std::string versionLine = I18n::Trf(kPublicBuild ? "Version {}" : "Version {} - Developer mode", APEX_VERSION_STRING);
         ApexUi::CardHeader(IconId::Info, APEX_PRODUCT_NAME " " APEX_PRODUCT_TAGLINE, versionLine.c_str(), nullptr, nullptr);
         ApexUi::CardDivider();
         ApexUi::GroupLabel("CREDITS");
-        CreditLine("Sims3SettingsSetter by sims3fiend: " APEX_PRODUCT_NAME " began as a fork of it, and its framework is still based on its "
-                   "design. Huge thanks to sims3fiend! I recommend using both.");
+        CreditLine(APEX_PRODUCT_NAME " by @loinyx.");
+        CreditLine("sims3fiend: framework design reference.");
         CreditLine("Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).");
         CreditLine("Edge Smoothing's texture sharpening follows AMD FidelityFX CAS (MIT).");
         CreditLine("Third-party code: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA by Jorge Jimenez et al. (MIT-style, "
                    "see third_party/smaa/LICENSE.txt), Lucide icons (ISC, see third_party/lucide/LICENSE).");
         CreditLine("Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from Arro's Split-Level Lighting Fix.");
-        CreditLine(APEX_PRODUCT_NAME " by @loinyx.");
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -1758,7 +1851,7 @@ void SettingsPage() {
 // mode (ApexUi::BeginFilter): only its matching rows, each under the part's breadcrumb, which opens that page and tab.
 
 struct SearchPart {
-    const char* crumbPage; // the breadcrumb, "Page › Tab" (English keys, shown translated)
+    const char* crumbPage; // the breadcrumb, "Page Ã¢â‚¬Âº Tab" (English keys, shown translated)
     const char* crumbTab;  // nullptr = the page alone
     int page;
     int* tab; // nullptr = a page without tabs
@@ -1768,7 +1861,7 @@ struct SearchPart {
 
 const SearchPart* SearchParts(int& count) {
     static const SearchPart kParts[] = {
-        {"Lighting", "Lamps", PageLighting, &g_lightingTab, LightingLamps, LampsTabContent},
+        {"Lighting", "Overview", PageLighting, &g_lightingTab, LightingLamps, LampsTabContent},
         {"Lighting", "Ground", PageLighting, &g_lightingTab, LightingGround, GroundTabContent},
         {"Lighting", "Objects", PageLighting, &g_lightingTab, LightingObjects, ObjectsTabContent},
         {"Lighting", "Buildings", PageLighting, &g_lightingTab, LightingBuildings, BuildingsTabContent},
@@ -1783,8 +1876,7 @@ const SearchPart* SearchParts(int& count) {
         {"Color", "Detail", PageColor, &g_colorTab, Picture::TabDetail, [] { PictureRows(Picture::TabDetail); }},
         {"Ambient Occlusion", nullptr, PageAmbientOcclusion, nullptr, 0, AmbientOcclusionContent},
         {"Depth Blur", nullptr, PageDepthBlur, nullptr, 0, DepthBlurContent},
-        {"Display", "Window", PageDisplay, &g_displayTab, DisplayWindow, BorderlessCard},
-        {"Display", "Anti-aliasing", PageDisplay, &g_displayTab, DisplayAntiAliasing, AntiAliasingContent},
+        {"Edge Smoothing", nullptr, PageEdgeSmoothing, nullptr, 0, AntiAliasingContent},
         {"Performance", nullptr, PagePerformance, nullptr, 0, PerformanceCard},
         {"Settings", "Menu", PageSettings, &g_settingsTab, SettingsMenu, MenuTab},
         {"Settings", "Shortcuts", PageSettings, &g_settingsTab, SettingsShortcuts, ShortcutsTab},
@@ -2046,8 +2138,9 @@ void Sidebar(bool collapsed) {
         {PageColor, IconId::Palette, "Color", "IMAGE"},
         {PageAmbientOcclusion, IconId::Contrast, "Ambient Occlusion", nullptr},
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
-        {PageDisplay, IconId::Monitor, "Display", "SYSTEM"},
+        {PageEdgeSmoothing, IconId::Spline, "Edge Smoothing", "SYSTEM"},
         {PagePerformance, IconId::Gauge, "Performance", nullptr},
+        {PageConflicts, IconId::TriangleAlert, "Conflicts", nullptr},
         {PageReport, IconId::Bug, "Report a problem", nullptr},
         {PageDeveloper, IconId::Wrench, "Developer", nullptr},
         {PageSettings, IconId::Settings, "Settings", nullptr},
@@ -2057,6 +2150,7 @@ void Sidebar(bool collapsed) {
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     for (const Item& item : items) {
         if (kPublicBuild && item.page == PageDeveloper) continue;
+        if (item.page == PageConflicts && !HasConfirmedConflicts()) continue;
         if (item.group) ApexUi::SidebarGroup(item.group, collapsed);
         if (ApexUi::SidebarItem(item.icon, item.label, g_page == item.page && !searching, collapsed)) {
             g_page = item.page;
@@ -2090,12 +2184,8 @@ void Sidebar(bool collapsed) {
 
 // Public and private builds share the same page reset entry point.
 void PageDefaultsRow() {
-    if (g_page == PageOverview || g_page == PageDeveloper) {
-        ApexUi::Gap(ApexUi::kSpace3);
-        if (ApexUi::IconTextButton("Restore the whole mod", IconId::RotateCcw)) {
-            Go(PageSettings, &g_settingsTab, SettingsMenu);
-            g_confirmResetAll = true;
-        }
+    if (g_page == PageOverview) return; // local reset lives beside the title
+    if (g_page == PageDeveloper) {
         return;
     }
     unsigned parts = 0;
@@ -2104,7 +2194,7 @@ void PageDefaultsRow() {
     case PageColor: parts = ApexConfig::kPartColor; break;
     case PageAmbientOcclusion: parts = ApexConfig::kPartAmbientOcclusion; break;
     case PageDepthBlur: parts = ApexConfig::kPartDepthBlur; break;
-    case PageDisplay: parts = ApexConfig::kPartWindow | ApexConfig::kPartEdgeSmoothing; break;
+    case PageEdgeSmoothing: parts = ApexConfig::kPartEdgeSmoothing; break;
     case PagePerformance: parts = ApexConfig::kPartPerformance; break;
     case PageSettings: case PageReport: break;
     default: return;
@@ -2133,7 +2223,6 @@ void PageDefaultsRow() {
                 }
                 if (g_page == PageWaterSnow) patches->erase(kUpperFloors);
             }
-            if (g_page == PageDisplay) defaults.insert_or_assign("display", toml::table{{"mode", "off"}});
             ApexConfig::ApplyFeatureState(defaults);
             if (g_page == PageSettings) {
                 ApexConfig::UiSettings ui;
@@ -2159,17 +2248,64 @@ void PageDefaultsRow() {
     }
 }
 
+// Queried only while drawing the open menu; the backbuffer reflects actual MSAA after reset.
+void GameAaCompatibilityNotice() {
+    g_menuGameAaOn = false;
+    if (Loading()) return;
+    auto* device = ApexD3D::Device();
+    if (!device) return;
+    IDirect3DSurface9* backbuffer = nullptr;
+    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer)) || !backbuffer) return;
+    D3DSURFACE_DESC desc{};
+    const HRESULT result = backbuffer->GetDesc(&desc);
+    backbuffer->Release();
+    if (FAILED(result) || desc.MultiSampleType == D3DMULTISAMPLE_NONE) return;
+    g_menuGameAaOn = true;
+    const auto active = [](const char* name) { auto* p = Find(name); return p && p->IsEnabled(); };
+    const bool aa = active("EdgeSmoothing"), blur = active("DepthBlur"), ao = active("AmbientOcclusion");
+    const bool water = active(kNightLighting) && NightLighting::ShoreReflection() > 0.0f;
+    const bool overview = g_page == PageOverview || g_page == PageConflicts;
+    const bool relevant = overview ? (aa || blur || ao || water) :
+        (g_page == PageDepthBlur && blur) || (g_page == PageAmbientOcclusion && ao) ||
+        (g_page == PageEdgeSmoothing && aa) || (g_page == PageWaterSnow && water);
+    if (!relevant) return;
+    ImGui::PushID("GameAaCompatibility");
+    if (ApexUi::BeginCard("##Warning", true)) {
+        ApexUi::IconLabel(IconId::TriangleAlert, I18n::Tr("Turn off the game's Edge Smoothing"), ImGui::GetColorU32(Col(VioletTheme::kWarning)));
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", I18n::Tr("The Sims 3's Edge Smoothing prevents these enabled Apex effects from working:"));
+        if (overview ? aa : g_page == PageEdgeSmoothing) ImGui::BulletText("%s", I18n::Tr("Edge Smoothing"));
+        if (overview ? blur : g_page == PageDepthBlur) ImGui::BulletText("%s", I18n::Tr("Depth Blur"));
+        if (overview ? ao : g_page == PageAmbientOcclusion) ImGui::BulletText("%s", I18n::Tr("Ambient Occlusion"));
+        if (overview ? water : g_page == PageWaterSnow) ImGui::BulletText("%s", I18n::Tr("Water Reflections"));
+        static bool instructions = false;
+        if (ApexUi::IconTextButton("How to turn it off", IconId::Info, nullptr, ButtonKind::Primary)) instructions = !instructions;
+        if (instructions) {
+            ApexUi::CardDivider();
+            ImGui::TextWrapped("%s", I18n::Tr("1. Open The Sims 3 menu and choose Options > Graphics."));
+            ImGui::TextWrapped("%s", I18n::Tr("2. Set Edge Smoothing to Off and apply the change."));
+            ImGui::TextWrapped("%s", I18n::Tr("3. Return to the game. Apex will check compatibility again."));
+            ImGui::TextWrapped("%s", I18n::Tr("Your Apex settings are kept. This notice disappears when the conflict is resolved."));
+        }
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
 void DrawPage() {
+    if (g_page == PageConflicts) { ConflictsPage(); GameAaCompatibilityNotice(); return; }
+    GameAaCompatibilityNotice();
     switch (g_page) {
     case PageLighting: LightingPage(); break;
     case PageWaterSnow: WaterSnowPage(); break;
     case PageColor: ColorPage(); break;
     case PageAmbientOcclusion: AmbientOcclusionPage(); break;
     case PageDepthBlur: DepthBlurPage(); break;
-    case PageDisplay: DisplayPage(); break;
+    case PageEdgeSmoothing: EdgeSmoothingPage(); break;
+    case PageConflicts: ConflictsPage(); break;
     case PagePerformance: PerformancePage(); break;
     case PageDeveloper:
-        if constexpr (!kPublicBuild) {
+        if (!kPublicBuild) {
             ApexUi::SetChangeReporting(false); // developer switches are not part of the undoable state
             DeveloperPage();
             ApexUi::SetChangeReporting(true);
@@ -2190,7 +2326,7 @@ float StatusBarHeight() {
     return lineH + ApexUi::kSpace2 * ApexUi::Unit();
 }
 
-// The thin footer: saving state (left), Sims3SettingsSetter (middle), the peek hint (right)
+// The thin footer: saving state (left), the peek hint (right)
 void StatusBar(float height) {
     const float u = ApexUi::Unit();
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -2207,24 +2343,14 @@ void StatusBar(float height) {
     const bool saving = ApexConfig::SavePending();
     const char* left = I18n::Tr(saving ? "Saving\xE2\x80\xA6" : "All changes saved");
     const float leftW = is + ig + ImGui::CalcTextSize(left).x;
-    const bool s3ss = S3SSDetect::Scan().s3ssLoaded;
-    const char* middle = I18n::Tr(s3ss ? "Sims3SettingsSetter detected" : "Sims3SettingsSetter not installed");
-    const float middleW = is + ig + ImGui::CalcTextSize(middle).x;
     const char* right = I18n::Tr("Hold Alt to peek");
     const float rightW = ImGui::CalcTextSize(right).x;
     const float spacing = ApexUi::kSpace4 * u;
     const bool showRight = leftW + spacing + rightW <= w;
-    const bool showMiddle = showRight && leftW + middleW + rightW + 2.0f * spacing <= w;
 
     ApexUi::DrawIcon(dl, saving ? IconId::Save : IconId::CircleCheck, ImVec2(p.x, y + (lineH - is) * 0.5f), is,
                      saving ? muted : ImGui::GetColorU32(Col(VioletTheme::kSuccess)));
     dl->AddText(ImVec2(p.x + is + ig, y), saving ? muted : ImGui::GetColorU32(Col(VioletTheme::kSuccess, 0.85f)), left);
-    if (showMiddle) {
-        const float mx = p.x + std::fmax(leftW + spacing, (w - middleW) * 0.5f);
-        ApexUi::DrawIcon(dl, s3ss ? IconId::CircleCheck : IconId::Info, ImVec2(mx, y + (lineH - is) * 0.5f), is,
-                         s3ss ? ImGui::GetColorU32(Col(VioletTheme::kAccent)) : muted);
-        dl->AddText(ImVec2(mx + is + ig, y), muted, middle);
-    }
     if (showRight) dl->AddText(ImVec2(p.x + w - rightW, y), muted, right);
     ImGui::PopFont();
 }
@@ -2286,7 +2412,7 @@ void DrawToast(float bottomY) {
 
 void MainWindow() {
     const float u = ApexUi::Unit();
-    if constexpr (kPublicBuild) {
+    if (kPublicBuild) {
         if (g_page == PageDeveloper) g_page = PageOverview;
     }
     ImGuiIO& io = ImGui::GetIO();
@@ -2300,7 +2426,7 @@ void MainWindow() {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) g_focusSearch = true;
         // Esc: clears the search, then closes the menu (never while a field is being
         // edited or the menu key is being chosen)
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !g_waitingForKey && g_recRow < 0 && !ImGui::IsAnyItemActive()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !g_waitingForKey && g_recRow < 0 && !ImGui::IsAnyItemActive() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
             if (g_search[0]) g_search[0] = '\0';
             else closeRequested = true;
         }
@@ -2373,6 +2499,7 @@ void MainWindow() {
         const float statusTop = ImGui::GetCursorScreenPos().y;
         StatusBar(statusH);
         DrawToast(statusTop);
+        DeveloperConfirmation();
         ImGui::EndDisabled();
 
         // Hold to compare: the eye button, or B while the pointer is over the menu (not while typing)
@@ -2401,6 +2528,36 @@ void MainWindow() {
     }
 }
 
+// Read-only session gate, using the resolved WorldManager global and documented active/mode fields.
+// The render thread publishes a cached bool; the window thread never reads game memory.
+std::atomic<bool> g_menuAvailable{false};
+unsigned long long g_menuLiveAt = 0, g_menuGateCheckedAt = 0;
+bool WorldSessionActive() {
+    const uintptr_t global = GameAddr::Get(GameAddr::Id::WorldManagerPtr);
+    if (!global) return false;
+    __try {
+        const uintptr_t world = *reinterpret_cast<const uintptr_t*>(global);
+        if (!world || !*reinterpret_cast<const unsigned char*>(world + 0x41)) return false;
+        const int mode = *reinterpret_cast<const int*>(world + 0x1B4);
+        return mode >= 1 && mode <= 3; // loaded world / edit in game / save in game
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+void UpdateMenuAvailability() {
+    const auto now = GetTickCount64();
+    if (g_menuGateCheckedAt && now - g_menuGateCheckedAt < 200) return;
+    g_menuGateCheckedAt = now;
+    const auto startup = g_startup.load();
+    const auto* night = Find(kNightLighting);
+    const bool worldLive = WorldSessionActive() && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::WorldLive());
+    if ((startup != Startup::Running && startup != Startup::RefusedOldBuild) || !worldLive) {
+        g_menuLiveAt = 0;
+        g_menuAvailable.store(false);
+        return;
+    }
+    if (!g_menuLiveAt) g_menuLiveAt = now;
+    g_menuAvailable.store(now - g_menuLiveAt >= 3000);
+}
+
 bool BannerNeeded() { return g_startup.load() == Startup::RefusedOldBuild || g_oldStandalone.load(); }
 
 // Old builds found at startup: the combined build (features off) and/or an older standalone S3SSApex.asi (idle).
@@ -2412,15 +2569,20 @@ void PlaceScreenNotice() {
     ImGui::SetNextWindowSizeConstraints(ImVec2(1.0f, 1.0f), ImVec2(std::max(1.0f, vp->Size.x - 40.0f * u), vp->Size.y));
 }
 
-bool BeginNoticePill(const char* id, float alpha = 1.0f, bool recording = false) {
+bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, bool recording = false) {
     PlaceScreenNotice();
     const float u = ApexUi::Unit();
     const float h = ImGui::GetTextLineHeight();
+    // Wrapped text cannot determine an auto-sized width: it otherwise settles at one glyph.
+    // Fix width from actual content before Begin, and allow auto-resize only for height.
+    const float maxWidth = std::max(1.0f, ImGui::GetMainViewport()->Size.x - 40.0f * u);
+    ImGui::SetNextWindowSize(ImVec2(std::min(maxWidth, contentWidth + 24.0f * u), 0.0f), ImGuiCond_Always);
+
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * u, 7.0f * u));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, (h * 1.6f + 14.0f * u) * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, (h + 14.0f * u) * 0.5f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, h * 1.6f + 14.0f * u));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, h + 14.0f * u));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(VioletTheme::kWindowBg, 0.92f));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(recording ? VioletTheme::kError : VioletTheme::kAccentLight, 0.18f));
     return ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
@@ -2431,6 +2593,18 @@ void EndNoticePill() {
     ImGui::End();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(5);
+}
+
+float NoticeContentWidth(const std::string& text) {
+    return ImGui::CalcTextSize(text.c_str()).x + ApexUi::kIconMedium * ApexUi::Unit() + ApexUi::kSpace2 * ApexUi::Unit();
+}
+
+void NoticeText(const std::string& text, IconId icon, bool recording = false) {
+    const float pulse = recording ? 0.6f + 0.4f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f)) : 1.0f;
+    ApexUi::InlineIcon(icon, ApexUi::kIconMedium * ApexUi::Unit(),
+        ImGui::GetColorU32(Col(recording ? VioletTheme::kError : VioletTheme::kAccentLight, pulse)));
+    ImGui::SameLine(0.0f, ApexUi::kSpace2 * ApexUi::Unit());
+    ImGui::TextWrapped("%s", text.c_str());
 }
 
 void Banner() {
@@ -2445,6 +2619,8 @@ void Banner() {
     ImGui::SetNextWindowBgAlpha(0.9f);
     if (ImGui::Begin("##ApexBanner", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+        ApexUi::InlineIcon(IconId::TriangleAlert, ApexUi::kIconMedium * ApexUi::Unit(), ImGui::GetColorU32(Col(VioletTheme::kWarning)));
+        ImGui::SameLine();
         if (refused) {
             ImGui::TextColored(Col(VioletTheme::kError), "%s", I18n::Tr(APEX_PRODUCT_NAME " is off"));
             ImGui::TextUnformatted(I18n::Tr("An old combined build (Sims3SettingsSetter with Apex inside) is also installed:"));
@@ -2461,42 +2637,24 @@ void Banner() {
     ImGui::End();
 }
 
-// ---- The start note (user's pick 30/09, "A · compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
-// menu key in light violet, in a dark rounded pill with a faint violet border, top-left corner, at every start (never
+// ---- The start note (user's pick 30/09, "A Ã‚Â· compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
+// menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
 // takes input; fades out). Wait for the world-live signal and its fade-out delay before starting any launch note.
-// Without Night Lighting that signal is unavailable, so the existing startup-time fallback is retained.
+// The same active-session readiness gate is shared by all notices and the menu; there is no application-start timer fallback.
 // Each frame counts at most 100 ms so a stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 8000;
-constexpr unsigned long long kHintStartMs = 2000;
-constexpr unsigned long long kHintDelayMs = 3000;
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
-unsigned long long g_runningAt = 0;    // when the features were first seen running (GetTickCount64)
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
 
 // Render thread, every frame (Client::AlwaysDraw)
 void UpdateHint() {
-    if (g_startup.load() != Startup::Running) return;
-    const unsigned long long now = GetTickCount64();
-    if (!g_runningAt) g_runningAt = now;
-    if (!g_hintStarted || !g_hintConsidered.load()) {
-        if (ApexPatch* nl = Find("NightTerrainRelight"); nl && nl->IsEnabled()) {
-            if (!NightLighting::WorldLive()) {
-                g_hintReadyAt = 0; // the world must remain live throughout the delay
-                return;
-            }
-            if (!g_hintReadyAt) g_hintReadyAt = now;
-            if (now - g_hintReadyAt < kHintDelayMs) return;
-        }
-    }
+    if (g_startup.load() != Startup::Running || !g_menuAvailable.load()) return;
     if (!g_hintStarted) {
-        if (now - g_runningAt >= kHintStartMs) {
-            g_hintStarted = true;
-            // the first start ever picks the menu key first (KeySetupWindow); an open menu needs no note
-            if (ApexConfig::GetUi().keyChosen && ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
-                g_hintLeftMs = kHintMs;
-                g_hintLastDraw = 0;
-            }
+        g_hintStarted = true; // the shared readiness gate already waited for the world and the settle delay
+        if (ApexConfig::GetUi().keyChosen && ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
+            g_hintLeftMs = kHintMs;
+            g_hintLastDraw = 0;
         }
     }
     if (g_hintConsidered.load()) return;
@@ -2518,27 +2676,15 @@ void Hint() {
     const float u = ApexUi::Unit();
     const float lineH = ImGui::GetTextLineHeight();
     const float logo = std::round(lineH * 1.6f); // 26 px beside 16 px text, as the mock-up
-    if (BeginNoticePill("##ApexHint", fade)) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
+    const std::string text = ready + " \xC2\xB7 " + press + " " + key;
+    if (BeginNoticePill("##ApexHint", ImGui::CalcTextSize(text.c_str()).x + logo + 10.0f * u, fade)) {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(logo, logo));
-        if (!ApexUi::DrawLogo(dl, p, ImVec2(p.x + logo, p.y + logo), ImGui::GetStyle().Alpha)) { // the sparkles icon when the logo could not be made
-            const float is = ApexUi::kIconSmall * u;
-            ApexUi::DrawIcon(dl, IconId::Sparkles, ImVec2(p.x + (logo - is) * 0.5f, p.y + (logo - is) * 0.5f), is, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
-        }
-        // the texts, centred on the logo
-        const float textY = ImGui::GetCursorPosY() - logo - ImGui::GetStyle().ItemSpacing.y + (logo - lineH) * 0.5f;
-        auto part = [&](const char* s, ImVec4 c, bool bold, float gap) {
-            ImGui::SameLine(0.0f, gap);
-            ImGui::SetCursorPosY(textY);
-            if (bold && VioletTheme::BoldFont()) ImGui::PushFont(VioletTheme::BoldFont(), 0.0f);
-            ImGui::TextColored(c, "%s", s);
-            if (bold && VioletTheme::BoldFont()) ImGui::PopFont();
-        };
-        part(ready.c_str(), Col(VioletTheme::kText), true, 10.0f * u);
-        part("\xC2\xB7", Col(VioletTheme::kText, 0.45f), false, 8.0f * u);
-        part(press.c_str(), Col(VioletTheme::kText, 0.8f), false, 8.0f * u);
-        part(key.c_str(), Col(VioletTheme::kAccentLight), true, 6.0f * u);
+        if (!ApexUi::DrawLogo(ImGui::GetWindowDrawList(), p, ImVec2(p.x + logo, p.y + logo), ImGui::GetStyle().Alpha))
+            ApexUi::DrawIcon(ImGui::GetWindowDrawList(), IconId::Sparkles, p, logo, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+        ImGui::SameLine(0.0f, 10.0f * u);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (logo - lineH) * 0.5f);
+        ImGui::TextWrapped("%s", text.c_str());
     }
     EndNoticePill();
 }
@@ -2751,7 +2897,7 @@ void ShortcutsContent(bool compact) {
     ApexUi::GroupLabel("REPORT A PROBLEM");
     for (const Hotkeys::Action a : {Hotkeys::Action::Recorder, Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics})
         info(Hotkeys::ActionName(a), ApexConfig::KeyChordText(Hotkeys::Key(a)).c_str());
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         ApexUi::GroupLabel("DEVELOPER TOOLS");
         info(Hotkeys::ActionName(Hotkeys::Action::FrameCapture), ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
     }
@@ -2797,6 +2943,8 @@ void RecommendNoteWindow() {
     ImGui::SetNextWindowBgAlpha(0.95f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace3 * u));
     if (ImGui::Begin("##ApexRecommendNote", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavInputs)) {
+        ApexUi::InlineIcon(IconId::Info, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
+        ImGui::SameLine();
         ImGui::TextUnformatted(I18n::Tr("Recommended for " APEX_PRODUCT_NAME));
         ApexUi::MutedText("For the mod to work at its best");
         ApexUi::Gap(ApexUi::kSpace2);
@@ -2838,6 +2986,8 @@ void KeyNoteWindow() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace3 * u));
     if (ImGui::Begin("##ApexKeyNote", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavInputs)) {
         if (!g_keyPanel) {
+            ApexUi::InlineIcon(IconId::Keyboard, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
+            ImGui::SameLine();
             ImGui::TextUnformatted(APEX_PRODUCT_NAME);
             ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s",
                                I18n::Trf("Menu: {} \xC2\xB7 customize the shortcuts?", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle)).c_str());
@@ -2847,6 +2997,8 @@ void KeyNoteWindow() {
             const float left = static_cast<float>(g_keyNoteUntil > now ? g_keyNoteUntil - now : 0) / static_cast<float>(kKeyNoteMs);
             ImGui::ProgressBar(left, ImVec2(-1.0f, 3.0f * u), "");
         } else {
+            ApexUi::InlineIcon(IconId::Keyboard, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
+            ImGui::SameLine();
             ImGui::TextUnformatted(I18n::Tr(APEX_PRODUCT_NAME " shortcuts"));
             ApexUi::Gap(ApexUi::kSpace1);
             ShortcutsContent(true);
@@ -2900,10 +3052,8 @@ void CompareNote() {
     if (!g_comparing) return;
     const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Compare));
     const std::string text = I18n::Trf("The game without Apex \xC2\xB7 {} to turn it back on", key);
-    if (BeginNoticePill("##ApexCompareNote")) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetTextLineHeight() * 0.3f);
-        ImGui::TextWrapped("%s", text.c_str());
-    }
+    if (BeginNoticePill("##ApexCompareNote", NoticeContentWidth(text)))
+        NoticeText(text, IconId::Columns2);
     EndNoticePill();
 }
 // Render thread, every frame: the shortcuts that are not the menu key
@@ -2932,20 +3082,9 @@ bool CaptureNote() {
     } else {
         return false;
     }
-    const float u = ApexUi::Unit();
-    const float lineH = ImGui::GetTextLineHeight();
-    if (BeginNoticePill("##ApexCaptureNote", 1.0f, dot)) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + lineH * 0.3f);
-        if (dot) { // a red recording dot, pulsing once a second
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float r = lineH * 0.28f;
-            const float a = 0.6f + 0.4f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f));
-            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + r, p.y + lineH * 0.5f), r, ImGui::GetColorU32(Col(VioletTheme::kError, a)));
-            ImGui::Dummy(ImVec2(2.0f * r, lineH));
-            ImGui::SameLine(0.0f, 8.0f * u);
-        }
-        ImGui::TextWrapped("%s", text.c_str());
-    }
+    const IconId icon = dot ? IconId::Activity : LightProbe::Aiming() ? IconId::Crosshair : IconId::Info;
+    if (BeginNoticePill("##ApexCaptureNote", NoticeContentWidth(text), 1.0f, dot))
+        NoticeText(text, icon, dot);
     EndNoticePill();
     return true;
 }
@@ -2980,7 +3119,8 @@ class GuiClient final : public Overlay::Client {
     bool eatProbeMouseUp = false; // window thread only: the confirming click must not also select/place a game object
   public:
     void Draw() override {
-        if (g_returnFromProbe.load() && !LightProbe::Busy() && !Captures::ScreenshotPending()) {
+        if (!g_menuAvailable.load()) return;
+        if (g_returnFromProbe.load() && !LightProbe::Busy() && !Captures::ScreenshotPending() && !Captures::Saving()) {
             g_returnFromProbe.store(false);
             g_page = PageReport;
             Overlay::SetVisible(true);
@@ -3043,6 +3183,8 @@ class GuiClient final : public Overlay::Client {
     }
 
     bool AlwaysDraw() override {
+        UpdateMenuAvailability();
+        if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return false; }
         RunShortcuts();
         UpdateHint();
         // the capture notes (recording, saved, an open session) show with the menu closed too
@@ -3059,6 +3201,7 @@ class GuiClient final : public Overlay::Client {
     }
 
     float FontScale() override { return ApexConfig::GetUi().fontScale; }
+    bool CanOpen() override { return g_menuAvailable.load(); }
 
     bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result) override {
         if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) {
@@ -3080,7 +3223,7 @@ class GuiClient final : public Overlay::Client {
                 return true;
             }
         }
-        return Borderless::OnWindowMessage(hwnd, msg, wp, lp, result);
+        return false;
     }
 
     // Alt (peek) and B (hold to compare) belong to the menu while the pointer is over it
@@ -3088,6 +3231,7 @@ class GuiClient final : public Overlay::Client {
 
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
+        if (!g_menuAvailable.load()) return false;
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
         const bool aiming = LightProbe::Aiming();
         const bool handled = g_recRow >= 0 || Hotkeys::OnKeyDown(vk, repeat);

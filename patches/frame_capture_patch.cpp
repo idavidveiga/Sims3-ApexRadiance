@@ -7,6 +7,7 @@
 #include "patch_base.h"
 #include "hotkeys.h"
 #include "apex_version.h"
+#include "build_flavor.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "d3d9_hooks.h"
@@ -428,6 +429,7 @@ class FrameCapturePatch : public ApexPatch {
     FrameCapturePatch() : ApexPatch("FrameCapture", nullptr) {}
 
     bool Install() override {
+        if (kPublicBuild) { lastError = "Enable developer mode and restart the game first"; return false; }
         if (isEnabled) return true;
         lastError.clear();
         LOG_INFO("[FrameCapture] Installing...");
@@ -507,7 +509,6 @@ class FrameCapturePatch : public ApexPatch {
 };
 
 #include "build_flavor.h"
-#ifndef S3SS_PUBLIC // development tool: left out of the public release
 APEX_REGISTER_FEATURE(FrameCapturePatch, {.displayName = "Frame Capture (developer)",
                                       .description = "Diagnostic: dumps the draw calls of 2 frames to ApexRadiance_FrameCapture.txt (Ctrl+Shift+F9)."
                                                      " Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
@@ -517,5 +518,3 @@ APEX_REGISTER_FEATURE(FrameCapturePatch, {.displayName = "Frame Capture (develop
                                       .technicalDetails = {"Logs SetRenderTarget, SetDepthStencilSurface, Clear, StretchRect and every draw with its bound shaders, textures and depth state.",
                                           "Detours Clear, StretchRect, SetDepthStencilSurface, DrawPrimitiveUP and DrawIndexedPrimitiveUP; the rest comes from the D3D9 hook registry.",
                                           "No work is done while no capture is running."}})
-
-#endif // S3SS_PUBLIC

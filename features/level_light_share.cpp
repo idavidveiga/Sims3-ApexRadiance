@@ -1838,7 +1838,7 @@ void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
     const int S = *reinterpret_cast<const int*>(rmgr + 0x88);
     const int level = *reinterpret_cast<const int*>(treeLevel + 0x1A0);
     const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(treeLevel + 4);
-    constexpr bool log = !kPublicBuild;
+    const bool log = !kPublicBuild;
     if (S < 0 || S > 7 || level < -4 || level > 7 || !tracker || TreeLevel(tracker, level) != reinterpret_cast<uintptr_t>(treeLevel) || StoryManager(tracker, S) != rmgr) {
         if (log) GatherLog(tracker, std::format("story {} room {}: gathered through tree level {} of tracker {:08X}, which does not match (skipped)", S, id, level, tracker));
         return;
@@ -1929,7 +1929,7 @@ void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
             if (void* mgrU = reinterpret_cast<void*>(StoryManager(tracker, U)))
                 if (void* giver = reinterpret_cast<RoomById_t>(kRoomById)(mgrU, c.home))
                     if (AddGiver(key, reinterpret_cast<uintptr_t>(giver), c.home, reinterpret_cast<uintptr_t>(mgrU), tracker, U) && QueueRoom(tracker, U, c.home)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
-            if constexpr (!kPublicBuild) {
+            if (!kPublicBuild) {
                 if (g_crossLamps.size() > 4096) g_crossLamps.clear();
                 g_crossLamps.insert(c.light);
             }
@@ -2117,7 +2117,7 @@ void RecheckLotWindows(uintptr_t tracker, unsigned pass) {
         bool edited = false;
         if (RecheckWindowEntry(entry, tl, edited)) { checked++; changed += edited; }
     }
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         LOG_INFO(std::format("[LevelLightShare] Window activation recheck: lot {:08X}, pass {}, {} evaluated, {} changed", *reinterpret_cast<const uint32_t*>(tracker + 0x90), pass + 1, checked, changed));
 }
 
@@ -2662,7 +2662,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
     g_lastRec = -1;
     float* r = reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         if (batch && !g_ghostSolve && g_diagArmed.load(std::memory_order_relaxed) && g_wallBase.count(reinterpret_cast<uintptr_t>(room))) RecordSeam(room, out, static_cast<const float*>(sample));
     g_ctx = prev;
     return r;
@@ -2878,7 +2878,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
     }
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         if (lit) {
             if (g_diagArmed.load(std::memory_order_relaxed) && !g_ghostSolve) Diag(info, light, sample, before, home, mine, culledList);
             else g_lastRec = -1; // as Diag does first: no record for the game's wall test that follows
@@ -2894,7 +2894,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
         why = reason;
         return 0.0f;
     };
-    if constexpr (!kPublicBuild) g_passDbg = PassDebug{};
+    if (!kPublicBuild) g_passDbg = PassDebug{};
     alignas(16) float pos[4];
     reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
     const int B = std::max(info.level, c.floor);
@@ -2930,7 +2930,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
         // an opening: no floor on B there, over an indoor room of the story below (the rule of ReadOpenings)
         const int q = Quadrant(x - ix, z - iz);
         const uintptr_t below = mgrBelow ? LightTile(mgrBelow, ix, iz) : 0;
-        if constexpr (!kPublicBuild) {
+        if (!kPublicBuild) {
             g_passDbg = PassDebug{ix, iz, q, below ? TileRoom(below, q) : -1, 0, 0, h, t};
             const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(c.level + 0x264);
             const uintptr_t data = grid ? *reinterpret_cast<const uintptr_t*>(grid) : 0;
@@ -2990,7 +2990,7 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
     }
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         g_lastRec = -1;
         // lamps of another story, and the room's own lamps that another story takes (to compare the game's own evaluation of
         // a lamp with ours on the other side of the floor; every own lamp would fill the record)
@@ -4194,7 +4194,7 @@ bool Install(std::string& error) {
         solveOk = solveOk && Redirect(site, kSolvePoint, site == kBatchSolveCall ? reinterpret_cast<const void*>(&SolvePointBatch) : reinterpret_cast<const void*>(&SolvePointSingle));
     // The game's own wall test is wrapped only to record its result for the F8 diagnostics: development build only (the
     // public build leaves that CALL as it is; the wrapper only forwarded it).
-    if constexpr (!kPublicBuild) solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
+    if (!kPublicBuild) solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
     if (solveOk) {
         for (size_t i = 0; i < std::size(kClasses); i++) {
             if (!kClasses[i].vtable) continue; // class not found on this build
@@ -4232,7 +4232,7 @@ bool Install(std::string& error) {
     g_alignReady = align;
     if (!align) LOG_WARNING("[LevelLightShare] Seamless walls between floors: the game code differs, left as the game has it");
     else if (g_alignOn) g_alignRequeue = true; // walls lit before this lined up too
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         std::string why;
         if (!EntryChain::Install(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateNoteHook), &why) ||
             !EntryChain::Install(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateFlagNoteHook), &why))
@@ -4268,7 +4268,7 @@ void Uninstall() {
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
     g_evalClasses = 0;
-    if constexpr (!kPublicBuild) {
+    if (!kPublicBuild) {
         EntryChain::Remove(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare);
         EntryChain::Remove(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare);
     }
@@ -4417,7 +4417,7 @@ bool LoadedRoomsBusy() {
 void OnWorldLive() {
     g_roomRefsAt = 0; // require a fresh enumeration after the load screen before an early refresh
     g_indoorGen.fetch_add(1);
-    if constexpr (!kPublicBuild) LOG_INFO("[LevelLightShare] " APEX_VERSION_STRING ": World live, the rooms near stair openings of every lot gather once more");
+    if (!kPublicBuild) LOG_INFO("[LevelLightShare] " APEX_VERSION_STRING ": World live, the rooms near stair openings of every lot gather once more");
 }
 
 void SetIndoor(bool on) {

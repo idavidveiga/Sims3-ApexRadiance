@@ -285,8 +285,8 @@ static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices
               "kGtaoPsId lists the SLICES of kQualitySlices");
 
 struct Params {
-    float strength = 1.0f; // multiplies the occlusion (1 = the lab's recommended look)
-    float reach = 1.0f;    // scales the radii
+    float strength = 1.669374824f; // approved player reference
+    float reach = 1.302870035f; // approved player reference, scales the radii
     float protect = 0.5f;  // lamp-lit / bright pixels keep this share of their light
     int quality = 2;       // stored index into kQualitySlices (2 = High, 8 slices)
     bool inMapView = true; // the map view gets its own radii (else the shade fades out there, as it is far)
@@ -743,7 +743,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {A, 1.0f / (nearZ * A), SceneDither::On() ? SceneDither::Strength() / 255.0f : 0.0f, SceneDither::GrainPhase()}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         if (g.captureRequested) CaptureFrame(dev, depth, nearZ, A, tanX, tanY);
 
     // 1. 1/z into level 0 of the pyramid (the screen area of it; the padding stays sky = 0 from the clear)
@@ -870,8 +870,8 @@ void OnPostReset(IDirect3DDevice9*) {
 class AmbientOcclusionPatch : public ApexPatch {
   public:
     AmbientOcclusionPatch() : ApexPatch("AmbientOcclusion", nullptr) {
-        RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, 1.0f, 0.0f, 2.0f, "How dark the shade gets where things meet (1 = the recommended look)");
-        RegisterFloatSetting(&g.p.reach, "alcance", SettingWidget::Slider, 1.0f, 0.5f, 2.0f, "How far the shade spreads from where things meet (scales the radii)");
+        RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, Params{}.strength, 0.0f, 2.0f, "How dark the shade gets where things meet");
+        RegisterFloatSetting(&g.p.reach, "alcance", SettingWidget::Slider, Params{}.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet (scales the radii)");
         RegisterFloatSetting(&g.p.protect, "protegerLuz", SettingWidget::Slider, 0.5f, 0.0f, 1.0f, "Lamp-lit and bright spots keep this share of their light");
         RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High", "Ultra", "Very Low"});
         RegisterBoolSetting(&g.p.inMapView, "noMapa", true, "Also shade the map view (radii for houses and trees seen from far away)");
@@ -942,9 +942,8 @@ class AmbientOcclusionPatch : public ApexPatch {
         static const Params kDefaults{};
         bool changed = false;
         if (g.status.rfind("ERROR: ", 0) == 0) ApexUi::IconNote(IconId::TriangleAlert, g.status.c_str() + 7, VioletTheme::kError);
-        else if (g.status.rfind("Paused", 0) == 0) ApexUi::IconNote(IconId::TriangleAlert, "Paused while the game's own Edge Smoothing is on (Options \xE2\x80\xBA Graphics)", VioletTheme::kWarning);
 
-        changed |= ApexUi::SliderPercent("Strength", &g.p.strength, 0.0f, 2.0f, "How dark the shade gets where things meet; 100% is the recommended look",
+        changed |= ApexUi::SliderPercent("Strength", &g.p.strength, 0.0f, 2.0f, "How dark the shade gets where things meet",
                                          kDefaults.strength);
         // Quality: shown from the lightest to the smoothest; the saved value keeps 2.1.0's indices (kQualityShown)
         static const char* const kQualities[] = {"Very Low", "Low", "Medium", "High", "Ultra"};

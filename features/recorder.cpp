@@ -16,6 +16,7 @@
 //  - at the end, ApexRadiance.toml as it was when the recording started (every setting).
 #include "recorder.h"
 #include "captures.h"
+#include "ui/i18n.h"
 #include "hotkeys.h"
 #include "apex_log.h"
 #include "apex_paths.h"
@@ -32,6 +33,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@ namespace {
 
 constexpr DWORD kMaxMs = 20000, kStatusEveryMs = 100;
 bool g_on = false, g_keyWasDown = false;
+std::atomic<bool> g_stopRequest{false}, g_cancelRequest{false};
 DWORD g_startTick = 0, g_lastStatus = 0;
 SYSTEMTIME g_startClock{};
 std::uintmax_t g_logStart = 0;
@@ -159,10 +162,8 @@ void Stop() {
     std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     const std::filesystem::path folder = Captures::NewFolder("Recording");
     const std::string name = folder.filename().string();
-    const auto path = folder / L"Recording.txt";
-
-    std::ofstream out(path, std::ios::out | std::ios::trunc);
-    if (out) {
+    std::ostringstream out;
+    {
         out << std::format("Apex Radiance recording: {} to {} ({:.1f} s), {} lines\n", Clock(g_startTick), Clock(end), (end - g_startTick) / 1000.0, all.size());
         out << "[solve] = the solve journal (S ambient step done, W wall pass done, Q sent by Apex, H held by Apex, I / F invalidated, with the caller); "
                "[status] = a status line that changed; [log] = the log\n";
@@ -179,7 +180,7 @@ void Stop() {
         for (const auto& [clock, text] : all) out << clock << ' ' << text << '\n';
         out << "\n==== ApexRadiance.toml at the start of the recording ====\n" << g_settingsAtStart << '\n';
     }
-    out.close();
+    Captures::WriteText(folder / L"Recording.txt", out.str());
     LOG_INFO(std::format("[Recorder] Saved {} lines to Captures\\{}", all.size(), name));
     Captures::Finish(folder, std::format("a recording of {:.0f} s of the lighting", (end - g_startTick) / 1000.0));
     g_saved = name;
@@ -197,9 +198,29 @@ void Note(const std::string& text) {
 }
 int SecondsRecorded() { return g_on ? static_cast<int>((GetTickCount() - g_startTick) / 1000) : -1; }
 void RequestToggle() { g_toggleRequest = true; }
+void RequestStop() { g_stopRequest = true; }
+void RequestCancel() { g_cancelRequest = true; }
 const char* JustSaved() { return !g_saved.empty() && GetTickCount() - g_savedAt < 4000 ? g_saved.c_str() : ""; }
 void OnPresent() {
-    const bool pressed = Hotkeys::Take(Hotkeys::Action::Recorder) || g_toggleRequest.exchange(false); // X, 6 or F6 by preset, or the menu
+    const bool requested = g_toggleRequest.exchange(false);
+    const bool pressed = Hotkeys::Take(Hotkeys::Action::Recorder) || requested;
+    const bool stop = g_stopRequest.exchange(false);
+    if (g_cancelRequest.exchange(false)) {
+        if (g_on) {
+            g_on = false;
+            g_lines.clear();
+            g_settingsAtStart.clear();
+            g_saved.clear();
+            g_notes = g_roomNotes = 0;
+            LOG_INFO("[Recorder] Cancelled: no capture folder created");
+            Captures::Notify(I18n::Tr("Recording cancelled. No capture was saved"));
+        }
+        return; // cancellation wins over a shortcut, Stop or the 20-second deadline
+    }
+    if (stop) {
+        if (g_on) Stop();
+        return;
+    }
     if (pressed) {
         if (g_on) Stop();
         else Start();

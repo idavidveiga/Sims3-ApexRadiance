@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Faster texture compression: the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical four-blocks-at-a-time
 // version (see fast_dxt.h, features/dxt_codec.h and docs/features/performance.md).
 //
@@ -339,7 +340,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     ImGui::TextUnformatted(("Faster texture compression: " + StatusText()).c_str());
@@ -384,4 +385,15 @@ void RenderDeveloperUI() {
     }
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("verify_every", g_verifyEvery.load());
+    out.insert("workers", g_parWorkers.load());
+    out.insert("min_side", g_parMinSide.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["verify_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_verifyEvery.store(std::clamp(v, 0, 1024)); }
+    if (auto n = t["workers"].value<int64_t>()) { const int v = static_cast<int>(*n); if (v < 0) g_parWorkers.store(-1); else SetParallelWorkers(v); }
+    if (auto n = t["min_side"].value<int64_t>()) { const int v = static_cast<int>(*n); g_parMinSide.store(std::clamp(v, 4, 4096)); }
+}
 } // namespace FastDxt

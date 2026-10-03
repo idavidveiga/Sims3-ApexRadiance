@@ -799,10 +799,7 @@ void FinishCapture(IDirect3DDevice9* dev) {
         out << std::format("T{} {}: {}\n", i + 1, g_textures[i].desc, stats);
     }
     const std::string report = out.str();
-    {
-        std::ofstream f(CapDir() / "Light capture.txt", std::ios::trunc | std::ios::binary);
-        f.write(report.data(), static_cast<std::streamsize>(report.size()));
-    }
+    Captures::WriteText(CapDir() / "Light capture.txt", report);
     ReleaseDraws();
     g_status = std::format("Measured: {} draws cover pixel ({}, {}), {} textures saved in Captures\\{}.", covering, g_pixel.x, g_pixel.y, g_textures.size(), g_capName);
     LOG_INFO("[LightProbe] " + g_status);

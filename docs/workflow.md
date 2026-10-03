@@ -54,17 +54,11 @@ In PowerShell remember the call operator: `& "C:\Program Files (x86)\...\MSBuild
 
 ### Standalone (Apex Radiance)
 
-Same toolchain. Run from `%USERPROFILE%\Desktop\S3SS-dev\S3SSApex\` (solution `ApexRadiance.sln`, project
-`ApexRadiance.vcxproj`, `TargetName` `ApexRadiance`):
-
-```
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexPublic=true
-```
-
-The first gives the dev build `Release\ApexRadiance.asi`; the second the public build `Public\ApexRadiance.asi`
-(`/p:ApexPublic=true` defines `S3SS_PUBLIC`, objects in `Public\obj\`). Until 2026-09-28 the output was
-`S3SSApex.asi` (`S3SSApex.sln`).
+From 2026-10-02 the standalone uses one binary, `Release/ApexRadiance.asi`, containing optional developer tools.
+Build once with `ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false`.
+The previous `ApexPublic` property is a no-op. Do not distribute two flavors.
+Settings > Menu > Enable developer mode defaults off, requires confirmation and applies after restarting the game.
+The combined-tree flavor table above is historical. See [developer-mode.md](features/developer-mode.md).
 
 ### Offline checks before a game test
 
@@ -190,7 +184,7 @@ under `...\S3SS\Apex\` (left in place, not migrated).
 
 ### Current standalone releases (2.5.4)
 
-The standalone repository is `loinyx/Sims3-ApexRadiance`; the combined-build information below is historical. Use the maintainer's `apex-release` skill for current versioning, English notes and GitHub/Nexus steps. Releases ship only `Public/ApexRadiance.asi`, built with `/p:ApexPublic=true`; the user's development binary stays private. Build both configurations and check translations. Release notes use a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`; the Nexus workflow derives its changelog from that body. Update source documentation and retain the user's requested description approval before publication. Internal provenance notes are excluded from Git and source archives. The maintainer's 2.5.4 lighting-response acceptance is documented in `features/night-lighting/terrain-relight.md`; it is a user report rather than an instrumented latency/FPS measurement.
+The standalone repository is `loinyx/Sims3-ApexRadiance`; the combined-build information below is historical. Use the maintainer's `apex-release` skill for current versioning, English notes and GitHub/Nexus steps. Releases ship the unified `Release/ApexRadiance.asi`, with developer mode off by default. Build once and check translations. The current candidate remains private until publication is explicitly requested. Release notes use a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`; the Nexus workflow derives its changelog from that body. Update source documentation and retain the user's requested description approval before publication. Internal provenance notes are excluded from Git and source archives. The maintainer's 2.5.4 lighting-response acceptance is documented in `features/night-lighting/terrain-relight.md`; it is a user report rather than an instrumented latency/FPS measurement.
 
 Repository: https://github.com/loinyx/Sims3SettingsSetter-Apex (public fork of sims3fiend/Sims3SettingsSetter; renamed
 from `Sims3SettingsSetter-NightRemake` on 2026-09-28, old links redirect). It holds the **combined** build until the

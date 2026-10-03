@@ -1,8 +1,10 @@
+> Version 2.5.5: one unified build; developer mode is optional in Settings. Edge Smoothing is the only System display page. Apex does not control window mode, V-Sync or FPS pacing. Night Lighting offers Subtle, Soft and Natural without overwriting existing settings. Report a problem uses the v2.5.3 layout with optional capture titles and descriptions.
+
 <p align="center"><img src="docs/images/logo-256.png" width="140" alt="Apex Radiance logo"></p>
 
 # Apex Radiance for The Sims 3
 
-A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, soft ambient occlusion, clean anti-aliasing, a soft depth blur and a borderless window, all from one in-game menu.
+A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, soft ambient occlusion, clean anti-aliasing, a soft depth blur all from one in-game menu.
 
 
 <div align="center">
@@ -80,7 +82,7 @@ Softly blurs the distant background, like a camera focused on what's near. The f
 
 ### Display
 
-- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K), with edges found from the scene depth too, an optional texture sharpening and an experimental temporal smoothing for SMAA (less shimmer while the camera moves).
+- **Anti-aliasing:** SMAA or FXAA on the 3D world while menus stay sharp, from Low to Extreme (straighter long edges at 4K), with edges found from the scene depth too and optional texture sharpening. The private RC removes temporal smoothing, improves High/Ultra color edges and offers an opt-in native MSAA + SMAA combination with explicit depth-effect limitations.
 - **Borderless window:** windowed or fullscreen, without a title bar.
 
 ### Performance
@@ -146,7 +148,7 @@ If you used the older combined build (Sims3SettingsSetter with Apex inside) or `
 
 ## Compatibility
 
-- **Sims3SettingsSetter:** both mods can be installed together, and I recommend using both. When they both offer the same thing, Apex Radiance steps aside: the borderless window and the ground lighting on upper floors are left to Sims3SettingsSetter when it has its own version turned on.
+- **Sims3SettingsSetter:** both mods can be installed together, and I recommend using both. When they both offer the same thing, Apex Radiance steps aside: ground lighting on upper floors is left to Sims3SettingsSetter when it has its own version turned on. Window modes and synchronization are no longer controlled by Apex.
 - **Sims 3 Performance Patch:** compatible. The two mods work on different parts of the game (it speeds up loading and saves memory; Apex Radiance targets in-game stutters) and do not patch the same game code.
 - Works with DXVK.
 
@@ -174,3 +176,15 @@ The Sims is a trademark of Electronic Arts Inc. This is a fan-made mod, not affi
 ## License
 
 [MIT](LICENSE)
+
+### Local test: simpler problem reports (not yet released)
+
+The local `2.5.4-test-report-library` build reorganizes **Report a problem** into visible **Prepare → Record → Describe → Completed** stages. Starting keeps the panel open; point capture, lighting snapshot and general report remain available while recording. Return to game is optional; point selection temporarily hides the panel and returns after one click and capture completion. Stop and continue leads to the required description on the same page, followed by the saved-file receipt. Cancel keeps captured files pending. Saved files, retry, optional collections, comparison and reversible removal/Undo are retained. All new player text is in EN/PT/ES/FR with Violet/Lucide styling. Developer stays private. Native checks passed; gameplay validation is still required. This local test is not installed or published. See [the capture documentation](docs/features/bug-reports.md).
+
+Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [docs/features/edge-smoothing.md](docs/features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
+
+Current private RC: `2.5.4-rc-unified-dev-mode`. Temporal smoothing and the experimental native MSAA combination are removed. High/Ultra color edge detection is retained. Keep the game’s own Edge Smoothing off. Native D3D9 and DXVK 3.1.1 passed 29 shader variants, ten spatial render cases and native MSAA rejection checks. Gameplay/FPS validation is pending. Not installed or published. See the Edge Smoothing feature document.
+
+## Unified build and optional developer mode (2026-10-02)
+
+One ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](docs/features/developer-mode.md). FXAA is the first smoothing method; Anti-aliasing precedes Window. The current RC is private.

@@ -4,6 +4,7 @@
 #include "captures.h"
 #include "apex_log.h"
 #include "apex_paths.h"
+#include "apex_util.h"
 #include "apex_version.h"
 #include "game_version.h"
 #include "ui/i18n.h"
@@ -19,6 +20,8 @@
 #include <format>
 #include <fstream>
 #include <mutex>
+#include <map>
+#include <sstream>
 #include <thread>
 
 #pragma comment(lib, "shell32.lib")
@@ -35,6 +38,45 @@ std::filesystem::path g_session; // the open session's folder (empty: none); und
 int g_sessionCount = 0;
 unsigned long long g_sessionStart = 0; // GetTickCount64 when it was opened
 std::vector<std::string> g_sessionItems; // what each capture of the session was
+SaveResult g_result;
+std::string g_description, g_retryDescription, g_retryWhat;
+std::string g_retryTitle;
+std::filesystem::path g_retryFolder;
+std::map<std::filesystem::path, std::string> g_failedText;
+std::map<std::filesystem::path, bool> g_shotJobs; // pending PNGs; protected by g_lock
+bool g_copyFailed = false, g_shotFailed = false;
+bool g_notifyCompletion = false;
+std::vector<std::pair<std::filesystem::path, std::filesystem::path>> g_removed;
+
+std::string DescriptionText(const std::string& title, const std::string& text) {
+    return (title.empty() ? std::string() : "Title: " + title + "\n\n") + text + "\n";
+}
+
+bool ChildName(const std::string& name) {
+    return !name.empty() && name != "." && name != ".." && name != ".Removed" &&
+           name.find_first_of("\\/:*?\"<>|") == std::string::npos && name.back() != '.' && name.back() != ' ';
+}
+bool PlainDirectory(const std::filesystem::path& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+void UpdateResultLocked() {
+    g_result.saving = g_shotJobs.contains(g_retryFolder);
+    g_result.failed = g_copyFailed || g_shotFailed;
+    for (const auto& [file, text] : g_failedText) {
+        (void)text;
+        if (file.parent_path() == g_retryFolder) g_result.failed = true;
+    }
+}
+void CompleteShot(const std::filesystem::path& folder, bool ok) {
+    std::lock_guard<std::mutex> lk(g_lock);
+    g_shotJobs.erase(folder);
+    if (folder == g_retryFolder) {
+        g_shotFailed = !ok;
+        UpdateResultLocked();
+        g_notifyCompletion = true;
+    }
+}
 
 std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirectory()); }
 
@@ -49,9 +91,25 @@ void ShowInExplorer(const std::filesystem::path& folder) {
     }).detach();
 }
 
-void CopyIfThere(const std::filesystem::path& from, const std::filesystem::path& to) {
+bool CopyIfThere(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code ec;
     if (std::filesystem::exists(from, ec)) std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
+    return !ec;
+}
+
+uint64_t FolderSize(const std::filesystem::path& path) {
+    namespace fs = std::filesystem;
+    uint64_t bytes = 0;
+    std::error_code ec;
+    auto it = fs::recursive_directory_iterator(path, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (it->is_directory(ec) && !PlainDirectory(it->path())) it.disable_recursion_pending();
+        if (it->is_regular_file(ec)) {
+            const auto size = it->file_size(ec);
+            if (!ec) bytes += size;
+        }
+    }
+    return bytes;
 }
 
 // ---- Screenshots (user, 30/09: "the game should capture the screen too, to have a print") ----
@@ -84,6 +142,7 @@ void WritePng(std::filesystem::path file, std::vector<BYTE> bgr, UINT w, UINT h)
         if (factory) factory->Release();
         if (SUCCEEDED(com)) CoUninitialize();
         if (!ok) LOG_WARNING("[Captures] The screenshot could not be written: " + file.string());
+        CompleteShot(file.parent_path(), ok);
     }).detach();
 }
 
@@ -93,7 +152,10 @@ void TakeShots(IDirect3DDevice9* dev) {
     const std::vector<std::filesystem::path> folders = std::move(g_shots);
     g_shots.clear();
     IDirect3DSurface9 *bb = nullptr, *resolved = nullptr, *sys = nullptr;
-    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) {
+        for (const auto& folder : folders) CompleteShot(folder, false);
+        return;
+    }
     D3DSURFACE_DESC d{};
     bb->GetDesc(&d);
     std::vector<BYTE> bgr;
@@ -125,6 +187,7 @@ void TakeShots(IDirect3DDevice9* dev) {
     bb->Release();
     if (bgr.empty()) {
         LOG_WARNING("[Captures] No screenshot: the screen format could not be read");
+        for (const auto& folder : folders) CompleteShot(folder, false);
         return;
     }
     for (size_t i = 0; i < folders.size(); i++) WritePng(folders[i] / L"Screenshot.png", i + 1 < folders.size() ? bgr : std::move(bgr), d.Width, d.Height);
@@ -137,6 +200,7 @@ void ShotAtSceneEnd(IDirect3DDevice9* dev) {
 void QueueShot(const std::filesystem::path& folder) {
     if (!g_shotsOn.load()) return;
     g_shots.push_back(folder);
+    { std::lock_guard<std::mutex> lk(g_lock); g_shotJobs[folder] = true; }
     if (g_shotHooks) return;
     g_shotHooks = true; // once; the callbacks do nothing while nothing is queued
     RenderCallbacks::endSceneBeforeOverlay.Add(ShotAtSceneEnd);
@@ -160,7 +224,7 @@ std::filesystem::path MakeFolder(const std::filesystem::path& parent, const char
     const std::string base = withDate ? std::format("{:04}-{:02}-{:02} {:02}-{:02}-{:02} {}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, kind)
                                       : std::format("{:02}-{:02}-{:02} {}", t.wHour, t.wMinute, t.wSecond, kind);
     fs::path p = parent / fs::path(base);
-    for (int n = 2; fs::exists(p, ec) && n < 1000; n++) p = parent / fs::path(std::format("{} ({})", base, n));
+    for (int n = 2; fs::exists(p, ec) && !ec; n++) p = parent / fs::path(std::format("{} ({})", base, n));
     fs::create_directories(p, ec);
     return p;
 }
@@ -175,6 +239,12 @@ void BeginSession() {
     std::lock_guard<std::mutex> lk(g_lock);
     if (!g_session.empty()) return;
     g_session = MakeFolder(Root(), "Session", true);
+    if (!PlainDirectory(g_session)) {
+        g_session.clear();
+        g_note = I18n::Tr("Could not create the collection. Check folder access and free space");
+        g_noteUntil = GetTickCount64() + 6000;
+        return;
+    }
     g_sessionCount = 0;
     g_sessionStart = GetTickCount64();
     g_sessionItems.clear();
@@ -188,14 +258,13 @@ void EndSession() {
         std::lock_guard<std::mutex> lk(g_lock);
         s = g_session;
         items = g_sessionItems;
-        g_session.clear();
     }
-    if (s.empty()) return;
-    CopyIfThere(Dir() / L"ApexRadiance_LOG.txt", s / L"ApexRadiance_LOG.txt");
-    CopyIfThere(Dir() / L"ApexRadiance.toml", s / L"ApexRadiance.toml");
-    CopyIfThere(Dir() / L"ApexRadiance_Crash.txt", s / L"ApexRadiance_Crash.txt");
-    std::ofstream about(s / L"About this session.txt", std::ios::out | std::ios::trunc);
-    if (about) {
+    if (s.empty() || Saving()) return;
+    const bool logOk = CopyIfThere(Dir() / L"ApexRadiance_LOG.txt", s / L"ApexRadiance_LOG.txt");
+    const bool configOk = CopyIfThere(Dir() / L"ApexRadiance.toml", s / L"ApexRadiance.toml");
+    const bool crashOk = CopyIfThere(Dir() / L"ApexRadiance_Crash.txt", s / L"ApexRadiance_Crash.txt");
+    std::ostringstream about;
+    {
         about << std::format("{} {} - a capture session with {} captures, on {}.\n\n", APEX_PRODUCT_NAME, APEX_VERSION_STRING, items.size(), GetGameVersionName());
         for (const std::string& i : items) about << "- " << i << "\n";
         about << "\nEach capture is in its own folder here, with the log as it was at that moment; the log and settings at the end of the session are "
@@ -203,9 +272,25 @@ void EndSession() {
                  "in the Bugs tab of Apex Radiance on Nexus Mods, or to an issue on GitHub (github.com/loinyx/Sims3-ApexRadiance/issues). Say in a few "
                  "words what you saw and what you did just before.\n";
     }
+    WriteText(s / L"About this session.txt", about.str());
+    const auto existingNote = ReadDescription(s.filename().string());
+    if (!existingNote.Complete()) {
+        WriteText(s / L"User notes.txt", DescriptionText(s.filename().string(), about.str()));
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        if (g_retryFolder != s) { g_retryDescription.clear(); g_retryTitle.clear(); }
+        g_retryFolder = s;
+        g_retryWhat.clear(); // retrying this receipt finishes the still-open collection
+        g_copyFailed = !logOk || !configOk || !crashOk;
+        g_shotFailed = false;
+        g_result = {g_result.serial + 1, s.filename().string(), false, false};
+        UpdateResultLocked();
+        if (!g_result.failed) g_session.clear();
+    }
     const std::string name = s.filename().string();
     LOG_INFO(std::format("[Captures] Session ended: Captures\\{} ({} captures)", name, items.size()));
-    Notify(I18n::Trf("Session saved in Captures \xE2\x80\xBA {}", name), 6);
+    Notify(LastSave().failed ? I18n::Tr("Some files could not be saved. Open Report a problem to retry") : I18n::Trf("Session saved in Captures \xE2\x80\xBA {}", name), 6);
 }
 
 bool SessionActive() {
@@ -231,35 +316,168 @@ int SessionSeconds() {
     return g_session.empty() ? 0 : static_cast<int>((GetTickCount64() - g_sessionStart) / 1000);
 }
 
-void Finish(const std::filesystem::path& folder, const std::string& what) {
-    CopyIfThere(Dir() / L"ApexRadiance_LOG.txt", folder / L"ApexRadiance_LOG.txt");
-    CopyIfThere(Dir() / L"ApexRadiance.toml", folder / L"ApexRadiance.toml");
-    CopyIfThere(Dir() / L"ApexRadiance_Crash.txt", folder / L"ApexRadiance_Crash.txt");
-    QueueShot(folder); // Screenshot.png, from the next frame (when screenshots are on)
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    std::ofstream about(folder / L"About this capture.txt", std::ios::out | std::ios::trunc);
-    if (about) {
-        about << std::format("{} {} - {}\n", APEX_PRODUCT_NAME, APEX_VERSION_STRING, what);
-        about << std::format("Taken {:04}-{:02}-{:02} {:02}:{:02}:{:02} on {}.\n\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, GetGameVersionName());
-        about << "This folder holds everything needed to look into a problem: the capture, the mod's log (ApexRadiance_LOG.txt), your settings "
-                 "(ApexRadiance.toml) and, after a crash, ApexRadiance_Crash.txt.\n\n";
-        about << "To report a problem: right-click this folder > Send to > Compressed (zipped) folder, then attach the .zip to your post in the "
-                 "Bugs tab of Apex Radiance on Nexus Mods, or to an issue on GitHub (github.com/loinyx/Sims3-ApexRadiance/issues). "
-                 "Say in a few words what you saw and what you did just before.\n";
-    }
-    const std::string name = folder.filename().string();
-    bool inSession = false;
+bool WriteText(const std::filesystem::path& file, const std::string& text) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.close();
+    const bool ok = !out.fail();
+    std::lock_guard<std::mutex> lk(g_lock);
+    if (ok) g_failedText.erase(file);
+    else g_failedText[file] = text;
+    return ok;
+}
+
+void SetDescription(const std::string& text) {
+    std::lock_guard<std::mutex> lk(g_lock);
+    g_description = text;
+}
+SaveResult LastSave() { std::lock_guard<std::mutex> lk(g_lock); return g_result; }
+bool Saving() { std::lock_guard<std::mutex> lk(g_lock); return !g_shotJobs.empty(); }
+
+std::string SavedDescription() { std::lock_guard<std::mutex> lk(g_lock); return g_retryDescription; }
+std::string SavedDescriptionTitle() { std::lock_guard<std::mutex> lk(g_lock); return g_retryTitle; }
+bool SaveDescription(const std::string& text) { return SaveDescription("", text); }
+bool SaveDescription(const std::string& title, const std::string& text) {
+    std::filesystem::path folder;
     {
         std::lock_guard<std::mutex> lk(g_lock);
-        if (!g_session.empty() && folder.parent_path() == g_session) {
-            inSession = true;
-            g_sessionCount++;
-            g_sessionItems.push_back(name + ": " + what);
+        if (!g_result.serial || g_result.failed || g_result.saving || !g_shotJobs.empty() ||
+            text.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+        folder = g_retryFolder;
+        g_retryDescription = text;
+        g_retryTitle = title;
+    }
+    const bool ok = WriteText(folder / L"User notes.txt", DescriptionText(title, text));
+    { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); }
+    Notify(I18n::Tr(ok ? "Description saved with the capture" : "Some files could not be saved. Open Report a problem to retry"));
+    return ok;
+}
+
+Description ReadDescription(const std::string& folder) {
+    Description note;
+    if (!ChildName(folder)) return note;
+    const auto path = Root() / std::filesystem::path(folder);
+    if (!PlainDirectory(path)) return note;
+    const auto file = path / L"User notes.txt";
+    const DWORD attrs = GetFileAttributesW(file.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) return note;
+    std::ifstream in(file, std::ios::binary);
+    char bytes[4096]{};
+    in.read(bytes, sizeof(bytes));
+    note.text.assign(bytes, static_cast<size_t>(in.gcount()));
+    if (note.text.rfind("Title: ", 0) == 0) {
+        const auto end = note.text.find("\n\n");
+        if (end != std::string::npos) {
+            note.title = note.text.substr(7, end - 7);
+            note.text.erase(0, end + 2);
         }
     }
-    LOG_INFO(std::format("[Captures] Saved: Captures\\{}{} ({})", inSession ? SessionFolder() + "\\" : "", name, what));
-    Notify(inSession ? I18n::Trf("Added to the session: {}", name) : I18n::Trf("Saved in Captures \xE2\x80\xBA {}", name), 6);
+    return note;
+}
+bool SaveFolderDescription(const std::string& folder, const std::string& title, const std::string& text) {
+    if (!ChildName(folder) || text.find_first_not_of(" \t\r\n") == std::string::npos || Saving()) return false;
+    const auto path = Root() / std::filesystem::path(folder);
+    if (!PlainDirectory(path)) return false;
+    const auto file = path / L"User notes.txt";
+    for (const auto& candidate : {file, std::filesystem::path(file.wstring() + L".tmp")}) {
+        const DWORD attrs = GetFileAttributesW(candidate.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+    }
+    return ApexUtil::WriteFileAtomic(file.wstring(), DescriptionText(title, text));
+}
+
+void Finish(const std::filesystem::path& folder, const std::string& what) {
+    std::string description, title;
+    bool retry = false, inSession = false;
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        retry = folder == g_retryFolder && g_result.failed;
+        // Only the latest receipt offers Retry. Do not accumulate large failed recordings in the 32-bit game.
+        if (!retry) {
+            for (auto it = g_failedText.begin(); it != g_failedText.end();) {
+                if (it->first.parent_path() != folder) it = g_failedText.erase(it); else ++it;
+            }
+        }
+        description = retry ? g_retryDescription : g_description;
+        title = retry ? g_retryTitle : std::string();
+        // Optional player notes: fallback describes recorded evidence, never an inferred problem.
+        if (title.empty()) title = folder.filename().string();
+        if (description.find_first_not_of(" \t\r\n") == std::string::npos) {
+            description = std::format("Diagnostic capture: {}.\nGame: {}.\nApex Radiance: {}.\nFolder: {}.\nAvailable logs, settings and capture details are stored alongside this note.",
+                what, GetGameVersionName(), APEX_VERSION_STRING, folder.filename().string());
+        }
+        g_retryFolder = folder;
+        g_retryWhat = what;
+        g_retryDescription = description;
+        g_retryTitle = title;
+        g_shotFailed = false;
+        g_notifyCompletion = false;
+        g_result = {g_result.serial + 1, folder.filename().string(), false, false};
+        if (folder.parent_path().parent_path() == Root()) g_result.folder = folder.parent_path().filename().string();
+    }
+    const bool logOk = CopyIfThere(Dir() / L"ApexRadiance_LOG.txt", folder / L"ApexRadiance_LOG.txt");
+    const bool configOk = CopyIfThere(Dir() / L"ApexRadiance.toml", folder / L"ApexRadiance.toml");
+    const bool crashOk = CopyIfThere(Dir() / L"ApexRadiance_Crash.txt", folder / L"ApexRadiance_Crash.txt");
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    std::ostringstream about;
+    about << std::format("{} {} - {}\n", APEX_PRODUCT_NAME, APEX_VERSION_STRING, what);
+    about << std::format("Taken {:04}-{:02}-{:02} {:02}:{:02}:{:02} on {}.\n\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, GetGameVersionName());
+    about << "This folder contains the capture, available mod log, settings and crash report.\n"
+             "To report a problem: compress this folder as ZIP and attach it to a Nexus Mods bug report or a GitHub issue "
+             "(github.com/loinyx/Sims3-ApexRadiance/issues). Describe what happened and how to reproduce it. "
+             "Nothing is uploaded automatically.\n";
+    WriteText(folder / L"About this capture.txt", about.str());
+    if (!description.empty() || !title.empty()) WriteText(folder / L"User notes.txt", DescriptionText(title, description));
+    // A failed text write is recoverable without measuring or recording the problem again.
+    if (!retry) QueueShot(folder);
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        g_copyFailed = !logOk || !configOk || !crashOk;
+        if (!g_session.empty() && folder.parent_path() == g_session) {
+            inSession = true;
+            const std::string item = folder.filename().string() + ": " + what;
+            if (std::find(g_sessionItems.begin(), g_sessionItems.end(), item) == g_sessionItems.end()) {
+                g_sessionCount++;
+                g_sessionItems.push_back(item);
+            }
+        }
+        UpdateResultLocked();
+    }
+    LOG_INFO(std::format("[Captures] {}: {} ({})", LastSave().failed ? "Save incomplete" : "Capture written", folder.string(), what));
+    Notify(I18n::Tr(LastSave().failed ? "Some files could not be saved. Open Report a problem to retry" :
+           Saving() ? "Saving the capture and screenshot..." : "Capture saved. Open Report a problem to find your files"), 6);
+    (void)inSession;
+}
+
+void RetrySave() {
+    std::map<std::filesystem::path, std::string> pending;
+    std::filesystem::path folder;
+    std::string what;
+    bool shot = false;
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        if (!g_result.failed || !g_shotJobs.empty()) return;
+        folder = g_retryFolder;
+        what = g_retryWhat;
+        shot = g_shotFailed;
+        for (const auto& [file, text] : g_failedText) if (file.parent_path() == folder) pending.emplace(file, text);
+    }
+    for (const auto& [file, text] : pending) WriteText(file, text);
+    if (what.empty()) {
+        if (SessionActive()) EndSession();
+        else {
+            { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); ++g_result.serial; }
+            Notify(I18n::Tr(LastSave().failed ? "Some files could not be saved. Open Report a problem to retry" : "Description saved with the capture"));
+        }
+        return;
+    }
+    Finish(folder, what);
+    if (shot) {
+        QueueShot(folder); // current frame, not a promise to reproduce the earlier image
+        Notify(I18n::Tr("Saving the capture and screenshot..."), 6);
+    }
+    { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); }
 }
 
 void SetScreenshots(bool on) { g_shotsOn = on; }
@@ -294,6 +512,11 @@ void Notify(const std::string& text, int seconds) {
 
 Note CurrentNote() {
     std::lock_guard<std::mutex> lk(g_lock);
+    if (g_notifyCompletion && !g_result.saving) {
+        g_notifyCompletion = false;
+        g_note = I18n::Tr(g_result.failed ? "Some files could not be saved. Open Report a problem to retry" : "Capture saved. Open Report a problem to find your files");
+        g_noteUntil = GetTickCount64() + 6000;
+    }
     Note n;
     if (!g_note.empty() && GetTickCount64() < g_noteUntil) {
         n.text = g_note;
@@ -307,16 +530,17 @@ Summary Scan() {
     Summary s;
     std::error_code ec;
     fs::file_time_type newest{};
-    for (const auto& e : fs::directory_iterator(Root(), ec)) {
-        if (!e.is_directory(ec)) continue;
+    for (auto it = fs::directory_iterator(Root(), fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const auto& e = *it;
+        if (!PlainDirectory(e.path()) || e.path().filename() == L".Removed") continue;
         s.count++;
         const auto wt = e.last_write_time(ec);
         if (s.newest.empty() || wt > newest) {
             newest = wt;
             s.newest = e.path().filename().string();
         }
-        for (const auto& f : fs::recursive_directory_iterator(e.path(), ec))
-            if (f.is_regular_file(ec)) s.bytes += f.file_size(ec);
+        s.bytes += FolderSize(e.path());
     }
     return s;
 }
@@ -333,7 +557,7 @@ int DeleteAll() {
     int n = 0;
     const std::string open = SessionFolder();
     for (const auto& e : fs::directory_iterator(Root(), ec))
-        if (e.is_directory(ec) && e.path().filename().string() != open && fs::remove_all(e.path(), ec) != static_cast<std::uintmax_t>(-1)) n++;
+        if (PlainDirectory(e.path()) && e.path().filename() != L".Removed" && e.path().filename().string() != open && fs::remove_all(e.path(), ec) != static_cast<std::uintmax_t>(-1)) n++;
     LOG_INFO(std::format("[Captures] {} capture folders deleted from the menu", n));
     return n;
 }
@@ -342,8 +566,10 @@ std::vector<Entry> List() {
     namespace fs = std::filesystem;
     std::vector<Entry> out;
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(Root(), ec)) {
-        if (!e.is_directory(ec)) continue;
+    for (auto it = fs::directory_iterator(Root(), fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const auto& e = *it;
+        if (!PlainDirectory(e.path()) || e.path().filename() == L".Removed") continue;
         Entry x;
         x.folder = e.path().filename().string();
         // "YYYY-MM-DD HH-MM-SS kind": names made by NewFolder; other folders are listed by name only
@@ -354,11 +580,15 @@ std::vector<Entry> List() {
         } else {
             x.kind = x.folder;
         }
-        for (const auto& f : fs::recursive_directory_iterator(e.path(), ec))
-            if (f.is_regular_file(ec)) x.bytes += f.file_size(ec);
+        x.bytes = FolderSize(e.path());
+        const auto note = ReadDescription(x.folder);
+        x.described = note.Complete();
+        x.title = note.title;
+        x.description = note.text;
         if (x.kind.rfind("Session", 0) == 0)
-            for (const auto& f : fs::directory_iterator(e.path(), ec))
-                if (f.is_directory(ec)) x.items++;
+            for (auto child = fs::directory_iterator(e.path(), fs::directory_options::skip_permission_denied, ec);
+                 !ec && child != fs::directory_iterator(); child.increment(ec))
+                if (PlainDirectory(child->path())) x.items++;
         out.push_back(std::move(x));
     }
     std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return a.folder > b.folder; }); // the date first in the name: newest first
@@ -366,20 +596,93 @@ std::vector<Entry> List() {
 }
 
 void Open(const std::string& folder) {
+    if (!ChildName(folder)) return;
     const std::filesystem::path p = Root() / std::filesystem::path(folder);
-    ShowInExplorer(p);
+    if (PlainDirectory(p)) ShowInExplorer(p);
 }
 
 bool Delete(const std::string& folder) {
     namespace fs = std::filesystem;
-    if (folder.empty() || folder.find_first_of("\\/:") != std::string::npos || folder == "." || folder == "..") return false; // only a direct child of Captures\.
+    if (!ChildName(folder) || Saving()) return false; // only a direct child of Captures\.
     if (folder == SessionFolder()) return false; // the open session: end it first
     std::error_code ec;
     const fs::path p = Root() / fs::path(folder);
-    if (!fs::is_directory(p, ec)) return false;
+    if (!PlainDirectory(p)) return false;
     const bool ok = fs::remove_all(p, ec) != static_cast<std::uintmax_t>(-1) && !ec;
     LOG_INFO(std::format("[Captures] Deleted from the menu: Captures\\{}{}", folder, ok ? "" : " (failed: " + ec.message() + ")"));
     return ok;
+}
+
+namespace {
+bool MoveToRemoved(const std::string& folder) {
+    namespace fs = std::filesystem;
+    if (!ChildName(folder) || folder == SessionFolder() || Saving()) return false;
+    const fs::path from = Root() / fs::path(folder), area = Root() / L".Removed";
+    if (!PlainDirectory(from)) return false;
+    std::error_code ec;
+    fs::create_directories(area, ec);
+    if (ec || !PlainDirectory(area)) return false;
+    fs::path to = area / fs::path(folder);
+    for (int n = 2; fs::exists(to, ec) && n < 1000; ++n) to = area / fs::path(std::format("{} ({})", folder, n));
+    if (ec || fs::exists(to, ec)) return false;
+    fs::rename(from, to, ec); // same root, no recursive move and no overwrite
+    if (ec) return false;
+    g_removed.emplace_back(to, from);
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        if (g_result.folder == folder) { g_result = {}; g_notifyCompletion = false; }
+    }
+    return true;
+}
+}
+bool Remove(const std::string& folder) {
+    if (!ChildName(folder) || folder == SessionFolder() || Saving()) return false;
+    const auto previous = g_removed;
+    g_removed.clear();
+    if (MoveToRemoved(folder)) return true;
+    g_removed = previous;
+    return false;
+}
+int RemoveAll() {
+    if (Saving()) return 0;
+    const auto list = List();
+    const auto previous = g_removed;
+    g_removed.clear();
+    for (const auto& entry : list) MoveToRemoved(entry.folder);
+    const int count = static_cast<int>(g_removed.size());
+    if (!count) g_removed = previous;
+    return count;
+}
+bool CanUndoRemoval() { return !g_removed.empty(); }
+int UndoRemoval() {
+    if (Saving()) return 0;
+    int restored = 0;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> pending;
+    for (const auto& item : g_removed) {
+        std::error_code ec;
+        if (!PlainDirectory(item.first) || !PlainDirectory(item.first.parent_path()) || std::filesystem::exists(item.second, ec) || ec) {
+            pending.push_back(item);
+            continue;
+        }
+        std::filesystem::rename(item.first, item.second, ec);
+        if (ec) pending.push_back(item); else ++restored;
+    }
+    g_removed = std::move(pending);
+    return restored;
+}
+std::vector<std::string> Files(const std::string& folder) {
+    std::vector<std::string> files;
+    if (!ChildName(folder)) return files;
+    const auto path = Root() / std::filesystem::path(folder);
+    if (!PlainDirectory(path)) return files;
+    std::error_code ec;
+    auto it = std::filesystem::recursive_directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (it->is_directory(ec) && !PlainDirectory(it->path())) it.disable_recursion_pending();
+        if (it->is_regular_file(ec)) files.push_back(it->path().lexically_relative(path).string());
+    }
+    std::sort(files.begin(), files.end());
+    return files;
 }
 
 } // namespace Captures

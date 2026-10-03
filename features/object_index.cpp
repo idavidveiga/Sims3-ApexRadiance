@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Object lookup index (see object_index.h and docs/features/performance.md, section "Faster object lookups (C8)").
 //
 // ---- The game side (Steam 1.67.2, TS3W.exe; research\engine_map\full.asm; addresses through framework/game_addresses.h) ----
@@ -195,7 +196,7 @@ uintptr_t CallTargetAt(uintptr_t call) {
 }
 
 int64_t Qpc() {
-    if constexpr (kPublicBuild) return 0;
+    if (kPublicBuild) return 0;
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     return t.QuadPart;
@@ -421,7 +422,7 @@ uint32_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32
                 }
                 c_hits.Add();
                 t_note.hit = true;
-                if constexpr (!kPublicBuild) g_hitTicks.fetch_add(static_cast<uint64_t>(Qpc() - t0), std::memory_order_relaxed);
+                if (!kPublicBuild) g_hitTicks.fetch_add(static_cast<uint64_t>(Qpc() - t0), std::memory_order_relaxed);
                 return obj;
             }
             if (why != Ok) {
@@ -434,7 +435,7 @@ uint32_t __fastcall Hook_ObjectById(void* self, void* edx, uint32_t idLo, uint32
     const uint32_t gen0 = g_gen.load(std::memory_order_acquire);
     const int64_t w0 = Qpc();
     const uint32_t r = next(self, edx, idLo, idHi, 0);
-    if constexpr (!kPublicBuild) g_walkTicks.fetch_add(static_cast<uint64_t>(Qpc() - w0), std::memory_order_relaxed);
+    if (!kPublicBuild) g_walkTicks.fetch_add(static_cast<uint64_t>(Qpc() - w0), std::memory_order_relaxed);
     c_walks.Add();
     if (!r) {
         c_notFound.Add();
@@ -568,7 +569,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     static Stats prev;
@@ -612,4 +613,11 @@ void RenderDeveloperUI() {
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("verify_every", g_verifyEvery.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["verify_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_verifyEvery.store(std::clamp(v, 0, 1024)); }
+}
 } // namespace ObjectIndex

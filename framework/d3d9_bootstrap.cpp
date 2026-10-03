@@ -6,7 +6,6 @@
 #include "overlay.h"
 #include "render_callbacks.h"
 #include "s3ss_detect.h"
-#include "borderless.h"
 #include "picture.h"
 #include "vulkan_driver_guard.h"
 #include <detours/detours.h>
@@ -74,7 +73,6 @@ void OnPresent(IDirect3DDevice9*) {
     g_firstPresentTick.store(GetTickCount64());
     LOG_INFO("[D3D] First Present");
     Overlay::InstallWndProc(); // after S3SS subclassed the window in its first EndScene: Apex sees messages first
-    Borderless::OnWndProcInstalled();
     S3SSDetect::Rescan(); // every ASI is loaded by now
 }
 
@@ -125,21 +123,12 @@ HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMET
     Overlay::BeforeReset();
     RenderCallbacks::Fire(RenderCallbacks::preReset, dev);
     Picture::Get().BeforeReset();
-    D3DPRESENT_PARAMETERS asked{};
-    if (pp) asked = *pp;
-    const bool changed = pp && Borderless::AdjustPresentParams(pp, "Reset");
     HRESULT hr = o_reset(dev, pp);
-    if (FAILED(hr) && changed) {
-        LOG_WARNING(std::format("[D3D] Reset failed with the borderless parameters (0x{:08X}), retrying with the game's", static_cast<unsigned>(hr)));
-        *pp = asked;
-        hr = o_reset(dev, pp);
-    }
     if (SUCCEEDED(hr)) {
         LOG_INFO(std::format("[D3D] Device reset: {}x{}, {}", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
                              pp && pp->Windowed ? "windowed" : "exclusive fullscreen"));
         RenderCallbacks::Fire(RenderCallbacks::postReset, dev);
         Overlay::AfterReset();
-        Borderless::OnDevice(g_window.load(), pp);
     } else {
         LOG_WARNING(std::format("[D3D] Reset failed (0x{:08X})", static_cast<unsigned>(hr)));
     }
@@ -162,15 +151,7 @@ void HookDevice(IDirect3DDevice9* dev) {
 
 HRESULT STDMETHODCALLTYPE Hooked_CreateDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out) {
     const bool hal = type == D3DDEVTYPE_HAL;
-    D3DPRESENT_PARAMETERS asked{};
-    if (pp) asked = *pp;
-    const bool changed = hal && pp && Borderless::AdjustPresentParams(pp, "CreateDevice");
     HRESULT hr = o_createDevice(self, adapter, type, focus, flags, pp, out);
-    if (FAILED(hr) && changed) {
-        LOG_WARNING(std::format("[D3D] CreateDevice failed with the borderless parameters (0x{:08X}), retrying with the game's", static_cast<unsigned>(hr)));
-        *pp = asked;
-        hr = o_createDevice(self, adapter, type, focus, flags, pp, out);
-    }
     if (SUCCEEDED(hr) && hal && out && *out) {
         LOG_INFO(std::format("[D3D] Game device created: {}x{}, {} (device {:#x}, back buffer format {}, multisample {}, flags {:#x})", pp ? pp->BackBufferWidth : 0,
                              pp ? pp->BackBufferHeight : 0, pp && pp->Windowed ? "windowed" : "exclusive fullscreen", reinterpret_cast<uintptr_t>(*out),
@@ -187,7 +168,6 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateDevice(IDirect3D9* self, UINT adapter, D3
         HookDevice(*out);
         const HWND w = pp && pp->hDeviceWindow ? pp->hDeviceWindow : focus;
         if (w) g_window.store(w);
-        Borderless::OnDevice(w, pp);
     }
     return hr;
 }

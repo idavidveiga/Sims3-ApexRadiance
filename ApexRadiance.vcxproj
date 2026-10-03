@@ -49,12 +49,7 @@
     <TargetName>ApexRadiance</TargetName>
     <TargetExt>.asi</TargetExt>
   </PropertyGroup>
-  <!-- Public release flavour (build_flavor.h): msbuild /p:ApexPublic=true defines S3SS_PUBLIC and builds into Public\ -->
-  <PropertyGroup Condition="'$(ApexPublic)'=='true'">
-    <ApexFlavorDefines>S3SS_PUBLIC</ApexFlavorDefines>
-    <OutDir>$(ProjectDir)Public\</OutDir>
-    <IntDir>$(ProjectDir)Public\obj\</IntDir>
-  </PropertyGroup>
+  <!-- Single build: all tools compiled in, developer mode gated at runtime. ApexPublic is a legacy no-op. -->
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -100,7 +95,6 @@
     <ClCompile Include="apex_config.cpp" />
     <ClCompile Include="apex_gui.cpp" />
     <ClCompile Include="apex_main.cpp" />
-    <ClCompile Include="features\borderless.cpp" />
     <ClCompile Include="features\dxt_codec.cpp" />
     <ClCompile Include="features\fast_dxt.cpp" />
     <ClCompile Include="features\fast_refpack.cpp" />
@@ -177,7 +171,6 @@
     <ClInclude Include="apex_gui.h" />
     <ClInclude Include="apex_version.h" />
     <ClInclude Include="build_flavor.h" />
-    <ClInclude Include="features\borderless.h" />
     <ClInclude Include="features\depth_share.h" />
     <ClInclude Include="features\dxt_codec.h" />
     <ClInclude Include="features\fast_dxt.h" />

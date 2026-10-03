@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Scene node budget (see scene_budget.h and docs/features/performance.md, section "How it works: Spread New Objects Over
 // Frames (C6)").
 //
@@ -386,7 +387,7 @@ void __fastcall Hook_HolderTeardown(void* holder, void* edx) {
 // alive. One found destroyed but still linked (what the destructor hook exists to prevent) is unlinked; anything else
 // stops budgeting. False = do not budget (the caller runs the game's drain).
 bool CheckRecords(void* holder) {
-    if constexpr (kPublicBuild) return true;
+    if (kPublicBuild) return true;
     if (!g_deferredCount.load(std::memory_order_acquire)) return true;
     std::string failure;
     uintptr_t repairedNode = 0;
@@ -456,7 +457,7 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         Link* const l = local.prev;
         Link* const p = l->prev;
         uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
-        if constexpr (!kPublicBuild) {
+        if (!kPublicBuild) {
             uintptr_t vt = 0;
             const bool linked = LinkConsistent(l) && l->next == &local; // l is the tail: its next is our sentinel
             const bool alive = NodeLooksAlive(node, &vt);
@@ -762,7 +763,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     ImGui::TextUnformatted(("Spread new objects over frames: " + StatusText()).c_str());
@@ -788,4 +789,15 @@ void RenderDeveloperUI() {
     if (ImGui::SliderInt("Longest wait (ms)##SbWait", &wait, 16, 5000)) SetMaxDeferMs(wait);
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("nodes", g_nodesPerFrame.load());
+    out.insert("time_ms", g_msPerFrame.load());
+    out.insert("max_wait_ms", g_maxDeferMs.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["nodes"].value<int64_t>()) { const int v = static_cast<int>(*n); SetNodesPerFrame(v); }
+    if (auto n = t["time_ms"].value<double>()) { const float v = static_cast<float>(*n); if (std::isfinite(v)) SetMsPerFrame(v); }
+    if (auto n = t["max_wait_ms"].value<int64_t>()) { const int v = static_cast<int>(*n); SetMaxDeferMs(v); }
+}
 } // namespace SceneBudget

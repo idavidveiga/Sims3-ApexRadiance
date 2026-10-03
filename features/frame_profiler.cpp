@@ -1,6 +1,5 @@
-// Development build only: the public build (S3SS_PUBLIC) compiles none of this; frame_profiler.h then has empty inline
-// versions of the interface.
-#ifndef S3SS_PUBLIC
+#include "build_flavor.h"
+// Included in the unified binary; runtime developer mode gates activation.
 // Frame-hitch profiler (see frame_profiler.h).
 //
 // ---- Frames ----
@@ -378,7 +377,7 @@ std::atomic<bool> g_sampleRender{false};    // statistical sampler: render threa
 std::atomic<bool> g_sampleSim{false};       // statistical sampler: simulation thread
 std::atomic<int> g_sampleHz{2000};
 std::atomic<bool> g_timeMutex{false};       // Advanced "Time the Mutex::Lock hook" (off: the lookup path is measured undistorted)
-bool g_objectBuildWanted = false;           // session only (see the header comment)
+std::atomic<bool> g_objectBuildWanted{false};           // session only (see the header comment)
 bool g_stateHooksActive = false;            // the state-call counters are registered
 
 // ---- clock ----
@@ -4803,6 +4802,7 @@ void RenderAdvanced() {
 namespace FrameProfiler {
 
 void SetEnabled(bool on) {
+    if (kPublicBuild && on) return;
     std::lock_guard<std::mutex> lk(g_ctrlMutex);
     if (on == g_enabled.load()) return;
     if (on) {
@@ -4895,10 +4895,13 @@ void SaveToToml(toml::table& qolTable) {
     t.insert("sample_simulation", g_sampleSim.load());
     t.insert("sample_hz", static_cast<int64_t>(g_sampleHz.load()));
     t.insert("time_mutex_lock", g_timeMutex.load());
+    t.insert("time_objects", g_objectBuildWanted.load());
+    t.insert("registry_timing", g_regTiming.load());
     qolTable.insert("frame_profiler", std::move(t));
 }
 
 void LoadFromToml(const toml::table& qolTable) {
+    if (kPublicBuild) return;
     bool enabled = false;
     bool mutexChanged = false;
     if (auto node = qolTable["frame_profiler"].as_table()) {
@@ -4910,6 +4913,8 @@ void LoadFromToml(const toml::table& qolTable) {
         g_sampleRender.store(t["sample_render"].value_or(false));
         g_sampleSim.store(t["sample_simulation"].value_or(false));
         g_sampleHz.store(std::clamp(static_cast<int>(t["sample_hz"].value_or(int64_t{2000})), 250, 4000));
+        g_objectBuildWanted.store(t["time_objects"].value_or(false));
+        g_regTiming.store(t["registry_timing"].value_or(false));
         const bool mutexTimed = t["time_mutex_lock"].value_or(false);
         mutexChanged = mutexTimed != g_timeMutex.exchange(mutexTimed);
         enabled = t["enabled"].value_or(false);
@@ -4990,5 +4995,3 @@ void AddRegistryHookTime(const std::string& hookName, uint64_t ticks) {
 }
 
 } // namespace FrameProfiler
-
-#endif // S3SS_PUBLIC

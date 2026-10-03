@@ -88,7 +88,7 @@ std::vector<uint64_t> TakeLotArrivals();
 bool LotVisible(uint64_t lot); // a verified lot light pass drew within 500 ms
 int ChunkCount();            // world terrain chunks whose light map was seen in a draw (0 until the world is drawn)
 std::string RoofStatus();
-void SetWaterFix(bool on, float strength, float reflection);
+void SetWaterFix(bool on, float strength, float reflection, bool filter = true, bool preserveColors = true);
 std::string WaterStatus();
 // Sidewalks under snow: 0 = like the game (fully snow-covered), 1 = concrete fully visible.
 void SetSidewalkClear(float amount);
@@ -96,6 +96,7 @@ void SetSidewalkClear(float amount);
 void SetFenceGroundLight(bool on, float strength);
 // Development: paint lamp-lit draws no fix claimed in magenta; record them for ApexRadiance_Censo.txt (3 frames).
 void SetFalseColor(bool on);
+bool FalseColor();
 void RequestCensus();
 std::string CensusStatus();
 // Outdoor walls: multiplies their baked lamp light (1 = the game).

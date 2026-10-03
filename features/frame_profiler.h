@@ -33,7 +33,6 @@ namespace FrameProfiler {
 //  - LampRefresh: Night Lighting's lamp list refresh (every 20 frames, lot_light_bridge.cpp), "Lamp refresh (mod)".
 enum class ModTime : int { D3DDispatch, LampRefresh };
 
-#ifndef S3SS_PUBLIC // development build
 
 // Turns the profiler on (registers the D3D9 hooks, starts the file writer; the timed game functions are resolved and
 // attached at the next frame boundary, on the render thread) or off (detaches and unregisters everything; the collected
@@ -84,26 +83,6 @@ class ModTimeScope {
     int token_;
 };
 
-#else // public build: the profiler is not compiled; [qol.frame_profiler] is left as it is in ApexRadiance.toml
 
-inline void SetEnabled(bool) {}
-inline bool IsEnabled() { return false; }
-inline void RenderUI(bool = true) {}
-inline void SaveToToml(toml::table&) {}
-inline void LoadFromToml(const toml::table&) {}
-inline void Shutdown() {}
-inline bool RegistryHookTimingActive() { return false; }
-inline uint64_t Ticks() { return 0; }
-inline void AddRegistryHookTime(const std::string&, uint64_t) {}
-inline bool PresentHookTimingActive() { return false; }
-inline bool ModTimeActive() { return false; }
-inline int BeginModTime(ModTime, const void*) { return -1; }
-inline void EndModTime(int, const void*) {}
-class ModTimeScope {
-  public:
-    explicit ModTimeScope(ModTime) {}
-};
-
-#endif
 
 } // namespace FrameProfiler

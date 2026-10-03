@@ -209,7 +209,7 @@ bool SliderFloat(const char* label, float* v, float min, float max, const char* 
 // A feature card: rounded panel, card colour, 1 px border, padding kSpace4 x kSpace3, auto height, kSpace3 below it.
 // ALWAYS call EndCard(), whatever BeginCard returned; submit the contents only when it returned true (false = scrolled
 // out of view).
-bool BeginCard(const char* id);
+bool BeginCard(const char* id, bool warning = false);
 void EndCard();
 // Between a card's header and its body: a hairline with kSpace3 above and below. Call it only when a body follows.
 void CardDivider();
@@ -238,7 +238,7 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
 // and on the right the switch (when on is not null) or a pill with rightText; chip (optional) left of them. Consecutive
 // rows get dividers. True on the frame the switch was clicked (it reports "<name> turned on/off").
 bool OverviewRow(const char* id, IconId icon, const char* name, const char* phrase, const char* tooltip, bool* on, bool enabled, const char* rightText,
-                 bool* nameClicked, const char* chip = nullptr);
+                 bool* nameClicked, const char* chip = nullptr, const char* summary = nullptr, bool attention = false);
 // Text of a GPU cost chip ("~0.4 ms") into buf; false (buf empty) when not measured (ms < 0)
 bool CostChipText(float ms, char* buf, int size);
 

@@ -174,7 +174,7 @@ bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord);
 // by c.xy in clip units (2 / width = one pixel), the depth is unchanged. Any vertex shader version. Refused (t unchanged):
 // subroutines or ret, no position write, only plain copies of an input (pre-transformed full-screen passes), no free temp,
 // or the constant already used. Composes with AddScreenPosVs applied after it (TEXCOORDk gets the moved position).
-enum class JitterResult { Ok, NotVertexShader, Unreadable, NoPosition, Subroutines, PassThrough, NoFreeRegister, ConstantInUse };
+enum class JitterResult { Ok, NotVertexShader, Unreadable, NoPosition, Subroutines, PassThrough, NoFreeRegister, ConstantInUse, ProjectedWater };
 JitterResult AddJitterVs(std::vector<DWORD>& t, int jitterConst);
 
 } // namespace ShaderPatches

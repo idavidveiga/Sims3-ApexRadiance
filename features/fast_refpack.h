@@ -34,7 +34,7 @@ bool Running();
 // Pump thread: removes the layer after Stop once the last counting run is 2 s old
 void Tick();
 
-// Development build knobs (not saved)
+// Developer mode preferences (saved; optionally included in Development profiles)
 void SetVerifyEvery(int n); // 1 stream in n is decompressed and compared (0 = only the first 16 of the session)
 int VerifyEvery();
 void SetCompareEvery(int n); // 1 stream in n is also compressed by the game (counting only) to compare size and time (0 = never)

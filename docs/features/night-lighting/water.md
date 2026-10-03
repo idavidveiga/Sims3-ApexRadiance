@@ -188,3 +188,19 @@ No game code is patched; recognition by exact shader id; lamps from `FUN_006acf7
 
 - Depth for water with MSAA on (resolve the MSAA depth or draw depth a second time), noted after m25.
 - Lamp term for the ocean surface and pools.
+
+## Private RC: lamp highlight filtering (2026-10-02)
+
+Version `2.5.4-rc-water-lamp-filter` preserves the approved unified RC and changes only the lamp contribution in the lake shader. Shore reflection marching, sampling, Fresnel and compositing remain unchanged.
+
+`waterSpecularFilter` (default true) uses screen-space wave-normal derivatives to widen undersampled lamp highlights. Variance is capped at 0.016; the exponent falls from 250 to approximately 81.6 at the cap. Peak scaling approximately compensates the wider lobe. This is spatial filtering, with no history, camera jitter or temporal smoothing.
+
+`waterPreserveLampColors` (default true) replaces independent channel clipping with a shared RGB scale. Values up to 0.7 are unchanged; larger peaks smoothly approach 0.8 while preserving RGB ratios. Strong highlights can look softer and slightly dimmer. Both settings are available for comparison in Developer > Lighting; disabling both restores the original lamp math.
+
+No additional render pass, texture or reflection ray steps are added. Compiled PS 3.0 instruction slots increased from approximately 670 to 700. Wave samples now precede depth rejection so derivatives are defined; occluded pixels therefore perform those samples too. Actual GPU cost requires gameplay measurement.
+
+The offline D3D9 harness compiled and created both shaders and passed 12 flat-normal A/B cases: original output within one 8-bit level, unchanged uniform-normal filtering, zero-light output, alpha preservation, analytical brightness and RGB ratios. These checks do not validate moving-camera shimmer, shore geometry, walls or performance in the game. Gameplay validation remains required before release.
+
+### Pending source adjustment: glow intensity range
+
+Lamp glow intensity (`brilhoNaAgua`) is limited to 10–40%, default 40%. Soft lighting uses 30%; Natural and Bright use 40%. Runtime clamping also limits older profiles with larger values. Shore reflection strength is unchanged. EN/PT/ES/FR help text updated. No new binary was built for this adjustment.

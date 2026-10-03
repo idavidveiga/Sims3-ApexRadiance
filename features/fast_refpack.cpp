@@ -1,3 +1,4 @@
+#include "developer_settings.h"
 // Faster cache compression: the RefPack stream write answered by a fast compressor with the game's stream format (see
 // fast_refpack.h, features/refpack_codec.h and docs/features/performance.md).
 //
@@ -646,7 +647,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     ImGui::TextUnformatted(("Faster cache compression: " + StatusText()).c_str());
@@ -676,4 +677,15 @@ void RenderDeveloperUI() {
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
 }
 
+
+void SaveDeveloperState(toml::table& out) {
+    out.insert("verify_every", g_verifyEvery.load());
+    out.insert("compare_every", g_compareEvery.load());
+    out.insert("chain_depth", g_chain.load());
+}
+void LoadDeveloperState(const toml::table& t) {
+    if (auto n = t["verify_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_verifyEvery.store(std::clamp(v, 0, 1024)); }
+    if (auto n = t["compare_every"].value<int64_t>()) { const int v = static_cast<int>(*n); g_compareEvery.store(std::clamp(v, 0, 1024)); }
+    if (auto n = t["chain_depth"].value<int64_t>()) { const int v = static_cast<int>(*n); g_chain.store(std::clamp(v, 4, 256)); }
+}
 } // namespace FastRefPack

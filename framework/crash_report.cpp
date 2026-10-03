@@ -75,7 +75,7 @@ void WriteText(EXCEPTION_POINTERS* ep) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     std::snprintf(line, sizeof line, "%s %s (%s) crash report, %04u-%02u-%02u %02u:%02u:%02u.%03u, thread %lu\r\n", APEX_PRODUCT_NAME, APEX_VERSION_STRING,
-                  kPublicBuild ? "public build" : "development build", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                  kPublicBuild ? "normal mode" : "developer mode", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
                   GetCurrentThreadId());
     o.Write(line);
     const EXCEPTION_RECORD* er = ep->ExceptionRecord;

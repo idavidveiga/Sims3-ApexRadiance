@@ -10,6 +10,18 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"S3SS limits FPS; disable its FPS limit and restart to use Apex's limiter", "O S3SS limita os FPS; desative esse limite e reinicie para usar o limitador do Apex", "S3SS limita los FPS; desactiva ese límite y reinicia para usar el limitador de Apex", "S3SS limite les FPS ; désactivez cette limite et redémarrez pour utiliser celle d’Apex"},
+    {"Keep current", "Preservar atual", "Mantener actual", "Conserver actuel"},
+    {"Changes apply when you restart the game", "As mudanças entram em vigor ao reiniciar o jogo", "Los cambios se aplican al reiniciar el juego", "Les modifications prennent effet au redémarrage du jeu"},
+    {"Limit FPS with Apex", "Limitar FPS com o Apex", "Limitar FPS con Apex", "Limiter les FPS avec Apex"},
+    {"Use only one FPS limiter: Apex, DXVK, or your graphics driver", "Use apenas um limitador de FPS: Apex, DXVK ou o driver de vídeo", "Usa un solo limitador de FPS: Apex, DXVK o el controlador gráfico", "Utilisez un seul limiteur de FPS : Apex, DXVK ou le pilote graphique"},
+    {"Choose a rate the game can sustain, below your monitor's maximum refresh rate", "Escolha uma taxa que o jogo consiga manter, abaixo da frequência máxima do monitor", "Elige una tasa que el juego pueda mantener, inferior a la frecuencia máxima del monitor", "Choisissez une cadence que le jeu peut maintenir, sous la fréquence maximale de l’écran"},
+    {"Target frame rate", "Limite de quadros", "Límite de fotogramas", "Limite d’images"},
+    {"Apex wait: {:.2f} ms | Present: {:.2f} ms", "Espera do Apex: {:.2f} ms | Present: {:.2f} ms", "Espera de Apex: {:.2f} ms | Present: {:.2f} ms", "Attente Apex : {:.2f} ms | Present : {:.2f} ms"},
+    {"Enable G-SYNC or FreeSync in your graphics driver; Apex does not activate it", "Ative G-SYNC ou FreeSync no driver de vídeo; o Apex não ativa essa função", "Activa G-SYNC o FreeSync en el controlador gráfico; Apex no lo activa", "Activez G-SYNC ou FreeSync dans le pilote graphique ; Apex ne l’active pas"},
+    {"DXVK or driver settings may override V-Sync; this cannot guarantee flicker-free output", "O DXVK ou o driver pode sobrescrever o V-Sync; isso não garante eliminar cintilações", "DXVK o el controlador puede sobrescribir V-Sync; esto no garantiza eliminar el parpadeo", "DXVK ou le pilote peut remplacer V-Sync ; cela ne garantit pas l’absence de scintillement"},
+    {"Restore synchronization", "Restaurar sincronização", "Restaurar sincronización", "Rétablir la synchronisation"},
+    {"V-Sync", "V-Sync", "V-Sync", "V-Sync"},
     // ---- Performance feature descriptions (hover) ----
     {"Remembers which of the game's packages holds each file the game asks for, so it does not search every package again. Fewer small "
      "stutters when objects, textures and lots load. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

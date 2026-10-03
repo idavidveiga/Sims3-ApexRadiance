@@ -50,6 +50,7 @@
 #include "lot_lighting_motion.h"
 #include "imgui.h"
 #include "ui/widgets.h"
+#include "ui/i18n.h"
 #include "overlay.h"
 #include <windows.h>
 #include <algorithm>
@@ -184,7 +185,8 @@ float g_wallStrength = 2.0f; // outdoor walls: baked lamp light x this (1 = the 
 bool g_roofs = true;
 float g_roofStrengthSetting = 0.6f;
 bool g_water = true;
-float g_waterStrengthSetting = 1.0f;
+bool g_waterFilter = true, g_waterColorCompression = true;
+float g_waterStrengthSetting = 0.4f;
 float g_waterReflSetting = 1.0f;
 // Brightness controls (Lamps and Ground tabs). Ground / roads / lot lamps on lot grass apply live in the ground shaders
 // (LotLightBridge::SetGroundBrightness); street / lot lamps in the terrain light bake (BakeColourStub) need a terrain
@@ -920,12 +922,12 @@ void RefreshArrivingLots(Clock::time_point now, bool night) {
         b.id = ChunkRelight::QueueLocal(footprints, why, chunks, true);
         if (!b.id) {
             pending.retry = now + std::chrono::milliseconds(500);
-            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Visible lot {:016X}: local entry update postponed ({})", it->first, why));
+            if (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Visible lot {:016X}: local entry update postponed ({})", it->first, why));
             continue;
         }
         b.lamps = std::move(current);
         b.what = std::format("visible lot {:016X}, {} lamp footprints, chunks {}", it->first, footprints.size(), chunks);
-        if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Entry relight queued: " + b.what);
+        if (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Entry relight queued: " + b.what);
         g_arrivalRelit[it->first] = now;
         g_localBatches.push_back(std::move(b));
         g_arrivals.erase(it);
@@ -1130,7 +1132,7 @@ void OnPresent() {
             g_live = true;
             g_liveAt = now;
             g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
-            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
+            if (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
             GameAddr::CheckWorldStructs(); // builds other than Steam 1.67.2: once, logs whether the assumed struct offsets hold
             LevelLightShare::OnWorldLive();
             RequestRefreshAfterLoad();
@@ -1186,13 +1188,13 @@ void OnPresent() {
     if (night != g_lastNight) {
         (night ? g_crossUp : g_crossDown)++;
         g_lastCrossAt = now;
-        if constexpr (!kPublicBuild)
+        if (!kPublicBuild)
             LOG_INFO(std::format("[NightTerrainRelight] Night level crossed 0.99 {} ({}; {:.1f} s after the world change; up {} / down {})", night ? "upwards" : "downwards",
                                  LevelText(s.level), MsSince(g_worldAt) / 1000.0, g_crossUp, g_crossDown));
     }
     if (g_autoDusk && night && !g_lastNight) {
         if (g_loadKickPending) { // the load rebuild runs at night: it is the dusk rebuild too (one rebuild, not two)
-            if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Dusk during the world load: merged into the load rebuild");
+            if (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Dusk during the world load: merged into the load rebuild");
         } else {
             g_scheduled = true;
             g_scheduledAt = now + std::chrono::milliseconds(static_cast<int>(g_delaySec * 1000.0f));
@@ -1272,7 +1274,7 @@ void OnPresent() {
         const std::vector<uint64_t> noEdits;
         if (const int n = LotLightBridge::AdoptNewLots(g_baked, LotLightBridge::CurrentBakeLamps(), g_editKickPending ? g_editUserLots : noEdits); n > 0) {
             g_editDiffEnum = -1;
-            if constexpr (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Snapshot: {} lot(s) loaded after the last rebuild joined it", n));
+            if (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] Snapshot: {} lot(s) loaded after the last rebuild joined it", n));
         }
     }
 
@@ -1352,7 +1354,7 @@ void OnPresent() {
             g_editDiffEnum = -1; // compare again with the updated snapshot
             g_localDone++;
             g_lastLocal = std::format("{}: {}", it->what, d.text);
-            if constexpr (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Local relight done: " + g_lastLocal);
+            if (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Local relight done: " + g_lastLocal);
             g_localBatches.erase(it);
         }
         if (fr.failed) {
@@ -1470,7 +1472,7 @@ void LoadAddresses() {
     }
     ResolveCamera(); // lamp change rebuilds wait for the camera to be still
     ChunkRelight::Init(); // local terrain relight: WorldManager global and terrain link (optional)
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         LOG_INFO(g_camOk ? std::format("[NightTerrainRelight] Camera eye for the lamp change rebuilds: [[{:#010x}]+{:#x}]+{:#x}", g_camRootGlobal, g_camOff, g_eyeOff)
                          : std::string("[NightTerrainRelight] Camera eye not found in the game's code: lamp change rebuilds do not wait for the camera"));
 }
@@ -1541,11 +1543,11 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_smoothMaps, "mapaDeLuzSuavizado", true,
             S3SS_TR("Luz dos postes no chao mais lisa e sem manchas coloridas: o mapa de luz do terreno e ampliado 4x e limpo da compressao.",
                     "Smooth lamp light on the ground, with no blocky steps or colored specks."));
-        if constexpr (!kPublicBuild) // developer A/B only; the public build always prefers the GPU (CPU when it is not available)
+        if (!kPublicBuild) // developer A/B only; the public build always prefers the GPU (CPU when it is not available)
             RegisterBoolSetting(&g_smoothMapsGpu, "mapaDeLuzSuavizadoNaGpu", true,
                 "Developer: smooth the ground light maps on the GPU in the same frame they change (off = the CPU worker path, "
                 "with a plain copy until each map is ready). Falls back to the CPU by itself when the GPU path is not available.");
-        if constexpr (!kPublicBuild) // developer A/B only; the public build always has soft lot edges
+        if (!kPublicBuild) // developer A/B only; the public build always has soft lot edges
             RegisterBoolSetting(&g_softLotEdges, "bordaSuaveLote", true,
                 "Developer: within 3 m of a lot edge, lot grass fades its lamp light to the ground light the world grass shows "
                 "outside the lot, so a lamp near a lot edge leaves no step at the edge (off = the plain max of lot and ground light).");
@@ -1594,9 +1596,11 @@ class NightTerrainRelightPatch : public ApexPatch {
             "How much of the game's light stays in a room with every lamp off, on walls, floors and furniture (1 = the game).");
         RegisterFloatSetting(&g_unlitBlue, "azulNosComodos", SettingWidget::Slider, 0.2f, 0.0f, 1.0f,
             "How blue the light left in rooms is, on walls, floors and furniture (1 = the game's blue, 0 = grey).");
+        RegisterBoolSetting(&g_waterFilter, "waterSpecularFilter", true, "Stabilize lamp sparkles on water");
+        RegisterBoolSetting(&g_waterColorCompression, "waterPreserveLampColors", true, "Preserve bright lamp colors on water");
         RegisterBoolSetting(&g_water, "lagosRefletemLampadas", true,
             S3SS_TR("A agua dos lagos reflete as lampadas e postes proximos a noite.", "Ponds glow and reflect nearby lamps at night."));
-        RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 1.0f, 0.1f, 3.0f,
+        RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 0.4f, 0.1f, 0.4f,
             S3SS_TR("Brilho do reflexo das lampadas na agua.", "Brightness of lamp reflections on water."));
         RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.0f, 0.0f, 3.0f,
             S3SS_TR("Forca do reflexo da margem (arvores, casas, postes) na agua dos lagos.",
@@ -1638,7 +1642,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", false,
             S3SS_TR("Depois de refazer o terreno a noite, recalcula a luz de todos os lotes como quando um poste e movido no modo construcao.",
                     "Experimental: after the dusk terrain rebuild, re-solve the light of every lot."));
-        if constexpr (!kPublicBuild) { // Developer controls only; public uses the approved paced sweep default without exposing diagnostic toggles.
+        if (!kPublicBuild) { // Developer controls only; public uses the approved paced sweep default without exposing diagnostic toggles.
             RegisterBoolSetting(&g_localRelight, "relightNearbyChunks", false,
                 "Developer: a lamp change re-renders only the terrain chunks under the changed lamps, one per frame through the game's own "
                 "chunk sweep, instead of rebuilding every chunk at once (~240 ms). Falls back to the full rebuild when it cannot.");
@@ -1835,7 +1839,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             // switched off its lamp strength is 0, so the pass adds the reflection alone (menu: Water Reflections card);
             // the reflection alone needs the scene depth (Depth Blur), without it the pass would add nothing.
             const bool shoreOnly = !g_water && g_waterReflSetting > 0.0f && DepthShare::Texture() != nullptr;
-            LotLightBridge::SetWaterFix(g_water || shoreOnly, g_water ? g_waterStrengthSetting : 0.0f, g_waterReflSetting);
+            LotLightBridge::SetWaterFix(g_water || shoreOnly, g_water ? std::clamp(g_waterStrengthSetting, 0.1f, 0.4f) : 0.0f, g_waterReflSetting, g_waterFilter, g_waterColorCompression);
             LotLightBridge::OnPresent();
             LightmapSmooth::SetEnabled(g_smoothMaps);
             LotLightBridge::SetSidewalkClear(g_sidewalkClear);
@@ -2051,7 +2055,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_roofs = true;
         g_roofStrengthSetting = 0.6f;
         g_water = true;
-        g_waterStrengthSetting = 1.0f;
+        g_waterFilter = g_waterColorCompression = true;
+        g_waterStrengthSetting = 0.4f;
         g_waterReflSetting = 1.0f;
         g_sidewalkClear = 0.5f;
         g_delaySec = 2.0f;
@@ -2083,10 +2088,11 @@ class NightTerrainRelightPatch : public ApexPatch {
     struct LightStyle {
         float v[10];
     };
+    // Preserve the approved Soft surface ratios; variants change intensity conservatively.
     static constexpr LightStyle kStyles[] = {
-        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f, 0.75f}}, // Soft
-        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f, 1.0f}},      // Natural (the defaults)
-        {{1.4f, 1.0f, 1.3f, 1.3f, 1.4f, 1.4f, 1.4f, 3.0f, 0.9f, 1.5f}},      // Bright
+        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 1.35f, 0.405f, 0.27f}}, // Subtle
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f, 0.3f}},       // Soft reference
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f, 0.4f}},           // Natural
     };
     static float* StyleValue(int i) {
         float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
@@ -2103,47 +2109,67 @@ class NightTerrainRelightPatch : public ApexPatch {
         return -1; // custom
     }
 
-    void DrawLampColor() {
+    void DrawLightingBalance() {
         Edit([] {
-            static const char* const kStyleNames[] = {"Soft", "Natural", "Bright"};
-            static const char* const kStyleTips[] = {"Dimmer lamp light everywhere", "The default look", "Stronger lamp light everywhere"};
-            ApexUi::GroupLabel("STYLE");
+            static const char* const kStyleNames[] = {"Subtle", "Soft", "Natural"};
+            static const char* const kStyleTips[] = {"Less light, more contrast at night", "Gentle, balanced lighting", "The original Apex lighting balance"};
+            static LightStyle previous{};
+            static bool canUndo = false;
+            ApexUi::GroupLabel("Choose the intensity");
+            ApexUi::MutedText("Ground, objects and buildings are already balanced together");
             int style = CurrentStyle();
             bool changed = false;
-            if (ApexUi::SegmentedRow("Light style", "Lamp brightness on the ground, objects, walls, roofs and ponds at once; fine-tune each in its tab", "##LightStyle", &style, kStyleNames,
-                                     static_cast<int>(std::size(kStyleNames)), kStyleTips, nullptr, 1) &&
-                style >= 0) {
-                const float* v = kStyles[style].v;
-                for (int i = 0; i < 10; i++) *StyleValue(i) = v[i];
-                changed = true;
+            const ApexUi::IconId icons[] = {ApexUi::IconId::Moon, ApexUi::IconId::MoonStar, ApexUi::IconId::Lightbulb};
+            const float u = ApexUi::Unit(), gap = ApexUi::kSpace3 * u;
+            const float available = ImGui::GetContentRegionAvail().x;
+            const int columns = available >= 620.0f * u ? 3 : 1;
+            const float width = (available - gap * (columns - 1)) / columns;
+            const float padding = ApexUi::kSpace4 * u;
+            float height = 110.0f * u;
+            for (const char* tip : kStyleTips)
+                height = std::max(height, 50.0f * u + ImGui::CalcTextSize(I18n::Tr(tip), nullptr, false, width - 2 * padding).y + padding);
+            ApexUi::Gap(ApexUi::kSpace3);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f * u);
+            for (int i = 0; i < static_cast<int>(std::size(kStyles)); ++i) {
+                ImGui::PushID(i);
+                const bool selected = style == i;
+                if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                const bool clicked = ImGui::Button("##StyleTile", ImVec2(width, height));
+                if (selected) ImGui::PopStyleColor();
+                const ImVec2 pos = ImGui::GetItemRectMin();
+                auto* draw = ImGui::GetWindowDrawList();
+                const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+                ApexUi::DrawIcon(draw, icons[i], ImVec2(pos.x + padding, pos.y + padding), ApexUi::kIconMedium * u, text);
+                draw->AddText(ImVec2(pos.x + padding + 26.0f * u, pos.y + padding), text, I18n::Tr(kStyleNames[i]));
+                draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(pos.x + padding, pos.y + 46.0f * u),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), I18n::Tr(kStyleTips[i]), nullptr, width - 2 * padding);
+                if (selected) ApexUi::DrawIcon(draw, ApexUi::IconId::Check, ImVec2(pos.x + width - padding - 14.0f * u, pos.y + 4.0f * u), 14.0f * u, text);
+                if (clicked && !selected) {
+                    for (int j = 0; j < 10; ++j) { previous.v[j] = *StyleValue(j); *StyleValue(j) = kStyles[i].v[j]; }
+                    canUndo = true;
+                    style = i;
+                    changed = true;
+                    ApexUi::ReportChange("Lighting balance changed");
+                }
+                ImGui::PopID();
+                if ((i + 1) % columns != 0 && i + 1 < static_cast<int>(std::size(kStyles))) ImGui::SameLine();
             }
-
-            const auto colorSlider = [](const char* label, float* v, const char* tooltip) {
-                ApexUi::SliderOptions o;
-                o.valueText = ""; // the end labels and the swatch say it
-                o.leftLabel = "Pink";
-                o.rightLabel = "Warm white";
-                o.tooltip = tooltip;
-                o.defaultValue = 1.0f;
-                o.trackFrom = LampColourAt(0.0f);
-                o.trackTo = LampColourAt(1.0f);
-                o.swatch = LampColourAt(*v);
-                return ApexUi::Slider(label, v, 0.0f, 1.0f, o);
-            };
-            ApexUi::GroupLabel("COLOR");
-            changed |= colorSlider("Lamp color", &g_lampTint,
-                                   g_lotTintOwn ? "Street lamps; colors you chose in Build mode stay" : "Stock lamps only; colors you chose in Build mode stay");
-            changed |= ApexUi::SwitchRow("Own color for lot lamps", &g_lotTintOwn, "Lamps on lots get a color of their own", false);
-            if (g_lotTintOwn) changed |= colorSlider("Lot lamp color", &g_lotLampTint, "Stock lamps on lots; colors you chose in Build mode stay");
-
-            ApexUi::GroupLabel("MOON");
-            ApexUi::SliderOptions m;
-            m.format = "%.0f%%";
-            m.displayScale = 100.0f;
-            m.tooltip = kSunlightScale ? "How much the moon lights the world at night; 100% is the game" : "Not available on this game version";
-            m.defaultValue = 1.0f;
-            ImGui::BeginDisabled(!kSunlightScale);
-            changed |= ApexUi::Slider("Moonlight", &g_moonlight, 0.0f, 2.0f, m);
+            ImGui::PopStyleVar(2);
+            ApexUi::Gap(ApexUi::kSpace3);
+            const std::string current = style < 0 ? std::string(I18n::Tr("Custom lighting balance")) : I18n::Trf("Current balance: {}", I18n::Tr(kStyleNames[style]));
+            ApexUi::IconNote(style < 0 ? ApexUi::IconId::SlidersHorizontal : ApexUi::IconId::Check, current.c_str());
+            if (ApexUi::BeginAdvanced("LightingBalanceScope", "What does this choice change?")) {
+                ApexUi::MutedText("Changes lamp intensity on ground, objects, walls, roofs and water. Lamp colors and room background light stay as they are.");
+                ApexUi::EndAdvanced();
+            }
+            ImGui::BeginDisabled(!canUndo);
+            if (ApexUi::IconTextButton("Undo choice", ApexUi::IconId::Undo2)) {
+                for (int j = 0; j < 10; ++j) *StyleValue(j) = previous.v[j];
+                canUndo = false;
+                changed = true;
+                ApexUi::ReportChange("Lighting balance restored");
+            }
             ImGui::EndDisabled();
             return changed;
         });
@@ -2337,7 +2363,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Lamps glow on ponds", &g_water, "Ponds glow and sparkle near lamps at night", true);
                 if (g_water)
-                    changed |= ApexUi::SliderPercent("Glow brightness", &g_waterStrengthSetting, 0.1f, 3.0f, "How bright the glow and sparkles are; 100% is the default", 1.0f);
+                    changed |= ApexUi::SliderPercent("Glow brightness", &g_waterStrengthSetting, 0.1f, 0.4f, "Brightness of lamp glow and sparkles on water; 10% to 40%, with 40% as the default", 0.4f);
                 return changed;
             });
         }
@@ -2372,19 +2398,10 @@ class NightTerrainRelightPatch : public ApexPatch {
     }
 
     // Lighting > Lamps, under the Night Lights card: the reset button (the rows that need a reload say so themselves)
-    void DrawFooter() {
-        Edit([] {
-            if (!ApexUi::IconTextButton("Reset Night Lights", ApexUi::IconId::RotateCcw, "Put every Night Lights setting back to default")) return false;
-            ApexUi::ReportChange("Night Lights reset");
-            ResetDefaults();
-            return true;
-        });
-    }
-
     // The generic per-feature controls: the lamp colour (the menu draws the cards itself)
     void RenderCustomUI() override {
         SAFE_IMGUI_BEGIN();
-        DrawLampColor();
+        DrawLightingBalance();
     }
 
     // Development build, Developer page > Lighting: status lines, diagnostics, the census and every individual option.
@@ -2404,7 +2421,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ApexUi::IconLabel(IconId::ListChecks, "Census", iconCol);
         {
             // Census: which lamp-lit draws no fix claimed
-            static bool falseColor = false;
+            bool falseColor = LotLightBridge::FalseColor();
             if (ImGui::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
             if (ImGui::Button("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
@@ -2439,6 +2456,8 @@ class NightTerrainRelightPatch : public ApexPatch {
                                                  : std::format("sunlight scale {:.3f} (base {:.3f}, moonlight x{:.2f})", g_moonWritten, g_sunlightBase, g_moonlight).c_str());
         ImGui::TextWrapped("Roofs: %s", LotLightBridge::RoofStatus().c_str());
         ImGui::TextWrapped("Water: %s", LotLightBridge::WaterStatus().c_str());
+        if (ApexUi::SwitchRow("Stabilize lamp sparkles on water", &g_waterFilter, "Filters tiny highlights without temporal smoothing. Turn off to compare the original", true)) NotifySettingChanged();
+        if (ApexUi::SwitchRow("Preserve bright lamp colors on water", &g_waterColorCompression, "Softens excessive lamp brightness while keeping its color. Turn off to compare the original", true)) NotifySettingChanged();
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
         if (ImGui::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
         ImGui::SameLine();
@@ -2505,7 +2524,7 @@ class NightTerrainRelightPatch : public ApexPatch {
 };
 
 static std::vector<std::string> NightRemakeDetails() {
-    if constexpr (kPublicBuild)
+    if (kPublicBuild)
         return {"Outdoor lot lamps join the terrain light bake (0xC29626) and arm its rebuild (0x6B6516/0x6B60D3/0x6B6618); street lamps count as lit in lot solves (0x6BE18C).",
                 "Outdoor lights are shared between the stories of a house, with the game's own wall occlusion.",
                 "Lamp light on objects, roofs, water and snow is added in the game's own shaders while they draw. At dusk the terrain and lot lighting are rebuilt through the game's own paths."};
@@ -2521,6 +2540,7 @@ APEX_REGISTER_FEATURE(NightTerrainRelightPatch, {.displayName = "Night Lights",
                                                             APEX_PRODUCT_NAME ". Credits: @loinyx",
                                              .category = "Graphics",
                                              .experimental = true,
+                                             .enabledByDefault = true,
                                              .supportedVersions = VERSION_STEAM,
                                              .technicalDetails = NightRemakeDetails(),
                                              .gameCodeGroup = "NightLights"})
@@ -2537,8 +2557,8 @@ namespace {
 NightTerrainRelightPatch* MenuPatch() { return ImGui::GetCurrentContext() ? NightTerrainRelightPatch::g_self : nullptr; }
 } // namespace
 
-void NightLighting::DrawLampColor() {
-    if (auto* p = MenuPatch()) p->DrawLampColor();
+void NightLighting::DrawLightingBalance() {
+    if (auto* p = MenuPatch()) p->DrawLightingBalance();
 }
 void NightLighting::DrawGroundCard() {
     if (auto* p = MenuPatch()) p->DrawGroundCard();
@@ -2561,9 +2581,7 @@ void NightLighting::DrawWaterCard() {
 void NightLighting::DrawSnowCard() {
     if (auto* p = MenuPatch()) p->DrawSnowCard();
 }
-void NightLighting::DrawFooter() {
-    if (auto* p = MenuPatch()) p->DrawFooter();
-}
+
 void NightLighting::DrawDeveloper() {
     if (auto* p = MenuPatch()) p->RenderDeveloperUI();
 }

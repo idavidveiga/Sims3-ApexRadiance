@@ -36,7 +36,7 @@ bool SeveralCores();
 void SetVerifyEvery(int n);
 int VerifyEvery();
 void VerifyAllFor(double seconds);
-// Development build (not saved): worker threads per image (0 = one core; default DxtCodec::Parallel::DefaultWorkers())
+// Developer mode preferences (saved): worker threads per image (0 = one core; default DxtCodec::Parallel::DefaultWorkers())
 // and the smallest image side, in pixels, that is split (width x height >= side x side; default 256)
 void SetParallelWorkers(int n);
 int ParallelWorkers();

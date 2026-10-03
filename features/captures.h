@@ -5,8 +5,8 @@
 // Every capture gets its own folder Documents\...\Apex Radiance\Captures\<YYYY-MM-DD HH-MM-SS> <kind>\ (never reused: a
 // second capture in the same second gets " (2)"), and when it is done the folder also gets a copy of ApexRadiance_LOG.txt,
 // ApexRadiance.toml, ApexRadiance_Crash.txt when there is one, and "About this capture.txt" (what it is, the version, how
-// to send it). Nothing is ever overwritten or deleted by itself; the Report a problem page shows the folder and can delete
-// the captures on request. Each start and end shows a note on screen (Notify, drawn by the menu module).
+// to send it). Capture folders are never reused or deleted by themselves; menu removal is reversible. Each start and
+// completion shows a centered note on screen (Notify, drawn by the menu module).
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -18,8 +18,27 @@ std::filesystem::path Root(); // ...\Apex Radiance\Captures
 // A new, empty capture folder: "<date> <time> <kind>" (kind = "Recording", "Light capture", "Lighting snapshot")
 std::filesystem::path NewFolder(const char* kind);
 // The folder is complete: copies the log, the settings and the crash report into it, writes "About this capture.txt"
-// (what = one line on what was captured) and shows "Saved" on screen
+// (what = one line on what was captured). The save receipt waits for asynchronous PNG completion and reports failures.
 void Finish(const std::filesystem::path& folder, const std::string& what);
+// Render-thread capture output. Failed text is retained for RetrySave, without repeating the measurement.
+bool WriteText(const std::filesystem::path& file, const std::string& text);
+void SetDescription(const std::string& text);
+std::string SavedDescription();
+std::string SavedDescriptionTitle();
+bool SaveDescription(const std::string& text); // add/edit the latest capture's note after it is saved
+bool SaveDescription(const std::string& title, const std::string& text);
+struct Description { std::string title, text; bool Complete() const { return text.find_first_not_of(" \t\r\n") != std::string::npos; } };
+Description ReadDescription(const std::string& folder);
+bool SaveFolderDescription(const std::string& folder, const std::string& title, const std::string& text);
+struct SaveResult {
+    uint64_t serial = 0;
+    std::string folder; // direct child of Root: the collection when grouped
+    bool saving = false;
+    bool failed = false;
+};
+SaveResult LastSave(); // thread-safe, no disk scan
+bool Saving(); // includes PNG encoding, unlike ScreenshotPending
+void RetrySave(); // text and metadata retained; a failed screenshot is taken again
 // Every capture also gets Screenshot.png, the picture of the next frame (menu closed: as shown, Color filters included;
 // menu open: the picture before the Apex menu draws). On by default ([ui] capture_screenshot, set by the menu).
 void SetScreenshots(bool on);
@@ -30,7 +49,7 @@ void SaveReport();
 // ApexRadiance_Crash.txt was written in the last 7 days: its date and time ("2026-09-30 21:50"), else ""
 std::string RecentCrash();
 
-// On-screen note (top-left, the start note's style) for a few seconds; recording = the live recording note
+// On-screen note at the top center for a few seconds; recording = the live recording note
 void Notify(const std::string& text, int seconds = 5);
 struct Note {
     std::string text;
@@ -66,9 +85,17 @@ struct Entry {
     std::string kind;   // "Recording", "Light capture", "Session", ...
     int items = 0;      // a session: the captures in it
     uint64_t bytes = 0;
+    bool described = false;
+    std::string title, description; // bounded notes, populated with the existing library scan
 };
 std::vector<Entry> List();               // walks Captures\ (call at most every few seconds)
 void Open(const std::string& folder);    // Explorer on that capture
 bool Delete(const std::string& folder);  // removes that capture (only folders inside Captures\)
+// Reversible menu removal: move into .Removed, never overwrite or delete. Undo restores the last batch.
+bool Remove(const std::string& folder);
+int RemoveAll();
+bool CanUndoRemoval();
+int UndoRemoval();
+std::vector<std::string> Files(const std::string& folder); // relative names, read on request only
 
 } // namespace Captures

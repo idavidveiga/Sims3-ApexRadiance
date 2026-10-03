@@ -1211,11 +1211,21 @@ bool SliderFloat(const char* label, float* v, float min, float max, const char* 
 
 // ---- cards ----
 
-bool BeginCard(const char* id) {
+bool BeginCard(const char* id, bool warning) {
     if (Hidden()) return true; // search: no frame, the rows go straight into the results
     const float u = Unit();
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(VioletTheme::kCardBg));
-    ImGui::PushStyleColor(ImGuiCol_Border, Col(VioletTheme::kCardBorder));
+    ImVec4 background = Col(VioletTheme::kCardBg), border = Col(VioletTheme::kCardBorder);
+    if (warning) {
+        const ImVec4 tint = Col(VioletTheme::kWarning);
+        background.x += (tint.x - background.x) * 0.12f;
+        background.y += (tint.y - background.y) * 0.12f;
+        background.z += (tint.z - background.z) * 0.12f;
+        border.x += (tint.x - border.x) * 0.35f;
+        border.y += (tint.y - border.y) * 0.35f;
+        border.z += (tint.z - border.z) * 0.35f;
+    }
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, background);
+    ImGui::PushStyleColor(ImGuiCol_Border, border);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f * u);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kSpace4 * u, kSpace3 * u));
@@ -1355,7 +1365,7 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
 }
 
 bool OverviewRow(const char* id, IconId icon, const char* name, const char* phrase, const char* tooltip, bool* on, bool enabled, const char* rightText,
-                 bool* nameClicked, const char* chip) {
+                 bool* nameClicked, const char* chip, const char* summary, bool attention) {
     if (nameClicked) *nameClicked = false;
     if (Hidden()) return false;
     const float u = Unit();
@@ -1379,15 +1389,23 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     // The name is a link to the feature's page
     const ImVec2 np = ImGui::GetCursorScreenPos();
-    const ImVec2 ns = ImGui::CalcTextSize(T(name));
+    const float nameWidth = std::fmax(20.0f * u, startX + width - rightSize.x - chipW - kSpace3 * u - textX);
+    const ImVec2 ns = ImGui::CalcTextSize(T(name), nullptr, false, nameWidth);
     const bool clicked = ImGui::InvisibleButton("##Name", ns, ImGuiButtonFlags_EnableNav);
     const bool hovered = ImGui::IsItemHovered();
     const ImU32 nameCol = hovered ? U32(VioletTheme::kAccentLight) : U32(VioletTheme::kText);
-    dl->AddText(np, nameCol, T(name));
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), np, nameCol, T(name), nullptr, nameWidth);
     if (hovered) dl->AddLine(ImVec2(np.x, np.y + ns.y), ImVec2(np.x + ns.x, np.y + ns.y), nameCol, 1.0f);
     Tooltip(tooltip);
     if (nameClicked) *nameClicked = clicked;
     RowDescription(phrase, startX + width - rightSize.x - chipW - kSpace3 * u);
+    if (summary && *summary) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Col(attention ? VioletTheme::kWarning : VioletTheme::kTextMuted));
+        ImGui::PushTextWrapPos(startX + width - rightSize.x - chipW - kSpace3 * u);
+        ImGui::TextUnformatted(T(summary));
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    }
     ImGui::PopStyleVar();
     ImGui::EndGroup();
     const float rowH = std::fmax(ImGui::GetItemRectMax().y - rowScreen.y, rightSize.y);

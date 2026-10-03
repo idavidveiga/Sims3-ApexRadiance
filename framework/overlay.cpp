@@ -1,4 +1,5 @@
 #include "overlay.h"
+#include "overlay_clock.h"
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "hook_chain.h"
@@ -178,6 +179,9 @@ bool WndProcInstalled() { return g_wndProcInstalled.load(); }
 
 void Frame(IDirect3DDevice9* device) {
     if (!g_ready.load() || !device) return;
+    static FrameClock frameClock;
+    const auto frameStart = FrameClock::Clock::now();
+    const float frameDelta = frameClock.Step(frameStart);
     IDirect3DSurface9* bb = nullptr;
     D3DSURFACE_DESC desc{};
     if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
@@ -190,7 +194,9 @@ void Frame(IDirect3DDevice9* device) {
     const bool draw = g_visible.load() || always;
     if (!draw || !g_client) return;
 
+    const auto beforeLock = FrameClock::Clock::now();
     std::lock_guard<std::mutex> lock(g_imguiLock);
+    const auto afterLock = FrameClock::Clock::now();
     ImGuiIO& io = ImGui::GetIO();
     if (g_clearInput.exchange(false)) {
         io.ClearInputKeys();
@@ -198,6 +204,8 @@ void Frame(IDirect3DDevice9* device) {
     }
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    io.DeltaTime = frameDelta;
+    const auto prepared = FrameClock::Clock::now();
     if (desc.Width && desc.Height) io.DisplaySize = ImVec2(static_cast<float>(desc.Width), static_cast<float>(desc.Height));
 
     // Size of the UI: the user's text size times the resolution (1080p = 1). Paddings, spacing and rounding scale with the
@@ -219,7 +227,17 @@ void Frame(IDirect3DDevice9* device) {
     g_client->Draw();
     ImGui::EndFrame();
     ImGui::Render();
+    const auto built = FrameClock::Clock::now();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    const auto submitted = FrameClock::Clock::now();
+    const auto ms = [](auto from, auto to) { return std::chrono::duration<double, std::milli>(to - from).count(); };
+    static auto lastSlowLog = FrameClock::Clock::time_point{};
+    if (g_visible.load() && (ms(frameStart, submitted) > 50.0 || frameDelta > 0.05f) && submitted - lastSlowLog > std::chrono::seconds(10)) {
+        lastSlowLog = submitted;
+        LOG_WARNING(std::format("[Overlay] Slow panel: total {:.2f} ms; pre-lock {:.2f}, lock {:.2f}, backend {:.2f}, UI {:.2f}, DX9 submit {:.2f}; game frame {:.2f} ms; vertices {}, indices {}",
+            ms(frameStart, submitted), ms(frameStart, beforeLock), ms(beforeLock, afterLock), ms(afterLock, prepared), ms(prepared, built), ms(built, submitted), frameDelta * 1000.0f,
+            ImGui::GetDrawData()->TotalVtxCount, ImGui::GetDrawData()->TotalIdxCount));
+    }
 }
 
 void BeforeReset() {
@@ -248,6 +266,7 @@ void Shutdown() {
 bool IsVisible() { return g_visible.load(); }
 
 void SetVisible(bool visible) {
+    if (visible && g_client && !g_client->CanOpen()) return;
     if (g_visible.exchange(visible) != visible && !visible) g_clearInput.store(true); // no stuck keys when it opens again
 }
 

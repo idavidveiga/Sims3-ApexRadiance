@@ -146,7 +146,7 @@ bool WaitForSettle() {
 
 DWORD WINAPI InitThread(LPVOID) {
     OpenLog();
-    LOG_INFO(std::format("[Main] {} {} ({}) in {}", APEX_PRODUCT_NAME, APEX_VERSION_STRING, kPublicBuild ? "public build" : "development build",
+    LOG_INFO(std::format("[Main] {} {} ({}) in {}", APEX_PRODUCT_NAME, APEX_VERSION_STRING, "unified build",
                          ApexUtil::ToUtf8(ModuleName(nullptr))));
     LOG_INFO("[Main] Files: " + ApexUtil::ToUtf8(ApexPaths::ApexDirectory()));
     if (DetectGameVersion()) LOG_INFO(std::format("[Main] Game: {} [0x{:08X}]", GetGameVersionName(), g_exeTimestamp));
@@ -155,12 +155,13 @@ DWORD WINAPI InitThread(LPVOID) {
     // Apex's HLSL shaders (every quality and mode) compile now on a background thread, so the render thread never runs
     // D3DCompile: the features only create the shader objects from the bytecode (shader_cache.h).
     ShaderCache::Start();
-    AddressSpace::Start(); // development build: the address-space monitor (address_space.h)
+
 
     S3SSDetect::Scan();
     ApexD3D::EnsureInstalled(); // only does something when the DllMain install could not happen
 
     try {
+        ApexConfig::LoadDeveloperMode();
         PatchManager::Get().CreateAll();
         ApexConfig::EnsureMigrated();
         ApexConfig::LoadSettings();
@@ -168,6 +169,8 @@ DWORD WINAPI InitThread(LPVOID) {
         LOG_ERROR(std::string("[Main] Settings could not be loaded: ") + e.what());
     }
 
+    AddressSpace::Start(); // starts only in developer mode, after settings have been loaded
+    LOG_INFO(kPublicBuild ? "[Main] Unified build: normal mode" : "[Main] Unified build: developer mode");
     if (!WaitForSettle()) return 0;
     const S3SSDetect::Info& s3ss = S3SSDetect::Rescan();
     if (s3ss.oldStandalone) {

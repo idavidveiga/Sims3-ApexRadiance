@@ -1995,6 +1995,20 @@ JitterResult AddJitterVs(std::vector<DWORD>& t, int jitterConst) {
     if (t.back() != 0x0000FFFFu) return JitterResult::Unreadable;
     const auto ins = Parse(t);
     if (ins.empty()) return JitterResult::Unreadable;
+    // Pool refraction VS captured 2026-10-02: compressed position decoding plus a
+    // perspective-divided screen coordinate in oT3. Its independently rendered
+    // reflection/refraction inputs are not jittered with the main scene. Keep the
+    // existing game/grain vertex path for this narrowly identified shader family.
+    bool poolDecode = false, poolScale = false, poolProject = false;
+    for (const Ins& x : ins) {
+        if (x.op == kDef && x.len == 5) {
+            const DWORD* f = &t[x.at + 2];
+            poolDecode |= f[0] == F(256.0f) && f[1] == F(7.96875f) && f[2] == F(-200.0f);
+            poolScale |= f[0] == F(63.75f) && f[1] == F(0.0f) && f[2] == F(1.0f);
+        }
+        poolProject |= x.op == kMad && x.len == 4 && IsReg(t[x.at + 1], kOutput, 3) && WMask(t[x.at + 1]) == 3;
+    }
+    if (poolDecode && poolScale && poolProject) return JitterResult::ProjectedWater;
     constexpr DWORD kRastOut = 4, kCall = 0x19, kCallnz = 0x1A, kRet = 0x1C, kLabel = 0x1E;
     constexpr DWORD kRegBits = 0x70001800u | 0x7FFu;
     const bool v3 = ((t[0] >> 8) & 0xFF) == 3;

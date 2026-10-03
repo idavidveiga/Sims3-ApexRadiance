@@ -346,7 +346,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
     ImGui::TextUnformatted(("Faster memory handling: " + StatusText()).c_str());

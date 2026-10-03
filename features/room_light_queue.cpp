@@ -317,7 +317,7 @@ std::string StatusText() {
 }
 
 void RenderDeveloperUI() {
-    if constexpr (kPublicBuild) return;
+    if (kPublicBuild) return;
     ImGui::TextWrapped("Room lighting queue: %s", StatusText().c_str());
 }
 

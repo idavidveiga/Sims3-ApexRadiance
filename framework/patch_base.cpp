@@ -1,3 +1,4 @@
+#include "build_flavor.h"
 #include "patch_base.h"
 #include "game_addresses.h"
 #include "ui/i18n.h"
@@ -356,6 +357,7 @@ void PatchManager::LoadFromToml(const toml::table& root) {
     const toml::table* all = root["patches"].as_table();
     if (!all) return;
     for (const auto& p : patches_) {
+        if (kPublicBuild && p->GetName() == "FrameCapture") continue;
         const toml::table* t = (*all)[p->GetName()].as_table();
         if (!t) continue;
         try {

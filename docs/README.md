@@ -1,3 +1,5 @@
+> Current RC `2.5.4-rc-edge-only`: the System page is Edge Smoothing only. Display/fluency was retired, including its runtime controllers and vendor SDK headers. Conditional MSAA conflicts remain. Night Lighting uses the approved Ready balance layout: Subtle, Soft and Natural, with explicit Custom status, scope help and choice undo. No setting is automatically changed on load.
+
 # Apex Radiance: developer documentation
 
 Apex Radiance ("Apex Radiance for The Sims 3"; file `ApexRadiance.asi`; by @loinyx; formerly "Sims3 Settings Setter
@@ -26,6 +28,7 @@ stay, as an SDR-only module.
 ### General
 | Document | What it covers |
 |---|---|
+| [features/bug-reports.md](features/bug-reports.md) | Current RC restores the 2.5.3 session/capture/list/help page; current save guards, retry, storage and centered notices remain. Superseded redesign notes are retained as history. |
 | [architecture.md](architecture.md) | Loading, D3D9 device hooks, hook registry (priorities, Skip), extra hooks, render callbacks, post-scene trigger chain, INTZ depth share, patch system and TOML settings, logger, build flavours, per-frame flow, threads, the standalone split |
 | [workflow.md](workflow.md) | Build commands, install, the user's standing rules, diagnosis with F7/F8/profiler, release process |
 | [removed-features.md](removed-features.md) | HDR output, Native HDR, Ambient Occlusion, Smooth Streaming, Script GC Scheduler, Service Frame Budget: what they were, where the code is, findings worth keeping |
@@ -75,7 +78,6 @@ stay, as an SDR-only module.
 ### Developer tools (dev build only)
 | Document | Tool |
 |---|---|
-| [features/bug-reports.md](features/bug-reports.md) | Report a problem: the player captures (F6 / F7 / F8, sessions), Captures\ folders, on-screen notes |
 | [features/dev-tools/light-probe.md](features/dev-tools/light-probe.md) | Light Probe, Ctrl+Shift+F7 |
 | [features/dev-tools/light-diag.md](features/dev-tools/light-diag.md) | Light Diag, Ctrl+Shift+F8 |
 | [features/dev-tools/frame-capture.md](features/dev-tools/frame-capture.md) | Frame Capture, Ctrl+Shift+F9 |
@@ -100,3 +102,17 @@ The candidate sources incorporate test007/test008 lighting work and the approved
 ## 2.5.4 hotfix
 
 The hotfix includes the verified summer multi-pass terrain correction for consistent lighting across lot/world boundaries, prioritized visible-lamp activation/colour/intensity changes and bounded visible-lot arrival refreshes. The user accepted the latest private lighting-response build and reported improved perceived performance; measured gameplay latency/FPS were not supplied. See [terrain-relight.md](features/night-lighting/terrain-relight.md#254-hotfix-validation) for validation and limits, [lot-light-pass.md](features/night-lighting/lot-light-pass.md) for the shader variant, [ui.md](ui.md) for page/whole-mod defaults, and [bug-reports.md](features/bug-reports.md) for one-click capture and centered notices. Public binaries exclude Developer tools.
+
+## Local Report interface test (unreleased)
+
+`2.5.4-test-report-ui` implements the complete direct Capture / Saved files workflow in both build flavours. The private Developer workspace is still excluded from the public binary. See [bug-reports.md](features/bug-reports.md#current-local-test-direct-capture-and-saved-files) for the exact controls, file/retry behavior, removal recovery, limitations and gameplay checklist. Published 2.5.4 assets are unchanged. No installation or upload is automatic.
+
+Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [features/edge-smoothing.md](features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
+
+Current private RC: `2.5.4-rc-unified-dev-mode`. Temporal smoothing and the experimental native MSAA combination are removed. High/Ultra color edge detection is retained. Keep the game’s own Edge Smoothing off for the mod’s smoothing and depth-based effects. Private candidate; no publication or installation.
+
+## Unified build and optional developer mode (2026-10-02)
+
+One ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](features/developer-mode.md). FXAA is the first smoothing method; Anti-aliasing precedes Window. The current RC is private.
+
+- [Persistent game anti-aliasing warning](ui-aa-compatibility.md): private RC notice, affected effects and inline help.

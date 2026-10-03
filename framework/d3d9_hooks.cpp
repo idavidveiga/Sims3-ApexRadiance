@@ -153,7 +153,7 @@ bool WaitForRenderThread(const std::string& caller) {
 
 template <typename Fn> void NoteOffThread(Chain<Fn>& chain) {
     g_offThread.fetch_add(1, std::memory_order_relaxed);
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         if (!chain.offThreadLogged.exchange(true))
             LOG_WARNING(std::format("[D3D9Hooks] {} called from thread {} (render thread {}): dispatched under the lock (first time only)", chain.method, ThreadId(),
                                     g_renderTid.load(std::memory_order_relaxed)));
@@ -165,13 +165,14 @@ template <typename Fn> void NoteOffThread(Chain<Fn>& chain) {
 struct ModTimeGuard {
     int token = -1;
     const void* key;
-    ModTimeGuard(bool modTimed, const void* k) : key(k) {
-        if constexpr (!kPublicBuild) {
+    const bool developer; // same gate for entry/exit even while startup reads the setting
+    ModTimeGuard(bool modTimed, const void* k) : key(k), developer(!kPublicBuild) {
+        if (developer) {
             if (t_dispatchDepth++ == 0 && modTimed && FrameProfiler::ModTimeActive()) token = FrameProfiler::BeginModTime(FrameProfiler::ModTime::D3DDispatch, key);
         }
     }
     ~ModTimeGuard() {
-        if constexpr (!kPublicBuild) {
+        if (developer) {
             --t_dispatchDepth;
             if (token >= 0) FrameProfiler::EndModTime(token, key);
         }
@@ -183,7 +184,7 @@ struct ModTimeGuard {
 // Runs one list. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, const typename Chain<Fn>::List& list, DeviceContext& ctx, HRESULT& result, Args... args) {
     bool timed = false;
-    if constexpr (!kPublicBuild)
+    if (!kPublicBuild)
         timed = chain.timing == Timing::Always ? FrameProfiler::PresentHookTimingActive() : (chain.timing == Timing::Option && FrameProfiler::RegistryHookTimingActive());
     for (const auto& e : list) {
         const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
@@ -277,7 +278,7 @@ void ReclaimRetired() {
 enum CallSlot : int { kCallSetTexture, kCallSetVS, kCallSetPS, kCallSetVSC, kCallSetPSC, kCallSetRT, kCallSlots };
 std::atomic<uint32_t> g_calls[kCallSlots]{};
 inline void CountCall(CallSlot s) {
-    if constexpr (!kPublicBuild) g_calls[s].store(g_calls[s].load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); // no locked instruction
+    if (!kPublicBuild) g_calls[s].store(g_calls[s].load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); // no locked instruction
 }
 
 // ---- detours (IDirect3DDevice9 vtable slots) ----

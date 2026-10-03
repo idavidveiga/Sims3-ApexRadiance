@@ -272,20 +272,20 @@ const ShaderCache::Id kBlurPsId[4] = {AddShader("DepthBlur BlurPS (Low, TAPS 4)"
 static_assert(kQualityTaps[0] == 4 && kQualityTaps[1] == 6 && kQualityTaps[2] == 8 && kQualityTaps[3] == 12, "kBlurPsId lists the TAPS of kQualityTaps");
 
 struct Params {
-    bool autoFocus = true;   // Auto (follows what the camera looks at) or Fixed (the original start/range curve)
-    float amount = 0.5f;     // max blur radius = amount x 1% of the screen height
-    int sharpArea = 1;       // Auto: 0 Small, 1 Medium, 2 Large
-    float focusSpeed = 0.3f; // Auto: easing time constant tau (s)
+    bool autoFocus = false;   // Auto (follows what the camera looks at) or Fixed (the original start/range curve)
+    float amount = 1.000000000f;     // max blur radius = amount x 1% of the screen height
+    int sharpArea = 2;       // Auto: 0 Small, 1 Medium, 2 Large
+    float focusSpeed = 0.100000001f; // Auto: easing time constant tau (s)
     bool glowLights = true;  // near-white taps weigh a little more
-    float start = 0.349f;    // Fixed
-    float range = 0.20f;     // Fixed
-    float strength = 1.0f;   // multiplies the blur amount (both modes)
-    float spread = 1.5f;     // legacy "tamanho" (the old Gaussian spread); kept so old configs load, no longer used
-    float farPlane = 1000.0f; // Fixed
+    float start = 0.318108052f;    // Fixed
+    float range = 0.287828237f;     // Fixed
+    float strength = 1.000000000f;   // multiplies the blur amount (both modes)
+    float spread = 0.800000012f;     // legacy "tamanho" (the old Gaussian spread); kept so old configs load, no longer used
+    float farPlane = 1000.000000000f; // Fixed
     bool blurSky = true;
     bool debugView = false;
     bool offInMapView = true; // no blur while the game's map view is open (everything is far away there)
-    int quality = 2; // 0 Low, 1 Medium, 2 High, 3 Ultra
+    int quality = 1; // 0 Low, 1 Medium, 2 High, 3 Ultra
 };
 
 struct BlurState {
@@ -817,7 +817,7 @@ void RunBlur(IDirect3DDevice9* dev, float dt) {
         {g.p.start, g.p.range, g.p.strength * (1.0f - g.mapFade), g.p.farPlane},
         {static_cast<float>(hw), static_cast<float>(hh), 1.0f / static_cast<float>(hw), 1.0f / static_cast<float>(hh)},
         {1.0f, 0.0f, maxRadius, g.p.glowLights ? kLampGain : 0.0f},
-        {g.p.blurSky ? 1.0f : 0.0f, g.p.debugView ? 1.0f : 0.0f, g.linearLight ? 1.0f : 0.0f, autoFocus ? 1.0f : 0.0f},
+        {g.p.blurSky ? 1.0f : 0.0f, (!kPublicBuild && g.p.debugView) ? 1.0f : 0.0f, g.linearLight ? 1.0f : 0.0f, autoFocus ? 1.0f : 0.0f},
         {W, H, 1.0f / W, 1.0f / H},
         {fc0, 1.0f / (fc1 - fc0), kDepthA, 0.0f},
         {ease, g.focusSnap ? 1.0f : 0.0f, 0.5f * kFocusWindow * H / W, 0.5f * kFocusWindow},
@@ -919,7 +919,7 @@ void BlurEffect(IDirect3DDevice9* dev) {
     if (!g.blurOn || !g.ready || g.inBlur || g.internalPass) return;
     const float dt = StepTime();
     StepMapFade(dt);
-    if (!g.p.debugView && (g.p.strength * (1.0f - g.mapFade) <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
+    if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
 
     const int key = g.p.quality;
     if (key != g.qKey) {
@@ -1016,21 +1016,21 @@ std::string Status() { return g.status; }
 class DepthBlurPatch : public ApexPatch {
   public:
     DepthBlurPatch() : ApexPatch("DepthBlur", nullptr) {
-        RegisterBoolSetting(&g.p.autoFocus, "focoAuto", true, "Auto focus: keep what the camera looks at sharp (off = Fixed distance)");
-        RegisterFloatSetting(&g.p.amount, "quantidade", SettingWidget::Slider, 0.5f, 0.0f, 1.0f, "Blur amount: largest blur radius, 1 = 1% of the screen height");
-        RegisterEnumSetting(&g.p.sharpArea, "areaNitida", 1, "Auto focus: how much around the focus stays sharp", {"Small", "Medium", "Large"});
-        RegisterFloatSetting(&g.p.focusSpeed, "velocidadeFoco", SettingWidget::Slider, 0.3f, 0.1f, 1.0f, "Auto focus: seconds the focus takes to follow the camera");
-        RegisterBoolSetting(&g.p.glowLights, "realceLuzes", true, "Lamps stay bright in the blur");
-        RegisterFloatSetting(&g.p.start, "distancia", SettingWidget::Slider, 0.349f, 0.0f, 0.5f, "Fixed focus: where the blur starts. Higher = further from the camera.",
+        RegisterBoolSetting(&g.p.autoFocus, "focoAuto", Params{}.autoFocus, "Auto focus: keep what the camera looks at sharp (off = Fixed distance)");
+        RegisterFloatSetting(&g.p.amount, "quantidade", SettingWidget::Slider, Params{}.amount, 0.0f, 1.0f, "Blur amount: largest blur radius, 1 = 1% of the screen height");
+        RegisterEnumSetting(&g.p.sharpArea, "areaNitida", Params{}.sharpArea, "Auto focus: how much around the focus stays sharp", {"Small", "Medium", "Large"});
+        RegisterFloatSetting(&g.p.focusSpeed, "velocidadeFoco", SettingWidget::Slider, Params{}.focusSpeed, 0.1f, 1.0f, "Auto focus: seconds the focus takes to follow the camera");
+        RegisterBoolSetting(&g.p.glowLights, "realceLuzes", Params{}.glowLights, "Lamps stay bright in the blur");
+        RegisterFloatSetting(&g.p.start, "distancia", SettingWidget::Slider, Params{}.start, 0.0f, 0.5f, "Fixed focus: where the blur starts. Higher = further from the camera.",
             {{"Near", 0.25f}, {"Medium", 0.349f}, {"Far", 0.45f}});
-        RegisterFloatSetting(&g.p.range, "transicao", SettingWidget::Slider, 0.20f, 0.01f, 0.5f,
+        RegisterFloatSetting(&g.p.range, "transicao", SettingWidget::Slider, Params{}.range, 0.01f, 0.5f,
             "Fixed focus: how far the blur takes to reach full strength. Lower = sharper transition.");
-        RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, 1.0f, 0.0f, 1.0f, "Multiplies the blur everywhere. 0 = none, 1 = full.");
-        RegisterFloatSetting(&g.p.spread, "tamanho", SettingWidget::Slider, 1.5f, 0.5f, 6.0f, "Legacy blur size (no longer used; Blur amount replaces it)");
-        RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Blur quality. Higher = smoother large blur, costs more GPU.", {"Low", "Medium", "High", "Ultra"});
-        RegisterFloatSetting(&g.p.farPlane, "farPlane", SettingWidget::InputBox, 1000.0f, 10.0f, 10000.0f, "Fixed focus: depth linearization (advanced)");
-        RegisterBoolSetting(&g.p.blurSky, "blurSky", true, "Blur the sky");
-        RegisterBoolSetting(&g.p.offInMapView, "offInMapView", true, "Turn the blur off while the map view is open");
+        RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, Params{}.strength, 0.0f, 1.0f, "Multiplies the blur everywhere. 0 = none, 1 = full.");
+        RegisterFloatSetting(&g.p.spread, "tamanho", SettingWidget::Slider, Params{}.spread, 0.5f, 6.0f, "Legacy blur size (no longer used; Blur amount replaces it)");
+        RegisterEnumSetting(&g.p.quality, "qualidade", Params{}.quality, "Blur quality. Higher = smoother large blur, costs more GPU.", {"Low", "Medium", "High", "Ultra"});
+        RegisterFloatSetting(&g.p.farPlane, "farPlane", SettingWidget::InputBox, Params{}.farPlane, 10.0f, 10000.0f, "Fixed focus: depth linearization (advanced)");
+        RegisterBoolSetting(&g.p.blurSky, "blurSky", Params{}.blurSky, "Blur the sky");
+        RegisterBoolSetting(&g.p.offInMapView, "offInMapView", Params{}.offInMapView, "Turn the blur off while the map view is open");
         RegisterBoolSetting(&g.p.debugView, "debugView", false, "Show the blur amount (white = blurred, black = sharp)");
     }
 
@@ -1064,6 +1064,7 @@ class DepthBlurPatch : public ApexPatch {
 
     // Overview row and card header chip (all passes, timed with timestamp queries)
     float GpuCostMs() const override { return (isEnabled.load() && g.ready && g.gpuMs >= 0.0f) ? g.gpuMs : -1.0f; }
+    const char* OverviewSummary() const override { return g.p.autoFocus ? "Automatic focus" : "Fixed focus"; }
 
     // The card's controls (menu: Image > Depth Blur page). Settings are read live every frame; the change notice only keeps
     // the base class informed and saves.
@@ -1072,8 +1073,7 @@ class DepthBlurPatch : public ApexPatch {
         using ApexUi::IconId;
         static const Params kDefaults{}; // the registered defaults (changed dots and per-row Reset)
         bool changed = false;
-        if (g.gameAaOn) ApexUi::IconNote(IconId::TriangleAlert, "Paused while the game's own Edge Smoothing is on (Options \xE2\x80\xBA Graphics)", VioletTheme::kWarning);
-        else if (g.status.rfind("ERROR: ", 0) == 0) ApexUi::IconNote(IconId::TriangleAlert, g.status.c_str() + 7, VioletTheme::kError);
+        if (g.status.rfind("ERROR: ", 0) == 0) ApexUi::IconNote(IconId::TriangleAlert, g.status.c_str() + 7, VioletTheme::kError);
 
         // Focus: Auto (follows the camera) or Fixed (the original distance curve)
         static const char* const kFocusModes[] = {"Auto", "Fixed"};
@@ -1192,6 +1192,7 @@ APEX_REGISTER_FEATURE(DepthBlurPatch, {.displayName = "Depth Blur",
                                                   "Works with the game's own Edge Smoothing turned off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                                    .category = "Graphics",
                                    .experimental = true,
+                                             .enabledByDefault = true,
                                    .supportedVersions = VERSION_ALL,
                                    .technicalDetails = {"Swaps the auto depth-stencil for an INTZ texture via Set/GetDepthStencilSurface detours (transparent to the game).",
                                        "Runs before the first ZENABLE=FALSE backbuffer draw after the scene (bloom composite / UI start).",

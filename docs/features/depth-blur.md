@@ -465,3 +465,7 @@ Depth Blur itself patches no game code. It depends on:
 - A quarter-resolution level if players want radii well beyond 1% of the screen height.
 - Decide whether PostScene should fire at the last depth-tested -> depth-off transition like the Picture scene copy.
 - Raise `RenderCallbacks::kSlots` or log when `Add` finds no free slot.
+
+## Investigation: distant foliage speckles (2026-10-02)
+
+The user supplied an image with small sharp dark/light points inside blurred trees. A candidate mechanism is the bilateral composite fallback: PrepPS stores the minimum blur amount of each 2x2 block, while CompositePS compares it to full-resolution depth. Thin alpha-tested foliage can produce mismatched blur values; low `wsum` reduces composite alpha and exposes the original pixel. Sparse gather taps are another possible source documented above. This is a code-based hypothesis, not a confirmed diagnosis. No blur shader or visual parameter was changed. Validate using the depth debug view and the same camera with quality levels before changing the fallback, which also protects foreground edges.

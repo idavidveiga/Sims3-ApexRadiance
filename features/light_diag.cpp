@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -175,7 +176,7 @@ void WriteDiag() {
     }
     // its own folder in Captures\ (never overwritten), with the log and settings (features/captures.h)
     const std::filesystem::path folder = Captures::NewFolder("Lighting snapshot");
-    std::ofstream out(folder / L"Lighting snapshot.txt", std::ios::out | std::ios::trunc);
+    std::ostringstream out;
     const uintptr_t cells = Rd<uintptr_t>(lightMgr + 0x104);
     out << std::format("Apex Radiance lighting snapshot\nnight level={:.2f} lightMgr={:08X} cells={:08X} counter={} / {}\n\n", Rd<float>(lightMgr + 0xF0), lightMgr, cells,
         cells ? Rd<int>(cells + 0x38) : 0, cells ? Rd<int>(cells + 0x3C) : 0);
@@ -259,7 +260,7 @@ void WriteDiag() {
     out << std::format("\nEnd: {} lights, {} lot stories, {} rooms\n", g_lights.size(), managers, rooms);
     g_status = std::format("Saved: {} lights, {} lot stories, {} rooms", g_lights.size(), managers, rooms);
     LOG_INFO("[LightDiag] " + g_status);
-    out.close();
+    Captures::WriteText(folder / L"Lighting snapshot.txt", out.str());
     Captures::Finish(folder, std::format("a snapshot of every light and room ({} lights, {} lot stories, {} rooms)", g_lights.size(), managers, rooms));
 }
 
