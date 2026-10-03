@@ -1,6 +1,10 @@
 # Night Lighting
 
-> **Status in the standalone:** the standalone's Night Lighting starts from **v0.1.0** (commit b84d5f1, 27/09), not from
+> Current release 2.5.6 includes the later lighting work described in the feature guides. See [world lamp response](world-lamp-response.md) for current terrain/rig reconciliation and validation limits. The original split baseline below is historical, not a list of missing current features.
+
+## Historical standalone baseline
+
+> **Status at the original split:** the standalone's Night Lighting starts from **v0.1.0** (commit b84d5f1, 27/09), not from
 > `combined-final`. Everything below that came after v0.1.0 is **not** in the standalone yet and is re-added one change at
 > a time after a user test, fences first: the story gate 0xC294D9 and the relight reconciliation / local relight
 > ([terrain-relight.md](terrain-relight.md); v0.1.0 has fixed triggers instead), the bake-matched per-pixel law

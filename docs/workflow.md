@@ -182,9 +182,9 @@ under `...\S3SS\Apex\` (left in place, not migrated).
 
 ## 5. Release process
 
-### Current standalone releases (2.5.4)
+### Current standalone release (2.5.6)
 
-The standalone repository is `loinyx/Sims3-ApexRadiance`; the combined-build information below is historical. Use the maintainer's `apex-release` skill for current versioning, English notes and GitHub/Nexus steps. Releases ship the unified `Release/ApexRadiance.asi`, with developer mode off by default. Build once and check translations. The current candidate remains private until publication is explicitly requested. Release notes use a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`; the Nexus workflow derives its changelog from that body. Update source documentation and retain the user's requested description approval before publication. Internal provenance notes are excluded from Git and source archives. The maintainer's 2.5.4 lighting-response acceptance is documented in `features/night-lighting/terrain-relight.md`; it is a user report rather than an instrumented latency/FPS measurement.
+The repository is `loinyx/Sims3-ApexRadiance`; the combined-build information below is historical. Version 2.5.6 was published with the unified `Release/ApexRadiance.asi`, developer mode off by default and Optimize rendering on by default for missing settings. Explicit saved off choices are preserved. Build once and check translations. Future candidates remain private until publication is explicitly requested. Release notes use a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`; the Nexus workflow derives its changelog from that body. Update source documentation and retain requested description approval before publication. Internal provenance notes are excluded from Git and source archives. The player acceptance of world-lamp response is documented in `features/night-lighting/world-lamp-response.md`; it is not an instrumented latency/FPS measurement. Documentation-only follow-ups do not require rebuilding or replacing the released ASI.
 
 Repository: https://github.com/loinyx/Sims3SettingsSetter-Apex (public fork of sims3fiend/Sims3SettingsSetter; renamed
 from `Sims3SettingsSetter-NightRemake` on 2026-09-28, old links redirect). It holds the **combined** build until the

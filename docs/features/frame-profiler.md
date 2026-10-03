@@ -51,7 +51,7 @@ sliders save on `IsItemDeactivatedAfterEdit`.
 | Sample the simulation thread (Advanced > Sampling) | `sample_simulation` | bool | false | | needs the simulation thread id (first GC call) |
 | Sampling rate (Advanced > Sampling) | `sample_hz` | int | 2000 | 250 .. 4000 Hz | per sampled thread |
 | Time lot object building (this session) (Advanced) | not saved | bool | false | | attaches / detaches `Lot::UpdateObjectSceneNode` 0x00ABFAC0 live |
-| Per-hook registry timing (Advanced) | not saved | bool | false | | needs the registry instrumentation (present for DIP / DP only) |
+| Per-hook registry timing (Advanced) | `[qol.frame_profiler] registry_timing` | bool | false | | optional draw and state callback timing in the standalone; see below |
 | Time the Mutex::Lock hook (Advanced) | `time_mutex_lock` | bool | **false** | | standalone, 2026-09-28: attaches / detaches the hand-made hook on `Mutex::Lock` 0x004E16F0 live; off = "Mutex wait" stays empty. The resource lookup takes that lock ~580 times per full scan, so the hook's two clock reads per call inflated exactly the lookup path (plan caveat 1b) |
 
 Buttons (shown while on or once data exists): **Clear** (forgets frames, hitches, session tables; the file keeps what
@@ -353,13 +353,21 @@ most 64 names / 256 pointer cache entries. `RollRegistryWindow` (render thread, 
 calls/frame per name once per second into `g_regDisplay` ("Registry hooks by name" in Advanced). The list includes the
 profiler's own "FrameProfiler" entries.
 
-Standalone (`framework/d3d9_hooks.cpp` `RunList`, 2026-09-29): the draw chains are timed per name as above (option
-"Per-hook registry timing"); **every Present callback is timed per name whenever the profiler is on** (M3,
+Standalone (`framework/d3d9_hooks.cpp` `RunList`, published 2.5.6): draw chains and
+SetRenderTarget, SetPixelShader, SetVertexShader, SetTexture, SetViewport,
+SetPixelShaderConstantF and SetVertexShaderConstantF are timed per name with the option.
+State entries have a method suffix, such as `LotLightBridge (SetPixelShader)`.
+Create* and BeginScene callbacks do not have per-name timing. The option is
+"Per-hook registry timing"; **every Present callback is timed per name whenever the profiler is on** (M3,
 `PresentHookTimingActive()`), reported as `"<name> (Present)"` (e.g. `NightTerrainRelight (Present)`, `PostScene
 (Present)`, `ApexCore (Present)`, `FrameProfiler (Present)`), so the Present hooks' cost is split by module without
 the option. The "Registry hooks by name" list is shown while the option is on or any name has data, and "Save report
 now" adds it ("Registry hooks by name (last second; ...)"). `AddRegistryHookTime` is still serialised by the registry's
 own timing mutex.
+
+These durations include nested callback work and device calls made by callbacks;
+they are not pure driver timings and must not be added as disjoint costs. Detailed
+timing adds measurement overhead; turn it off for paired performance runs.
 
 ### Hitch detection (`FrameBoundary`)
 - Frame time = time between two Present boundaries. Median of the last 120 frames (`kMedianWindow`, `nth_element`),
@@ -469,7 +477,7 @@ none` when no counter reached 0.05 ms of render self time.
 The report adds "Counters since Clear" (per bucket calls x ms, longest calls, render-thread per-frame averages, extras),
 "Counters per hitch" (the hitch ring), "Apex shaders: ..." (the shader precompile status, see
 [architecture](../architecture.md#shader-precompile)), (standalone, 2026-09-29) "Registry hooks by name (last second; ...)"
-with one line per name (Present hooks always, draw hooks with the option) and "Draw / state hooks called off the render
+with one line per name (Present hooks always, draw and state hooks with the option) and "Draw / state hooks called off the render
 thread (dispatched under the lock): N", "Resource lookup cache: ...", "Resource lookup cache counters:
 ..." (round 3: lookups, from memory, absent, answers with no probe of the counted packages, game lookups, re-check
 failed, stored / absent stored / not stored / unreliable read-only package, list changes, notices, missed changes, the

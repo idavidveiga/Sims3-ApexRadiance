@@ -1,4 +1,6 @@
-# Removed features
+# Removed features and historical implementations
+
+> This is a historical reference, not the current feature list. Standalone GTAO was reintroduced on 2026-09-30; see [Ambient Occlusion](features/ambient-occlusion.md). The Ambient Occlusion section below describes the earlier removed implementation.
 
 Features that existed in the combined build (S3SS + Apex in one ASI, git tag `combined-final`, commit 45e36e2, tree
 `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`) and are **not** carried into the standalone Apex Radiance. This
@@ -473,7 +475,7 @@ per-lot build runs in each frame. See the header comment of the source, lines 1-
 UI location: Apex tab > "Performance" > "Smooth Streaming" (collapsing header, open by default; `gui.cpp`
 `RenderApexFeature("SmoothStreaming", "Smooth Streaming")`). Settings are saved in `S3SS.toml` under
 `[patches.SmoothStreaming]` (plus `enabled`), through `OptimizationPatch::SaveToToml`. The standalone saves them in its
-own config (see [../architecture.md](../architecture.md)). The source says: "Keys are the TOML names of saved configs:
+own config (see [../architecture.md](architecture.md)). The source says: "Keys are the TOML names of saved configs:
 never rename them."
 
 | UI label | TOML key | Type | Default | Range (registered / UI) | Notes |
@@ -536,7 +538,7 @@ Any failure after the first write calls `Rollback`, which restores the bytes, re
 The chain is: WorldManager service `FUN_00C7E3C0` (runs only while WorldManager+0x41 != 0) → `WorldManager::Update`
 0xC6D570 → lot pass `FUN_00C7CEA0(worldRenderer=[0x011ECE58], dt)` → for each lot renderer `FUN_00AEB2E0(node+8)` →
 `FUN_00AEA680` while `+0x1E` (done) and `+0x1F` (failed) are both 0. See
-[../engine/lot-loading-and-streaming.md](../engine/lot-loading-and-streaming.md).
+[../engine/lot-loading-and-streaming.md](engine/lot-loading-and-streaming.md).
 
 `Hook_LotPass` (0xC7CEA0) wraps the original between `BeginPass` and `EndPass`. It records the pass thread and sets
 `g_inPass`. The other hooks act only inside the pass and on that thread.
@@ -568,7 +570,7 @@ address shifts the offset by 4). EAX is dead at both sites, and `mov` does not t
 touched.
 
 The budget is in milliseconds of an EA stopwatch: unit 4, QPC scale `[0x011CB8FC]` = 1000/QPF (see
-[../engine/timers-and-sleeps.md](../engine/timers-and-sleeps.md)). It is cumulative for one call and checked after each
+[../engine/timers-and-sleeps.md](engine/timers-and-sleeps.md)). It is cumulative for one call and checked after each
 stage (0xAEB102..0xAEB126), so one stage always runs and a slow stage overshoots.
 
 ##### Part 1b: the shared frame gate (`Hook_LoadStages`, 0xAEA680)
@@ -629,7 +631,7 @@ returns once elapsed >= budget while room+0x164 is set, and resumes from room+0x
   fewer chunks (the localized relight below) makes the whole rebuild shorter.
 - **Arming test in live mode.** The test is "cells+0x3C == 0" (0xC84C14..0xC84C2B, BL = WorldManager+0x1B4 != 0),
   with no night condition. The +0x38 countdown alone (light register, remove or move) never triggers it. Details in
-  [../engine/terrain-and-light-bake.md](../engine/terrain-and-light-bake.md).
+  [../engine/terrain-and-light-bake.md](engine/terrain-and-light-bake.md).
 
 ##### Part 4: localized terrain relight for Night Lighting
 `int SmoothStreamingRelightTerrainRects(const float* rects, int count, float maxFraction)` is exported to
@@ -729,13 +731,13 @@ None.
   (`FUN_00C69FF0` blocks the next while a promoted lot is still loading). Smooth Streaming adds nothing there. Its frame
   gate is what keeps a burst cheap when that throttle is off. Smooth Streaming reads the bytes at 0xC6D68C (inside
   WorldManager::Update's body, not its prologue), so LSO's detour of 0xC6D570 does not disturb it. Details:
-  [../engine/lot-loading-and-streaming.md](../engine/lot-loading-and-streaming.md).
+  [../engine/lot-loading-and-streaming.md](engine/lot-loading-and-streaming.md).
 - **Night Lighting** (`night_terrain_relight_patch.cpp`):
   - It uses `SmoothStreamingRelightTerrainRects` for local relights.
   - Its dusk and lamp "kicks" arm the game's countdown, and the resulting full rebuild goes through the queue when the
     spread is on.
   - Night Terrain Relight also calls `FUN_00C845C0` itself from its Present hook, on the same thread.
-  - See [night-lighting/terrain-relight.md](night-lighting/terrain-relight.md).
+  - See [night-lighting/terrain-relight.md](features/night-lighting/terrain-relight.md).
 - **Frame Profiler** (`frame_profiler.cpp`):
   - It times `FUN_00AEA680` and `FUN_00C845C0` at their per-frame call sites (0xAEB306, 0xC6D68F; 5-byte call
     redirects) instead of at the entries, precisely because Smooth Streaming verifies the entry bytes. With Smooth
@@ -821,7 +823,7 @@ None.
   - "Could not install the function hooks";
   - "Could not patch the lot load budget";
   - "Could not patch the terrain relight arming".
-- **Frame Profiler** ([frame-profiler.md](frame-profiler.md)): compare "Lot load stages", "Lot lighting update" and
+- **Frame Profiler** ([frame-profiler.md](features/frame-profiler.md)): compare "Lot load stages", "Lot lighting update" and
   "Terrain update" per hitch with the feature on and off, camera moving across a neighbourhood. "lots promoted" per hitch
   is in the hitch file.
 
@@ -853,7 +855,7 @@ None.
 #### Purpose
 
 The game collects continuously: one time-boxed slice (0.5-1.5 ms budget) per Simulate pass on the simulation thread
-(details in [../engine/mono-gc.md](../engine/mono-gc.md)). The idea is to move that work away from camera motion, when
+(details in [../engine/mono-gc.md](engine/mono-gc.md)). The idea is to move that work away from camera motion, when
 hitches are most visible, and to catch up when the camera rests.
 
 Two facts limit what this can achieve:
@@ -956,7 +958,7 @@ is overwritten at 0x00D819AF).
 
 #### Game addresses and patterns
 
-All TS3W.exe 1.67.2 Steam. Full GC background in [../engine/mono-gc.md](../engine/mono-gc.md).
+All TS3W.exe 1.67.2 Steam. Full GC background in [../engine/mono-gc.md](engine/mono-gc.md).
 
 | Address | What | How found / verified |
 |---|---|---|
@@ -1000,7 +1002,7 @@ None.
   `cmp eax,0C8h` at 0x00D81A1D (200 → 32767) and the `jnz` at 0x00D81A37 (NOPed). PLANO lists the pattern starts
   0xD81A1B / 0xD81A30; the bytes actually written are at +2 and +7. Different bytes: they combine.
 - **S3SS "GC_stop_world() Optimization"** (`GCStopWorld`). It patches 0x00E511F5 inside `GC_stop_world`. They combine.
-  See [../engine/mono-gc.md](../engine/mono-gc.md) for what that patch really does.
+  See [../engine/mono-gc.md](engine/mono-gc.md) for what that patch really does.
 - **Frame Profiler.** It Detours the **entry** of 0x00E4A050 ("Script GC" category) at its first frame boundary after
   being turned on, and reports the call site ("GC call site: redirected to 0x... by another patch (e.g. Script GC
   Scheduler); timed whenever it calls GC_try_to_collect", seen in every `S3SS_Hitches.txt` report of 28/09).

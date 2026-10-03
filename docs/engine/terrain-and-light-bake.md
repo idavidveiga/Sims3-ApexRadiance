@@ -1,5 +1,7 @@
 # Terrain chunks and the terrain light bake
 
+> Current Apex policy and captured world-owned lamp evidence are documented in [world lamp response](../features/night-lighting/world-lamp-response.md). Release 2.5.6 also reports native LOD chunk completion to the existing lightmap reconciliation; validated retained textures reuse immutable metadata, not baked contents.
+
 > Engine reference for TS3W.exe 1.67.2 (Steam, image base 0x00400000). It covers how world terrain is split into 256 m
 > chunks, how each chunk's lamp "stamp" light map is baked on the GPU by `FUN_00C292B0`, which lights that bake accepts
 > (visitor filter, rectangle test, lot/story gate at `0x00C294D9`), how a rebuild is armed and consumed (light-cell

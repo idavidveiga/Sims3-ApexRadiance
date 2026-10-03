@@ -1,8 +1,8 @@
 > Current standalone update (2026-10-02): one unified ASI now includes optional developer tools, off by default and selected at startup. The compile-time flavor descriptions below are historical. See [developer-mode.md](features/developer-mode.md).
 
-# Architecture: how Apex Radiance (formerly S3SS Apex) hooks the game and D3D9
+# Architecture: how Apex Radiance hooks the game and D3D9
 
-> This covers the **frozen combined build**: Apex inside a fork of Sims3SettingsSetter, tag `combined-final`, commit
+> Historical architecture baseline: the following covers the **frozen combined build**: Apex inside a fork of Sims3SettingsSetter, tag `combined-final`, commit
 > 45e36e2, tree `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`. File paths below are relative to that tree.
 > The **standalone** ASI, **Apex Radiance** (`ApexRadiance.asi`; project folder still `S3SSApex\`), is **in progress**.
 > Its design is summarised in

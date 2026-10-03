@@ -1,4 +1,4 @@
-> Version 2.5.5: one unified build; developer mode is optional in Settings. Edge Smoothing is the only System display page. Apex does not control window mode, V-Sync or FPS pacing. Night Lighting offers Subtle, Soft and Natural without overwriting existing settings. Report a problem uses the v2.5.3 layout with optional capture titles and descriptions.
+> Version 2.5.6: world street-lamp colour edits update ground lighting and native object rigs. Optimize rendering is on by default for new settings; saved choices are preserved. One unified build offers optional developer mode. Edge Smoothing is the only System display page; Apex does not control window mode, V-Sync or FPS pacing.
 
 <p align="center"><img src="docs/images/logo-256.png" width="140" alt="Apex Radiance logo"></p>
 
@@ -124,7 +124,7 @@ The first start asks which key opens it (Ctrl+Shift+R, Ctrl+Shift+1 or Ctrl+Shif
 
 - The Sims 3, Steam version 1.67.2 (`TS3W.exe`). The EA App version 1.69 (`TS3.exe`) is supported too (experimental); on other versions, features whose game code is not found show as unavailable.
 - An ASI loader in `Game\Bin`, for example [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
-- Recommended: the official Sims3SettingsSetter for its frame rate limiter and stutter fixes.
+- Optional companion mods are covered under Compatibility below; they are not required to load Apex Radiance.
 
 ## Install
 
@@ -148,7 +148,7 @@ If you used the older combined build (Sims3SettingsSetter with Apex inside) or `
 
 ## Compatibility
 
-- **Sims3SettingsSetter:** both mods can be installed together, and I recommend using both. When they both offer the same thing, Apex Radiance steps aside: ground lighting on upper floors is left to Sims3SettingsSetter when it has its own version turned on. Window modes and synchronization are no longer controlled by Apex.
+- **Sims3SettingsSetter:** compatible alongside Apex Radiance. When its Split-Level Lighting Fix is active, Apex avoids applying that patch twice and preserves the real lot ID for the outdoor-room gather. Apex does not control window modes or synchronization.
 - **Sims 3 Performance Patch:** compatible. The two mods work on different parts of the game (it speeds up loading and saves memory; Apex Radiance targets in-game stutters) and do not patch the same game code.
 - Works with DXVK.
 
@@ -177,14 +177,21 @@ The Sims is a trademark of Electronic Arts Inc. This is a fan-made mod, not affi
 
 [MIT](LICENSE)
 
-### Local test: simpler problem reports (not yet released)
-
-The local `2.5.4-test-report-library` build reorganizes **Report a problem** into visible **Prepare → Record → Describe → Completed** stages. Starting keeps the panel open; point capture, lighting snapshot and general report remain available while recording. Return to game is optional; point selection temporarily hides the panel and returns after one click and capture completion. Stop and continue leads to the required description on the same page, followed by the saved-file receipt. Cancel keeps captured files pending. Saved files, retry, optional collections, comparison and reversible removal/Undo are retained. All new player text is in EN/PT/ES/FR with Violet/Lucide styling. Developer stays private. Native checks passed; gameplay validation is still required. This local test is not installed or published. See [the capture documentation](docs/features/bug-reports.md).
-
-Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [docs/features/edge-smoothing.md](docs/features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
-
-Current private RC: `2.5.4-rc-unified-dev-mode`. Temporal smoothing and the experimental native MSAA combination are removed. High/Ultra color edge detection is retained. Keep the game’s own Edge Smoothing off. Native D3D9 and DXVK 3.1.1 passed 29 shader variants, ten spatial render cases and native MSAA rejection checks. Gameplay/FPS validation is pending. Not installed or published. See the Edge Smoothing feature document.
-
 ## Unified build and optional developer mode (2026-10-02)
 
-One ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](docs/features/developer-mode.md). FXAA is the first smoothing method; Anti-aliasing precedes Window. The current RC is private.
+Published since 2.5.5: one ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](docs/features/developer-mode.md). FXAA is first and recommended; SMAA is spatial only. Window and pacing controls were removed.
+
+## Rendering optimizations and world lights (2.5.6)
+
+System > Performance contains **Optimize rendering**, enabled by default when no
+explicit choice is saved. It reduces repeated rendering work without changing
+resolution, filters, light counts or lighting-update budgets. Existing off choices
+are preserved; Reset restores on. Overall FPS gains have not been measured.
+
+World-owned street lamps now participate in colour-change reconciliation, including
+lamps without a lot-room association. Completed local terrain updates notify the
+smoothed-map cache, and coalesced edits refresh native object-light rigs. The player
+confirmed the colour response in the test scene; broader gameplay and cost checks
+remain pending. Alpha-blended sidewalk shader recognition was also extended.
+See [performance](docs/features/performance.md), [world lamp response](docs/features/night-lighting/world-lamp-response.md)
+and [roads](docs/features/night-lighting/roads.md).

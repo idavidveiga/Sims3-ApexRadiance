@@ -1,6 +1,10 @@
 # Terrain relight (lot lamps in the terrain bake, story gate, dusk rebuild, reconciliation)
 
-> **Status in the standalone:** only the v0.1.0 part is in the standalone: visitor 0xC29626, the 3 arm sites, the dusk
+> Current release 2.5.6: world-owned lamp edits reconcile terrain and native object rigs. See [world lamp response](world-lamp-response.md) for the current policy, captured evidence and validation limits. The split-baseline status below is historical; later sections record subsequent work.
+
+## Historical split baseline
+
+> **Status at the original split:** only the v0.1.0 part is in the standalone: visitor 0xC29626, the 3 arm sites, the dusk
 > kick, the experimental switches and the dev buttons, with full rebuilds (never the reconciliation). Its triggers were
 > reworked on 28/09 ("Standalone triggers" below, **not yet tested in game**): the load rebuild waits for the world to be
 > drawn and a steady night level and merges with the dusk rebuild; lamp additions and removals count like edits (only on

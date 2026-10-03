@@ -1,12 +1,12 @@
-> Version 2.5.5: one unified build; developer mode is optional in Settings. Edge Smoothing is the only System display page. Apex does not control window mode, V-Sync or FPS pacing. Night Lighting offers Subtle, Soft and Natural without overwriting existing settings. Report a problem uses the v2.5.3 layout with optional capture titles and descriptions.
+> Published version 2.5.6: Optimize rendering defaults on (`[ui] performance_mode`); explicit saved off choices remain off. World-owned type-11 lamp edits reconcile terrain and native rigs; the player confirmed the test-scene colour response, not a latency/FPS benchmark. Read docs/features/night-lighting/world-lamp-response.md and docs/features/performance.md before changing these paths. One unified ASI; optional developer mode; no Apex window/V-Sync/FPS controls.
 
 # CLAUDE.md: Apex Radiance
 
 ## What this is
 **Apex Radiance** ("Apex Radiance for The Sims 3"; file `ApexRadiance.asi`; author @loinyx; renamed 2026-09-28 from
 "Sims3 Settings Setter Apex Edition" / "S3SS Apex" / `S3SSApex.asi`) is a native mod for The Sims 3 (Steam 1.67.2,
-`TS3W.exe`, 32-bit). It is an ASI loaded by Ultimate ASI Loader, running next to an unmodified official
-Sims3SettingsSetter. It hooks the D3D9 device (the game runs on the official DXVK 3.1.1 `d3d9.dll`) and patches game
+`TS3W.exe`, 32-bit). It is an ASI loaded by Ultimate ASI Loader, compatible with an unmodified official
+Sims3SettingsSetter but not dependent on it. It hooks the D3D9 device and patches game
 code in memory: Detours, pattern scans, ImGui menu, TOML config. Visible names come from `apex_version.h`
 (`APEX_PRODUCT_NAME`, `APEX_PRODUCT_TAGLINE`); internal identifiers keep "Apex" (namespaces, `ApexPatch`, `APEX_`
 macros, `apex_*` source files).
@@ -23,23 +23,21 @@ bit-identical rewrite of the game's CPU DXT encoders, and Faster Cache Compressi
 RefPack compressor in the game's format, both off by default until tested; Spread New Objects Over Frames
 `SceneNodeBudget`, a budgeted copy of the scene's pending-node drain while the camera moves, and Faster Object Lookups
 `ObjectLookupIndex`, a validated index for the object/lot lookup by ID, both experimental and off by default; offline
-tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (dev build only), plus dev tools (Light Probe
+tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (developer mode only), plus dev tools (Light Probe
 Ctrl+Shift+F7, Light Diag Ctrl+Shift+F8, Frame Capture Ctrl+Shift+F9, Lot Map Probe, census). Menu: Violet UI
 (sidebar plus feature cards), hotkey Ctrl+Shift+F11. Smooth Streaming, Script GC Scheduler and Service Frame Budget
 were removed (see below).
 
-**Scope (user decision 2026-09-28):** HDR output, Native HDR, Ambient Occlusion, Smooth Streaming, Script GC Scheduler
-and Service Frame Budget are removed from the standalone. Their findings are kept in `docs/removed-features.md`; do not
-bring them back without the user asking.
+**Scope:** HDR output, Native HDR, Smooth Streaming, Script GC Scheduler and Service Frame Budget remain removed. Their findings are kept in `docs/removed-features.md`; do not restore them without a user request. Ambient Occlusion was reintroduced as standalone GTAO on 2026-09-30; see `docs/features/ambient-occlusion.md`. The earlier removal decision is historical.
 
 ## State of the code
 - Frozen combined build (Apex inside a fork of S3SS): `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`, branch
   `night-remake`, tag `combined-final` (commit 45e36e2, local only). Full copy in
   `Backups Sims 3\16-antes da separacao (codigo completo)`. Treat it as read-only reference.
-- This folder (`S3SSApex\`; the folder name is not changed yet, the user decides) is Apex Radiance, the standalone ASI
-  that runs next to an unmodified official S3SS. The plan is `%USERPROFILE%\Desktop\S3SS-dev\PLANO-SEPARACAO.md`,
+- This repository is Apex Radiance, the standalone ASI
+  that can coexist with an unmodified official S3SS. The plan is `%USERPROFILE%\Desktop\S3SS-dev\PLANO-SEPARACAO.md`,
   summarised in `docs/architecture.md`. New work goes here. The framework is rewritten from scratch (no S3SS code).
-- The docs cite files by their combined-tree names; the standalone keeps the module names.
+- Current source paths refer to this repository. Explicitly historical sections retain combined-tree references.
 
 ## Read before touching anything
 - `docs/README.md`: index. Then `docs/architecture.md` and `docs/workflow.md`.

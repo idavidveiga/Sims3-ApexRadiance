@@ -1,7 +1,8 @@
 # Roads and sidewalks
 
-> **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) as described. `RoadPatch::scaleConst` (`LampScaleAfter`)
-> is post-0.1.0 and only fed the removed HDR gain: leave it out.
+> Published 2.5.6 adds recognition of alpha-blended sidewalk VS variants packing
+> terrain UV in TEXCOORD1.xy and opacity UV in zw. Current scaleConst is used by
+> the SDR ground/road brightness path; the earlier HDR-only note is superseded.
 
 > Roads and sidewalks sample their own copy of the chunk light map, which does not contain the lamps the world terrain
 > map has, so they stayed dark next to lit ground. Night Lighting recognises every road vertex shader by pattern
@@ -49,10 +50,16 @@ Roads also need `luzDoPosteNaGramaDoLote` (dispatch gate) and benefit from `mapa
 
 ### Recognition (`ShaderPatches::IsRoadVs`, VS class 4)
 
-A vs_3_0 whose TEXCOORD1 output is declared with write mask exactly **.xy** (terrain VS declare it full, lot VS .xyz:
-both stop here), that has `dp4` with c8 and with c10 (world matrix rows), and exactly one
+A vs_3_0 whose TEXCOORD1 output is declared with write mask **.xy**, or **.xyzw**
+with the additional validated opacity-UV multiplication into zw. The full-mask
+variant must use the recognised constant/input swizzles, unit-scale definition
+and texture-coordinate declaration; arbitrary full outputs are not accepted.
+Lot .xyz outputs remain excluded. The shader has `dp4` with c8 and c10, and exactly one
 `mad oT1.xy, rA.xzzw, cM, cM.zwzw` (terrain uv). M is stored per VS (`g_roadMapConst`): c16 in winter, c14 in summer.
 Scan of 118 unique captured shaders (25/09 09:10): 3 road VS, 7 road PS (4 winter + 3 summer), all disassemble.
+The later offline captured-VS scan retained the three existing road matches and
+added one alpha-blended sidewalk match among 314 shaders. This recognises a shader
+variant; it does not certify every sidewalk or colour-correction configuration.
 
 ### Pixel patch (`ShaderPatches::PatchRoad`, ps_3_0)
 

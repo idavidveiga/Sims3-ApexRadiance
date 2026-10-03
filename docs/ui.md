@@ -1,8 +1,15 @@
-> Current RC `2.5.4-rc-edge-only`: the System page is Edge Smoothing only. Display/fluency was retired, including its runtime controllers and vendor SDK headers. Conditional MSAA conflicts remain. Night Lighting uses the approved Ready balance layout: Subtle, Soft and Natural, with explicit Custom status, scope help and choice undo. No setting is automatically changed on load.
+> Published 2.5.6: System > Performance begins with Optimize rendering, default on
+> for missing settings, preserving explicit saved off choices. Its row reset and
+> Reset all restore on. One unified ASI offers optional developer mode. The System
+> display page is Edge Smoothing only; window and pacing controls are removed.
 
-> Current RC Report restoration (2026-10-02): the page uses the v2.5.3 session/capture/list/help layout again. Today's guided stages, compulsory description and redesigned library are superseded. Save guards and centered notices remain. See [bug-reports.md](features/bug-reports.md#current-rc-restored-253-page-2026-10-02).
+> Published since 2.5.5: Report uses the restored session/capture/list/help layout
+> with optional title/description after saving. Earlier guided stages and required
+> descriptions are superseded. See [bug-reports.md](features/bug-reports.md).
 
-> Private RC update, 2026-10-02: approved proposal 3 is implemented as Display and fluency, with window/monitor selection, read-only VRR reports and conditional conflicts. See [display-fluency.md](features/display-fluency.md). No installation/publication or universal multi-monitor FPS fix is implied.
+> Historical RC, superseded before 2.5.5: Display and fluency was tested with
+> window/monitor selection and read-only VRR reports, then removed. See
+> [display-fluency.md](features/display-fluency.md) for historical findings only.
 
 # Menu UI (Violet design)
 
@@ -434,8 +441,8 @@ Capture, recording, comparison and entry pills have a content-measured width set
 
 ## Unified build and optional developer mode (2026-10-02)
 
-One ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](features/developer-mode.md). FXAA is the first smoothing method; Anti-aliasing precedes Window. The current RC is private.
+Published since 2.5.5: one ASI contains the player features and optional developer tools. Enable developer mode in Settings > Menu after confirmation, then restart the game. Default off. Profiles optionally include Development; the save option is hidden in normal mode and appears when importing a profile containing it. Profiles never start measurements or recordings automatically. See [developer-mode.md](features/developer-mode.md). FXAA is first and recommended; SMAA is spatial only. There is no Window page in the current release.
 
-## Private RC synchronization controls (2026-10-02)
+## Historical RC synchronization controls (removed before 2.5.5)
 
 Display > Window retains Borderless and adds experimental V-Sync policy, optional Apex FPS limiting and a dependent target slider. They share the Window profile category and page reset. Restore synchronization resets only these three values. S3SS FPS conflict blocks pacing and supplies an inline explanation. Driver VRR activation and DXVK overrides are explained inline; no automatic claim of VRR support or flicker elimination. See [features/presentation.md](features/presentation.md).

@@ -1,8 +1,10 @@
 # Performance: Faster Game File Lookups, Lot Lighting While Moving, Faster Texture / Cache Compression, Spread New Objects, Faster Object Lookups
 
-## Performance mode (2.5.5 test build)
+## Optimize rendering (published 2.5.6)
 
-The Performance page has a live, persistent switch (`[ui] performance_mode`, default false).
+The Performance page has a live, persistent switch (`[ui] performance_mode`, default true).
+The label is Optimize rendering (PT-BR: Otimizar renderizacao). Existing explicit false
+settings remain false; missing settings, the row reset and Reset all use true.
 It leaves visual settings and existing performance patch choices unchanged. It caches the fully prepared outdoor
 object lamp parameter block in the existing exact-position lamp memo; every memo miss invalidates that block.
 Strength is applied after the cached copy, so live strength edits do not reuse stale values. It also indexes the
@@ -10,9 +12,17 @@ light-map entries in map-key order, preserving the original round-robin hash seq
 and GPU paths. Insertions rebuild the index; Clear releases it before deleting map nodes. Disabling uses the original
 map traversal and prepares lamp rows per draw again. No visible update is postponed.
 
-Offline tests compare 10000 lamp blocks byte for byte with the former calculation and 10000 map-index results
+Adjacent atlas/strength PS constants are read together per draw for outdoor objects, instanced objects and snow; failures fall back to individual reads. No persistent shader-state cache is introduced. World chunks reuse only immutable metadata of validated, retained textures; contents and lightmap notifications remain live, and reset/release clears ownership.
+
+Optional registry timing covers draw and state callbacks, including nested work. Disable detailed timing for A/B measurements; see [frame-profiler.md](frame-profiler.md).
+
+Offline constant-read tests passed 24577 checks, including bit preservation and failure fallback. Offline tests compare 10000 lamp blocks byte for byte with the former calculation and 10000 map-index results
 with the original traversal, including insertion, empty maps, reset and live mode switching. In-game image and
 performance validation is still required; no FPS improvement is claimed.
+
+## Historical implementation baseline (2026-09-29)
+
+The following records the original implementation and test plan. Build-flavour, menu and unpublished-status notes are historical; use the current release section above and [UI documentation](../ui.md) for current behavior.
 
 > Six anti-stutter features from the perf round 2 plan (`research\perf2\plan.md`, candidates C1, C7, C9, C4, C6 and C8), written
 > on 2026-09-29 from the game's disassembly and Apex's own framework (no Sims3SettingsSetter code). Both builds (public
@@ -1512,28 +1522,3 @@ While LevelLightShare's installed full-detail-all-floors policy is active, Prior
 
 ## Release 2.5.3 UI
 The single Performance card is split into four cards documented in docs/ui.md. Main switches remain visible, dependent controls retain their previous behavior, and existing translated descriptions remain available on hover. Experimental badges are removed by explicit user request; this labeling change does not establish additional gameplay validation.
-
-## D3D Performance Follow-Up
-
-The user-facing switch is Optimize rendering, enabled by default. The existing
-ui.performance_mode key is retained: explicit false settings remain false,
-missing settings and Reset all use true. The row reset also restores true.
-
-Performance mode combines adjacent atlas/strength PS constant reads for outdoor
-objects, instanced objects and snow. Values are still read from the device for
-each draw; failed combined reads fall back to the original individual queries.
-No persistent shader state or lamp colour cache is introduced.
-
-RecordWorldChunk reuses immutable texture metadata only for textures already
-validated and held by g_chunks. Unknown textures retain the original checks,
-sampler order and chunk ownership checks. Reset/release removes these entries.
-Texture contents and lightmap change notifications remain live.
-
-Optional per-hook registry timing now also separates state callbacks by method.
-It remains gated by developer mode, profiler activation and registry_timing;
-it measures callback duration (including nested work), not driver cost alone.
-Use detailed timing only to locate costs, then disable it for A/B measurements.
-
-No lighting budgets, resolution, filters, lamp count or edit timing changed.
-Offline tests cover constant bit preservation and query fallback. In-game FPS
-and visual equivalence remain unverified until paired runs of the same scene.

@@ -1,6 +1,10 @@
 # Objects and rigs (lamp light on outdoor objects)
 
-> **Status in the standalone:** the CPU part (`object_light_bridge.cpp`: 9-class rig boost, cap, `RigCtorForce`, fenced
+> Current release 2.5.6: world-owned lamp edits reconcile terrain and native object rigs. See [world lamp response](world-lamp-response.md) for the current policy, captured evidence and validation limits. The split-baseline status below is historical; later sections record subsequent work.
+
+## Historical split baseline
+
+> **Status at the original split:** the CPU part (`object_light_bridge.cpp`: 9-class rig boost, cap, `RigCtorForce`, fenced
 > yards) and `RigTracker::CurrentMode` are in the v0.1.0 baseline (b84d5f1). The GPU patch is in v0.1.0 in its **older
 > form**: per-pixel lamps chosen with `SelectLamps(x, z, 40 m)` (nearest by distance minus radius), falloff
 > `sat(N.l) x sat(1 - d^2/R^2)^2` with `R = clamp(1.2 sqrt(range), 2, 25)` (lamp block .w = 1/R^2), the rig **zeroed** for

@@ -1,4 +1,4 @@
-> Current 2.5.5 behavior: FXAA is first and recommended; SMAA is spatial only. Temporal smoothing is removed. The feature defaults on for new configurations; existing choices are preserved. One unified build offers optional Developer mode in Settings. Older baseline details below are historical.
+> Published 2.5.5 and retained in 2.5.6: FXAA is first and recommended; SMAA is spatial only. Temporal smoothing is removed. The feature defaults on for new configurations; existing choices are preserved. One unified build offers optional Developer mode in Settings. Older baseline details below are historical.
 
 # Edge Smoothing (SMAA 1x / FXAA)
 
