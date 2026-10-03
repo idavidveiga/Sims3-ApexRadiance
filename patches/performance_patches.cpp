@@ -35,6 +35,7 @@
 #include "lot_lighting_motion.h"
 #include "lot_lod_streaming.h"
 #include "lot_object_throttle.h"
+#include "lot_active_threshold.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
@@ -328,6 +329,36 @@ class LotObjectThrottlePatch : public ApexPatch {
     int delayMs_ = LotObjectThrottle::kDefaultDelayMs;
 };
 
+class LotActiveThresholdPatch : public ApexPatch {
+  public:
+    LotActiveThresholdPatch() : ApexPatch(Performance::kLotActiveThresholdName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotActiveThreshold::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotActiveThreshold::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void Update() override {
+        pendingReinstall = false;
+        LotActiveThreshold::Tick();
+    }
+
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
+};
+
 class FastTextureCompressionPatch;
 std::atomic<FastTextureCompressionPatch*> g_texPatch{nullptr};
 
@@ -584,6 +615,8 @@ int Performance::LotObjectThrottleDelayMs() {
 void Performance::SetLotObjectThrottleDelayMs(int value) {
     if (LotObjectThrottlePatch* p = g_lotObjectThrottlePatch.load()) p->SetDelayMs(value);
 }
+std::string Performance::LotActiveThresholdStatus() { return LotActiveThreshold::StatusText(); }
+bool Performance::LotActiveThresholdHandledByS3SS() { return LotActiveThreshold::HandledByS3SS(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
@@ -704,6 +737,19 @@ APEX_REGISTER_FEATURE(LotObjectThrottlePatch,
                                             "This is earlier than Spread New Objects Over Frames: that feature budgets the later Scene::BeginFrame pending-node drain. They are intentionally separate.",
                                             "If official Sims3SettingsSetter owns LotStreamingOptimizations.objectThrottle, Apex makes no hook/write and reports it as handled by Sims3SettingsSetter."},
                        .gameCodeGroup = "LotObjectThrottle"});
+
+APEX_REGISTER_FEATURE(LotActiveThresholdPatch,
+                      {.displayName = "Use LoD Active-Lot Threshold 12",
+                       .description = "Sets the internal lot-LoD transition threshold to 12, matching Sims3SettingsSetter. This is not the game's Max Active Lots option. "
+                                      "Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VersionBit(GameVersion::EA),
+                       .technicalDetails = {"Resolves the live setting 'Throttle Lot LoD Transitions Max Active Lot Threshold' from its UTF-16 registration name in TS3.exe; no EA address is hard-coded.",
+                                            "The resolved pointer must be module-writable, 4-byte aligned and contain a plausible integer before Apex writes anything. Ambiguous or missing registrations fail closed.",
+                                            "While enabled, Apex maintains the value at 12. On disable it restores the value observed before activation only if the current value is still 12.",
+                                            "This is the internal LoD transition threshold, not Options.ini maxactivelots. If official Sims3SettingsSetter owns LotStreamingOptimizations.streamingSettings, Apex makes no writes."}});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                       {.displayName = "Faster Texture Compression",
