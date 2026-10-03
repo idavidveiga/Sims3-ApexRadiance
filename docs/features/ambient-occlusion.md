@@ -125,6 +125,9 @@ The Sim receiver mask also accepts recognized alpha-blended body materials using
 - Compare with the game (shortcut) turns it off with Night Lighting, Depth Blur and Edge Smoothing.
 - Depth Blur and Reflections read the same INTZ depth; the swap runs while any of them needs it.
 - Picture's scene copy is taken after the post-scene effects, so Color filters apply on top of the shade.
+- If hiding the game's UI removes the usual depth-off draw that marks the scene boundary, `PostScene` runs the effects
+  at `endSceneBeforeOverlay` after at least 20 depth-tested backbuffer draws. This fallback keeps the scene effects
+  available with the game UI hidden; frames with an earlier depth-off draw retain the existing trigger behavior.
 
 ## Pitfalls and failed approaches
 
