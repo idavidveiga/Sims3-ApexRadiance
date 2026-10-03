@@ -731,6 +731,36 @@ void PerformanceCard() {
         if (mapBlockerOn && Performance::MapViewStreamingBlockerHandledByS3SS())
             CardNote("Handled by Sims3SettingsSetter: Apex leaves the map-view streaming blocker untouched");
 
+        const bool objectThrottleOn = FeatureSwitchRow(Performance::kLotObjectThrottleName, "Spread lot objects while loading",
+                                                       "Builds a lot's regular objects in small windows instead of one large burst", true);
+        if (objectThrottleOn && Performance::LotObjectThrottleHandledByS3SS()) {
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot object throttle untouched");
+        } else if (objectThrottleOn) {
+            float objects = static_cast<float>(Performance::LotObjectThrottleObjectsPerWindow());
+            char objectValue[24];
+            std::snprintf(objectValue, sizeof objectValue, "%d", Performance::LotObjectThrottleObjectsPerWindow());
+            ApexUi::SliderOptions objectOptions;
+            objectOptions.tooltip = "Regular objects built for each lot continuation window; 2 matches Sims3SettingsSetter";
+            objectOptions.valueText = objectValue;
+            objectOptions.leftLabel = "Smoother";
+            objectOptions.rightLabel = "Loads sooner";
+            objectOptions.defaultValue = 2.0f;
+            if (ApexUi::Slider("Objects per lot window", &objects, 1.0f, 64.0f, objectOptions))
+                Performance::SetLotObjectThrottleObjectsPerWindow(static_cast<int>(std::lround(objects)));
+
+            float delay = static_cast<float>(Performance::LotObjectThrottleDelayMs());
+            char delayValue[24];
+            std::snprintf(delayValue, sizeof delayValue, "%d ms", Performance::LotObjectThrottleDelayMs());
+            ApexUi::SliderOptions delayOptions;
+            delayOptions.tooltip = "Minimum delay between continuation windows for the same lot; 16 ms matches Sims3SettingsSetter";
+            delayOptions.valueText = delayValue;
+            delayOptions.leftLabel = "Loads sooner";
+            delayOptions.rightLabel = "More spread";
+            delayOptions.defaultValue = 16.0f;
+            if (ApexUi::Slider("Delay between lot windows", &delay, 0.0f, 500.0f, delayOptions))
+                Performance::SetLotObjectThrottleDelayMs(static_cast<int>(std::lround(delay)));
+        }
+
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
