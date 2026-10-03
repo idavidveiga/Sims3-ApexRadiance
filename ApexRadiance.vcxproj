@@ -122,6 +122,7 @@
     <ClCompile Include="features\lot_lod_streaming.cpp" />
     <ClCompile Include="features\lot_object_throttle.cpp" />
     <ClCompile Include="features\lot_active_threshold.cpp" />
+    <ClCompile Include="features\lot_visibility_override.cpp" />
     <ClCompile Include="features\room_map_padding.cpp" />
     <ClCompile Include="features\unlit_rooms.cpp" />
     <ClCompile Include="features\lamp_mark_filter.cpp" />
@@ -201,6 +202,7 @@
     <ClInclude Include="features\lot_lod_streaming.h" />
     <ClInclude Include="features\lot_object_throttle.h" />
     <ClInclude Include="features\lot_active_threshold.h" />
+    <ClInclude Include="features\lot_visibility_override.h" />
     <ClInclude Include="features\room_map_padding.h" />
     <ClInclude Include="features\unlit_rooms.h" />
     <ClInclude Include="features\lamp_mark_filter.h" />
