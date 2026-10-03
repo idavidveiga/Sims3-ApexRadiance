@@ -725,6 +725,12 @@ void PerformanceCard() {
                                                   "Loads nearby lots into full detail gradually to reduce stutters while moving around the world", true);
         if (streamingOn && Performance::LotLodStreamingHandledByS3SS())
             CardNote("Handled by Sims3SettingsSetter: Apex leaves the same streaming settings untouched");
+
+        const bool mapBlockerOn = FeatureSwitchRow(Performance::kMapViewStreamingBlockerName, "Pause lot streaming in map view",
+                                                   "Stops lot-detail streaming while the neighborhood map is open, then resumes it after closing", true);
+        if (mapBlockerOn && Performance::MapViewStreamingBlockerHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the map-view streaming blocker untouched");
+
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
