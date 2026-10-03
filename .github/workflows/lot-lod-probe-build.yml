@@ -1,4 +1,4 @@
-name: Build Lot LOD Distance 100 Probe
+name: Build Lot LOD Metric Probes
 
 on:
   push:
@@ -27,20 +27,27 @@ jobs:
           & $vcpkg install --triplet x86-windows-static --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE\vcpkg_installed"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build ApexRadiance lot LOD 100 probe
+      - name: Build metric probe at stock LOD 70
         shell: pwsh
         run: |
-          msbuild ApexRadiance.sln /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexLotLodProbe=true
+          msbuild ApexRadiance.sln /t:Rebuild /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexLotLodProbe=true /p:ApexLotLodTestValue=70
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
+          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodMetric70_TEST.asi"
 
-      - name: Rename lot LOD 100 probe build
+      - name: Build metric probe at controlled LOD 100
         shell: pwsh
-        run: Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodDistance100_TEST.asi"
+        run: |
+          msbuild ApexRadiance.sln /t:Rebuild /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexLotLodProbe=true /p:ApexLotLodTestValue=100
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
+          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodMetric100_TEST.asi"
 
-      - name: Upload lot LOD 100 probe
+      - name: Upload metric probes
         uses: actions/upload-artifact@v4
         with:
-          name: ApexRadiance-LotLodDistance100-TEST
-          path: ApexRadiance_LotLodDistance100_TEST.asi
+          name: ApexRadiance-LotLodMetric-70-100-TEST
+          path: |
+            ApexRadiance_LotLodMetric70_TEST.asi
+            ApexRadiance_LotLodMetric100_TEST.asi
           if-no-files-found: error
