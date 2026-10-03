@@ -52,3 +52,7 @@ trace_targets.h
 /outputs/
 /.codex/skills/*/cache/
 /.codex/skills/*/state/
+
+# Portable skill local state
+/.agents/skills/*/cache/
+/.agents/skills/*/state/
