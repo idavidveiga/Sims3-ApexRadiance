@@ -2301,6 +2301,14 @@ void DrawToast(float bottomY) {
     ImGui::PopStyleColor(2);
 }
 
+bool HoldShortcutDown(const ApexConfig::KeyChord& key) {
+    if (!key.vk || key.ctrl || key.shift || key.alt) return false;
+    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState(VK_SHIFT) & 0x8000)) return false;
+    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    if (key.vk != VK_MENU && altDown) return false;
+    return (GetAsyncKeyState(static_cast<int>(key.vk)) & 0x8000) != 0;
+}
+
 void MainWindow() {
     const float u = ApexUi::Unit();
     if (kPublicBuild) {
@@ -2311,10 +2319,11 @@ void MainWindow() {
 
     // ---- keys and pointer, from the previous frame's hover / focus (before any widget sees this frame's input) ----
     const bool dragging = ApexUi::SliderDragging();
-    // Peek: Alt held over the menu makes it nearly transparent and inert (never while typing or dragging)
-    const bool peek = g_menuHovered && io.KeyAlt && !io.WantTextInput && !dragging && !ImGui::IsAnyItemActive();
+    // The configurable peek key makes the menu translucent and inert (never while typing or dragging).
+    const auto uiKeys = ApexConfig::GetUi();
+    const bool peek = g_menuHovered && HoldShortcutDown(uiKeys.peekKey) &&
+                      !io.WantTextInput && !dragging && !ImGui::IsAnyItemActive();
     if (g_menuFocused && !peek) {
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) g_focusSearch = true;
         // Esc: clears the search, then closes the menu (never while a field is being
         // edited or the menu key is being chosen)
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !g_waitingForKey && g_recRow < 0 && !ImGui::IsAnyItemActive() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
@@ -2393,15 +2402,15 @@ void MainWindow() {
         DeveloperConfirmation();
         ImGui::EndDisabled();
 
-        // Hold to compare: the eye button, or B while the pointer is over the menu (not while typing)
-        const bool holdKey = g_menuHovered && !peek && !io.WantTextInput && ImGui::IsKeyDown(ImGuiKey_B);
+        // Hold to compare: the eye button, or the configured key while the pointer is over the menu.
+        const bool holdKey = g_menuHovered && !peek && !io.WantTextInput && HoldShortcutDown(uiKeys.pictureCompareKey);
         if ((g_holdCompare || holdKey) && Picture::Get().GetParams().enabled) Picture::Get().HoldBypass();
     }
     g_holdCompare = false;
     ImGui::End();
     ImGui::PopStyleVar(); // Alpha
 
-    // Alt and B are the menu's while the pointer is over it (the game does not see them); not while typing
+    // Peek and hold-to-compare belong to the menu while the pointer is over it; not while typing.
     g_keysOverMenu.store(g_menuHovered && !io.WantTextInput);
     g_menuTextInput.store(io.WantTextInput);
 
@@ -2627,12 +2636,34 @@ bool CaptureChordAny(ApexConfig::KeyChord& out) {
     return CaptureChord(out);
 }
 
+bool CaptureHoldKey(ApexConfig::KeyChord& out) {
+    for (UINT vk = 0x08; vk <= 0xFE; vk++) {
+        if (vk == VK_ESCAPE || vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2 ||
+            vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+            vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_LMENU || vk == VK_RMENU ||
+            vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL) continue;
+        if (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) {
+            out = ApexConfig::KeyChord{vk, false, false, false};
+            return true;
+        }
+    }
+    // Alt is a useful standalone hold key; Shift and Ctrl are deliberately not accepted as base keys.
+    if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+        out = ApexConfig::KeyChord{VK_MENU, false, false, false};
+        return true;
+    }
+    return false;
+}
+
 // ---- Shortcuts: Settings > Shortcuts, the tour step and the first-start corner panel draw the same content ----
 // A key is recorded by clicking its chip and pressing the combination: while recording, every key press is eaten
 // (Client::HotkeyDown, CaptureKey) so neither the game nor another shortcut sees it; Esc cancels. A combination is refused
 // with a note when it is another action's, the game's cheat console (Ctrl+Shift+C), Windows' own (Alt+F4, Alt+Tab),
 // Sims3SettingsSetter's menu (Insert alone), or a bare letter, digit or Space (it would stop that key from typing in the game).
-enum ShortcutRow : int { RowMenu, RowCompare, RowRefresh, RowScreenshot, RowCount };
+enum ShortcutRow : int {
+    RowMenu, RowCompare, RowRefresh, RowScreenshot, RowRecorder, RowProbe, RowDiagnostics, RowFrameCapture,
+    RowSearch, RowPeek, RowPictureCompare, RowCount
+};
 UINT g_recHeldVk = 0;       // a refused key still held: ignored until released
 bool g_recWaitRelease = false; // recording starts only once every key is up (the click's Enter, a held chord)
 int g_recSeenFrame = -1;       // the last frame the editor was drawn: recording stops when it is not (menu closed, page left)
@@ -2640,18 +2671,48 @@ std::string g_recNote;      // why the last combination was refused
 
 ApexConfig::KeyChord RowKey(int row) {
     if (row == RowMenu) return ApexConfig::GetUi().toggle;
-    if (row == RowScreenshot) return ApexConfig::GetUi().screenshotKey;
-    return Hotkeys::Key(row == RowCompare ? Hotkeys::Action::Compare : Hotkeys::Action::Refresh);
+    switch (row) {
+    case RowCompare: return Hotkeys::Key(Hotkeys::Action::Compare);
+    case RowRefresh: return Hotkeys::Key(Hotkeys::Action::Refresh);
+    case RowScreenshot: return Hotkeys::Key(Hotkeys::Action::Screenshot);
+    case RowRecorder: return Hotkeys::Key(Hotkeys::Action::Recorder);
+    case RowProbe: return Hotkeys::Key(Hotkeys::Action::Probe);
+    case RowDiagnostics: return Hotkeys::Key(Hotkeys::Action::Diagnostics);
+    case RowFrameCapture: return Hotkeys::Key(Hotkeys::Action::FrameCapture);
+    case RowSearch: return ApexConfig::GetUi().searchKey;
+    case RowPeek: return ApexConfig::GetUi().peekKey;
+    default: return ApexConfig::GetUi().pictureCompareKey;
+    }
 }
 const char* RowName(int row) {
-    return row == RowMenu ? "Open the menu" : row == RowCompare ? "Compare with the game" :
-           row == RowScreenshot ? "Take a filtered screenshot" : "Refresh the lighting";
+    switch (row) {
+    case RowMenu: return "Open the menu";
+    case RowCompare: return "Compare with the game";
+    case RowRefresh: return "Refresh the lighting";
+    case RowScreenshot: return "Take a filtered screenshot";
+    case RowRecorder: return "Recording";
+    case RowProbe: return "Light capture";
+    case RowDiagnostics: return "Lighting snapshot";
+    case RowFrameCapture: return "Frame Capture";
+    case RowSearch: return "Search the settings";
+    case RowPeek: return "Peek at the game behind the menu";
+    default: return "Compare the picture without its filters";
+    }
 }
 const char* RowText(int row) {
-    return row == RowMenu ? "Opens and closes the " APEX_PRODUCT_NAME " menu"
-         : row == RowCompare ? "Turns Apex's effects off and on, to see the difference"
-         : row == RowScreenshot ? "Saves the finished game image after Apex's visual effects"
-                               : "Relights the ground, lots and rooms when something loaded wrong";
+    switch (row) {
+    case RowMenu: return "Opens and closes the " APEX_PRODUCT_NAME " menu";
+    case RowCompare: return "Turns Apex's effects off and on, to see the difference";
+    case RowRefresh: return "Relights the ground, lots and rooms when something loaded wrong";
+    case RowScreenshot: return "Saves the finished game image after Apex's visual effects";
+    case RowRecorder: return "Collects lighting activity and settings for troubleshooting";
+    case RowProbe: return "Captures lighting at a point you choose";
+    case RowDiagnostics: return "Saves a snapshot of the lighting state";
+    case RowFrameCapture: return "Records draw calls for troubleshooting";
+    case RowSearch: return "Focuses the settings search field";
+    case RowPeek: return "Hold the key over the menu to see through it";
+    default: return "Hold the key over the menu to bypass Picture";
+    }
 }
 bool SameChord(const ApexConfig::KeyChord& a, const ApexConfig::KeyChord& b) {
     return a.vk == b.vk && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt;
@@ -2660,30 +2721,40 @@ bool SameChord(const ApexConfig::KeyChord& a, const ApexConfig::KeyChord& b) {
 std::string ChordProblem(const ApexConfig::KeyChord& c, int row) {
     const bool mods = c.ctrl || c.shift || c.alt;
     if (c.vk == VK_ESCAPE) return "Escape cancels the current action";
-    if (row == RowScreenshot && c.vk == VK_F10 && !mods) return "F10 is reserved for hiding the game's interface";
+    if (c.vk == VK_F10 && !mods) return "F10 is reserved for hiding the game's interface";
+    if (c.vk == VK_LWIN || c.vk == VK_RWIN || c.vk == VK_APPS) return "Windows keys are reserved by Windows";
     if (c.vk == VK_INSERT && !mods) return "Insert alone opens Sims3SettingsSetter's menu";
     if (c.vk == 'C' && c.ctrl && c.shift && !c.alt) return "Ctrl+Shift+C is the game's cheat console";
     if ((c.vk == VK_F4 || c.vk == VK_TAB) && c.alt) return "That combination belongs to Windows";
-    if (row != RowScreenshot && !mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
+    if ((row == RowPeek || row == RowPictureCompare) && mods) return "Choose one key without modifiers for this hold action";
+    if (row != RowScreenshot && row != RowPeek && row != RowPictureCompare && !mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
                   c.vk == VK_RETURN || c.vk == VK_BACK || c.vk == VK_DELETE || c.vk == VK_TAB || (c.vk >= VK_LEFT && c.vk <= VK_DOWN)))
         return "Use it with Ctrl, Shift or Alt: alone it would stop that key from typing in the game";
-    for (int r = 0; r < RowCount; r++)
+    for (int r = 0; r < RowCount; r++) {
+        if (r == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled) continue;
+        if (r == RowFrameCapture && kPublicBuild) continue;
         if (r != row && SameChord(RowKey(r), c)) return I18n::Trf("Already used by: {}", I18n::Tr(RowName(r)));
+    }
     return {};
 }
 void StoreRowKey(int row, const ApexConfig::KeyChord& c) {
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
     const int base = ui.hotkeyPreset >= 0 && ui.hotkeyPreset < static_cast<int>(Hotkeys::Preset::Count) ? ui.hotkeyPreset : static_cast<int>(Hotkeys::Preset::FKeys);
-    if (ui.hotkeyPreset != Hotkeys::kMine) { // "Mine" starts from the preset's keys
-        const auto p = static_cast<Hotkeys::Preset>(base);
-        ui.compareKey = Hotkeys::PresetKey(p, Hotkeys::Action::Compare);
-        ui.refreshKey = Hotkeys::PresetKey(p, Hotkeys::Action::Refresh);
-        ui.minePresetBase = base;
-    }
+    if (ui.hotkeyPreset != Hotkeys::kMine) ui.minePresetBase = base;
     if (row == RowMenu) ui.toggle = c;
-    else if (row == RowCompare) ui.compareKey = c;
-    else if (row == RowRefresh) ui.refreshKey = c;
-    else ui.screenshotKey = c;
+    else switch (row) {
+    case RowCompare: ui.compareKey = c; break;
+    case RowRefresh: ui.refreshKey = c; break;
+    case RowScreenshot: ui.screenshotKey = c; break;
+    case RowRecorder: ui.recorderKey = c; break;
+    case RowProbe: ui.probeKey = c; break;
+    case RowDiagnostics: ui.diagnosticsKey = c; break;
+    case RowFrameCapture: ui.frameCaptureKey = c; break;
+    case RowSearch: ui.searchKey = c; break;
+    case RowPeek: ui.peekKey = c; break;
+    case RowPictureCompare: ui.pictureCompareKey = c; break;
+    default: break;
+    }
     ui.hotkeyPreset = Hotkeys::kMine;
     ui.keyChosen = true;
     ApexConfig::SetUi(ui);
@@ -2716,7 +2787,8 @@ void RecordStep() {
         g_recHeldVk = 0;
     }
     ApexConfig::KeyChord c;
-    if (!CaptureChordAny(c)) return;
+    const bool holdKeyRow = g_recRow == RowPeek || g_recRow == RowPictureCompare;
+    if (!(holdKeyRow ? CaptureHoldKey(c) : CaptureChordAny(c))) return;
     const std::string problem = ChordProblem(c, g_recRow);
     if (!problem.empty()) {
         g_recNote = ApexConfig::KeyChordText(c) + ": " + I18n::Tr(problem.c_str()); // a text already translated comes back as it is
@@ -2732,6 +2804,7 @@ void ApplyPreset(int preset) {
     ui.hotkeyPreset = preset;
     ui.toggle = Hotkeys::PresetMenu(static_cast<Hotkeys::Preset>(preset));
     ui.compareKey.vk = ui.refreshKey.vk = 0;
+    ui.probeKey.vk = ui.diagnosticsKey.vk = ui.recorderKey.vk = ui.frameCaptureKey.vk = 0;
     ui.keyChosen = true;
     ApexConfig::SetUi(ui);
     LOG_INFO(std::format("[Menu] Shortcut preset: {}", Hotkeys::PresetName(static_cast<Hotkeys::Preset>(preset))));
@@ -2755,27 +2828,24 @@ void KeyChip(int row) {
     ImGui::PopID();
 }
 
-int MapRowForKey(UINT vk) {
-    for (int row : {RowMenu, RowCompare, RowRefresh})
-        if (RowKey(row).vk == vk) return row;
-    if (ApexConfig::GetUi().screenshotShortcutEnabled && RowKey(RowScreenshot).vk == vk) return RowScreenshot;
-    return -1;
+int MapRowForKey(UINT vk, int* matches = nullptr) {
+    int count = 0;
+    int first = -1;
+    for (int row = 0; row < RowCount; ++row) {
+        if (row == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled) continue;
+        if (row == RowFrameCapture && kPublicBuild) continue;
+        if (RowKey(row).vk == vk) {
+            if (first < 0) first = row;
+            ++count;
+        }
+    }
+    if (matches) *matches = count;
+    return first;
 }
 
 const char* MapKeyAction(UINT vk) {
-    if (MapRowForKey(vk) >= 0) return RowName(MapRowForKey(vk));
-    const auto ui = ApexConfig::GetUi();
-    const int presetIndex = ui.hotkeyPreset == Hotkeys::kMine
-        ? std::clamp(ui.minePresetBase, 0, static_cast<int>(Hotkeys::Preset::Count) - 1)
-        : ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
-                              : std::clamp(ui.hotkeyPreset, 0, static_cast<int>(Hotkeys::Preset::Count) - 1);
-    const auto preset = static_cast<Hotkeys::Preset>(presetIndex);
-    for (Hotkeys::Action action : {Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics, Hotkeys::Action::Recorder,
-                                   Hotkeys::Action::FrameCapture}) {
-        if (kPublicBuild && action == Hotkeys::Action::FrameCapture) continue;
-        if (Hotkeys::PresetKey(preset, action).vk == vk) return Hotkeys::ActionName(action);
-    }
-    return nullptr;
+    const int row = MapRowForKey(vk);
+    return row >= 0 ? RowName(row) : nullptr;
 }
 
 void StartRecordingRow(int row) {
@@ -2787,7 +2857,8 @@ void StartRecordingRow(int row) {
 
 void DrawMapKey(const char* label, UINT vk, float width, float height) {
     const float u = ApexUi::Unit();
-    const int row = MapRowForKey(vk);
+    int actionCount = 0;
+    const int row = MapRowForKey(vk, &actionCount);
     const bool assigned = MapKeyAction(vk) != nullptr;
     const bool recording = row >= 0 && g_recRow == row;
     ImGui::PushID(static_cast<int>(vk));
@@ -2808,9 +2879,21 @@ void DrawMapKey(const char* label, UINT vk, float width, float height) {
     if (hovered && assigned) {
         const int target = row;
         const char* action = MapKeyAction(vk);
-        ImGui::SetTooltip("%s\n%s", I18n::Tr(action), target >= 0
-            ? I18n::Tr("Click to change this shortcut") : I18n::Tr("Assigned by the selected preset"));
-        if (target >= 0 && ImGui::IsItemActivated()) StartRecordingRow(target);
+        if (actionCount > 1) {
+            std::string details;
+            for (int assignedRow = 0; assignedRow < RowCount; ++assignedRow) {
+                if ((assignedRow == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled) ||
+                    (assignedRow == RowFrameCapture && kPublicBuild) || RowKey(assignedRow).vk != vk) continue;
+                if (!details.empty()) details += "\n";
+                details += std::format("{}: {}", I18n::Tr(RowName(assignedRow)), ApexConfig::KeyChordText(RowKey(assignedRow)));
+            }
+            ImGui::SetTooltip("%s\n%s", details.c_str(), I18n::Tr("Click the action chips to edit these shortcuts"));
+        } else {
+            const std::string chord = ApexConfig::KeyChordText(RowKey(target));
+            ImGui::SetTooltip("%s\n%s\n%s", I18n::Tr(action), chord.c_str(), target >= 0
+                ? I18n::Tr("Click to change this shortcut") : I18n::Tr("Assigned by the selected preset"));
+            if (target >= 0 && ImGui::IsItemActivated()) StartRecordingRow(target);
+        }
     } else if (hovered) {
         ImGui::SetTooltip("%s", I18n::Tr("No Apex shortcut assigned"));
     }
@@ -2831,27 +2914,18 @@ void DrawKeyboardMap() {
         }
         ApexUi::Gap(ApexUi::kSpace1);
     };
-    static const char* const fkeysA[] = {"F1","F2","F3","F4","F5","F6"};
-    static const UINT fkeysAVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6};
-    static const char* const fkeysB[] = {"F7","F8","F9","F10","F11","F12"};
-    static const UINT fkeysBVk[] = {VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
-    static const char* const digits[] = {"1","2","3","4","5","6","7","8","9","0"};
-    static const UINT digitsVk[] = {'1','2','3','4','5','6','7','8','9','0'};
-    static const char* const top[] = {"Q","W","E","R","T","Y","U","I","O","P"};
-    static const UINT topKeys[] = {'Q','W','E','R','T','Y','U','I','O','P'};
-    static const char* const middle[] = {"A","S","D","F","G","H","J","K","L"};
-    static const UINT middleKeys[] = {'A','S','D','F','G','H','J','K','L'};
-    static const char* const bottom[] = {"Z","X","C","V","B","N","M"};
-    static const UINT bottomKeys[] = {'Z','X','C','V','B','N','M'};
+    static const char* const function[] = {"F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"};
+    static const UINT functionVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6,VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
+    static const char* const digits[] = {"1","2","3","4","5","6","7","8","9","0","-","="};
+    static const UINT digitsVk[] = {'1','2','3','4','5','6','7','8','9','0',VK_OEM_MINUS,VK_OEM_PLUS};
+    static const char* const top[] = {"Q","W","E","R","T","Y","U","I","O","P","[","]"};
+    static const UINT topKeys[] = {'Q','W','E','R','T','Y','U','I','O','P',VK_OEM_4,VK_OEM_6};
+    static const char* const middle[] = {"A","S","D","F","G","H","J","K","L",";","'"};
+    static const UINT middleKeys[] = {'A','S','D','F','G','H','J','K','L',VK_OEM_1,VK_OEM_7};
+    static const char* const bottom[] = {"Z","X","C","V","B","N","M",",",".","/"};
+    static const UINT bottomKeys[] = {'Z','X','C','V','B','N','M',VK_OEM_COMMA,VK_OEM_PERIOD,VK_OEM_2};
     ApexUi::GroupLabel("FUNCTION ROW");
-    if (avail < 290.0f * u) {
-        drawRow(fkeysA, fkeysAVk, IM_ARRAYSIZE(fkeysAVk));
-        drawRow(fkeysB, fkeysBVk, IM_ARRAYSIZE(fkeysBVk));
-    } else {
-        static const char* const allF[] = {"F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"};
-        static const UINT allFVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6,VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
-        drawRow(allF, allFVk, IM_ARRAYSIZE(allFVk));
-    }
+    drawRow(function, functionVk, IM_ARRAYSIZE(functionVk));
     ApexUi::GroupLabel("NUMBER ROW");
     drawRow(digits, digitsVk, IM_ARRAYSIZE(digitsVk));
     ApexUi::GroupLabel("LETTER KEYS");
@@ -2889,11 +2963,11 @@ bool PresetTile(const char* title, const char* detail, int preset, bool selected
     return clicked;
 }
 
-// The whole editor: the preset list, the three rows (key chips), notes; compact = the corner panel (no extra groups)
+// Shared key editor for settings search and the first-start panel; compact keeps only the menu and everyday actions.
 void ShortcutsContent(bool compact) {
     g_recSeenFrame = ImGui::GetFrameCount();
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    static const char* const kPresets[] = {"Letter keys", "Number row", "Function keys", "Custom"};
+    static const char* const kPresets[] = {"Letter row", "Number row", "Function row", "Custom"};
     int sel = ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
                                   : std::clamp(ui.hotkeyPreset, 0, Hotkeys::kMine);
     const float u = ApexUi::Unit();
@@ -2917,22 +2991,23 @@ void ShortcutsContent(bool compact) {
                                         g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
     if (compact) return;
     ApexUi::GroupLabel("IN THE MENU");
-    const auto info = [](const char* what, const char* key) {
-        if (!ApexUi::BeginControlRow(what, nullptr, ImGui::CalcTextSize(I18n::Tr(key)).x)) return;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Tr(key));
+    for (int row : {RowSearch, RowPeek, RowPictureCompare}) {
+        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
+        KeyChip(row);
         ApexUi::EndControlRow();
-    };
-    info("Search the settings", "Ctrl+F");
-    info("Peek at the game behind the menu", "Hold Alt");
-    info("Compare the picture without its filters", "Hold B");
-    // the bug-report captures (Report a problem page): their keys follow the shortcut set
+    }
     ApexUi::GroupLabel("REPORT A PROBLEM");
-    for (const Hotkeys::Action a : {Hotkeys::Action::Recorder, Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics})
-        info(Hotkeys::ActionName(a), ApexConfig::KeyChordText(Hotkeys::Key(a)).c_str());
+    for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
+        if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
+        KeyChip(row);
+        ApexUi::EndControlRow();
+    }
     if (!kPublicBuild) {
         ApexUi::GroupLabel("DEVELOPER TOOLS");
-        info(Hotkeys::ActionName(Hotkeys::Action::FrameCapture), ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
+        if (ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 150.0f * u)) {
+            KeyChip(RowFrameCapture);
+            ApexUi::EndControlRow();
+        }
     }
     ApexUi::Gap(ApexUi::kSpace2);
     if (ApexUi::TextButton("Show the note again##Shortcuts", "Shows the shortcuts note at the top center of the screen at the next start")) {
@@ -2973,8 +3048,8 @@ void ShortcutsTab() {
     const bool custom = current.hotkeyPreset == Hotkeys::kMine;
     const int selectedPreset = custom ? Hotkeys::kMine : current.hotkeyPreset < 0
         ? static_cast<int>(Hotkeys::Preset::FKeys) : current.hotkeyPreset;
-    const char* labels[] = {"Letter keys", "Number row", "Function keys"};
-    const char* details[] = {"Recommended", "Quick recall", "Classic"};
+    const char* labels[] = {"Letter row", "Number row", "Function row"};
+    const char* details[] = {"No Fn required", "Easy to recall", "Classic layout"};
     const char* tips[] = {"Uses nearby letter keys without Fn", "Uses the number row for quick recall",
                           "Keeps the familiar function-key layout"};
     const int ids[] = {0, 1, 2};
@@ -2988,7 +3063,7 @@ void ShortcutsTab() {
         }
         ImGui::TableNextColumn();
         if (ApexUi::BeginCard("##KeyboardMap")) {
-            ApexUi::CardHeader(IconId::Keyboard, "Keyboard map", "Choose a layout; click a highlighted key to change its action", nullptr, nullptr);
+            ApexUi::CardHeader(IconId::Keyboard, "Keyboard map", "Choose a preset, then click an assigned key to record a new shortcut", nullptr, nullptr);
             ApexUi::CardDivider();
             const float tileGap = ApexUi::kSpace1 * ApexUi::Unit();
             const float tileAvail = ImGui::GetContentRegionAvail().x;
@@ -3000,7 +3075,7 @@ void ShortcutsTab() {
             }
             if (custom) {
                 ApexUi::Gap(ApexUi::kSpace1);
-                ApexUi::Pill("Custom", true, IconId::Keyboard);
+                ApexUi::Pill("Custom", true, IconId::SlidersHorizontal);
                 ImGui::SameLine();
                 ApexUi::MutedText("Your manually chosen shortcuts are active");
             }
@@ -3022,18 +3097,14 @@ void ShortcutsTab() {
                 ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
                                  g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
             ApexUi::GroupLabel("REPORT A PROBLEM");
-            for (const Hotkeys::Action a : {Hotkeys::Action::Recorder, Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics}) {
-                const std::string chord = ApexConfig::KeyChordText(Hotkeys::Key(a));
-                if (!ApexUi::BeginControlRow(Hotkeys::ActionName(a), nullptr, ImGui::CalcTextSize(chord.c_str()).x)) continue;
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", chord.c_str());
+            for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
+                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
+                KeyChip(row);
                 ApexUi::EndControlRow();
             }
             if (!kPublicBuild) {
-                const std::string chord = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture));
-                if (ApexUi::BeginControlRow("Frame Capture", nullptr, ImGui::CalcTextSize(chord.c_str()).x)) {
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", chord.c_str());
+                if (ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 150.0f * ApexUi::Unit())) {
+                    KeyChip(RowFrameCapture);
                     ApexUi::EndControlRow();
                 }
             }
@@ -3071,20 +3142,16 @@ void ShortcutsTab() {
         if (ApexUi::BeginCard("##InMenu")) {
             ApexUi::CardHeader(IconId::AppWindow, "While Apex is open", "Quick ways to navigate and compare", nullptr, nullptr);
             ApexUi::CardDivider();
-            const auto info = [](const char* title, const char* key) {
-                if (!ApexUi::BeginControlRow(title, nullptr, ImGui::CalcTextSize(I18n::Tr(key)).x)) return;
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Tr(key));
+            for (int row : {RowSearch, RowPeek, RowPictureCompare}) {
+                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
+                KeyChip(row);
                 ApexUi::EndControlRow();
-            };
-            info("Search the settings", "Ctrl+F");
-            info("Peek at the game behind the menu", "Hold Alt");
-            info("Compare the picture without its filters", "Hold B");
+            }
         }
         ApexUi::EndCard();
         ImGui::TableNextColumn();
         if (ApexUi::BeginCard("##PersonalizeShortcuts")) {
-            ApexUi::CardHeader(IconId::Info, "Personalize", "Your settings stay yours", nullptr, nullptr);
+            ApexUi::CardHeader(IconId::SlidersHorizontal, "Personalize", "Your settings stay yours", nullptr, nullptr);
             ApexUi::CardDivider();
             ApexUi::MutedText("Presets change only after you select one. Custom key choices are saved and stay in place.");
             ApexUi::Gap(ApexUi::kSpace2);
@@ -3409,19 +3476,29 @@ class GuiClient final : public Overlay::Client {
 
     void GameKeyDown(WPARAM vk, bool repeat) override { Captures::ObserveGameUiKey(vk, repeat); }
 
-    // Alt (peek) and B (hold to compare) belong to the menu while the pointer is over it
+    // The configurable peek and hold-to-compare keys belong to the menu while the pointer is over it.
     bool CaptureKey(WPARAM vk) override {
+        const auto ui = ApexConfig::GetUi();
         const ApexConfig::KeyChord screenshot = Hotkeys::Key(Hotkeys::Action::Screenshot);
-        const bool bareScreenshotKey = ApexConfig::GetUi().screenshotShortcutEnabled && screenshot.vk == vk &&
+        const bool bareScreenshotKey = ui.screenshotShortcutEnabled && screenshot.vk == vk &&
                                        !screenshot.ctrl && !screenshot.shift && !screenshot.alt;
-        return (g_keysOverMenu.load() && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == 'B')) ||
-               (Overlay::IsVisible() && bareScreenshotKey);
+        const bool holdKey = vk == ui.peekKey.vk && HoldShortcutDown(ui.peekKey);
+        const bool pictureKey = vk == ui.pictureCompareKey.vk && HoldShortcutDown(ui.pictureCompareKey);
+        return (g_keysOverMenu.load() && (holdKey || pictureKey)) ||
+               (Overlay::IsVisible() && !g_menuTextInput.load() && bareScreenshotKey);
     }
 
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
         if (!g_menuAvailable.load()) return false;
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
+        const auto ui = ApexConfig::GetUi();
+        const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
+        if (g_recRow < 0 && Overlay::IsVisible() && g_menuFocused && !g_menuTextInput.load() && vk == ui.searchKey.vk &&
+            ui.searchKey.ctrl == ctrl && ui.searchKey.shift == shift && ui.searchKey.alt == alt) {
+            g_focusSearch = true;
+            return true;
+        }
         const ApexConfig::KeyChord screenshot = Hotkeys::Key(Hotkeys::Action::Screenshot);
         if (g_recRow < 0 && Overlay::IsVisible() && g_menuTextInput.load() && screenshot.vk == vk &&
             !screenshot.ctrl && !screenshot.shift && !screenshot.alt)

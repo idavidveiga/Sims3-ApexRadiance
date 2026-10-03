@@ -45,9 +45,9 @@ KeyChord PresetKey(Preset p, Action a) { return Chord(kKeys[static_cast<int>(p)]
 
 const char* PresetName(Preset p) {
     switch (p) {
-    case Preset::Letters: return "Letter keys";
+    case Preset::Letters: return "Letter row";
     case Preset::Numbers: return "Number row";
-    default: return "Function keys";
+    default: return "Function row";
     }
 }
 const char* PresetDescription(Preset p) {
@@ -60,9 +60,16 @@ const char* PresetDescription(Preset p) {
 
 KeyChord Key(Action a) {
     const ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    if (a == Action::Compare && ui.compareKey.vk) return ui.compareKey;
-    if (a == Action::Refresh && ui.refreshKey.vk) return ui.refreshKey;
     if (a == Action::Screenshot) return ui.screenshotKey;
+    switch (a) {
+    case Action::Compare: if (ui.compareKey.vk) return ui.compareKey; break;
+    case Action::Refresh: if (ui.refreshKey.vk) return ui.refreshKey; break;
+    case Action::Probe: if (ui.probeKey.vk) return ui.probeKey; break;
+    case Action::Diagnostics: if (ui.diagnosticsKey.vk) return ui.diagnosticsKey; break;
+    case Action::Recorder: if (ui.recorderKey.vk) return ui.recorderKey; break;
+    case Action::FrameCapture: if (ui.frameCaptureKey.vk) return ui.frameCaptureKey; break;
+    default: break;
+    }
     return PresetKey(Current(), a);
 }
 

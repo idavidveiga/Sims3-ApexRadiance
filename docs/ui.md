@@ -286,41 +286,48 @@ The ready delay resets if the world stops being live before it expires. With Nig
 signal is unavailable and the previous 2 s startup-time fallback remains. This changes display timing, not feature
 installation or shader/font initialisation, and does not establish that the note caused the reported startup hitch.
 
-**Shortcuts and the first-start prompt (30/09).** Every Apex shortcut is eaten by the overlay's window procedure before
-the game sees it (the menu chord as before; the others through `Client::HotkeyDown` -> `Hotkeys::OnKeyDown`), so no game
-key can clash. Preset ids and serialized values remain stable (`letters`, `numbers`, `fkeys`, `mine`); the visible names
-are **Letter keys**, **Number row**, **Function keys**, and **Custom**. A missing `[ui] hotkey_preset` still means the
-earlier Function keys layout. Selecting a preset is an explicit user action; loading the menu never replaces a saved key.
+**Shortcuts (03/10).** Every Apex action shortcut is intercepted by the overlay before the game sees it. Preset ids and
+serialized values remain stable (`letters`, `numbers`, `fkeys`, `mine`); the visible names are **Letter row**,
+**Number row**, **Function row**, and **Custom**. A missing `[ui] hotkey_preset` still means the earlier Function keys layout. Selecting a
+preset is an explicit user action; opening Settings never replaces a saved key or applies a preset.
 
-| | Letter keys (recommended) | Number row | Function keys |
+| | Letter row | Number row | Function row |
 |---|---|---|---|
 | Menu (`toggle_key`) | Ctrl+Shift+R | Ctrl+Shift+1 | Ctrl+Shift+F11 |
 | Compare with the game | Ctrl+Shift+T | Ctrl+Shift+2 | Ctrl+Shift+F10 |
 | Refresh the lighting | Ctrl+Shift+G | Ctrl+Shift+3 | Ctrl+Shift+F9 |
 | Dev: Light Probe / Light Diag / recorder / Frame Capture | V / B / X / F | 4 / 5 / 6 / 7 | F7 / F8 / F6 / F5 |
 
-Settings > Shortcuts presents the selected layout as a responsive keyboard map. Hovered keys explain their action;
-highlighted keys for the menu, compare, refresh and screenshot can be clicked to record a replacement. The three ready
-layouts appear as selectable tiles. When a player changes a key, **Custom** marks the saved mix while the developer
-shortcuts retain the chosen base layout. Narrow windows stack the map, actions and supporting cards. Search keeps the
-standard searchable shortcut rows instead of hiding settings inside the map.
+Settings > Shortcuts presents the selected layout as a responsive QWERTY keyboard map and three selectable preset
+tiles. Hovered assigned keys show their action and full modifier combination; clicking one records a replacement. The **Core actions**, **Report a
+problem**, **Developer tools**, **While Apex is open**, and **Screenshot capture** groups also show clickable key chips;
+menu navigation, hold-to-peek, hold-to-compare, diagnostics, and screenshot actions can all be changed there. Recording
+waits until held keys are released, Esc cancels, and a note explains collisions and reserved game/Windows shortcuts.
+The **Custom** state keeps the selected preset as the fallback for any action the player has not changed. Choosing a
+preset explicitly clears per-action overrides; merely loading Settings never does. Narrow windows stack the map, actions
+and supporting cards. Search keeps the standard shortcut rows and preserves the screenshot controls' enabled-state
+behavior.
 
-Letter keys group nearby left-hand keys; Number row is easy to recall; Function keys preserve the earlier layout.
-Compare turns Night Lighting, Depth Blur, Edge Smoothing and the picture filters off and back (not saved; a note shows
-at the top while off). Refresh does what the Developer buttons "Rebuild terrain light now" and "Relight lots now" do
-plus every room and the object rigs (`NightLighting::RefreshAll`). `compare_key` / `refresh_key` hold the player's own
-keys. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on C only for new or missing key
+Letter row groups nearby left-hand keys; Number row is easy to recall; Function row preserves the earlier layout. Compare turns Night
+Lighting, Depth Blur, Edge Smoothing and Picture off and back (not saved; a note shows at the top while off). Refresh
+does what the Developer buttons "Rebuild terrain light now" and "Relight lots now" do plus every room and the object
+rigs (`NightLighting::RefreshAll`). Per-action choices are stored in `[ui]`: existing `compare_key` and `refresh_key`,
+plus `probe_key`, `diagnostics_key`, `recorder_key`, and `frame_capture_key`. Missing new fields mean “use the selected
+preset”, preserving older config files. The same fields are included in the optional Shortcuts section of saved
+profiles. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on C only for new or missing key
 settings. Existing saved screenshot keys remain unchanged. Apex consumes C and saves one filtered PNG to the game's
 standard Documents `Electronic Arts\The Sims 3\Screenshots` folder; it does not also invoke the native screenshot.
 Bare F10 remains the game's interface toggle; Apex uses it internally only while hiding the interface for a shot. It
 reads the finished back buffer after Apex's scene and Picture passes. Ctrl+Shift+F10 remains Compare. **Hide game UI**
 is on by default and temporarily toggles F10, captures one frame and restores the prior tracked state. Apex's own
 overlay is suppressed for that frame. This is separate from Report's diagnostic screenshots.
+Search, peek, and Picture compare bindings are also saved under `[ui]` and included in the optional Shortcuts profile
+section; loading an older config or profile that lacks them keeps their defaults.
 
-While `[ui] key_chosen` is false (missing = false: every existing config sees it once), a centred window shows the
-three presets with their keys (Letter keys marked recommended) and "Customize…" (an own menu key, the rest on Letter
-keys). A choice sets the preset, the menu key and `key_chosen`, closes the window; pressing the current menu key closes
-it keeping that key (Function keys layout). Settings > Menu: "Shortcuts" (the preset) and the keys of the quick
+While `[ui] key_chosen` is false (missing = false: every existing config sees it once), a centered note shows the menu
+key and offers **Customize**. The compact editor uses the same preset names, defaulting to Function row for configs
+without a saved selection; its core action chips can be changed individually. Finishing closes the note and sets
+`key_chosen`; pressing the current menu key also closes it while keeping that key. Settings > Menu: "Shortcuts" (the preset) and the keys of the quick
 actions, then "Menu key" (Change: any key).
 
 ### Status bar

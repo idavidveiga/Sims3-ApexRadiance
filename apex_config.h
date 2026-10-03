@@ -38,6 +38,13 @@ struct UiSettings {
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)
+    KeyChord probeKey{0, true, true, false}; // optional override for Light Probe ([ui] probe_key; vk 0 = the preset's)
+    KeyChord diagnosticsKey{0, true, true, false}; // optional override for Light Diag ([ui] diagnostics_key; vk 0 = the preset's)
+    KeyChord recorderKey{0, true, true, false}; // optional override for Recording ([ui] recorder_key; vk 0 = the preset's)
+    KeyChord frameCaptureKey{0, true, true, false}; // optional override for Frame Capture ([ui] frame_capture_key; vk 0 = the preset's)
+    KeyChord searchKey{'F', true, false, false}; // focuses settings search while the menu is open ([ui] search_key)
+    KeyChord peekKey{VK_MENU, false, false, false}; // hold to peek through the menu ([ui] peek_key)
+    KeyChord pictureCompareKey{'B', false, false, false}; // hold to bypass Picture while over the menu ([ui] picture_compare_key)
     bool screenshotShortcutEnabled = true; // intercept a configurable key for filtered screenshots ([ui] screenshot_shortcut_enabled)
     KeyChord screenshotKey{'C', false, false, false}; // C takes one filtered screenshot into the game's Screenshots folder
     bool screenshotHideGameUi = true; // temporarily toggle the game's F10 UI visibility only while taking the screenshot
