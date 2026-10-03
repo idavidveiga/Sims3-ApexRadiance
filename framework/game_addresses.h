@@ -216,6 +216,13 @@ enum class Id : uint16_t {
     LotLodScoring,            // FUN_00c6c290: scores nearby lots and requests Detailed View transitions
     LotLodThrottleTest,       // Steam 0x00c6c695: cmp byte [Throttle Lot LoD Transitions],0 inside LotLodScoring
     LotLodThrottleFlag,       // global byte tested above; Steam 0x011ecbc0
+    // ---- Per-lot object streaming throttle (features/lot_object_throttle.cpp; group "LotObjectThrottle") ----
+    LotAddObjectsToScene,     // Lot::AddLotObjectsToScene thiscall(lot, initialLoad, alwaysVisibleOnly), ret 8
+    LotUpdateObjectSceneNode, // Lot::UpdateObjectSceneNode thiscall(lot, object, initialLoad, alwaysVisibleOnly)
+    ScriptMessageScopeCtor,   // ScriptMessageScope ctor thiscall(scope, beginMsg, endMsg, lot)
+    ScriptMessageScopeDtor,   // ScriptMessageScope dtor fastcall(scope)
+    PostRemoteMethodCall,     // cdecl(thread, lot, func, a4, initialLoad, alwaysVisibleOnly)
+    IsObjectLargeOrFlora,     // cdecl(object) -> int; shells / large exterior geometry / outdoor flora
     // ---- Local terrain relight (features/terrain_chunk_relight.cpp; optional part of Night Lights: without them lamp
     //      changes keep the full terrain rebuild) ----
     WorldManagerPtr,          // the WorldManager global 0x011ECBC4 (FUN_00c6cf80 stores the manager there at 0x00C6D0CC)
@@ -263,7 +270,7 @@ std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
 // "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache",
-// "SceneNodeBudget", "ObjectIndex", "LotLodStreaming"
+// "SceneNodeBudget", "ObjectIndex", "LotLodStreaming", "LotObjectThrottle"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1
