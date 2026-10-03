@@ -42,5 +42,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ApexRadiance-LotLodDistance100-TEST
-          path: ApexRadiance_LotLodDistanceProbe_TEST.asi
+          path: ApexRadiance_LotLodDistance100_TEST.asi
           if-no-files-found: error
