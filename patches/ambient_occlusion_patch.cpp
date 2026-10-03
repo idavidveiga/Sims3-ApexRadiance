@@ -95,7 +95,7 @@ sampler2D sZt    : register(s2); // the same pyramid, bilinear within the neares
 sampler2D sAo    : register(s3); // AO + 1/z (G16R16F), point
 sampler2D sColor : register(s4); // copy of the finished scene, point
 sampler2D sSim : register(s5); // Sim receiver device-depth mask, point
-sampler2D sHair : register(s6); // transparent hair: device depth and source coverage
+sampler2D sHair : register(s6); // blended Sim body/hair: signed device depth and source coverage
 float4 cView  : register(c0);  // x = tanX, y = tanY, z = H / (2 tanY) (pixels per metre times z), w = max radius (px)
 float4 cSize  : register(c1);  // xy = screen size, zw = pyramid level-0 size (padded)
 float4 cMarch : register(c2);  // x = first step (px), y = mip offset, z = (1 + thin)^2, w = 1 / (fade1 - fade0)
@@ -271,12 +271,13 @@ float4 CompositePS(float2 uv : TEXCOORD0, float2 vpos : VPOS) : COLOR0
     }
     [branch] if (cSimView.y > 0.5) {
         float2 hair = tex2Dlod(sHair, float4(uv, 0, 0)).rg;
-        // Non-depth-writing hair can be in front of the final scene depth.
+        // Blended Sim materials can be in front of the final scene depth.
         // Never extend coverage into neighbouring pixels or through foreground geometry.
-        if (hair.x < 0 && -hair.x <= sceneDepth + 2.4e-7) {
+        if (abs(hair.x) > 0 && abs(hair.x) <= sceneDepth + 2.4e-7) {
             float alpha = saturate(hair.y);
-            v = lerp(v, 1 - min((1 - original) * cSim.z, cSim.w), alpha);
-            coverage = lerp(coverage, float3(0, 1, 0), alpha);
+            bool isHair = hair.x < 0;
+            v = lerp(v, 1 - min((1 - original) * (isHair ? cSim.z : cSim.x), cSim.w), alpha);
+            coverage = lerp(coverage, isHair ? float3(0, 1, 0) : float3(0, 0.5, 1), alpha);
         }
     }
     if (cSimView.x > 0.5) return float4(coverage, 1);
@@ -471,7 +472,7 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
                            SUCCEEDED(dev->GetRenderState(D3DRS_ZWRITEENABLE, &write)) &&
                            SUCCEEDED(dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend));
     bool transparent = false;
-    if (stateRead && accepted == 2 && !write && blend && g.p.transparentHair && simMask.hairSurface) {
+    if (stateRead && blend && (accepted != 2 || g.p.transparentHair) && simMask.hairSurface) {
         DWORD src = 0, dst = 0, op = 0;
         transparent = SUCCEEDED(dev->GetRenderState(D3DRS_SRCBLEND, &src)) && src == D3DBLEND_SRCALPHA &&
                       SUCCEEDED(dev->GetRenderState(D3DRS_DESTBLEND, &dst)) && dst == D3DBLEND_INVSRCALPHA &&
@@ -489,7 +490,8 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
             SafeRelease(vs); SafeRelease(ps); SafeRelease(rt); SafeRelease(ds); return;
         }
         constexpr D3DRENDERSTATETYPE states[] = {D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE,
-            D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_COLORWRITEENABLE, D3DRS_STENCILWRITEMASK, D3DRS_SCISSORTESTENABLE};
+            D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_COLORWRITEENABLE, D3DRS_STENCILWRITEMASK, D3DRS_SCISSORTESTENABLE,
+            D3DRS_ZFUNC};
         DWORD saved[std::size(states)]{};
         for (size_t i = 0; i < std::size(states); ++i)
             if (FAILED(dev->GetRenderState(states[i], &saved[i]))) {
@@ -504,7 +506,10 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
             cleared = ok;
         }
         ok = SUCCEEDED(dev->SetViewport(&vp)) && ok;
-        const DWORD maskStates[] = {FALSE, FALSE, FALSE, FALSE, FALSE, 15, 0, saved[7]};
+        // The original draw already wrote depth. LESS must accept its equal-depth replay;
+        // keep every other comparison and restore the game's state afterwards.
+        const DWORD replayZ = write && saved[8] == D3DCMP_LESS ? D3DCMP_LESSEQUAL : saved[8];
+        const DWORD maskStates[] = {FALSE, FALSE, FALSE, FALSE, FALSE, 15, 0, saved[7], replayZ};
         for (size_t i = 0; i < std::size(states); ++i) ok = SUCCEEDED(dev->SetRenderState(states[i], maskStates[i])) && ok;
         ok = ok && SUCCEEDED(D3D9Hooks::CallOriginalSetVertexShader(dev, copy->vs)) &&
                    SUCCEEDED(D3D9Hooks::CallOriginalSetPixelShader(dev, copy->ps));
@@ -935,7 +940,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {A, 1.0f / (nearZ * A), SceneDither::On() ? SceneDither::Strength() / 255.0f : 0.0f, SceneDither::GrainPhase()},
         {std::clamp(g.p.simStrength, 0.0f, 1.0f), WantSimMask() && simMask.cleared && !simMask.failed ? 1.0f : 0.0f,
          std::clamp(g.p.hairStrength, 0.0f, 1.0f), std::clamp(g.p.simMaxShade, 0.0f, 1.0f)},
-        {g.p.simControls && g.showSimMask ? 1.0f : 0.0f, WantSimMask() && g.p.transparentHair && simMask.hairCleared && !simMask.failed ? 1.0f : 0.0f, 0, 0}};
+        {g.p.simControls && g.showSimMask ? 1.0f : 0.0f, WantSimMask() && simMask.hairCleared && !simMask.failed ? 1.0f : 0.0f, 0, 0}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
     if (!kPublicBuild)
@@ -1068,14 +1073,14 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
             LOG_WARNING("[AO] Sim receiver mask unavailable; retaining original shade");
         } else { simMask.width = g.width; simMask.height = g.height; }
     }
-    if (WantSimMask() && g.ready && g.p.transparentHair && !simMask.hairTexture && !simMask.failed) {
+    if (WantSimMask() && g.ready && !simMask.hairTexture && !simMask.failed) {
         if (FAILED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F,
                                      D3DPOOL_DEFAULT, &simMask.hairTexture, nullptr)) ||
             FAILED(simMask.hairTexture->GetSurfaceLevel(0, &simMask.hairSurface))) {
             SafeRelease(simMask.hairTexture); SafeRelease(simMask.hairSurface);
             simMask.failed = true;
         }
-    } else if (!g.p.transparentHair) {
+    } else if (!WantSimMask()) {
         SafeRelease(simMask.hairTexture); SafeRelease(simMask.hairSurface);
     }
 }

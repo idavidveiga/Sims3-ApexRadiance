@@ -62,6 +62,18 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
         check(std::fabs(pixels[(16*32+27)*2]-(kind!=0?-.6f:.6f)) < 2.4e-7f);
         const float coverage = pixels[(16*32+27)*2+1];
         check(kind==2 ? coverage>.8f && coverage<1.0f : coverage==1.0f);
+        // A depth-writing material using LESS passes once, then rejects its own replay.
+        dev->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);
+        dev->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS);
+        dev->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0);
+        dev->BeginScene(); check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)))); dev->EndScene();
+        dev->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);
+        dev->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0);
+        dev->BeginScene(); check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)))); dev->EndScene();
+        check(ReadMask(dev,target)[(16*32+27)*2]==0);
+        dev->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
+        dev->BeginScene(); check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)))); dev->EndScene();
+        check(std::fabs(ReadMask(dev,target)[(16*32+27)*2]-(kind!=0?-.6f:.6f))<2.4e-7f);
         if (vs) vs->Release(); if (ps) ps->Release();
     }
     // Compile the actual AO shaders, then render the actual composite against the mask.
@@ -151,6 +163,12 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
     check(render(0,1,0,1,-.5f,1,.3f,true)==original); // foreground occludes hair
     check(render(.6f,0,1,1,-.5f,0,.6f,true)==128); // alpha-zero hair retains body's adjustment
     check(render(.6f,0,1,1,-.5f,1,.6f,true)==original);
+    check(render(0,0,1,1,.5f,1,.6f,true)==128); // blended Sim body, independent of hair strength
+    check(render(0,1,0,1,.5f,1,.6f,true)==original);
+    check(render(0,0,1,1,.5f,0,.6f,true)==original); // invisible body overlay
+    const auto bodyHalf=render(0,0,1,1,.5f,.5f,.6f,true);
+    check(bodyHalf>original && bodyHalf<128);
+    check(render(0,0,1,1,.5f,1,.3f,true)==original); // foreground rejects body overlay
     dev->SetTexture(5,nullptr); dev->SetTexture(6,nullptr); receiver->Release(); hairMask->Release();
     dev->SetTexture(0,nullptr); dev->SetTexture(3,nullptr); dev->SetTexture(4,nullptr); dev->SetTexture(5,nullptr);
     composite->Release(); colour->Release(); ao->Release(); depth->Release(); result->Release(); cpu->Release();
