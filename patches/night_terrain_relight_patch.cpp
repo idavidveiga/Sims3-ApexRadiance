@@ -2426,30 +2426,9 @@ class NightTerrainRelightPatch : public ApexPatch {
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
         using ApexUi::IconId;
-        const ImU32 iconCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        ImGui::TextWrapped("Status: %s", g_status.c_str());
-        ImGui::Separator();
-        {
-            // Rooms keep their light when their lamps did not change (lamp_mark_filter.cpp; 30/09, on by default, A/B here)
-            bool keep = LampMarkFilter::Enabled();
-            if (ApexUi::Checkbox("Rooms keep their light when their lamps did not change (floor switches)", &keep)) LampMarkFilter::SetEnabled(keep);
-            ImGui::TextWrapped("%s", LampMarkFilter::Status().c_str());
-        }
-        ImGui::Separator();
-        ApexUi::IconLabel(IconId::ListChecks, "Census", iconCol);
-        {
-            // Census: which lamp-lit draws no fix claimed
-            bool falseColor = LotLightBridge::FalseColor();
-            if (ApexUi::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
-            if (ApexUi::TextButton("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
-            ImGui::SameLine();
-            ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
-        }
-        if (ApexUi::TextButton("Rebuild terrain light now")) g_kickRequested = true;
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Relight lots now")) g_relightLotsRequested = true;
-        ImGui::Separator();
-        ApexUi::IconLabel(IconId::Stethoscope, "Diagnostics", iconCol);
+        if (ApexUi::BeginCard("##CollectLighting")) {
+            ApexUi::CardHeader(IconId::Camera, "Collect lighting evidence", "Capture a state before changing the scene", nullptr, nullptr);
+            ApexUi::CardDivider();
         if (ApexUi::TextButton("Save light diagnostics")) LightDiag::RequestDump();
         ImGui::SameLine();
         ImGui::TextDisabled("(or %s)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Diagnostics)).c_str());
@@ -2459,9 +2438,51 @@ class NightTerrainRelightPatch : public ApexPatch {
             ImGui::SetTooltip("Records, in every lot light solve, the points near each lamp of the active lot with the game's wall test and ours\n"
                               "(the \"stories\" section of the diagnostics). Costs time in every solve, so it is off until checked or until the\n"
                               "first diagnostics of the session are saved.");
+        {
+            // Census: which lamp-lit draws no fix claimed
+            bool falseColor = LotLightBridge::FalseColor();
+            if (ApexUi::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
+            if (ApexUi::TextButton("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
+        }
+        }
+        ApexUi::EndCard();
+        if (ApexUi::BeginCard("##CompareLighting")) {
+            ApexUi::CardHeader(IconId::Columns2, "Compare lighting paths", "Change one option at a time, then compare the same scene", nullptr, nullptr);
+            ApexUi::CardDivider();
+        {
+            // Rooms keep their light when their lamps did not change (lamp_mark_filter.cpp; 30/09, on by default, A/B here)
+            bool keep = LampMarkFilter::Enabled();
+            if (ApexUi::Checkbox("Rooms keep their light when their lamps did not change (floor switches)", &keep)) LampMarkFilter::SetEnabled(keep);
+            ImGui::TextWrapped("%s", LampMarkFilter::Status().c_str());
+        }
+        if (ApexUi::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();
+        if (ApexUi::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
+        ImGui::SameLine();
+        if (ApexUi::TextButton("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
+        if (ApexUi::BeginAdvanced("WaterHighlights", "Water highlights")) {
+        if (ApexUi::SwitchRow("Stabilize lamp sparkles on water", &g_waterFilter, "Filters tiny highlights without temporal smoothing. Turn off to compare the original", true)) NotifySettingChanged();
+        if (ApexUi::SwitchRow("Preserve bright lamp colors on water", &g_waterColorCompression, "Softens excessive lamp brightness while keeping its color. Turn off to compare the original", true)) NotifySettingChanged();
+            ApexUi::EndAdvanced();
+        }
+        }
+        ApexUi::EndCard();
+        if (ApexUi::BeginCard("##RefreshLighting")) {
+            ApexUi::CardHeader(IconId::RotateCcw, "Refresh lighting", "Use after saving the state you want to investigate", nullptr, nullptr);
+            ApexUi::CardDivider();
+        if (ApexUi::TextButton("Rebuild terrain light now")) g_kickRequested = true;
+        ImGui::SameLine();
+        if (ApexUi::TextButton("Relight lots now")) g_relightLotsRequested = true;
+        }
+        ApexUi::EndCard();
+        if (ApexUi::BeginCard("##InspectLighting")) {
+            ApexUi::CardHeader(IconId::Scan, "Inspect lighting state", "Open the data involved in your test", nullptr, nullptr);
+            ApexUi::CardDivider();
+        ApexUi::MutedText(g_status.c_str());
+        if (ApexUi::BeginAdvanced("SurfaceState", "Surface and provider state")) {
         ImGui::TextWrapped("Diagnostics: %s", LightDiag::Status().c_str());
         ImGui::TextWrapped("Street lamps in lots: %s", LotLightBridge::Status().c_str());
-        if (ApexUi::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();
         ImGui::TextWrapped("Soft lot edges: %s", LotLightBridge::LotEdgeStatus().c_str());
         ImGui::TextWrapped("Objects: %s", ObjectLightBridge::Status().c_str());
         ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
@@ -2474,20 +2495,14 @@ class NightTerrainRelightPatch : public ApexPatch {
                                                  : std::format("sunlight scale {:.3f} (base {:.3f}, moonlight x{:.2f})", g_moonWritten, g_sunlightBase, g_moonlight).c_str());
         ImGui::TextWrapped("Roofs: %s", LotLightBridge::RoofStatus().c_str());
         ImGui::TextWrapped("Water: %s", LotLightBridge::WaterStatus().c_str());
-        if (ApexUi::SwitchRow("Stabilize lamp sparkles on water", &g_waterFilter, "Filters tiny highlights without temporal smoothing. Turn off to compare the original", true)) NotifySettingChanged();
-        if (ApexUi::SwitchRow("Preserve bright lamp colors on water", &g_waterColorCompression, "Softens excessive lamp brightness while keeping its color. Turn off to compare the original", true)) NotifySettingChanged();
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
-        if (ApexUi::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
         ImGui::TextDisabled("GPU vs CPU: %s", LightmapSmooth::CompareStatus().c_str());
         ImGui::TextWrapped("Lamp colour: %s", ObjectLightBridge::LampColourStatus().c_str());
         ImGui::TextWrapped("Stories: %s", LevelLightShare::Status().c_str());
         ImGui::TextWrapped("Rooms at night: %s", UnlitRooms::Status().c_str());
-        ImGui::Separator();
-        ApexUi::IconLabel(IconId::Crosshair, "Light probe", iconCol);
-        LightProbe::RenderUI();
-        ImGui::Separator();
+            ApexUi::EndAdvanced();
+        }
+        if (ApexUi::BeginAdvanced("RebuildEvents", "Rebuild events and terrain tests")) {
         ImGui::TextWrapped("Last event: %s", g_lastEvent.c_str());
         ImGui::Text("Night level: %.2f | countdown: %d / %d", g_level, g_counter38, g_counter3C);
         ImGui::Text("Terrain: armed %d | rebuilt %d | last: %s", g_kicks.load(), g_rebuilds.load(), g_lastTiming.c_str());
@@ -2524,14 +2539,21 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextWrapped("Lots: %s (times: %d, stories: %d)", g_lastLotRelight.c_str(), g_lotRelights.load(), g_roomsQueued.load());
         ImGui::Text("Street lamps counted as lit: %ld", static_cast<long>(g_forcedLampUses));
         ImGui::Text("Lot lamps: armed %d | on the ground %d | off %d", g_lotLampArms.load(), g_lotLampsBaked.load(), g_lotLampsSkippedOff.load());
-        ImGui::Separator();
-        if (ImGui::TreeNode("Individual options (for tests)")) {
+            ApexUi::EndAdvanced();
+        }
+        if (ApexUi::BeginAdvanced("ProbeTextures", "Light probe textures")) {
+        LightProbe::RenderUI();
+            ApexUi::EndAdvanced();
+        }
+        if (ApexUi::BeginAdvanced("IndividualTests", "Individual options (for tests)")) {
             // The generic list only stores the value: install or remove the parts that are toggled live.
             const bool shareBefore = g_levelShare, objBefore = g_objLamps, bridgeBefore = g_bridge, objPixelBefore = g_objPixel;
             ApexPatch::RenderCustomUI();
             ApplyLive(bridgeBefore, objBefore, shareBefore, objPixelBefore);
-            ImGui::TreePop();
+            ApexUi::EndAdvanced();
         }
+        }
+        ApexUi::EndCard();
     }
 
     float ShoreReflection() const { return g_waterReflSetting; }

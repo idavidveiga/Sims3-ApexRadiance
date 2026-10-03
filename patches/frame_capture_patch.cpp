@@ -500,12 +500,16 @@ class FrameCapturePatch : public ApexPatch {
     void RenderCustomUI() override {
         SAFE_IMGUI_BEGIN();
         ImGui::Text("Status: %s", g.status.c_str());
-        ImGui::TextWrapped("Records everything the game draws in %d consecutive frames, to find the point between the 3D scene and the interface.",
-                           kFramesPerCapture);
-        if (ApexUi::TextButton("Capture now")) Arm();
-        ImGui::SameLine();
-        ImGui::TextDisabled("(or %s in game)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
-        ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");
+        if (ApexUi::BeginControlRow("Render operations", "Render targets, depth buffers, clears and draw calls", ApexUi::ButtonWidth("Capture two frames", true))) {
+            if (ApexUi::IconTextButton("Capture two frames", ApexUi::IconId::Camera)) Arm();
+            ApexUi::EndControlRow();
+        }
+        if (ApexUi::BeginAdvanced("FrameCaptureDetails", "File and shortcut")) {
+            ImGui::TextDisabled("Shortcut: %s", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
+            ImGui::TextDisabled("Frames per capture: %d", kFramesPerCapture);
+            ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");
+            ApexUi::EndAdvanced();
+        }
     }
 };
 

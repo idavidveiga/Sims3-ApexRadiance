@@ -95,6 +95,7 @@ bool g_recNoteShow = false, g_recNoteShown = false; // the first note of a start
 int g_recRow = -1; // Shortcuts: the row whose key is being recorded (-1 = none)
 void ShortcutsContent(bool compact);
 void ShortcutsTab();
+void LanguageRow();
 void ScreenshotCaptureCard();
 std::atomic<bool> g_hintConsidered{false};
 
@@ -1154,7 +1155,10 @@ template <typename Body> void DevCard(const char* id, IconId icon, const char* t
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(icon, title, subtitle, nullptr, nullptr);
         ApexUi::CardDivider();
-        if (on) body();
+        if (on) {
+            ApexUi::ControlSizeScope compact(ApexUi::ControlSize::Compact);
+            body();
+        }
         else CardNote("Off");
     }
     ApexUi::EndCard();
@@ -1164,9 +1168,8 @@ template <typename Body> void DevCard(const char* id, IconId icon, const char* t
 void DevLightingTab() {
     ApexUi::MutedText("Keep the camera fixed. Save the correct state, cause the problem and save again. Refresh only after capturing the incorrect state.");
     ApexPatch* ntr = Find(kNightLighting);
-    DevCard("DevNightLighting", IconId::Lightbulb, "Room, lamp and ground lighting",
-            "Check how lighting responds to floor changes and lamp edits. Capture the problem before forcing a rebuild.",
-            ntr && ntr->IsEnabled(), [] { NightLighting::DrawDeveloper(); });
+    if (ntr && ntr->IsEnabled()) NightLighting::DrawDeveloper();
+    else DevCard("DevNightLighting", IconId::Lightbulb, "Lighting diagnostics", "Turn on Night Lights to inspect lighting", false, [] {});
     if (ApexPatch* upper = Find(kUpperFloors)) {
         if (ApexUi::BeginAdvanced("GroundProvider", "Technical reference from the current code")) {
             const char* state = !upper->IsEnabled() ? "off" : NightLighting::SplitLevelProvidedByS3SS() ? "on, provided by Sims3SettingsSetter" : "on (GetLotID 0x6BC020 returns 0)";
@@ -1177,7 +1180,7 @@ void DevLightingTab() {
 }
 
 void DevProfilerTab() {
-    ApexUi::MutedText("Clear the previous data, reproduce the stutter, then stop and save. High FPS can still hide short pauses.");
+    ApexUi::MutedText("Clear old data, reproduce the pause, then stop and save the measurement.");
     ImGui::PushID("FrameProfiler");
     if (ApexUi::BeginCard("##Card")) {
         bool on = FrameProfiler::IsEnabled();
@@ -1202,23 +1205,23 @@ void DevProfilerTab() {
     ApexPatch* lists = Find(Performance::kFileListName);
     const bool cachesOn = (cache && cache->IsEnabled()) || (lists && lists->IsEnabled());
     DevCard("DevCaches", IconId::Search, "File searches and remembered answers",
-            "Check whether remembered answers match the game. Compare matching, different and inconclusive answers; validation adds work.", cachesOn,
+            "Compare cached file and list answers with the game", cachesOn,
             [cache, lists] { (cache ? cache : lists)->RenderDeveloperUI(); });
-    inspect(Performance::kObjectIndexName, "Find objects faster", "Compare indexed answers with the game. Watch for expired entries, changed paths and differences in validation.", "DevObjectIndex");
-    inspect(Performance::kLotLightingName, "Lighting while the camera moves", "Check which lighting passes were delayed, how long they waited and whether the camera was read correctly.", "DevLotLighting");
-    inspect(Performance::kWallShadingName, "Wall shading", "Check which lighting passes were delayed, how long they waited and whether the camera was read correctly.", "DevWallShading");
-    inspect(Performance::kSceneBudgetName, "Objects spread across frames", "Balance the amount of object work per frame against the longest allowed wait. Review the pending queue and object-lifetime checks.", "DevSceneObjects");
-    inspect(Performance::kFastTextureName, "Texture compression and processor cores", "Compare compressed textures with the game. Worker limits depend on the processor; zero workers means one core.", "DevTextures");
-    inspect(Performance::kFastCacheName, "Compressed game data", "Check that compressed data decompresses correctly. Running the gameÃ¢â‚¬â„¢s compressor too adds its processing time to the test.", "DevCompression");
+    inspect(Performance::kObjectIndexName, "Find objects faster", "Check indexed results and expired entries", "DevObjectIndex");
+    inspect(Performance::kLotLightingName, "Lighting while the camera moves", "Inspect deferred lighting work and the camera state", "DevLotLighting");
+    inspect(Performance::kWallShadingName, "Wall shading", "Inspect deferred lighting work and the camera state", "DevWallShading");
+    inspect(Performance::kSceneBudgetName, "Objects spread across frames", "Inspect pending work and object lifetime checks", "DevSceneObjects");
+    inspect(Performance::kFastTextureName, "Texture compression and processor cores", "Compare texture output and processor worker use", "DevTextures");
+    inspect(Performance::kFastCacheName, "Compressed game data", "Verify decompressed data matches the original", "DevCompression");
 }
 
 void DevDebugViewsTab() {
-    ApexUi::MutedText("Inspect one effect at a time. Save the result and switch off its diagnostic view when finished. Conditional controls remain tied to their effect.");
+    ApexUi::MutedText("Inspect one effect at a time. Switch off its diagnostic view when finished.");
     const auto inspect = [](const char* key, const char* title, const char* purpose) {
         ApexPatch* p = Find(key);
         DevCard(key, IconId::Eye, title, purpose, p && p->IsEnabled(), [p] { p->RenderDeveloperUI(); });
     };
-    inspect("EdgeSmoothing", "Edge smoothing", "Inspect smoothed pixels and temporal history. Temporal controls appear only when that mode is active.");
+    inspect("EdgeSmoothing", "Edge smoothing", "Inspect the pixels changed by SMAA or FXAA.");
     inspect("DepthBlur", "Depth blur", "Inspect focus and blur strength. The far-plane value is used only by fixed focus.");
     inspect("AmbientOcclusion", "Ambient shadows", "Show the added shade by itself and save depth and colour for investigation.");
     inspect("SceneDither", "Gradient correction coverage", "Show which surfaces receive the correction and review why some shaders were refused.");
@@ -1228,7 +1231,7 @@ void DevDebugViewsTab() {
 void DeveloperPage() {
     const toml::table preferencesBefore = DeveloperSettings::Capture();
     toml::table profilerBefore; FrameProfiler::SaveToToml(profilerBefore);
-    ApexUi::PageTitle("Developer", "Choose a test and keep its tools together");
+    ApexUi::PageTitle("Developer", "Inspect a problem, collect evidence and compare the result");
     static int tab = 0;
     constexpr const char* labels[] = {"Lighting", "Performance", "Captures", "Visual effects", "Translations"};
     constexpr IconId icons[] = {IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type};
@@ -1236,25 +1239,52 @@ void DeveloperPage() {
     if (tab == 0) DevLightingTab();
     else if (tab == 1) DevProfilerTab();
     else if (tab == 2) {
-        ApexUi::MutedText("A session keeps related captures together. Reports save the log and settings; lighting recording lasts up to 20 seconds. The Profiler saves a separate measurement report.");
+        ApexUi::MutedText("A session groups related captures. Profiler measurements are saved separately.");
         SessionHeroCard();
         ReportCaptureCard();
-        FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save the gameÃ¢â‚¬â„¢s drawing operations to a text file. This is detailed evidence for rendering problems.");
+        FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save two frames of rendering operations for detailed investigation.");
         ReportListCard();
     } else if (tab == 3) DevDebugViewsTab();
     else {
         ApexUi::MutedText("Open the affected screens in the language you want to check. Save the missing-text list and placeholder errors to the log.");
-        DevCard("TranslationReview", IconId::Type, "Translations", "Missing translations", true, [] {
-            ImGui::Text("%s: %s", I18n::Tr("Language"), I18n::NativeName(I18n::Current()));
-            ImGui::Text("%s: %zu", I18n::Tr("Missing translations"), I18n::MissingCount());
-            if (ApexUi::IconTextButton("Write the list to the log", IconId::Save)) LOG_INFO("[I18n] Texts without a translation:\n" + I18n::MissingList(4000));
-            if (ApexUi::IconTextButton("Clear collected data", IconId::RotateCcw)) I18n::ClearMissing();
+        DevCard("TranslationReview", IconId::Type, "Review translations", "Collect missing text while visiting menu screens", true, [] {
+            LanguageRow();
+            const std::string missing = std::to_string(I18n::MissingCount());
+            if (ApexUi::BeginControlRow("Missing translations", nullptr, ImGui::CalcTextSize(missing.c_str()).x)) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("%s", missing.c_str());
+                ApexUi::EndControlRow();
+            }
+            const float actionsW = ApexUi::ButtonWidth("Clear collected data", true) + ImGui::GetStyle().ItemSpacing.x + ApexUi::ButtonWidth("Write the list to the log", true);
+            if (ApexUi::BeginControlRow("Collected issues", "Save the current list before clearing it", actionsW)) {
+                if (ApexUi::IconTextButton("Clear collected data", IconId::RotateCcw)) I18n::ClearMissing();
+                ImGui::SameLine();
+                if (ApexUi::IconTextButton("Write the list to the log", IconId::Save, nullptr, ButtonKind::Primary)) LOG_INFO("[I18n] Texts without a translation:\n" + I18n::MissingList(4000));
+                ApexUi::EndControlRow();
+            }
+        });
+        DevCard("MissingText", IconId::ListChecks, "Missing text", "Collected from the menu", true, [] {
+            static ImGuiTextFilter filter;
+            filter.Draw(I18n::Tr("Filter collected text"), ImGui::GetContentRegionAvail().x);
+            if (I18n::MissingCount()) {
+                const std::string list = I18n::MissingList(4000);
+                bool found = false;
+                for (const char* line = list.c_str(); *line;) {
+                    const char* end = std::strchr(line, '\n');
+                    if (!end) end = line + std::strlen(line);
+                    if (filter.PassFilter(line, end)) { ImGui::TextWrapped("%.*s", static_cast<int>(end - line), line); found = true; }
+                    line = *end ? end + 1 : end;
+                }
+                if (!found) ApexUi::MutedText("No collected text matches this filter");
+            } else ApexUi::MutedText("No missing text collected. Visit menu screens to begin.");
+        });
+        DevCard("PlaceholderChecks", IconId::Scan, "Placeholder checks", "Formatting arguments must match across languages", true, [] {
             const std::string problems = I18n::PlaceholderProblems();
-            if (!problems.empty()) {
+            if (problems.empty()) ApexUi::MutedText("No placeholder errors found");
+            else {
                 ApexUi::IconNote(IconId::TriangleAlert, "Translation argument errors", VioletTheme::kWarning);
                 ImGui::TextWrapped("%s", problems.c_str());
             }
-            ImGui::TextWrapped("%s", I18n::MissingList(200).c_str());
         });
     }
     toml::table profilerAfter; FrameProfiler::SaveToToml(profilerAfter);

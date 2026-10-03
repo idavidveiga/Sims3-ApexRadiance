@@ -972,3 +972,37 @@ const I18n::Entry kProfileApplyCardEntries[] = {
 };
 const I18n::Table kProfileApplyCardTable(kProfileApplyCardEntries, std::size(kProfileApplyCardEntries));
 }
+
+namespace {
+const I18n::Entry kDeveloperDesignEntries[] = {
+    {"Filter collected text", "Filtrar textos coletados", "Filtrar textos recopilados", "Filtrer les textes collectés"},
+    {"No collected text matches this filter", "Nenhum texto coletado corresponde ao filtro", "Ningún texto recopilado coincide con el filtro", "Aucun texte collecté ne correspond au filtre"},
+    {"Capture a state before changing the scene", "Capture um estado antes de alterar a cena", "Captura un estado antes de cambiar la escena", "Capturez un état avant de modifier la scène"},
+    {"Change one option at a time, then compare the same scene", "Altere uma opção por vez e compare a mesma cena", "Cambia una opción a la vez y compara la misma escena", "Modifiez une option à la fois puis comparez la même scène"},
+    {"Use after saving the state you want to investigate", "Use após salvar o estado que deseja investigar", "Úsalo después de guardar el estado que deseas investigar", "Utilisez après avoir enregistré l’état à examiner"},
+    {"Open the data involved in your test", "Abra os dados relacionados ao seu teste", "Abre los datos relacionados con tu prueba", "Ouvrez les données liées à votre test"},
+    {"Collect lighting evidence", "Coletar evidências de iluminação", "Recopilar pruebas de iluminación", "Recueillir des données d’éclairage"},
+    {"Compare lighting paths", "Comparar caminhos de iluminação", "Comparar rutas de iluminación", "Comparer les chemins d’éclairage"},
+    {"Refresh lighting", "Atualizar iluminação", "Actualizar iluminación", "Actualiser l’éclairage"},
+    {"Inspect lighting state", "Inspecionar o estado da iluminação", "Inspeccionar el estado de la iluminación", "Examiner l’état de l’éclairage"},
+    {"Surface and provider state", "Estado das superfícies e provedores", "Estado de superficies y proveedores", "État des surfaces et des fournisseurs"},
+    {"Rebuild events and terrain tests", "Eventos de reconstrução e testes do terreno", "Eventos de reconstrucción y pruebas del terreno", "Événements de recalcul et tests du terrain"},
+    {"Light probe textures", "Texturas da captura de luz", "Texturas de la captura de luz", "Textures de la capture de lumière"},
+    {"Water highlights", "Brilhos na água", "Brillos en el agua", "Reflets lumineux sur l’eau"},
+    {"Measurement setup", "Configuração da medição", "Configuración de la medición", "Configuration de la mesure"},
+    {"Collected timing details", "Detalhes de tempo coletados", "Detalles de tiempo recopilados", "Détails des mesures collectées"},
+    {"Collected measurement", "Medição coletada", "Medición recopilada", "Mesure collectée"},
+    {"Camera and Sim mask", "Câmera e máscara dos Sims", "Cámara y máscara de los Sims", "Caméra et masque des Sims"},
+    {"Focus and rendering details", "Detalhes de foco e renderização", "Detalles de enfoque y renderizado", "Détails de mise au point et de rendu"},
+    {"Rendering details", "Detalhes de renderização", "Detalles de renderizado", "Détails du rendu"},
+    {"Shader coverage", "Cobertura dos shaders", "Cobertura de shaders", "Couverture des shaders"},
+    {"File and shortcut", "Arquivo e atalho", "Archivo y atajo", "Fichier et raccourci"},
+    {"Review translations", "Revisar traduções", "Revisar traducciones", "Vérifier les traductions"},
+    {"Missing text", "Textos ausentes", "Textos faltantes", "Textes manquants"},
+    {"Placeholder checks", "Verificação de argumentos", "Verificación de argumentos", "Vérification des arguments"},
+    {"Collected issues", "Problemas coletados", "Problemas recopilados", "Problèmes collectés"},
+    {"No placeholder errors found", "Nenhum erro de argumentos encontrado", "No se encontraron errores de argumentos", "Aucune erreur d’arguments trouvée"},
+    {"No missing text collected. Visit menu screens to begin.", "Nenhum texto ausente coletado. Visite as telas do menu para começar.", "No se ha recopilado texto faltante. Visita las pantallas del menú para empezar.", "Aucun texte manquant collecté. Parcourez les écrans du menu pour commencer."},
+};
+const I18n::Table kDeveloperDesignTable(kDeveloperDesignEntries, std::size(kDeveloperDesignEntries));
+}

@@ -4853,35 +4853,43 @@ void RenderUI(bool showEnable) {
              "Off = nothing is hooked, no cost.");
     }
     if (on || g_stats.frames) {
-        if (showEnable) ImGui::SameLine();
-        if (ApexUi::TextButton("Clear##FrameProfiler")) Clear();
-        Hint("Forget the collected frames and hitches (ApexRadiance_Hitches.txt keeps what was written).");
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Save report now")) SaveReport();
-        Hint("Append a full report (percentiles, totals, the last hitches, hook status) to ApexRadiance_Hitches.txt.");
+        const float actionsW = ApexUi::ButtonWidth("Clear##FrameProfiler", true) + ImGui::GetStyle().ItemSpacing.x + ApexUi::ButtonWidth("Save report now", true);
+        if (ApexUi::BeginControlRow("Collected measurement", "Clear old data before the next run", actionsW)) {
+            if (ApexUi::IconTextButton("Clear##FrameProfiler", ApexUi::IconId::RotateCcw)) Clear();
+            ImGui::SameLine();
+            if (ApexUi::IconTextButton("Save report now", ApexUi::IconId::Save)) SaveReport();
+            ApexUi::EndControlRow();
+        }
     }
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Measurement preset:");
-    ImGui::SameLine();
-    if (ApexUi::TextButton("Timing run##FpPreset")) ApplyPreset(false);
-    Hint("Recommended settings for the 60-second measurement, run type A (research\\perf2\\plan.md section 9):\n"
-         "hitch multiplier 2.0, floor 8 ms, count state calls on, write the file on, sampling off, Mutex::Lock not timed,\n"
-         "per-hook registry timing and lot object building off. Turns the profiler on.\n"
-         "Then press Clear right before the run and Save report now right after it.");
-    ImGui::SameLine();
-    if (ApexUi::TextButton("Sampling run##FpPreset")) ApplyPreset(true);
-    Hint("Recommended settings for the attribution run, run type B: the same as the timing run, plus sampling of the\n"
-         "render and simulation threads at 2000 Hz. Turns the profiler on.\n"
-         "Then press Clear right before the run and Save report now right after it.");
+    if (ApexUi::BeginAdvanced("MeasurementSetup", "Measurement setup")) {
+        const float presetWidth = ApexUi::ButtonWidth("Timing run##FpPreset", false) + ImGui::GetStyle().ItemSpacing.x + ApexUi::ButtonWidth("Sampling run##FpPreset", false);
+        if (ApexUi::BeginControlRow("Measurement preset", "Choose a timing or sampling run", presetWidth)) {
+        if (ApexUi::TextButton("Timing run##FpPreset")) ApplyPreset(false);
+        Hint("Recommended settings for the 60-second measurement, run type A (research\\perf2\\plan.md section 9):\n"
+             "hitch multiplier 2.0, floor 8 ms, count state calls on, write the file on, sampling off, Mutex::Lock not timed,\n"
+             "per-hook registry timing and lot object building off. Turns the profiler on.\n"
+             "Then press Clear right before the run and Save report now right after it.");
+        ImGui::SameLine();
+        if (ApexUi::TextButton("Sampling run##FpPreset")) ApplyPreset(true);
+        Hint("Recommended settings for the attribution run, run type B: the same as the timing run, plus sampling of the\n"
+             "render and simulation threads at 2000 Hz. Turns the profiler on.\n"
+             "Then press Clear right before the run and Save report now right after it.");
+        ApexUi::EndControlRow();
+        }
+        RenderAdvanced();
+        ApexUi::EndAdvanced();
+    }
     if (!g_stats.frames) {
         ImGui::TextDisabled("%s", on ? "Waiting for frames..." : "Off: nothing is hooked.");
     } else {
         if (!on) ImGui::TextDisabled("Off: showing the data collected so far.");
         RenderLive();
-        RenderHitches();
-        RenderCounters();
+        if (ApexUi::BeginAdvanced("CollectedDetails", "Collected timing details")) {
+            RenderHitches();
+            RenderCounters();
+            ApexUi::EndAdvanced();
+        }
     }
-    RenderAdvanced();
 }
 
 void SaveToToml(toml::table& qolTable) {

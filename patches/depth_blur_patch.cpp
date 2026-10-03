@@ -1146,8 +1146,19 @@ class DepthBlurPatch : public ApexPatch {
     // Developer page > Debug views
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
-        ImGui::TextWrapped("Status: %s", g.status.c_str());
         bool changed = false;
+
+        changed |= ApexUi::Checkbox("Show blur amount", &g.p.debugView);
+        ApexUi::Tooltip("Shows the blur amount instead of the image: white = blurred, black = sharp; the Auto focus window is tinted violet");
+        ImGui::SetNextItemWidth(120.0f * ApexUi::Unit());
+        if (ImGui::InputFloat("Far plane", &g.p.farPlane, 0.0f, 0.0f, "%.1f")) {
+            g.p.farPlane = std::fmin(std::fmax(g.p.farPlane, 10.0f), 10000.0f);
+            changed = true;
+        }
+        ApexUi::Tooltip("Fixed focus only: the far plane of the curve that turns the depth buffer into distance (10 - 10000)");
+        if (changed) NotifySettingChanged();
+        if (ApexUi::BeginAdvanced("DiagnosticDetails", "Focus and rendering details")) {
+        ImGui::TextWrapped("Status: %s", g.status.c_str());
         // Ask the effect for the focus read-out while this is drawn (the next half second)
         {
             LARGE_INTEGER now, freq;
@@ -1171,15 +1182,8 @@ class DepthBlurPatch : public ApexPatch {
             ImGui::TextDisabled("Blurred frames: %u  |  taps per side: %d  |  blur targets: %s", g.framesBlurred, g.lastTaps, FormatName(g.halfFmt));
         }
         ImGui::TextDisabled("Map view: %s  |  fade %.2f", g.mapOpen ? "open" : "closed", g.mapFade);
-        changed |= ApexUi::Checkbox("Show blur amount", &g.p.debugView);
-        ApexUi::Tooltip("Shows the blur amount instead of the image: white = blurred, black = sharp; the Auto focus window is tinted violet");
-        ImGui::SetNextItemWidth(120.0f * ApexUi::Unit());
-        if (ImGui::InputFloat("Far plane", &g.p.farPlane, 0.0f, 0.0f, "%.1f")) {
-            g.p.farPlane = std::fmin(std::fmax(g.p.farPlane, 10.0f), 10000.0f);
-            changed = true;
+            ApexUi::EndAdvanced();
         }
-        ApexUi::Tooltip("Fixed focus only: the far plane of the curve that turns the depth buffer into distance (10 - 10000)");
-        if (changed) NotifySettingChanged();
     }
 };
 

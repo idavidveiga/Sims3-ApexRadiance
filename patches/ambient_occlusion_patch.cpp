@@ -1287,6 +1287,16 @@ class AmbientOcclusionPatch : public ApexPatch {
     // Developer page > Debug views
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
+
+        ApexUi::Checkbox("Show the shade alone", &g.showShade);
+        if (ApexUi::TextButton("Save depth and colour##AoCapture")) {
+            g.captureRequested = true;
+            g.captureNote = g.ready ? "Saving at the next frame..." : "Turn Ambient Occlusion on first";
+        }
+        ApexUi::Tooltip("Saves the next frame's depth, colour (before the AO and the menus) and camera into Documents > ... > Apex Radiance > Profundidade, for the offline AO lab. Open the map view first to capture it");
+        if (!g.captureNote.empty()) ImGui::TextDisabled("%s", g.captureNote.c_str());
+        ApexUi::Tooltip("Shows the ambient occlusion in grey instead of the image: white = no shade (not saved)");
+        if (ApexUi::BeginAdvanced("DiagnosticDetails", "Camera and Sim mask")) {
         ImGui::TextWrapped("Status: %s", g.status.c_str());
         ImGui::TextDisabled("Sim mask: %u draws last frame, %u refused pairs, %zu cached pairs%s",
                             simMask.lastDraws, simMask.refused, simMask.copies.size(), simMask.failed ? " (unavailable)" : "");
@@ -1296,14 +1306,8 @@ class AmbientOcclusionPatch : public ApexPatch {
             ImGui::TextDisabled("Camera: near %.3f m, A %.6f, tan %.4f x %.4f (%s)", g.lastNear, g.lastA, g.lastTanX, g.lastTanY,
                                 g.lastCamera ? "read this frame" : "fallback");
         }
-        ApexUi::Checkbox("Show the shade alone", &g.showShade);
-        if (ApexUi::TextButton("Save depth and colour##AoCapture")) {
-            g.captureRequested = true;
-            g.captureNote = g.ready ? "Saving at the next frame..." : "Turn Ambient Occlusion on first";
+            ApexUi::EndAdvanced();
         }
-        ApexUi::Tooltip("Saves the next frame's depth, colour (before the AO and the menus) and camera into Documents > ... > Apex Radiance > Profundidade, for the offline AO lab. Open the map view first to capture it");
-        if (!g.captureNote.empty()) ImGui::TextDisabled("%s", g.captureNote.c_str());
-        ApexUi::Tooltip("Shows the ambient occlusion in grey instead of the image: white = no shade (not saved)");
     }
 };
 

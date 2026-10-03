@@ -444,6 +444,9 @@ class SceneDitherPatch : public ApexPatch {
             pairs = g_copies.size();
             vsPairs = g_vsCopies.size();
         }
+        ApexUi::Checkbox("Show covered surfaces", &g_showCovered);
+        ApexUi::Tooltip("A coarse grain on every surface the fix covers; smooth surfaces are not covered (not saved)");
+        if (ApexUi::BeginAdvanced("ShaderCoverage", "Shader coverage")) {
         ImGui::TextDisabled("Pixel shaders seen: %zu (copies %u)  |  vertex copies asked: %zu (made %u)", pairs, g_made.load(), vsPairs, g_madeVs.load());
         ImGui::TextDisabled("Refused: no colour write %u, subroutines %u, relative constants %u, no free register %u, unreadable %u", g_refused[2].load(),
                             g_refused[3].load(), g_refused[4].load(), g_refused[5].load(), g_refused[6].load());
@@ -453,8 +456,8 @@ class SceneDitherPatch : public ApexPatch {
                             "%u ps_3_0 refused, %u other",
                             dithered, total ? 100.0 * dithered / total : 0.0, g_last.dithered3, g_last.dithered2, g_last.ps2NoPair, g_last.ps2Refused,
                             g_last.ps3Refused, g_last.other);
-        ApexUi::Checkbox("Show covered surfaces", &g_showCovered);
-        ApexUi::Tooltip("A coarse grain on every surface the fix covers; smooth surfaces are not covered (not saved)");
+            ApexUi::EndAdvanced();
+        }
     }
 };
 
