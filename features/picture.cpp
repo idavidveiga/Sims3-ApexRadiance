@@ -968,24 +968,28 @@ void Picture::RenderUI(int tab) {
     case TabColor: {
         signedAmount("Tint", &q.tint, kDef.tint, "Shift colors toward green or magenta", "Green", "Magenta");
         signedAmount("Vibrance", &q.vibrance, kDef.vibrance, "Boosts dull colors and keeps skin tones natural");
-        ApexUi::GroupLabel("FILM TONES");
-        hue("Shadow color", &q.shadowHue, kDef.shadowHue, "Teal or blue is the classic film look");
-        percent("Shadow amount", &q.shadowTint, 0.0f, 1.0f, "How strongly shadows take that color; 0% is off", kDef.shadowTint);
-        hue("Highlight color", &q.highlightHue, kDef.highlightHue, "Orange or gold is the classic film look");
-        percent("Highlight amount", &q.highlightTint, 0.0f, 1.0f, "How strongly highlights take that color; 0% is off", kDef.highlightTint);
-        ApexUi::GroupLabel("COLOR MIXER");
-        static const char* const names[6] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
-        static const char* const descs[6] = {"Red flowers, brick and clothing", "Sunlight, sand and autumn leaves", "Grass and leaves; lower it for less neon plants",
-                                             "Pools and pale skies", "Sky and water", "Pink and purple flowers and clothing"};
-        static const float hues[6] = {0.0f, 60.0f, 120.0f, 180.0f, 240.0f, 300.0f};
-        for (int i = 0; i < 6; i++) {
-            ApexUi::SliderOptions o;
-            o.format = "%.0f%%";
-            o.displayScale = 100.0f;
-            o.swatch = HueSwatch(hues[i]);
-            o.tooltip = descs[i];
-            o.defaultValue = kDef.mixer[i];
-            slide(names[i], &q.mixer[i], 0.0f, 2.0f, o);
+        if (ApexUi::BeginAdvanced("FilmTones", "Film tones")) {
+            hue("Shadow color", &q.shadowHue, kDef.shadowHue, "Teal or blue is the classic film look");
+            percent("Shadow amount", &q.shadowTint, 0.0f, 1.0f, "How strongly shadows take that color; 0% is off", kDef.shadowTint);
+            hue("Highlight color", &q.highlightHue, kDef.highlightHue, "Orange or gold is the classic film look");
+            percent("Highlight amount", &q.highlightTint, 0.0f, 1.0f, "How strongly highlights take that color; 0% is off", kDef.highlightTint);
+            ApexUi::EndAdvanced();
+        }
+        if (ApexUi::BeginAdvanced("ColorMixer", "Color mixer")) {
+            static const char* const names[6] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
+            static const char* const descs[6] = {"Red flowers, brick and clothing", "Sunlight, sand and autumn leaves", "Grass and leaves; lower it for less neon plants",
+                                                 "Pools and pale skies", "Sky and water", "Pink and purple flowers and clothing"};
+            static const float hues[6] = {0.0f, 60.0f, 120.0f, 180.0f, 240.0f, 300.0f};
+            for (int i = 0; i < 6; i++) {
+                ApexUi::SliderOptions o;
+                o.format = "%.0f%%";
+                o.displayScale = 100.0f;
+                o.swatch = HueSwatch(hues[i]);
+                o.tooltip = descs[i];
+                o.defaultValue = kDef.mixer[i];
+                slide(names[i], &q.mixer[i], 0.0f, 2.0f, o);
+            }
+            ApexUi::EndAdvanced();
         }
 
         break;

@@ -413,3 +413,7 @@ Engine background: [../../engine/terrain-and-light-bake.md](../../engine/terrain
 [../../engine/room-light-maps.md](../../engine/room-light-maps.md),
 [../../engine/light-objects-and-rigs.md](../../engine/light-objects-and-rigs.md),
 [../../engine/shaders.md](../../engine/shaders.md).
+
+## Local menu hierarchy refinement
+
+Lighting keeps its Overview/Ground/Objects/Buildings/Stories tabs. Ground now uses behavior and intensity cards; dusk timing stays under Updates beside the behavior controls. Objects uses separate outdoor, connected-piece and indoor cards. Stories moves seam handling and all-floor detail under Floor detail. All original setting bindings, ranges, defaults, preset ratios, dependencies and application paths remain unchanged; only presentation and translated descriptions change.

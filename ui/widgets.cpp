@@ -1099,7 +1099,8 @@ bool BeginAdvanced(const char* id, const char* label) {
     const ImU32 col = U32(hovered ? VioletTheme::kAccentLight : VioletTheme::kAccent);
     DrawIcon(dl, open ? IconId::ChevronDown : IconId::ChevronRight, ImVec2(p.x, p.y + (lineH - is) * 0.5f), is, col);
     const std::string_view shown = I18n::TrLabel(label);
-    dl->AddText(ImVec2(p.x + is + gap, p.y), col, shown.data(), shown.data() + shown.size());
+    dl->AddText(ImVec2(p.x + is + gap, CenteredTextY(shown, p.y + lineH * 0.5f)), col, shown.data(), shown.data() + shown.size());
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return open;
 }
 

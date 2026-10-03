@@ -936,3 +936,30 @@ const I18n::Entry kDirectReportEntries[] = {
 };
 const I18n::Table kDirectReportTable(kDirectReportEntries, std::size(kDirectReportEntries));
 }
+
+namespace {
+const I18n::Entry kOrganizationEntries[] = {
+    {"Lamp light on plants and outdoor furniture", "Luz das lâmpadas em plantas e móveis externos", "Luz de las lámparas en plantas y muebles exteriores", "Lumière des lampes sur les plantes et le mobilier extérieur"},
+    {"Ground intensity", "Intensidade no solo", "Intensidad en el suelo", "Intensité au sol"},
+    {"Balance surfaces and lamp brightness", "Equilibre as superfícies e o brilho das lâmpadas", "Equilibra las superficies y el brillo de las lámparas", "Équilibrez les surfaces et la luminosité des lampes"},
+    {"Doors, counters and fences", "Portas, bancadas e cercas", "Puertas, encimeras y vallas", "Portes, plans de travail et clôtures"},
+    {"Match connected pieces to the surrounding light", "Harmonize a luz das peças com o entorno", "Iguala la luz de las piezas con su entorno", "Harmonisez la lumière des éléments avec leur environnement"},
+    {"Indoor objects", "Objetos internos", "Objetos interiores", "Objets intérieurs"},
+    {"Furniture and stairs inside rooms", "Móveis e escadas dentro dos cômodos", "Muebles y escaleras dentro de las habitaciones", "Meubles et escaliers dans les pièces"},
+    {"Floor detail", "Detalhes dos andares", "Detalle de las plantas", "Détail des étages"},
+    {"Film tones", "Tons de cinema", "Tonos de cine", "Tons cinématographiques"},
+    {"Color mixer", "Misturador de cores", "Mezclador de colores", "Mélangeur de couleurs"},
+    {"Lamp light on grass, lots and patios", "Luz das lâmpadas na grama, nos lotes e nos pátios", "Luz de las lámparas en césped, solares y patios", "Lumière des lampes sur l’herbe, les terrains et les patios"},
+    {"Balance roads against the surrounding ground", "Equilibre as ruas com o solo ao redor", "Equilibra las calles con el suelo circundante", "Équilibrez les routes avec le sol environnant"},
+    {"Ground light cast by street lamps", "Luz dos postes sobre o solo", "Luz de las farolas sobre el suelo", "Lumière des lampadaires sur le sol"},
+    {"Ground light cast by lamps on lots", "Luz das lâmpadas dos lotes sobre o solo", "Luz de las lámparas de los solares sobre el suelo", "Lumière des lampes des terrains sur le sol"},
+    {"Intensity on counters and modular pieces", "Intensidade em bancadas e peças modulares", "Intensidad en encimeras y piezas modulares", "Intensité sur les plans de travail et les éléments modulaires"},
+    {"Balance fences against the surrounding ground", "Equilibre as cercas com o solo ao redor", "Equilibra las vallas con el suelo circundante", "Équilibrez les clôtures avec le sol environnant"},
+    {"Intensity of lamp light on roofs", "Intensidade da luz das lâmpadas nos telhados", "Intensidad de la luz de las lámparas en los tejados", "Intensité de la lumière des lampes sur les toits"},
+    {"Set the ambient glow indoors, with lamps on or off", "Ajuste a luz ambiente interna, com lâmpadas acesas ou apagadas", "Ajusta la luz ambiental interior, con lámparas encendidas o apagadas", "Réglez la lumière ambiante intérieure, lampes allumées ou éteintes"},
+    {"Intensity of lamp glow and sparkles on ponds", "Intensidade do brilho e dos reflexos das lâmpadas nos lagos", "Intensidad del brillo y los destellos de las lámparas en los estanques", "Intensité de la lueur et des scintillements des lampes sur les étangs"},
+    {"Startup menu hint", "Dica do menu ao iniciar", "Ayuda del menú al iniciar", "Rappel du menu au démarrage"},
+    {"Shows the menu shortcut when the game starts", "Mostra o atalho do menu ao iniciar o jogo", "Muestra el atajo del menú al iniciar el juego", "Affiche le raccourci du menu au démarrage du jeu"},
+};
+const I18n::Table kOrganizationTable(kOrganizationEntries, std::size(kOrganizationEntries));
+}

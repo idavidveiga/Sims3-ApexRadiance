@@ -549,3 +549,16 @@ Shortcut buttons and their control rows share `KeyChipWidth`, including translat
 ### Cross-page design polish
 
 Settings > Menu keeps language/text/start-note controls first, screenshot capture second, then a separate Settings and maintenance card for saving, developer mode and reset. Game Edge Smoothing prerequisite notes on AO/Depth Blur/Edge Smoothing appear only while the actual game AA conflict is active. Remaining raw diagnostic action buttons across feature files and shortcut key buttons use the shared compact action renderer. Segmented choices share visible-glyph vertical centring with buttons; settings keys, defaults, profile bits and renderer behavior are unchanged. Overview, Lighting, Water/Snow, Color, AO, Depth Blur, Edge Smoothing, Performance, Report, Developer and Settings retain their established page/card hierarchy, with common control geometry applied throughout.
+
+### Information hierarchy review (local development)
+
+The approved Violet palette, Segoe UI family and 30/36-unit control roles remain the baseline. Page headings identify the task; card headings identify the affected area; row descriptions explain the result rather than repeating default values already available through reset controls.
+
+- Lighting > Overview retains the three presets and Custom; Undo appears only after a choice that can actually be undone.
+- Ground separates its three behavior switches (and infrequent dusk Updates) from the four intensity sliders. Objects separates outdoor objects, connected pieces and indoor objects, with Armchair, Fence and Lightbulb icons. Existing disabled dependencies and reload/experimental badges remain attached to their controls.
+- Stories keeps the ground/outdoor/indoor sharing controls visible; seam handling and all-floor detail live in Floor detail. Buildings retains its wall/roof groups and separate room ambience card. Water/Snow retain their small, distinct cards. Brightness copy is shorter in all four languages.
+- Color keeps basic tint and vibrance immediately visible. Film tones and the six-channel Color mixer are independently expandable, preserving live drag and save-on-release behavior. Search traverses collapsed content through the shared advanced widget.
+- AO retains separate world and Sim controls; the GPU-cost note appears while world AO is enabled. Depth Blur and Edge Smoothing retain their existing focus/method hierarchy and advanced controls.
+- Overview, Performance, Profiles, Shortcuts and Developer were reviewed against their existing task groups; their approved organization is retained. Settings uses appearance, capture and maintenance cards; its startup hint copy is shorter. Report retains the approved session/capture/library/help flow and required-title modal.
+
+Disclosure text uses the same visible-glyph centring and keyboard focus treatment as action controls. No TOML key, profile bit, preset value, range, reset value, rendering hook or background task is changed. Native shared-control checks are geometric evidence, not a substitute for inspecting every page in the game.

@@ -631,8 +631,10 @@ void GameEdgeSmoothingNote(const char* forWhat) {
 
 void AmbientOcclusionContent() {
     GameEdgeSmoothingNote("Ambient Occlusion");
-    ApexUi::IconNote(IconId::Gauge, "Heavier on the graphics card than other effects: lower the Quality if the game slows down");
-    ApexUi::Gap(ApexUi::kSpace1);
+    if (auto* ao = Find("AmbientOcclusion"); ao && ao->IsEnabled()) {
+        ApexUi::IconNote(IconId::Gauge, "Heavier on the graphics card than other effects: lower the Quality if the game slows down");
+        ApexUi::Gap(ApexUi::kSpace1);
+    }
     FeatureCard("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade under furniture, in corners and around houses");
     ApexUi::Gap(ApexUi::kSpace2);
     SimOcclusion::RenderUI(Find("AmbientOcclusion"));
@@ -1513,7 +1515,7 @@ void MenuTab() {
         TextSizeRow();
         {
             ApexConfig::UiSettings ui = ApexConfig::GetUi();
-            if (ApexUi::SwitchRow("Start note", &ui.startNote, "The small note at the top center of the screen at every start, with the key that opens this menu", true))
+            if (ApexUi::SwitchRow("Startup menu hint", &ui.startNote, "Shows the menu shortcut when the game starts", true))
                 ApexConfig::SetUi(ui); // [ui] start_note
         }
     }
