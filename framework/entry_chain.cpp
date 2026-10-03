@@ -51,6 +51,7 @@ const SiteInfo kSiteInfo[kSites] = {
     {"room invalidate on flag change", GameAddr::Id::InvalidateFlag, {0x8A, 0x44, 0x24, 0x04, 0x56}, 5},
     {"CAS triangle sort", GameAddr::Id::CasTriSort, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"record CRC", GameAddr::Id::RecordCrc, {0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x44, 0x24, 0x08}, 8},
+    {"lot AddLotObjectsToScene", GameAddr::Id::LotAddObjectsToScene, {0x83, 0xEC, 0x08, 0x57, 0x8B, 0xF9}, 6},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 
