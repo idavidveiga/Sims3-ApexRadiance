@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compilar projeto"
+  short_description: "Compilação reutilizável com comandos validados"
+  default_prompt: "Use $compile-project para compilar este projeto reutilizando o comando validado e resumindo os erros."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Versões com commits e PRs"
+  short_description: "Organiza versões com branch, commits e PR em rascunho"
+  default_prompt: "Use $version-pr-workflow para organizar esta versão e continuar pela branch e pelo PR existentes."

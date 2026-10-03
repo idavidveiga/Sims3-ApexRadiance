@@ -40,6 +40,7 @@ were removed (see below).
 - Current source paths refer to this repository. Explicitly historical sections retain combined-tree references.
 
 ## Read before touching anything
+- New versions/features use a branch, small coherent commits and a draft PR. For multi-agent continuity and local build-command reuse, read `.codex/skills/version-pr-workflow/SKILL.md` and `.codex/skills/compile-project/SKILL.md` as applicable. Coordinate simultaneous work in separate worktrees; merging and releasing remain explicit actions.
 - `docs/README.md`: index. Then `docs/architecture.md` and `docs/workflow.md`.
 - Before any lighting change: `docs/features/night-lighting/README.md`, the sub-part doc, and the engine docs
   (`docs/engine/`). Each feature doc has a "Pitfalls and failed approaches" section. Do not retry what is listed there

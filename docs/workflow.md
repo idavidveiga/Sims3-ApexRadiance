@@ -3,6 +3,12 @@
 This page is the operating manual for working on Apex Radiance (formerly Sims3 Settings Setter Apex Edition). The
 user's rules in section 3 are not optional.
 
+## Version branches and pull requests
+
+New versions/features are developed on a branch with small coherent commits and a draft PR. Resume the existing PR across chats; keep its current scope, tested commit and remaining validation visible. Concurrent contributors use separate worktrees and contribution branches, with one integrator updating the shared PR. Fetch and inspect new remote commits before pushing; never overwrite another agent's work with a force push. Merge and release follow explicit user requests.
+
+Reusable workflows are tracked in [.codex/skills/version-pr-workflow](../.codex/skills/version-pr-workflow/SKILL.md) and [.codex/skills/compile-project](../.codex/skills/compile-project/SKILL.md). The compilation helper accepts a reviewed executable/argument recipe, verifies expected artifacts, saves full local logs and reuses successful commands. Skill caches/checkpoints and task scratch/output directories are ignored; no machine-specific recipes or build binaries are committed.
+
 Paths used below:
 
 | What | Path |
