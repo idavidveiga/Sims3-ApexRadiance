@@ -337,7 +337,6 @@ void RecommendS3SSCard() {
 // ---- Overview ----
 
 bool g_menuGameAaOn = false;
-void OverviewDefaults();
 
 void OverviewPatchRow(const char* patchName, IconId icon, const char* name, const char* phrase, int page, int* tabOfPage = nullptr, int tab = 0) {
     ApexPatch* patch = Find(patchName);
@@ -354,28 +353,7 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
 }
 
 void OverviewPage() {
-    const ImVec2 titlePos = ImGui::GetCursorPos();
-    const float available = ImGui::GetContentRegionAvail().x;
-    const float resetSize = 28.0f * ApexUi::Unit();
-    ImGui::SetCursorPosX(titlePos.x + std::max(0.0f, available - resetSize));
-    const bool resetClicked = ApexUi::IconButton("##OverviewReset", IconId::RotateCcw, "Restore page defaults", false, 28.0f);
-    ImGui::SetCursorPos(titlePos);
-    ImGui::PushTextWrapPos(titlePos.x + std::max(40.0f * ApexUi::Unit(), available - resetSize - ApexUi::kSpace2 * ApexUi::Unit()));
     ApexUi::PageTitle("Overview", "See what is in use; click a resource to open its settings");
-    ImGui::PopTextWrapPos();
-    static bool resetConfirm = false;
-    if (resetClicked) resetConfirm = !resetConfirm;
-    if (resetConfirm) {
-        CardNote("Restore the controls shown here? Other settings and saved files stay.");
-        ImGui::BeginDisabled(Loading());
-        if (ApexUi::TextButton("Cancel##OverviewReset")) resetConfirm = false;
-        ImGui::SameLine();
-        if (ApexUi::IconTextButton("Restore page defaults##Overview", IconId::RotateCcw)) {
-            OverviewDefaults();
-            resetConfirm = false;
-        }
-        ImGui::EndDisabled();
-    }
     RecommendS3SSCard();
     ImGui::PushID("Overview");
     ApexUi::GroupLabel("Lighting");
@@ -423,29 +401,6 @@ void OverviewPage() {
     ImGui::PopID();
 }
 
-void OverviewDefaults() {
-    toml::table before, defaults, changes, switches;
-    ApexConfig::CaptureFeatureState(before);
-    ApexConfig::DefaultFeatureState(defaults);
-    static const char* const names[] = {kNightLighting, "AmbientOcclusion", "SceneDither", "DepthBlur", "EdgeSmoothing",
-        Performance::kResourceCacheName, Performance::kRoomLightQueueName, Performance::kLotLightingName};
-    for (const char* name : names) {
-        if (const auto* t = defaults["patches"][name].as_table()) {
-            toml::table values;
-            if (const auto value = (*t)["enabled"].value<bool>()) values.insert("enabled", *value);
-            if (std::strcmp(name, kNightLighting) == 0) {
-                if (const auto value = (*t)["reflexoNoLago"].value<float>()) values.insert("reflexoNoLago", *value);
-            }
-            switches.insert(name, std::move(values));
-        }
-    }
-    changes.insert("patches", std::move(switches));
-    if (const auto enabled = defaults["qol"]["picture"]["enabled"].value<bool>())
-        changes.insert("qol", toml::table{{"picture", toml::table{{"enabled", *enabled}}}});
-
-    ApexConfig::ApplyFeatureState(changes);
-    ShowToast(I18n::Tr("Page defaults restored"), std::move(before), "Page defaults restored");
-}
 
 // ---- World > Lighting ----
 
@@ -2194,71 +2149,6 @@ void Sidebar(bool collapsed) {
     }
 }
 
-// Public and private builds share the same page reset entry point.
-void PageDefaultsRow() {
-    if (g_page == PageOverview) return; // local reset lives beside the title
-    if (g_page == PageDeveloper) {
-        return;
-    }
-    unsigned parts = 0;
-    switch (g_page) {
-    case PageLighting: case PageWaterSnow: parts = ApexConfig::kPartNightLights; break;
-    case PageColor: parts = ApexConfig::kPartColor; break;
-    case PageAmbientOcclusion: parts = ApexConfig::kPartAmbientOcclusion; break;
-    case PageDepthBlur: parts = ApexConfig::kPartDepthBlur; break;
-    case PageEdgeSmoothing: parts = ApexConfig::kPartEdgeSmoothing; break;
-    case PagePerformance: parts = ApexConfig::kPartPerformance; break;
-    case PageSettings: case PageReport: break;
-    default: return;
-    }
-    static int confirming = -1;
-    ApexUi::Gap(ApexUi::kSpace3);
-    ApexUi::MutedText("Restore this page without changing other pages. Saved files stay.");
-    ImGui::BeginDisabled(Loading());
-    if (ApexUi::IconTextButton(confirming == g_page ? "Confirm page reset" : "Restore page defaults", IconId::RotateCcw)) {
-        if (confirming != g_page) confirming = g_page;
-        else {
-            toml::table before, defaults;
-            ApexConfig::CaptureFeatureState(before);
-            const auto previousUi = ApexConfig::GetUi();
-            ApexConfig::DefaultFeatureState(defaults);
-            ApexConfig::KeepProfileParts(defaults, parts);
-            if (auto* patches = defaults["patches"].as_table()) {
-                if (auto* night = (*patches)[kNightLighting].as_table()) {
-                    std::vector<std::string> remove;
-                    for (auto&& [key, value] : *night) {
-                        const auto name = key.str();
-                        const bool waterSnow = name == "lagosRefletemLampadas" || name == "brilhoNaAgua" || name == "reflexoNoLago" || name == "calcadaComNevePisada";
-                        if (waterSnow != (g_page == PageWaterSnow)) remove.emplace_back(name);
-                    }
-                    for (const auto& key : remove) night->erase(key);
-                }
-                if (g_page == PageWaterSnow) patches->erase(kUpperFloors);
-            }
-            ApexConfig::ApplyFeatureState(defaults);
-            if (g_page == PageSettings) {
-                ApexConfig::UiSettings ui;
-                ui.welcomeDone = previousUi.welcomeDone;
-                ui.keyChosen = previousUi.keyChosen;
-                ui.captureScreenshot = previousUi.captureScreenshot;
-                ApexConfig::SetUi(ui);
-            } else if (g_page == PageReport) {
-                auto ui = previousUi;
-                ui.captureScreenshot = ApexConfig::UiSettings{}.captureScreenshot;
-                ApexConfig::SetUi(ui);
-            }
-            ShowToast(I18n::Tr("Page defaults restored"), std::move(before), "Page defaults restored");
-            g_toast.restoreUi = g_page == PageSettings || g_page == PageReport;
-            g_toast.undoUi = previousUi;
-            confirming = -1;
-        }
-    }
-    ImGui::EndDisabled();
-    if (confirming == g_page) {
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Cancel##PageReset")) confirming = -1;
-    }
-}
 
 // Queried only while drawing the open menu; the backbuffer reflects actual MSAA after reset.
 void GameAaCompatibilityNotice() {
@@ -2327,7 +2217,6 @@ void DrawPage() {
     case PageReport: ReportPage(); break;
     default: OverviewPage(); break;
     }
-    PageDefaultsRow();
 }
 
 // Height of the status bar (the hairline, a gap and one line of small text)
