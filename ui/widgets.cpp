@@ -798,7 +798,23 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         DrawIcon(dl, icon, ImVec2(x, cy - is * 0.5f), is, iconCol);
         x += is + gap;
     }
-    dl->AddText(ImVec2(x, cy - ts.y * 0.5f), textCol, shown.data(), shown.data() + shown.size());
+    // Centre the visible glyph bounds, rather than the font line box (Segoe has asymmetric blank space).
+    float inkTop = ImGui::GetFontSize(), inkBottom = 0.0f;
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const float fontScale = ImGui::GetFontSize() / baked->Size;
+    for (const char* at = shown.data(), *end = at + shown.size(); at < end;) {
+        unsigned codepoint = 0;
+        const int bytes = ImTextCharFromUtf8(&codepoint, at, end);
+        if (bytes <= 0) break;
+        at += bytes;
+        const ImFontGlyph* glyph = baked->FindGlyph(static_cast<ImWchar>(codepoint));
+        if (glyph && glyph->Visible) {
+            inkTop = std::fmin(inkTop, glyph->Y0 * fontScale);
+            inkBottom = std::fmax(inkBottom, glyph->Y1 * fontScale);
+        }
+    }
+    const float textY = inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ts.y * 0.5f;
+    dl->AddText(ImVec2(x, std::round(textY)), textCol, shown.data(), shown.data() + shown.size());
     return clicked;
 }
 } // namespace

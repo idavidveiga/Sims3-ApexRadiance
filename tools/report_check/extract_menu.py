@@ -15,3 +15,7 @@ recorder = Path('features/recorder.cpp').read_text(encoding='utf-8')
 Path(sys.argv[1]).with_name('recorder_under_test.inc').write_text(recorder[recorder.index('namespace Recorder {'):], encoding='utf-8')
 gate_start = source.index('std::atomic<bool> g_menuAvailable')
 Path(sys.argv[1]).with_name('startup_gate_under_test.inc').write_text(source[gate_start:source.index('bool BannerNeeded()', gate_start)], encoding='utf-8')
+
+# Real profile picker for the multi-frame control sizing/style-stack regression fixture.
+Path(sys.argv[1]).with_name("profile_picker_under_test.inc").write_text(
+    source[source.index("void ProfileIconPicker("):source.index("void ProfilesTab()")], encoding="utf-8")

@@ -818,41 +818,43 @@ void ReportOptionalNotes() {
     if (ImGui::BeginPopupModal("OptionalCaptureNotes", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
         ApexUi::CardHeader(IconId::Check, "Capture saved", "Give it a name to find it more easily", nullptr, nullptr);
         ApexUi::CardDivider();
-        const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
-        ImGui::TextUnformatted(I18n::Tr("Title (required)"));
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputText("##OptionalCaptureTitle", g_report.optionalTitle, sizeof(g_report.optionalTitle));
-        ApexUi::Gap(ApexUi::kSpace2);
-        ImGui::TextUnformatted(I18n::Tr("Description (optional)"));
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextMultiline("##OptionalCaptureDescription", g_report.optionalDescription, sizeof(g_report.optionalDescription), ImVec2(-1, 100 * ApexUi::Unit()));
-        ApexUi::MutedText("Enter a title to finish. The description is optional; your capture files are already saved.");
-        if (g_report.notesDeleteError) ApexUi::IconNote(IconId::TriangleAlert, "Could not delete the capture. Check folder access and try again.");
-        if (g_report.notesError) ApexUi::IconNote(IconId::TriangleAlert, "Could not save the description. Check free space and folder access");
-        ApexUi::Gap(ApexUi::kSpace2);
-        const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
-        const bool titleValid = filled(g_report.optionalTitle);
-        const bool oneRow = ReportDialogActions("Cancel", false, "Save capture", true);
-        ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
-        if (ApexUi::TextButton("Cancel", "Deletes this new capture and closes the form")) {
-            if (Captures::Delete(g_report.notesFolder)) {
-                g_report.scannedAt = 0;
-                g_report.notesFolder.clear();
-                ImGui::CloseCurrentPopup();
-            } else g_report.notesDeleteError = true;
-        }
-        ImGui::EndDisabled();
-        ReportDialogLastAction("Save capture", true, oneRow);
-        ImGui::BeginDisabled(!titleValid || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
-        if (ApexUi::IconTextButton("Save capture", IconId::Save, nullptr, ButtonKind::Primary)) {
-            const std::string title = g_report.optionalTitle;
-            const std::string text = filled(g_report.optionalDescription) ? g_report.optionalDescription : g_report.fallbackNote.text;
-            if (Captures::SaveFolderDescription(g_report.notesFolder, title, text)) {
-                g_report.scannedAt = 0;
-                ImGui::CloseCurrentPopup();
-            } else g_report.notesError = true;
-        }
-        ImGui::EndDisabled();
+        {
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
+            ImGui::TextUnformatted(I18n::Tr("Title (required)"));
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##OptionalCaptureTitle", g_report.optionalTitle, sizeof(g_report.optionalTitle));
+            ApexUi::Gap(ApexUi::kSpace2);
+            ImGui::TextUnformatted(I18n::Tr("Description (optional)"));
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextMultiline("##OptionalCaptureDescription", g_report.optionalDescription, sizeof(g_report.optionalDescription), ImVec2(-1, 100 * ApexUi::Unit()));
+            ApexUi::MutedText("Enter a title to finish. The description is optional; your capture files are already saved.");
+            if (g_report.notesDeleteError) ApexUi::IconNote(IconId::TriangleAlert, "Could not delete the capture. Check folder access and try again.");
+            if (g_report.notesError) ApexUi::IconNote(IconId::TriangleAlert, "Could not save the description. Check free space and folder access");
+            ApexUi::Gap(ApexUi::kSpace2);
+            const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
+            const bool titleValid = filled(g_report.optionalTitle);
+            const bool oneRow = ReportDialogActions("Cancel", false, "Save capture", true);
+            ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
+            if (ApexUi::TextButton("Cancel", "Deletes this new capture and closes the form")) {
+                if (Captures::Delete(g_report.notesFolder)) {
+                    g_report.scannedAt = 0;
+                    g_report.notesFolder.clear();
+                    ImGui::CloseCurrentPopup();
+                } else g_report.notesDeleteError = true;
+            }
+            ImGui::EndDisabled();
+            ReportDialogLastAction("Save capture", true, oneRow);
+            ImGui::BeginDisabled(!titleValid || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
+            if (ApexUi::IconTextButton("Save capture", IconId::Save, nullptr, ButtonKind::Primary)) {
+                const std::string title = g_report.optionalTitle;
+                const std::string text = filled(g_report.optionalDescription) ? g_report.optionalDescription : g_report.fallbackNote.text;
+                if (Captures::SaveFolderDescription(g_report.notesFolder, title, text)) {
+                    g_report.scannedAt = 0;
+                    ImGui::CloseCurrentPopup();
+                } else g_report.notesError = true;
+            }
+            ImGui::EndDisabled();
+        } // restore the frame style before EndPopup checks its stack
         ImGui::EndPopup();
     }
 }
@@ -1478,20 +1480,22 @@ void DeveloperConfirmation() {
         ApexUi::MutedText("Captures and reports may contain your settings, local file paths and details about the current game session. Review them before sharing. Nothing is sent automatically.");
         ApexUi::MutedText("Restart the game after confirming. Measurements and recordings will not start automatically when you load a profile.");
         ApexUi::Gap(ApexUi::kSpace2);
-        const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
-        const bool oneRow = ReportDialogActions("Cancel", false, "Enable developer mode", true);
-        if (ApexUi::TextButton("Cancel")) { g_developerPendingProfile = {}; ImGui::CloseCurrentPopup(); }
-        ReportDialogLastAction("Enable developer mode", true, oneRow);
-        if (ApexUi::IconTextButton("Enable developer mode", IconId::Wrench, nullptr, ButtonKind::Primary)) {
-            toml::table before; ApexConfig::CaptureFeatureState(before);
-            auto ui = ApexConfig::GetUi(); ui.developerMode = true; ApexConfig::SetUi(ui);
-            if (!g_developerPendingProfile.empty()) {
-                ApexConfig::ApplyFeatureState(g_developerPendingProfile);
-                ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + g_developerPendingProfileName);
-                g_developerPendingProfile = {};
+        {
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
+            const bool oneRow = ReportDialogActions("Cancel", false, "Enable developer mode", true);
+            if (ApexUi::TextButton("Cancel")) { g_developerPendingProfile = {}; ImGui::CloseCurrentPopup(); }
+            ReportDialogLastAction("Enable developer mode", true, oneRow);
+            if (ApexUi::IconTextButton("Enable developer mode", IconId::Wrench, nullptr, ButtonKind::Primary)) {
+                toml::table before; ApexConfig::CaptureFeatureState(before);
+                auto ui = ApexConfig::GetUi(); ui.developerMode = true; ApexConfig::SetUi(ui);
+                if (!g_developerPendingProfile.empty()) {
+                    ApexConfig::ApplyFeatureState(g_developerPendingProfile);
+                    ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + g_developerPendingProfileName);
+                    g_developerPendingProfile = {};
+                }
+                ImGui::CloseCurrentPopup();
             }
-            ImGui::CloseCurrentPopup();
-        }
+        } // restore the frame style before EndPopup checks its stack
         ImGui::EndPopup();
     }
 }
@@ -1682,22 +1686,24 @@ void ProfileIconPicker(IconId& selected) {
                      ImGui::GetColorU32(Col(VioletTheme::kTextMuted)));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("Choose a profile icon"));
     if (ImGui::BeginPopup("##ProfileIcons")) {
-        const ApexUi::ControlSizeScope sizeScope(ApexUi::ControlSize::Compact);
-        static constexpr IconId choices[] = {
-            IconId::House, IconId::Armchair, IconId::Fence, IconId::LandPlot, IconId::Trees, IconId::Flower2,
-            IconId::Leaf, IconId::Cat, IconId::Dog, IconId::UserRound, IconId::Heart, IconId::Coffee,
-            IconId::Music, IconId::Sun, IconId::Moon, IconId::Cloud, IconId::Snowflake, IconId::Droplet,
-            IconId::Camera, IconId::Image, IconId::Palette, IconId::Lightbulb, IconId::Diamond, IconId::Bookmark,
-            IconId::Skull, IconId::CloudMoon, IconId::MoonStar, IconId::SunMedium, IconId::Sparkles, IconId::Flame
-        };
-        for (int i = 0; i < IM_COUNTOF(choices); ++i) {
-            if (i % 6) ImGui::SameLine();
-            const IconId id = choices[i];
-            if (ApexUi::IconButton(ApexUi::IconName(id), id, ApexUi::IconName(id), selected == id, VioletTheme::kControlCompact)) {
-                selected = id;
-                ImGui::CloseCurrentPopup();
+        {
+            const ApexUi::ControlSizeScope sizeScope(ApexUi::ControlSize::Compact);
+            static constexpr IconId choices[] = {
+                IconId::House, IconId::Armchair, IconId::Fence, IconId::LandPlot, IconId::Trees, IconId::Flower2,
+                IconId::Leaf, IconId::Cat, IconId::Dog, IconId::UserRound, IconId::Heart, IconId::Coffee,
+                IconId::Music, IconId::Sun, IconId::Moon, IconId::Cloud, IconId::Snowflake, IconId::Droplet,
+                IconId::Camera, IconId::Image, IconId::Palette, IconId::Lightbulb, IconId::Diamond, IconId::Bookmark,
+                IconId::Skull, IconId::CloudMoon, IconId::MoonStar, IconId::SunMedium, IconId::Sparkles, IconId::Flame
+            };
+            for (int i = 0; i < IM_COUNTOF(choices); ++i) {
+                if (i % 6) ImGui::SameLine();
+                const IconId id = choices[i];
+                if (ApexUi::IconButton(ApexUi::IconName(id), id, ApexUi::IconName(id), selected == id, VioletTheme::kControlCompact)) {
+                    selected = id;
+                    ImGui::CloseCurrentPopup();
+                }
             }
-        }
+        } // restore the frame style before EndPopup checks its stack
         ImGui::EndPopup();
     }
 }
