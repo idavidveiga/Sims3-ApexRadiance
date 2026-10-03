@@ -214,6 +214,7 @@ enum class Id : uint16_t {
     ObjectTreeSearch,         // FUN_00c5fa60 cdecl(node, idLo, idHi, int* visited): recursive depth-first search (id at +0x48/+0x4C)
     // ---- Lot LoD streaming probe (features/lot_lod_streaming.cpp; group "LotLodStreaming") ----
     LotLodScoring,            // FUN_00c6c290: scores nearby lots and requests Detailed View transitions
+    LotDetailRequest,          // FUN_00ac20e0: applies Detailed View on/off to one lot
     LotLodThrottleTest,       // Steam 0x00c6c695: cmp byte [Throttle Lot LoD Transitions],0 inside LotLodScoring
     LotLodThrottleFlag,       // global byte tested above; Steam 0x011ecbc0
     // ---- Lot visibility override (features/lot_visibility_override.cpp; group "LotVisibilityOverride") ----
