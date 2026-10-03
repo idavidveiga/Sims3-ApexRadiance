@@ -128,7 +128,7 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip = nullptr, BoolDe
 // between them; AlignTextToFramePadding before text). Returns false (and draws nothing) when the search filter hides
 // it: then submit nothing and do NOT call EndControlRow(). When it returns true, always call EndControlRow(). Not
 // nestable.
-bool BeginControlRow(const char* label, const char* description, float controlsWidth);
+bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon = IconId::None);
 void EndControlRow();
 // A small muted chip ("~0.4 ms"); submitted as an item (hover it for a tooltip)
 ImVec2 ChipSize(const char* text);

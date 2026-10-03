@@ -1767,15 +1767,13 @@ void ProfilesTab() {
             ImGui::PushID(name.c_str());
             const bool confirming = s.confirmDelete == name;
             const bool picking = s.loading == name;
-            const float loadW = ApexUi::ButtonWidth("Load", true), delW = ApexUi::ButtonWidth("Delete", true);
+            const float loadW = ApexUi::ButtonWidth("Apply", true), delW = ApexUi::ButtonWidth("Delete", true);
             const float cancelW = ApexUi::ButtonWidth("Cancel", false);
             const float controlsW = confirming || picking ? (confirming ? delW : loadW) + gap + cancelW : loadW + gap + delW;
             const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
-            const char* description = confirming ? "Delete this profile?" : picking ? "Pick what to load" : partsText.c_str();
-            ApexUi::InlineIcon(item.icon, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
-            ImGui::SameLine(0.0f, 10.0f * u);
+            const char* description = confirming ? "Delete this profile?" : picking ? "Choose what to apply" : partsText.c_str();
             ApexUi::SetNextRowUntranslated(); // the name is the user's
-            if (ApexUi::BeginControlRow(name.c_str(), description, controlsW)) {
+            if (ApexUi::BeginControlRow(name.c_str(), description, controlsW, item.icon)) {
                 if (confirming) {
                     if (ApexUi::IconTextButton("Delete##Confirm", IconId::Trash2, "Deletes the profile file", ButtonKind::Primary)) {
                         std::string err;
@@ -1788,7 +1786,7 @@ void ProfilesTab() {
                     if (ApexUi::TextButton("Cancel")) s.confirmDelete.clear();
                 } else if (picking) {
                     ImGui::BeginDisabled(Loading() || s.loadParts == 0);
-                    if (ApexUi::IconTextButton("Load##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
+                    if (ApexUi::IconTextButton("Apply##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
                         LoadProfileNow(name, s.loadParts);
                         s.loading.clear();
                     }
@@ -1797,7 +1795,7 @@ void ProfilesTab() {
                     if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
                 } else {
                     ImGui::BeginDisabled(Loading() || item.parts == 0);
-                    if (ApexUi::IconTextButton("Load", IconId::Download, "Pick which parts of this profile to apply")) {
+                    if (ApexUi::IconTextButton("Apply", IconId::Download, "Pick which parts of this profile to apply")) {
                         s.loading = name;
                         s.loadParts = item.parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper); // shortcuts only when picked (they belong to the keyboard)
                         s.confirmDelete.clear();

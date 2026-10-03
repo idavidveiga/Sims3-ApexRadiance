@@ -595,7 +595,7 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip, BoolDefault def,
     return clicked;
 }
 
-bool BeginControlRow(const char* label, const char* description, float controlsWidth) {
+bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon) {
     if (!RowVisible(label, description)) return false;
     g_inControlRow = true;
     const float u = Unit();
@@ -604,8 +604,17 @@ bool BeginControlRow(const char* label, const char* description, float controlsW
     const float top = RowTop();
     const float frameH = ImGui::GetFrameHeight();
     const float wrapX = std::fmax(startX + width - controlsWidth - kSpace3 * u, startX + 40.0f * u);
-    ImGui::SetCursorPos(ImVec2(startX, top));
-    const float rowH = std::fmax(RowText(label, description, wrapX), frameH);
+    // Keep the divider and right cluster anchored to the full row; only the text is indented.
+    const bool hasIcon = icon != IconId::None;
+    const float iconBox = 22.0f * u;
+    const float textX = startX + (hasIcon ? iconBox + kSpace3 * u : 0.0f);
+    ImGui::SetCursorPos(ImVec2(textX, top));
+    const float rowH = std::fmax(RowText(label, description, std::fmax(wrapX, textX + 40.0f * u)), frameH);
+    if (hasIcon) {
+        const float size = kIconMedium * u;
+        DrawIcon(ImGui::GetWindowDrawList(), icon,
+                 ToScreen(startX + (iconBox - size) * 0.5f, top + (rowH - size) * 0.5f), size, U32(VioletTheme::kAccent));
+    }
     g_ctrlStartX = startX;
     g_ctrlBottom = top + rowH;
     ImGui::SetCursorPos(ImVec2(startX + width - controlsWidth, top + (rowH - frameH) * 0.5f));

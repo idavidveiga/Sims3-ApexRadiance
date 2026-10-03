@@ -521,3 +521,5 @@ Profile icons: the name field has a curated 30-icon Lucide picker inspired by Th
 Profiles now uses the approved aligned selection grid: icon and label left, checkbox right, two equal columns with a one-column fallback based on translated text width. Save and selective load share this layout. Presentation order does not change category bits; Shortcuts remains opt-in.
 
 Profile selection labels match the corresponding tabs: Lighting, Color, Ambient Occlusion, Depth Blur, Edge Smoothing, Performance, Shortcuts and Developer. Lighting retains its existing combined category, including water/snow lighting; no serialized bits or settings tables change.
+
+Saved profiles use Apply in both selection and confirmation states. The control-row widget accepts an optional icon, centered on the same measured text block as the action buttons. Its original full-width row origin is retained for separators and spacing; profile icons no longer use a separate inline item.

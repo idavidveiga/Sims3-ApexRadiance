@@ -11,6 +11,8 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"Apply", "Aplicar", "Aplicar", "Appliquer"},
+    {"Choose what to apply", "Escolha o que aplicar", "Elige qué aplicar", "Choisissez quoi appliquer"},
     {"Deletes this new capture and closes the form", "Exclui esta nova captura e fecha o formulário", "Elimina esta nueva captura y cierra el formulario", "Supprime cette nouvelle capture et ferme le formulaire"},
     {"Could not delete the capture. Check folder access and try again.", "Não foi possível excluir a captura. Verifique o acesso à pasta e tente novamente.", "No se pudo eliminar la captura. Revisa el acceso a la carpeta e inténtalo de nuevo.", "Impossible de supprimer la capture. Vérifiez l'accès au dossier et réessayez."},
     {"Choose the settings to include in this profile.", "Escolha os ajustes para incluir neste perfil.", "Elige los ajustes que incluir en este perfil.", "Choisissez les réglages à inclure dans ce profil."},
