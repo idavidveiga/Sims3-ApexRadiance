@@ -9,6 +9,10 @@
 > fade outside map view, not object LOD. See [Ambient Occlusion](features/ambient-occlusion.md)
 > for shader coverage, fallback behavior, revision migration and validation limits.
 
+> Current local development: the Optimize rendering card and its mode switch are
+> removed; the existing performance patch controls remain. The published 2.5.6
+> behavior described above is historical.
+
 > Published since 2.5.5: Report uses the restored session/capture/list/help layout
 > with optional title/description after saving. Earlier guided stages and required
 > descriptions are superseded. See [bug-reports.md](features/bug-reports.md).

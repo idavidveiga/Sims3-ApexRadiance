@@ -27,7 +27,6 @@ struct KeyChord {
 };
 
 struct UiSettings {
-    bool performanceMode = true;
     KeyChord toggle;       // opens / closes the Apex menu (default Ctrl+Shift+F11; S3SS uses a bare Insert)
     bool developerMode = false; // applies next game start; enabling requires UI confirmation
     float fontScale = 1.0f;

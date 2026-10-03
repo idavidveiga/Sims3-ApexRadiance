@@ -1,4 +1,4 @@
-> Published version 2.5.6: Optimize rendering defaults on (`[ui] performance_mode`); explicit saved off choices remain off. World-owned type-11 lamp edits reconcile terrain and native rigs; the player confirmed the test-scene colour response, not a latency/FPS benchmark. Read docs/features/night-lighting/world-lamp-response.md and docs/features/performance.md before changing these paths. One unified ASI; optional developer mode; no Apex window/V-Sync/FPS controls.
+> Published version 2.5.6: Optimize rendering defaults on (`[ui] performance_mode`); explicit saved off choices remain off. Current development PR #2 removes that switch and its mode-dependent paths; the published binary is unchanged. World-owned type-11 lamp edits reconcile terrain and native rigs; the player confirmed the test-scene colour response, not a latency/FPS benchmark. Read docs/features/night-lighting/world-lamp-response.md and docs/features/performance.md before changing these paths. One unified ASI; optional developer mode; no Apex window/V-Sync/FPS controls.
 
 # CLAUDE.md: Apex Radiance
 

@@ -9,7 +9,6 @@
 #include "picture.h"
 #include "frame_profiler.h"
 #include "performance.h"
-#include "features/performance_mode.h"
 #include "ui/i18n.h"
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -288,7 +287,6 @@ void SetUi(const UiSettings& ui) {
         g_ui = ui;
     }
     I18n::SetChoice(ui.language);
-    PerformanceMode::SetEnabled(ui.performanceMode);
     RequestSave();
 }
 
@@ -338,8 +336,6 @@ void LoadSettings() {
         u.fontScale = std::clamp(static_cast<float>((*ui)["font_scale"].value_or(1.0)), 0.5f, 3.0f);
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
         u.startNote = (*ui)["start_note"].value_or(true);
-        u.performanceMode = (*ui)["performance_mode"].value_or(true);
-        PerformanceMode::SetEnabled(u.performanceMode);
         u.captureScreenshot = (*ui)["capture_screenshot"].value_or(true);
         u.developerMode = (*ui)["developer_mode"].value_or(false);
         kPublicBuild.store(!u.developerMode, std::memory_order_relaxed);
@@ -409,7 +405,6 @@ bool Save(std::string* error) {
         ui.insert("font_scale", static_cast<double>(u.fontScale));
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("start_note", u.startNote);
-        ui.insert("performance_mode", u.performanceMode);
         ui.insert("capture_screenshot", u.captureScreenshot);
         ui.insert("developer_mode", u.developerMode);
         ui.insert("welcome_done", u.welcomeDone);

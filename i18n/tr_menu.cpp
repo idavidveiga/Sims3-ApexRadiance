@@ -422,10 +422,6 @@ const I18n::Entry kEntries[] = {
     {"Settings: {}", "Configurações: {}", "Ajustes: {}", "Paramètres : {}"},
 
     // ---- Settings > About (credits) ----
-    {"Optimize rendering", "Otimizar renderização", "Optimizar renderizado", "Optimiser le rendu"},
-    {"Keeps your visual settings", "Mantém seus ajustes visuais", "Mantiene tus ajustes visuales", "Conserve vos réglages visuels"},
-    {"Reduces repeated rendering work without reducing visual quality", "Reduz trabalho repetido na renderização sem diminuir a qualidade visual",
-     "Reduce el trabajo repetido de renderizado sin reducir la calidad visual", "Réduit le travail répété du rendu sans réduire la qualité visuelle"},
     {APEX_PRODUCT_NAME " " APEX_PRODUCT_TAGLINE, APEX_PRODUCT_NAME " para The Sims 3", APEX_PRODUCT_NAME " para Los Sims 3",
      APEX_PRODUCT_NAME " pour Les Sims 3"},
     {"Version {} \xC2\xB7 Public build", "Versão {} · Build pública", "Versión {} · Compilación pública", "Version {} · Build publique"},

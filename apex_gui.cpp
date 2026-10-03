@@ -700,18 +700,7 @@ bool FeatureSwitchRow(const char* patchName, const char* label, const char* text
     return patch->IsEnabled() || ApexUi::FilterActive();
 }
 
-// Performance controls grouped with the existing Violet cards; feature state and keys are unchanged.
 void PerformanceCard() {
-    ImGui::PushID("PerformanceMode");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Gauge, "Optimize rendering", "Keeps your visual settings", nullptr, nullptr);
-        ApexUi::CardDivider();
-        auto ui = ApexConfig::GetUi();
-        if (ApexUi::SwitchRow("Optimize rendering", &ui.performanceMode, "Reduces repeated rendering work without reducing visual quality", true))
-            ApexConfig::SetUi(ui);
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
     ImGui::PushID("PerformanceLighting");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Camera and lighting", "Smoother movement while rooms and lots update", nullptr, nullptr);
