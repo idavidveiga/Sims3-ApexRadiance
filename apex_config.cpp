@@ -347,6 +347,9 @@ void LoadSettings() {
         KeyChord own;
         if (ParseKeyChord((*ui)["compare_key"].value_or(std::string()), own)) u.compareKey = own;
         if (ParseKeyChord((*ui)["refresh_key"].value_or(std::string()), own)) u.refreshKey = own;
+        u.screenshotShortcutEnabled = (*ui)["screenshot_shortcut_enabled"].value_or(true);
+        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string("F10")), own)) u.screenshotKey = own;
+        u.screenshotHideGameUi = (*ui)["screenshot_hide_game_ui"].value_or(true);
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
         u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
@@ -414,6 +417,9 @@ bool Save(std::string* error) {
         if (u.hotkeyPreset == 3) ui.insert("mine_base", static_cast<int64_t>(u.minePresetBase));
         if (u.compareKey.vk) ui.insert("compare_key", KeyChordText(u.compareKey));
         if (u.refreshKey.vk) ui.insert("refresh_key", KeyChordText(u.refreshKey));
+        ui.insert("screenshot_shortcut_enabled", u.screenshotShortcutEnabled);
+        ui.insert("screenshot_key", KeyChordText(u.screenshotKey));
+        ui.insert("screenshot_hide_game_ui", u.screenshotHideGameUi);
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
         static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
         ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
@@ -601,6 +607,9 @@ void ApplyFeatureState(const toml::table& state) {
         u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
         u.compareKey = ParseKeyChord((*sc)["compare_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
         u.refreshKey = ParseKeyChord((*sc)["refresh_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.screenshotShortcutEnabled = (*sc)["screenshot_shortcut_enabled"].value_or(u.screenshotShortcutEnabled);
+        if (ParseKeyChord((*sc)["screenshot_key"].value_or(std::string()), k)) u.screenshotKey = k;
+        u.screenshotHideGameUi = (*sc)["screenshot_hide_game_ui"].value_or(u.screenshotHideGameUi);
         u.keyChosen = true;
         SetUi(u);
         LOG_INFO("[Config] Shortcuts taken from the profile: menu key " + KeyChordText(u.toggle));
@@ -745,6 +754,9 @@ bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
             if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) sc.insert("preset", kPresetKeys[u.hotkeyPreset]);
             if (u.compareKey.vk) sc.insert("compare_key", KeyChordText(u.compareKey));
             if (u.refreshKey.vk) sc.insert("refresh_key", KeyChordText(u.refreshKey));
+            sc.insert("screenshot_shortcut_enabled", u.screenshotShortcutEnabled);
+            sc.insert("screenshot_key", KeyChordText(u.screenshotKey));
+            sc.insert("screenshot_hide_game_ui", u.screenshotHideGameUi);
             root.insert_or_assign("shortcuts", std::move(sc));
         }
         KeepProfileParts(root, parts);

@@ -19,11 +19,11 @@ KeyChord Chord(UINT vk) {
     return c;
 }
 
-// [preset][action]: Compare, Refresh, Probe, Diagnostics, Recorder, FrameCapture
+// [preset][action]: Compare, Refresh, Probe, Diagnostics, Recorder, Screenshot (custom only), FrameCapture
 constexpr UINT kKeys[static_cast<int>(Preset::Count)][kActions] = {
-    {'T', 'G', 'V', 'B', 'X', 'F'},
-    {'2', '3', '4', '5', '6', '7'},
-    {VK_F10, VK_F9, VK_F7, VK_F8, VK_F6, VK_F5},
+    {'T', 'G', 'V', 'B', 'X', 0, 'F'},
+    {'2', '3', '4', '5', '6', 0, '7'},
+    {VK_F10, VK_F9, VK_F7, VK_F8, VK_F6, 0, VK_F5},
 };
 constexpr UINT kMenu[static_cast<int>(Preset::Count)] = {'R', '1', VK_F11};
 
@@ -62,6 +62,7 @@ KeyChord Key(Action a) {
     const ApexConfig::UiSettings ui = ApexConfig::GetUi();
     if (a == Action::Compare && ui.compareKey.vk) return ui.compareKey;
     if (a == Action::Refresh && ui.refreshKey.vk) return ui.refreshKey;
+    if (a == Action::Screenshot) return ui.screenshotKey;
     return PresetKey(Current(), a);
 }
 
@@ -72,14 +73,16 @@ const char* ActionName(Action a) {
     case Action::Probe: return "Light capture";
     case Action::Diagnostics: return "Lighting snapshot";
     case Action::Recorder: return "Recording";
+    case Action::Screenshot: return "Take a filtered screenshot";
     default: return "Frame Capture";
     }
 }
 
 bool OnKeyDown(WPARAM vk, bool repeat) {
     const bool ctrl = Held(VK_CONTROL), shift = Held(VK_SHIFT), alt = Held(VK_MENU);
-    const int last = kPublicBuild ? static_cast<int>(Action::Recorder) : kActions - 1; // the capture keys (Report a problem) in both builds
-    for (int i = 0; i <= last; i++) {
+    for (int i = 0; i < kActions; i++) {
+        if (kPublicBuild && i == static_cast<int>(Action::FrameCapture)) continue;
+        if (i == static_cast<int>(Action::Screenshot) && !ApexConfig::GetUi().screenshotShortcutEnabled) continue;
         const KeyChord c = Key(static_cast<Action>(i));
         if (!c.vk || c.vk != vk || c.ctrl != ctrl || c.shift != shift || c.alt != alt) continue;
         if (!repeat) g_pending[i].store(true);

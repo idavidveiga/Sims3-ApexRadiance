@@ -2630,7 +2630,7 @@ bool CaptureChordAny(ApexConfig::KeyChord& out) {
 // (Client::HotkeyDown, CaptureKey) so neither the game nor another shortcut sees it; Esc cancels. A combination is refused
 // with a note when it is another action's, the game's cheat console (Ctrl+Shift+C), Windows' own (Alt+F4, Alt+Tab),
 // Sims3SettingsSetter's menu (Insert alone), or a bare letter, digit or Space (it would stop that key from typing in the game).
-enum ShortcutRow : int { RowMenu, RowCompare, RowRefresh, RowCount };
+enum ShortcutRow : int { RowMenu, RowCompare, RowRefresh, RowScreenshot, RowCount };
 UINT g_recHeldVk = 0;       // a refused key still held: ignored until released
 bool g_recWaitRelease = false; // recording starts only once every key is up (the click's Enter, a held chord)
 int g_recSeenFrame = -1;       // the last frame the editor was drawn: recording stops when it is not (menu closed, page left)
@@ -2638,15 +2638,18 @@ std::string g_recNote;      // why the last combination was refused
 
 ApexConfig::KeyChord RowKey(int row) {
     if (row == RowMenu) return ApexConfig::GetUi().toggle;
+    if (row == RowScreenshot) return ApexConfig::GetUi().screenshotKey;
     return Hotkeys::Key(row == RowCompare ? Hotkeys::Action::Compare : Hotkeys::Action::Refresh);
 }
 const char* RowName(int row) {
-    return row == RowMenu ? "Open the menu" : row == RowCompare ? "Compare with the game" : "Refresh the lighting";
+    return row == RowMenu ? "Open the menu" : row == RowCompare ? "Compare with the game" :
+           row == RowScreenshot ? "Take a filtered screenshot" : "Refresh the lighting";
 }
 const char* RowText(int row) {
     return row == RowMenu ? "Opens and closes the " APEX_PRODUCT_NAME " menu"
          : row == RowCompare ? "Turns Apex's effects off and on, to see the difference"
-                             : "Relights the ground, lots and rooms when something loaded wrong";
+         : row == RowScreenshot ? "Saves the finished game image after Apex's visual effects"
+                               : "Relights the ground, lots and rooms when something loaded wrong";
 }
 bool SameChord(const ApexConfig::KeyChord& a, const ApexConfig::KeyChord& b) {
     return a.vk == b.vk && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt;
@@ -2654,10 +2657,11 @@ bool SameChord(const ApexConfig::KeyChord& a, const ApexConfig::KeyChord& b) {
 // Empty when the combination can be used for `row`, else why not (English, translated where drawn)
 std::string ChordProblem(const ApexConfig::KeyChord& c, int row) {
     const bool mods = c.ctrl || c.shift || c.alt;
+    if (c.vk == VK_ESCAPE) return "Escape cancels the current action";
     if (c.vk == VK_INSERT && !mods) return "Insert alone opens Sims3SettingsSetter's menu";
     if (c.vk == 'C' && c.ctrl && c.shift && !c.alt) return "Ctrl+Shift+C is the game's cheat console";
     if ((c.vk == VK_F4 || c.vk == VK_TAB) && c.alt) return "That combination belongs to Windows";
-    if (!mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
+    if (row != RowScreenshot && !mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
                   c.vk == VK_RETURN || c.vk == VK_BACK || c.vk == VK_DELETE || c.vk == VK_TAB || (c.vk >= VK_LEFT && c.vk <= VK_DOWN)))
         return "Use it with Ctrl, Shift or Alt: alone it would stop that key from typing in the game";
     for (int r = 0; r < RowCount; r++)
@@ -2675,7 +2679,8 @@ void StoreRowKey(int row, const ApexConfig::KeyChord& c) {
     }
     if (row == RowMenu) ui.toggle = c;
     else if (row == RowCompare) ui.compareKey = c;
-    else ui.refreshKey = c;
+    else if (row == RowRefresh) ui.refreshKey = c;
+    else ui.screenshotKey = c;
     ui.hotkeyPreset = Hotkeys::kMine;
     ui.keyChosen = true;
     ApexConfig::SetUi(ui);
@@ -2765,7 +2770,7 @@ void ShortcutsContent(bool compact) {
         ApexUi::EndControlRow();
     }
     if (sel < 3) ApexUi::MutedText(I18n::Tr(Hotkeys::PresetDescription(static_cast<Hotkeys::Preset>(sel))));
-    for (int row = 0; row < RowCount; row++) {
+    for (int row : {RowMenu, RowCompare, RowRefresh}) {
         if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * u)) continue;
         KeyChip(row);
         ApexUi::EndControlRow();
@@ -2803,9 +2808,24 @@ void ShortcutsContent(bool compact) {
 void ShortcutsTab() {
     ImGui::PushID("Shortcuts");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Every key of the mod; the game never gets these keys", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose keys for the menu and Apex actions", nullptr, nullptr);
         ApexUi::CardDivider();
         ShortcutsContent(false);
+        ApexUi::GroupLabel("SCREENSHOTS");
+        ApexConfig::UiSettings ui = ApexConfig::GetUi();
+        if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
+                              "Replace a game key with a screenshot after Apex's visual effects"))
+            ApexConfig::SetUi(ui);
+        if (ui.screenshotShortcutEnabled) {
+            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 150.0f * ApexUi::Unit())) {
+                KeyChip(RowScreenshot);
+                ApexUi::EndControlRow();
+            }
+            if (ApexUi::SwitchRow("Hide game UI", &ui.screenshotHideGameUi,
+                                  "Uses F10 for one frame, then restores the previous UI state"))
+                ApexConfig::SetUi(ui);
+            ApexUi::MutedText("Screenshots are saved in your Documents game folder > Apex Radiance > Screenshots");
+        }
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -2951,6 +2971,8 @@ void RunShortcuts() {
     RecordStep();
     if (Hotkeys::Take(Hotkeys::Action::Compare)) ToggleCompare();
     if (Hotkeys::Take(Hotkeys::Action::Refresh)) NightLighting::RefreshAll();
+    if (Hotkeys::Take(Hotkeys::Action::Screenshot))
+        Captures::RequestPlayerScreenshot(ApexConfig::GetUi().screenshotHideGameUi);
 }
 
 // The capture notes (Report a problem, both builds): a pill at the top center in the start note's style; shown instead of the start note when
@@ -3115,6 +3137,8 @@ class GuiClient final : public Overlay::Client {
         }
         return false;
     }
+
+    void GameKeyDown(WPARAM vk, bool repeat) override { Captures::ObserveGameUiKey(vk, repeat); }
 
     // Alt (peek) and B (hold to compare) belong to the menu while the pointer is over it
     bool CaptureKey(WPARAM vk) override { return g_keysOverMenu.load() && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == 'B'); }

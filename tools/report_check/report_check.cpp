@@ -11,9 +11,17 @@
 #include <thread>
 #include <chrono>
 std::wstring testDirectory;
-namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } }
+bool testOverlayVisible = false, testCaptureSuppressed = false;
+int testGameKeyPresses = 0;
+namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } bool EnsureApexDirectory() { return true; } }
 namespace ApexLog { void Write(Level, const std::string&, const std::source_location&) {} }
-namespace Overlay { bool IsVisible() { return false; } }
+namespace Overlay {
+bool IsVisible() { return testOverlayVisible; }
+void SetVisible(bool visible) { testOverlayVisible = visible; }
+void SetCaptureSuppressed(bool suppressed) { testCaptureSuppressed = suppressed; }
+bool PostGameKeyPress(WPARAM vk) { if (vk == VK_F10) ++testGameKeyPresses; return true; }
+HWND Window() { return nullptr; }
+}
 namespace D3D9Hooks { bool RegisterPresent(const std::string&, PresentHook, Priority) { return true; } }
 const char* GetGameVersionName() { return "isolated test"; }
 #include "features/captures.cpp"
@@ -28,12 +36,12 @@ std::string Read(const std::filesystem::path& file) {
     return {std::istreambuf_iterator<char>(in), {}};
 }
 void EncodeQueued(bool fail) {
-    const auto folders = std::move(Captures::g_shots);
+    const auto jobs = std::move(Captures::g_shots);
     Captures::g_shots.clear();
-    Check(!folders.empty(), "screenshot queued");
-    for (const auto& folder : folders) {
-        if (fail) std::filesystem::create_directory(folder / L"Screenshot.png");
-        Captures::WritePng(folder / L"Screenshot.png", std::vector<BYTE>(8 * 8 * 3, 127), 8, 8);
+    Check(!jobs.empty(), "screenshot queued");
+    for (auto job : jobs) {
+        if (fail) std::filesystem::create_directory(job.file);
+        Captures::WritePng(std::move(job), std::vector<BYTE>(8 * 8 * 3, 127), 8, 8);
     }
     for (int n = 0; Captures::Saving() && n < 300; ++n) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     Check(!Captures::Saving(), "WIC worker reports completion");
@@ -138,5 +146,19 @@ int wmain(int argc, wchar_t** argv) {
     EncodeQueued(false);
     Check(!Captures::LastSave().failed && fs::file_size(png / L"Screenshot.png") > 8, "real WIC retry writes PNG and completes receipt");
     Check(Captures::CurrentNote().text.find("Capture saved") != std::string::npos, "completion notice appears after encoding");
+
+    Check(Captures::RequestPlayerScreenshot(true), "player screenshot can be queued with game UI hiding enabled");
+    Check(testGameKeyPresses == 1, "player screenshot posts one game UI toggle before capture");
+    Check(Captures::g_shots.size() == 1 && !Captures::g_shots.front().report && Captures::g_shots.front().skipPresents == 1,
+          "player screenshot waits one present and is not a report capture");
+    Check(!Captures::ScreenshotPending(), "player screenshot does not mark the Report screenshot pending");
+    const auto playerPhoto = Captures::g_shots.front();
+    Captures::g_shots.clear();
+    Captures::WritePng(playerPhoto, std::vector<BYTE>(8 * 8 * 3, 127), 8, 8);
+    for (int n = 0; n < 300 && !fs::exists(playerPhoto.file); ++n) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Check(fs::exists(playerPhoto.file) && fs::file_size(playerPhoto.file) > 8, "player screenshot writes a WIC PNG to its separate folder");
+    Captures::RestorePlayerPhoto();
+    Check(testGameKeyPresses == 2, "player screenshot restores the previous game UI state after capture");
+    Check(!testCaptureSuppressed && !Captures::g_playerPhoto.active, "player screenshot restores the overlay capture state");
     std::printf("%d checks passed; isolated files kept at %ls\n", checks, testDirectory.c_str());
 }

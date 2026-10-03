@@ -16,7 +16,7 @@
 
 namespace Hotkeys {
 
-enum class Action : int { Compare, Refresh, Probe, Diagnostics, Recorder, FrameCapture, Count };
+enum class Action : int { Compare, Refresh, Probe, Diagnostics, Recorder, Screenshot, FrameCapture, Count };
 enum class Preset : int { Letters, Numbers, FKeys, Count };
 inline constexpr int kMine = 3; // [ui] hotkey_preset "mine": the player's own keys (compare_key, refresh_key), the rest from mine_base
 

@@ -1,7 +1,7 @@
 #pragma once
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
-//   [ui]                 toggle_key ("Ctrl+Shift+F11"), font_scale, recommend_s3ss, welcome_done, key_chosen, sidebar_collapsed
+//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, welcome_done, sidebar_collapsed
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
 //   [patches.<Name>]     one table per feature: enabled + its settings (same keys as before the split)
@@ -38,6 +38,9 @@ struct UiSettings {
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)
+    bool screenshotShortcutEnabled = true; // intercept a configurable key for filtered screenshots ([ui] screenshot_shortcut_enabled)
+    KeyChord screenshotKey{VK_F10, false, false, false}; // F10 screenshot; Ctrl+Shift+F10 remains the Compare shortcut
+    bool screenshotHideGameUi = true; // temporarily toggle the game's F10 UI visibility only while taking the screenshot
     int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
     int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" / "en" / "pt" / "es" / "fr")
@@ -103,7 +106,7 @@ enum ProfilePart : unsigned {
     kPartEdgeSmoothing = 1u << 3, // Edge Smoothing
     // Bit 4 is reserved for retired window profiles; other category bits do not shift.
     kPartPerformance = 1u << 5,   // the Performance page's features
-    kPartShortcuts = 1u << 6,     // the keyboard shortcuts ([shortcuts] in a profile: menu key, preset, own keys); not saved by default
+    kPartShortcuts = 1u << 6,     // keyboard and screenshot shortcut settings; not saved by default
     kPartDeveloper = 1u << 8, // advanced settings, opt-in and hidden in normal mode
     kPartAmbientOcclusion = 1u << 7, // Ambient Occlusion (after Shortcuts: older saved part masks keep their bits)
 };
