@@ -80,6 +80,7 @@ bool g_menuHovered = false;       // the mouse is over the menu window (last fra
 bool g_menuFocused = false;       // the menu window has keyboard focus (last frame)
 ImVec2 g_windowMin{}, g_windowMax{}; // the menu window's rectangle (last frame)
 std::atomic<bool> g_keysOverMenu{false}; // Alt / B are the menu's (Client::CaptureKey, window thread)
+std::atomic<bool> g_menuTextInput{false}; // bare screenshot letters must remain typeable in menu text fields
 float g_alpha = 1.0f;             // the menu's opacity (peek, slider drag fade)
 bool g_waitingForKey = false;     // Settings > Menu: waiting for a new menu key (Esc cancels it, not the menu)
 bool g_holdCompare = false;       // the hold-to-compare button is held this frame
@@ -2402,6 +2403,7 @@ void MainWindow() {
 
     // Alt and B are the menu's while the pointer is over it (the game does not see them); not while typing
     g_keysOverMenu.store(g_menuHovered && !io.WantTextInput);
+    g_menuTextInput.store(io.WantTextInput);
 
     // The last change of the frame becomes the undo toast (with the state from before the click)
     std::string change, changeEnglish;
@@ -3142,12 +3144,22 @@ class GuiClient final : public Overlay::Client {
     void GameKeyDown(WPARAM vk, bool repeat) override { Captures::ObserveGameUiKey(vk, repeat); }
 
     // Alt (peek) and B (hold to compare) belong to the menu while the pointer is over it
-    bool CaptureKey(WPARAM vk) override { return g_keysOverMenu.load() && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == 'B'); }
+    bool CaptureKey(WPARAM vk) override {
+        const ApexConfig::KeyChord screenshot = Hotkeys::Key(Hotkeys::Action::Screenshot);
+        const bool bareScreenshotKey = ApexConfig::GetUi().screenshotShortcutEnabled && screenshot.vk == vk &&
+                                       !screenshot.ctrl && !screenshot.shift && !screenshot.alt;
+        return (g_keysOverMenu.load() && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU || vk == 'B')) ||
+               (Overlay::IsVisible() && bareScreenshotKey);
+    }
 
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
         if (!g_menuAvailable.load()) return false;
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
+        const ApexConfig::KeyChord screenshot = Hotkeys::Key(Hotkeys::Action::Screenshot);
+        if (g_recRow < 0 && Overlay::IsVisible() && g_menuTextInput.load() && screenshot.vk == vk &&
+            !screenshot.ctrl && !screenshot.shift && !screenshot.alt)
+            return false; // let ImGui handle typing; its keyboard capture still keeps the key from reaching the game
         const bool aiming = LightProbe::Aiming();
         const bool handled = g_recRow >= 0 || Hotkeys::OnKeyDown(vk, repeat);
         if (aiming && handled && vk == Hotkeys::Key(Hotkeys::Action::Probe).vk) g_returnFromProbe.store(true);

@@ -10,10 +10,10 @@
 #include <fstream>
 #include <thread>
 #include <chrono>
-std::wstring testDirectory;
+std::wstring testDirectory, testGameDirectory;
 bool testOverlayVisible = false, testCaptureSuppressed = false;
 int testGameKeyPresses = 0;
-namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } bool EnsureApexDirectory() { return true; } }
+namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } const std::wstring& GameDocumentsDirectory() { return testGameDirectory; } bool EnsureApexDirectory() { return true; } }
 namespace ApexLog { void Write(Level, const std::string&, const std::source_location&) {} }
 namespace Overlay {
 bool IsVisible() { return testOverlayVisible; }
@@ -50,6 +50,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
     namespace fs = std::filesystem;
     testDirectory = (fs::absolute(argv[1]) / std::format("storage-{}-{}", GetCurrentProcessId(), GetTickCount64())).wstring();
+    testGameDirectory = (fs::path(testDirectory) / L"Documents" / L"Electronic Arts" / L"The Sims 3").wstring();
     fs::create_directories(testDirectory);
     Captures::SetScreenshots(false);
     fs::path log = fs::path(testDirectory) / L"ApexRadiance_LOG.txt";
@@ -151,6 +152,8 @@ int wmain(int argc, wchar_t** argv) {
     Check(testGameKeyPresses == 1, "player screenshot posts one game UI toggle before capture");
     Check(Captures::g_shots.size() == 1 && !Captures::g_shots.front().report && Captures::g_shots.front().skipPresents == 1,
           "player screenshot waits one present and is not a report capture");
+    Check(Captures::g_shots.front().file.parent_path() == fs::path(testGameDirectory) / L"Screenshots",
+          "player screenshot targets the game's standard Documents Screenshots folder");
     Check(!Captures::ScreenshotPending(), "player screenshot does not mark the Report screenshot pending");
     const auto playerPhoto = Captures::g_shots.front();
     Captures::g_shots.clear();

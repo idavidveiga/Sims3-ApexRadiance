@@ -115,11 +115,14 @@ names for players: "Recording", "Light capture", "Lighting snapshot".
 
 ## Player screenshots
 
-Settings > Shortcuts enables the player screenshot shortcut by default on Ctrl+Shift+F12. Bare F10 remains available
-for the game's UI toggle, which the mod uses internally only while hiding the interface for the shot. Apex only runs
-Compare on the exact Ctrl+Shift+F10 chord; the synthetic bare F10 bypasses Apex shortcut interception.
+For new or missing screenshot-key settings, Settings > Shortcuts enables the player screenshot shortcut on C,
+replacing the game's native screenshot key while the option is enabled. Apex consumes that key and writes one filtered PNG to the game's standard Documents
+`Screenshots` folder; it does not also invoke the game's unfiltered screenshot. Existing saved screenshot keys remain
+unchanged. Bare F10 remains available for the game's UI toggle, which the mod uses internally only while hiding the
+interface for the shot. Apex only runs Compare on the exact Ctrl+Shift+F10 chord; the synthetic bare F10 bypasses Apex
+shortcut interception.
 It reads the game's final back buffer at Present, after Ambient Occlusion, Edge Smoothing, Depth Blur and Picture have
-rendered, and writes a timestamped PNG to `Apex Radiance/Screenshots`. This differs from `SceneCaptureManager`'s
+rendered, and writes a timestamped PNG to the game's standard `Screenshots` folder in Documents. This differs from `SceneCaptureManager`'s
 off-screen photo/thumbnail path, whose inclusion of post-processing is not established. Apex's overlay is suppressed
 for the shot. By default, the mod sends F10 for a single frame to hide the game's UI, captures the frame, then restores
 the prior tracked F10 state. It tracks F10 key presses seen after the overlay hook starts; it cannot infer an earlier

@@ -348,7 +348,7 @@ void LoadSettings() {
         if (ParseKeyChord((*ui)["compare_key"].value_or(std::string()), own)) u.compareKey = own;
         if (ParseKeyChord((*ui)["refresh_key"].value_or(std::string()), own)) u.refreshKey = own;
         u.screenshotShortcutEnabled = (*ui)["screenshot_shortcut_enabled"].value_or(true);
-        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string("Ctrl+Shift+F12")), own)) u.screenshotKey = own;
+        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string("C")), own)) u.screenshotKey = own;
         u.screenshotHideGameUi = (*ui)["screenshot_hide_game_ui"].value_or(true);
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));

@@ -9,7 +9,8 @@
 > See [Ambient Occlusion](features/ambient-occlusion.md) for shader coverage, fallback behavior, revision migration
 > and validation limits.
 
-> Local development: Settings > Shortcuts enables the filtered screenshot shortcut by default on Ctrl+Shift+F12. It
+> Local development: new configurations enable the filtered screenshot shortcut by default on C. Previously saved
+> screenshot keys remain unchanged. It
 > leaves bare F10 available for the game's UI toggle, which is used only internally while hiding the interface for a
 > screenshot; the prior UI state is restored afterwards. Ctrl+Shift+F10 remains Compare.
 
@@ -297,16 +298,19 @@ key can clash. They come in presets (`hotkeys.h`, `[ui] hotkey_preset`; missing 
 | Dev: Light Probe / Light Diag / recorder / Frame Capture | V / B / X / F | 4 / 5 / 6 / 7 | F7 / F8 / F6 / F5 |
 
 Letters: left-hand keys next to each other, in the same place on QWERTY, ABNT2, AZERTY and QWERTZ, no Fn (A Q W Z move
-on some layouts; C is the cheat console; D S E move the camera; M is the map). Numbers: easiest to remember. F keys: the
+on some layouts; C is the game's screenshot key; D S E move the camera; M is the map). Numbers: easiest to remember. F keys: the
 earlier keys. Compare turns Night Lighting, Depth Blur, Edge Smoothing and the picture filters off and back (not saved;
 a note shows at the top while off). Refresh does what the Developer buttons "Rebuild terrain light now" and "Relight lots
 now" do plus every room and the object rigs (NightLighting::RefreshAll). `compare_key` / `refresh_key` hold the player's
-own keys. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on Ctrl+Shift+F12. Bare F10
-remains available for the game's UI toggle, which the mod uses internally only while hiding the interface for the
-shot. It reads the finished back buffer after Apex's scene and Picture passes. Ctrl+Shift+F10 remains Compare. The **Hide the game
+own keys. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on C for new or missing key
+settings. Existing saved screenshot keys remain unchanged. Apex consumes C and saves
+one filtered PNG to the game's standard Documents `Screenshots` folder; it does not also invoke the native screenshot.
+Existing saved screenshot keys remain unchanged. Bare F10 remains available for the game's UI toggle, which the mod
+uses internally only while hiding the interface for the shot. It reads the finished back buffer after Apex's scene and
+Picture passes. Ctrl+Shift+F10 remains Compare. The **Hide the game
 interface in screenshots** option is on by default; it temporarily toggles the game's F10 interface visibility,
 captures one frame, and restores the prior tracked state. Apex's own overlay is suppressed for that frame. PNGs are
-saved under the game's Documents folder in `Apex Radiance/Screenshots`. This is separate from Report's diagnostic screenshots.
+saved under the game's Documents folder in `Screenshots`. This is separate from Report's diagnostic screenshots.
 While `[ui] key_chosen` is false (missing = false: every existing config sees it once), a centred window shows the three
 presets with their keys (Letters marked recommended) and "Customize…" (an own menu key, the rest on Letters). A choice
 sets the preset, the menu key and `key_chosen`, closes the window; pressing the

@@ -135,7 +135,7 @@ struct PlayerPhotoState {
 PlayerPhotoState g_playerPhoto;
 
 bool PostGameUiToggle() {
-    return Overlay::PostGameKeyPress(VK_F10); // bypass Apex's F10 screenshot shortcut, but let the game toggle its UI
+    return Overlay::PostGameKeyPress(VK_F10); // bypass Apex hotkey handling, but let the game toggle its UI
 }
 
 void RestorePlayerPhoto() {
@@ -553,12 +553,12 @@ void ObserveGameUiKey(WPARAM vk, bool repeat) {
 bool RequestPlayerScreenshot(bool hideGameUi) {
     if (g_playerPhoto.active) return false;
     std::error_code ec;
-    const std::wstring& apexDir = ApexPaths::ApexDirectory();
-    if (apexDir.empty() || !ApexPaths::EnsureApexDirectory()) {
+    const std::wstring& gameDir = ApexPaths::GameDocumentsDirectory();
+    if (gameDir.empty()) {
         Notify(I18n::Tr("Could not create the screenshots folder"), 5);
         return false;
     }
-    const std::filesystem::path folder = std::filesystem::path(apexDir) / L"Screenshots";
+    const std::filesystem::path folder = std::filesystem::path(gameDir) / L"Screenshots";
     std::filesystem::create_directories(folder, ec);
     if (ec) {
         Notify(I18n::Tr("Could not create the screenshots folder"), 5);
@@ -568,7 +568,13 @@ bool RequestPlayerScreenshot(bool hideGameUi) {
     GetLocalTime(&t);
     const std::string base = std::format("Screenshot_{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_{:03}",
                                          t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
-    const std::filesystem::path file = folder / (base + ".png");
+    std::filesystem::path file = folder / (base + ".png");
+    for (unsigned suffix = 2; std::filesystem::exists(file, ec) && !ec; ++suffix)
+        file = folder / (base + std::format(" ({})", suffix) + ".png");
+    if (ec) {
+        Notify(I18n::Tr("Could not create the screenshots folder"), 5);
+        return false;
+    }
     if (!QueuePlayerPhoto(file, hideGameUi)) {
         Notify(I18n::Tr("Could not hide the game interface; screenshot was not taken"), 5);
         return false;

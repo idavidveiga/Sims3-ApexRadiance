@@ -245,9 +245,10 @@ FrameCapture 24/09 #977; UI drawn with ZENABLE off).
 - **S3SS overlay / Apex menu.** Drawn after `BeforeOverlay`, so it is always UI (unchanged pixels), including frames with
   no game UI.
 - **Frame Capture (dev tool).** Source of the bloom-strip rule (#977); see [dev-tools/frame-capture.md](dev-tools/frame-capture.md).
-- **The game's own C screenshot / video capture:** its inclusion of the filters remains unverified because its capture
-  point is not documented. Apex's player screenshot shortcut (enabled by default on Ctrl+Shift+F12) instead reads the back buffer at Present, after
-  the scene effects and Picture pass; see [bug-reports.md](bug-reports.md#player-screenshots).
+- **The game's C screenshot:** when Apex's screenshot shortcut is enabled, it consumes C and saves one filtered PNG
+  in the game's Documents `Screenshots` folder. It reads the back buffer at Present, after the scene effects and Picture
+  pass; see [bug-reports.md](bug-reports.md#player-screenshots). If the shortcut is disabled, the native C capture's
+  inclusion of the filters remains unverified.
 - **Game's own Edge Smoothing (MSAA):** unverified for Picture. If the game renders the scene off the back buffer and
   resolves it with a copy, fewer than 20 depth-tested back-buffer draws would mean no scene copy and no filtering
   (inferred from the counter rule, not tested). The README asks for the game's Edge Smoothing off for all post effects.
