@@ -2468,14 +2468,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         }
         }
         ApexUi::EndCard();
-        if (ApexUi::BeginCard("##RefreshLighting")) {
-            ApexUi::CardHeader(IconId::RotateCcw, "Refresh lighting", "Use after saving the state you want to investigate", nullptr, nullptr);
-            ApexUi::CardDivider();
-        if (ApexUi::TextButton("Rebuild terrain light now")) g_kickRequested = true;
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Relight lots now")) g_relightLotsRequested = true;
-        }
-        ApexUi::EndCard();
+        NightLighting::DrawRefreshCard();
         if (ApexUi::BeginCard("##InspectLighting")) {
             ApexUi::CardHeader(IconId::Scan, "Inspect lighting state", "Open the data involved in your test", nullptr, nullptr);
             ApexUi::CardDivider();
@@ -2599,6 +2592,31 @@ NightTerrainRelightPatch* MenuPatch() { return ImGui::GetCurrentContext() ? Nigh
 
 void NightLighting::DrawLightingBalance() {
     if (auto* p = MenuPatch()) p->DrawLightingBalance();
+}
+void NightLighting::DrawRefreshCard() {
+    if (!MenuPatch()) return;
+    ImGui::PushID("RefreshLightingCard");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(ApexUi::IconId::RotateCcw, "Refresh lighting", "Recalculate lighting if something looks wrong", nullptr, nullptr);
+        ApexUi::CardDivider();
+        ImGui::TextUnformatted(I18n::Tr("Terrain and lots"));
+        ApexUi::MutedText("Use when light on the ground or a lot looks incorrect or has not updated");
+        ApexUi::Gap(ApexUi::kSpace3);
+        ApexUi::ControlSizeScope controls(ApexUi::ControlSize::Compact);
+        const float gap = ImGui::GetStyle().ItemSpacing.x;
+        const float terrainW = ApexUi::ButtonWidth("Refresh terrain", true), lotW = ApexUi::ButtonWidth("Refresh lots", true), lightsW = ApexUi::ButtonWidth("Refresh lights", true);
+        const bool inlineActions = terrainW + lotW + lightsW + 2.0f * gap <= ImGui::GetContentRegionAvail().x;
+        if (inlineActions) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - terrainW - lotW - lightsW - 2.0f * gap);
+        ImGui::BeginDisabled(g_menuLevel.load() < 0.0f || !g_live);
+        if (ApexUi::IconTextButton("Refresh terrain", ApexUi::IconId::LandPlot)) g_kickRequested = true;
+        if (inlineActions) ImGui::SameLine();
+        if (ApexUi::IconTextButton("Refresh lots", ApexUi::IconId::House)) g_relightLotsRequested = true;
+        if (inlineActions) ImGui::SameLine();
+        if (ApexUi::IconTextButton("Refresh lights", ApexUi::IconId::Lightbulb)) NightLighting::RefreshAll("button");
+        ImGui::EndDisabled();
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
 }
 void NightLighting::DrawGroundCard() {
     if (auto* p = MenuPatch()) p->DrawGroundCard();

@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Lot lighting while the camera moves (see lot_lighting_motion.h and docs/features/performance.md).
 //
@@ -505,11 +506,14 @@ void RenderDeveloperUI() {
     ImGui::TextUnformatted(("Lot lighting while moving: " + StatusText()).c_str());
     const uint64_t last = g_lastMoveTick.load();
     const uint64_t now = GetTickCount64();
-    ImGui::TextDisabled("Call %#010x -> %#010x; camera eye [[%#010x]+0x%X]+0x%X (%s); last camera move %s; frames sampled %u", static_cast<unsigned>(g_call),
+    if (ApexUi::BeginAdvanced("CameraCounters", "Live counters")) {
+    ImGui::TextWrapped("Call %#010x -> %#010x; camera eye [[%#010x]+0x%X]+0x%X (%s); last camera move %s; frames sampled %u", static_cast<unsigned>(g_call),
                         static_cast<unsigned>(g_budgetFn), static_cast<unsigned>(g_rootGlobal), g_camOff, g_eyeOff, g_haveEye ? "read" : "not readable now",
                         last ? std::format("{:.1f} s ago", static_cast<double>(now - last) / 1000.0).c_str() : "never", g_frame.load());
-    ImGui::TextDisabled("Budget calls %u, scaled while moving %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(), c_scaled.load(), c_eyeFails.load(),
+    ImGui::TextWrapped("Budget calls %u, scaled while moving %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(), c_scaled.load(), c_eyeFails.load(),
                         Bits(g_lastGame.load()), Bits(g_lastOut.load()));
+        ApexUi::EndAdvanced();
+    }
 }
 
 // ---- wall shading gate ----

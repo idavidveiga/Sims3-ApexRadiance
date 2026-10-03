@@ -446,6 +446,7 @@ void LampsTabContent() {
     }
     if (ApexUi::BeginCard("##NightBalance")) NightLighting::DrawLightingBalance();
     ApexUi::EndCard();
+    NightLighting::DrawRefreshCard();
 
 }
 
@@ -1193,10 +1194,12 @@ void DevProfilerTab() {
     }
     ApexUi::EndCard();
     ImGui::PopID();
-    if (ApexUi::BeginAdvanced("ShaderPreparation", "Technical reference from the current code")) {
-        ImGui::TextDisabled("Apex shaders: %s", ShaderCache::StatusText().c_str());
-        ApexUi::EndAdvanced();
-    }
+    DevCard("ShaderPreparation", IconId::Aperture, "Shader preparation", "Read the current preparation state", true, [] {
+        if (ApexUi::BeginAdvanced("ShaderState", "Technical reference")) {
+            ImGui::TextWrapped("Apex shaders: %s", ShaderCache::StatusText().c_str());
+            ApexUi::EndAdvanced();
+        }
+    });
     const auto inspect = [](const char* key, const char* title, const char* purpose, const char* id) {
         ApexPatch* p = Find(key);
         DevCard(id, IconId::Gauge, title, purpose, p && p->IsEnabled(), [p] { p->RenderDeveloperUI(); });
@@ -1582,6 +1585,7 @@ struct ProfilesState {
     std::string confirmReplace; // a name that exists, waiting for "Replace?"
     std::string loading;        // a profile whose parts are being picked before "Load"
     unsigned loadParts = 0;
+    double applyOpenedAt = 0.0;
 };
 ProfilesState g_profiles;
 
@@ -1856,6 +1860,7 @@ void ProfilesTab() {
                     ImGui::BeginDisabled(Loading() || item.parts == 0);
                     if (ApexUi::IconTextButton("Apply", IconId::Download, "Pick which parts of this profile to apply")) {
                         s.loading = name;
+                        s.applyOpenedAt = ImGui::GetTime();
                         s.loadParts = item.parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper); // shortcuts only when picked (they belong to the keyboard)
                         s.confirmDelete.clear();
                     }
@@ -1864,6 +1869,9 @@ void ProfilesTab() {
                 ApexUi::EndControlRow();
                 if (picking) {
                     ApexUi::Gap(ApexUi::kSpace2);
+                    const float reveal = std::clamp(static_cast<float>((ImGui::GetTime() - s.applyOpenedAt) / 0.14), 0.0f, 1.0f);
+                    const float easedReveal = reveal * reveal * (3.0f - 2.0f * reveal);
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * (0.25f + 0.75f * easedReveal));
                     if (ApexUi::BeginCard("##ApplySelection")) {
                         unsigned selected = 0, total = 0;
                         for (int part : {0, 1, 7, 2, 3, 5, 6, 8}) {
@@ -1885,7 +1893,7 @@ void ProfilesTab() {
                             ApexUi::ControlSizeScope footerSize(ApexUi::ControlSize::Compact);
                             const float actionsW = ApexUi::ButtonWidth("Cancel", false) + gap + ApexUi::ButtonWidth("Apply", true);
                             const float footerHeight = ImGui::GetFrameHeight();
-                            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.87f); // description typography, centred beside the actions
+                            ImGui::PushFont(VioletTheme::RegularFont(), VioletTheme::BaseFontSize() * ApexUi::kSmallScale); // same regular face and scale as secondary descriptions
                             ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
                             const bool footerVisible = ApexUi::BeginControlRow("Unchecked settings stay as they are", nullptr, actionsW, IconId::None, footerHeight);
                             ImGui::PopStyleColor();
@@ -1904,6 +1912,7 @@ void ProfilesTab() {
                         }
                     }
                     ApexUi::EndCard();
+                    ImGui::PopStyleVar();
                 }
             }
             ImGui::PopID();
@@ -3571,7 +3580,7 @@ class GuiClient final : public Overlay::Client {
         UpdateHint();
         // the capture notes (recording, saved, an open session) show with the menu closed too
         return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
-               NoticeAnimationsPending() || LightProbe::Aiming() || g_returnFromProbe.load();
+               NoticeAnimationsPending() || (!g_profiles.loading.empty() && ImGui::GetTime() - g_profiles.applyOpenedAt < 0.14) || LightProbe::Aiming() || g_returnFromProbe.load();
     }
 
     bool IsToggleKey(WPARAM vk) override {

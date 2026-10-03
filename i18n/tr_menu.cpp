@@ -1006,3 +1006,25 @@ const I18n::Entry kDeveloperDesignEntries[] = {
 };
 const I18n::Table kDeveloperDesignTable(kDeveloperDesignEntries, std::size(kDeveloperDesignEntries));
 }
+
+namespace {
+const I18n::Entry kDeveloperCounterEntries[] = {
+    {"Live counters", "Contadores atuais", "Contadores actuales", "Compteurs actuels"},
+    {"Worker counters", "Contadores dos trabalhadores", "Contadores de los trabajadores", "Compteurs des threads de travail"},
+    {"Validation run", "Teste de validação", "Prueba de validación", "Test de validation"},
+    {"Adds comparison work while the test is active", "Adiciona trabalho de comparação enquanto o teste está ativo", "Añade trabajo de comparación mientras la prueba está activa", "Ajoute du travail de comparaison pendant le test"},
+};
+const I18n::Table kDeveloperCounterTable(kDeveloperCounterEntries, std::size(kDeveloperCounterEntries));
+}
+
+namespace {
+const I18n::Entry kRefreshLightingCardEntries[] = {
+    {"Refresh lights", "Atualizar luzes", "Actualizar luces", "Actualiser les lumières"},
+    {"Recalculate lighting if something looks wrong", "Recalcule a iluminação se algo parecer errado", "Recalcula la iluminación si algo se ve mal", "Recalculez l’éclairage si quelque chose semble incorrect"},
+    {"Terrain and lots", "Terreno e lotes", "Terreno y solares", "Terrain et parcelles"},
+    {"Use when light on the ground or a lot looks incorrect or has not updated", "Use se a luz no terreno ou em um lote parecer errada ou não tiver atualizado", "Úsalo si la luz en el terreno o en un solar se ve mal o no se ha actualizado", "Utilisez si l’éclairage du terrain ou d’une parcelle semble incorrect ou ne s’est pas actualisé"},
+    {"Refresh terrain", "Atualizar terreno", "Actualizar terreno", "Actualiser le terrain"},
+    {"Refresh lots", "Atualizar lotes", "Actualizar solares", "Actualiser les parcelles"},
+};
+const I18n::Table kRefreshLightingCardTable(kRefreshLightingCardEntries, std::size(kRefreshLightingCardEntries));
+}

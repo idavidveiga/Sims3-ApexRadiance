@@ -770,6 +770,17 @@ bool Checkbox(const char* label, bool* value) {
     return changed;
 }
 
+bool DiagnosticIntRow(const char* label, int* value, int min, int max, const char* description, ImGuiSliderFlags flags) {
+    const float width = 180.0f * Unit();
+    if (!BeginControlRow(label, description, width)) return false;
+    ImGui::PushID(label);
+    ImGui::SetNextItemWidth(width);
+    const bool changed = ImGui::SliderInt("##Value", value, min, max, "%d", flags);
+    ImGui::PopID();
+    EndControlRow();
+    return changed;
+}
+
 float ButtonWidth(const char* label, bool withIcon, float minWidth) {
     const float u = Unit();
     const std::string_view shown = I18n::TrLabel(label);
@@ -1065,6 +1076,11 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
     return changed;
 }
 
+namespace {
+ImGuiID g_dividerWindow = 0;
+int g_dividerFrame = -1;
+float g_dividerBodyY = 0.0f;
+}
 bool BeginAdvanced(const char* id, const char* label) {
     if (Hidden()) return true; // search: the contents are searched too, without the header
     const float u = Unit();
@@ -1077,7 +1093,9 @@ bool BeginAdvanced(const char* id, const char* label) {
     const float startX = ImGui::GetCursorPosX();
     const float width = ImGui::GetContentRegionAvail().x;
     float top;
-    if (FollowsRow(ImGui::GetCursorPosY())) {
+    if (g_dividerFrame == ImGui::GetFrameCount() && g_dividerWindow == ImGui::GetCurrentWindow()->ID && std::fabs(ImGui::GetCursorPosY() - g_dividerBodyY) < 0.5f) {
+        top = ImGui::GetCursorPosY(); // the card header already supplied the divider
+    } else if (FollowsRow(ImGui::GetCursorPosY())) {
         top = RowTop();
     } else {
         const float lineY = ImGui::GetCursorPosY() - Spacing() + kSpace2 * u;
@@ -1301,6 +1319,9 @@ void CardDivider() {
     HairlineAt(lineY);
     ImGui::SetCursorPosY(lineY + 1.0f + kSpace3 * u - Spacing());
     ImGui::Dummy(ImVec2(0.0f, 0.0f)); // the body starts kSpace3 below the line
+    g_dividerWindow = ImGui::GetCurrentWindow()->ID;
+    g_dividerFrame = ImGui::GetFrameCount();
+    g_dividerBodyY = ImGui::GetCursorPosY();
 }
 
 bool CardHeader(IconId icon, const char* title, const char* subtitle, const char* tooltip, bool* toggle, bool toggleEnabled, HeaderExtra* extra,

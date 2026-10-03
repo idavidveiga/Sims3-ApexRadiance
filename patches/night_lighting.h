@@ -26,6 +26,7 @@ bool WorldLive();
 // ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings / Stories) and Water & Snow page (tabs Water / Snow) ----
 // Overview tab: three balanced intensity choices, custom status and explicit choice undo.
 void DrawLightingBalance();
+void DrawRefreshCard();
 // Ground tab
 void DrawGroundCard();
 // Stories tab: lamp light between the floors of a house. drawUpperFloorRow draws the "Upper floors light the ground" row

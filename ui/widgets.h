@@ -130,6 +130,8 @@ public:
 // Native-style diagnostic checkbox: a 20-unit box, independent of input frame heights.
 // Labels are supplied by the caller (developer English or already translated).
 bool Checkbox(const char* label, bool* value);
+// Diagnostic integers retain native integer behavior inside a measured, responsive control row.
+bool DiagnosticIntRow(const char* label, int* value, int min, int max, const char* description = nullptr, ImGuiSliderFlags flags = 0);
 
 // iOS-style switch (violet when on). True on the frame it was clicked (*v is already flipped).
 bool ToggleSwitch(const char* id, bool* v);
