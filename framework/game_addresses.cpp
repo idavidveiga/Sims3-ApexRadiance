@@ -242,6 +242,7 @@ constexpr Info kInfo[] = {
     {"LotLodScoring", 0x00C6C290},
     {"LotLodThrottleTest", 0x00C6C695},
     {"LotLodThrottleFlag", 0x011ECBC0},
+    {"LotVisibilityCameraBiasJZ", 0x00C63015},
     // No fixed Steam addresses are claimed for these six yet. Their signatures are verified first on EA 1.69.47;
     // the feature metadata therefore advertises only that exact EA build until Steam is probed.
     {"LotAddObjectsToScene", 0},
@@ -526,6 +527,9 @@ const Entry kTable[] = {
     {Id::LotLodScoring, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 84 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C 0F 28 8B A0 03 00 00", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C", 0, M::At}}},
     {Id::LotLodThrottleTest, K::InRange, W::Text, Id::LotLodScoring, 0x700, {{"80 3D ?? ?? ?? ?? 00", 0, M::At}, NOSIG}},
     {Id::LotLodThrottleFlag, K::Deref, W::Image, Id::LotLodThrottleTest, 2, {NOSIG, NOSIG}},
+    // ---- Lot visibility override: camera-view distance bias JZ -> JMP ----
+    {Id::LotVisibilityCameraBiasJZ, K::Sig, W::Text, None, 0,
+     {{"74 ?? F3 0F 10 44 24 08 F3 0F 5C 87 E0 00 00 00 F3 0F 11 44 24 08 D9 44 24 08 5F 5E 8B E5 5D C2 0C 00", 0, M::At}, NOSIG}},
     // ---- Per-lot object streaming throttle (S3SS LotStreamingOptimizations objectThrottle, frozen 5eb2c65) ----
     {Id::LotAddObjectsToScene, K::Sig, W::Text, None, 0, {{"83 EC 08 57 8B F9 80 BF C9 00 00 00 00 74 0E C6 87 C1 00 00 00 00 5F 83 C4 08 C2 08", 0, M::At}, NOSIG}},
     {Id::LotUpdateObjectSceneNode, K::Sig, W::Text, None, 0, {{"83 EC 0C 83 B9 64 03 00 00 00 89 4C 24 04 0F 84 ?? ?? ?? ?? 83 B9 08 04 00 00 01", 0, M::At}, NOSIG}},
@@ -580,6 +584,7 @@ const Group kGroups[] = {
     {"LotLodStreaming", {Id::LotLodScoring, Id::LotLodThrottleTest, Id::LotLodThrottleFlag, Id::WorldManagerPtr}},
     {"LotObjectThrottle", {Id::LotAddObjectsToScene, Id::LotUpdateObjectSceneNode, Id::ScriptMessageScopeCtor, Id::ScriptMessageScopeDtor,
                             Id::PostRemoteMethodCall, Id::IsObjectLargeOrFlora}},
+    {"LotVisibilityOverride", {Id::LotVisibilityCameraBiasJZ}},
     {"FastCasSort", {Id::CasTriSort}},
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
