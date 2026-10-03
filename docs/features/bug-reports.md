@@ -116,7 +116,8 @@ names for players: "Recording", "Light capture", "Lighting snapshot".
 ## Player screenshots
 
 Settings > Shortcuts enables the player screenshot shortcut by default on Ctrl+Shift+F12. Bare F10 remains available
-for the game's UI toggle, which the mod uses internally only while hiding the interface for the shot. Ctrl+Shift+F10 remains Compare.
+for the game's UI toggle, which the mod uses internally only while hiding the interface for the shot. Apex only runs
+Compare on the exact Ctrl+Shift+F10 chord; the synthetic bare F10 bypasses Apex shortcut interception.
 It reads the game's final back buffer at Present, after Ambient Occlusion, Edge Smoothing, Depth Blur and Picture have
 rendered, and writes a timestamped PNG to `Apex Radiance/Screenshots`. This differs from `SceneCaptureManager`'s
 off-screen photo/thumbnail path, whose inclusion of post-processing is not established. Apex's overlay is suppressed
