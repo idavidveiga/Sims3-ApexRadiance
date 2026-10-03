@@ -15,6 +15,12 @@ Read only the relevant sections of `docs/ui.md` and the affected feature documen
 - Update the feature's settings table and `docs/ui.md` when the layout changes. Update player-facing release material only when the change affects players.
 - Check how the row participates in menu search (`SearchParts`) and how the same card reads as a whole.
 
+## Icons
+
+- Give each new feature or standalone card its own Lucide icon; do not reuse the parent feature's icon or an unrelated card's icon.
+- Check the vendored `third_party/lucide/icons/` set first. If the icon is absent, add its SVG stroke elements to `ui/lucide_data.h` and its `IconId` to `ui/icons.h` in matching order; retain the Lucide name and license attribution.
+- Review where the icon is used so it remains distinctive, and verify the enum/data count assertion with a build.
+
 ## Audit
 
 Run the read-only audit from any directory, passing the repository root when it cannot be inferred from the script location:

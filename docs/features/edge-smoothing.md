@@ -274,8 +274,9 @@ draws, then the first depth-off back-buffer draw) and on the game's back buffer 
 - GPU cost per preset at 1080p / 1440p / 4K: not recorded.
 - Which SMAA preset the offline slot counts (35 / 442 / 62) refer to.
 - Whether the Picture copy / PostScene same-draw race happens in practice (frames without a bloom strip).
-- Whether the game's in-game screenshot contains the smoothed image (it is taken from the back buffer at an unknown
-  point).
+- Whether the game's own C screenshot contains the smoothed image remains unverified. Apex's optional player screenshot
+  shortcut reads the back buffer at Present after Edge Smoothing and the other Apex passes; see
+  [bug-reports.md](bug-reports.md#player-screenshots).
 
 **Supersampling note (30/09, user: players at 1080p found the game very jagged with Edge Smoothing on).** At 1200 lines or fewer the card shows "Smoothest at 1080p: NVIDIA DSR or AMD VSR with a higher game resolution" (tooltip: where to turn it on; it costs more and the game's interface gets smaller). The driver renders at a higher resolution and scales down to the screen: the only thing that smooths detail thinner than a pixel. DLSS / DLAA / FSR 2+ are temporal (jittered camera, motion vectors) and have no D3D9 path; see NOTAS / the conversation of 30/09.
 
