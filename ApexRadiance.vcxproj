@@ -56,7 +56,8 @@
     <IntDir>$(ProjectDir)Public\obj\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(ApexLotLodProbe)'=='true'">
-    <ApexProbeDefines>APEX_LOT_LOD_DISTANCE_PROBE</ApexProbeDefines>
+    <ApexLotLodTestValue Condition="'$(ApexLotLodTestValue)'==''">70</ApexLotLodTestValue>
+    <ApexProbeDefines>APEX_LOT_LOD_DISTANCE_PROBE;APEX_LOT_LOD_TEST_VALUE=$(ApexLotLodTestValue)</ApexProbeDefines>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
