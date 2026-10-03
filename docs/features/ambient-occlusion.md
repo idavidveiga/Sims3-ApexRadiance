@@ -102,6 +102,8 @@ CompositePS 35, DownPS 25, LinearizePS 8.
 
 ## Verified
 
+The Sim receiver mask also accepts recognized alpha-blended body materials using SRCALPHA/INVSRCALPHA ADD, with signed depth and original alpha coverage. The transparent-hair option only gates hair draws; body coverage remains active with Sim controls. Depth-writing LESS materials replay with LESSEQUAL to accept the depth they just wrote, restoring the original state afterwards. Native regression checks cover equal-depth rejection, blended body strength/opacity and foreground rejection. This addresses two coverage gaps; the reported mouth artifact still needs an in-game before/after comparison. No screen-space mask dilation or global AO smoothing is added. Blended coverage remains a last-layer approximation.
+
 - **The GPU shader against the CPU lab** (`scratchpad\aonew\gpucheck.cpp`: the patch's HLSL on a D3D9 HAL device, the
   same saved depth and colour, the lab's Gtao + Denoise(1) + Composite(3)): scenes 1, 2, 3, 6: raw AO mean difference
   0.08-0.11 of 255 levels, filtered 0.26-0.28 (G16R16F rounding), composite 0.06-0.09 levels (max 2-4); a second run is

@@ -17,4 +17,6 @@ node tools\ao_receiver_test\generate_ids.cjs "C:\Games\Hydra\The Sims 3\Game\Bin
 
 The generator excludes PS bytecode shared with non-Sim techniques. It stores no game bytecode. Re-run native checks after generation. Exact fingerprints deliberately fail closed on unrecognized variants; they do not prove game coverage.
 
-Known limits: nonstandard transparency equations, unknown/custom shader overrides and refused interpolator layouts retain original shading. Replays add GPU/CPU cost and can affect active occlusion-query sample counts; native in-game query behavior, DXVK and gameplay cost must be evaluated before release.
+Regression checks also reproduce an equal-depth replay rejected by LESS and accepted by LESSEQUAL, and verify blended body coverage, zero/partial opacity, independent body/hair strength and foreground rejection. Recognized SRCALPHA/INVSRCALPHA ADD body overlays now use the same coverage target as blended hair; the hair toggle only gates hair draws. Depth-writing LESS draws replay with LESSEQUAL, then restore the original comparison.
+
+Known limits: nonstandard transparency equations, unknown/custom shader overrides and refused interpolator layouts retain original shading. The shared blended target retains the last accepted layer, not exact multilayer colour separation. Replays add GPU/CPU cost and can affect active occlusion-query sample counts; native in-game query behavior, DXVK and gameplay cost must be evaluated before release.
