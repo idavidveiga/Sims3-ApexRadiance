@@ -240,6 +240,7 @@ constexpr Info kInfo[] = {
     {"ObjectTreeWalk", 0x00C60D30},
     {"ObjectTreeSearch", 0x00C5FA60},
     {"LotLodScoring", 0x00C6C290},
+    {"LotDetailRequest", 0x00AC20E0},
     {"LotLodThrottleTest", 0x00C6C695},
     {"LotLodThrottleFlag", 0x011ECBC0},
     {"LotVisibilityCameraBiasJZ", 0x00C63015},
@@ -525,6 +526,7 @@ const Entry kTable[] = {
     // "Throttle Lot LoD Transitions". If the test is not unique the resolver deliberately returns 0 and the probe
     // writes nothing; the [Addr] log contains the matches needed to refine the EA signature.
     {Id::LotLodScoring, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 84 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C 0F 28 8B A0 03 00 00", 0, M::At}, {"55 8B EC 83 E4 F0 81 EC ?? 08 00 00 A1 ?? ?? ?? ?? 53 8B D9 8B 4D 0C", 0, M::At}}},
+    {Id::LotDetailRequest, K::Sig, W::Text, None, 0, {{"53 8A 5C 24 08 56 8B F1 8A 86 C1 00 00 00 3A C3 0F 84 ?? ?? ?? ?? 80 BE C9 00 00 00 00", 0, M::At}, NOSIG}},
     {Id::LotLodThrottleTest, K::InRange, W::Text, Id::LotLodScoring, 0x700, {{"80 3D ?? ?? ?? ?? 00", 0, M::At}, NOSIG}},
     {Id::LotLodThrottleFlag, K::Deref, W::Image, Id::LotLodThrottleTest, 2, {NOSIG, NOSIG}},
     // ---- Lot visibility override: camera-view distance bias JZ -> JMP ----
@@ -582,6 +584,7 @@ const Group kGroups[] = {
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
     {"LotLodStreaming", {Id::LotLodScoring, Id::LotLodThrottleTest, Id::LotLodThrottleFlag, Id::WorldManagerPtr}},
+    {"LotLodDistanceProbe", {Id::LotLodScoring, Id::LotDetailRequest}},
     {"LotObjectThrottle", {Id::LotAddObjectsToScene, Id::LotUpdateObjectSceneNode, Id::ScriptMessageScopeCtor, Id::ScriptMessageScopeDtor,
                             Id::PostRemoteMethodCall, Id::IsObjectLargeOrFlora}},
     {"LotVisibilityOverride", {Id::LotVisibilityCameraBiasJZ}},
