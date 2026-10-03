@@ -188,7 +188,7 @@ DWORD WINAPI InitThread(LPVOID) {
         {
             std::string probeError;
             if (!LotLodDistanceProbe::Start(&probeError))
-                LOG_ERROR("[LotLodDistProbe] Could not start read-only probe: " + probeError);
+                LOG_ERROR("[LotLodMetricProbe] Could not start metric probe: " + probeError);
         }
 #endif
         try {
