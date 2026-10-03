@@ -766,6 +766,13 @@ void PerformanceCard() {
         if (activeThresholdOn && Performance::LotActiveThresholdHandledByS3SS())
             CardNote("Handled by Sims3SettingsSetter: Apex leaves the LoD active-lot threshold untouched");
 
+        const bool visibilityOn = FeatureSwitchRow(Performance::kLotVisibilityOverrideName, "Keep lot visibility stable",
+                                                   "Stops camera viewing angle alone from making lots load or unload", true);
+        if (visibilityOn && Performance::LotVisibilityOverrideHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot visibility override untouched");
+        else if (visibilityOn && Performance::LotVisibilityOverrideAlreadyExternal())
+            CardNote("Already applied by another patch: Apex leaves the existing visibility override untouched");
+
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
