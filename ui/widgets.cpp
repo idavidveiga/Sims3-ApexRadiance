@@ -559,6 +559,7 @@ bool ToggleSwitch(const char* id, bool* v) {
     const float knobR = r - 2.5f * u;
     const ImVec2 knob(p.x + r + (size.x - 2.0f * r) * t, p.y + r);
     dl->AddCircleFilled(knob, knobR, U32(0xFFFFFF));
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 
@@ -606,14 +607,15 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip, BoolDefault def,
     return clicked;
 }
 
-bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon) {
+bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon, float controlsHeight) {
     if (!RowVisible(label, description)) return false;
     g_inControlRow = true;
     const float u = Unit();
     const float startX = ImGui::GetCursorPosX();
     const float width = ImGui::GetContentRegionAvail().x;
     const float top = RowTop();
-    const float frameH = ImGui::GetFrameHeight();
+    const float frameH = controlsHeight > 0.0f ? controlsHeight : ImGui::GetFrameHeight();
+    const float minimumHeight = ImGui::GetFrameHeight();
     const bool stacked = width - controlsWidth - kSpace3 * u < 120.0f * u;
     const float wrapX = stacked ? startX + width : startX + width - controlsWidth - kSpace3 * u;
     // Keep the divider and right cluster anchored to the full row; only the text is indented.
@@ -621,7 +623,7 @@ bool BeginControlRow(const char* label, const char* description, float controlsW
     const float iconBox = 22.0f * u;
     const float textX = startX + (hasIcon ? iconBox + kSpace3 * u : 0.0f);
     ImGui::SetCursorPos(ImVec2(textX, top));
-    const float rowH = std::fmax(RowText(label, description, std::fmax(wrapX, textX + 40.0f * u), -1.0f, nullptr, stacked ? 0.0f : frameH), stacked ? 0.0f : frameH);
+    const float rowH = std::fmax(RowText(label, description, std::fmax(wrapX, textX + 40.0f * u), -1.0f, nullptr, stacked ? 0.0f : minimumHeight), stacked ? 0.0f : minimumHeight);
     if (hasIcon) {
         const float size = kIconMedium * u;
         DrawIcon(ImGui::GetWindowDrawList(), icon,
@@ -731,19 +733,20 @@ bool IconButtonImpl(const char* id, IconId icon, const char* tooltip, bool activ
     const ImU32 col = active ? U32(VioletTheme::kAccent) : hovered ? U32(VioletTheme::kText) : U32(VioletTheme::kTextMuted);
     const float is = (sizeUnits >= 24.0f ? kIconMedium : kIconSmall) * u;
     DrawIcon(dl, icon, ImVec2(p.x + (s - is) * 0.5f, p.y + (s - is) * 0.5f), is, col);
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 } // namespace
 
 ControlSizeScope::ControlSizeScope(ControlSize size) {
     const float height = (size == ControlSize::Primary ? VioletTheme::kControlPrimary : VioletTheme::kControlCompact) * Unit();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kSpace3 * Unit(), std::fmax(0.0f, (height - ImGui::GetFontSize()) * 0.5f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2((size == ControlSize::Primary ? VioletTheme::kPrimaryPadding : VioletTheme::kControlPadding) * Unit(), std::fmax(0.0f, (height - ImGui::GetFontSize()) * 0.5f)));
 }
 
 ControlSizeScope::~ControlSizeScope() { ImGui::PopStyleVar(); }
 
 bool Checkbox(const char* label, bool* value) {
-    const float padding = std::fmax(0.0f, (VioletTheme::kControlIcon * Unit() - ImGui::GetFontSize()) * 0.5f);
+    const float padding = std::fmax(0.0f, (VioletTheme::kCheckboxSize * Unit() - ImGui::GetFontSize()) * 0.5f);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, padding));
     const bool changed = ImGui::Checkbox(label, value);
     ImGui::PopStyleVar();
@@ -753,8 +756,8 @@ bool Checkbox(const char* label, bool* value) {
 float ButtonWidth(const char* label, bool withIcon, float minWidth) {
     const float u = Unit();
     const std::string_view shown = I18n::TrLabel(label);
-    float w = 2.0f * kSpace3 * u + ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
-    if (withIcon) w += VioletTheme::kControlIcon * u + kSpace2 * u;
+    float w = 2.0f * ImGui::GetStyle().FramePadding.x + ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
+    if (withIcon) w += VioletTheme::kControlIcon * u + VioletTheme::kControlIconGap * u;
     return std::fmax(w, minWidth);
 }
 
@@ -789,7 +792,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         textCol = U32(VioletTheme::kText);
         iconCol = U32(VioletTheme::kAccent);
     }
-    const float is = VioletTheme::kControlIcon * u, gap = kSpace2 * u;
+    const float is = VioletTheme::kControlIcon * u, gap = VioletTheme::kControlIconGap * u;
     const ImVec2 ts = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size());
     const float contentW = ts.x + (withIcon ? is + gap : 0.0f);
     float x = p.x + (size.x - contentW) * 0.5f;
@@ -815,6 +818,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
     }
     const float textY = inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ts.y * 0.5f;
     dl->AddText(ImVec2(x, std::round(textY)), textCol, shown.data(), shown.data() + shown.size());
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 } // namespace
@@ -952,9 +956,9 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
     const float u = Unit();
     ImGui::PushID(id);
     const float avail = ImGui::GetContentRegionAvail().x;
-    const float padX = kSpace3 * u;
+    const float padX = ImGui::GetStyle().FramePadding.x;
     const float h = ImGui::GetFrameHeight();
-    const float is = VioletTheme::kControlIcon * u, iconGap = kSpace2 * u;
+    const float is = VioletTheme::kControlIcon * u, iconGap = VioletTheme::kControlIconGap * u;
     auto hasIcon = [&](int i) { return icons && icons[i] != IconId::None; };
     std::vector<float> widths(static_cast<size_t>(count));
     float natural = 0.0f;

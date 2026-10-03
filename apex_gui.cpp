@@ -929,22 +929,21 @@ void ReportCaptureCard() {
         }
         const int secs = Recorder::SecondsRecorded();
         const std::string recDesc =
-            I18n::Trf("Writes down what the lighting does for up to 20 seconds while you make the problem happen: lights that turn on late, flicker or "
-                      "light the wrong room. Key: {}",
+            I18n::Trf("Records lighting for up to 20 seconds while you reproduce the problem. Key: {}",
                       CaptureKey(Hotkeys::Action::Recorder));
         if (row("Record a few seconds", recDesc, secs >= 0 ? "Stop##Rec" : "Start##Rec", IconId::Activity, secs >= 0 ? ApexUi::ButtonKind::Primary : ApexUi::ButtonKind::Secondary)) {
             Recorder::RequestToggle();
             g_report.scannedAt = 0;
         }
         const std::string probeKey = CaptureKey(Hotkeys::Action::Probe);
-        const std::string probeDesc = I18n::Trf("Close the menu, point the mouse at the spot that looks wrong and press {}: saves what paints that spot, with its "
-                                                "textures. Good for a wrong color, a dark patch or a light in the wrong place.",
+        const std::string probeDesc = I18n::Trf("Close the menu, point at the problem and press {} to capture that spot and its textures.",
                                                 probeKey);
-        if (ApexUi::BeginControlRow("Capture the light at a spot", probeDesc.c_str(), ImGui::CalcTextSize(probeKey.c_str()).x + 16.0f * u)) {
+        const ImVec2 probeChipSize = ApexUi::ChipSize(probeKey.c_str());
+        if (ApexUi::BeginControlRow("Capture the light at a spot", probeDesc.c_str(), probeChipSize.x, IconId::None, probeChipSize.y)) {
             ApexUi::Chip(probeKey.c_str(), VioletTheme::kAccentLight);
             ApexUi::EndControlRow();
         }
-        const std::string snapDesc = I18n::Trf("Every lamp and room of the loaded lots, as they are now. Good when a room or a lamp has the wrong light. Key: {}",
+        const std::string snapDesc = I18n::Trf("Saves the current lamps and rooms to investigate incorrect lighting. Key: {}",
                                                CaptureKey(Hotkeys::Action::Diagnostics));
         if (row("Lighting snapshot", snapDesc, "Save##Snapshot", IconId::Lightbulb, ApexUi::ButtonKind::Secondary)) {
             LightDiag::RequestDump();
@@ -1671,8 +1670,8 @@ void ProfileIconPicker(IconId& selected) {
     const float u = ApexUi::Unit();
     const float h = ImGui::GetFrameHeight();
     const float size = VioletTheme::kControlIcon * u;
-    const float arrow = 12.0f * u;
-    const float gap = 8.0f * u, padding = 12.0f * u;
+    const float arrow = 10.0f * u;
+    const float gap = VioletTheme::kControlIconGap * u, padding = ImGui::GetStyle().FramePadding.x;
     const float width = padding * 2.0f + size + gap + arrow;
     if (ImGui::Button("##ProfileIcon", ImVec2(width, h))) ImGui::OpenPopup("##ProfileIcons");
     // Button placement may include baseline alignment; anchor to its submitted rectangle.
