@@ -1593,6 +1593,8 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
     const int columns = ImGui::GetContentRegionAvail().x >= 2.0f * (longest + 76.0f * u) + gutter ? 2 : 1;
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gutter * 0.5f, 0.0f));
     if (ImGui::BeginTable("##Parts", columns, ImGuiTableFlags_SizingStretchSame)) {
+        int visibleParts = 0;
+        for (int part : order) if (available & (1u << part)) ++visibleParts;
         int shown = 0;
         for (int index = 0; index < IM_COUNTOF(order); ++index) {
             const int i = order[index];
@@ -1601,7 +1603,7 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
             ImGui::TableNextColumn();
             ImGui::PushID(i);
             const float width = ImGui::GetContentRegionAvail().x;
-            const float height = std::max(40.0f * u, ImGui::GetFrameHeight() + 12.0f * u);
+            const float height = std::max(40.0f * u, ImGui::GetTextLineHeight() + 16.0f * u);
             const ImVec2 p = ImGui::GetCursorScreenPos();
             const bool on = (*parts & bit) != 0;
             if (ImGui::InvisibleButton("##Part", ImVec2(width, height), ImGuiButtonFlags_EnableNav))
@@ -1613,7 +1615,7 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
             ApexUi::DrawIcon(draw, icons[index], ImVec2(p.x, p.y + (height - iconSize) * 0.5f), iconSize,
                              ImGui::GetColorU32(Col(VioletTheme::kAccent)));
             const char* label = I18n::Tr(ApexConfig::ProfilePartName(i));
-            draw->AddText(ImVec2(p.x + 22.0f * u + ApexUi::kSpace3 * u, p.y + (height - ImGui::GetTextLineHeight()) * 0.5f),
+            draw->AddText(ImVec2(p.x + iconSize + ApexUi::kSpace3 * u, p.y + (height - ImGui::GetTextLineHeight()) * 0.5f),
                           ImGui::GetColorU32(Col(VioletTheme::kText)), label);
             const float box = std::max(VioletTheme::kCheckboxSize * u, ImGui::GetFontSize());
             const ImVec2 check(std::round(p.x + width - box), std::round(p.y + (height - box) * 0.5f));
@@ -1625,7 +1627,8 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
                 ImGui::RenderCheckMark(draw, ImVec2(check.x + padding, check.y + padding), ImGui::GetColorU32(ImGuiCol_CheckMark), box - 2.0f * padding);
             }
             ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
-            draw->AddLine(ImVec2(p.x, p.y + height), ImVec2(p.x + width, p.y + height), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
+            if (shown / columns < (visibleParts - 1) / columns)
+                draw->AddLine(ImVec2(p.x, std::floor(p.y + height)), ImVec2(p.x + width, std::floor(p.y + height)), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
             ++shown;
             ImGui::PopID();
         }
@@ -1830,6 +1833,7 @@ void ProfilesTab() {
                 }
                 ApexUi::EndControlRow();
                 if (picking) {
+                    ApexUi::Gap(ApexUi::kSpace2);
                     if (ApexUi::BeginCard("##ApplySelection")) {
                         unsigned selected = 0, total = 0;
                         for (int part : {0, 1, 7, 2, 3, 5, 6, 8}) {
@@ -1837,16 +1841,26 @@ void ProfilesTab() {
                             if (item.parts & bit) { ++total; if (s.loadParts & bit) ++selected; }
                         }
                         const std::string count = I18n::Trf("{} of {} selected", selected, total);
-                        if (ApexUi::BeginControlRow("Settings to apply", nullptr, ImGui::CalcTextSize(count.c_str()).x)) {
-                            ImGui::AlignTextToFramePadding();
-                            ApexUi::MutedText(count.c_str());
-                            ApexUi::EndControlRow();
-                        }
-                        ProfilePartChecks("LoadParts", &s.loadParts, item.parts);
+                        ImGui::TextUnformatted(I18n::Tr("Settings to apply"));
+                        ImGui::SameLine();
+                        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(count.c_str()).x);
+                        ImGui::TextDisabled("%s", count.c_str());
+                        ApexUi::CardDivider();
                         {
-                            ApexUi::ControlSizeScope footerSize(ApexUi::ControlSize::Primary);
+                            ApexUi::ControlSizeScope gridSize(ApexUi::ControlSize::Compact);
+                            ProfilePartChecks("LoadParts", &s.loadParts, item.parts);
+                        }
+                        ApexUi::CardDivider();
+                        {
+                            ApexUi::ControlSizeScope footerSize(ApexUi::ControlSize::Compact);
                             const float actionsW = ApexUi::ButtonWidth("Cancel", false) + gap + ApexUi::ButtonWidth("Apply", true);
-                            if (ApexUi::BeginControlRow("Unchecked settings stay as they are", nullptr, actionsW)) {
+                            const float footerHeight = ImGui::GetFrameHeight();
+                            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.87f); // description typography, centred beside the actions
+                            ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
+                            const bool footerVisible = ApexUi::BeginControlRow("Unchecked settings stay as they are", nullptr, actionsW, IconId::None, footerHeight);
+                            ImGui::PopStyleColor();
+                            ImGui::PopFont();
+                            if (footerVisible) {
                                 if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
                                 ImGui::SameLine();
                                 ImGui::BeginDisabled(Loading() || s.loadParts == 0);
