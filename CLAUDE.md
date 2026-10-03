@@ -122,6 +122,7 @@ the Frame Profiler / `ApexRadiance_Hitches.txt` for performance. The docs quote 
 `docs/workflow.md` section 4 and `docs/features/dev-tools/`.
 
 ## Release
+- Every release requires `.codex/skills/review-pr-release/SKILL.md` before publication: independent review of substantive code, evidence-based bug/regression debate, performance costs, preservation of intended visuals and documentation consistency. Record the exact reviewed/tested SHA; unresolved gameplay evidence remains unverified. Check changes added after the review before releasing. Publication is still explicitly authorized by the user.
 GitHub `loinyx/Sims3SettingsSetter-Apex` (combined build; releases `nightremake-v0.1.0-alpha`, `apex-v0.2.0-alpha`
 Latest). Push:
 `git -c credential.helper= -c 'credential.helper=!"/c/Program Files/GitHub CLI/gh.exe" auth git-credential' push fork night-remake:main`.

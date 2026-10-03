@@ -45,6 +45,8 @@ Sequential takeover can reuse the PR branch after checking that no agent is stil
 
 ## Finish
 
+Before every release, apply `$review-pr-release` at `../review-pr-release/SKILL.md`: independent review/debate of substantive code, bugs/regressions, equivalence-preserving performance, intended visual changes and consistent documentation. Record the reviewed/tested SHA and unresolved validation. Do not publish without completing this review; changes after review require checking the affected delta. This gate does not grant merge/release authorization.
+
 Review the final diff, keep documentation consistent, and inspect required checks once. Mark the draft ready when implementation and required validation are complete within the authorized workflow; keep unresolved gameplay or other validation visible. Report the PR link, concise changes, validation and material remaining work.
 
 Merging and publishing a release are separate actions: follow the user's explicit request and project rules. A new version is not automatically a release. Do not merge/release just because tests pass. Do not modify Git remote configuration, global identity or trust settings to bypass an access issue. Report a concrete access blocker without repeated identical attempts.
