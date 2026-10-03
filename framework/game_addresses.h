@@ -216,6 +216,8 @@ enum class Id : uint16_t {
     LotLodScoring,            // FUN_00c6c290: scores nearby lots and requests Detailed View transitions
     LotLodThrottleTest,       // Steam 0x00c6c695: cmp byte [Throttle Lot LoD Transitions],0 inside LotLodScoring
     LotLodThrottleFlag,       // global byte tested above; Steam 0x011ecbc0
+    // ---- Lot visibility override (features/lot_visibility_override.cpp; group "LotVisibilityOverride") ----
+    LotVisibilityCameraBiasJZ, // JZ in the lot visibility/distance camera-bias metric; 0x74 -> 0xEB
     // ---- Per-lot object streaming throttle (features/lot_object_throttle.cpp; group "LotObjectThrottle") ----
     LotAddObjectsToScene,     // Lot::AddLotObjectsToScene thiscall(lot, initialLoad, alwaysVisibleOnly), ret 8
     LotUpdateObjectSceneNode, // Lot::UpdateObjectSceneNode thiscall(lot, object, initialLoad, alwaysVisibleOnly)
@@ -270,7 +272,7 @@ std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
 // "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache",
-// "SceneNodeBudget", "ObjectIndex", "LotLodStreaming", "LotObjectThrottle"
+// "SceneNodeBudget", "ObjectIndex", "LotLodStreaming", "LotObjectThrottle", "LotVisibilityOverride"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1
