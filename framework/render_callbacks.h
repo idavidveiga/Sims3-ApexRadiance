@@ -49,6 +49,8 @@ class CallbackList {
 };
 
 inline CallbackList endSceneBeforeOverlay{"endSceneBeforeOverlay"};
+// Filtered report photos: fired explicitly after Picture, before Apex's overlay.
+inline CallbackList filteredSceneBeforeOverlay{"filteredSceneBeforeOverlay"};
 inline CallbackList preReset{"preReset"};
 inline CallbackList postReset{"postReset"};
 

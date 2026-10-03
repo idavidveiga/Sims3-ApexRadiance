@@ -94,9 +94,20 @@ LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // screenshot shortcut and are forwarded with a normal key-message LPARAM to the game's window procedure.
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP) && (lp & kSyntheticGameKey)) {
         const LPARAM gameLp = lp & ~kSyntheticGameKey;
+        const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, gameLp);
         if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client)
             g_client->GameKeyDown(wp, (gameLp & (1 << 30)) != 0);
-        return CallWindowProcW(g_original, hwnd, msg, wp, gameLp);
+        return forwarded;
+    }
+
+    // Bare F10 belongs to the game, even while ImGui wants keyboard input or a legacy binding uses it.
+    const bool nativeF10 = wp == VK_F10 && GetKeyState(VK_CONTROL) >= 0 &&
+                           GetKeyState(VK_SHIFT) >= 0 && GetKeyState(VK_MENU) >= 0;
+    if (nativeF10 && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP)) {
+        const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, lp);
+        if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client)
+            g_client->GameKeyDown(wp, (lp & (1 << 30)) != 0);
+        return forwarded;
     }
 
     // Apex's toggle chord (auto-repeat ignored); its key-up is eaten as well so the game never sees half of it

@@ -536,6 +536,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         }
         return;
     }
+    if (!ShaderCache::PrecompileComplete()) return; // keep loading frames moving while bytecode compiles
     RegisterHooks(dev);
     const unsigned long long now = GetTickCount64();
     if (dev != m_lastDevice) { // the game has two devices (a tiny one first): which one the frames end on

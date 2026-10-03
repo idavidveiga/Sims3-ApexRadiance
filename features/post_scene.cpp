@@ -3,8 +3,10 @@
 #define NOMINMAX
 #endif
 #include "post_scene.h"
+#include "shader_cache.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
+#include "d3d9_extra_hooks.h"
 #include "render_callbacks.h"
 #include <algorithm>
 #include <atomic>
@@ -27,6 +29,17 @@ IDirect3DSurface9* g_curRT0 = nullptr;     // identity only
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only
 int g_sceneDraws = 0;
 bool g_done = false;
+bool g_rejectedBoundary = false; // no late composite over UI already drawn after an invalid boundary
+
+bool SceneDepthReady(IDirect3DDevice9* dev) {
+    IDirect3DSurface9* expected = DepthShare::Surface();
+    if (!expected) return true; // colour-only effects need no depth swap
+    IDirect3DSurface9* bound = nullptr;
+    ExtraHooks::RawGetDepthStencilSurface(dev, &bound);
+    const bool ready = bound && bound == expected;
+    if (bound) bound->Release();
+    return ready;
+}
 
 // ---- camera (combined build's post_scene.cpp, tag combined-final) ----
 // Every scene draw carries the camera projection in several vertex-constant blocks (LightProbe-m80: c0, c40, c180, c192
@@ -124,6 +137,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     }
     g_sceneDraws = 0;
     g_done = false;
+    g_rejectedBoundary = false;
     g_nearDraws = 0;
     g_nearVotes.clear();
     g_vpVotes.clear();
@@ -131,16 +145,22 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
 }
 
 void OnGameDraw(IDirect3DDevice9* dev) {
-    if (g_done || DepthShare::InternalPass()) return;
+    if (g_done || DepthShare::InternalPass() || !ShaderCache::PrecompileComplete()) return;
     if (!g_curRT0 || g_curRT0 != g_backBuffer) return;
     DWORD z = D3DZB_TRUE;
     dev->GetRenderState(D3DRS_ZENABLE, &z);
     if (z != D3DZB_FALSE) {
+        if (g_rejectedBoundary && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
         g_sceneDraws++;
         if (g_nearDraws < kNearDraws && g_cameraWanted.load(std::memory_order_relaxed) > 0) VoteCamera(dev);
         return;
     }
     if (g_sceneDraws < kMinSceneDraws) return;
+    if (g_rejectedBoundary) return;
+    if (!SceneDepthReady(dev)) {
+        g_rejectedBoundary = true;
+        return; // effects stay pending for a later scene boundary, not for the UI after this one
+    }
     g_done = true; // set first so a failure never retries within the frame
     std::vector<std::pair<int, PostScene::Effect>> run;
     {
@@ -154,7 +174,8 @@ void OnGameDraw(IDirect3DDevice9* dev) {
 // ordered effects at the game's EndScene, before Apex's overlay and Picture's scene copy. Keep the draw-triggered path
 // above for frames that do have a depth-off boundary (including its existing interior behavior).
 void AtEndSceneBeforeOverlay(IDirect3DDevice9* dev) {
-    if (!dev || g_done || g_sceneDraws < kMinSceneDraws || !g_backBuffer || g_curRT0 != g_backBuffer) return;
+    if (!ShaderCache::PrecompileComplete()) return;
+    if (!dev || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws || !g_backBuffer || g_curRT0 != g_backBuffer || !SceneDepthReady(dev)) return;
     IDirect3DSurface9* rt = nullptr;
     if (FAILED(dev->GetRenderTarget(0, &rt)) || !rt) return;
     const bool onBackBuffer = rt == g_backBuffer;
@@ -176,6 +197,7 @@ void OnPreReset(IDirect3DDevice9*) {
     g_curRT0 = nullptr;
     g_backBuffer = nullptr;
     g_done = true;
+    g_rejectedBoundary = false;
 }
 
 void RegisterHooks() {

@@ -7,6 +7,7 @@
 #include "render_callbacks.h"
 #include "s3ss_detect.h"
 #include "picture.h"
+#include "captures.h"
 #include "vulkan_driver_guard.h"
 #include <detours/detours.h>
 #include <atomic>
@@ -110,6 +111,12 @@ HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice9* dev) {
     if (SUCCEEDED(dev->TestCooperativeLevel())) {
         RenderCallbacks::Fire(RenderCallbacks::endSceneBeforeOverlay, dev);
         Picture::Get().BeforeOverlay(dev);
+        if (Overlay::IsVisible() && Captures::ScreenshotPending()) {
+            // A report photo needs the grade too, without photographing the Apex menu.
+            // Picture consumes frameReady, so the normal call below will not grade twice.
+            Picture::Get().OnEndScene(dev);
+        }
+        RenderCallbacks::Fire(RenderCallbacks::filteredSceneBeforeOverlay, dev);
         // once per frame (the Present hook clears the flag); every EndScene if the device hooks are missing
         if (!D3D9Hooks::IsInstalled() || !g_overlayDrawnThisFrame.exchange(true)) Overlay::Frame(dev);
         Picture::Get().OnEndScene(dev);

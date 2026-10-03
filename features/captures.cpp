@@ -117,8 +117,8 @@ uint64_t FolderSize(const std::filesystem::path& path) {
 // ---- Screenshots (user, 30/09: "the game should capture the screen too, to have a print") ----
 // Finish queues the capture folder; the next frame's picture is copied from the back buffer and written as
 // Screenshot.png on a short-lived thread (WIC). Menu closed: at Present, so the picture has everything the player sees
-// (Color filters included); the capture notes are not drawn that frame (ScreenshotPending). Menu open: at the end of the
-// scene, before the Apex menu draws (the Color filters come after the menu, so they are not in that one).
+// (Color filters included); the capture notes are not drawn that frame (ScreenshotPending). Menu open: the bootstrap
+// runs Picture once, then fires filteredSceneBeforeOverlay, before the Apex menu draws.
 struct ShotJob {
     std::filesystem::path file;
     std::filesystem::path reportFolder;
@@ -133,6 +133,7 @@ struct PlayerPhotoState {
     bool active = false;
     bool restoreOverlay = false;
     bool toggledGameUi = false;
+    unsigned long long requestedAt = 0;
 };
 PlayerPhotoState g_playerPhoto;
 
@@ -180,6 +181,14 @@ void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
 // Render thread: the finished back buffer (including post-scene and Picture passes) -> queued PNGs.
 void TakeShots(IDirect3DDevice9* dev) {
     if (g_shots.empty() || !dev) return;
+    // Wait for the posted hide key to pass through the game procedure before counting a clean frame.
+    if (g_playerPhoto.active && g_playerPhoto.toggledGameUi && !g_gameUiHidden.load()) {
+        if (GetTickCount64() - g_playerPhoto.requestedAt < 2000) return;
+        LOG_WARNING("[Captures] Screenshot cancelled: the UI hide key was not processed in time");
+        std::erase_if(g_shots, [](const ShotJob& job) { return !job.report; });
+        RestorePlayerPhoto();
+        return;
+    }
     std::vector<ShotJob> jobs;
     for (auto it = g_shots.begin(); it != g_shots.end();) {
         if (it->skipPresents > 0) { --it->skipPresents; ++it; }
@@ -242,7 +251,7 @@ void QueueShot(const std::filesystem::path& folder) {
     { std::lock_guard<std::mutex> lk(g_lock); g_shotJobs[folder] = true; }
     if (g_shotHooks) return;
     g_shotHooks = true; // once; the callbacks do nothing while nothing is queued
-    RenderCallbacks::endSceneBeforeOverlay.Add(ShotAtSceneEnd);
+    RenderCallbacks::filteredSceneBeforeOverlay.Add(ShotAtSceneEnd);
     D3D9Hooks::RegisterPresent("CapturesScreenshot", [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
         TakeShots(ctx.device); // menu closed: the frame as it is shown (notes held back for it)
         return D3D9Hooks::HookAction::Continue;
@@ -251,6 +260,7 @@ void QueueShot(const std::filesystem::path& folder) {
 
 bool QueuePlayerPhoto(const std::filesystem::path& file, bool hideGameUi) {
     g_playerPhoto.active = true;
+    g_playerPhoto.requestedAt = GetTickCount64();
     g_playerPhoto.restoreOverlay = Overlay::IsVisible();
     g_playerPhoto.toggledGameUi = hideGameUi && !g_gameUiHidden.load();
     Overlay::SetVisible(false);
@@ -265,7 +275,7 @@ bool QueuePlayerPhoto(const std::filesystem::path& file, bool hideGameUi) {
     g_shots.push_back({file, {}, false, 1}); // allow the posted F10 toggle to reach the game before reading the back buffer
     if (g_shotHooks) return true;
     g_shotHooks = true; // once; the callbacks do nothing while nothing is queued
-    RenderCallbacks::endSceneBeforeOverlay.Add(ShotAtSceneEnd);
+    RenderCallbacks::filteredSceneBeforeOverlay.Add(ShotAtSceneEnd);
     D3D9Hooks::RegisterPresent("CapturesScreenshot", [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
         TakeShots(ctx.device); // menu closed: the frame as it is shown (notes held back for it)
         return D3D9Hooks::HookAction::Continue;

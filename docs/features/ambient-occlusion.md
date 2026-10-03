@@ -67,6 +67,13 @@ Validation: tools/ao_receiver_test reads the shader package without writing byte
 
 ## How it works (`patches/ambient_occlusion_patch.cpp`)
 
+PostScene validates the bound shared scene depth before consuming the chain. A mismatched boundary leaves effects
+pending; only resumed depth-tested draws with the real scene depth allow another boundary. The EndScene fallback
+does not run over UI already drawn after a rejected boundary. Native regression coverage in `tools/post_scene_test`
+passes 12 checks for order, once-per-frame execution, hidden-UI fallback, mismatch/recovery, internal draws and reset.
+This does not establish visual equivalence in the game. Picture's colour-difference UI heuristic and the existing
+mid-scene depth-off limitation still require controlled gameplay captures; no AO intensity or shader math is changed.
+
 Runs first in the post-scene chain (`PostScene::kAmbientOcclusion = 10`, before Edge Smoothing 20 and Depth Blur 30),
 only when the bound depth-stencil is `DepthShare::Surface()` (the main scene). `Install` asks for the INTZ depth swap
 (`DepthShare::Request`) and for the camera (`PostScene::WantCamera`).
