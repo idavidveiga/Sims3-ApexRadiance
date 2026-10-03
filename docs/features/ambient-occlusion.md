@@ -41,7 +41,7 @@ six saved frames of the game (depth dumps `Documents\...\S3SS\Profundidade\profu
 | Quality (visible) | `qualidade` | enum | 2 (High) | stored 0 Low, 1 Medium, 2 High, 3 Ultra, 4 Very Low | 4 / 6 / 8 / 12 / 2 slices; the menu shows Very Low .. Ultra (`kQualityShown`), stored indices kept from 2.1.0 |
 | Advanced > Show the shade alone | (not saved) | bool | false | | the shade in grey (also on the Developer page) |
 | Also in map view (visible) | `noMapa` | bool | true | | with the map view open: contact 4 m, large 15 m, no fade (lab on 3 map captures 30/09: view 950-1800 m, one depth step 5-20 cm as near is ~1 m there; AO shift 0.35-0.48 levels) |
-| (none) | `revisao` | int | 9 | | existing revision policy: older configs/profiles reset AO settings to defaults, retaining enabled state; revision 9 applies the approved default profile while keeping Sim Occlusion off |
+| (none) | `revisao` | int | 9 | | revision marker: older configs/profiles keep every stored value and fill only missing keys from the current defaults |
 
 All live (read every frame). The old combined build's keys (`intensidade`, `raioM`, `visualizar`) are not read.
 
@@ -59,7 +59,7 @@ Opaque and alpha-tested depth-writing receivers replay into G32R32F: signed devi
 
 Recognized non-depth-writing hair using SRCALPHA/INVSRCALPHA and ADD also replays into a separate G32R32F target, retaining source alpha as coverage. The composite rejects hair behind final foreground depth and interpolates suppression by coverage. It preserves the underlying opaque receiver adjustment. Other transparency equations/materials remain unchanged. This is a screen-composite approximation: it cannot separate the already blended hair/background colours, and overlapping translucent layers use the last accepted replay rather than exact accumulated coverage. Validate these cases on real CC before release.
 
-Both targets are created on demand, reset safely and released when customization is off or all strengths/caps are 100% with preview off. Transparent hair uses a second target only when enabled. Each target costs 8 bytes per screen pixel; replays add GPU/CPU work. The AO-pass timer excludes replay costs. Device/allocation failure retains original shading with an inline warning. Configs/profiles include all controls; preview is not saved. Revision 9 follows the existing reset-on-revision policy, preserving the AO enabled state while applying the approved AO defaults and keeping Sim Occlusion off. Shader references are retained against pointer reuse; caches have fixed limits.
+Both targets are created on demand, reset safely and released when customization is off or all strengths/caps are 100% with preview off. Transparent hair uses a second target only when enabled. Each target costs 8 bytes per screen pixel; replays add GPU/CPU work. The AO-pass timer excludes replay costs. Device/allocation failure retains original shading with an inline warning. Configs/profiles include all controls; preview is not saved. Revision 9 preserves every explicitly saved AO value and fills only settings missing from older files with the current defaults. Shader references are retained against pointer reuse; caches have fixed limits.
 
 Distance changes the existing view-depth fade, not pyramid sampling LOD or Sim mesh detail. The default retains 150-400 m. Map view keeps its dedicated radii and fade. A shorter cutoff can avoid distant GTAO marching, but still runs copy, pyramid, blur and composite passes; no overall FPS gain is established.
 

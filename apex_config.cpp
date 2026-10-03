@@ -348,10 +348,7 @@ void LoadSettings() {
         if (ParseKeyChord((*ui)["compare_key"].value_or(std::string()), own)) u.compareKey = own;
         if (ParseKeyChord((*ui)["refresh_key"].value_or(std::string()), own)) u.refreshKey = own;
         u.screenshotShortcutEnabled = (*ui)["screenshot_shortcut_enabled"].value_or(true);
-        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string("Ctrl+Shift+F12")), own)) {
-            if (own.vk == VK_F10 && !own.ctrl && !own.shift && !own.alt) own = {VK_F12, true, true, false};
-            u.screenshotKey = own;
-        }
+        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string("Ctrl+Shift+F12")), own)) u.screenshotKey = own;
         u.screenshotHideGameUi = (*ui)["screenshot_hide_game_ui"].value_or(true);
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
@@ -611,10 +608,7 @@ void ApplyFeatureState(const toml::table& state) {
         u.compareKey = ParseKeyChord((*sc)["compare_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
         u.refreshKey = ParseKeyChord((*sc)["refresh_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
         u.screenshotShortcutEnabled = (*sc)["screenshot_shortcut_enabled"].value_or(u.screenshotShortcutEnabled);
-        if (ParseKeyChord((*sc)["screenshot_key"].value_or(std::string()), k)) {
-            if (k.vk == VK_F10 && !k.ctrl && !k.shift && !k.alt) k = {VK_F12, true, true, false};
-            u.screenshotKey = k;
-        }
+        if (ParseKeyChord((*sc)["screenshot_key"].value_or(std::string()), k)) u.screenshotKey = k;
         u.screenshotHideGameUi = (*sc)["screenshot_hide_game_ui"].value_or(u.screenshotHideGameUi);
         u.keyChosen = true;
         SetUi(u);

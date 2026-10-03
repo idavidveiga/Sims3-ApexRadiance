@@ -1215,15 +1215,15 @@ class AmbientOcclusionPatch : public ApexPatch {
     // Settings are read live every frame, never reinstall (that would tear down the depth swap from the wrong thread)
     void Update() override { pendingReinstall = false; }
 
-    // Settings revision (user rule, 30/09: whenever the AO changes, the players' AO settings go back to the new defaults
-    // by themselves). Configs and profiles saved with an older revision load the defaults; the on/off state is kept.
+    // Settings revisions let newer builds supply defaults for newly added keys. Stored values always take precedence;
+    // older configs and profiles fill only keys they do not contain.
     void SaveToToml(toml::table& table) const override {
         ApexPatch::SaveToToml(table);
         table.insert_or_assign(kRevisionKey, kSettingsRevision);
     }
     bool LoadFromToml(const toml::table& table) override {
         if (Revision(table) >= kSettingsRevision) return ApexPatch::LoadFromToml(table);
-        LOG_INFO(std::format("[AO] Settings of revision {} reset to the defaults of revision {}", Revision(table), kSettingsRevision));
+        LOG_INFO(std::format("[AO] Settings of revision {}: preserving saved values and filling missing keys from revision {} defaults", Revision(table), kSettingsRevision));
         const bool ok = ApexPatch::LoadFromToml(WithDefaults(table));
         PatchManager::Get().SetUnsavedChanges(true); // saved again with the current revision
         return ok;
@@ -1275,11 +1275,11 @@ class AmbientOcclusionPatch : public ApexPatch {
     static constexpr int kSettingsRevision = 9;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
-    // The defaults, with the table's on/off state
+    // Start from current defaults, then overlay every value that was explicitly saved.
     toml::table WithDefaults(const toml::table& table) const {
         toml::table d;
         DefaultsToToml(d);
-        if (const auto on = table["enabled"].value<bool>()) d.insert_or_assign("enabled", *on);
+        for (const auto& [key, value] : table) d.insert_or_assign(key, value);
         return d;
     }
 
