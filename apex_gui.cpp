@@ -22,6 +22,7 @@
 #include "hotkeys.h"
 #include "s3ss_detect.h"
 #include "shader_cache.h"
+#include "sim_occlusion.h"
 #include "ui/i18n.h"
 #include "ui/logo.h"
 #include "ui/violet_theme.h"
@@ -677,6 +678,8 @@ void AmbientOcclusionContent() {
     ApexUi::IconNote(IconId::Gauge, "Heavier on the graphics card than other effects: lower the Quality if the game slows down");
     ApexUi::Gap(ApexUi::kSpace1);
     FeatureCard("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade under furniture, in corners and around houses");
+    ApexUi::Gap(ApexUi::kSpace2);
+    SimOcclusion::RenderUI(Find("AmbientOcclusion"));
 }
 
 void AmbientOcclusionPage() {
