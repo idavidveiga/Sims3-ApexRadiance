@@ -1171,7 +1171,7 @@ class DepthBlurPatch : public ApexPatch {
             ImGui::TextDisabled("Blurred frames: %u  |  taps per side: %d  |  blur targets: %s", g.framesBlurred, g.lastTaps, FormatName(g.halfFmt));
         }
         ImGui::TextDisabled("Map view: %s  |  fade %.2f", g.mapOpen ? "open" : "closed", g.mapFade);
-        changed |= ImGui::Checkbox("Show blur amount", &g.p.debugView);
+        changed |= ApexUi::Checkbox("Show blur amount", &g.p.debugView);
         ApexUi::Tooltip("Shows the blur amount instead of the image: white = blurred, black = sharp; the Auto focus window is tinted violet");
         ImGui::SetNextItemWidth(120.0f * ApexUi::Unit());
         if (ImGui::InputFloat("Far plane", &g.p.farPlane, 0.0f, 0.0f, "%.1f")) {

@@ -41,8 +41,8 @@ void ApplyStyle(ImGuiStyle& style) {
     ImGui::StyleColorsDark(&style); // anything not set below keeps a sane dark value
 
     style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(7.0f, 3.0f);
-    style.ItemSpacing = ImVec2(8.0f, 5.0f);
+    style.FramePadding = ImVec2(12.0f, (kControlCompact - kFontSize) * 0.5f);
+    style.ItemSpacing = ImVec2(12.0f, 5.0f);
     style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
     style.IndentSpacing = 14.0f;
     style.ScrollbarSize = 8.0f; // thin

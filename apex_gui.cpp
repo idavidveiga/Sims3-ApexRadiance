@@ -818,6 +818,7 @@ void ReportOptionalNotes() {
     if (ImGui::BeginPopupModal("OptionalCaptureNotes", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
         ApexUi::CardHeader(IconId::Check, "Capture saved", "Give it a name to find it more easily", nullptr, nullptr);
         ApexUi::CardDivider();
+        const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
         ImGui::TextUnformatted(I18n::Tr("Title (required)"));
         ImGui::SetNextItemWidth(-1);
         ImGui::InputText("##OptionalCaptureTitle", g_report.optionalTitle, sizeof(g_report.optionalTitle));
@@ -1072,6 +1073,7 @@ void SessionHeroCard() {
             ApexUi::Gap(ApexUi::kSpace3);
             ImGui::Separator();
             ApexUi::Gap(ApexUi::kSpace2);
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
             ImGui::BeginDisabled(Loading() || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
             if (ApexUi::IconTextButton("Start a session##Sess", IconId::Camera, "Every capture you save goes into this session's folder until you end it",
                                        ApexUi::ButtonKind::Primary)) {
@@ -1098,6 +1100,7 @@ void SessionHeroCard() {
                 }
             }
             ApexUi::Gap(ApexUi::kSpace3);
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
             ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
             if (ApexUi::IconTextButton("End and save the session##Sess", IconId::Check, "Adds the log, your settings and a list of the captures, ready to zip and send",
                                        ApexUi::ButtonKind::Primary)) {
@@ -1475,6 +1478,7 @@ void DeveloperConfirmation() {
         ApexUi::MutedText("Captures and reports may contain your settings, local file paths and details about the current game session. Review them before sharing. Nothing is sent automatically.");
         ApexUi::MutedText("Restart the game after confirming. Measurements and recordings will not start automatically when you load a profile.");
         ApexUi::Gap(ApexUi::kSpace2);
+        const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
         const bool oneRow = ReportDialogActions("Cancel", false, "Enable developer mode", true);
         if (ApexUi::TextButton("Cancel")) { g_developerPendingProfile = {}; ImGui::CloseCurrentPopup(); }
         ReportDialogLastAction("Enable developer mode", true, oneRow);
@@ -1662,9 +1666,9 @@ void LoadProfileNow(const std::string& name, unsigned parts) {
 void ProfileIconPicker(IconId& selected) {
     const float u = ApexUi::Unit();
     const float h = ImGui::GetFrameHeight();
-    const float size = ApexUi::kIconMedium * u;
-    const float arrow = 10.0f * u;
-    const float gap = 6.0f * u, padding = 8.0f * u;
+    const float size = VioletTheme::kControlIcon * u;
+    const float arrow = 12.0f * u;
+    const float gap = 8.0f * u, padding = 12.0f * u;
     const float width = padding * 2.0f + size + gap + arrow;
     if (ImGui::Button("##ProfileIcon", ImVec2(width, h))) ImGui::OpenPopup("##ProfileIcons");
     // Button placement may include baseline alignment; anchor to its submitted rectangle.
@@ -1678,6 +1682,7 @@ void ProfileIconPicker(IconId& selected) {
                      ImGui::GetColorU32(Col(VioletTheme::kTextMuted)));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("Choose a profile icon"));
     if (ImGui::BeginPopup("##ProfileIcons")) {
+        const ApexUi::ControlSizeScope sizeScope(ApexUi::ControlSize::Compact);
         static constexpr IconId choices[] = {
             IconId::House, IconId::Armchair, IconId::Fence, IconId::LandPlot, IconId::Trees, IconId::Flower2,
             IconId::Leaf, IconId::Cat, IconId::Dog, IconId::UserRound, IconId::Heart, IconId::Coffee,
@@ -1688,7 +1693,7 @@ void ProfileIconPicker(IconId& selected) {
         for (int i = 0; i < IM_COUNTOF(choices); ++i) {
             if (i % 6) ImGui::SameLine();
             const IconId id = choices[i];
-            if (ApexUi::IconButton(ApexUi::IconName(id), id, ApexUi::IconName(id), selected == id, 32.0f)) {
+            if (ApexUi::IconButton(ApexUi::IconName(id), id, ApexUi::IconName(id), selected == id, VioletTheme::kControlCompact)) {
                 selected = id;
                 ImGui::CloseCurrentPopup();
             }
@@ -1723,23 +1728,27 @@ void ProfilesTab() {
         s.saveParts &= saveAvailable;
         if (!ApexUi::FilterActive()) ProfilePartChecks("SaveParts", &s.saveParts, saveAvailable);
         ApexUi::Gap(ApexUi::kSpace3);
-        const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
-        const float gap = ImGui::GetStyle().ItemSpacing.x;
-        ProfileIconPicker(s.icon);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(std::fmax(ImGui::GetContentRegionAvail().x - saveW - gap, 80.0f * u));
-        const bool enter = ImGui::InputTextWithHint("##ProfileName", I18n::Tr("Profile name"), s.name, sizeof s.name,
-                                                    ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, ProfileNameFilter);
-        ImGui::SameLine();
-        const std::string clean = ApexConfig::SanitizeProfileName(s.name);
-        const bool canSave = !clean.empty() && s.saveParts != 0 && !Loading();
-        ImGui::BeginDisabled(!canSave);
-        const bool save = ApexUi::IconTextButton("Save##Profile", IconId::Save, s.saveParts == 0 ? "Pick at least one part to save" : nullptr, ButtonKind::Primary);
-        ImGui::EndDisabled();
-        if ((save || (enter && !clean.empty())) && canSave) {
-            if (ApexConfig::ProfileExists(clean) && s.confirmReplace != clean) s.confirmReplace = clean;
-            else SaveProfileNow(clean);
-        }
+        {
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
+            const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            const bool inlineSave = ImGui::GetContentRegionAvail().x >= 72.0f * u + 80.0f * u + saveW + 2.0f * gap;
+            ProfileIconPicker(s.icon);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(std::fmax(ImGui::GetContentRegionAvail().x - (inlineSave ? saveW + gap : 0.0f), 80.0f * u));
+            const bool enter = ImGui::InputTextWithHint("##ProfileName", I18n::Tr("Profile name"), s.name, sizeof s.name,
+                                                        ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, ProfileNameFilter);
+            if (inlineSave) ImGui::SameLine();
+            const std::string clean = ApexConfig::SanitizeProfileName(s.name);
+            const bool canSave = !clean.empty() && s.saveParts != 0 && !Loading();
+            ImGui::BeginDisabled(!canSave);
+            const bool save = ApexUi::IconTextButton("Save##Profile", IconId::Save, s.saveParts == 0 ? "Pick at least one part to save" : nullptr, ButtonKind::Primary);
+            ImGui::EndDisabled();
+            if ((save || (enter && !clean.empty())) && canSave) {
+                if (ApexConfig::ProfileExists(clean) && s.confirmReplace != clean) s.confirmReplace = clean;
+                else SaveProfileNow(clean);
+            }
+        } // primary profile form
         ApexUi::Gap(ApexUi::kSpace1);
         ApexUi::MutedText("Shortcuts are optional and start unchecked.");
         if (!s.confirmReplace.empty()) {
@@ -2034,12 +2043,12 @@ void TourPanel() {
 void SearchBox(float x, float y, float width) {
     const float u = ApexUi::Unit();
     const float h = ImGui::GetFrameHeight();
-    const float is = ApexUi::kIconSmall * u;
+    const float is = VioletTheme::kControlIcon * u;
     const bool hasText = g_search[0] != '\0';
     const float clearW = hasText ? h : 0.0f;
     ImGui::SetCursorPos(ImVec2(x, y));
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * u + is + 6.0f * u, ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u, ImGui::GetStyle().FramePadding.y));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, h * 0.5f);
     ImGui::SetNextItemWidth(std::fmax(width - clearW, 40.0f * u));
     if (g_focusSearch) {
@@ -2052,13 +2061,13 @@ void SearchBox(float x, float y, float width) {
     ImGui::PopStyleVar(2);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImU32 muted = ImGui::GetColorU32(Col(VioletTheme::kTextMuted));
-    ApexUi::DrawIcon(dl, IconId::Search, ImVec2(p.x + 8.0f * u, p.y + (h - is) * 0.5f), is, active ? ImGui::GetColorU32(Col(VioletTheme::kAccentLight)) : muted);
+    ApexUi::DrawIcon(dl, IconId::Search, ImVec2(p.x + ApexUi::kSpace3 * u, p.y + (h - is) * 0.5f), is, active ? ImGui::GetColorU32(Col(VioletTheme::kAccentLight)) : muted);
     if (!hasText && !active) {
         ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
         const char* hint = "Ctrl+F";
         const ImVec2 ts = ImGui::CalcTextSize(hint);
         const float hx = p.x + width - ts.x - 10.0f * u;
-        if (hx > p.x + 8.0f * u + is + 6.0f * u + ImGui::CalcTextSize(placeholder).x + 8.0f * u) // only when it fits after the placeholder
+        if (hx > p.x + ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u + ImGui::CalcTextSize(placeholder).x + 8.0f * u) // only when it fits after the placeholder
             dl->AddText(ImVec2(hx, p.y + (h - ts.y) * 0.5f), muted, hint);
         ImGui::PopFont();
     }

@@ -4572,11 +4572,11 @@ void RenderSampling(bool& save) {
     ImGui::SeparatorText("Sampling");
     bool render = g_sampleRender.load(), sim = g_sampleSim.load();
     bool changed = false;
-    if (ImGui::Checkbox("Sample the render thread", &render)) changed = true;
+    if (ApexUi::Checkbox("Sample the render thread", &render)) changed = true;
     Hint("A sampler thread pauses the render thread ~2000 times a second for a few microseconds and records where it is\n"
          "(EIP and the TS3W call sites on its stack). Hitches then show which code the Unattributed time was spent in.\n"
          "Costs the paused time shown below (a few % of the render thread) plus a little CPU on another core.");
-    if (ImGui::Checkbox("Sample the simulation thread", &sim)) changed = true;
+    if (ApexUi::Checkbox("Sample the simulation thread", &sim)) changed = true;
     Hint("Same for the simulation thread (the thread that calls GC_try_to_collect; unknown until the first script GC).");
     int hz = g_sampleHz.load();
     if (ImGui::SliderInt("Sampling rate", &hz, 250, 4000, "%d Hz")) g_sampleHz.store(hz);
@@ -4657,7 +4657,7 @@ void RenderAdvanced() {
     save |= ImGui::IsItemDeactivatedAfterEdit();
     Hint("Frames shorter than this are never hitches.");
     bool state = g_countState.load();
-    if (ImGui::Checkbox("Count state calls", &state)) {
+    if (ApexUi::Checkbox("Count state calls", &state)) {
         g_countState.store(state);
         std::lock_guard<std::mutex> lk(g_ctrlMutex);
         if (g_enabled.load()) {
@@ -4670,13 +4670,13 @@ void RenderAdvanced() {
          "counters (no callback, a nanosecond per call, always on in the development build); Apex's own state changes around a replaced draw\n"
          "bypass the detours and are not counted.");
     bool file = g_writeFile.load();
-    if (ImGui::Checkbox("Write ApexRadiance_Hitches.txt", &file)) {
+    if (ApexUi::Checkbox("Write ApexRadiance_Hitches.txt", &file)) {
         g_writeFile.store(file);
         save = true;
     }
     Hint("Append every hitch to ApexRadiance_Hitches.txt in the Apex Radiance folder (Documents), in batches at most once per second.");
     bool objects = g_objectBuildWanted;
-    if (ImGui::Checkbox("Time lot object building (this session)", &objects)) {
+    if (ApexUi::Checkbox("Time lot object building (this session)", &objects)) {
         std::lock_guard<std::mutex> lk(g_ctrlMutex);
         g_objectBuildWanted = objects;
         if (g_enabled.load() && !g_attachPending.load()) {
@@ -4689,7 +4689,7 @@ void RenderAdvanced() {
          "While on, Lot Streaming Optimizations cannot re-install (changing its settings turns its object throttle off),\n"
          "so leave its settings alone during the measurement. Not saved.");
     bool mutexTimed = g_timeMutex.load();
-    if (ImGui::Checkbox("Time the Mutex::Lock hook", &mutexTimed)) {
+    if (ApexUi::Checkbox("Time the Mutex::Lock hook", &mutexTimed)) {
         std::lock_guard<std::mutex> lk(g_ctrlMutex);
         g_timeMutex.store(mutexTimed);
         ApplyMutexOptionLocked();
@@ -4700,7 +4700,7 @@ void RenderAdvanced() {
          "580 times per scan, so this hook inflates exactly what the Resource lookup counter measures (and its samples).\n"
          "Turn it on only to look for lock contention.");
     bool reg = g_regTiming.load();
-    if (ImGui::Checkbox("Per-hook registry timing", &reg)) {
+    if (ApexUi::Checkbox("Per-hook registry timing", &reg)) {
         g_regTiming.store(reg);
         g_regTimingActive.store(reg && g_enabled.load());
     }
@@ -4844,7 +4844,7 @@ void Shutdown() {
 void RenderUI(bool showEnable) {
     bool on = g_enabled.load();
     if (showEnable) { // the Violet menu's card has its own switch
-        if (ImGui::Checkbox("Enable frame profiler", &on)) {
+        if (ApexUi::Checkbox("Enable frame profiler", &on)) {
             SetEnabled(on);
             ApexConfig::RequestSave();
         }

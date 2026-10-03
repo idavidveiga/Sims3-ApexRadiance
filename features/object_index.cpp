@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Object lookup index (see object_index.h and docs/features/performance.md, section "Faster object lookups (C8)").
 //
@@ -606,7 +607,7 @@ void RenderDeveloperUI() {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::SliderInt("Check 1 answer in N against the game##OiVerify", &every, 0, 1024)) SetVerifyEvery(every);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Check every answer for 10 s##OiVerifyAll")) VerifyAllFor(10.0);
+    if (ApexUi::TextButton("Check every answer for 10 s##OiVerifyAll")) VerifyAllFor(10.0);
     const bool checkingAll = GetTickCount64() < g_verifyAllUntil.load();
     ImGui::TextDisabled("Checks: %llu equal, %llu different, %llu inconclusive (the tree changed during the check)%s", static_cast<unsigned long long>(s.verified),
                         static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.inconclusive), checkingAll ? "  [checking every answer]" : "");

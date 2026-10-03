@@ -1150,7 +1150,7 @@ class EdgeSmoothingPatch : public ApexPatch {
         SAFE_IMGUI_BEGIN();
         ImGui::TextWrapped("Status: %s", g.status.c_str());
         if (g.ready && g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame", g.gpuMs);
-        bool changed = ImGui::Checkbox("Show smoothed pixels in red", &g.p.debugView);
+        bool changed = ApexUi::Checkbox("Show smoothed pixels in red", &g.p.debugView);
         ApexUi::Tooltip("Tints every pixel the smoothing changed red, to see which edges it catches");
         if (g.ready) ImGui::TextDisabled("Frames smoothed: %u (with the scene depth %u)", g.framesSmoothed, g.framesWithDepth);
         if (changed) NotifySettingChanged();

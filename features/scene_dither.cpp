@@ -453,7 +453,7 @@ class SceneDitherPatch : public ApexPatch {
                             "%u ps_3_0 refused, %u other",
                             dithered, total ? 100.0 * dithered / total : 0.0, g_last.dithered3, g_last.dithered2, g_last.ps2NoPair, g_last.ps2Refused,
                             g_last.ps3Refused, g_last.other);
-        ImGui::Checkbox("Show covered surfaces", &g_showCovered);
+        ApexUi::Checkbox("Show covered surfaces", &g_showCovered);
         ApexUi::Tooltip("A coarse grain on every surface the fix covers; smooth surfaces are not covered (not saved)");
     }
 };

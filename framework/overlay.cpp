@@ -245,6 +245,8 @@ void Frame(IDirect3DDevice9* device) {
         g_appliedScale = scale;
     }
     ImGui::GetStyle().FontScaleMain = scale;
+    // Keep the compact frame height exact even when Segoe UI falls back to a different base font.
+    ImGui::GetStyle().FramePadding.y = std::fmax(0.0f, (VioletTheme::kControlCompact - VioletTheme::BaseFontSize()) * 0.5f * scale);
 
     ImGui::NewFrame();
     g_client->Draw();

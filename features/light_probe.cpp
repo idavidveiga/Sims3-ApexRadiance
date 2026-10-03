@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 // GPU light probe (see light_probe.h)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -915,10 +916,10 @@ void RenderUI() {
     if (g_textures.empty()) return;
     ImGui::TextWrapped("Textures used at this pixel. Tick one to replace it with a solid colour and see the effect on screen:");
     bool changed = false;
-    changed |= ImGui::Checkbox("Replace with white (unticked = black)", &g_blankWhite);
+    changed |= ApexUi::Checkbox("Replace with white (unticked = black)", &g_blankWhite);
     for (size_t i = 0; i < g_textures.size(); i++) {
         const std::string label = std::format("T{}: {}##probe{}", i + 1, g_textures[i].desc, i);
-        changed |= ImGui::Checkbox(label.c_str(), &g_textures[i].blank);
+        changed |= ApexUi::Checkbox(label.c_str(), &g_textures[i].blank);
     }
     if (AnyBlank()) RegisterHooks();
     else if (g_state == State::Idle) UnregisterHooks();

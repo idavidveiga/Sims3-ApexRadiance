@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Resource lookup cache, "Remember missing files" and "Faster file lists" (see resource_cache.h and
 // docs/features/performance.md).
@@ -1842,7 +1843,7 @@ void RenderDeveloperUI() {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::SliderInt("Check 1 answer in N against the game##RcVerify", &every, 0, 1024)) SetVerifyEvery(every);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Check every answer for 10 s##RcVerifyAll")) VerifyAllFor(10.0);
+    if (ApexUi::TextButton("Check every answer for 10 s##RcVerifyAll")) VerifyAllFor(10.0);
     const bool checkingAll = GetTickCount64() < g_verifyAllUntil.load();
     ImGui::TextDisabled("Lookup checks: %llu equal, %llu different, %llu inconclusive (the list changed during the check)%s", static_cast<unsigned long long>(s.verified),
                         static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.inconclusive), checkingAll ? "  [checking every answer]" : "");

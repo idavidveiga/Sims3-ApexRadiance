@@ -2408,7 +2408,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         {
             // Rooms keep their light when their lamps did not change (lamp_mark_filter.cpp; 30/09, on by default, A/B here)
             bool keep = LampMarkFilter::Enabled();
-            if (ImGui::Checkbox("Rooms keep their light when their lamps did not change (floor switches)", &keep)) LampMarkFilter::SetEnabled(keep);
+            if (ApexUi::Checkbox("Rooms keep their light when their lamps did not change (floor switches)", &keep)) LampMarkFilter::SetEnabled(keep);
             ImGui::TextWrapped("%s", LampMarkFilter::Status().c_str());
         }
         ImGui::Separator();
@@ -2416,7 +2416,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         {
             // Census: which lamp-lit draws no fix claimed
             bool falseColor = LotLightBridge::FalseColor();
-            if (ImGui::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
+            if (ApexUi::Checkbox("False colour: magenta = gets lamp light but no fix claimed it", &falseColor)) LotLightBridge::SetFalseColor(falseColor);
             if (ImGui::Button("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
@@ -2430,14 +2430,14 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::SameLine();
         ImGui::TextDisabled("(or %s)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Diagnostics)).c_str());
         bool storySamples = LevelLightShare::DiagArmed();
-        if (ImGui::Checkbox("Record story light samples for the diagnostics", &storySamples)) LevelLightShare::SetDiagArmed(storySamples);
+        if (ApexUi::Checkbox("Record story light samples for the diagnostics", &storySamples)) LevelLightShare::SetDiagArmed(storySamples);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Records, in every lot light solve, the points near each lamp of the active lot with the game's wall test and ours\n"
                               "(the \"stories\" section of the diagnostics). Costs time in every solve, so it is off until checked or until the\n"
                               "first diagnostics of the session are saved.");
         ImGui::TextWrapped("Diagnostics: %s", LightDiag::Status().c_str());
         ImGui::TextWrapped("Street lamps in lots: %s", LotLightBridge::Status().c_str());
-        if (ImGui::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();
+        if (ApexUi::Checkbox("Soft lot edges (A/B: off = plain max of lot and ground light)", &g_softLotEdges)) NotifySettingChanged();
         ImGui::TextWrapped("Soft lot edges: %s", LotLightBridge::LotEdgeStatus().c_str());
         ImGui::TextWrapped("Objects: %s", ObjectLightBridge::Status().c_str());
         ImGui::TextWrapped("Shadow: %s", LotLightBridge::ObjectStatus().c_str());
@@ -2453,7 +2453,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (ApexUi::SwitchRow("Stabilize lamp sparkles on water", &g_waterFilter, "Filters tiny highlights without temporal smoothing. Turn off to compare the original", true)) NotifySettingChanged();
         if (ApexUi::SwitchRow("Preserve bright lamp colors on water", &g_waterColorCompression, "Softens excessive lamp brightness while keeping its color. Turn off to compare the original", true)) NotifySettingChanged();
         ImGui::TextWrapped("Smoothed light map: %s", LightmapSmooth::Status().c_str());
-        if (ImGui::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
+        if (ApexUi::Checkbox("Smooth the ground light maps on the GPU (A/B: off = CPU worker)", &g_smoothMapsGpu)) NotifySettingChanged();
         ImGui::SameLine();
         if (ImGui::Button("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
         ImGui::TextDisabled("GPU vs CPU: %s", LightmapSmooth::CompareStatus().c_str());
@@ -2490,8 +2490,8 @@ class NightTerrainRelightPatch : public ApexPatch {
                                g_lastEditOutcome.c_str());
         }
         ImGui::Text("Chunk re-render notices: %d (%s)", g_chunkRenders.load(), g_chunkHookInstalled ? "hooked at 0xC8504C" : "not hooked: hashing only");
-        if (ImGui::Checkbox("Relight only nearby terrain (lamp changes re-render only the chunks under the changed lamps)", &g_localRelight)) NotifySettingChanged();
-        if (ImGui::Checkbox("Paced terrain sweep (dusk and lamp-change rebuilds re-render one chunk at a time, nearest first)", &g_pacedSweep)) NotifySettingChanged();
+        if (ApexUi::Checkbox("Relight only nearby terrain (lamp changes re-render only the chunks under the changed lamps)", &g_localRelight)) NotifySettingChanged();
+        if (ApexUi::Checkbox("Paced terrain sweep (dusk and lamp-change rebuilds re-render one chunk at a time, nearest first)", &g_pacedSweep)) NotifySettingChanged();
         ImGui::TextWrapped("Local terrain relight: relit locally %d user-driven / %d automatic, done %d, refused %d (last: %s), failures %d | paced sweeps: %d started, %d done%s | "
                            "last: %s",
                            g_decLocalUser, g_decLocalAuto, g_localDone, g_decLocalRefused, g_lastLocalRefusal.c_str(), g_localFailures, g_sweepsStarted, g_sweepsDone,

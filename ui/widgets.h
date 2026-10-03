@@ -8,7 +8,7 @@
 // Design tokens (docs/ui.md "Design tokens"):
 //  - spacing scale kSpace1..4 = 4 / 8 / 12 / 16 (x Unit());
 //  - type scale: page title 1.3x bold, card title 1.05x bold, row label 1x, description / value / end labels 0.87x muted,
-//    group label 0.8x bold muted upper case;
+//    group label regular 1x muted, without artificial tracking;
 //  - rows: consecutive rows (switch, slider, segmented, control, overview) are kRowGap apart with a hairline divider in the
 //    middle; any other element (note, button, "Advanced", group label) keeps kSpace2 from a row above it.
 //  - rows with a default (the optional default argument) show a small violet dot after the label while their value differs
@@ -116,6 +116,21 @@ void IconNote(IconId icon, const char* text, unsigned rgb = 0x8B8C96);
 void Gap(float units = 4.0f);
 
 // ---- controls ----
+// Scope a whole form/action group so its inputs and buttons share one height.
+// Compact is the default; Primary is for main actions, independent of button colour.
+enum class ControlSize { Compact, Primary };
+class ControlSizeScope {
+public:
+    explicit ControlSizeScope(ControlSize size);
+    ~ControlSizeScope();
+    ControlSizeScope(const ControlSizeScope&) = delete;
+    ControlSizeScope& operator=(const ControlSizeScope&) = delete;
+};
+
+// Native-style diagnostic checkbox: a 20-unit box, independent of input frame heights.
+// Labels are supplied by the caller (developer English or already translated).
+bool Checkbox(const char* label, bool* value);
+
 // iOS-style switch (violet when on). True on the frame it was clicked (*v is already flipped).
 bool ToggleSwitch(const char* id, bool* v);
 // A row: label on the left with its description (a short sentence, always visible, muted and smaller) under it, the
@@ -138,10 +153,10 @@ ImVec2 PillSize(const char* text, bool withIcon);
 void Pill(const char* text, bool highlighted, IconId icon = IconId::None);
 // Borderless square button with an icon (header close, before/after); true when clicked. `active` keeps it violet.
 bool IconButton(const char* id, IconId icon, const char* tooltip = nullptr, bool active = false, float sizeUnits = 24.0f);
-// Buttons, one frame high. Secondary = neutral fill with a border that turns violet on hover (Reset, Save, Change);
+// Buttons use the active compact/primary group frame height. Secondary = neutral fill with a border that turns violet on hover (Reset, Save, Change);
 // Primary = violet fill with white text, for the key action of a card (Turn on ..., Download).
 enum class ButtonKind { Secondary, Primary };
-// A button with a small icon before its label; true when clicked. "Label##id" hides the ##id part.
+// A button with a 20-unit icon before its label; true when clicked. "Label##id" hides the ##id part.
 bool IconTextButton(const char* label, IconId icon, const char* tooltip = nullptr, ButtonKind kind = ButtonKind::Secondary);
 // The same without an icon; minWidth (pixels, already x Unit()) for equal-width buttons like - / +.
 bool TextButton(const char* label, const char* tooltip = nullptr, ButtonKind kind = ButtonKind::Secondary, float minWidth = 0.0f);

@@ -128,7 +128,7 @@ like the frame, on every nav-focusable widget (all custom widgets use `Invisible
 label 1x `kText`; description 0.87x muted; slider value 1x muted, right-aligned on the label's line; end labels, pills
 and the sidebar version 0.87x muted; group and sidebar labels use the regular menu font at normal size, muted, without artificial letter spacing.
 
-**Icons**: on card headers (18, accent), the sidebar (18), overview rows (18), notes (14), buttons (14), pills (14).
+**Icons**: on card headers (18, accent), the sidebar (18), overview rows (18), notes (14), action buttons (20), pills (14).
 Setting rows have no icons (all rows in a card look the same).
 
 ## Components (`ApexUi`, ui/widgets.h)
@@ -523,3 +523,11 @@ Profiles now uses the approved aligned selection grid: icon and label left, chec
 Profile selection labels match the corresponding tabs: Lighting, Color, Ambient Occlusion, Depth Blur, Edge Smoothing, Performance, Shortcuts and Developer. Lighting retains its existing combined category, including water/snow lighting; no serialized bits or settings tables change.
 
 Saved profiles use Apply in both selection and confirmation states. The control-row widget accepts an optional icon, centered on the same measured text block as the action buttons. Its original full-width row origin is retained for separators and spacing; profile icons no longer use a separate inline item.
+
+### Shared control sizing (2026-10-03)
+
+Approved control concept 02: compact inputs, combos and action buttons use a 36-unit frame; primary form/action groups use 44 units. These reference heights follow the existing UI scale, retaining the Segoe UI font. `ControlSizeScope` adjusts frame padding for the whole group and restores it automatically, so inputs, icon selectors, Cancel and Save share a centre and height. Colour remains independent of size: Apply/Delete in saved-profile rows stay compact, even when confirming an action. Profile saving, capture notes and session start/end use primary groups. Button icons use 20 units, an 8-unit text gap and 12-unit horizontal padding; the profile selector uses the same icon size and padding. Header/pill/notice icon tokens remain separate. No settings or profile schema changes. Runtime visual validation is still required.
+
+Alignment audit: segmented controls now inherit the compact frame height and shared icon/padding tokens; search uses the shared 20-unit icon and 12-unit inset. Diagnostic checkboxes keep independent 20-unit boxes, and former SmallButton actions use the standard compact widget. The profile save group wraps its action when there is insufficient width. The icon-picker popup explicitly restores compact sizing. Developer activation confirmation uses a primary footer group. Both menu skill copies document these distinctions.
+
+Control rows measure the label/description block before vertical centring in taller frames. If the controls leave less than 120 reference units for text, the right-hand group moves below the text with an 8-unit gap; the full row still owns its separator.

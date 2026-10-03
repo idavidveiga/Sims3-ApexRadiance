@@ -1296,7 +1296,7 @@ class AmbientOcclusionPatch : public ApexPatch {
             ImGui::TextDisabled("Camera: near %.3f m, A %.6f, tan %.4f x %.4f (%s)", g.lastNear, g.lastA, g.lastTanX, g.lastTanY,
                                 g.lastCamera ? "read this frame" : "fallback");
         }
-        ImGui::Checkbox("Show the shade alone", &g.showShade);
+        ApexUi::Checkbox("Show the shade alone", &g.showShade);
         if (ImGui::Button("Save depth and colour##AoCapture")) {
             g.captureRequested = true;
             g.captureNote = g.ready ? "Saving at the next frame..." : "Turn Ambient Occlusion on first";

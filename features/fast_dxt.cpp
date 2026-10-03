@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Faster texture compression: the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical four-blocks-at-a-time
 // version (see fast_dxt.h, features/dxt_codec.h and docs/features/performance.md).
@@ -354,7 +355,7 @@ void RenderDeveloperUI() {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::SliderInt("Check 1 texture in N against the game##FdVerify", &every, 0, 64)) SetVerifyEvery(every);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Check every texture for 30 s##FdVerifyAll")) VerifyAllFor(30.0);
+    if (ApexUi::TextButton("Check every texture for 30 s##FdVerifyAll")) VerifyAllFor(30.0);
     const bool all = GetTickCount64() < g_verifyAllUntil.load();
     ImGui::TextDisabled("Checks: %llu equal, %llu different, %llu too large to check%s", static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches),
                         static_cast<unsigned long long>(s.notCheckable), all ? "  [checking every texture]" : "");
@@ -379,7 +380,7 @@ void RenderDeveloperUI() {
     ImGui::SetNextItemWidth(160.0f);
     if (ImGui::SliderInt("Split textures from (side, pixels)##FdMinSide", &side, 32, 2048, "%d", ImGuiSliderFlags_Logarithmic)) SetParallelMinSide(side);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Default##FdParDefaults")) {
+    if (ApexUi::TextButton("Default##FdParDefaults")) {
         SetParallelWorkers(static_cast<int>(maxWorkers));
         SetParallelMinSide(kDefaultMinSide);
     }
