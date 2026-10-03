@@ -36,6 +36,7 @@
 #include "lot_lod_streaming.h"
 #include "lot_object_throttle.h"
 #include "lot_active_threshold.h"
+#include "lot_visibility_override.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
@@ -359,6 +360,36 @@ class LotActiveThresholdPatch : public ApexPatch {
     void RenderDeveloperUI() override {}
 };
 
+class LotVisibilityOverridePatch : public ApexPatch {
+  public:
+    LotVisibilityOverridePatch() : ApexPatch(Performance::kLotVisibilityOverrideName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotVisibilityOverride::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotVisibilityOverride::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void Update() override {
+        pendingReinstall = false;
+        LotVisibilityOverride::Tick();
+    }
+
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
+};
+
 class FastTextureCompressionPatch;
 std::atomic<FastTextureCompressionPatch*> g_texPatch{nullptr};
 
@@ -617,6 +648,9 @@ void Performance::SetLotObjectThrottleDelayMs(int value) {
 }
 std::string Performance::LotActiveThresholdStatus() { return LotActiveThreshold::StatusText(); }
 bool Performance::LotActiveThresholdHandledByS3SS() { return LotActiveThreshold::HandledByS3SS(); }
+std::string Performance::LotVisibilityOverrideStatus() { return LotVisibilityOverride::StatusText(); }
+bool Performance::LotVisibilityOverrideHandledByS3SS() { return LotVisibilityOverride::HandledByS3SS(); }
+bool Performance::LotVisibilityOverrideAlreadyExternal() { return LotVisibilityOverride::AlreadyPatchedExternally(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
@@ -750,6 +784,20 @@ APEX_REGISTER_FEATURE(LotActiveThresholdPatch,
                                             "The resolved pointer must be module-writable, 4-byte aligned and contain a plausible integer before Apex writes anything. Ambiguous or missing registrations fail closed.",
                                             "While enabled, Apex maintains the value at 12. On disable it restores the value observed before activation only if the current value is still 12.",
                                             "This is the internal LoD transition threshold, not Options.ini maxactivelots. If official Sims3SettingsSetter owns LotStreamingOptimizations.streamingSettings, Apex makes no writes."}});
+
+APEX_REGISTER_FEATURE(LotVisibilityOverridePatch,
+                      {.displayName = "Keep Lot Visibility Stable",
+                       .description = "Disables the camera-view distance bias in the lot visibility metric so lots do not load or unload purely because the viewing angle changes. "
+                                      "Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VersionBit(GameVersion::EA),
+                       .technicalDetails = {"Ports Sims3SettingsSetter LotStreamingOptimizations.visibilityOverride.",
+                                            "The exact lot-visibility short branch is resolved and validated as opcode 0x74 (JZ) before Apex writes a single byte: 0x74 -> 0xEB (JMP).",
+                                            "If the branch is already 0xEB, Apex treats it as externally owned and never restores it. Apex restores 0x74 only when Apex itself performed the 0x74 -> 0xEB write.",
+                                            "If official Sims3SettingsSetter owns LotStreamingOptimizations.visibilityOverride, Apex makes no branch write."},
+                       .gameCodeGroup = "LotVisibilityOverride"});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                       {.displayName = "Faster Texture Compression",
