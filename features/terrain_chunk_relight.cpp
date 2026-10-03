@@ -32,6 +32,7 @@
 // Every read is guarded (SEH) and every layout fact is re-checked when it is used: any difference refuses the local path
 // and the caller keeps the full rebuild.
 #include "terrain_chunk_relight.h"
+#include "lightmap_smooth.h"
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "game_addresses.h"
@@ -390,6 +391,9 @@ bool Check(View& v, std::string& why) {
 double TicksToMs(int64_t ticks) { return g_ticksPerMs > 0.0 ? static_cast<double>(ticks) / g_ticksPerMs : -1.0; }
 
 void FinishFlight(bool viaThunk) {
+    // The LOD rebuild can clear the flag without going through ChunkRenderThunk.
+    // Notify the same consumers before declaring that local chunk complete.
+    if (!viaThunk) LightmapSmooth::NoteChunkRendered(g_flight.ix, g_flight.iz);
     const double ms = viaThunk ? TicksToMs(g_flightTicks.load(std::memory_order_acquire)) : -1.0;
     g_flightChunk.store(0, std::memory_order_release);
     g_haveFlight = false;

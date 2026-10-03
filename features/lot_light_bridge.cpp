@@ -1,4 +1,6 @@
 #include "shader_lookup_cache.h"
+#include "performance_mode.h"
+#include "world_lamp_policy.h"
 // Lot light bridge (part of Night Lighting)
 //
 // Why lot grass has a hard edge next to street lamps (measured with light_probe.cpp):
@@ -820,15 +822,14 @@ bool ObservedEnableSwitch(const LotLampState& before, const LotLampState& after)
             || ((before.inten <= 1e-3f) != (after.inten <= 1e-3f)));
 }
 
-// Lot light of a type the bake can take (3..6 or the street-lamp class 0xB), alive, outdoors (room known, room 0)
+// Outdoor bake lamps: lot types 3..6/11, plus world-owned type-11 street lamps.
 bool ReadLotLamp(uintptr_t L, LotLampState& out) {
     __try {
         const uint32_t lo = *reinterpret_cast<const uint32_t*>(L + 0xC0), hi = *reinterpret_cast<const uint32_t*>(L + 0xC4);
-        if ((lo | hi) == 0) return false; // not a lot lamp
         const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
-        if (!(f & 0x01) || !(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0) return false; // alive, outdoors
         const int type = *reinterpret_cast<const int*>(L + 0xB0);
-        if (!IsPlainType(type) && type != 0xB) return false; // window lights and the other classes never reach the bake
+        const uint64_t lot = (static_cast<uint64_t>(hi) << 32) | lo;
+        if (!WorldLampPolicy::Eligible(lot, type, f, *reinterpret_cast<const int*>(L + 0x08))) return false;
         std::memcpy(out.col, reinterpret_cast<const void*>(L + 0xF0), 12);  // base colour
         out.inten = *reinterpret_cast<const float*>(L + 0x10);               // intensity (x)
         out.range = *reinterpret_cast<const float*>(L + 0x130);              // range
@@ -1056,7 +1057,9 @@ void TrackLotLampEdits() {
         }
         if (p.baked && s.baked && MovedApart(p.pos, s.pos)) {
             counts = moved = true; // user-driven (Build mode)
-        } else if ((editing || (s.type == 11 && p.type == 11 && p.lot == s.lot) || ObservedEnableSwitch(p, s)
+        } else if ((editing || (s.type == 11 && p.type == 11 && p.lot == s.lot &&
+                    (s.lot != 0 || (p.baked && s.baked && LightChanged(pl, sl)) || ((p.flags ^ s.flags) & 0x40)
+                     || ((p.inten <= 1e-3f) != (s.inten <= 1e-3f)))) || ObservedEnableSwitch(p, s)
                     || (p.lot == s.lot && p.type == s.type && IsPlainType(s.type) && VisibleLot(s.lot))) &&
                    (p.baked != s.baked || (p.baked && s.baked && LightChanged(pl, sl)))) {
             // Known enable/zero-intensity switches, visible ordinary value edits and type-11 edits
@@ -1161,6 +1164,12 @@ void TrackLotLampEdits() {
     const bool oneLotSwitch = changes.size() == 1 && changes.begin()->second.added == 0 && changes.begin()->second.removed == 0;
     const bool bulk = total > 8 && !oneLotSwitch;
     for (const auto& [lot, c] : changes) {
+        // World lamps share ID zero. Streaming and the town-wide dawn/dusk switch
+        // are not individual edits; only changes of already observed lamps qualify.
+        if (!WorldLampPolicy::AcceptEdit(lot, c.added, c.removed, c.edited, c.userEdited)) {
+            ignored++;
+            continue;
+        }
         auto s = g_lotSeen.find(lot);
         if (s == g_lotSeen.end()) { // the lot vanished: streaming out
             ignored++;
@@ -1253,6 +1262,8 @@ struct LampMemo {
     uint32_t x = 0, z = 0, maxScore = 0;
     int picked = 0, candidates = 0;
     float rows[32][4] = {}; // g_lampData[0..31] as SelectLamps leaves them
+    bool objectRowsReady = false;
+    float objectRows[1 + 2 * ShaderPatches::kObjectPixelLamps][4] = {};
 };
 constexpr uint32_t kLampMemoSize = 512; // direct-mapped, indexed by the top 9 bits of a hash
 static_assert(kLampMemoSize == (1u << (32 - 23)));
@@ -1267,9 +1278,10 @@ uint32_t FloatBits(float f) {
 
 int SelectLampsScan(float x, float z, float maxScore);
 
-int SelectLamps(float x, float z, float maxScore) {
+int SelectLamps(float x, float z, float maxScore, LampMemo** memo = nullptr) {
     const uint32_t bx = FloatBits(x), bz = FloatBits(z), bm = FloatBits(maxScore);
     LampMemo& e = g_lampMemo[((bx * 0x9E3779B1u) ^ (bz * 0x85EBCA77u) ^ (bm * 0xC2B2AE3Du)) >> 23]; // top 9 bits: 512 entries
+    if (memo) *memo = &e;
     if (e.gen == g_lampMemoGen && e.x == bx && e.z == bz && e.maxScore == bm) {
         g_lampMemoHits++;
         g_lastLampCandidates = e.candidates;
@@ -1278,6 +1290,7 @@ int SelectLamps(float x, float z, float maxScore) {
     }
     g_lampMemoMisses++;
     const int m = SelectLampsScan(x, z, maxScore);
+    e.objectRowsReady = false;
     e.gen = g_lampMemoGen;
     e.x = bx;
     e.z = bz;
@@ -1744,8 +1757,8 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     PatchedPs& p = PatchedFor(dev, g_fencePs, "Fence/stairs", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchInstancedLamps(t, pp.inst); });
     if (!p.ps) return false;
     float oldA[4] = {}, oldB[4] = {};
-    dev->GetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
-    dev->GetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
+    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
+                                      p.inst.atlasConst, p.inst.strengthConst, oldA, oldB, PerformanceMode::Enabled());
     const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
@@ -1781,8 +1794,8 @@ bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDi
     PatchedPs& p = PatchedFor(dev, cache, what, patch);
     if (!p.ps) return false;
     float oldA[4] = {}, oldB[4] = {};
-    dev->GetPixelShaderConstantF(p.snow.atlasConst, oldA, 1);
-    dev->GetPixelShaderConstantF(p.snow.strengthConst, oldB, 1);
+    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
+                                      p.snow.atlasConst, p.snow.strengthConst, oldA, oldB, PerformanceMode::Enabled());
     const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
@@ -1868,8 +1881,8 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     IDirect3DVertexShader9* vs = ObjectVsFor(dev, g_curVs);
     if (!vs) return false;
     float oldA[4] = {}, oldB[4] = {};
-    dev->GetPixelShaderConstantF(p.obj.atlasConst, oldA, 1);
-    dev->GetPixelShaderConstantF(p.obj.strengthConst, oldB, 1);
+    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
+                                      p.obj.atlasConst, p.obj.strengthConst, oldA, oldB, PerformanceMode::Enabled());
     const float s[4] = {g_objPixelStrength.load(std::memory_order_relaxed), 0, 0, 0};
     // Per-pixel lamps ("Counters" request): the same world lamps for every piece, chosen by the object's position (the
     // VS world triple's translation), so neighbouring pieces of a modular object get the same lamps.
@@ -1887,19 +1900,17 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     if (pixelLamps) {
         float m[3][4];
         if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
-            const int n = SelectLamps(m[0][3], m[2][3], 40.0f);
+            LampMemo* memo = nullptr;
+            const int n = SelectLamps(m[0][3], m[2][3], 40.0f, &memo);
             nLamps = std::min(n, static_cast<int>(N));
-            for (int k = 0; k < n && k < static_cast<int>(N); k++) {
-                const float* pr = g_lampData[k];
-                const float* col = g_lampData[16 + k];
-                const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
-                lamps[1 + 2 * k][0] = pr[0];
-                lamps[1 + 2 * k][1] = pr[1];
-                lamps[1 + 2 * k][2] = pr[2];
-                lamps[1 + 2 * k][3] = 1.0f / (r * r);
-                lamps[2 + 2 * k][0] = col[0];
-                lamps[2 + 2 * k][1] = col[1];
-                lamps[2 + 2 * k][2] = col[2];
+            if (PerformanceMode::Enabled()) {
+                if (!memo->objectRowsReady) {
+                    PerformanceMode::BuildLampRows<N>(g_lampData, n, memo->objectRows);
+                    memo->objectRowsReady = true;
+                }
+                std::memcpy(lamps, memo->objectRows, sizeof(lamps));
+            } else {
+                PerformanceMode::BuildLampRows<N>(g_lampData, n, lamps);
             }
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
@@ -2379,20 +2390,24 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
         if (!(mask & (1u << s))) continue;
         IDirect3DBaseTexture9* cand = nullptr;
         if (FAILED(dev->GetTexture(s, &cand)) || !cand) continue;
-        bool ok = cand->GetType() == D3DRTYPE_TEXTURE && cand->GetLevelCount() <= 5;
-        if (ok) {
+        const auto owner = g_chunkOfTexture.find(cand);
+        const bool known = PerformanceMode::Enabled() && owner != g_chunkOfTexture.end();
+        // g_chunks owns the reference; texture type, dimensions and mip count
+        // cannot change while this object remains alive. Contents are not cached.
+        bool ok = known ? owner->second == here : cand->GetType() == D3DRTYPE_TEXTURE && cand->GetLevelCount() <= 5;
+        if (ok && !known) {
             D3DSURFACE_DESC d{};
             ok = SUCCEEDED(static_cast<IDirect3DTexture9*>(cand)->GetLevelDesc(0, &d)) && d.Width == 256 && d.Height == 256 && d.Format != D3DFMT_Q8W8V8U8;
         }
         // Already the map of another chunk (g_chunks holds a reference, so its address cannot belong to a new texture):
         // a leftover, not this chunk's map
         if (ok) {
-            const auto owner = g_chunkOfTexture.find(cand);
             if (owner != g_chunkOfTexture.end() && owner->second != here) {
                 ok = false;
                 g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
             }
         }
+        else if (known && owner->second != here) g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
         if (ok) {
             t = cand;
             sampler = s;

@@ -744,6 +744,16 @@ bool FeatureSwitchRow(const char* patchName, const char* label, const char* text
 
 // Performance controls grouped with the existing Violet cards; feature state and keys are unchanged.
 void PerformanceCard() {
+    ImGui::PushID("PerformanceMode");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Gauge, "Optimize rendering", "Keeps your visual settings", nullptr, nullptr);
+        ApexUi::CardDivider();
+        auto ui = ApexConfig::GetUi();
+        if (ApexUi::SwitchRow("Optimize rendering", &ui.performanceMode, "Reduces repeated rendering work without reducing visual quality", true))
+            ApexConfig::SetUi(ui);
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
     ImGui::PushID("PerformanceLighting");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Camera and lighting", "Smoother movement while rooms and lots update", nullptr, nullptr);
@@ -1822,12 +1832,11 @@ void AboutTab() {
         ApexUi::CardDivider();
         ApexUi::GroupLabel("CREDITS");
         CreditLine(APEX_PRODUCT_NAME " by @loinyx.");
-        CreditLine("sims3fiend: framework design reference.");
-        CreditLine("Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).");
-        CreditLine("Edge Smoothing's texture sharpening follows AMD FidelityFX CAS (MIT).");
-        CreditLine("Third-party code: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA by Jorge Jimenez et al. (MIT-style, "
-                   "see third_party/smaa/LICENSE.txt), Lucide icons (ISC, see third_party/lucide/LICENSE).");
-        CreditLine("Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from Arro's Split-Level Lighting Fix.");
+        CreditLine("Sims3SettingsSetter by sims3fiend: project origin and framework reference.");
+        CreditLine("FXAA 3.11: Timothy Lottes (NVIDIA).");
+        CreditLine("FidelityFX CAS: AMD (MIT).");
+        CreditLine("Upper-floor ground light: Arro's technique, adapted in Apex Radiance.");
+        CreditLine("Libraries and licenses: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA - Jorge Jimenez et al. (MIT), Lucide icons (ISC).");
     }
     ApexUi::EndCard();
     ImGui::PopID();

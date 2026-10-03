@@ -1,5 +1,16 @@
 # Level light share (outdoor lamps on every story)
 
+### Lighting response test (2026-10-03)
+
+Changed lamp signatures and lamp-driven lot refreshes request a bounded window reevaluation burst on the light thread,
+before the native changed-room walk: immediately, then at most once per 250 ms for six seconds.
+The request validates the ground manager and is discarded on world changes or manager replacement.
+Unchanged entries do not explicitly requeue whole lots. Existing startup passes, ambient merge,
+fresh-solve retention, lighting budgets and visual parameters remain unchanged. This is independent
+of Performance mode. Session 00-29-16 shows a lamp switch at 00:29:34.970, terrain completion at
+35.092, and two window activation changes only at 43.163. Offline checks and compilation do not
+validate native evaluation cost, convergence or visual latency; repeat the switch in-game.
+
 > **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) exactly as described; `level_light_share.cpp` changed
 > after v0.1.0 only in its error and status strings (Portuguese in v0.1.0, e.g. "Luz entre andares nao confere",
 > "Ativo | luzes externas levadas a outros andares ...").

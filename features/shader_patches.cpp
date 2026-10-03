@@ -147,13 +147,15 @@ bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst) {
     const auto ins = Parse(t);
     if (ins.empty()) return false;
     int tc1 = -1;
+    DWORD tc1Mask = 0;
     bool c8 = false, c10 = false;
     for (const Ins& x : ins) {
         if (x.op == kDcl) {
             const DWORD use = t[x.at + 1] & 0x1F, idx = (t[x.at + 1] >> 16) & 0xF, r = t[x.at + 2];
             if (Type(r) == kOutput && use == 5 && idx == 1) {
-                if (WMask(r) != 0x3) return false; // terrain (full) and lot (.xyz) vertex shaders stop here
+                if (tc1 >= 0 || (WMask(r) != 0x3 && WMask(r) != 0xF)) return false;
                 tc1 = static_cast<int>(Num(r));
+                tc1Mask = WMask(r);
             }
             continue;
         }
@@ -164,7 +166,26 @@ bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst) {
     }
     if (tc1 < 0 || !c8 || !c10) return false;
     int found = 0;
+    int alphaUv = 0;
     for (const Ins& x : ins) {
+        if (tc1Mask == 0xF && x.op != kDcl && x.len >= 1 && IsReg(t[x.at + 1], kOutput, static_cast<DWORD>(tc1))) {
+            // Alpha-blended sidewalks pack the opacity UV into zw beside the terrain UV in xy.
+            if (WMask(t[x.at + 1]) == 0xC && x.op == kMul && x.len == 3 &&
+                Type(t[x.at + 2]) == kConst && Swz(t[x.at + 2]) == 0xC4 && !(t[x.at + 2] & 0x0F002000u) &&
+                Type(t[x.at + 3]) == kInput && Swz(t[x.at + 3]) == kSwzXYXY && !(t[x.at + 3] & 0x0F002000u)) {
+                bool unitScale = false, textureUv = false;
+                for (const Ins& d : ins) {
+                    if (d.op == kDef && d.len == 5 && IsReg(t[d.at + 1], kConst, Num(t[x.at + 2])))
+                        unitScale = t[d.at + 2] == F(1.0f) && t[d.at + 3] == F(2.0f);
+                    if (d.op == kDcl && d.len == 2 && IsReg(t[d.at + 2], kInput, Num(t[x.at + 3])))
+                        textureUv = (t[d.at + 1] & 0x1F) == 5;
+                }
+                if (!unitScale || !textureUv) return false;
+                alphaUv++;
+                continue;
+            }
+            if (x.op != kMad || x.len != 4 || WMask(t[x.at + 1]) != 0x3) return false;
+        }
         // mad oT1.xy, rA.xzzw, cM, cM.zwzw
         if (x.op != kMad || !IsReg(t[x.at + 1], kOutput, static_cast<DWORD>(tc1)) || WMask(t[x.at + 1]) != 0x3) continue;
         if (Type(t[x.at + 2]) != kTemp || Swz(t[x.at + 2]) != 0xE8 || Type(t[x.at + 3]) != kConst || Swz(t[x.at + 3]) != kSwzXYZW ||
@@ -173,7 +194,7 @@ bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst) {
         mapConst = Num(t[x.at + 3]);
         found++;
     }
-    return found == 1;
+    return found == 1 && (tc1Mask == 0x3 || alphaUv == 1);
 }
 
 bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {

@@ -230,19 +230,19 @@ template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDev
 
 Chain<DrawIndexedPrimitiveHook> g_dip("DrawIndexedPrimitive", true, true, Timing::Option, nullptr);
 Chain<DrawPrimitiveHook> g_dp("DrawPrimitive", true, true, Timing::Option, nullptr);
-Chain<SetRenderTargetHook> g_srt("SetRenderTarget", true, true, Timing::None, nullptr);
-Chain<SetPixelShaderHook> g_sps("SetPixelShader", true, true, Timing::None, nullptr);
-Chain<SetVertexShaderHook> g_svs("SetVertexShader", true, true, Timing::None, nullptr);
-Chain<SetTextureHook> g_stex("SetTexture", true, true, Timing::None, nullptr);
+Chain<SetRenderTargetHook> g_srt("SetRenderTarget", true, true, Timing::Option, " (SetRenderTarget)");
+Chain<SetPixelShaderHook> g_sps("SetPixelShader", true, true, Timing::Option, " (SetPixelShader)");
+Chain<SetVertexShaderHook> g_svs("SetVertexShader", true, true, Timing::Option, " (SetVertexShader)");
+Chain<SetTextureHook> g_stex("SetTexture", true, true, Timing::Option, " (SetTexture)");
 Chain<PresentHook> g_present("Present", false, false, Timing::Always, " (Present)");
 Chain<BeginSceneHook> g_begin("BeginScene", false, true, Timing::None, nullptr);
 Chain<CreateTextureHook> g_ctex("CreateTexture", false, true, Timing::None, nullptr);
 Chain<CreateRenderTargetHook> g_crt("CreateRenderTarget", false, true, Timing::None, nullptr);
-Chain<SetViewportHook> g_svp("SetViewport", true, true, Timing::None, nullptr);
+Chain<SetViewportHook> g_svp("SetViewport", true, true, Timing::Option, " (SetViewport)");
 Chain<CreatePixelShaderHook> g_cps("CreatePixelShader", false, true, Timing::None, nullptr);
 Chain<CreateVertexShaderHook> g_cvs("CreateVertexShader", false, true, Timing::None, nullptr);
-Chain<SetPixelShaderConstantFHook> g_psc("SetPixelShaderConstantF", true, true, Timing::None, nullptr);
-Chain<SetVertexShaderConstantFHook> g_vsc("SetVertexShaderConstantF", true, true, Timing::None, nullptr);
+Chain<SetPixelShaderConstantFHook> g_psc("SetPixelShaderConstantF", true, true, Timing::Option, " (SetPixelShaderConstantF)");
+Chain<SetVertexShaderConstantFHook> g_vsc("SetVertexShaderConstantF", true, true, Timing::Option, " (SetVertexShaderConstantF)");
 
 // Caller holds g_lock, at a safe point
 void FreeAllRetired() {

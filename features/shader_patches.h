@@ -10,8 +10,9 @@ namespace ShaderPatches {
 // light map, followed by "mul rX.xyz, rX, c4.x") take the max with the terrain map bound to extraSampler. When the
 // shader has the sidewalk snow blend, sidewalkConst is the constant whose .x mixes the plain road texture back in.
 // Road vertex shaders (all seasons and pieces): TEXCOORD1 declared .xy and written by "mad oT1.xy, rA.xzzw, cM, cM.zwzw"
-// (terrain uv; cM = c14 in summer, c16 in winter) plus the world matrix rows c8/c10. Terrain (TEXCOORD1 full) and lot
-// (.xyz) vertex shaders do not match. mapConst = M.
+// (terrain uv; cM = c14 in summer, c16 in winter) plus the world matrix rows c8/c10. Alpha-blended sidewalks may
+// declare .xyzw with a separate zw opacity UV write using the captured (1, 2) scale. Terrain and lot shaders do not match.
+// mapConst = M.
 bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst);
 struct RoadPatch {
     DWORD lightSampler = 0;

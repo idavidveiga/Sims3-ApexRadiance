@@ -252,6 +252,7 @@ int g_lastUserEdits = 0;
 //    twice;
 //  - both wait until the camera has been still for 1 s.
 bool g_editKickPending = false;
+bool g_worldRigRefreshPending = false;
 bool g_editUser = false;  // the pending change includes a user-driven one (fast path)
 bool g_editForce = false; // a switch changed what the bake takes: no snapshot compare
 Clock::time_point g_editFirstAt{}, g_editLastAt{};
@@ -744,6 +745,7 @@ void NoteEdit(Clock::time_point now, bool user, bool force, const std::string& r
         g_editForce = false;
         g_editWait = EditWait::None;
         g_editUserLots.clear();
+        g_worldRigRefreshPending = false;
     }
     g_editKickPending = true;
     g_editLastAt = backdate ? now - kEditQuiet : now;
@@ -975,7 +977,8 @@ bool EditReady(Clock::time_point now, Clock::time_point first, Clock::time_point
 
 // The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).
 void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_point now) {
-    if (!night && g_autoDusk) // lamps are off by day and not in the bake; the dusk rebuild takes the change
+    const bool worldLampEdit = std::find(g_editUserLots.begin(), g_editUserLots.end(), uint64_t{0}) != g_editUserLots.end();
+    if (!night && g_autoDusk && !worldLampEdit) // an observed world lamp may be lit before the night indicator reaches 1
         return FinishEdit(std::format("{}: left to the dusk rebuild (day)", g_editReason));
     if (g_loadKickPending || (g_scheduled && night))
         return FinishEdit(std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk"));
@@ -1080,6 +1083,7 @@ void OnPresent() {
         g_pendingReason.clear();
         g_pendingDusk = false;
         g_editKickPending = false;
+        g_worldRigRefreshPending = false;
         g_editWait = EditWait::None;
         g_haveBaked = false; // the new world's first rebuild (the load rebuild) takes the first snapshot
         g_bakedDue = false;
@@ -1259,7 +1263,10 @@ void OnPresent() {
         g_lastUserEdits = user;
         NoteEdit(now, userDriven, false, userDriven ? "observed lot lamps switched or edited" : "lot lamps switched, dimmed or recoloured");
         if (userDriven)
-            for (uint64_t lot : LotLightBridge::LastUserChangeLots()) g_editUserLots.push_back(lot);
+            for (uint64_t lot : LotLightBridge::LastUserChangeLots()) {
+                g_editUserLots.push_back(lot);
+                if (lot == 0) g_worldRigRefreshPending = true;
+            }
     }
     if (g_lotLamps != g_lotLampsSeen) {
         g_lotLampsSeen = g_lotLamps;
@@ -1329,7 +1336,16 @@ void OnPresent() {
         g_stuckFrames = 0;
 
     // A continuous colour drag cannot postpone its final-state reconciliation forever.
-    if (g_editKickPending && EditReady(now, g_editFirstAt, g_editLastAt, g_editUser || g_editForce)) DecideEdit(s.cells, s.level, night, c38, now);
+    if (g_editKickPending && EditReady(now, g_editFirstAt, g_editLastAt, g_editUser || g_editForce)) {
+        // Native rigs are independent of the terrain bake. Reconcile once for a
+        // coalesced observed world edit, even when terrain completion must wait.
+        if (g_worldRigRefreshPending) {
+            g_worldRigRefreshPending = false;
+            ObjectLightBridge::RequestRigRefresh();
+            if (Recorder::Verbose()) LOG_INFO("[NightTerrainRelight] Observed world lamp edit: native rig refresh requested after edit debounce");
+        }
+        DecideEdit(s.cells, s.level, night, c38, now);
+    }
     RefreshArrivingLots(now, night);
 
     // Local terrain relight / paced sweep: completion of the chunk in flight, release of the next one (at most one per
@@ -1798,6 +1814,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             g_editWait = EditWait::None;
             g_editUserLots.clear();
             g_editReason = "Night Lights turned on";
+            g_worldRigRefreshPending = false;
         }
 
         D3D9Hooks::RegisterPresent("NightTerrainRelight", [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {

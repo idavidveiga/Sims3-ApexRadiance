@@ -1,0 +1,34 @@
+#include "../../features/world_lamp_policy.h"
+#include <cstdio>
+#include <initializer_list>
+
+int main() {
+    using namespace WorldLampPolicy;
+    int checks = 0, failed = 0;
+    auto check = [&](bool ok) { ++checks; if (!ok) ++failed; };
+    for (int type = 0; type < 32; ++type) {
+        check(Track(0, type) == (type == 11));
+        check(Track(7, type));
+    }
+    for (int added = 0; added < 3; ++added)
+        for (int removed = 0; removed < 3; ++removed)
+            for (int edited = 0; edited < 250; ++edited)
+                for (bool observed : {false, true}) {
+                    check(AcceptEdit(0, added, removed, edited, observed)
+                          == (added == 0 && removed == 0 && edited >= 1 && observed));
+                    check(AcceptEdit(7, added, removed, edited, observed));
+                }
+    check(Eligible(0, 11, 0x73, 0));
+    check(Eligible(0, 11, 0xF3, 0));
+    check(!Eligible(7, 11, 0x73, 0));
+    check(Eligible(7, 11, 0x77, 0));
+    check(!Eligible(7, 11, 0x77, 1));
+    for (unsigned flags = 0; flags < 256; ++flags)
+        for (int type = 0; type < 32; ++type)
+            for (int room = -1; room <= 1; ++room) {
+                check(Eligible(0, type, flags, room) == (type == 11 && (flags & 1)));
+                check(Eligible(7, type, flags, room) == ((flags & 1) && (flags & 4) && room == 0 && (type == 11 || (type >= 3 && type <= 6))));
+            }
+    std::printf("World lamp policy: %d checks, %d failures\n", checks, failed);
+    return failed ? 1 : 0;
+}
