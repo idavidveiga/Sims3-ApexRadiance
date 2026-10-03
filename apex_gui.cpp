@@ -1799,7 +1799,7 @@ void ProfilesTab() {
             const bool picking = s.loading == name;
             const float loadW = ApexUi::ButtonWidth("Apply", true), delW = ApexUi::ButtonWidth("Delete", true);
             const float cancelW = ApexUi::ButtonWidth("Cancel", false);
-            const float controlsW = confirming || picking ? (confirming ? delW : loadW) + gap + cancelW : loadW + gap + delW;
+            const float controlsW = picking ? 0.0f : confirming ? delW + gap + cancelW : loadW + gap + delW;
             const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
             const char* description = confirming ? "Delete this profile?" : picking ? "Choose what to apply" : partsText.c_str();
             ApexUi::SetNextRowUntranslated(); // the name is the user's
@@ -1814,16 +1814,7 @@ void ProfilesTab() {
                     }
                     ImGui::SameLine();
                     if (ApexUi::TextButton("Cancel")) s.confirmDelete.clear();
-                } else if (picking) {
-                    if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(Loading() || s.loadParts == 0);
-                    if (ApexUi::IconTextButton("Apply##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
-                        LoadProfileNow(name, s.loadParts);
-                        s.loading.clear();
-                    }
-                    ImGui::EndDisabled();
-                } else {
+                } else if (!picking) {
                     if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
                         s.confirmDelete = name;
                         s.loading.clear();
@@ -1838,7 +1829,38 @@ void ProfilesTab() {
                     ImGui::EndDisabled();
                 }
                 ApexUi::EndControlRow();
-                if (picking) ProfilePartChecks("LoadParts", &s.loadParts, item.parts);
+                if (picking) {
+                    if (ApexUi::BeginCard("##ApplySelection")) {
+                        unsigned selected = 0, total = 0;
+                        for (int part : {0, 1, 7, 2, 3, 5, 6, 8}) {
+                            const unsigned bit = 1u << part;
+                            if (item.parts & bit) { ++total; if (s.loadParts & bit) ++selected; }
+                        }
+                        const std::string count = I18n::Trf("{} of {} selected", selected, total);
+                        if (ApexUi::BeginControlRow("Settings to apply", nullptr, ImGui::CalcTextSize(count.c_str()).x)) {
+                            ImGui::AlignTextToFramePadding();
+                            ApexUi::MutedText(count.c_str());
+                            ApexUi::EndControlRow();
+                        }
+                        ProfilePartChecks("LoadParts", &s.loadParts, item.parts);
+                        {
+                            ApexUi::ControlSizeScope footerSize(ApexUi::ControlSize::Primary);
+                            const float actionsW = ApexUi::ButtonWidth("Cancel", false) + gap + ApexUi::ButtonWidth("Apply", true);
+                            if (ApexUi::BeginControlRow("Unchecked settings stay as they are", nullptr, actionsW)) {
+                                if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
+                                ImGui::SameLine();
+                                ImGui::BeginDisabled(Loading() || s.loadParts == 0);
+                                if (ApexUi::IconTextButton("Apply##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
+                                    LoadProfileNow(name, s.loadParts);
+                                    s.loading.clear();
+                                }
+                                ImGui::EndDisabled();
+                                ApexUi::EndControlRow();
+                            }
+                        }
+                    }
+                    ApexUi::EndCard();
+                }
             }
             ImGui::PopID();
         }

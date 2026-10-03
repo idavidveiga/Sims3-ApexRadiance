@@ -566,3 +566,5 @@ Disclosure text uses the same visible-glyph centring and keyboard focus treatmen
 Profile action refinement: shared button icons are 16 reference units. Saved-profile actions read Delete then Apply, with Apply at the right edge; the part-selection state reads Cancel then Apply. Header and row icon sizes are unchanged.
 
 Profile category checkboxes use the shared 20-unit checkbox geometry and ImGui frame/checkmark colours, borders and rounding. The full category row remains clickable with a keyboard focus outline. Category bits and the approved two-column grid are unchanged.
+
+Saved-profile application uses the approved contained-editor layout: profile identity above a nested selection card, heading/count, unchanged category grid, then a footer explaining unselected settings with Cancel followed by Apply. Footer control sizing ends before the nested card closes. Loading guards, optional shortcut/developer selection, activation confirmation and Undo behavior are retained.

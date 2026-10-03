@@ -963,3 +963,12 @@ const I18n::Entry kOrganizationEntries[] = {
 };
 const I18n::Table kOrganizationTable(kOrganizationEntries, std::size(kOrganizationEntries));
 }
+
+namespace {
+const I18n::Entry kProfileApplyCardEntries[] = {
+    {"Settings to apply", "Configurações a aplicar", "Ajustes que aplicar", "Réglages à appliquer"},
+    {"Unchecked settings stay as they are", "Configurações desmarcadas não serão alteradas", "Los ajustes sin marcar se mantienen", "Les réglages non cochés restent inchangés"},
+    {"{} of {} selected", "{} de {} selecionadas", "{} de {} seleccionados", "{} sur {} sélectionnés"},
+};
+const I18n::Table kProfileApplyCardTable(kProfileApplyCardEntries, std::size(kProfileApplyCardEntries));
+}
