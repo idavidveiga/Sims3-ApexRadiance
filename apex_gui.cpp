@@ -28,6 +28,7 @@
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include <toml++/toml.hpp>
 #include <objbase.h>
 #include <shellapi.h>
@@ -1614,13 +1615,16 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
             const char* label = I18n::Tr(ApexConfig::ProfilePartName(i));
             draw->AddText(ImVec2(p.x + 22.0f * u + ApexUi::kSpace3 * u, p.y + (height - ImGui::GetTextLineHeight()) * 0.5f),
                           ImGui::GetColorU32(Col(VioletTheme::kText)), label);
-            const float box = 16.0f * u;
-            const ImVec2 check(p.x + width - box, p.y + (height - box) * 0.5f);
-            draw->AddRectFilled(check, ImVec2(check.x + box, check.y + box),
-                                ImGui::GetColorU32(Col(checked ? VioletTheme::kAccent : VioletTheme::kToggleOff)), 2.0f * u);
-            if (checked) ApexUi::DrawIcon(draw, IconId::Check, ImVec2(check.x + 2.0f * u, check.y + 2.0f * u), box - 4.0f * u,
-                                         ImGui::GetColorU32(Col(VioletTheme::kText)));
-            else draw->AddRect(check, ImVec2(check.x + box, check.y + box), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)), 2.0f * u);
+            const float box = std::max(VioletTheme::kCheckboxSize * u, ImGui::GetFontSize());
+            const ImVec2 check(std::round(p.x + width - box), std::round(p.y + (height - box) * 0.5f));
+            const ImU32 frameColor = ImGui::GetColorU32(ImGui::IsItemActive() && ImGui::IsItemHovered() ? ImGuiCol_FrameBgActive :
+                                                       ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+            ImGui::RenderFrame(check, ImVec2(check.x + box, check.y + box), frameColor, true, ImGui::GetStyle().FrameRounding);
+            if (checked) {
+                const float padding = std::max(1.0f, std::floor(box / 6.0f));
+                ImGui::RenderCheckMark(draw, ImVec2(check.x + padding, check.y + padding), ImGui::GetColorU32(ImGuiCol_CheckMark), box - 2.0f * padding);
+            }
+            ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
             draw->AddLine(ImVec2(p.x, p.y + height), ImVec2(p.x + width, p.y + height), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
             ++shown;
             ImGui::PopID();
@@ -1811,15 +1815,20 @@ void ProfilesTab() {
                     ImGui::SameLine();
                     if (ApexUi::TextButton("Cancel")) s.confirmDelete.clear();
                 } else if (picking) {
+                    if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
+                    ImGui::SameLine();
                     ImGui::BeginDisabled(Loading() || s.loadParts == 0);
                     if (ApexUi::IconTextButton("Apply##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
                         LoadProfileNow(name, s.loadParts);
                         s.loading.clear();
                     }
                     ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    if (ApexUi::TextButton("Cancel##Load")) s.loading.clear();
                 } else {
+                    if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
+                        s.confirmDelete = name;
+                        s.loading.clear();
+                    }
+                    ImGui::SameLine();
                     ImGui::BeginDisabled(Loading() || item.parts == 0);
                     if (ApexUi::IconTextButton("Apply", IconId::Download, "Pick which parts of this profile to apply")) {
                         s.loading = name;
@@ -1827,11 +1836,6 @@ void ProfilesTab() {
                         s.confirmDelete.clear();
                     }
                     ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
-                        s.confirmDelete = name;
-                        s.loading.clear();
-                    }
                 }
                 ApexUi::EndControlRow();
                 if (picking) ProfilePartChecks("LoadParts", &s.loadParts, item.parts);

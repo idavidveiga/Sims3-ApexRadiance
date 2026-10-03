@@ -13,7 +13,7 @@ namespace VioletTheme {
 // Control heights at the reference scale; colour and size are independent.
 inline constexpr float kControlCompact = 30.0f;
 inline constexpr float kControlPrimary = 36.0f;
-inline constexpr float kControlIcon = 18.0f;
+inline constexpr float kControlIcon = 16.0f;
 
 inline constexpr float kControlPadding = 10.0f;
 inline constexpr float kPrimaryPadding = 14.0f;

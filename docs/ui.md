@@ -562,3 +562,7 @@ The approved Violet palette, Segoe UI family and 30/36-unit control roles remain
 - Overview, Performance, Profiles, Shortcuts and Developer were reviewed against their existing task groups; their approved organization is retained. Settings uses appearance, capture and maintenance cards; its startup hint copy is shorter. Report retains the approved session/capture/library/help flow and required-title modal.
 
 Disclosure text uses the same visible-glyph centring and keyboard focus treatment as action controls. No TOML key, profile bit, preset value, range, reset value, rendering hook or background task is changed. Native shared-control checks are geometric evidence, not a substitute for inspecting every page in the game.
+
+Profile action refinement: shared button icons are 16 reference units. Saved-profile actions read Delete then Apply, with Apply at the right edge; the part-selection state reads Cancel then Apply. Header and row icon sizes are unchanged.
+
+Profile category checkboxes use the shared 20-unit checkbox geometry and ImGui frame/checkmark colours, borders and rounding. The full category row remains clickable with a keyboard focus outline. Category bits and the approved two-column grid are unchanged.
