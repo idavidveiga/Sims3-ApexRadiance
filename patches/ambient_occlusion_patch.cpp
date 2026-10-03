@@ -319,16 +319,16 @@ static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices
               "kGtaoPsId lists the SLICES of kQualitySlices");
 
 struct Params {
-    float strength = 1.669374824f; // approved player reference
-    float reach = 1.302870035f; // approved player reference, scales the radii
-    float protect = 0.5f;  // lamp-lit / bright pixels keep this share of their light
-    int quality = 2;       // stored index into kQualitySlices (2 = High, 8 slices)
+    float strength = 1.68f; // user-approved default from the in-game configuration
+    float reach = 1.3f; // user-approved default, scales the radii
+    float protect = 0.38f; // lamp-lit / bright pixels keep this share of their light
+    int quality = 2; // stored index into kQualitySlices (2 = High, 8 slices)
     bool inMapView = true; // the map view gets its own radii (else the shade fades out there, as it is far)
-    float distance = kFade1;
-    float simStrength = 1.0f; // full original shade; no mask work at this value
-    bool simControls = true;
-    float hairStrength = 0.25f;
-    float simMaxShade = 1.0f;
+    float distance = 351.0f;
+    float simStrength = 0.47f;
+    bool simControls = false;
+    float hairStrength = 0.38f;
+    float simMaxShade = 0.47f;
     bool transparentHair = true;
 
 };
@@ -1103,31 +1103,35 @@ void SimOcclusion::RenderUI(ApexPatch* patch) {
     bool changed = false;
     ImGui::PushID("SimOcclusion");
     if (ApexUi::BeginCard("##SimOcclusion")) {
+        ApexUi::HeaderExtra headerBadge;
+        headerBadge.badge = "Experimental";
+        headerBadge.badgeTooltip = "Still being tested: if anything looks wrong or the game crashes, turn it off";
         ImGui::BeginDisabled(!patch->IsEnabled());
-        changed |= ApexUi::CardHeader(ApexUi::IconId::Contrast, "Sim Occlusion", "Softer shade on Sims and hair",
-                                     "Adjust occlusion on Sims separately from the scene", &g.p.simControls);
+        changed |= ApexUi::CardHeader(ApexUi::IconId::UserRound, "Sim Occlusion", "Softer shade on Sims and hair",
+                                     "Adjust occlusion on Sims separately from the scene", &g.p.simControls, true, &headerBadge);
         ImGui::EndDisabled();
-        ApexUi::CardDivider();
+        if (g.p.simControls || !patch->IsEnabled()) ApexUi::CardDivider();
         if (!patch->IsEnabled())
             ApexUi::IconNote(ApexUi::IconId::Info, "Needs Ambient Occlusion");
-        ImGui::BeginDisabled(!patch->IsEnabled() || !g.p.simControls);
-        ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-        changed |= ApexUi::SliderPercent("Sim intensity", &g.p.simStrength, 0.0f, 1.0f,
-                                        "Shade on the body, face and clothes; hair has its own control", defaults.simStrength);
-        changed |= ApexUi::SliderPercent("Hair intensity", &g.p.hairStrength, 0.0f, 1.0f,
-                                        "Shade on recognized hair; 0% removes it, 100% keeps the original", defaults.hairStrength);
-        changed |= ApexUi::SliderPercent("Maximum darkening", &g.p.simMaxShade, 0.0f, 1.0f,
-                                        "Limit the maximum added shade on Sims and hair", defaults.simMaxShade);
-        if (ApexUi::BeginAdvanced("Advanced##SimOcclusion")) {
-            changed |= ApexUi::SwitchRow("Transparent hair", &g.p.transparentHair,
-                                        "Also adjust supported transparent hair strands", defaults.transparentHair);
-            ApexUi::SwitchRow("Show Sim coverage", &g.showSimMask,
-                              "Blue shows Sims, green shows hair, black is unrecognized; preview is not saved");
-            ApexUi::EndAdvanced();
+        if (g.p.simControls) {
+            ImGui::BeginDisabled(!patch->IsEnabled());
+            changed |= ApexUi::SliderPercent("Sim intensity", &g.p.simStrength, 0.0f, 1.0f,
+                                            "Shade on the body, face and clothes; hair has its own control", defaults.simStrength);
+            changed |= ApexUi::SliderPercent("Hair intensity", &g.p.hairStrength, 0.0f, 1.0f,
+                                            "Shade on recognized hair; 0% removes it, 100% keeps the original", defaults.hairStrength);
+            changed |= ApexUi::SliderPercent("Maximum darkening", &g.p.simMaxShade, 0.0f, 1.0f,
+                                            "Limit the maximum added shade on Sims and hair", defaults.simMaxShade);
+            if (ApexUi::BeginAdvanced("Advanced##SimOcclusion")) {
+                changed |= ApexUi::SwitchRow("Transparent hair", &g.p.transparentHair,
+                                            "Also adjust supported transparent hair strands", defaults.transparentHair);
+                ApexUi::SwitchRow("Show Sim coverage", &g.showSimMask,
+                                  "Blue shows Sims, green shows hair, black is unrecognized; preview is not saved");
+                ApexUi::EndAdvanced();
+            }
+            if (WantSimMask() && simMask.failed)
+                ApexUi::IconNote(ApexUi::IconId::TriangleAlert, "Sim shading control is unavailable; original shade is kept", VioletTheme::kWarning);
+            ImGui::EndDisabled();
         }
-        if (WantSimMask() && simMask.failed)
-            ApexUi::IconNote(ApexUi::IconId::TriangleAlert, "Sim shading control is unavailable; original shade is kept", VioletTheme::kWarning);
-        ImGui::EndDisabled();
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -1139,14 +1143,14 @@ class AmbientOcclusionPatch : public ApexPatch {
     AmbientOcclusionPatch() : ApexPatch("AmbientOcclusion", nullptr) {
         RegisterFloatSetting(&g.p.strength, "forca", SettingWidget::Slider, Params{}.strength, 0.0f, 2.0f, "How dark the shade gets where things meet");
         RegisterFloatSetting(&g.p.reach, "alcance", SettingWidget::Slider, Params{}.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet (scales the radii)");
-        RegisterFloatSetting(&g.p.protect, "protegerLuz", SettingWidget::Slider, 0.5f, 0.0f, 1.0f, "Lamp-lit and bright spots keep this share of their light");
-        RegisterEnumSetting(&g.p.quality, "qualidade", 2, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High", "Ultra", "Very Low"});
+        RegisterFloatSetting(&g.p.protect, "protegerLuz", SettingWidget::Slider, Params{}.protect, 0.0f, 1.0f, "Lamp-lit and bright spots keep this share of their light");
+        RegisterEnumSetting(&g.p.quality, "qualidade", Params{}.quality, "Directions per pixel: higher is smoother and costs more GPU", {"Low", "Medium", "High", "Ultra", "Very Low"});
         RegisterBoolSetting(&g.p.inMapView, "noMapa", true, "Also shade the map view (radii for houses and trees seen from far away)");
         RegisterFloatSetting(&g.p.distance, "distance", SettingWidget::Slider, Params{}.distance, 25.0f, 1000.0f, "Distance at which the shade fades out outside map view");
-        RegisterFloatSetting(&g.p.simStrength, "simStrength", SettingWidget::Slider, 1.0f, 0.0f, 1.0f, "Shade on supported Sim materials; 0% removes it, 100% keeps the original");
-        RegisterBoolSetting(&g.p.simControls, "simControls", true, "Adjust occlusion on Sims separately from the scene");
+        RegisterFloatSetting(&g.p.simStrength, "simStrength", SettingWidget::Slider, Params{}.simStrength, 0.0f, 1.0f, "Shade on supported Sim materials; 0% removes it, 100% keeps the original");
+        RegisterBoolSetting(&g.p.simControls, "simControls", false, "Adjust occlusion on Sims separately from the scene");
         RegisterFloatSetting(&g.p.hairStrength, "hairStrength", SettingWidget::Slider, Params{}.hairStrength, 0.0f, 1.0f, "Shade on recognized hair; 0% removes it, 100% keeps the original");
-        RegisterFloatSetting(&g.p.simMaxShade, "simMaxShade", SettingWidget::Slider, 1.0f, 0.0f, 1.0f, "Limit the maximum added shade on Sims and hair");
+        RegisterFloatSetting(&g.p.simMaxShade, "simMaxShade", SettingWidget::Slider, Params{}.simMaxShade, 0.0f, 1.0f, "Limit the maximum added shade on Sims and hair");
         RegisterBoolSetting(&g.p.transparentHair, "transparentHair", true, "Also adjust supported transparent hair strands");
     }
 
@@ -1266,8 +1270,9 @@ class AmbientOcclusionPatch : public ApexPatch {
     // Bump with every change of the AO's look or options. 1 = 2.1.0 (saved no key), 2 = 30/09 (bilinear march, five
     // qualities, shade preview), 3 = 30/09 evening (grain in the composite), 4 = 30/09 night (the map view), 5 = 30/09 night
     // (the composite grain follows the Banding Fix, only where the shade changed the pixel); 6 = distance and Sim receivers;
-    // 7 = independent hair, transparency coverage and a separate Sim card.
-    static constexpr int kSettingsRevision = 7;
+    // 7 = independent hair, transparency coverage and a separate Sim card; 8 = Sim Occlusion defaults off;
+    // 9 = user-approved default configuration for scene and Sim controls.
+    static constexpr int kSettingsRevision = 9;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
     // The defaults, with the table's on/off state
@@ -1308,6 +1313,7 @@ APEX_REGISTER_FEATURE(AmbientOcclusionPatch,
                                       "Computed at full resolution with no noise, so it stays still when the camera does. Works with the game's own Edge "
                                       "Smoothing turned off. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Graphics",
+                       .enabledByDefault = true,
                        .supportedVersions = VERSION_ALL,
                        .technicalDetails = {"Reads the INTZ scene depth shared by the Depth Blur module (kept running even with Depth Blur off).",
                                             "GTAO at full resolution, deterministic: 2 to 12 slices (quality) x 4 geometric steps per side over a 9-level "
