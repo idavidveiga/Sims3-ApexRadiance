@@ -761,6 +761,11 @@ void PerformanceCard() {
                 Performance::SetLotObjectThrottleDelayMs(static_cast<int>(std::lround(delay)));
         }
 
+        const bool activeThresholdOn = FeatureSwitchRow(Performance::kLotActiveThresholdName, "Use LoD active-lot threshold 12",
+                                                            "Sets the internal lot-streaming transition threshold to 12; this does not change the game's Max Active Lots option", true);
+        if (activeThresholdOn && Performance::LotActiveThresholdHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the LoD active-lot threshold untouched");
+
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
