@@ -20,7 +20,8 @@ std::filesystem::path Root(); // ...\Apex Radiance\Captures
 std::filesystem::path NewFolder(const char* kind);
 // The folder is complete: copies the log, the settings and the crash report into it, writes "About this capture.txt"
 // (what = one line on what was captured). The save receipt waits for asynchronous PNG completion and reports failures.
-void Finish(const std::filesystem::path& folder, const std::string& what);
+enum class CaptureKind { Generic, Recording, LightCapture, LightingSnapshot };
+void Finish(const std::filesystem::path& folder, const std::string& what, CaptureKind kind = CaptureKind::Generic);
 // Render-thread capture output. Failed text is retained for RetrySave, without repeating the measurement.
 bool WriteText(const std::filesystem::path& file, const std::string& text);
 void SetDescription(const std::string& text);
@@ -54,10 +55,12 @@ void SaveReport();
 std::string RecentCrash();
 
 // On-screen note at the top center for a few seconds; recording = the live recording note
-void Notify(const std::string& text, int seconds = 5);
+enum class NoteKind { Info, Success, Warning, Saving, Screenshot, Probe };
+void Notify(const std::string& text, int seconds = 5, NoteKind kind = NoteKind::Info);
 struct Note {
     std::string text;
     bool visible = false;
+    NoteKind kind = NoteKind::Info;
 };
 Note CurrentNote(); // render thread: the note to draw now
 

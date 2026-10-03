@@ -2470,7 +2470,7 @@ void PlaceScreenNotice() {
     ImGui::SetNextWindowSizeConstraints(ImVec2(1.0f, 1.0f), ImVec2(std::max(1.0f, vp->Size.x - 40.0f * u), vp->Size.y));
 }
 
-bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, bool recording = false) {
+bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, bool recording = false, unsigned borderTint = VioletTheme::kAccentLight) {
     PlaceScreenNotice();
     const float u = ApexUi::Unit();
     const float h = ImGui::GetTextLineHeight();
@@ -2485,7 +2485,7 @@ bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, boo
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, h + 14.0f * u));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(VioletTheme::kWindowBg, 0.92f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Col(recording ? VioletTheme::kError : VioletTheme::kAccentLight, 0.18f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(recording ? VioletTheme::kError : borderTint, 0.18f));
     return ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
 }
@@ -2500,10 +2500,10 @@ float NoticeContentWidth(const std::string& text) {
     return ImGui::CalcTextSize(text.c_str()).x + ApexUi::kIconMedium * ApexUi::Unit() + ApexUi::kSpace2 * ApexUi::Unit();
 }
 
-void NoticeText(const std::string& text, IconId icon, bool recording = false) {
+void NoticeText(const std::string& text, IconId icon, bool recording = false, unsigned tint = VioletTheme::kAccentLight) {
     const float pulse = recording ? 0.6f + 0.4f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f)) : 1.0f;
     ApexUi::InlineIcon(icon, ApexUi::kIconMedium * ApexUi::Unit(),
-        ImGui::GetColorU32(Col(recording ? VioletTheme::kError : VioletTheme::kAccentLight, pulse)));
+        ImGui::GetColorU32(Col(recording ? VioletTheme::kError : tint, pulse)));
     ImGui::SameLine(0.0f, ApexUi::kSpace2 * ApexUi::Unit());
     ImGui::TextWrapped("%s", text.c_str());
 }
@@ -3330,9 +3330,20 @@ bool CaptureNote() {
     } else {
         return false;
     }
-    const IconId icon = dot ? IconId::Activity : LightProbe::Aiming() ? IconId::Crosshair : IconId::Info;
-    if (BeginNoticePill("##ApexCaptureNote", NoticeContentWidth(text), 1.0f, dot))
-        NoticeText(text, icon, dot);
+    IconId icon = IconId::Info;
+    unsigned tint = VioletTheme::kAccentLight;
+    if (dot) { icon = IconId::Activity; tint = VioletTheme::kError; }
+    else if (LightProbe::Aiming() || note.kind == Captures::NoteKind::Probe) { icon = IconId::Crosshair; }
+    else switch (note.kind) {
+        case Captures::NoteKind::Success: icon = IconId::CircleCheck; tint = VioletTheme::kSuccess; break;
+        case Captures::NoteKind::Warning: icon = IconId::TriangleAlert; tint = VioletTheme::kWarning; break;
+        case Captures::NoteKind::Saving: icon = IconId::Save; break;
+        case Captures::NoteKind::Screenshot: icon = IconId::Camera; tint = VioletTheme::kSuccess; break;
+        case Captures::NoteKind::Info:
+        case Captures::NoteKind::Probe: break;
+    }
+    if (BeginNoticePill("##ApexCaptureNote", NoticeContentWidth(text), 1.0f, dot, tint))
+        NoticeText(text, icon, dot, tint);
     EndNoticePill();
     return true;
 }

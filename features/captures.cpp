@@ -33,6 +33,7 @@ namespace {
 
 std::mutex g_lock;
 std::string g_note;
+NoteKind g_noteKind = NoteKind::Info;
 unsigned long long g_noteUntil = 0;
 std::filesystem::path g_session; // the open session's folder (empty: none); under g_lock
 int g_sessionCount = 0;
@@ -46,6 +47,7 @@ std::map<std::filesystem::path, std::string> g_failedText;
 std::map<std::filesystem::path, bool> g_shotJobs; // pending PNGs; protected by g_lock
 bool g_copyFailed = false, g_shotFailed = false;
 bool g_notifyCompletion = false;
+CaptureKind g_retryKind = CaptureKind::Generic;
 std::vector<std::pair<std::filesystem::path, std::filesystem::path>> g_removed;
 
 std::string DescriptionText(const std::string& title, const std::string& text) {
@@ -170,7 +172,8 @@ void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
         if (SUCCEEDED(com)) CoUninitialize();
         if (!ok) LOG_WARNING("[Captures] The screenshot could not be written: " + file.string());
         if (job.report) CompleteShot(job.reportFolder, ok);
-        else Notify(I18n::Tr(ok ? "Screenshot saved" : "The screenshot could not be saved"), 4);
+        else Notify(I18n::Tr(ok ? "Screenshot saved" : "The screenshot could not be saved"), 4,
+                    ok ? NoteKind::Screenshot : NoteKind::Warning);
     }).detach();
 }
 
@@ -302,6 +305,7 @@ void BeginSession() {
     if (!PlainDirectory(g_session)) {
         g_session.clear();
         g_note = I18n::Tr("Could not create the collection. Check folder access and free space");
+        g_noteKind = NoteKind::Warning;
         g_noteUntil = GetTickCount64() + 6000;
         return;
     }
@@ -342,6 +346,7 @@ void EndSession() {
         if (g_retryFolder != s) { g_retryDescription.clear(); g_retryTitle.clear(); }
         g_retryFolder = s;
         g_retryWhat.clear(); // retrying this receipt finishes the still-open collection
+        g_retryKind = CaptureKind::Generic;
         g_copyFailed = !logOk || !configOk || !crashOk;
         g_shotFailed = false;
         g_result = {g_result.serial + 1, s.filename().string(), false, false};
@@ -350,7 +355,9 @@ void EndSession() {
     }
     const std::string name = s.filename().string();
     LOG_INFO(std::format("[Captures] Session ended: Captures\\{} ({} captures)", name, items.size()));
-    Notify(LastSave().failed ? I18n::Tr("Some files could not be saved. Open Report a problem to retry") : I18n::Trf("Session saved in Captures \xE2\x80\xBA {}", name), 6);
+    const bool failed = LastSave().failed;
+    Notify(failed ? I18n::Tr("Some files could not be saved. Open Report a problem to retry") : I18n::Trf("Session saved in Captures \xE2\x80\xBA {}", name), 6,
+           failed ? NoteKind::Warning : NoteKind::Success);
 }
 
 bool SessionActive() {
@@ -409,7 +416,8 @@ bool SaveDescription(const std::string& title, const std::string& text) {
     }
     const bool ok = WriteText(folder / L"User notes.txt", DescriptionText(title, text));
     { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); }
-    Notify(I18n::Tr(ok ? "Description saved with the capture" : "Some files could not be saved. Open Report a problem to retry"));
+    Notify(I18n::Tr(ok ? "Description saved with the capture" : "Some files could not be saved. Open Report a problem to retry"), 5,
+           ok ? NoteKind::Success : NoteKind::Warning);
     return ok;
 }
 
@@ -446,12 +454,13 @@ bool SaveFolderDescription(const std::string& folder, const std::string& title, 
     return ApexUtil::WriteFileAtomic(file.wstring(), DescriptionText(title, text));
 }
 
-void Finish(const std::filesystem::path& folder, const std::string& what) {
+void Finish(const std::filesystem::path& folder, const std::string& what, CaptureKind kind) {
     std::string description, title;
     bool retry = false, inSession = false;
     {
         std::lock_guard<std::mutex> lk(g_lock);
         retry = folder == g_retryFolder && g_result.failed;
+        if (retry) kind = g_retryKind;
         // Only the latest receipt offers Retry. Do not accumulate large failed recordings in the 32-bit game.
         if (!retry) {
             for (auto it = g_failedText.begin(); it != g_failedText.end();) {
@@ -468,6 +477,7 @@ void Finish(const std::filesystem::path& folder, const std::string& what) {
         }
         g_retryFolder = folder;
         g_retryWhat = what;
+        g_retryKind = kind;
         g_retryDescription = description;
         g_retryTitle = title;
         g_shotFailed = false;
@@ -505,8 +515,15 @@ void Finish(const std::filesystem::path& folder, const std::string& what) {
         UpdateResultLocked();
     }
     LOG_INFO(std::format("[Captures] {}: {} ({})", LastSave().failed ? "Save incomplete" : "Capture written", folder.string(), what));
-    Notify(I18n::Tr(LastSave().failed ? "Some files could not be saved. Open Report a problem to retry" :
-           Saving() ? "Saving the capture and screenshot..." : "Capture saved. Open Report a problem to find your files"), 6);
+    const SaveResult result = LastSave();
+    const bool saving = Saving();
+    const char* message = "Capture saved. Open Report a problem to find your files";
+    if (result.failed) message = "Some files could not be saved. Open Report a problem to retry";
+    else if (saving) message = "Saving the capture and screenshot...";
+    else if (kind == CaptureKind::Recording) message = "Recording saved. Open Report a problem to find your files";
+    else if (kind == CaptureKind::LightCapture) message = "Light capture saved. Open Report a problem to find your files";
+    else if (kind == CaptureKind::LightingSnapshot) message = "Lighting snapshot saved. Open Report a problem to find your files";
+    Notify(I18n::Tr(message), 6, result.failed ? NoteKind::Warning : saving ? NoteKind::Saving : NoteKind::Success);
     (void)inSession;
 }
 
@@ -528,14 +545,16 @@ void RetrySave() {
         if (SessionActive()) EndSession();
         else {
             { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); ++g_result.serial; }
-            Notify(I18n::Tr(LastSave().failed ? "Some files could not be saved. Open Report a problem to retry" : "Description saved with the capture"));
+            const bool failed = LastSave().failed;
+            Notify(I18n::Tr(failed ? "Some files could not be saved. Open Report a problem to retry" : "Description saved with the capture"), 5,
+                   failed ? NoteKind::Warning : NoteKind::Success);
         }
         return;
     }
     Finish(folder, what);
     if (shot) {
         QueueShot(folder); // current frame, not a promise to reproduce the earlier image
-        Notify(I18n::Tr("Saving the capture and screenshot..."), 6);
+        Notify(I18n::Tr("Saving the capture and screenshot..."), 6, NoteKind::Saving);
     }
     { std::lock_guard<std::mutex> lk(g_lock); UpdateResultLocked(); }
 }
@@ -555,13 +574,13 @@ bool RequestPlayerScreenshot(bool hideGameUi) {
     std::error_code ec;
     const std::wstring& gameDir = ApexPaths::GameDocumentsDirectory();
     if (gameDir.empty()) {
-        Notify(I18n::Tr("Could not create the screenshots folder"), 5);
+        Notify(I18n::Tr("Could not create the screenshots folder"), 5, NoteKind::Warning);
         return false;
     }
     const std::filesystem::path folder = std::filesystem::path(gameDir) / L"Screenshots";
     std::filesystem::create_directories(folder, ec);
     if (ec) {
-        Notify(I18n::Tr("Could not create the screenshots folder"), 5);
+        Notify(I18n::Tr("Could not create the screenshots folder"), 5, NoteKind::Warning);
         return false;
     }
     SYSTEMTIME t{};
@@ -572,11 +591,11 @@ bool RequestPlayerScreenshot(bool hideGameUi) {
     for (unsigned suffix = 2; std::filesystem::exists(file, ec) && !ec; ++suffix)
         file = folder / (base + std::format(" ({})", suffix) + ".png");
     if (ec) {
-        Notify(I18n::Tr("Could not create the screenshots folder"), 5);
+        Notify(I18n::Tr("Could not create the screenshots folder"), 5, NoteKind::Warning);
         return false;
     }
     if (!QueuePlayerPhoto(file, hideGameUi)) {
-        Notify(I18n::Tr("Could not hide the game interface; screenshot was not taken"), 5);
+        Notify(I18n::Tr("Could not hide the game interface; screenshot was not taken"), 5, NoteKind::Warning);
         return false;
     }
     LOG_INFO("[Captures] Filtered screenshot requested: " + file.string());
@@ -603,9 +622,10 @@ std::string RecentCrash() {
     return std::format("{:04}-{:02}-{:02} {:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
 }
 
-void Notify(const std::string& text, int seconds) {
+void Notify(const std::string& text, int seconds, NoteKind kind) {
     std::lock_guard<std::mutex> lk(g_lock);
     g_note = text;
+    g_noteKind = kind;
     g_noteUntil = GetTickCount64() + static_cast<unsigned long long>(seconds) * 1000ull;
 }
 
@@ -613,13 +633,21 @@ Note CurrentNote() {
     std::lock_guard<std::mutex> lk(g_lock);
     if (g_notifyCompletion && !g_result.saving) {
         g_notifyCompletion = false;
-        g_note = I18n::Tr(g_result.failed ? "Some files could not be saved. Open Report a problem to retry" : "Capture saved. Open Report a problem to find your files");
+        const bool failed = g_result.failed;
+        const char* message = "Capture saved. Open Report a problem to find your files";
+        if (failed) message = "Some files could not be saved. Open Report a problem to retry";
+        else if (g_retryKind == CaptureKind::Recording) message = "Recording saved. Open Report a problem to find your files";
+        else if (g_retryKind == CaptureKind::LightCapture) message = "Light capture saved. Open Report a problem to find your files";
+        else if (g_retryKind == CaptureKind::LightingSnapshot) message = "Lighting snapshot saved. Open Report a problem to find your files";
+        g_note = I18n::Tr(message);
+        g_noteKind = failed ? NoteKind::Warning : NoteKind::Success;
         g_noteUntil = GetTickCount64() + 6000;
     }
     Note n;
     if (!g_note.empty() && GetTickCount64() < g_noteUntil) {
         n.text = g_note;
         n.visible = true;
+        n.kind = g_noteKind;
     }
     return n;
 }

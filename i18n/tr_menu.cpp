@@ -19,8 +19,8 @@ const I18n::Entry kEntries[] = {
     {"Hide game UI", "Ocultar interface do jogo", "Ocultar interfaz del juego", "Masquer l'interface du jeu"},
     {"Uses F10 for one frame, then restores the previous UI state", "Usa F10 por um quadro e restaura o estado anterior da interface", "Usa F10 durante un fotograma y restaura el estado anterior de la interfaz", "Utilise F10 pendant une image, puis rétablit l'état précédent de l'interface"},
     {"Screenshots are saved in your Documents game folder > Screenshots", "As capturas ficam na pasta do jogo em Documentos > Screenshots", "Las capturas se guardan en la carpeta del juego en Documentos > Screenshots", "Les captures sont enregistrées dans le dossier du jeu sous Documents > Screenshots"},
-    {"Screenshot saved", "Captura salva", "Captura guardada", "Capture enregistrée"},
-    {"The screenshot could not be saved", "Não foi possível salvar a captura", "No se pudo guardar la captura", "La capture n'a pas pu être enregistrée"},
+    {"Screenshot saved", "Foto salva", "Captura de pantalla guardada", "Capture d'écran enregistrée"},
+    {"The screenshot could not be saved", "Não foi possível salvar a foto", "No se pudo guardar la captura de pantalla", "La capture d'écran n'a pas pu être enregistrée"},
     {"Could not create the screenshots folder", "Não foi possível criar a pasta de capturas", "No se pudo crear la carpeta de capturas", "Impossible de créer le dossier des captures"},
     {"Could not hide the game interface; screenshot was not taken", "Não foi possível ocultar a interface do jogo; a captura não foi feita", "No se pudo ocultar la interfaz del juego; no se tomó la captura", "Impossible de masquer l'interface du jeu ; la capture n'a pas été prise"},
     {"Conflicts", "Conflitos", "Conflictos", "Conflits"},
@@ -902,6 +902,9 @@ const I18n::Entry kDirectReportEntries[] = {
     {"Some files could not be saved. Open Report a problem to retry", "Alguns arquivos não foram salvos. Abra Relatar um problema para tentar de novo", "Algunos archivos no se guardaron. Abre Informar de un problema para reintentar", "Certains fichiers n'ont pas été enregistrés. Ouvrez Signaler un problème pour réessayer"},
     {"Saving the capture and screenshot...", "Salvando a captura e a imagem...", "Guardando la captura y la imagen...", "Enregistrement de la capture et de l'image..."},
     {"Capture saved. Open Report a problem to find your files", "Captura salva. Abra Relatar um problema para encontrar seus arquivos", "Captura guardada. Abre Informar de un problema para encontrar tus archivos", "Capture enregistrée. Ouvrez Signaler un problème pour retrouver vos fichiers"},
+    {"Recording saved. Open Report a problem to find your files", "Gravação salva. Abra Relatar um problema para encontrar seus arquivos", "Grabación guardada. Abre Informar de un problema para encontrar tus archivos", "Enregistrement sauvegardé. Ouvrez Signaler un problème pour retrouver vos fichiers"},
+    {"Light capture saved. Open Report a problem to find your files", "Captura de luz salva. Abra Relatar um problema para encontrar seus arquivos", "Captura de luz guardada. Abre Informar de un problema para encontrar tus archivos", "Capture de lumière enregistrée. Ouvrez Signaler un problème pour retrouver vos fichiers"},
+    {"Lighting snapshot saved. Open Report a problem to find your files", "Instantâneo da iluminação salvo. Abra Relatar um problema para encontrar seus arquivos", "Instantánea de iluminación guardada. Abre Informar de un problema para encontrar tus archivos", "Instantané de l'éclairage enregistré. Ouvrez Signaler un problème pour retrouver vos fichiers"},
 };
 const I18n::Table kDirectReportTable(kDirectReportEntries, std::size(kDirectReportEntries));
 }
