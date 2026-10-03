@@ -45,16 +45,16 @@ KeyChord PresetKey(Preset p, Action a) { return Chord(kKeys[static_cast<int>(p)]
 
 const char* PresetName(Preset p) {
     switch (p) {
-    case Preset::Letters: return "Letters";
-    case Preset::Numbers: return "Numbers";
-    default: return "F keys";
+    case Preset::Letters: return "Letter keys";
+    case Preset::Numbers: return "Number row";
+    default: return "Function keys";
     }
 }
 const char* PresetDescription(Preset p) {
     switch (p) {
-    case Preset::Letters: return "Keys next to each other on the left: no Fn, one hand, any keyboard layout";
-    case Preset::Numbers: return "The easiest to remember: 1 menu, 2 compare, 3 refresh";
-    default: return "The keys of earlier versions, for keyboards with F keys";
+    case Preset::Letters: return "Nearby letter keys keep your shortcuts together; no Fn key needed";
+    case Preset::Numbers: return "Easy to remember: 1 opens the menu, 2 compares, 3 refreshes";
+    default: return "The familiar function-key shortcuts from earlier versions";
     }
 }
 

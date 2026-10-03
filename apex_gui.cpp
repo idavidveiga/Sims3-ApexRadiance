@@ -2755,12 +2755,147 @@ void KeyChip(int row) {
     ImGui::PopID();
 }
 
+int MapRowForKey(UINT vk) {
+    for (int row : {RowMenu, RowCompare, RowRefresh})
+        if (RowKey(row).vk == vk) return row;
+    if (ApexConfig::GetUi().screenshotShortcutEnabled && RowKey(RowScreenshot).vk == vk) return RowScreenshot;
+    return -1;
+}
+
+const char* MapKeyAction(UINT vk) {
+    if (MapRowForKey(vk) >= 0) return RowName(MapRowForKey(vk));
+    const auto ui = ApexConfig::GetUi();
+    const int presetIndex = ui.hotkeyPreset == Hotkeys::kMine
+        ? std::clamp(ui.minePresetBase, 0, static_cast<int>(Hotkeys::Preset::Count) - 1)
+        : ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
+                              : std::clamp(ui.hotkeyPreset, 0, static_cast<int>(Hotkeys::Preset::Count) - 1);
+    const auto preset = static_cast<Hotkeys::Preset>(presetIndex);
+    for (Hotkeys::Action action : {Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics, Hotkeys::Action::Recorder,
+                                   Hotkeys::Action::FrameCapture}) {
+        if (kPublicBuild && action == Hotkeys::Action::FrameCapture) continue;
+        if (Hotkeys::PresetKey(preset, action).vk == vk) return Hotkeys::ActionName(action);
+    }
+    return nullptr;
+}
+
+void StartRecordingRow(int row) {
+    g_recRow = g_recRow == row ? -1 : row;
+    g_recWaitRelease = true;
+    g_recNote.clear();
+    g_recHeldVk = 0;
+}
+
+void DrawMapKey(const char* label, UINT vk, float width, float height) {
+    const float u = ApexUi::Unit();
+    const int row = MapRowForKey(vk);
+    const bool assigned = MapKeyAction(vk) != nullptr;
+    const bool recording = row >= 0 && g_recRow == row;
+    ImGui::PushID(static_cast<int>(vk));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##MapKey", ImVec2(width, height));
+    const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 fill = ImGui::GetColorU32(recording ? Col(VioletTheme::kAccentDark)
+        : assigned ? (hovered ? Col(VioletTheme::kAccentDark) : Col(VioletTheme::kSelectedBg))
+                   : (hovered ? Col(VioletTheme::kHoverBg) : Col(VioletTheme::kCardBg)));
+    const ImU32 border = ImGui::GetColorU32(recording || (assigned && hovered) ? Col(VioletTheme::kAccent)
+                                                                          : Col(VioletTheme::kCardBorder));
+    dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), fill, 4.0f * u);
+    dl->AddRect(p, ImVec2(p.x + width, p.y + height), border, 4.0f * u, 0, 1.0f * u);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p.x + (width - ts.x) * 0.5f, p.y + (height - ts.y) * 0.5f),
+                ImGui::GetColorU32(assigned ? Col(VioletTheme::kText) : Col(VioletTheme::kTextMuted)), label);
+    if (hovered && assigned) {
+        const int target = row;
+        const char* action = MapKeyAction(vk);
+        ImGui::SetTooltip("%s\n%s", I18n::Tr(action), target >= 0
+            ? I18n::Tr("Click to change this shortcut") : I18n::Tr("Assigned by the selected preset"));
+        if (target >= 0 && ImGui::IsItemActivated()) StartRecordingRow(target);
+    } else if (hovered) {
+        ImGui::SetTooltip("%s", I18n::Tr("No Apex shortcut assigned"));
+    }
+    ImGui::PopID();
+}
+
+void DrawKeyboardMap() {
+    const float u = ApexUi::Unit();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float gap = 3.0f * u, keyH = 25.0f * u;
+    auto drawRow = [&](const char* const* labels, const UINT* keys, int count) {
+        const float cell = std::max(15.0f * u, std::min(32.0f * u, (avail - gap * (count - 1)) / count));
+        const float total = cell * count + gap * (count - 1);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - total) * 0.5f));
+        for (int i = 0; i < count; ++i) {
+            if (i) ImGui::SameLine(0.0f, gap);
+            DrawMapKey(labels[i], keys[i], cell, keyH);
+        }
+        ApexUi::Gap(ApexUi::kSpace1);
+    };
+    static const char* const fkeysA[] = {"F1","F2","F3","F4","F5","F6"};
+    static const UINT fkeysAVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6};
+    static const char* const fkeysB[] = {"F7","F8","F9","F10","F11","F12"};
+    static const UINT fkeysBVk[] = {VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
+    static const char* const digits[] = {"1","2","3","4","5","6","7","8","9","0"};
+    static const UINT digitsVk[] = {'1','2','3','4','5','6','7','8','9','0'};
+    static const char* const top[] = {"Q","W","E","R","T","Y","U","I","O","P"};
+    static const UINT topKeys[] = {'Q','W','E','R','T','Y','U','I','O','P'};
+    static const char* const middle[] = {"A","S","D","F","G","H","J","K","L"};
+    static const UINT middleKeys[] = {'A','S','D','F','G','H','J','K','L'};
+    static const char* const bottom[] = {"Z","X","C","V","B","N","M"};
+    static const UINT bottomKeys[] = {'Z','X','C','V','B','N','M'};
+    ApexUi::GroupLabel("FUNCTION ROW");
+    if (avail < 290.0f * u) {
+        drawRow(fkeysA, fkeysAVk, IM_ARRAYSIZE(fkeysAVk));
+        drawRow(fkeysB, fkeysBVk, IM_ARRAYSIZE(fkeysBVk));
+    } else {
+        static const char* const allF[] = {"F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"};
+        static const UINT allFVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6,VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
+        drawRow(allF, allFVk, IM_ARRAYSIZE(allFVk));
+    }
+    ApexUi::GroupLabel("NUMBER ROW");
+    drawRow(digits, digitsVk, IM_ARRAYSIZE(digitsVk));
+    ApexUi::GroupLabel("LETTER KEYS");
+    drawRow(top, topKeys, IM_ARRAYSIZE(topKeys));
+    drawRow(middle, middleKeys, IM_ARRAYSIZE(middleKeys));
+    drawRow(bottom, bottomKeys, IM_ARRAYSIZE(bottomKeys));
+    const char* modifiers = I18n::Tr("Preset shortcuts use Ctrl + Shift");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", modifiers);
+}
+
+bool PresetTile(const char* title, const char* detail, int preset, bool selected, const char* tooltip, int count) {
+    const float u = ApexUi::Unit();
+    const float width = (ImGui::GetContentRegionAvail().x - (count - 1) * ApexUi::kSpace1 * u) / count;
+    const float height = 46.0f * u;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::PushID(preset);
+    ImGui::InvisibleButton("##Preset", ImVec2(width, height));
+    const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 bg = ImGui::GetColorU32(selected ? Col(VioletTheme::kAccentDark)
+        : hovered ? Col(VioletTheme::kHoverBg) : Col(VioletTheme::kCardBg));
+    const ImU32 stroke = ImGui::GetColorU32(selected || hovered ? Col(VioletTheme::kAccent) : Col(VioletTheme::kCardBorder));
+    dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), bg, 7.0f * u);
+    dl->AddRect(p, ImVec2(p.x + width, p.y + height), stroke, 7.0f * u, 0, 1.0f * u);
+    const ImVec2 titleSize = ImGui::CalcTextSize(I18n::Tr(title));
+    const ImVec2 detailSize = ImGui::CalcTextSize(I18n::Tr(detail));
+    const float y = p.y + (height - titleSize.y - detailSize.y - 1.0f * u) * 0.5f;
+    dl->AddText(ImVec2(p.x + (width - titleSize.x) * 0.5f, y), ImGui::GetColorU32(Col(selected ? VioletTheme::kText : VioletTheme::kTextMuted)), I18n::Tr(title));
+    dl->AddText(ImVec2(p.x + (width - detailSize.x) * 0.5f, y + titleSize.y + 1.0f * u), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), I18n::Tr(detail));
+    if (hovered) ApexUi::Tooltip(I18n::Tr(tooltip));
+    const bool clicked = ImGui::IsItemActivated();
+    ImGui::PopID();
+    if (clicked && preset >= 0) ApplyPreset(preset);
+    return clicked;
+}
+
 // The whole editor: the preset list, the three rows (key chips), notes; compact = the corner panel (no extra groups)
 void ShortcutsContent(bool compact) {
     g_recSeenFrame = ImGui::GetFrameCount();
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    static const char* const kPresets[] = {"Letters (recommended)", "Numbers", "F keys", "Mine"};
-    int sel = ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys) : ui.hotkeyPreset;
+    static const char* const kPresets[] = {"Letter keys", "Number row", "Function keys", "Custom"};
+    int sel = ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
+                                  : std::clamp(ui.hotkeyPreset, 0, Hotkeys::kMine);
     const float u = ApexUi::Unit();
     if (ApexUi::BeginControlRow("Key set", "Pick a ready set, or click a key below to record your own", 220.0f * u)) {
         ImGui::SetNextItemWidth(220.0f * u);
@@ -2810,27 +2945,158 @@ void ShortcutsContent(bool compact) {
 // Settings > Shortcuts
 void ShortcutsTab() {
     ImGui::PushID("Shortcuts");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose keys for the menu and Apex actions", nullptr, nullptr);
-        ApexUi::CardDivider();
-        ShortcutsContent(false);
-        ApexUi::GroupLabel("SCREENSHOTS");
+    g_recSeenFrame = ImGui::GetFrameCount();
+    if (ApexUi::FilterActive()) {
+        if (ApexUi::BeginCard("##SearchShortcuts")) {
+            ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose keys for the menu and Apex actions", nullptr, nullptr);
+            ApexUi::CardDivider();
+            ShortcutsContent(false);
+            ApexConfig::UiSettings ui = ApexConfig::GetUi();
+            ApexUi::GroupLabel("SCREENSHOTS");
+            if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
+                                  "Replace a game key with a screenshot after Apex's visual effects")) ApexConfig::SetUi(ui);
+            if (ui.screenshotShortcutEnabled) {
+                if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 150.0f * ApexUi::Unit())) {
+                    KeyChip(RowScreenshot);
+                    ApexUi::EndControlRow();
+                }
+                if (ApexUi::SwitchRow("Hide game UI", &ui.screenshotHideGameUi,
+                                      "Uses F10 for one frame, then restores the previous UI state")) ApexConfig::SetUi(ui);
+            }
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+        return;
+    }
+
+    const auto current = ApexConfig::GetUi();
+    const bool custom = current.hotkeyPreset == Hotkeys::kMine;
+    const int selectedPreset = custom ? Hotkeys::kMine : current.hotkeyPreset < 0
+        ? static_cast<int>(Hotkeys::Preset::FKeys) : current.hotkeyPreset;
+    const char* labels[] = {"Letter keys", "Number row", "Function keys"};
+    const char* details[] = {"Recommended", "Quick recall", "Classic"};
+    const char* tips[] = {"Uses nearby letter keys without Fn", "Uses the number row for quick recall",
+                          "Keeps the familiar function-key layout"};
+    const int ids[] = {0, 1, 2};
+
+    const float layoutWidth = ImGui::GetContentRegionAvail().x;
+    const bool narrowLayout = layoutWidth < 760.0f * ApexUi::Unit();
+    if (ImGui::BeginTable("##ShortcutLayout", narrowLayout ? 1 : 2, ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
+        if (!narrowLayout) {
+            ImGui::TableSetupColumn("map", ImGuiTableColumnFlags_WidthStretch, 1.12f);
+            ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthStretch, 0.88f);
+        }
+        ImGui::TableNextColumn();
+        if (ApexUi::BeginCard("##KeyboardMap")) {
+            ApexUi::CardHeader(IconId::Keyboard, "Keyboard map", "Choose a layout; click a highlighted key to change its action", nullptr, nullptr);
+            ApexUi::CardDivider();
+            const float tileGap = ApexUi::kSpace1 * ApexUi::Unit();
+            const float tileAvail = ImGui::GetContentRegionAvail().x;
+            const int tileColumns = std::clamp(static_cast<int>((tileAvail + tileGap) / (116.0f * ApexUi::Unit() + tileGap)), 1, 3);
+            for (int i = 0; i < 3; ++i) {
+                if (i && i % tileColumns) ImGui::SameLine(0.0f, tileGap);
+                else if (i) ApexUi::Gap(ApexUi::kSpace1);
+                PresetTile(labels[i], details[i], ids[i], !custom && selectedPreset == ids[i], tips[i], tileColumns);
+            }
+            if (custom) {
+                ApexUi::Gap(ApexUi::kSpace1);
+                ApexUi::Pill("Custom", true, IconId::Keyboard);
+                ImGui::SameLine();
+                ApexUi::MutedText("Your manually chosen shortcuts are active");
+            }
+            ApexUi::Gap(ApexUi::kSpace2);
+            DrawKeyboardMap();
+        }
+        ApexUi::EndCard();
+
+        ImGui::TableNextColumn();
+        if (ApexUi::BeginCard("##CoreActions")) {
+            ApexUi::CardHeader(IconId::ListChecks, "Core actions", "Shortcuts used most often", nullptr, nullptr);
+            ApexUi::CardDivider();
+            for (int row : {RowMenu, RowCompare, RowRefresh}) {
+                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
+                KeyChip(row);
+                ApexUi::EndControlRow();
+            }
+            if (g_recRow >= 0)
+                ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
+                                 g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
+            ApexUi::GroupLabel("REPORT A PROBLEM");
+            for (const Hotkeys::Action a : {Hotkeys::Action::Recorder, Hotkeys::Action::Probe, Hotkeys::Action::Diagnostics}) {
+                const std::string chord = ApexConfig::KeyChordText(Hotkeys::Key(a));
+                if (!ApexUi::BeginControlRow(Hotkeys::ActionName(a), nullptr, ImGui::CalcTextSize(chord.c_str()).x)) continue;
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", chord.c_str());
+                ApexUi::EndControlRow();
+            }
+            if (!kPublicBuild) {
+                const std::string chord = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture));
+                if (ApexUi::BeginControlRow("Frame Capture", nullptr, ImGui::CalcTextSize(chord.c_str()).x)) {
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", chord.c_str());
+                    ApexUi::EndControlRow();
+                }
+            }
+        }
+        ApexUi::EndCard();
+        ImGui::EndTable();
+    }
+
+    if (ApexUi::BeginCard("##ScreenshotCapture")) {
         ApexConfig::UiSettings ui = ApexConfig::GetUi();
+        ApexUi::CardHeader(IconId::Camera, "Screenshot capture", "Save the finished game image with Apex's active effects", nullptr, nullptr);
+        ApexUi::CardDivider();
         if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
-                              "Replace a game key with a screenshot after Apex's visual effects"))
-            ApexConfig::SetUi(ui);
+                              "Replace a game key with a screenshot after Apex's visual effects")) ApexConfig::SetUi(ui);
         if (ui.screenshotShortcutEnabled) {
             if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 150.0f * ApexUi::Unit())) {
                 KeyChip(RowScreenshot);
                 ApexUi::EndControlRow();
             }
             if (ApexUi::SwitchRow("Hide game UI", &ui.screenshotHideGameUi,
-                                  "Uses F10 for one frame, then restores the previous UI state"))
-                ApexConfig::SetUi(ui);
-            ApexUi::MutedText("Screenshots are saved in your Documents game folder > Apex Radiance > Screenshots");
+                                  "Uses F10 for one frame, then restores the previous UI state")) ApexConfig::SetUi(ui);
+            ApexUi::MutedText("Saves one filtered PNG in the game's Documents > Electronic Arts > The Sims 3 > Screenshots folder");
+            ApexUi::MutedText("F10 hides the game UI for the shot; Ctrl+Shift+F10 still compares Apex effects");
         }
     }
     ApexUi::EndCard();
+
+    const bool narrowExtras = ImGui::GetContentRegionAvail().x < 700.0f * ApexUi::Unit();
+    if (ImGui::BeginTable("##ShortcutExtras", narrowExtras ? 1 : 2, ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
+        if (!narrowExtras) {
+            ImGui::TableSetupColumn("menu", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("help", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        }
+        ImGui::TableNextColumn();
+        if (ApexUi::BeginCard("##InMenu")) {
+            ApexUi::CardHeader(IconId::AppWindow, "While Apex is open", "Quick ways to navigate and compare", nullptr, nullptr);
+            ApexUi::CardDivider();
+            const auto info = [](const char* title, const char* key) {
+                if (!ApexUi::BeginControlRow(title, nullptr, ImGui::CalcTextSize(I18n::Tr(key)).x)) return;
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Tr(key));
+                ApexUi::EndControlRow();
+            };
+            info("Search the settings", "Ctrl+F");
+            info("Peek at the game behind the menu", "Hold Alt");
+            info("Compare the picture without its filters", "Hold B");
+        }
+        ApexUi::EndCard();
+        ImGui::TableNextColumn();
+        if (ApexUi::BeginCard("##PersonalizeShortcuts")) {
+            ApexUi::CardHeader(IconId::Info, "Personalize", "Your settings stay yours", nullptr, nullptr);
+            ApexUi::CardDivider();
+            ApexUi::MutedText("Presets change only after you select one. Custom key choices are saved and stay in place.");
+            ApexUi::Gap(ApexUi::kSpace2);
+            if (ApexUi::TextButton("Show the note again##Shortcuts", "Shows the shortcuts note at the top center of the screen at the next start")) {
+                ApexConfig::UiSettings ui = ApexConfig::GetUi();
+                ui.keyChosen = false;
+                ApexConfig::SetUi(ui);
+            }
+        }
+        ApexUi::EndCard();
+        ImGui::EndTable();
+    }
     ImGui::PopID();
 }
 
