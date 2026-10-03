@@ -34,6 +34,7 @@
 #include "resource_cache.h"
 #include "lot_lighting_motion.h"
 #include "lot_lod_streaming.h"
+#include "lot_object_throttle.h"
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
@@ -260,6 +261,71 @@ class MapViewStreamingBlockerPatch : public ApexPatch {
 
     void RenderCustomUI() override {}
     void RenderDeveloperUI() override {}
+};
+
+class LotObjectThrottlePatch;
+std::atomic<LotObjectThrottlePatch*> g_lotObjectThrottlePatch{nullptr};
+
+class LotObjectThrottlePatch : public ApexPatch {
+  public:
+    LotObjectThrottlePatch() : ApexPatch(Performance::kLotObjectThrottleName, nullptr) {
+        RegisterIntSetting(&objectsPerWindow_, "objectsPerLot", LotObjectThrottle::kDefaultObjectsPerWindow, 1, 64,
+                           "Objects built per lot window. Lower is smoother.");
+        RegisterIntSetting(&delayMs_, "delayMs", LotObjectThrottle::kDefaultDelayMs, 0, 500,
+                           "Minimum milliseconds between a lot's object windows. Higher spreads the work more.");
+        g_lotObjectThrottlePatch.store(this);
+    }
+    ~LotObjectThrottlePatch() override { g_lotObjectThrottlePatch.store(nullptr); }
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        LotObjectThrottle::SetObjectsPerWindow(objectsPerWindow_);
+        LotObjectThrottle::SetDelayMs(delayMs_);
+        std::string error;
+        if (!LotObjectThrottle::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotObjectThrottle::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void Update() override {
+        pendingReinstall = false;
+        LotObjectThrottle::SetObjectsPerWindow(objectsPerWindow_);
+        LotObjectThrottle::SetDelayMs(delayMs_);
+        LotObjectThrottle::Tick();
+    }
+
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
+
+    int ObjectsPerWindow() const { return objectsPerWindow_; }
+    int DelayMs() const { return delayMs_; }
+    void SetObjectsPerWindow(int value) {
+        value = std::clamp(value, 1, 64);
+        if (value == objectsPerWindow_) return;
+        objectsPerWindow_ = value;
+        LotObjectThrottle::SetObjectsPerWindow(value);
+        NotifySettingChanged();
+    }
+    void SetDelayMs(int value) {
+        value = std::clamp(value, 0, 500);
+        if (value == delayMs_) return;
+        delayMs_ = value;
+        LotObjectThrottle::SetDelayMs(value);
+        NotifySettingChanged();
+    }
+
+  private:
+    int objectsPerWindow_ = LotObjectThrottle::kDefaultObjectsPerWindow;
+    int delayMs_ = LotObjectThrottle::kDefaultDelayMs;
 };
 
 class FastTextureCompressionPatch;
@@ -502,6 +568,22 @@ std::string Performance::LotLodStreamingStatus() { return LotLodStreaming::Statu
 bool Performance::LotLodStreamingHandledByS3SS() { return LotLodStreaming::HandledByS3SS(); }
 std::string Performance::MapViewStreamingBlockerStatus() { return LotLodStreaming::MapViewBlockerStatusText(); }
 bool Performance::MapViewStreamingBlockerHandledByS3SS() { return LotLodStreaming::MapViewBlockerHandledByS3SS(); }
+std::string Performance::LotObjectThrottleStatus() { return LotObjectThrottle::StatusText(); }
+bool Performance::LotObjectThrottleHandledByS3SS() { return LotObjectThrottle::HandledByS3SS(); }
+int Performance::LotObjectThrottleObjectsPerWindow() {
+    if (LotObjectThrottlePatch* p = g_lotObjectThrottlePatch.load()) return p->ObjectsPerWindow();
+    return LotObjectThrottle::kDefaultObjectsPerWindow;
+}
+void Performance::SetLotObjectThrottleObjectsPerWindow(int value) {
+    if (LotObjectThrottlePatch* p = g_lotObjectThrottlePatch.load()) p->SetObjectsPerWindow(value);
+}
+int Performance::LotObjectThrottleDelayMs() {
+    if (LotObjectThrottlePatch* p = g_lotObjectThrottlePatch.load()) return p->DelayMs();
+    return LotObjectThrottle::kDefaultDelayMs;
+}
+void Performance::SetLotObjectThrottleDelayMs(int value) {
+    if (LotObjectThrottlePatch* p = g_lotObjectThrottlePatch.load()) p->SetDelayMs(value);
+}
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
@@ -607,6 +689,21 @@ APEX_REGISTER_FEATURE(MapViewStreamingBlockerPatch,
                                             "Apex does not detour WorldManager::Update. The skip gate stays set only while map view is open and for a 1000 ms grace period after exit, then its previous value is restored safely.",
                                             "If official Sims3SettingsSetter has LotStreamingOptimizations.mapViewBlocker enabled, Apex makes no writes and reports the setting as handled by Sims3SettingsSetter."},
                        .gameCodeGroup = "LotLodStreaming"});
+
+APEX_REGISTER_FEATURE(LotObjectThrottlePatch,
+                      {.displayName = "Spread Lot Objects While Loading",
+                       .description = "Builds regular objects of a lot in small continuation windows instead of one large burst when the lot enters detailed view. "
+                                      "Building and apartment shells, large exterior geometry and flora stay synchronous. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VersionBit(GameVersion::EA),
+                       .technicalDetails = {"Port of Sims3SettingsSetter LotStreamingOptimizations.objectThrottle: Lot::AddLotObjectsToScene is replaced through Apex EntryChain and regular objects are processed in small windows.",
+                                            "Default: 2 regular objects per lot window, minimum 16 ms between continuation posts. Continuations use the game's PostRemoteMethodCall so they are marshalled through the engine.",
+                                            "Large/flora objects are built synchronously in the first window because Lot::SetActiveImpl has one-shot post-add fixups that require apartment/building shells to already have scene presence.",
+                                            "This is earlier than Spread New Objects Over Frames: that feature budgets the later Scene::BeginFrame pending-node drain. They are intentionally separate.",
+                                            "If official Sims3SettingsSetter owns LotStreamingOptimizations.objectThrottle, Apex makes no hook/write and reports it as handled by Sims3SettingsSetter."},
+                       .gameCodeGroup = "LotObjectThrottle"});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                       {.displayName = "Faster Texture Compression",
