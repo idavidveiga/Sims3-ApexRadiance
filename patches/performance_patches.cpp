@@ -232,6 +232,36 @@ class LotLodStreamingPatch : public ApexPatch {
     void RenderDeveloperUI() override {}
 };
 
+class MapViewStreamingBlockerPatch : public ApexPatch {
+  public:
+    MapViewStreamingBlockerPatch() : ApexPatch(Performance::kMapViewStreamingBlockerName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotLodStreaming::StartMapViewBlocker(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotLodStreaming::StopMapViewBlocker();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void Update() override {
+        pendingReinstall = false;
+        LotLodStreaming::TickMapViewBlocker();
+    }
+
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
+};
+
 class FastTextureCompressionPatch;
 std::atomic<FastTextureCompressionPatch*> g_texPatch{nullptr};
 
@@ -470,6 +500,8 @@ std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusT
 std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoStatusText(); }
 std::string Performance::LotLodStreamingStatus() { return LotLodStreaming::StatusText(); }
 bool Performance::LotLodStreamingHandledByS3SS() { return LotLodStreaming::HandledByS3SS(); }
+std::string Performance::MapViewStreamingBlockerStatus() { return LotLodStreaming::MapViewBlockerStatusText(); }
+bool Performance::MapViewStreamingBlockerHandledByS3SS() { return LotLodStreaming::MapViewBlockerHandledByS3SS(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
@@ -561,6 +593,19 @@ APEX_REGISTER_FEATURE(LotLodStreamingPatch,
                                             "Apex restores only values it changed, and only if they still equal Apex's applied value.",
                                             "If official Sims3SettingsSetter has LotStreamingOptimizations.streamingSettings enabled, Apex makes no writes and reports "
                                             "the setting as handled by Sims3SettingsSetter."},
+                       .gameCodeGroup = "LotLodStreaming"});
+
+APEX_REGISTER_FEATURE(MapViewStreamingBlockerPatch,
+                      {.displayName = "Pause Lot Streaming in Map View",
+                       .description = "Pauses lot-detail streaming while the neighborhood map is open, then resumes it after the map closes. This avoids doing lot "
+                                      "streaming work during the map transition. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"Uses Apex's existing validated Camera_IsMapViewModeEnabled getter and the live WorldManager+0x258 'skip lot streaming' gate.",
+                                            "Apex does not detour WorldManager::Update. The skip gate stays set only while map view is open and for a 1000 ms grace period after exit, then its previous value is restored safely.",
+                                            "If official Sims3SettingsSetter has LotStreamingOptimizations.mapViewBlocker enabled, Apex makes no writes and reports the setting as handled by Sims3SettingsSetter."},
                        .gameCodeGroup = "LotLodStreaming"});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
