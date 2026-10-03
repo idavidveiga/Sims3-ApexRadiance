@@ -1729,6 +1729,8 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
 // so every rail gets the same lamp light as the ground next to it. ----
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // by day, keep the game's normal lighting on fences / railings / stairs
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -1737,7 +1739,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
-    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
+    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
