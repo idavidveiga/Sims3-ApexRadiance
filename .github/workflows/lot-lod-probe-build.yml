@@ -1,4 +1,4 @@
-name: Build Lot LOD Distance Probe
+name: Build Lot LOD Distance 100 Probe
 
 on:
   push:
@@ -27,20 +27,20 @@ jobs:
           & $vcpkg install --triplet x86-windows-static --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE\vcpkg_installed"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build ApexRadiance lot LOD probe
+      - name: Build ApexRadiance lot LOD 100 probe
         shell: pwsh
         run: |
           msbuild ApexRadiance.sln /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexLotLodProbe=true
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
 
-      - name: Rename lot LOD probe build
+      - name: Rename lot LOD 100 probe build
         shell: pwsh
-        run: Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodDistanceProbe_TEST.asi"
+        run: Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotLodDistance100_TEST.asi"
 
-      - name: Upload lot LOD probe
+      - name: Upload lot LOD 100 probe
         uses: actions/upload-artifact@v4
         with:
-          name: ApexRadiance-LotLodDistanceProbe-TEST
+          name: ApexRadiance-LotLodDistance100-TEST
           path: ApexRadiance_LotLodDistanceProbe_TEST.asi
           if-no-files-found: error
