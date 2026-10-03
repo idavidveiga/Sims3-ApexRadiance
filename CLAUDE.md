@@ -40,7 +40,7 @@ were removed (see below).
 - Current source paths refer to this repository. Explicitly historical sections retain combined-tree references.
 
 ## Read before touching anything
-- New versions/features use a branch, small coherent commits and a draft PR. For multi-agent continuity and local build-command reuse, read `.codex/skills/version-pr-workflow/SKILL.md` and `.codex/skills/compile-project/SKILL.md` as applicable. Coordinate simultaneous work in separate worktrees; merging and releasing remain explicit actions.
+- Reusable workflows live in the repository: `.codex/skills/apex-version-pr-workflow`, `.codex/skills/apex-compile-project`, `.codex/skills/apex-review-pr-release`; menu guidance and its audit live in `.agents/skills/apex-menu` (portable discovery) and `.claude/skills/apex-menu` (Claude Code discovery). Keep those two UI skill copies synchronized. Read the relevant skill when its task applies. Keep these paths relative so contributors on other machines can use them. New versions/features use a branch, small coherent commits and a draft PR. Coordinate simultaneous work in separate worktrees; merging and releasing remain explicit actions.
 - `docs/README.md`: index. Then `docs/architecture.md` and `docs/workflow.md`.
 - Before any lighting change: `docs/features/night-lighting/README.md`, the sub-part doc, and the engine docs
   (`docs/engine/`). Each feature doc has a "Pitfalls and failed approaches" section. Do not retry what is listed there
@@ -101,9 +101,10 @@ See `docs/features/developer-mode.md` for persistence and verification details.
 - **Name:** visible text says "Apex Radiance" via `APEX_PRODUCT_NAME`; never "S3SS Apex" / "Apex Edition" again.
 - **Every new function (user rule, 2026-09-29):** after adding any feature or option, review the whole menu for the
   best organization (page, tab, card, group, order, labels that read alike, Advanced vs visible, Experimental badge,
-  dependencies) and adjust what needs it, not only the new row. Use the `apex-menu` skill
-  (`~/.claude/skills/apex-menu`: `perl audit.pl` lists untranslated texts, copy-guideline breaks, undocumented keys
-  and settings missing from ResetDefaults) and report what was moved or renamed.
+  dependencies) and adjust what needs it, not only the new row. Use [the repository `apex-menu` skill](.agents/skills/apex-menu/SKILL.md)
+  and run `perl .claude/skills/apex-menu/audit.pl .` from the repository root. It reports untranslated texts,
+  copy-guideline breaks, undocumented keys and settings missing from ResetDefaults; treat these as heuristic reports
+  and check runtime text and persistence manually. Report what was moved or renamed.
 - **UI:** main controls visible, tuning in collapsed "Advanced", dev tools apart (Developer sections, public build
   hides them). New standalone UI theme: **Violet** (accent #7F77DD, dark #534AB7, light #CECBF6; window #15161a, cards
   #1c1d22), sidebar plus feature cards, own hotkey Ctrl+Shift+F11 (see `docs/ui.md`).
@@ -122,7 +123,7 @@ the Frame Profiler / `ApexRadiance_Hitches.txt` for performance. The docs quote 
 `docs/workflow.md` section 4 and `docs/features/dev-tools/`.
 
 ## Release
-- Every release requires `.codex/skills/review-pr-release/SKILL.md` before publication: independent review of substantive code, evidence-based bug/regression debate, performance costs, preservation of intended visuals and documentation consistency. Record the exact reviewed/tested SHA; unresolved gameplay evidence remains unverified. Check changes added after the review before releasing. Publication is still explicitly authorized by the user.
+- Every release requires `.codex/skills/apex-review-pr-release/SKILL.md` before publication: independent review of substantive code, evidence-based bug/regression debate, performance costs, preservation of intended visuals and documentation consistency. Record the exact reviewed/tested SHA; unresolved gameplay evidence remains unverified. Check changes added after the review before releasing. Publication is still explicitly authorized by the user.
 GitHub `loinyx/Sims3SettingsSetter-Apex` (combined build; releases `nightremake-v0.1.0-alpha`, `apex-v0.2.0-alpha`
 Latest). Push:
 `git -c credential.helper= -c 'credential.helper=!"/c/Program Files/GitHub CLI/gh.exe" auth git-credential' push fork night-remake:main`.

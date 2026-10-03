@@ -1,4 +1,0 @@
-interface:
-  display_name: "Revisar PR e release"
-  short_description: "Revisa bugs, regressões, desempenho, visual e documentação"
-  default_prompt: "Use $review-pr-release para revisar esta PR antes da release, debater os riscos e corrigir os problemas encontrados."

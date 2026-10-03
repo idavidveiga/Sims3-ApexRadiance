@@ -1,5 +1,5 @@
 ---
-name: version-pr-workflow
+name: apex-version-pr-workflow
 description: Organize a software version into a reusable Git branch, coherent commits and a draft PR, with continuity between agents. Use when adopting a commits/PR workflow, starting a version or resuming its PR. Reuses compact state; does not authorize merging or releasing.
 ---
 
@@ -21,7 +21,7 @@ Before switching branches, inspect dirty files and preserve work. Do not reset, 
 
 Commit when a coherent change is complete and its appropriate checks have passed: behavior and necessary tests/docs together. Do not commit every file or tool action separately. Use the project's commit convention and maintainer identity. Inspect the staged diff and filenames; include only this task's changes. Exclude binaries, logs, caches, captures, temporary scripts, secrets and game assets unless the repository explicitly tracks that deliverable. Do not rewrite published history to tidy progress.
 
-Use `$compile-project` at `../compile-project/SKILL.md` when available for builds; reuse its validated target and dependency paths. Run only checks relevant to new changes or unresolved failures. Compilation does not establish gameplay visuals or performance.
+Use `$apex-compile-project` at `../apex-compile-project/SKILL.md` when available for builds; reuse its validated target and dependency paths. Run only checks relevant to new changes or unresolved failures. Compilation does not establish gameplay visuals or performance.
 
 When the user's requested workflow includes remote work and at least one meaningful commit exists, push the feature branch and open a draft PR. Check for an existing PR first. Use the repository template; describe the concrete problem, resulting behavior, validation and remaining limitations. With gh, write multiline descriptions to a task-local file and use `--body-file`. Attach every created PR with `attach_artifact`. Update the same PR as scope evolves; avoid publishing progress comments unless requested.
 
@@ -45,7 +45,7 @@ Sequential takeover can reuse the PR branch after checking that no agent is stil
 
 ## Finish
 
-Before every release, apply `$review-pr-release` at `../review-pr-release/SKILL.md`: independent review/debate of substantive code, bugs/regressions, equivalence-preserving performance, intended visual changes and consistent documentation. Record the reviewed/tested SHA and unresolved validation. Do not publish without completing this review; changes after review require checking the affected delta. This gate does not grant merge/release authorization.
+Before every release, apply `$apex-review-pr-release` at `../apex-review-pr-release/SKILL.md`: independent review/debate of substantive code, bugs/regressions, equivalence-preserving performance, intended visual changes and consistent documentation. Record the reviewed/tested SHA and unresolved validation. Do not publish without completing this review; changes after review require checking the affected delta. This gate does not grant merge/release authorization.
 
 Review the final diff, keep documentation consistent, and inspect required checks once. Mark the draft ready when implementation and required validation are complete within the authorized workflow; keep unresolved gameplay or other validation visible. Report the PR link, concise changes, validation and material remaining work.
 

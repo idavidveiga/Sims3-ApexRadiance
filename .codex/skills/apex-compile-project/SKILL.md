@@ -1,5 +1,5 @@
 ---
-name: compile-project
+name: apex-compile-project
 description: Compile or build a software project using its existing toolchain, reuse a previously successful command, and return a concise result with an artifact check. Applies when asked to compile/build or verify a code change; does not authorize installation, publishing, or deployment.
 ---
 

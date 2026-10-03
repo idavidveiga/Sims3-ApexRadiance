@@ -1,5 +1,5 @@
 ---
-name: review-pr-release
+name: apex-review-pr-release
 description: Review a PR before release through independent review and evidence-based debate; find and fix bugs, regressions and unnecessary costs, update project documentation and preserve intended visuals. Required for the user's release workflow. Record the exact reviewed/tested SHA and outstanding validation; does not authorize merging or publishing.
 ---
 
@@ -29,7 +29,7 @@ Classify each actionable finding by severity with file/line, concrete trigger, i
 
 ## Fix and validate
 
-Fix demonstrated issues within the authorized task, in small coherent commits. Review new changes and rerun only affected checks or unresolved failures. Use `$compile-project` for the correct build target. If simultaneous work advanced the PR, fetch and review the combined change; validation must name the tested SHA. Missing gameplay evidence stays unverified, not silently approved. Do not retry a failed visual hypothesis without inspecting whether the code change reached the affected path.
+Fix demonstrated issues within the authorized task, in small coherent commits. Review new changes and rerun only affected checks or unresolved failures. Use `$apex-compile-project` for the correct build target. If simultaneous work advanced the PR, fetch and review the combined change; validation must name the tested SHA. Missing gameplay evidence stays unverified, not silently approved. Do not retry a failed visual hypothesis without inspecting whether the code change reached the affected path.
 
 Write a concise review/handoff in the existing PR description when PR updates are authorized: reviewed/tested SHA, findings resolved/outstanding, checks and their limits, intended visual changes, documentation status and next validation. Follow the repository's reporting format when one exists. Do not add an unsolicited standalone public review/comment; publishing external feedback must be within the user's request.
 
