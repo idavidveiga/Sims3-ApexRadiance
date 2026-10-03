@@ -11,6 +11,7 @@
 #include <cstring>
 #include <format>
 #include <mutex>
+#include <vector>
 
 namespace {
 
@@ -25,6 +26,15 @@ std::atomic<bool> g_running{false};
 std::atomic<uint64_t> g_scoringCalls{0};
 std::atomic<uint64_t> g_promotions{0};
 std::atomic<uint64_t> g_demotions{0};
+
+constexpr float kBaselineLodDist = 70.0f;
+constexpr float kTestLodDist = 100.0f;
+std::atomic<bool> g_overrideApplied{false};
+std::atomic<bool> g_overrideAbandoned{false};
+void* g_overrideWorld = nullptr;
+float g_originalLodDist = 0.0f;
+bool g_originalLodValid = false;
+bool g_driftLogged = false;
 
 std::mutex g_snapshotMtx;
 void* g_world = nullptr;
@@ -87,6 +97,94 @@ bool PlausibleWorldSettings(float lodDist, float activeBias, int maxActive, floa
            std::isfinite(cameraThreshold) && cameraThreshold >= 0.0f && cameraThreshold <= 10000.0f;
 }
 
+bool FloatNear(float a, float b) {
+    return std::isfinite(a) && std::isfinite(b) && std::fabs(a - b) <= 0.0001f;
+}
+
+bool ReadLodDistance(void* world, float& value) {
+    if (!world) return false;
+    __try {
+        value = *reinterpret_cast<const float*>(static_cast<const uint8_t*>(world) + 0xDC);
+        return std::isfinite(value);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool WriteExpectedLodDistance(void* world, float desired, float expected) {
+    if (!world) return false;
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(world) + 0xDC;
+    std::vector<BYTE> desiredBytes(sizeof(float));
+    std::vector<BYTE> expectedBytes(sizeof(float));
+    std::memcpy(desiredBytes.data(), &desired, sizeof(float));
+    std::memcpy(expectedBytes.data(), &expected, sizeof(float));
+    return MemPatch::WriteBytes(addr, desiredBytes, nullptr, &expectedBytes);
+}
+
+void TryApplyOrMaintainTestValue(void* world, float observed) {
+    if (!world || g_overrideAbandoned.load(std::memory_order_acquire)) return;
+
+    if (!g_overrideApplied.load(std::memory_order_acquire)) {
+        if (!FloatNear(observed, kBaselineLodDist)) {
+            g_overrideAbandoned.store(true, std::memory_order_release);
+            LOG_WARNING(std::format("[LotLodDistProbe] Controlled 100 test NOT applied: initial Lot LOD dist. was {:.3f}, expected baseline {:.3f}", observed, kBaselineLodDist));
+            return;
+        }
+        if (!WriteExpectedLodDistance(world, kTestLodDist, observed)) {
+            g_overrideAbandoned.store(true, std::memory_order_release);
+            LOG_WARNING("[LotLodDistProbe] Controlled 100 test NOT applied: guarded write of WorldManager+0xDC failed");
+            return;
+        }
+        g_overrideWorld = world;
+        g_originalLodDist = observed;
+        g_originalLodValid = true;
+        g_overrideApplied.store(true, std::memory_order_release);
+        LOG_INFO(std::format("[LotLodDistProbe] Controlled test applied: Lot LOD dist. {:.3f} -> {:.3f} at WorldManager+0xDC ({:#010x})",
+                             observed, kTestLodDist, reinterpret_cast<uintptr_t>(world) + 0xDC));
+        return;
+    }
+
+    if (world != g_overrideWorld) {
+        g_overrideAbandoned.store(true, std::memory_order_release);
+        LOG_WARNING("[LotLodDistProbe] WorldManager changed while the 100 test was active; Apex stopped maintaining the test value");
+        return;
+    }
+
+    if (FloatNear(observed, kTestLodDist)) return;
+
+    if (FloatNear(observed, g_originalLodDist)) {
+        if (WriteExpectedLodDistance(world, kTestLodDist, observed)) {
+            if (!g_driftLogged) {
+                LOG_INFO(std::format("[LotLodDistProbe] Lot LOD dist. drifted {:.3f} -> {:.3f}; maintained at test value", observed, kTestLodDist));
+                g_driftLogged = true;
+            }
+            return;
+        }
+    }
+
+    g_overrideAbandoned.store(true, std::memory_order_release);
+    LOG_WARNING(std::format("[LotLodDistProbe] Another owner changed Lot LOD dist. to {:.3f}; Apex stopped maintaining the 100 test", observed));
+}
+
+void RestoreTestValueIfOwned() {
+    if (!g_overrideApplied.load(std::memory_order_acquire) || !g_originalLodValid || !g_overrideWorld) return;
+
+    float current = 0.0f;
+    if (!ReadLodDistance(g_overrideWorld, current)) {
+        LOG_WARNING("[LotLodDistProbe] Restore skipped: WorldManager+0xDC is unreadable");
+        return;
+    }
+    if (!FloatNear(current, kTestLodDist)) {
+        LOG_INFO(std::format("[LotLodDistProbe] Restore skipped: current Lot LOD dist. is {:.3f}, so Apex no longer owns the value", current));
+        return;
+    }
+    if (WriteExpectedLodDistance(g_overrideWorld, g_originalLodDist, current)) {
+        LOG_INFO(std::format("[LotLodDistProbe] Restored Lot LOD dist. {:.3f} -> {:.3f}", current, g_originalLodDist));
+    } else {
+        LOG_WARNING("[LotLodDistProbe] Restore failed; WorldManager+0xDC was left unchanged");
+    }
+}
+
 bool MatchBytes(uintptr_t addr, const uint8_t* expected, size_t n) {
     uint8_t buf[16] = {};
     return n <= sizeof(buf) && MemPatch::ReadBytes(addr, buf, n) && std::memcmp(buf, expected, n) == 0;
@@ -100,8 +198,15 @@ uint64_t __fastcall HookScoring(void* self, void* edx, uint32_t dt, uint32_t cam
 
     float lod = 0.0f, bias = 0.0f, terrain = 0.0f, cameraThreshold = 0.0f;
     int maxActive = 0;
-    const bool haveSettings = ReadWorldSnapshot(self, lod, bias, maxActive, terrain, cameraThreshold) &&
-                              PlausibleWorldSettings(lod, bias, maxActive, terrain, cameraThreshold);
+    bool haveSettings = ReadWorldSnapshot(self, lod, bias, maxActive, terrain, cameraThreshold) &&
+                        PlausibleWorldSettings(lod, bias, maxActive, terrain, cameraThreshold);
+
+    if (haveSettings) {
+        TryApplyOrMaintainTestValue(self, lod);
+        // Re-read so every diagnostic line reflects the value actually used by the test.
+        haveSettings = ReadWorldSnapshot(self, lod, bias, maxActive, terrain, cameraThreshold) &&
+                       PlausibleWorldSettings(lod, bias, maxActive, terrain, cameraThreshold);
+    }
 
     bool logSettings = false;
     {
@@ -250,14 +355,22 @@ bool Start(std::string* error) {
     g_scoringCalls.store(0, std::memory_order_relaxed);
     g_promotions.store(0, std::memory_order_relaxed);
     g_demotions.store(0, std::memory_order_relaxed);
+    g_overrideApplied.store(false, std::memory_order_relaxed);
+    g_overrideAbandoned.store(false, std::memory_order_relaxed);
+    g_overrideWorld = nullptr;
+    g_originalLodDist = 0.0f;
+    g_originalLodValid = false;
+    g_driftLogged = false;
     g_running.store(true, std::memory_order_release);
-    LOG_INFO(std::format("[LotLodDistProbe] READ-ONLY probe active on {}: scoring={:#010x}, detailRequest={:#010x}; WorldManager+0xDC will NOT be modified",
-                         GetGameVersionName(), g_scoringAddr, g_detailAddr));
+    LOG_INFO(std::format("[LotLodDistProbe] CONTROLLED probe active on {}: scoring={:#010x}, detailRequest={:#010x}; will change ONLY Lot LOD dist. {:.3f} -> {:.3f} after validating the baseline",
+                         GetGameVersionName(), g_scoringAddr, g_detailAddr, kBaselineLodDist, kTestLodDist));
     return true;
 }
 
 void Stop() {
     if (!g_running.exchange(false, std::memory_order_acq_rel)) return;
+
+    RestoreTestValueIfOwned();
 
     if (g_origScoring && g_origDetail) {
         if (DetourTransactionBegin() == NO_ERROR) {
@@ -272,9 +385,10 @@ void Stop() {
         }
     }
 
-    LOG_INFO(std::format("[LotLodDistProbe] Stopped: {} scoring calls, {} Detailed View ON, {} Detailed View OFF; no LOD setting was written",
+    LOG_INFO(std::format("[LotLodDistProbe] Stopped: {} scoring calls, {} Detailed View ON, {} Detailed View OFF; controlled Lot LOD dist. test {}",
                          g_scoringCalls.load(std::memory_order_relaxed), g_promotions.load(std::memory_order_relaxed),
-                         g_demotions.load(std::memory_order_relaxed)));
+                         g_demotions.load(std::memory_order_relaxed),
+                         g_overrideApplied.load(std::memory_order_relaxed) ? "was applied" : "was not applied"));
     g_origScoring = nullptr;
     g_origDetail = nullptr;
     g_scoringAddr = 0;
