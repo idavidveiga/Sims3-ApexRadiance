@@ -122,7 +122,7 @@ inline constexpr unsigned kProfilePartsAll = ((1u << kProfilePartCount) - 1) & ~
 const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
 unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has
 void KeepProfileParts(toml::table& state, unsigned parts); // removes the other parts from a profile table
-bool SaveProfile(const std::string& name, unsigned parts = kProfilePartsAll, std::string* error = nullptr);
+bool SaveProfile(const std::string& name, unsigned parts = kProfilePartsAll, std::string* error = nullptr, const std::string& icon = "bookmark");
 // Parses the profile (does not apply it: see ApplyFeatureState)
 bool ReadProfile(const std::string& name, toml::table& out, std::string* error = nullptr);
 bool DeleteProfile(const std::string& name, std::string* error = nullptr);

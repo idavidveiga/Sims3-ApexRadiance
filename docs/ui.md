@@ -126,7 +126,7 @@ like the frame, on every nav-focusable widget (all custom widgets use `Invisible
 
 **Typography**: page title bold 1.3x, page subtitle muted 1x; card title bold 1.05x, card subtitle muted 1x; row
 label 1x `kText`; description 0.87x muted; slider value 1x muted, right-aligned on the label's line; end labels, pills
-and the sidebar version 0.87x muted; group labels ("WALLS", sidebar "WORLD") bold 0.8x muted, upper case, letter-spaced.
+and the sidebar version 0.87x muted; group and sidebar labels use the regular menu font at normal size, muted, without artificial letter spacing.
 
 **Icons**: on card headers (18, accent), the sidebar (18), overview rows (18), notes (14), buttons (14), pills (14).
 Setting rows have no icons (all rows in a card look the same).
@@ -287,8 +287,7 @@ signal is unavailable and the previous 2 s startup-time fallback remains. This c
 installation or shader/font initialisation, and does not establish that the note caused the reported startup hitch.
 
 **Shortcuts (03/10).** Every Apex action shortcut is intercepted by the overlay before the game sees it. Preset ids and
-serialized values remain stable (`letters`, `numbers`, `fkeys`, `mine`); the visible names are **Letter row**,
-**Number row**, **Function row**, and **Custom**. A missing `[ui] hotkey_preset` still means the earlier Function keys layout. Selecting a
+serialized values remain stable (`letters`, `numbers`, `fkeys`, `mine`); the visible names are **Letters**, **Numbers**, **F keys**, and **Custom**. A missing `[ui] hotkey_preset` still means the earlier Function keys layout. Selecting a
 preset is an explicit user action; opening Settings never replaces a saved key or applies a preset.
 
 | | Letter row | Number row | Function row |
@@ -298,15 +297,15 @@ preset is an explicit user action; opening Settings never replaces a saved key o
 | Refresh the lighting | Ctrl+Shift+G | Ctrl+Shift+3 | Ctrl+Shift+F9 |
 | Dev: Light Probe / Light Diag / recorder / Frame Capture | V / B / X / F | 4 / 5 / 6 / 7 | F7 / F8 / F6 / F5 |
 
-Settings > Shortcuts presents the selected layout as a responsive QWERTY keyboard map and three selectable preset
-tiles. Hovered assigned keys show their action and full modifier combination; clicking one records a replacement. The **Core actions**, **Report a
-problem**, **Developer tools**, **While Apex is open**, and **Screenshot capture** groups also show clickable key chips;
-menu navigation, hold-to-peek, hold-to-compare, diagnostics, and screenshot actions can all be changed there. Recording
-waits until held keys are released, Esc cancels, and a note explains collisions and reserved game/Windows shortcuts.
-The **Custom** state keeps the selected preset as the fallback for any action the player has not changed. Choosing a
-preset explicitly clears per-action overrides; merely loading Settings never does. Narrow windows stack the map, actions
-and supporting cards. Search keeps the standard shortcut rows and preserves the screenshot controls' enabled-state
-behavior.
+Settings > Shortcuts uses a compact full-width **Shortcuts** card: one preset dropdown followed by single-line
+editable menu, compare, refresh and screenshot shortcut rows. The screenshot row is disabled while the screenshot
+feature is off. Presets change only on explicit selection; opening the card keeps all saved bindings. The former
+QWERTY map and preset tiles are removed, avoiding the extra key geometry, tooltips and per-key action scans.
+Report shortcuts have their own card; screenshot options and in-menu controls keep their existing cards.
+Recording waits until held keys are released, Esc cancels, and a note explains collisions and reserved shortcuts.
+The **Custom** state keeps the selected preset as the fallback for unchanged actions. Selecting a preset explicitly
+clears per-action overrides; loading Settings never does. Search keeps the standard shortcut rows and enabled-state
+behavior. Serialized ids, key defaults and profile fields are unchanged.
 
 Letter row groups nearby left-hand keys; Number row is easy to recall; Function row preserves the earlier layout. Compare turns Night
 Lighting, Depth Blur, Edge Smoothing and Picture off and back (not saved; a note shows at the top while off). Refresh
@@ -472,8 +471,16 @@ Panel opening, shortcuts and notices wait for a loaded active session plus three
 ### Compact footer and credits (local test)
 The footer shows only configuration save status and Hold Alt to peek. Sims3SettingsSetter detection stays in Settings > Compatibility rather than every page. About credits start with Apex Radiance by @loinyx; the former promotional paragraph is replaced by a short sims3fiend framework-design attribution in all four languages. Historical attribution and third-party licenses remain in the project documentation. Compatibility detection, conflict protection, and integration behavior are unchanged.
 
-### Centered notice width and icons (local test)
-Capture, recording, comparison and entry pills have a content-measured width set before ImGui Begin; only height auto-resizes. Wrapped text plus AlwaysAutoResize previously converged to one glyph of width, creating a vertical strip. Width is clamped to the viewport's shared notice margins. Capture uses Info, aiming Crosshair, recording a pulsing Activity icon and comparison Columns2; entry retains the logo/Sparkles fallback. Recommendation/key setup headers use Info/Keyboard. Existing top-center placement, lifetimes and input pass-through remain.
+### Centered notice width, icons and spacing (local test)
+
+Report screenshots with the Apex menu open now use an explicit `filteredSceneBeforeOverlay` stage: PostScene and
+Picture's scene copy finish, Picture runs once, the screenshot is copied, then the menu draws. The normal late Picture
+call consumes no second pass. This includes colour filters in report photos and removes callback-registration order
+from their capture timing. Player photos on C still read the finished backbuffer at Present. The reported F10/photo
+visual mismatch is not considered resolved without a matched in-game comparison; the colour-difference UI mask remains
+a heuristic, and partial native interaction menus may still need investigation.
+
+Capture, recording, comparison and entry pills have a content-measured width set before ImGui Begin; only height auto-resizes. Every pill keeps its complete text on one line, without ellipses; width grows with the measured copy. Icon notices use the approved separated capsule: fixed 44-unit height, a 48-unit icon compartment, 20-unit Lucide icon, 22-unit subtle separator, 14-unit gap and 18-unit right inset. Text and icons center independently within the same fixed height. Explicit width and top-left positioning keep new windows centered on their first frame. The entry notice keeps its existing logo layout. Drawing adds only one separator line; no blur or new scene pass is used. Capture notices use Camera for a saved screenshot, CircleCheck for completed captures, TriangleAlert for warnings and Save while writing; light aiming uses Crosshair and active recording uses a pulsing Activity icon. Comparison keeps Columns2; entry retains the logo/Sparkles fallback. Notices enter over 140 ms with a small downward fade and leave over 120 ms; the animation changes only ImGui alpha and position, with no per-pixel effect or added scene work. Recommendation/key setup headers use Info/Keyboard. Existing top-center placement, lifetimes and input pass-through remain.
 
 ## Unified build and optional developer mode (2026-10-02)
 
@@ -486,3 +493,31 @@ Display > Window retains Borderless and adds experimental V-Sync policy, optiona
 ## Local Sim occlusion UI revision
 
 The Ambient Occlusion page has two cards: scene AO first (Strength, Distance, Quality), then Sim Occlusion (body/hair intensity, maximum darkening and advanced coverage preview). The second depends on scene AO, is experimental and off by default; its switch has a dedicated User Round icon and an Experimental badge, and its controls are hidden while the switch is off. Page and card restore-default buttons, including Overview, Picture/mixer, Depth Blur and Edge Smoothing, are removed. Individual row defaults and the explicit global Settings reset remain. See [features/ambient-occlusion.md](features/ambient-occlusion.md).
+
+The first-start Customize and Not now buttons use the existing bold font and violet primary fill at their original font size and height.
+
+Screenshot capture copy shows the configured intercepted key (C by default) and explains that it produces one filtered photo without a duplicate. The existing Hide game UI in screenshots switch controls temporary native F10 hiding and restoration; off includes the game UI. The destination note uses the shared small description font. Persistence and capture behavior are unchanged.
+
+Native F10 routing: unmodified F10 down/up messages bypass Apex shortcuts and ImGui keyboard capture, including while the menu is open. Ctrl+Shift+F10 retains its configured compare behavior. Synthetic screenshot keys are observed after forwarding to the game procedure; screenshots wait for that observation before their clean-frame delay, with a two-second cancellation bound. This acknowledges message delivery, not the native HUD state; the visibility tracker remains an estimate and gameplay validation is required.
+
+Screenshot capture is the second card in Settings > Menu. It includes the same shortcut recorder as Shortcuts, with existing conflict and reserved-key validation. Choosing a different key frees C for the native game screenshot. Keys and capture settings retain their existing persistence fields.
+
+Loading startup: Picture and the shared AO/AA/Depth Blur chain defer their passes until registered shader precompilation completes. The readiness probe uses try-lock and never waits for compiler work. This can delay filters during startup; saved settings are unchanged. Other startup costs and shader consumers remain separate, and gameplay timing needs validation.
+
+Section typography update: shared section labels use the regular menu font at normal size, with no artificial glyph spacing. Overview headings are consistently Lighting, Image and Performance.
+
+Lighting Overview now uses full-width icon/name/description rows for Subtle, Soft, Natural and derived Custom, preserving preset values and Undo choice. Custom cannot replace individual settings. The redundant fine-tuning card is removed; area tabs remain.
+
+Report capture-session refinement: uses the sidebar Bug icon without a decorative disk, a quieter border, connected outlined step markers with consistent vertical gaps, and a subtle divider above Start a session. Session collection, saving dependencies and active-session controls remain unchanged.
+
+Developer opens directly in Lighting; the redundant Start here overview was removed. Performance, Captures, Visual effects and Translations remain. Session start uses Camera and active-session status uses Activity instead of a plain dot.
+
+> Local development: capture titles are required to finish the post-save form; descriptions remain optional. Whitespace-only titles cannot be saved. Capture files already written remain preserved.
+
+Local development: Profiles separates saving the current setup and the saved library into two standard cards. Existing TOML files, category bits, selective apply, replacement/deletion confirmations and Undo stay unchanged. Capture session uses the shared CardHeader alignment and accent color; its smaller numbered circles use a violet fill and centered text.
+
+Profile icons: the name field has a curated 30-icon Lucide picker inspired by The Sims. The selection is stored as an optional stable name in [meta].icon, not an enum index. Missing or unknown names display Bookmark. Loading settings ignores this visual metadata; category masks and all previous TOML sections remain unchanged. Lighting choices share Overview row typography, description scale, icon column and spacing. The Night Lights overview header no longer has an empty divider.
+
+Profiles now uses the approved aligned selection grid: icon and label left, checkbox right, two equal columns with a one-column fallback based on translated text width. Save and selective load share this layout. Presentation order does not change category bits; Shortcuts remains opt-in.
+
+Profile selection labels match the corresponding tabs: Lighting, Color, Ambient Occlusion, Depth Blur, Edge Smoothing, Performance, Shortcuts and Developer. Lighting retains its existing combined category, including water/snow lighting; no serialized bits or settings tables change.

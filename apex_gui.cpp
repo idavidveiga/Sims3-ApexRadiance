@@ -94,6 +94,7 @@ bool g_recNoteShow = false, g_recNoteShown = false; // the first note of a start
 int g_recRow = -1; // Shortcuts: the row whose key is being recorded (-1 = none)
 void ShortcutsContent(bool compact);
 void ShortcutsTab();
+void ScreenshotCaptureCard();
 std::atomic<bool> g_hintConsidered{false};
 
 // Undo: the feature state at the last click / key activation in the menu (before any widget saw it), and the toast
@@ -180,7 +181,7 @@ template <int N> const char* CostChip(float ms, char (&buf)[N]) { return ApexUi:
 // One feature card: header (icon, title, subtitle; the description, which ends with the credit, on hover) with its
 // on/off switch and its GPU cost chip, then (below a divider) its state notes and body(patch) while it is on. In the
 // search results the body is searched even while the feature is off.
-template <typename Body> void FeatureCardWith(const char* patchName, IconId icon, const char* title, const char* subtitle, Body&& body) {
+template <typename Body> void FeatureCardWith(const char* patchName, IconId icon, const char* title, const char* subtitle, Body&& body, bool showDivider = true) {
     ApexPatch* patch = Find(patchName);
     if (!patch) return;
     ImGui::PushID(patchName);
@@ -190,7 +191,7 @@ template <typename Body> void FeatureCardWith(const char* patchName, IconId icon
         const char* chip = on ? CostChip(patch->GpuCostMs(), chipBuf) : nullptr;
         if (ApexUi::CardHeader(icon, title, subtitle, Description(patch), &on, Switchable(patch), nullptr, chip)) SetPatch(patch, on);
         const bool enabled = patch->IsEnabled();
-        if (enabled || HasStateNotes(patch)) ApexUi::CardDivider();
+        if ((enabled && showDivider) || HasStateNotes(patch)) ApexUi::CardDivider();
         StateNotes(patch);
         if (enabled || ApexUi::FilterActive()) body(patch);
     }
@@ -373,7 +374,7 @@ void OverviewPage() {
         OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
     }
     ApexUi::EndCard();
-    ApexUi::GroupLabel("IMAGE");
+    ApexUi::GroupLabel("Image");
     if (ApexUi::BeginCard("##Image")) {
         bool nameClicked = false;
         {
@@ -434,7 +435,7 @@ void UpperFloorRow() {
 }
 
 void LampsTabContent() {
-    FeatureCardWith(kNightLighting, IconId::MoonStar, "Night Lights", "Lamps light your neighborhood at night", [](ApexPatch*) {});
+    FeatureCardWith(kNightLighting, IconId::MoonStar, "Night Lights", "Lamps light your neighborhood at night", [](ApexPatch*) {}, false);
     ApexPatch* ntr = Find(kNightLighting);
     if (!ntr) return;
     if (!ntr->IsEnabled()) {
@@ -443,9 +444,7 @@ void LampsTabContent() {
     }
     if (ApexUi::BeginCard("##NightBalance")) NightLighting::DrawLightingBalance();
     ApexUi::EndCard();
-    if (ApexUi::BeginCard("##NightFineTuning"))
-        ApexUi::CardHeader(IconId::SlidersHorizontal, "Want to adjust one part?", "Use the tabs above. Your combination is shown as Custom.", nullptr, nullptr);
-    ApexUi::EndCard();
+
 }
 
 void GroundTabContent() {
@@ -780,6 +779,7 @@ struct ReportState {
     char optionalTitle[256]{};
     char optionalDescription[3072]{};
     bool notesError = false;
+    bool notesDeleteError = false;
 };
 ReportState g_report;
 
@@ -806,31 +806,45 @@ void ReportOptionalNotes() {
             g_report.fallbackNote = Captures::ReadDescription(saved.folder);
             g_report.optionalTitle[0] = g_report.optionalDescription[0] = 0;
             g_report.notesError = false;
+            g_report.notesDeleteError = false;
             ImGui::OpenPopup("OptionalCaptureNotes");
         }
     }
-    ImGui::SetNextWindowSize(ImVec2(std::min(500.0f * ApexUi::Unit(), ImGui::GetIO().DisplaySize.x - 32.0f), 0), ImGuiCond_Appearing);
+    const float modalWidth = std::max(1.0f, std::min(500.0f * ApexUi::Unit(), ImGui::GetIO().DisplaySize.x - 32.0f));
+    // Auto-resize only the height: full-width fields must not feed back into the next frame's width.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(modalWidth, 0.0f), ImVec2(modalWidth, FLT_MAX));
+    ImGui::SetNextWindowSize(ImVec2(modalWidth, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("OptionalCaptureNotes", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
         ApexUi::CardHeader(IconId::Check, "Capture saved", "Give it a name to find it more easily", nullptr, nullptr);
         ApexUi::CardDivider();
-        ImGui::TextUnformatted(I18n::Tr("Title (optional)"));
+        ImGui::TextUnformatted(I18n::Tr("Title (required)"));
         ImGui::SetNextItemWidth(-1);
         ImGui::InputText("##OptionalCaptureTitle", g_report.optionalTitle, sizeof(g_report.optionalTitle));
         ApexUi::Gap(ApexUi::kSpace2);
         ImGui::TextUnformatted(I18n::Tr("Description (optional)"));
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextMultiline("##OptionalCaptureDescription", g_report.optionalDescription, sizeof(g_report.optionalDescription), ImVec2(-1, 100 * ApexUi::Unit()));
-        ApexUi::MutedText("Blank fields use the capture type and diagnostic information. Your files are already saved.");
+        ApexUi::MutedText("Enter a title to finish. The description is optional; your capture files are already saved.");
+        if (g_report.notesDeleteError) ApexUi::IconNote(IconId::TriangleAlert, "Could not delete the capture. Check folder access and try again.");
         if (g_report.notesError) ApexUi::IconNote(IconId::TriangleAlert, "Could not save the description. Check free space and folder access");
         ApexUi::Gap(ApexUi::kSpace2);
-        const bool oneRow = ReportDialogActions("Keep automatic details", false, "Save capture", true);
-        if (ApexUi::TextButton("Keep automatic details")) ImGui::CloseCurrentPopup();
-        ReportDialogLastAction("Save capture", true, oneRow);
+        const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
+        const bool titleValid = filled(g_report.optionalTitle);
+        const bool oneRow = ReportDialogActions("Cancel", false, "Save capture", true);
         ImGui::BeginDisabled(Captures::Saving() || Recorder::Active() || LightProbe::Busy());
+        if (ApexUi::TextButton("Cancel", "Deletes this new capture and closes the form")) {
+            if (Captures::Delete(g_report.notesFolder)) {
+                g_report.scannedAt = 0;
+                g_report.notesFolder.clear();
+                ImGui::CloseCurrentPopup();
+            } else g_report.notesDeleteError = true;
+        }
+        ImGui::EndDisabled();
+        ReportDialogLastAction("Save capture", true, oneRow);
+        ImGui::BeginDisabled(!titleValid || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
         if (ApexUi::IconTextButton("Save capture", IconId::Save, nullptr, ButtonKind::Primary)) {
-            const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
-            const std::string title = filled(g_report.optionalTitle) ? g_report.optionalTitle : g_report.fallbackNote.title;
+            const std::string title = g_report.optionalTitle;
             const std::string text = filled(g_report.optionalDescription) ? g_report.optionalDescription : g_report.fallbackNote.text;
             if (Captures::SaveFolderDescription(g_report.notesFolder, title, text)) {
                 g_report.scannedAt = 0;
@@ -1014,10 +1028,10 @@ void SessionHeroCard() {
     const float u = ApexUi::Unit();
     const bool open = Captures::SessionActive();
     ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(open ? VioletTheme::kAccentDark : VioletTheme::kCardBg, open ? 0.28f : 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Col(VioletTheme::kAccent, open ? 0.9f : 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(VioletTheme::kAccent, open ? 0.65f : 0.35f));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14.0f * u);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * 1.25f * u, ApexUi::kSpace4 * u));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * u, ApexUi::kSpace3 * u));
     const bool visible = ImGui::BeginChild("##Hero", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
                                            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar(3);
@@ -1025,54 +1039,41 @@ void SessionHeroCard() {
     if (visible) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float lineH = ImGui::GetTextLineHeight();
-        // the icon in a violet circle, the title and the state
-        const float disc = std::round(lineH * 2.6f);
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddCircleFilled(ImVec2(p.x + disc * 0.5f, p.y + disc * 0.5f), disc * 0.5f, ImGui::GetColorU32(Col(VioletTheme::kAccent, open ? 0.95f : 0.25f)));
-        const float is = ApexUi::kIconMedium * 1.3f * u;
-        ApexUi::DrawIcon(dl, IconId::Layers, ImVec2(p.x + (disc - is) * 0.5f, p.y + (disc - is) * 0.5f), is,
-                         ImGui::GetColorU32(Col(open ? 0xFFFFFF : VioletTheme::kAccentLight)));
-        ImGui::Dummy(ImVec2(disc, disc));
-        ImGui::SameLine(0.0f, ApexUi::kSpace4 * u);
-        ImGui::BeginGroup();
-        if (VioletTheme::BoldFont()) ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * 1.25f);
-        ImGui::TextColored(Col(VioletTheme::kText), "%s", I18n::Tr("Capture session"));
-        if (VioletTheme::BoldFont()) ImGui::PopFont();
-        if (open) {
-            const int s = Captures::SessionSeconds();
-            const std::string state = I18n::Trf("Recording a session \xC2\xB7 {}:{:02} \xC2\xB7 {} captures", s / 60, s % 60, Captures::SessionCaptures());
-            const ImVec2 q = ImGui::GetCursorScreenPos();
-            const float r = lineH * 0.25f;
-            const float a = 0.55f + 0.45f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f));
-            dl->AddCircleFilled(ImVec2(q.x + r, q.y + lineH * 0.5f), r, ImGui::GetColorU32(Col(VioletTheme::kError, a)));
-            ImGui::Dummy(ImVec2(2.0f * r, lineH));
-            ImGui::SameLine(0.0f, ApexUi::kSpace2 * u);
-            ImGui::TextColored(Col(VioletTheme::kAccentLight), "%s", state.c_str());
-        } else {
-            ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", I18n::Tr("The best way to report a problem: everything you capture goes into one folder"));
-        }
-        ImGui::EndGroup();
+        const int seconds = Captures::SessionSeconds();
+        const std::string subtitle = open
+            ? I18n::Trf("Recording a session \xC2\xB7 {}:{:02} \xC2\xB7 {} captures", seconds / 60, seconds % 60, Captures::SessionCaptures())
+            : std::string(I18n::Tr("The best way to report a problem: everything you capture goes into one folder"));
+        ApexUi::CardHeader(IconId::Bug, "Capture session", subtitle.c_str(), nullptr, nullptr);
         ApexUi::Gap(ApexUi::kSpace3);
         if (!open) {
             // the three steps as numbered bubbles
             static const char* const kSteps[3] = {"Start a session here", "Make the problem happen and save captures, with the buttons below or their keys",
                                                   "End it: one folder with the captures, the log and your settings, ready to send"};
+            ImVec2 previousCenter{};
             for (int i = 0; i < 3; i++) {
                 const ImVec2 b = ImGui::GetCursorScreenPos();
-                const float br = lineH * 0.62f;
-                dl->AddCircleFilled(ImVec2(b.x + br, b.y + lineH * 0.5f), br, ImGui::GetColorU32(Col(VioletTheme::kAccentDark)));
+                const float br = std::max(9.0f * u, lineH * 0.45f);
+                const ImVec2 center(b.x + br, b.y + lineH * 0.5f);
+                if (i) dl->AddLine(ImVec2(previousCenter.x, previousCenter.y + br), ImVec2(center.x, center.y - br), ImGui::GetColorU32(Col(VioletTheme::kAccent, 0.3f)), u);
+                dl->AddCircleFilled(center, br, ImGui::GetColorU32(Col(VioletTheme::kAccentDark)), 24);
+                previousCenter = center;
                 const std::string n = std::to_string(i + 1);
-                const ImVec2 ns = ImGui::CalcTextSize(n.c_str());
-                dl->AddText(ImVec2(b.x + br - ns.x * 0.5f, b.y), ImGui::GetColorU32(Col(VioletTheme::kAccentLight)), n.c_str());
+                const float numberSize = ImGui::GetFontSize() * 0.85f;
+                const ImVec2 ns = ImGui::GetFont()->CalcTextSizeA(numberSize, FLT_MAX, 0.0f, n.c_str());
+                dl->AddText(ImGui::GetFont(), numberSize, ImVec2(center.x - ns.x * 0.5f, center.y - ns.y * 0.5f),
+                            ImGui::GetColorU32(Col(VioletTheme::kText)), n.c_str());
                 ImGui::Dummy(ImVec2(2.0f * br, lineH));
                 ImGui::SameLine(0.0f, ApexUi::kSpace3 * u);
                 ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextColored(Col(VioletTheme::kText, 0.9f), "%s", I18n::Tr(kSteps[i]));
                 ImGui::PopTextWrapPos();
+                if (i < 2) ApexUi::Gap(ApexUi::kSpace2);
             }
             ApexUi::Gap(ApexUi::kSpace3);
+            ImGui::Separator();
+            ApexUi::Gap(ApexUi::kSpace2);
             ImGui::BeginDisabled(Loading() || Captures::Saving() || Recorder::Active() || LightProbe::Busy());
-            if (ApexUi::IconTextButton("Start a session##Sess", IconId::Layers, "Every capture you save goes into this session's folder until you end it",
+            if (ApexUi::IconTextButton("Start a session##Sess", IconId::Camera, "Every capture you save goes into this session's folder until you end it",
                                        ApexUi::ButtonKind::Primary)) {
                 Captures::BeginSession();
                 g_report.scannedAt = 0;
@@ -1217,34 +1218,18 @@ void DeveloperPage() {
     toml::table profilerBefore; FrameProfiler::SaveToToml(profilerBefore);
     ApexUi::PageTitle("Developer", "Choose a test and keep its tools together");
     static int tab = 0;
-    constexpr const char* labels[] = {"Start here", "Lighting", "Performance", "Captures", "Visual effects", "Translations"};
-    constexpr IconId icons[] = {IconId::LayoutDashboard, IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type};
-    ApexUi::TabBar("##DeveloperTabs", &tab, labels, 6, icons);
-    if (tab == 0) {
-        DevCard("DevStart", IconId::Wrench, "Developer", "Developer mode is optional. Turn it off in Settings when you have finished testing.", true, [&] {
-            constexpr const char* purpose[] = {
-                "Keep the camera fixed. Save the correct state, cause the problem and save again. Refresh only after capturing the incorrect state.",
-                "Clear the previous data, reproduce the stutter, then stop and save. High FPS can still hide short pauses.",
-                "A session keeps related captures together. Reports save the log and settings; lighting recording lasts up to 20 seconds. The Profiler saves a separate measurement report.",
-                "Inspect one effect at a time. Save the result and switch off its diagnostic view when finished. Conditional controls remain tied to their effect.",
-                "Open the affected screens in the language you want to check. Save the missing-text list and placeholder errors to the log."};
-            for (int i = 1; i < 6; ++i) {
-                ImGui::PushID(i);
-                if (ApexUi::IconTextButton(labels[i], icons[i], purpose[i-1])) tab = i;
-                ApexUi::MutedText(purpose[i-1]);
-                ApexUi::Gap(ApexUi::kSpace3);
-                ImGui::PopID();
-            }
-        });
-    } else if (tab == 1) DevLightingTab();
-    else if (tab == 2) DevProfilerTab();
-    else if (tab == 3) {
+    constexpr const char* labels[] = {"Lighting", "Performance", "Captures", "Visual effects", "Translations"};
+    constexpr IconId icons[] = {IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type};
+    ApexUi::TabBar("##DeveloperTabs", &tab, labels, 5, icons);
+    if (tab == 0) DevLightingTab();
+    else if (tab == 1) DevProfilerTab();
+    else if (tab == 2) {
         ApexUi::MutedText("A session keeps related captures together. Reports save the log and settings; lighting recording lasts up to 20 seconds. The Profiler saves a separate measurement report.");
         SessionHeroCard();
         ReportCaptureCard();
         FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save the gameÃ¢â‚¬â„¢s drawing operations to a text file. This is detailed evidence for rendering problems.");
         ReportListCard();
-    } else if (tab == 4) DevDebugViewsTab();
+    } else if (tab == 3) DevDebugViewsTab();
     else {
         ApexUi::MutedText("Open the affected screens in the language you want to check. Save the missing-text list and placeholder errors to the log.");
         DevCard("TranslationReview", IconId::Type, "Translations", "Missing translations", true, [] {
@@ -1524,6 +1509,7 @@ void MenuTab() {
         ResetAllRow();
     }
     ApexUi::EndCard();
+    ScreenshotCaptureCard();
     ImGui::PopID();
 }
 
@@ -1531,10 +1517,12 @@ void MenuTab() {
 
 struct ProfileItem {
     std::string name;
+    IconId icon = IconId::Bookmark;
     unsigned parts = 0; // what the file has (ApexConfig::ProfilePartsOf)
 };
 struct ProfilesState {
     char name[ApexConfig::kProfileNameMax + 1] = {};
+    IconId icon = IconId::Bookmark;
     std::vector<ProfileItem> list;
     bool listDirty = true;
     unsigned saveParts = ApexConfig::kProfilePartsAll & ~ApexConfig::kPartShortcuts; // what "Save" writes (shortcuts: only when picked, they belong to the keyboard)
@@ -1570,20 +1558,57 @@ std::string ProfilePartsText(unsigned parts) {
     return s;
 }
 
-// A checkbox per part, three to a line; only the parts in `available`. The ImGui IDs stay the same in every language.
+// Two aligned columns, collapsing to one when translated labels need more room.
+// Presentation order is independent of the stable legacy category bits.
 void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
     ImGui::PushID(id);
-    const float colW = ImGui::GetContentRegionAvail().x / 3.0f;
-    int shown = 0;
-    for (int i = 0; i < ApexConfig::kProfilePartCount; i++) {
-        const unsigned bit = 1u << i;
-        if (!(available & bit)) continue;
-        if (shown % 3 != 0) ImGui::SameLine(colW * static_cast<float>(shown % 3));
-        bool on = (*parts & bit) != 0;
-        const std::string label = std::string(I18n::Tr(ApexConfig::ProfilePartName(i))) + "###Part" + std::to_string(i);
-        if (ImGui::Checkbox(label.c_str(), &on)) *parts = on ? (*parts | bit) : (*parts & ~bit);
-        shown++;
+    const float u = ApexUi::Unit();
+    static constexpr int order[] = {0, 1, 7, 2, 3, 5, 6, 8};
+    static constexpr IconId icons[] = {IconId::MoonStar, IconId::Palette, IconId::Contrast, IconId::Aperture,
+                                      IconId::Spline, IconId::Gauge, IconId::Keyboard, IconId::Wrench};
+    float longest = 0.0f;
+    for (int i : order) if (available & (1u << i))
+        longest = std::max(longest, ImGui::CalcTextSize(I18n::Tr(ApexConfig::ProfilePartName(i))).x);
+    const float gutter = ApexUi::kSpace4 * u;
+    const int columns = ImGui::GetContentRegionAvail().x >= 2.0f * (longest + 76.0f * u) + gutter ? 2 : 1;
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gutter * 0.5f, 0.0f));
+    if (ImGui::BeginTable("##Parts", columns, ImGuiTableFlags_SizingStretchSame)) {
+        int shown = 0;
+        for (int index = 0; index < IM_COUNTOF(order); ++index) {
+            const int i = order[index];
+            const unsigned bit = 1u << i;
+            if (!(available & bit)) continue;
+            ImGui::TableNextColumn();
+            ImGui::PushID(i);
+            const float width = ImGui::GetContentRegionAvail().x;
+            const float height = std::max(40.0f * u, ImGui::GetFrameHeight() + 12.0f * u);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const bool on = (*parts & bit) != 0;
+            if (ImGui::InvisibleButton("##Part", ImVec2(width, height), ImGuiButtonFlags_EnableNav))
+                *parts = on ? (*parts & ~bit) : (*parts | bit);
+            const bool checked = (*parts & bit) != 0;
+            auto* draw = ImGui::GetWindowDrawList();
+            if (ImGui::IsItemHovered()) draw->AddRectFilled(p, ImVec2(p.x + width, p.y + height), ImGui::GetColorU32(Col(VioletTheme::kHoverBg)), 4.0f * u);
+            const float iconSize = ApexUi::kIconMedium * u;
+            ApexUi::DrawIcon(draw, icons[index], ImVec2(p.x, p.y + (height - iconSize) * 0.5f), iconSize,
+                             ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+            const char* label = I18n::Tr(ApexConfig::ProfilePartName(i));
+            draw->AddText(ImVec2(p.x + 22.0f * u + ApexUi::kSpace3 * u, p.y + (height - ImGui::GetTextLineHeight()) * 0.5f),
+                          ImGui::GetColorU32(Col(VioletTheme::kText)), label);
+            const float box = 16.0f * u;
+            const ImVec2 check(p.x + width - box, p.y + (height - box) * 0.5f);
+            draw->AddRectFilled(check, ImVec2(check.x + box, check.y + box),
+                                ImGui::GetColorU32(Col(checked ? VioletTheme::kAccent : VioletTheme::kToggleOff)), 2.0f * u);
+            if (checked) ApexUi::DrawIcon(draw, IconId::Check, ImVec2(check.x + 2.0f * u, check.y + 2.0f * u), box - 4.0f * u,
+                                         ImGui::GetColorU32(Col(VioletTheme::kText)));
+            else draw->AddRect(check, ImVec2(check.x + box, check.y + box), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)), 2.0f * u);
+            draw->AddLine(ImVec2(p.x, p.y + height), ImVec2(p.x + width, p.y + height), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
+            ++shown;
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
     }
+    ImGui::PopStyleVar();
     ImGui::PopID();
 }
 
@@ -1601,7 +1626,7 @@ void OpenProfilesFolder() {
 
 void SaveProfileNow(const std::string& name) {
     std::string err;
-    if (ApexConfig::SaveProfile(name, g_profiles.saveParts, &err)) {
+    if (ApexConfig::SaveProfile(name, g_profiles.saveParts, &err, ApexUi::IconName(g_profiles.icon))) {
         ProfileMessage(I18n::Trf("Saved \"{}\"", name), false);
         g_profiles.name[0] = '\0';
     } else {
@@ -1633,14 +1658,56 @@ void LoadProfileNow(const std::string& name, unsigned parts) {
     ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + name);
 }
 
+// Uses stable Lucide names in metadata; enum positions never enter saved files.
+void ProfileIconPicker(IconId& selected) {
+    const float u = ApexUi::Unit();
+    const float h = ImGui::GetFrameHeight();
+    const float size = ApexUi::kIconMedium * u;
+    const float arrow = 10.0f * u;
+    const float gap = 6.0f * u, padding = 8.0f * u;
+    const float width = padding * 2.0f + size + gap + arrow;
+    if (ImGui::Button("##ProfileIcon", ImVec2(width, h))) ImGui::OpenPopup("##ProfileIcons");
+    // Button placement may include baseline alignment; anchor to its submitted rectangle.
+    const ImVec2 p = ImGui::GetItemRectMin();
+    const ImVec2 end = ImGui::GetItemRectMax();
+    const float centerY = (p.y + end.y) * 0.5f;
+    ApexUi::DrawIcon(ImGui::GetWindowDrawList(), selected, ImVec2(p.x + padding, centerY - size * 0.5f), size,
+                     ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+    ApexUi::DrawIcon(ImGui::GetWindowDrawList(), IconId::ChevronDown,
+                     ImVec2(p.x + padding + size + gap, centerY - arrow * 0.5f), arrow,
+                     ImGui::GetColorU32(Col(VioletTheme::kTextMuted)));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("Choose a profile icon"));
+    if (ImGui::BeginPopup("##ProfileIcons")) {
+        static constexpr IconId choices[] = {
+            IconId::House, IconId::Armchair, IconId::Fence, IconId::LandPlot, IconId::Trees, IconId::Flower2,
+            IconId::Leaf, IconId::Cat, IconId::Dog, IconId::UserRound, IconId::Heart, IconId::Coffee,
+            IconId::Music, IconId::Sun, IconId::Moon, IconId::Cloud, IconId::Snowflake, IconId::Droplet,
+            IconId::Camera, IconId::Image, IconId::Palette, IconId::Lightbulb, IconId::Diamond, IconId::Bookmark,
+            IconId::Skull, IconId::CloudMoon, IconId::MoonStar, IconId::SunMedium, IconId::Sparkles, IconId::Flame
+        };
+        for (int i = 0; i < IM_COUNTOF(choices); ++i) {
+            if (i % 6) ImGui::SameLine();
+            const IconId id = choices[i];
+            if (ApexUi::IconButton(ApexUi::IconName(id), id, ApexUi::IconName(id), selected == id, 32.0f)) {
+                selected = id;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void ProfilesTab() {
     ProfilesState& s = g_profiles;
     if (s.listDirty) {
         s.list.clear();
         for (const std::string& name : ApexConfig::ListProfiles()) {
-            ProfileItem item{name, 0};
+            ProfileItem item{name, IconId::Bookmark, 0};
             toml::table state;
-            if (ApexConfig::ReadProfile(name, state)) item.parts = ApexConfig::ProfilePartsOf(state);
+            if (ApexConfig::ReadProfile(name, state)) {
+                item.parts = ApexConfig::ProfilePartsOf(state);
+                item.icon = ApexUi::IconFromName(state["meta"]["icon"].value_or(std::string("bookmark")));
+            }
             s.list.push_back(std::move(item));
         }
         s.listDirty = false;
@@ -1650,14 +1717,16 @@ void ProfilesTab() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Bookmark, "Profiles", "Save your setup and switch between them", nullptr, nullptr);
         ApexUi::CardDivider();
-        ApexUi::GroupLabel("SAVE CURRENT SETUP");
-        ApexUi::MutedText("What to save");
+        ApexUi::GroupLabel("Save current setup");
+        ApexUi::MutedText("Choose the settings to include in this profile.");
         const unsigned saveAvailable = ApexConfig::kProfilePartsAll & (ApexConfig::GetUi().developerMode ? ~0u : ~ApexConfig::kPartDeveloper);
         s.saveParts &= saveAvailable;
         if (!ApexUi::FilterActive()) ProfilePartChecks("SaveParts", &s.saveParts, saveAvailable);
-        ApexUi::Gap(ApexUi::kSpace1);
+        ApexUi::Gap(ApexUi::kSpace3);
         const float saveW = ApexUi::ButtonWidth("Save##Profile", true);
         const float gap = ImGui::GetStyle().ItemSpacing.x;
+        ProfileIconPicker(s.icon);
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(std::fmax(ImGui::GetContentRegionAvail().x - saveW - gap, 80.0f * u));
         const bool enter = ImGui::InputTextWithHint("##ProfileName", I18n::Tr("Profile name"), s.name, sizeof s.name,
                                                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, ProfileNameFilter);
@@ -1671,6 +1740,8 @@ void ProfilesTab() {
             if (ApexConfig::ProfileExists(clean) && s.confirmReplace != clean) s.confirmReplace = clean;
             else SaveProfileNow(clean);
         }
+        ApexUi::Gap(ApexUi::kSpace1);
+        ApexUi::MutedText("Shortcuts are optional and start unchecked.");
         if (!s.confirmReplace.empty()) {
             const std::string q = I18n::Trf("\"{}\" already exists; replace it?", s.confirmReplace);
             ApexUi::IconNote(IconId::TriangleAlert, q.c_str(), VioletTheme::kWarning);
@@ -1684,7 +1755,12 @@ void ProfilesTab() {
             ApexUi::IconNote(s.messageError ? IconId::TriangleAlert : IconId::CircleCheck, s.message.c_str(), s.messageError ? VioletTheme::kError : VioletTheme::kTextMuted);
         }
 
-        ApexUi::GroupLabel("SAVED");
+    }
+    ApexUi::EndCard();
+    if (ApexUi::BeginCard("##SavedProfiles")) {
+        const float gap = ImGui::GetStyle().ItemSpacing.x;
+        ApexUi::CardHeader(IconId::Layers, "Saved profiles", "Choose which saved settings to apply", nullptr, nullptr);
+        ApexUi::CardDivider();
         if (s.list.empty()) ApexUi::MutedText("No profiles yet");
         for (const ProfileItem& item : s.list) {
             const std::string& name = item.name;
@@ -1696,6 +1772,8 @@ void ProfilesTab() {
             const float controlsW = confirming || picking ? (confirming ? delW : loadW) + gap + cancelW : loadW + gap + delW;
             const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
             const char* description = confirming ? "Delete this profile?" : picking ? "Pick what to load" : partsText.c_str();
+            ApexUi::InlineIcon(item.icon, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+            ImGui::SameLine(0.0f, 10.0f * u);
             ApexUi::SetNextRowUntranslated(); // the name is the user's
             if (ApexUi::BeginControlRow(name.c_str(), description, controlsW)) {
                 if (confirming) {
@@ -2461,32 +2539,92 @@ void UpdateMenuAvailability() {
 
 bool BannerNeeded() { return g_startup.load() == Startup::RefusedOldBuild || g_oldStandalone.load(); }
 
-// Old builds found at startup: the combined build (features off) and/or an older standalone S3SSApex.asi (idle).
-// One shared anchor for on-screen notices, irrespective of resolution, scale or notice type.
-void PlaceScreenNotice() {
-    const auto* vp = ImGui::GetMainViewport();
-    const float u = ApexUi::Unit();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + 20.0f * u), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(1.0f, 1.0f), ImVec2(std::max(1.0f, vp->Size.x - 40.0f * u), vp->Size.y));
+struct NoticeMotionState {
+    bool active = false;
+    unsigned long long enteredAt = 0;
+    unsigned long long exitedAt = 0;
+};
+struct NoticeMotion {
+    bool draw = false;
+    float alpha = 1.0f;
+    float yOffset = 0.0f;
+};
+constexpr unsigned long long kNoticeEnterMs = 140;
+constexpr unsigned long long kNoticeExitMs = 120;
+NoticeMotionState g_captureNoticeMotion, g_compareNoticeMotion, g_hintNoticeMotion;
+
+NoticeMotion AnimateNotice(NoticeMotionState& state, bool active) {
+    const unsigned long long now = GetTickCount64();
+    if (active) {
+        if (!state.active) {
+            state.enteredAt = now;
+            state.exitedAt = 0;
+        }
+        state.active = true;
+        const float t = std::clamp(static_cast<float>(now - state.enteredAt) / static_cast<float>(kNoticeEnterMs), 0.0f, 1.0f);
+        const float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+        return {true, eased, -8.0f * (1.0f - eased)};
+    }
+    if (state.active) {
+        state.active = false;
+        state.exitedAt = now;
+    }
+    if (!state.exitedAt || now - state.exitedAt >= kNoticeExitMs) {
+        state.exitedAt = 0;
+        return {};
+    }
+    const float t = std::clamp(static_cast<float>(now - state.exitedAt) / static_cast<float>(kNoticeExitMs), 0.0f, 1.0f);
+    const float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+    return {true, 1.0f - eased, -4.0f * eased};
 }
 
-bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, bool recording = false, unsigned borderTint = VioletTheme::kAccentLight) {
-    PlaceScreenNotice();
+bool NoticeAnimationsPending() {
+    const auto pending = [](const NoticeMotionState& state) {
+        return state.active || (state.exitedAt && GetTickCount64() - state.exitedAt < kNoticeExitMs);
+    };
+    return pending(g_captureNoticeMotion) || pending(g_compareNoticeMotion) || pending(g_hintNoticeMotion);
+}
+bool NoticeAnimationPending(const NoticeMotionState& state) {
+    return state.active || (state.exitedAt && GetTickCount64() - state.exitedAt < kNoticeExitMs);
+}
+
+// Old builds found at startup: the combined build (features off) and/or an older standalone S3SSApex.asi (idle).
+// One shared anchor for on-screen notices, irrespective of resolution, scale or notice type.
+void PlaceScreenNotice(float yOffset = 0.0f) {
+    const auto* vp = ImGui::GetMainViewport();
+    const float u = ApexUi::Unit();
+    const float margin = (ApexUi::kSpace4 + ApexUi::kSpace1) * u;
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + margin + yOffset * u), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(1.0f, 1.0f), ImVec2(std::max(1.0f, vp->Size.x - 2.0f * margin), vp->Size.y));
+}
+
+bool BeginNoticePill(const char* id, float contentWidth, float alpha = 1.0f, bool recording = false, unsigned borderTint = VioletTheme::kAccentLight, float yOffset = 0.0f, bool iconLayout = true) {
+    PlaceScreenNotice(yOffset);
     const float u = ApexUi::Unit();
     const float h = ImGui::GetTextLineHeight();
+    const float horizontalPadding = iconLayout ? 0.0f : ApexUi::kSpace3 * u;
+    const float verticalPadding = iconLayout ? 0.0f : ApexUi::kSpace2 * u;
     // Wrapped text cannot determine an auto-sized width: it otherwise settles at one glyph.
     // Fix width from actual content before Begin, and allow auto-resize only for height.
-    const float maxWidth = std::max(1.0f, ImGui::GetMainViewport()->Size.x - 40.0f * u);
-    ImGui::SetNextWindowSize(ImVec2(std::min(maxWidth, contentWidth + 24.0f * u), 0.0f), ImGuiCond_Always);
+    const float margin = (ApexUi::kSpace4 + ApexUi::kSpace1) * u;
+    const float width = std::ceil(contentWidth + (iconLayout ? 18.0f * u : 2.0f * horizontalPadding));
+    const float height = iconLayout ? std::max(44.0f * u, h + 16.0f * u) : std::round(h * 1.6f) + 2.0f * verticalPadding;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(width, height), ImVec2(width, height));
+    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
+    {
+        const auto* vp = ImGui::GetMainViewport();
+        // Explicit size/position avoids first-frame pivot deferral on a new ImGui window.
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + (vp->Size.x - width) * 0.5f, vp->Pos.y + margin + yOffset * u), ImGuiCond_Always);
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * u, 7.0f * u));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, (h + 14.0f * u) * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(horizontalPadding, verticalPadding));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, height * 0.5f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, h + 14.0f * u));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, h + 2.0f * verticalPadding));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(VioletTheme::kWindowBg, 0.92f));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(recording ? VioletTheme::kError : borderTint, 0.18f));
-    return ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+    return ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
 }
 
@@ -2497,15 +2635,30 @@ void EndNoticePill() {
 }
 
 float NoticeContentWidth(const std::string& text) {
-    return ImGui::CalcTextSize(text.c_str()).x + ApexUi::kIconMedium * ApexUi::Unit() + ApexUi::kSpace2 * ApexUi::Unit();
+    const float u = ApexUi::Unit();
+    return ImGui::CalcTextSize(text.c_str()).x + (48.0f + 14.0f) * u;
 }
 
 void NoticeText(const std::string& text, IconId icon, bool recording = false, unsigned tint = VioletTheme::kAccentLight) {
     const float pulse = recording ? 0.6f + 0.4f * std::abs(std::sin(static_cast<float>(GetTickCount64() % 2000) * 3.14159265f / 2000.0f)) : 1.0f;
-    ApexUi::InlineIcon(icon, ApexUi::kIconMedium * ApexUi::Unit(),
-        ImGui::GetColorU32(Col(recording ? VioletTheme::kError : tint, pulse)));
-    ImGui::SameLine(0.0f, ApexUi::kSpace2 * ApexUi::Unit());
-    ImGui::TextWrapped("%s", text.c_str());
+    const float u = ApexUi::Unit();
+    const ImVec2 start = ImGui::GetWindowPos();
+    const float height = ImGui::GetWindowHeight();
+    const float iconSize = 20.0f * u;
+    const float compartment = 48.0f * u;
+    const float textX = compartment + 14.0f * u;
+    const std::string& displayText = text;
+    const ImVec2 textSize = ImGui::CalcTextSize(displayText.c_str());
+    const float iconY = start.y + (height - iconSize) * 0.5f;
+    ApexUi::Icon(icon, ImVec2(start.x + (compartment - iconSize) * 0.5f, iconY), iconSize,
+                 ImGui::GetColorU32(Col(recording ? VioletTheme::kError : tint, pulse)));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float separatorHalf = 11.0f * u;
+    dl->AddLine(ImVec2(start.x + compartment, start.y + height * 0.5f - separatorHalf),
+                ImVec2(start.x + compartment, start.y + height * 0.5f + separatorHalf),
+                ImGui::GetColorU32(Col(recording ? VioletTheme::kError : tint, 0.25f)), 1.0f * u);
+    dl->AddText(ImVec2(start.x + textX, start.y + (height - textSize.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), displayText.c_str());
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
 }
 
 void Banner() {
@@ -2564,13 +2717,14 @@ void UpdateHint() {
     if (!ApexConfig::GetUi().keyChosen) g_keySetup = true;
 }
 
-bool HintVisible() { return g_hintLeftMs > 0; }
+bool HintVisible() { return g_hintLeftMs > 0 || NoticeAnimationPending(g_hintNoticeMotion); }
 
 void Hint() {
     const unsigned long long now = GetTickCount64();
     if (g_hintLastDraw) g_hintLeftMs -= static_cast<int>(std::min<unsigned long long>(now - g_hintLastDraw, 100));
     g_hintLastDraw = now;
-    const float fade = std::clamp(static_cast<float>(g_hintLeftMs) / 800.0f, 0.0f, 1.0f); // fades out over the last 0.8 s
+    const NoticeMotion motion = AnimateNotice(g_hintNoticeMotion, g_hintLeftMs > 0);
+    if (!motion.draw) return;
     const std::string ready = I18n::Tr(APEX_PRODUCT_NAME " is ready");
     const std::string press = I18n::Tr("press");
     const std::string key = ApexConfig::KeyChordText(ApexConfig::GetUi().toggle);
@@ -2578,14 +2732,15 @@ void Hint() {
     const float lineH = ImGui::GetTextLineHeight();
     const float logo = std::round(lineH * 1.6f); // 26 px beside 16 px text, as the mock-up
     const std::string text = ready + " \xC2\xB7 " + press + " " + key;
-    if (BeginNoticePill("##ApexHint", ImGui::CalcTextSize(text.c_str()).x + logo + 10.0f * u, fade)) {
+    if (BeginNoticePill("##ApexHint", ImGui::CalcTextSize(text.c_str()).x + logo + 10.0f * u, motion.alpha, false,
+                        VioletTheme::kAccentLight, motion.yOffset, false)) {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(logo, logo));
         if (!ApexUi::DrawLogo(ImGui::GetWindowDrawList(), p, ImVec2(p.x + logo, p.y + logo), ImGui::GetStyle().Alpha))
             ApexUi::DrawIcon(ImGui::GetWindowDrawList(), IconId::Sparkles, p, logo, ImGui::GetColorU32(Col(VioletTheme::kAccent)));
         ImGui::SameLine(0.0f, 10.0f * u);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (logo - lineH) * 0.5f);
-        ImGui::TextWrapped("%s", text.c_str());
+        ImGui::TextUnformatted(text.c_str());
     }
     EndNoticePill();
 }
@@ -2828,146 +2983,11 @@ void KeyChip(int row) {
     ImGui::PopID();
 }
 
-int MapRowForKey(UINT vk, int* matches = nullptr) {
-    int count = 0;
-    int first = -1;
-    for (int row = 0; row < RowCount; ++row) {
-        if (row == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled) continue;
-        if (row == RowFrameCapture && kPublicBuild) continue;
-        if (RowKey(row).vk == vk) {
-            if (first < 0) first = row;
-            ++count;
-        }
-    }
-    if (matches) *matches = count;
-    return first;
-}
-
-const char* MapKeyAction(UINT vk) {
-    const int row = MapRowForKey(vk);
-    return row >= 0 ? RowName(row) : nullptr;
-}
-
-void StartRecordingRow(int row) {
-    g_recRow = g_recRow == row ? -1 : row;
-    g_recWaitRelease = true;
-    g_recNote.clear();
-    g_recHeldVk = 0;
-}
-
-void DrawMapKey(const char* label, UINT vk, float width, float height) {
-    const float u = ApexUi::Unit();
-    int actionCount = 0;
-    const int row = MapRowForKey(vk, &actionCount);
-    const bool assigned = MapKeyAction(vk) != nullptr;
-    const bool recording = row >= 0 && g_recRow == row;
-    ImGui::PushID(static_cast<int>(vk));
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##MapKey", ImVec2(width, height));
-    const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 fill = ImGui::GetColorU32(recording ? Col(VioletTheme::kAccentDark)
-        : assigned ? (hovered ? Col(VioletTheme::kAccentDark) : Col(VioletTheme::kSelectedBg))
-                   : (hovered ? Col(VioletTheme::kHoverBg) : Col(VioletTheme::kCardBg)));
-    const ImU32 border = ImGui::GetColorU32(recording || (assigned && hovered) ? Col(VioletTheme::kAccent)
-                                                                          : Col(VioletTheme::kCardBorder));
-    dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), fill, 4.0f * u);
-    dl->AddRect(p, ImVec2(p.x + width, p.y + height), border, 4.0f * u, 0, 1.0f * u);
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + (width - ts.x) * 0.5f, p.y + (height - ts.y) * 0.5f),
-                ImGui::GetColorU32(assigned ? Col(VioletTheme::kText) : Col(VioletTheme::kTextMuted)), label);
-    if (hovered && assigned) {
-        const int target = row;
-        const char* action = MapKeyAction(vk);
-        if (actionCount > 1) {
-            std::string details;
-            for (int assignedRow = 0; assignedRow < RowCount; ++assignedRow) {
-                if ((assignedRow == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled) ||
-                    (assignedRow == RowFrameCapture && kPublicBuild) || RowKey(assignedRow).vk != vk) continue;
-                if (!details.empty()) details += "\n";
-                details += std::format("{}: {}", I18n::Tr(RowName(assignedRow)), ApexConfig::KeyChordText(RowKey(assignedRow)));
-            }
-            ImGui::SetTooltip("%s\n%s", details.c_str(), I18n::Tr("Click the action chips to edit these shortcuts"));
-        } else {
-            const std::string chord = ApexConfig::KeyChordText(RowKey(target));
-            ImGui::SetTooltip("%s\n%s\n%s", I18n::Tr(action), chord.c_str(), target >= 0
-                ? I18n::Tr("Click to change this shortcut") : I18n::Tr("Assigned by the selected preset"));
-            if (target >= 0 && ImGui::IsItemActivated()) StartRecordingRow(target);
-        }
-    } else if (hovered) {
-        ImGui::SetTooltip("%s", I18n::Tr("No Apex shortcut assigned"));
-    }
-    ImGui::PopID();
-}
-
-void DrawKeyboardMap() {
-    const float u = ApexUi::Unit();
-    const float avail = ImGui::GetContentRegionAvail().x;
-    const float gap = 3.0f * u, keyH = 25.0f * u;
-    auto drawRow = [&](const char* const* labels, const UINT* keys, int count) {
-        const float cell = std::max(15.0f * u, std::min(32.0f * u, (avail - gap * (count - 1)) / count));
-        const float total = cell * count + gap * (count - 1);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - total) * 0.5f));
-        for (int i = 0; i < count; ++i) {
-            if (i) ImGui::SameLine(0.0f, gap);
-            DrawMapKey(labels[i], keys[i], cell, keyH);
-        }
-        ApexUi::Gap(ApexUi::kSpace1);
-    };
-    static const char* const function[] = {"F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"};
-    static const UINT functionVk[] = {VK_F1,VK_F2,VK_F3,VK_F4,VK_F5,VK_F6,VK_F7,VK_F8,VK_F9,VK_F10,VK_F11,VK_F12};
-    static const char* const digits[] = {"1","2","3","4","5","6","7","8","9","0","-","="};
-    static const UINT digitsVk[] = {'1','2','3','4','5','6','7','8','9','0',VK_OEM_MINUS,VK_OEM_PLUS};
-    static const char* const top[] = {"Q","W","E","R","T","Y","U","I","O","P","[","]"};
-    static const UINT topKeys[] = {'Q','W','E','R','T','Y','U','I','O','P',VK_OEM_4,VK_OEM_6};
-    static const char* const middle[] = {"A","S","D","F","G","H","J","K","L",";","'"};
-    static const UINT middleKeys[] = {'A','S','D','F','G','H','J','K','L',VK_OEM_1,VK_OEM_7};
-    static const char* const bottom[] = {"Z","X","C","V","B","N","M",",",".","/"};
-    static const UINT bottomKeys[] = {'Z','X','C','V','B','N','M',VK_OEM_COMMA,VK_OEM_PERIOD,VK_OEM_2};
-    ApexUi::GroupLabel("FUNCTION ROW");
-    drawRow(function, functionVk, IM_ARRAYSIZE(functionVk));
-    ApexUi::GroupLabel("NUMBER ROW");
-    drawRow(digits, digitsVk, IM_ARRAYSIZE(digitsVk));
-    ApexUi::GroupLabel("LETTER KEYS");
-    drawRow(top, topKeys, IM_ARRAYSIZE(topKeys));
-    drawRow(middle, middleKeys, IM_ARRAYSIZE(middleKeys));
-    drawRow(bottom, bottomKeys, IM_ARRAYSIZE(bottomKeys));
-    const char* modifiers = I18n::Tr("Preset shortcuts use Ctrl + Shift");
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s", modifiers);
-}
-
-bool PresetTile(const char* title, const char* detail, int preset, bool selected, const char* tooltip, int count) {
-    const float u = ApexUi::Unit();
-    const float width = (ImGui::GetContentRegionAvail().x - (count - 1) * ApexUi::kSpace1 * u) / count;
-    const float height = 46.0f * u;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::PushID(preset);
-    ImGui::InvisibleButton("##Preset", ImVec2(width, height));
-    const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 bg = ImGui::GetColorU32(selected ? Col(VioletTheme::kAccentDark)
-        : hovered ? Col(VioletTheme::kHoverBg) : Col(VioletTheme::kCardBg));
-    const ImU32 stroke = ImGui::GetColorU32(selected || hovered ? Col(VioletTheme::kAccent) : Col(VioletTheme::kCardBorder));
-    dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), bg, 7.0f * u);
-    dl->AddRect(p, ImVec2(p.x + width, p.y + height), stroke, 7.0f * u, 0, 1.0f * u);
-    const ImVec2 titleSize = ImGui::CalcTextSize(I18n::Tr(title));
-    const ImVec2 detailSize = ImGui::CalcTextSize(I18n::Tr(detail));
-    const float y = p.y + (height - titleSize.y - detailSize.y - 1.0f * u) * 0.5f;
-    dl->AddText(ImVec2(p.x + (width - titleSize.x) * 0.5f, y), ImGui::GetColorU32(Col(selected ? VioletTheme::kText : VioletTheme::kTextMuted)), I18n::Tr(title));
-    dl->AddText(ImVec2(p.x + (width - detailSize.x) * 0.5f, y + titleSize.y + 1.0f * u), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), I18n::Tr(detail));
-    if (hovered) ApexUi::Tooltip(I18n::Tr(tooltip));
-    const bool clicked = ImGui::IsItemActivated();
-    ImGui::PopID();
-    if (clicked && preset >= 0) ApplyPreset(preset);
-    return clicked;
-}
-
 // Shared key editor for settings search and the first-start panel; compact keeps only the menu and everyday actions.
 void ShortcutsContent(bool compact) {
     g_recSeenFrame = ImGui::GetFrameCount();
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    static const char* const kPresets[] = {"Letter row", "Number row", "Function row", "Custom"};
+    static const char* const kPresets[] = {"Letters", "Numbers", "F keys", "Custom"};
     int sel = ui.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
                                   : std::clamp(ui.hotkeyPreset, 0, Hotkeys::kMine);
     const float u = ApexUi::Unit();
@@ -3017,6 +3037,34 @@ void ShortcutsContent(bool compact) {
     }
 }
 
+// Settings > Menu: screenshot settings and the existing validated shortcut recorder.
+void ScreenshotCaptureCard() {
+    g_recSeenFrame = ImGui::GetFrameCount();
+    if (ApexUi::BeginCard("##ScreenshotCapture")) {
+        ApexConfig::UiSettings ui = ApexConfig::GetUi();
+        ApexUi::CardHeader(IconId::Camera, "Screenshot capture", "Save the finished game image with Apex's active effects", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
+                              I18n::Trf("Replaces {} with one filtered screenshot; no duplicate photo", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Screenshot))).c_str())) ApexConfig::SetUi(ui);
+        if (ui.screenshotShortcutEnabled) {
+            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 180.0f * ApexUi::Unit())) {
+                KeyChip(RowScreenshot);
+                ApexUi::EndControlRow();
+            }
+            if (g_recRow == RowScreenshot)
+                ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
+                                 g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
+            if (ApexUi::SwitchRow("Hide game UI in screenshots", &ui.screenshotHideGameUi,
+                                  "Temporarily hides the game UI for the photo, then restores it; turn off to include it")) ApexConfig::SetUi(ui);
+            ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
+            ApexUi::MutedText("Saves one filtered PNG in the game's Documents > Electronic Arts > The Sims 3 > Screenshots folder");
+            ImGui::PopFont();
+        }
+    }
+    ApexUi::EndCard();
+
+}
+
 // Settings > Shortcuts
 void ShortcutsTab() {
     ImGui::PushID("Shortcuts");
@@ -3026,108 +3074,63 @@ void ShortcutsTab() {
             ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose keys for the menu and Apex actions", nullptr, nullptr);
             ApexUi::CardDivider();
             ShortcutsContent(false);
-            ApexConfig::UiSettings ui = ApexConfig::GetUi();
-            ApexUi::GroupLabel("SCREENSHOTS");
-            if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
-                                  "Replace a game key with a screenshot after Apex's visual effects")) ApexConfig::SetUi(ui);
-            if (ui.screenshotShortcutEnabled) {
-                if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 150.0f * ApexUi::Unit())) {
-                    KeyChip(RowScreenshot);
-                    ApexUi::EndControlRow();
-                }
-                if (ApexUi::SwitchRow("Hide game UI", &ui.screenshotHideGameUi,
-                                      "Uses F10 for one frame, then restores the previous UI state")) ApexConfig::SetUi(ui);
-            }
+
         }
         ApexUi::EndCard();
         ImGui::PopID();
         return;
     }
 
-    const auto current = ApexConfig::GetUi();
-    const bool custom = current.hotkeyPreset == Hotkeys::kMine;
-    const int selectedPreset = custom ? Hotkeys::kMine : current.hotkeyPreset < 0
-        ? static_cast<int>(Hotkeys::Preset::FKeys) : current.hotkeyPreset;
-    const char* labels[] = {"Letter row", "Number row", "Function row"};
-    const char* details[] = {"No Fn required", "Easy to recall", "Classic layout"};
-    const char* tips[] = {"Uses nearby letter keys without Fn", "Uses the number row for quick recall",
-                          "Keeps the familiar function-key layout"};
-    const int ids[] = {0, 1, 2};
-
-    const float layoutWidth = ImGui::GetContentRegionAvail().x;
-    const bool narrowLayout = layoutWidth < 760.0f * ApexUi::Unit();
-    if (ImGui::BeginTable("##ShortcutLayout", narrowLayout ? 1 : 2, ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
-        if (!narrowLayout) {
-            ImGui::TableSetupColumn("map", ImGuiTableColumnFlags_WidthStretch, 1.12f);
-            ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthStretch, 0.88f);
-        }
-        ImGui::TableNextColumn();
-        if (ApexUi::BeginCard("##KeyboardMap")) {
-            ApexUi::CardHeader(IconId::Keyboard, "Keyboard map", "Choose a preset, then click an assigned key to record a new shortcut", nullptr, nullptr);
-            ApexUi::CardDivider();
-            const float tileGap = ApexUi::kSpace1 * ApexUi::Unit();
-            const float tileAvail = ImGui::GetContentRegionAvail().x;
-            const int tileColumns = std::clamp(static_cast<int>((tileAvail + tileGap) / (116.0f * ApexUi::Unit() + tileGap)), 1, 3);
-            for (int i = 0; i < 3; ++i) {
-                if (i && i % tileColumns) ImGui::SameLine(0.0f, tileGap);
-                else if (i) ApexUi::Gap(ApexUi::kSpace1);
-                PresetTile(labels[i], details[i], ids[i], !custom && selectedPreset == ids[i], tips[i], tileColumns);
-            }
-            if (custom) {
-                ApexUi::Gap(ApexUi::kSpace1);
-                ApexUi::Pill("Custom", true, IconId::SlidersHorizontal);
-                ImGui::SameLine();
-                ApexUi::MutedText("Your manually chosen shortcuts are active");
-            }
-            ApexUi::Gap(ApexUi::kSpace2);
-            DrawKeyboardMap();
-        }
-        ApexUi::EndCard();
-
-        ImGui::TableNextColumn();
-        if (ApexUi::BeginCard("##CoreActions")) {
-            ApexUi::CardHeader(IconId::ListChecks, "Core actions", "Shortcuts used most often", nullptr, nullptr);
-            ApexUi::CardDivider();
-            for (int row : {RowMenu, RowCompare, RowRefresh}) {
-                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
-                KeyChip(row);
-                ApexUi::EndControlRow();
-            }
-            if (g_recRow >= 0)
-                ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
-                                 g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
-            ApexUi::GroupLabel("REPORT A PROBLEM");
-            for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
-                if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 150.0f * ApexUi::Unit())) continue;
-                KeyChip(row);
-                ApexUi::EndControlRow();
-            }
-            if (!kPublicBuild) {
-                if (ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 150.0f * ApexUi::Unit())) {
-                    KeyChip(RowFrameCapture);
-                    ApexUi::EndControlRow();
-                }
-            }
-        }
-        ApexUi::EndCard();
-        ImGui::EndTable();
-    }
-
-    if (ApexUi::BeginCard("##ScreenshotCapture")) {
-        ApexConfig::UiSettings ui = ApexConfig::GetUi();
-        ApexUi::CardHeader(IconId::Camera, "Screenshot capture", "Save the finished game image with Apex's active effects", nullptr, nullptr);
+    if (ApexUi::BeginCard("##MainShortcuts")) {
+        ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose a preset or click a shortcut to edit it", nullptr, nullptr);
         ApexUi::CardDivider();
-        if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
-                              "Replace a game key with a screenshot after Apex's visual effects")) ApexConfig::SetUi(ui);
-        if (ui.screenshotShortcutEnabled) {
-            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), 150.0f * ApexUi::Unit())) {
-                KeyChip(RowScreenshot);
+        const auto current = ApexConfig::GetUi();
+        const int selected = current.hotkeyPreset < 0 ? static_cast<int>(Hotkeys::Preset::FKeys)
+            : std::clamp(current.hotkeyPreset, 0, Hotkeys::kMine);
+        static const char* const presets[] = {"Letters", "Numbers", "F keys", "Custom"};
+        if (ApexUi::BeginControlRow("Shortcut preset", "Switch the main shortcuts together", 180.0f * ApexUi::Unit())) {
+            ImGui::SetNextItemWidth(180.0f * ApexUi::Unit());
+            if (ImGui::BeginCombo("##MainPreset", I18n::Tr(presets[selected]))) {
+                for (int i = 0; i < 3; ++i) {
+                    if (ImGui::Selectable(I18n::Tr(presets[i]), selected == i)) ApplyPreset(i);
+                    if (selected == i) ImGui::SetItemDefaultFocus();
+                }
+                if (selected == Hotkeys::kMine) {
+                    ImGui::BeginDisabled();
+                    ImGui::Selectable(I18n::Tr("Custom"), true);
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndCombo();
+            }
+            ApexUi::EndControlRow();
+        }
+        for (int row : {RowMenu, RowCompare, RowRefresh, RowScreenshot}) {
+            ImGui::BeginDisabled(row == RowScreenshot && !ApexConfig::GetUi().screenshotShortcutEnabled);
+            if (ApexUi::BeginControlRow(RowName(row), nullptr, 180.0f * ApexUi::Unit())) {
+                KeyChip(row);
                 ApexUi::EndControlRow();
             }
-            if (ApexUi::SwitchRow("Hide game UI", &ui.screenshotHideGameUi,
-                                  "Uses F10 for one frame, then restores the previous UI state")) ApexConfig::SetUi(ui);
-            ApexUi::MutedText("Saves one filtered PNG in the game's Documents > Electronic Arts > The Sims 3 > Screenshots folder");
-            ApexUi::MutedText("F10 hides the game UI for the shot; Ctrl+Shift+F10 still compares Apex effects");
+            ImGui::EndDisabled();
+        }
+        if (g_recRow >= 0)
+            ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
+                             g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
+        ApexUi::Gap(ApexUi::kSpace1);
+        ApexUi::MutedText("F10 always hides the game interface");
+    }
+    ApexUi::EndCard();
+
+    if (ApexUi::BeginCard("##ReportShortcuts")) {
+        ApexUi::CardHeader(IconId::ListChecks, "Report a problem", "Shortcuts for recording and lighting captures", nullptr, nullptr);
+        ApexUi::CardDivider();
+        for (int row : {RowRecorder, RowProbe, RowDiagnostics}) {
+            if (!ApexUi::BeginControlRow(RowName(row), RowText(row), 180.0f * ApexUi::Unit())) continue;
+            KeyChip(row);
+            ApexUi::EndControlRow();
+        }
+        if (!kPublicBuild && ApexUi::BeginControlRow(RowName(RowFrameCapture), RowText(RowFrameCapture), 180.0f * ApexUi::Unit())) {
+            KeyChip(RowFrameCapture);
+            ApexUi::EndControlRow();
         }
     }
     ApexUi::EndCard();
@@ -3237,9 +3240,11 @@ void KeyNoteWindow() {
             ImGui::TextUnformatted(APEX_PRODUCT_NAME);
             ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s",
                                I18n::Trf("Menu: {} \xC2\xB7 customize the shortcuts?", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle)).c_str());
+            ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize());
             if (ApexUi::TextButton("Customize##KeyNote", nullptr, ApexUi::ButtonKind::Primary)) g_keyPanel = true;
             ImGui::SameLine();
-            if (ApexUi::TextButton("Not now##KeyNote")) EndKeySetup(false);
+            if (ApexUi::TextButton("Not now##KeyNote", nullptr, ApexUi::ButtonKind::Primary)) EndKeySetup(false);
+            ImGui::PopFont();
             const float left = static_cast<float>(g_keyNoteUntil > now ? g_keyNoteUntil - now : 0) / static_cast<float>(kKeyNoteMs);
             ImGui::ProgressBar(left, ImVec2(-1.0f, 3.0f * u), "");
         } else {
@@ -3294,13 +3299,19 @@ void ToggleCompare() {
     }
 }
 // While comparing: a small note top centre (the game as it looks without Apex)
-void CompareNote() {
-    if (!g_comparing) return;
-    const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Compare));
-    const std::string text = I18n::Trf("The game without Apex \xC2\xB7 {} to turn it back on", key);
-    if (BeginNoticePill("##ApexCompareNote", NoticeContentWidth(text)))
-        NoticeText(text, IconId::Columns2);
+bool CompareNote(bool drawAllowed = true) {
+    static std::string cachedText;
+    if (g_comparing) {
+        const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Compare));
+        cachedText = I18n::Trf("The game without Apex \xC2\xB7 {} to turn it back on", key);
+    }
+    const NoticeMotion motion = AnimateNotice(g_compareNoticeMotion, g_comparing);
+    if (!motion.draw || !drawAllowed) return false;
+    if (BeginNoticePill("##ApexCompareNote", NoticeContentWidth(cachedText), motion.alpha, false,
+                        VioletTheme::kAccentLight, motion.yOffset))
+        NoticeText(cachedText, IconId::Columns2);
     EndNoticePill();
+    return true;
 }
 // Render thread, every frame: the shortcuts that are not the menu key
 void RunShortcuts() {
@@ -3315,7 +3326,11 @@ void RunShortcuts() {
 // both show, never taking input. While a recording runs: a red dot, its seconds and the key to stop; then "Saved ..." (or
 // the other captures' start / saved notes, Captures::Notify) for a few seconds; while a capture session is open and
 // nothing else shows: the session and its count, so it is not forgotten.
-bool CaptureNote() {
+bool CaptureNote(bool drawAllowed = true) {
+    static std::string cachedText;
+    static IconId cachedIcon = IconId::Info;
+    static bool cachedDot = false;
+    static unsigned cachedTint = VioletTheme::kAccentLight;
     const int secs = Recorder::SecondsRecorded();
     const Captures::Note note = Captures::CurrentNote();
     std::string text;
@@ -3327,8 +3342,6 @@ bool CaptureNote() {
         dot = true;
     } else if (note.visible) {
         text = note.text; // translated when it was made (Captures::Notify callers)
-    } else {
-        return false;
     }
     IconId icon = IconId::Info;
     unsigned tint = VioletTheme::kAccentLight;
@@ -3342,8 +3355,17 @@ bool CaptureNote() {
         case Captures::NoteKind::Info:
         case Captures::NoteKind::Probe: break;
     }
-    if (BeginNoticePill("##ApexCaptureNote", NoticeContentWidth(text), 1.0f, dot, tint))
-        NoticeText(text, icon, dot, tint);
+    const bool active = LightProbe::Aiming() || secs >= 0 || note.visible;
+    if (active) {
+        cachedText = text;
+        cachedIcon = icon;
+        cachedDot = dot;
+        cachedTint = tint;
+    }
+    const NoticeMotion motion = AnimateNotice(g_captureNoticeMotion, active);
+    if (!motion.draw || !drawAllowed) return false;
+    if (BeginNoticePill("##ApexCaptureNote", NoticeContentWidth(cachedText), motion.alpha, cachedDot, cachedTint, motion.yOffset))
+        NoticeText(cachedText, cachedIcon, cachedDot, cachedTint);
     EndNoticePill();
     return true;
 }
@@ -3386,13 +3408,13 @@ class GuiClient final : public Overlay::Client {
         }
         Captures::SetScreenshots(ApexConfig::GetUi().captureScreenshot); // [ui] capture_screenshot
         bool noticeShown = false;
+        const bool noticesAllowed = !BannerNeeded() && !g_recNoteShow && !g_keySetup && !Captures::ScreenshotPending();
         if (!Captures::ScreenshotPending()) {
             CaptureTarget();
-            if (!BannerNeeded() && !g_recNoteShow && !g_keySetup) {
-                noticeShown = CaptureNote(); // never in the capture's own screenshot
-                if (!noticeShown && g_comparing) { CompareNote(); noticeShown = true; }
-            }
         }
+        noticeShown = CaptureNote(noticesAllowed); // never in the capture's own screenshot
+        const bool compareShown = CompareNote(noticesAllowed && !noticeShown);
+        if (!noticeShown) noticeShown = compareShown;
         if (BannerNeeded()) { Banner(); noticeShown = true; }
         if (g_recNoteShow) {
             if (!Overlay::IsVisible()) {
@@ -3429,6 +3451,7 @@ class GuiClient final : public Overlay::Client {
         }
         g_menuEverOpened = true;
         g_hintLeftMs = 0; // opening the menu ends the start note
+        AnimateNotice(g_hintNoticeMotion, false);
         // The welcome tour was removed (user, 30/09): the shortcuts note of the first start and Settings cover it
         if (!g_tourChecked) { // the first open ends the "press <key>" corner hint for good
             g_tourChecked = true;
@@ -3448,7 +3471,7 @@ class GuiClient final : public Overlay::Client {
         UpdateHint();
         // the capture notes (recording, saved, an open session) show with the menu closed too
         return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
-               LightProbe::Aiming() || g_returnFromProbe.load();
+               NoticeAnimationsPending() || LightProbe::Aiming() || g_returnFromProbe.load();
     }
 
     bool IsToggleKey(WPARAM vk) override {

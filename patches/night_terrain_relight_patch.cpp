@@ -2132,50 +2132,27 @@ class NightTerrainRelightPatch : public ApexPatch {
             static const char* const kStyleTips[] = {"Less light, more contrast at night", "Gentle, balanced lighting", "The original Apex lighting balance"};
             static LightStyle previous{};
             static bool canUndo = false;
-            ApexUi::GroupLabel("Choose the intensity");
-            ApexUi::MutedText("Ground, objects and buildings are already balanced together");
             int style = CurrentStyle();
             bool changed = false;
-            const ApexUi::IconId icons[] = {ApexUi::IconId::Moon, ApexUi::IconId::MoonStar, ApexUi::IconId::Lightbulb};
-            const float u = ApexUi::Unit(), gap = ApexUi::kSpace3 * u;
-            const float available = ImGui::GetContentRegionAvail().x;
-            const int columns = available >= 620.0f * u ? 3 : 1;
-            const float width = (available - gap * (columns - 1)) / columns;
-            const float padding = ApexUi::kSpace4 * u;
-            float height = 110.0f * u;
-            for (const char* tip : kStyleTips)
-                height = std::max(height, 50.0f * u + ImGui::CalcTextSize(I18n::Tr(tip), nullptr, false, width - 2 * padding).y + padding);
-            ApexUi::Gap(ApexUi::kSpace3);
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f * u);
-            for (int i = 0; i < static_cast<int>(std::size(kStyles)); ++i) {
+            const float u = ApexUi::Unit();
+            const ApexUi::IconId icons[] = {ApexUi::IconId::Moon, ApexUi::IconId::MoonStar, ApexUi::IconId::Lightbulb, ApexUi::IconId::SlidersHorizontal};
+            for (int i = 0; i < 4; ++i) {
+                const bool selected = i == 3 ? style < 0 : style == i;
+                const char* name = i == 3 ? "Custom" : kStyleNames[i];
+                const char* tip = i == 3 ? "Your individual lighting settings are active" : kStyleTips[i];
                 ImGui::PushID(i);
-                const bool selected = style == i;
-                if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                const bool clicked = ImGui::Button("##StyleTile", ImVec2(width, height));
-                if (selected) ImGui::PopStyleColor();
-                const ImVec2 pos = ImGui::GetItemRectMin();
-                auto* draw = ImGui::GetWindowDrawList();
-                const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
-                ApexUi::DrawIcon(draw, icons[i], ImVec2(pos.x + padding, pos.y + padding), ApexUi::kIconMedium * u, text);
-                draw->AddText(ImVec2(pos.x + padding + 26.0f * u, pos.y + padding), text, I18n::Tr(kStyleNames[i]));
-                draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(pos.x + padding, pos.y + 46.0f * u),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), I18n::Tr(kStyleTips[i]), nullptr, width - 2 * padding);
-                if (selected) ApexUi::DrawIcon(draw, ApexUi::IconId::Check, ImVec2(pos.x + width - padding - 14.0f * u, pos.y + 4.0f * u), 14.0f * u, text);
-                if (clicked && !selected) {
+                const bool clicked = ApexUi::ProfileChoiceRow("LightingStyle", icons[i], name, tip, selected);
+                if (clicked && i < 3 && !selected) {
                     for (int j = 0; j < 10; ++j) { previous.v[j] = *StyleValue(j); *StyleValue(j) = kStyles[i].v[j]; }
                     canUndo = true;
                     style = i;
                     changed = true;
                     ApexUi::ReportChange("Lighting balance changed");
                 }
+                if (i == 3 && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("Custom lighting balance"));
                 ImGui::PopID();
-                if ((i + 1) % columns != 0 && i + 1 < static_cast<int>(std::size(kStyles))) ImGui::SameLine();
             }
-            ImGui::PopStyleVar(2);
-            ApexUi::Gap(ApexUi::kSpace3);
-            const std::string current = style < 0 ? std::string(I18n::Tr("Custom lighting balance")) : I18n::Trf("Current balance: {}", I18n::Tr(kStyleNames[style]));
-            ApexUi::IconNote(style < 0 ? ApexUi::IconId::SlidersHorizontal : ApexUi::IconId::Check, current.c_str());
+            ApexUi::Gap(ApexUi::kSpace2);
             if (ApexUi::BeginAdvanced("LightingBalanceScope", "What does this choice change?")) {
                 ApexUi::MutedText("Changes lamp intensity on ground, objects, walls, roofs and water. Lamp colors and room background light stay as they are.");
                 ApexUi::EndAdvanced();

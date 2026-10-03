@@ -21,9 +21,9 @@
 #include "imgui_internal.h"
 namespace ApexLog { void Write(Level, const std::string&, const std::source_location&) {} }
 std::wstring testDirectory;
-namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } }
+namespace ApexPaths { const std::wstring& ApexDirectory() { return testDirectory; } const std::wstring& GameDocumentsDirectory() { return testDirectory; } }
 bool panelVisible = true;
-namespace Overlay { bool IsVisible() { return panelVisible; } void SetVisible(bool value) { panelVisible = value; } }
+namespace Overlay { bool IsVisible() { return panelVisible; } void SetVisible(bool value) { panelVisible = value; } void SetCaptureSuppressed(bool) {} bool PostGameKeyPress(WPARAM vk) { return vk == VK_F10; } }
 namespace D3D9Hooks { bool RegisterPresent(const std::string&, PresentHook, Priority) { return true; } }
 const char* GetGameVersionName() { return "layout test"; }
 #include "features/captures.cpp"
@@ -112,7 +112,7 @@ void Rasterize(const std::filesystem::path& file, int width, int height) {
         }
     }
     { std::lock_guard<std::mutex> lk(Captures::g_lock); Captures::g_shotJobs[file.parent_path()] = true; }
-    Captures::WritePng(file, std::move(bgr), width, height);
+    Captures::WritePng({file, file.parent_path(), true, 0}, std::move(bgr), width, height);
     for(int n=0;Captures::Saving() && n<300;++n) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     if(Captures::Saving() || !std::filesystem::is_regular_file(file)) std::exit(3);
 }
@@ -128,6 +128,23 @@ int main(int argc,char** argv) {
     ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;
     VioletTheme::ApplyStyle(ImGui::GetStyle());VioletTheme::LoadFonts(io);
     unsigned char* pixels=nullptr;int aw=0,ah=0;io.Fonts->GetTexDataAsRGBA32(&pixels,&aw,&ah);io.Fonts->SetTexID(1);
+    int noticeCases=0;
+    for(int lang=0;lang<4;++lang)for(int width:{430,900,1920})for(float scale:{1.0f,1.4f}) {
+        I18n::SetChoice(lang);I18n::ClearMissing();
+        io.DisplaySize=ImVec2(static_cast<float>(width),1080);io.DeltaTime=1.f/60;
+        ImGui::GetStyle().FontScaleMain=scale;
+        const std::string text=I18n::Tr("Some files could not be saved. Open Report a problem to retry");
+        ImGui::NewFrame();
+        if(!BeginNoticePill("##NoticeRegression",NoticeContentWidth(text)))return 12;
+        const float lineStart=ImGui::GetCursorScreenPos().y;
+        NoticeText(text,IconId::TriangleAlert);
+        if(ImGui::GetCursorScreenPos().y-lineStart>ImGui::GetTextLineHeightWithSpacing()+1)return 13;
+        const auto* notice=ImGui::GetCurrentWindow();
+        const auto* viewport=ImGui::GetMainViewport();
+        if(notice->Size.x + 0.1f < NoticeContentWidth(text) + 18.0f * ApexUi::Unit() ||
+           std::abs(notice->Pos.x+notice->Size.x*0.5f-(viewport->Pos.x+viewport->Size.x*0.5f))>1.1f)return 14;
+        EndNoticePill();ImGui::Render();++noticeCases;
+    }
     int checked=0;
     for(int lang=0;lang<4;++lang)for(int narrow=0;narrow<2;++narrow)for(int state=0;state<5;++state){
         I18n::SetChoice(lang);I18n::ClearMissing();g_report={};buttons.clear();
@@ -161,6 +178,6 @@ int main(int argc,char** argv) {
     if(generated.title.empty()||!generated.Complete()||generated.text.find("Game: layout test")==std::string::npos)return 10;
     Captures::BeginSession();Captures::EndSession();
     if(!Captures::ReadDescription(Captures::LastSave().folder).Complete())return 11;
-    ImGui::DestroyContext();printf("PASS: %d native page cases; EN/PT/ES/FR, two sizes, idle/recording/saving/failure, controls and existing notes preserved.\n",checked);
+    ImGui::DestroyContext();printf("PASS: %d one-line notice cases; %d native page cases; EN/PT/ES/FR, two sizes, idle/recording/saving/failure, controls and existing notes preserved.\n",noticeCases,checked);
     return 0;
 }

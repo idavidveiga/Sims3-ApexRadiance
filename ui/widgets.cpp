@@ -358,26 +358,15 @@ bool RowDecorations(const RowDecor& d, const LabelInfo& li, ImVec2 rowMin, ImVec
     return IconButtonImpl("##ResetRow", IconId::RotateCcw, "Reset to default", false, kResetButton);
 }
 
-// Small, bold, muted, letter-spaced text (group labels), one item; indent = extra x before it
-void SpacedCaps(const char* text, float indent, float extraBelow) {
+// Section labels use the regular menu font without artificial glyph tracking.
+void SectionLabelText(const char* text, float indent, float extraBelow) {
     text = T(text);
-    const float u = Unit();
-    PushSized(VioletTheme::BoldFont(), kGroupScale);
-    const float track = 0.9f * u;
+    PushSized(VioletTheme::RegularFont(), 1.0f);
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = U32(VioletTheme::kTextMuted);
-    float x = p.x + indent;
-    for (const char* c = text; *c;) {
-        const char* next = c + 1;
-        while ((*next & 0xC0) == 0x80) ++next; // one UTF-8 sequence
-        dl->AddText(ImVec2(x, p.y), col, c, next);
-        x += ImGui::CalcTextSize(c, next).x + track;
-        c = next;
-    }
-    const float h = ImGui::GetFontSize();
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + indent, p.y), U32(VioletTheme::kTextMuted), text);
+    ImGui::Dummy(ImVec2(indent + size.x, size.y + extraBelow));
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(x - p.x, h + extraBelow));
 }
 
 // Control rows (BeginControlRow / EndControlRow)
@@ -495,7 +484,7 @@ void SectionLabel(const char* text) {
 void GroupLabel(const char* text) {
     if (Hidden()) return;
     PadAfterRow(kSpace3);
-    SpacedCaps(text, 0.0f, 3.0f * Unit());
+    SectionLabelText(text, 0.0f, 3.0f * Unit());
 }
 
 void IconNote(IconId icon, const char* text, unsigned rgb) {
@@ -841,7 +830,7 @@ void SidebarGroup(const char* text, bool collapsed) {
         ImGui::Dummy(ImVec2(w, 6.0f * u));
         return;
     }
-    SpacedCaps(text, kSpace3 * u, 2.0f * u);
+    SectionLabelText(text, kSpace3 * u, 2.0f * u);
 }
 
 bool TabBar(const char* id, int* current, const char* const* labels, int count, const IconId* icons) {
@@ -1444,6 +1433,35 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
     RowFinish(startX, top + rowH);
     ImGui::PopID();
     return toggled;
+}
+
+// Profile choices share Overview typography, icon geometry and row spacing.
+bool ProfileChoiceRow(const char* id, IconId icon, const char* name, const char* description, bool selected) {
+    if (Hidden()) return false;
+    ImGui::PushID(id);
+    const float u = Unit(), startX = ImGui::GetCursorPosX(), width = ImGui::GetContentRegionAvail().x;
+    const float top = RowTop(), textX = startX + 22.0f * u + kSpace3 * u;
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorPos(ImVec2(textX, top));
+    ImGui::BeginGroup();
+    ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
+    ImGui::TextUnformatted(T(name));
+    RowDescription(description, startX + width - 32.0f * u - kSpace3 * u);
+    ImGui::PopStyleVar();
+    ImGui::EndGroup();
+    const float h = std::fmax(ImGui::GetItemRectMax().y - p.y, 22.0f * u);
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    const bool clicked = ImGui::InvisibleButton("##Choice", ImVec2(width, h), ImGuiButtonFlags_EnableNav);
+    auto* draw = ImGui::GetWindowDrawList();
+    const float size = kIconMedium * u;
+    DrawIcon(draw, icon, ImVec2(p.x + (22.0f * u - size) * 0.5f, p.y + (h - size) * 0.5f), size, U32(VioletTheme::kAccent));
+    const ImVec2 center(p.x + width - 11.0f * u, p.y + h * 0.5f);
+    draw->AddCircle(center, 8.0f * u, U32(selected || ImGui::IsItemHovered() ? VioletTheme::kAccent : VioletTheme::kCardBorder), 24, 1.5f * u);
+    if (selected) draw->AddCircleFilled(center, 4.0f * u, U32(VioletTheme::kAccent));
+    RowFinish(startX, top + h);
+    ImGui::PopID();
+    return clicked;
 }
 
 } // namespace ApexUi

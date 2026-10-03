@@ -153,3 +153,9 @@ The completed receipt keeps user title, folder and right-aligned New recording/O
 ### Saved capture library redesign (local test, 2026-10-02)
 
 Each entry leads with the user title and full description, followed by date/time. Untitled older captures use translated plain names by capture type; missing descriptions have an explicit prompt. Open its folder and Add or edit description remain visible. Files and more actions expands the technical folder name, size, actual contents, sending guidance and confirmed removal. Bulk removal is under Manage saved captures; Undo remains available there. All new labels support EN/PT/ES/FR. Notes are returned by the existing bounded ReadDescription during the two-second visible-library scan, rather than adding per-frame disk reads or an extra read per entry. Names on disk and stored notes remain unchanged. The native fixture checks stored title/body visibility data and collapsed destructive/technical controls in all languages and both sizes. Gameplay validation remains pending.
+
+## Local development: required capture title
+
+The post-save form now requires a non-whitespace title and keeps Description optional. Save capture remains disabled until a title is entered; the automatic-details bypass is removed. An empty description retains diagnostic details. This requirement completes metadata after capture files are saved and never deletes those files or overwrites existing notes.
+
+The naming modal has fixed responsive width and automatic height. Cancel explicitly deletes only the newly captured folder through Captures::Delete, with existing root/session/busy guards; failure leaves the form open with an error. Save still requires a title and keeps the description optional.

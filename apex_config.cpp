@@ -679,7 +679,7 @@ void ApplyFeatureState(const toml::table& state) {
 // ---- profiles ----
 
 const char* ProfilePartName(int index) {
-    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "", "Performance", "Shortcuts", "Ambient Occlusion", "Development"};
+    static const char* const kNames[kProfilePartCount] = {"Lighting", "Color", "Depth Blur", "Edge Smoothing", "", "Performance", "Shortcuts", "Ambient Occlusion", "Developer"};
     return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
 }
 
@@ -760,7 +760,7 @@ bool ProfileExists(const std::string& name) {
     return !clean.empty() && ApexUtil::FileExists(ProfileFile(clean));
 }
 
-bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
+bool SaveProfile(const std::string& name, unsigned parts, std::string* error, const std::string& icon) {
     const std::string clean = SanitizeProfileName(name);
     if (clean.empty() || clean != name) {
         if (error) *error = "invalid name";
@@ -794,6 +794,7 @@ bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
         toml::table meta;
         meta.insert("written_by", APEX_PRODUCT_NAME " " APEX_VERSION_STRING);
         meta.insert("profile", clean);
+        meta.insert("icon", icon);
         root.insert_or_assign("meta", std::move(meta));
         if (!ApexPaths::EnsureApexDirectory()) {
             if (error) *error = "the settings folder could not be created";

@@ -32,3 +32,7 @@ perl .claude/skills/apex-menu/audit.pl .
 It reports missing translation entries, copy guideline breaks, undocumented settings, and settings omitted from a local `ResetDefaults()`. It is a heuristic: manually check runtime/generated text, reset paths outside the feature file, profile and preset behavior, and whether each report is applicable. Developer-only English is allowed; investigate other findings rather than blindly changing text. Run it again after UI changes.
 
 Use the project's current build instructions and applicable checks for the changed code; do not assume separate development and public binaries exist. Report the menu placement and any copy, labels, or layout changed, along with checks and unresolved findings.
+
+## Typography
+
+Use the existing Segoe UI menu family. Section and sidebar labels use the regular face without manually spaced glyphs or decorative tracking. Keep parallel headings consistently cased (Lighting, Image, Performance). Bold in the same family is reserved for hierarchy and intentional emphasis; do not introduce another display font.

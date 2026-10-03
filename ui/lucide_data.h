@@ -445,6 +445,88 @@ inline constexpr Element kUserRound[] = {
     {Kind::Path, "M20 21a8 8 0 0 0-16 0", {}, false},
 };
 
+inline constexpr Element kStar[] = {
+    {Kind::Path, "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z", {}, false},
+};
+inline constexpr Element kCoffee[] = {
+    {Kind::Path, "M10 2v2", {}, false},
+    {Kind::Path, "M14 2v2", {}, false},
+    {Kind::Path, "M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1", {}, false},
+    {Kind::Path, "M6 2v2", {}, false},
+};
+inline constexpr Element kFlower2[] = {
+    {Kind::Path, "M12 5a3 3 0 1 1 3 3m-3-3a3 3 0 1 0-3 3m3-3v1M9 8a3 3 0 1 0 3 3M9 8h1m5 0a3 3 0 1 1-3 3m3-3h-1m-2 3v-1", {}, false},
+    {Kind::Circle, nullptr, {12.0f, 8.0f, 2.0f}, false},
+    {Kind::Path, "M12 10v12", {}, false},
+    {Kind::Path, "M12 22c4.2 0 7-1.667 7-5-4.2 0-7 1.667-7 5Z", {}, false},
+    {Kind::Path, "M12 22c-4.2 0-7-1.667-7-5 4.2 0 7 1.667 7 5Z", {}, false},
+};
+inline constexpr Element kLeaf[] = {
+    {Kind::Path, "M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20", {}, false},
+    {Kind::Path, "M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13", {}, false},
+};
+inline constexpr Element kFlame[] = {
+    {Kind::Path, "M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4", {}, false},
+};
+inline constexpr Element kCloud[] = {
+    {Kind::Path, "M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z", {}, false},
+};
+inline constexpr Element kCloudMoon[] = {
+    {Kind::Path, "M13 16a3 3 0 0 1 0 6H7a5 5 0 1 1 4.9-6z", {}, false},
+    {Kind::Path, "M18.376 14.512a6 6 0 0 0 3.461-4.127c.148-.625-.659-.97-1.248-.714a4 4 0 0 1-5.259-5.26c.255-.589-.09-1.395-.716-1.248a6 6 0 0 0-4.594 5.36", {}, false},
+};
+inline constexpr Element kRainbow[] = {
+    {Kind::Path, "M22 17a10 10 0 0 0-20 0", {}, false},
+    {Kind::Path, "M6 17a6 6 0 0 1 12 0", {}, false},
+    {Kind::Path, "M10 17a2 2 0 0 1 4 0", {}, false},
+};
+inline constexpr Element kMountain[] = {
+    {Kind::Path, "m8 3 4 8 5-5 5 15H2L8 3z", {}, false},
+};
+inline constexpr Element kGem[] = {
+    {Kind::Path, "M10.5 3 8 9l4 13 4-13-2.5-6", {}, false},
+    {Kind::Path, "M17 3a2 2 0 0 1 1.6.8l3 4a2 2 0 0 1 .013 2.382l-7.99 10.986a2 2 0 0 1-3.247 0l-7.99-10.986A2 2 0 0 1 2.4 7.8l2.998-3.997A2 2 0 0 1 7 3z", {}, false},
+    {Kind::Path, "M2 9h20", {}, false},
+};
+inline constexpr Element kDiamond[] = {
+    {Kind::Path, "M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41l-7.59-7.59a2.41 2.41 0 0 0-3.41 0Z", {}, false},
+};
+inline constexpr Element kMusic[] = {
+    {Kind::Path, "M9 18V5l12-2v13", {}, false},
+    {Kind::Circle, nullptr, {6.0f, 18.0f, 3.0f}, false},
+    {Kind::Circle, nullptr, {18.0f, 16.0f, 3.0f}, false},
+};
+inline constexpr Element kHeadphones[] = {
+    {Kind::Path, "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3", {}, false},
+};
+inline constexpr Element kGamepad2[] = {
+    {Kind::Line, nullptr, {6.0f, 11.0f, 10.0f, 11.0f}, false},
+    {Kind::Line, nullptr, {8.0f, 9.0f, 8.0f, 13.0f}, false},
+    {Kind::Line, nullptr, {15.0f, 12.0f, 15.01f, 12.0f}, false},
+    {Kind::Line, nullptr, {18.0f, 10.0f, 18.01f, 10.0f}, false},
+    {Kind::Path, "M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z", {}, false},
+};
+inline constexpr Element kCat[] = {
+    {Kind::Path, "M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.84 6.42-2.26 1.4.58-.42 7-.42 7 .57 1.07 1 2.24 1 3.44C21 17.9 16.97 21 12 21s-9-3-9-7.56c0-1.25.5-2.4 1-3.44 0 0-1.89-6.42-.5-7 1.39-.58 4.72.23 6.5 2.23A9.04 9.04 0 0 1 12 5Z", {}, false},
+    {Kind::Path, "M8 14v.5", {}, false},
+    {Kind::Path, "M16 14v.5", {}, false},
+    {Kind::Path, "M11.25 16.25h1.5L12 17l-.75-.75Z", {}, false},
+};
+inline constexpr Element kDog[] = {
+    {Kind::Path, "M11.25 16.25h1.5L12 17z", {}, false},
+    {Kind::Path, "M16 14v.5", {}, false},
+    {Kind::Path, "M4.42 11.247A13.152 13.152 0 0 0 4 14.556C4 18.728 7.582 21 12 21s8-2.272 8-6.444a11.702 11.702 0 0 0-.493-3.309", {}, false},
+    {Kind::Path, "M8 14v.5", {}, false},
+    {Kind::Path, "M8.5 8.5c-.384 1.05-1.083 2.028-2.344 2.5-1.931.722-3.576-.297-3.656-1-.113-.994 1.177-6.53 4-7 1.923-.321 3.651.845 3.651 2.235A7.497 7.497 0 0 1 14 5.277c0-1.39 1.844-2.598 3.767-2.277 2.823.47 4.113 6.006 4 7-.08.703-1.725 1.722-3.656 1-1.261-.472-1.855-1.45-2.239-2.5", {}, false},
+};
+
+inline constexpr Element kSkull[] = {
+    {Kind::Path, "m12.5 17-.5-1-.5 1h1z", {}, false},
+    {Kind::Path, "M15 22a1 1 0 0 0 1-1v-1a2 2 0 0 0 1.56-3.25 8 8 0 1 0-11.12 0A2 2 0 0 0 8 20v1a1 1 0 0 0 1 1z", {}, false},
+    {Kind::Circle, nullptr, {15.0f, 12.0f, 1.0f}, false},
+    {Kind::Circle, nullptr, {9.0f, 12.0f, 1.0f}, false},
+};
+
 inline constexpr IconData kIcons[] = {
     {"activity", kActivity, static_cast<int>(sizeof(kActivity) / sizeof(kActivity[0]))},
     {"aperture", kAperture, static_cast<int>(sizeof(kAperture) / sizeof(kAperture[0]))},
@@ -510,6 +592,23 @@ inline constexpr IconData kIcons[] = {
     {"bookmark", kBookmark, static_cast<int>(sizeof(kBookmark) / sizeof(kBookmark[0]))},
     {"trash-2", kTrash2, static_cast<int>(sizeof(kTrash2) / sizeof(kTrash2[0]))},
     {"user-round", kUserRound, static_cast<int>(sizeof(kUserRound) / sizeof(kUserRound[0]))},
+    {"star", kStar, static_cast<int>(sizeof(kStar) / sizeof(kStar[0]))},
+    {"coffee", kCoffee, static_cast<int>(sizeof(kCoffee) / sizeof(kCoffee[0]))},
+    {"flower-2", kFlower2, static_cast<int>(sizeof(kFlower2) / sizeof(kFlower2[0]))},
+    {"leaf", kLeaf, static_cast<int>(sizeof(kLeaf) / sizeof(kLeaf[0]))},
+    {"flame", kFlame, static_cast<int>(sizeof(kFlame) / sizeof(kFlame[0]))},
+    {"cloud", kCloud, static_cast<int>(sizeof(kCloud) / sizeof(kCloud[0]))},
+    {"cloud-moon", kCloudMoon, static_cast<int>(sizeof(kCloudMoon) / sizeof(kCloudMoon[0]))},
+    {"rainbow", kRainbow, static_cast<int>(sizeof(kRainbow) / sizeof(kRainbow[0]))},
+    {"mountain", kMountain, static_cast<int>(sizeof(kMountain) / sizeof(kMountain[0]))},
+    {"gem", kGem, static_cast<int>(sizeof(kGem) / sizeof(kGem[0]))},
+    {"diamond", kDiamond, static_cast<int>(sizeof(kDiamond) / sizeof(kDiamond[0]))},
+    {"music", kMusic, static_cast<int>(sizeof(kMusic) / sizeof(kMusic[0]))},
+    {"headphones", kHeadphones, static_cast<int>(sizeof(kHeadphones) / sizeof(kHeadphones[0]))},
+    {"gamepad-2", kGamepad2, static_cast<int>(sizeof(kGamepad2) / sizeof(kGamepad2[0]))},
+    {"cat", kCat, static_cast<int>(sizeof(kCat) / sizeof(kCat[0]))},
+    {"dog", kDog, static_cast<int>(sizeof(kDog) / sizeof(kDog[0]))},
+    {"skull", kSkull, static_cast<int>(sizeof(kSkull) / sizeof(kSkull[0]))},
 };
 
 } // namespace ApexUi::LucideData

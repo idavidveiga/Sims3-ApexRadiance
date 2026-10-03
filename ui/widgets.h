@@ -106,7 +106,7 @@ void PageTitle(const char* title, const char* subtitle);
 void MutedText(const char* text);
 // Small bold section label inside a card or page (kept for older callers; cards use GroupLabel)
 void SectionLabel(const char* text);
-// Group label inside a card: small, bold, muted, letter-spaced; pass it in upper case ("WALLS")
+// Group label inside a card: regular menu font, muted, without letter spacing
 void GroupLabel(const char* text);
 // A note: a small icon and wrapped text in a subtly tinted rounded box, in the given colour (0xRRGGBB). Info notes use
 // IconId::Info and the default muted colour, warnings IconId::TriangleAlert and VioletTheme::kWarning, errors
@@ -245,3 +245,7 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
 bool CostChipText(float ms, char* buf, int size);
 
 } // namespace ApexUi
+
+namespace ApexUi {
+bool ProfileChoiceRow(const char* id, IconId icon, const char* name, const char* description, bool selected);
+}
