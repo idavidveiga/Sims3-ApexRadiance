@@ -329,6 +329,7 @@ const I18n::Entry kEntries[] = {
     {"Ctrl+Shift+C is the game's cheat console", "Ctrl+Shift+C é o console de cheats do jogo", "Ctrl+Shift+C es la consola de trucos del juego",
      "Ctrl+Maj+C est la console de triche du jeu"},
     {"That combination belongs to Windows", "Essa combinação é do Windows", "Esa combinación es de Windows", "Cette combinaison appartient à Windows"},
+    {"F10 is reserved for hiding the game's interface", "F10 fica reservado para ocultar a interface do jogo", "F10 está reservado para ocultar la interfaz del juego", "F10 est réservé au masquage de l'interface du jeu"},
     {"Use it with Ctrl, Shift or Alt: alone it would stop that key from typing in the game", "Use com Ctrl, Shift ou Alt: sozinha ela deixaria de digitar no jogo",
      "Úsala con Ctrl, Shift o Alt: sola dejaría de escribir en el juego", "Utilisez-la avec Ctrl, Maj ou Alt : seule, elle n'écrirait plus dans le jeu"},
     {"Already used by: {}", "Já usada por: {}", "Ya la usa: {}", "Déjà utilisée par : {}"},

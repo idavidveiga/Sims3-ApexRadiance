@@ -9,9 +9,9 @@
 > See [Ambient Occlusion](features/ambient-occlusion.md) for shader coverage, fallback behavior, revision migration
 > and validation limits.
 
-> Local development: Settings > Shortcuts enables the filtered screenshot shortcut by default on bare F10. It hides
-> the game's UI for the captured frame and restores its previous state; Ctrl+Shift+F10 remains Compare. Both choices
-> can be changed in Settings, and the UI can be left visible in screenshots.
+> Local development: Settings > Shortcuts enables the filtered screenshot shortcut by default on Ctrl+Shift+F12. It
+> leaves bare F10 available for the game's UI toggle, which is used only internally while hiding the interface for a
+> screenshot; the prior UI state is restored afterwards. Ctrl+Shift+F10 remains Compare.
 
 > Current local development: the Optimize rendering card and its mode switch are
 > removed; the existing performance patch controls remain. The published 2.5.6
@@ -301,8 +301,9 @@ on some layouts; C is the cheat console; D S E move the camera; M is the map). N
 earlier keys. Compare turns Night Lighting, Depth Blur, Edge Smoothing and the picture filters off and back (not saved;
 a note shows at the top while off). Refresh does what the Developer buttons "Rebuild terrain light now" and "Relight lots
 now" do plus every room and the object rigs (NightLighting::RefreshAll). `compare_key` / `refresh_key` hold the player's
-own keys. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on bare F10. It reads the
-finished back buffer after Apex's scene and Picture passes. Ctrl+Shift+F10 remains Compare. The **Hide the game
+own keys. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on Ctrl+Shift+F12. Bare F10
+remains available for the game's UI toggle, which the mod uses internally only while hiding the interface for the
+shot. It reads the finished back buffer after Apex's scene and Picture passes. Ctrl+Shift+F10 remains Compare. The **Hide the game
 interface in screenshots** option is on by default; it temporarily toggles the game's F10 interface visibility,
 captures one frame, and restores the prior tracked state. Apex's own overlay is suppressed for that frame. PNGs are
 saved under the game's Documents folder in `Apex Radiance/Screenshots`. This is separate from Report's diagnostic screenshots.

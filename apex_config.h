@@ -39,7 +39,7 @@ struct UiSettings {
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)
     bool screenshotShortcutEnabled = true; // intercept a configurable key for filtered screenshots ([ui] screenshot_shortcut_enabled)
-    KeyChord screenshotKey{VK_F10, false, false, false}; // F10 screenshot; Ctrl+Shift+F10 remains the Compare shortcut
+    KeyChord screenshotKey{VK_F12, true, true, false}; // Ctrl+Shift+F12 screenshot; bare F10 stays the game's UI toggle
     bool screenshotHideGameUi = true; // temporarily toggle the game's F10 UI visibility only while taking the screenshot
     int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)

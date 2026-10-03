@@ -2658,6 +2658,7 @@ bool SameChord(const ApexConfig::KeyChord& a, const ApexConfig::KeyChord& b) {
 std::string ChordProblem(const ApexConfig::KeyChord& c, int row) {
     const bool mods = c.ctrl || c.shift || c.alt;
     if (c.vk == VK_ESCAPE) return "Escape cancels the current action";
+    if (row == RowScreenshot && c.vk == VK_F10 && !mods) return "F10 is reserved for hiding the game's interface";
     if (c.vk == VK_INSERT && !mods) return "Insert alone opens Sims3SettingsSetter's menu";
     if (c.vk == 'C' && c.ctrl && c.shift && !c.alt) return "Ctrl+Shift+C is the game's cheat console";
     if ((c.vk == VK_F4 || c.vk == VK_TAB) && c.alt) return "That combination belongs to Windows";
