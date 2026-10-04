@@ -2187,9 +2187,18 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
-                changed |= ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true);
                 return changed;
             });
+            // Smooth ground light is a draw/map-filter choice, not a room/lot-lighting rule. Running the generic F9-style
+            // auto refresh here re-solves every lot and room, including ExteriorWall, even though no wall light setting
+            // changed. That made a harmless A/B of this switch capable of leaving bright wall lightmaps at night.
+            // The object rigs are the only live consumers that benefit from being re-evaluated for this A/B, so refresh
+            // those without touching terrain/lot/room lighting.
+            if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
+                NotifySettingChanged();
+                ObjectLightBridge::RequestRigRefresh();
+                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: refreshed object rigs only; terrain, lots, rooms and walls left untouched");
+            }
             Edit([] {
                 ApexUi::GroupLabel("BRIGHTNESS");
                 // The ground and road gains are applied in the draws of "Street lamps light lots"
