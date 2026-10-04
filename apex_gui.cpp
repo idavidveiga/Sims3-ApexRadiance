@@ -3377,6 +3377,7 @@ void CaptureTarget() {
 std::atomic<bool> g_returnFromProbe{false};
 class GuiClient final : public Overlay::Client {
     bool eatProbeMouseUp = false; // window thread only: the confirming click must not also select/place a game object
+    bool gameCheatConsoleOpen = false; // window thread only: let cheat text pass through instead of firing bare-key shortcuts
   public:
     void Draw() override {
         if (!g_menuAvailable.load()) {
@@ -3418,6 +3419,7 @@ class GuiClient final : public Overlay::Client {
     }
 
     bool IsToggleKey(WPARAM vk) override {
+        if (gameCheatConsoleOpen) return false; // the game's cheat console owns all keys until Enter, Esc or Ctrl+Shift+C
         if (g_recRow >= 0) return false; // being recorded as a shortcut
         const ApexConfig::KeyChord c = ApexConfig::GetUi().toggle;
         if (vk != c.vk) return false;
@@ -3431,6 +3433,7 @@ class GuiClient final : public Overlay::Client {
     bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result) override {
         if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) {
             eatProbeMouseUp = false;
+            gameCheatConsoleOpen = false;
             LightProbe::CancelAim();
         }
         if (msg == WM_LBUTTONUP && eatProbeMouseUp) {
@@ -3451,7 +3454,17 @@ class GuiClient final : public Overlay::Client {
         return false;
     }
 
-    void GameKeyDown(WPARAM vk, bool repeat) override { Captures::ObserveGameUiKey(vk, repeat); }
+    void GameKeyDown(WPARAM vk, bool repeat) override {
+        Captures::ObserveGameUiKey(vk, repeat);
+        if (repeat) return;
+        const bool cheatConsoleChord = vk == 'C' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0 &&
+                                       GetKeyState(VK_MENU) >= 0;
+        if (cheatConsoleChord) {
+            gameCheatConsoleOpen = !gameCheatConsoleOpen;
+        } else if (gameCheatConsoleOpen && (vk == VK_RETURN || vk == VK_ESCAPE)) {
+            gameCheatConsoleOpen = false;
+        }
+    }
 
     // The configurable peek and hold-to-compare keys belong to the menu while the pointer is over it.
     bool CaptureKey(WPARAM vk) override {
@@ -3462,12 +3475,13 @@ class GuiClient final : public Overlay::Client {
         const bool holdKey = vk == ui.peekKey.vk && HoldShortcutDown(ui.peekKey);
         const bool pictureKey = vk == ui.pictureCompareKey.vk && HoldShortcutDown(ui.pictureCompareKey);
         return (g_keysOverMenu.load() && (holdKey || pictureKey)) ||
-               (Overlay::IsVisible() && !g_menuTextInput.load() && bareScreenshotKey);
+               (Overlay::IsVisible() && !gameCheatConsoleOpen && !g_menuTextInput.load() && bareScreenshotKey);
     }
 
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
         if (!g_menuAvailable.load()) return false;
+        if (gameCheatConsoleOpen) return false; // don't steal letters (notably C) from a cheat being typed
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
         const auto ui = ApexConfig::GetUi();
         const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;

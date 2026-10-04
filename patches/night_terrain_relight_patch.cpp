@@ -2100,27 +2100,27 @@ class NightTerrainRelightPatch : public ApexPatch {
 
     // Every row goes through ApexUi::SwitchRow / Slider with its label as the stable id (unique within its card).
 
-    // Light styles: every brightness of Night Lights at once (the moonlight and colors are not part of a style)
-    // each: ground, roads, street lamps, lot lamps, objects, pieces, fences, walls, roofs, water (the StyleValue order)
+    // Light styles: every brightness setting on the Lighting page at once (the moonlight and colors are not part of a style)
+    // each: ground, roads, street lamps, lot lamps, objects, pieces, fences, walls, roofs (the StyleValue order)
     struct LightStyle {
-        float v[10];
+        float v[9];
     };
     // Preserve the approved Soft surface ratios; variants change intensity conservatively.
     static constexpr LightStyle kStyles[] = {
-        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 1.35f, 0.405f, 0.27f}}, // Subtle
-        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f, 0.3f}},       // Soft reference
-        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f, 0.4f}},           // Natural
+        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 1.35f, 0.405f}}, // Subtle
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f}},         // Soft reference
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f}},             // Natural
     };
     static float* StyleValue(int i) {
         float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
-                            &g_objPixelLightStrength, &g_fenceGroundStrength, &g_wallStrength, &g_roofStrengthSetting, &g_waterStrengthSetting};
+                            &g_objPixelLightStrength, &g_fenceGroundStrength, &g_wallStrength, &g_roofStrengthSetting};
         return v[i];
     }
     static int CurrentStyle() {
         for (int s = 0; s < static_cast<int>(std::size(kStyles)); s++) {
             const float* want = kStyles[s].v;
             bool same = true;
-            for (int i = 0; i < 10 && same; i++) same = std::fabs(*StyleValue(i) - want[i]) < 0.005f;
+            for (int i = 0; i < 9 && same; i++) same = std::fabs(*StyleValue(i) - want[i]) < 0.005f;
             if (same) return s;
         }
         return -1; // custom
@@ -2143,7 +2143,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ImGui::PushID(i);
                 const bool clicked = ApexUi::ProfileChoiceRow("LightingStyle", icons[i], name, tip, selected);
                 if (clicked && i < 3 && !selected) {
-                    for (int j = 0; j < 10; ++j) { previous.v[j] = *StyleValue(j); *StyleValue(j) = kStyles[i].v[j]; }
+                    for (int j = 0; j < 9; ++j) { previous.v[j] = *StyleValue(j); *StyleValue(j) = kStyles[i].v[j]; }
                     canUndo = true;
                     style = i;
                     changed = true;
@@ -2154,12 +2154,12 @@ class NightTerrainRelightPatch : public ApexPatch {
             }
             ApexUi::Gap(ApexUi::kSpace2);
             if (ApexUi::BeginAdvanced("LightingBalanceScope", "What does this choice change?")) {
-                ApexUi::MutedText("Changes lamp intensity on ground, objects, walls, roofs and water. Lamp colors and room background light stay as they are.");
+                ApexUi::MutedText("Changes lamp intensity on the Lighting page. Water settings, lamp colors and room background light stay as they are.");
                 ApexUi::EndAdvanced();
             }
             if (canUndo) {
                 if (ApexUi::IconTextButton("Undo choice", ApexUi::IconId::Undo2)) {
-                    for (int j = 0; j < 10; ++j) *StyleValue(j) = previous.v[j];
+                    for (int j = 0; j < 9; ++j) *StyleValue(j) = previous.v[j];
                     canUndo = false;
                     changed = true;
                     ApexUi::ReportChange("Lighting balance restored");

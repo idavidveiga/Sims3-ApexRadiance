@@ -46,7 +46,7 @@ struct UiSettings {
     KeyChord peekKey{VK_MENU, false, false, false}; // hold to peek through the menu ([ui] peek_key)
     KeyChord pictureCompareKey{'B', false, false, false}; // hold to bypass Picture while over the menu ([ui] picture_compare_key)
     bool screenshotShortcutEnabled = true; // intercept a configurable key for filtered screenshots ([ui] screenshot_shortcut_enabled)
-    KeyChord screenshotKey{'C', false, false, false}; // C takes one filtered screenshot into the game's Screenshots folder
+    KeyChord screenshotKey{'C', false, false, false}; // C takes a filtered screenshot; cheat-console typing passes through
     bool screenshotHideGameUi = true; // temporarily toggle the game's F10 UI visibility only while taking the screenshot
     int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)

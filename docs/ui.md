@@ -308,6 +308,8 @@ preset”, preserving older config files. The same fields are included in the op
 profiles. Settings > Shortcuts has **Use Apex screenshot shortcut**, enabled by default on C only for new or missing key
 settings. Existing saved screenshot keys remain unchanged. Apex consumes C and saves one filtered PNG to the game's
 standard Documents `Electronic Arts\The Sims 3\Screenshots` folder; it does not also invoke the native screenshot.
+After `Ctrl+Shift+C` opens the game's cheat console, all keys pass through until Enter, Esc, or `Ctrl+Shift+C` closes
+the console, so typing a cheat never triggers the screenshot shortcut.
 Bare F10 remains the game's interface toggle; Apex uses it internally only while hiding the interface for a shot. It
 reads the finished back buffer after Apex's scene and Picture passes. Ctrl+Shift+F10 remains Compare. **Hide game UI**
 is on by default and temporarily toggles F10, captures one frame and restores the prior tracked state. Apex's own
@@ -480,17 +482,17 @@ Display > Window retains Borderless and adds experimental V-Sync policy, optiona
 
 The Ambient Occlusion page has two cards: scene AO first (Strength, Distance, Quality), then Sim Occlusion (body/hair intensity, maximum darkening and advanced coverage preview). The second depends on scene AO, is experimental and off by default; its switch has a dedicated User Round icon and an Experimental badge, and its controls are hidden while the switch is off. Page and card restore-default buttons, including Overview, Picture/mixer, Depth Blur and Edge Smoothing, are removed. Individual row defaults and the explicit global Settings reset remain. See [features/ambient-occlusion.md](features/ambient-occlusion.md).
 
-Screenshot capture copy shows the configured intercepted key (C by default) and explains that it produces one filtered photo without a duplicate. The existing Hide game UI in screenshots switch controls temporary native F10 hiding and restoration; off includes the game UI. The destination note uses the shared small description font. Persistence and capture behavior are unchanged.
+Screenshot capture copy shows the configured intercepted key (C by default), explains that it produces one filtered photo without a duplicate, and notes that cheat-console typing passes through. The existing Hide game UI in screenshots switch controls temporary native F10 hiding and restoration; off includes the game UI. The destination note uses the shared small description font. Persistence fields and saved key choices remain unchanged.
 
 Native F10 routing: unmodified F10 down/up messages bypass Apex shortcuts and ImGui keyboard capture, including while the menu is open. Ctrl+Shift+F10 retains its configured compare behavior. Synthetic screenshot keys are observed after forwarding to the game procedure; screenshots wait for that observation before their clean-frame delay, with a two-second cancellation bound. This acknowledges message delivery, not the native HUD state; the visibility tracker remains an estimate and gameplay validation is required.
 
-Screenshot capture is the second card in Settings > Menu. It includes the same shortcut recorder as Shortcuts, with existing conflict and reserved-key validation. Choosing a different key frees C for the native game screenshot. Keys and capture settings retain their existing persistence fields.
+Screenshot capture is the second card in Settings > Menu. It includes the same shortcut recorder as Shortcuts, with existing conflict and reserved-key validation. Choosing a different key frees C for the native game screenshot. With the default C key, Apex recognizes the forwarded `Ctrl+Shift+C` cheat-console toggle and passes game keys through until Enter, Esc or the toggle closes the console. Keys and capture settings retain their existing persistence fields.
 
 Loading startup: Picture and the shared AO/AA/Depth Blur chain defer their passes until registered shader precompilation completes. The readiness probe uses try-lock and never waits for compiler work. This can delay filters during startup; saved settings are unchanged. Other startup costs and shader consumers remain separate, and gameplay timing needs validation.
 
 Section typography update: shared section labels use the regular menu font at normal size, with no artificial glyph spacing. Overview headings are consistently Lighting, Image and Performance.
 
-Lighting Overview now uses full-width icon/name/description rows for Subtle, Soft, Natural and derived Custom, preserving preset values and Undo choice. Custom cannot replace individual settings. The redundant fine-tuning card is removed; area tabs remain.
+Lighting Overview now uses full-width icon/name/description rows for Subtle, Soft, Natural and derived Custom, preserving preset values and Undo choice. Presets affect only lamp intensities on the Lighting page; Water & Snow settings, including pond lamp-glow brightness, remain untouched. Custom is derived from the Lighting values alone and cannot replace individual settings. The redundant fine-tuning card is removed; area tabs remain.
 
 Report capture-session refinement: uses the sidebar Bug icon without a decorative disk, a quieter border, connected outlined step markers with consistent vertical gaps, and a subtle divider above Start a session. Session collection, saving dependencies and active-session controls remain unchanged.
 
@@ -538,7 +540,7 @@ Settings > Menu keeps language/text/start-note controls first, screenshot captur
 
 The approved Violet palette, Segoe UI family and 30/36-unit control roles remain the baseline. Page headings identify the task; card headings identify the affected area; row descriptions explain the result rather than repeating default values already available through reset controls.
 
-- Lighting > Overview retains the three presets and Custom; Undo appears only after a choice that can actually be undone.
+- Lighting > Overview retains the three presets and Custom; they change only Lighting-page lamp intensities, and Undo appears only after a choice that can actually be undone. Water & Snow settings are independent.
 - Ground separates its three behavior switches (and infrequent dusk Updates) from the four intensity sliders. Objects separates outdoor objects, connected pieces and indoor objects, with Armchair, Fence and Lightbulb icons. Existing disabled dependencies and reload/experimental badges remain attached to their controls.
 - Stories keeps the ground/outdoor/indoor sharing controls visible; seam handling and all-floor detail live in Floor detail. Buildings retains its wall/roof groups and separate room ambience card. Water/Snow retain their small, distinct cards. Brightness copy is shorter in all four languages.
 - Color keeps basic tint and vibrance immediately visible. Film tones and the six-channel Color mixer are independently expandable, preserving live drag and save-on-release behavior. Search traverses collapsed content through the shared advanced widget.
