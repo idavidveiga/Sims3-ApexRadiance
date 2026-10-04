@@ -990,7 +990,7 @@ APEX_REGISTER_FEATURE(RoomLightQueuePatch,
                                       "Credits: @loinyx",
                        .category = "Performance",
                        .experimental = true,
-                       .enabledByDefault = true,
+                       .enabledByDefault = false,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The game relights rooms one at a time for the whole world, one per frame at most: the priority of each room (CALL 0x6A81DF "
                                             "-> 0x69E770) is raised for the priority lot on and below the camera's story; a finished class-0 solve steps straight to "
