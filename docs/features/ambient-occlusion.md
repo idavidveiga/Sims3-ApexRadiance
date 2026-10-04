@@ -1,6 +1,6 @@
 # Ambient Occlusion
 
-> Local development, not released: Sim Occlusion card, independent hair strength and Distance controls. Native D3D9 shader and synthetic rendering checks passed; gameplay coverage and cost remain unverified. Published 2.5.6 does not include these controls.
+> Local development, not released: Sim Occlusion card, independent hair strength and Distance controls. Native D3D9 and DXVK shader/replay checks passed, and the user confirmed the reported Sim scenario in game. The Sim card no longer carries an Experimental badge. Broader gameplay coverage and replay cost remain unverified. Published 2.5.6 does not include these controls.
 
 > Soft shade where things meet (under furniture, in corners, where walls meet the floor, around houses and trees),
 > computed from the scene depth right after the game finishes the 3D scene and before bloom and the UI. GTAO at full
@@ -30,7 +30,7 @@ six saved frames of the game (depth dumps `Documents\...\S3SS\Profundidade\profu
 | (card switch) | `enabled` | bool | true | | main effect; enabled by default for new configurations |
 | Strength | `forca` | float | 1.68 | 0 - 2 | 168%; multiplies contact and large strengths; 0 = no AO passes |
 | Sim intensity (Sim Occlusion card) | `simStrength` | float | 0.47 | 0 - 1 | default 47%; 0 removes received AO on supported Sim pixels, 1 keeps original shading and skips mask work |
-| Sim Occlusion (card switch) | `simControls` | bool | false | | experimental and off by default; depends on Ambient Occlusion; off hides the card controls and releases receiver resources |
+| Sim Occlusion (card switch) | `simControls` | bool | false | | off by default; depends on Ambient Occlusion; off hides the card controls and releases receiver resources |
 | Hair intensity | `hairStrength` | float | 0.38 | 0 - 1 | exclusive SimHair shaders; default 38%, independent from body strength |
 | Maximum darkening | `simMaxShade` | float | 0.47 | 0 - 1 | default 47%; caps added visibility loss before multi-bounce/light protection; not final pixel luminance |
 | Advanced > Transparent hair | `transparentHair` | bool | true | | only recognized non-depth-writing source-alpha hair with standard additive blend equation |
@@ -51,7 +51,7 @@ The main controls stay in Image > Ambient Occlusion, directly below Strength; Qu
 
 The mask uses 916 exclusive material PS identifiers extracted from Steam shader-package TECH/PASS ownership: SimSkin, SimHair, SimEyes, SimEyelashes, SimpleSim and SimRobot. Shaders shared with non-Sim techniques are excluded. No skin-colour or generic skinning heuristic is used, and no game bytecode is shipped.
 
-The dedicated **Sim Occlusion** card follows the scene AO card and uses Lucide's User Round icon, distinct from the scene AO card's Contrast icon. Its Experimental badge sits beside the card switch. The scene AO feature starts enabled for new configurations, using Strength 168%, Distance 351 m, High quality, Reach 130% and Keep lamp light 38%. The Sim card itself starts off; when the user enables it, Sim intensity and maximum darkening start at 47%, hair intensity at 38%, and transparent hair is on. Turning the Sim switch off hides its controls and releases receiver resources. Page and card reset buttons were removed at the user's request; individual control defaults and Settings' global reset remain.
+The dedicated **Sim Occlusion** card follows the scene AO card and uses Lucide's User Round icon, distinct from the scene AO card's Contrast icon. It uses the standard card header and switch without an Experimental badge. The scene AO feature starts enabled for new configurations, using Strength 168%, Distance 351 m, High quality, Reach 130% and Keep lamp light 38%. The Sim card itself starts off; when the user enables it, Sim intensity and maximum darkening start at 47%, hair intensity at 38%, and transparent hair is on. Turning the Sim switch off hides its controls and releases receiver resources. Page and card reset buttons were removed at the user's request; individual control defaults and Settings' global reset remain.
 
 Hair is identified by 48 fingerprints owned exclusively by SimHair within the 916 exclusive Sim material fingerprints. Shared or custom shaders are not guessed from skin colour or animation. CC using these standard game materials participates without a filename list; this does not guarantee every CC hair is covered.
 

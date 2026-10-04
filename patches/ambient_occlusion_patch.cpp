@@ -1139,12 +1139,9 @@ void SimOcclusion::RenderUI(ApexPatch* patch) {
     bool changed = false;
     ImGui::PushID("SimOcclusion");
     if (ApexUi::BeginCard("##SimOcclusion")) {
-        ApexUi::HeaderExtra headerBadge;
-        headerBadge.badge = "Experimental";
-        headerBadge.badgeTooltip = "Still being tested: if anything looks wrong or the game crashes, turn it off";
         ImGui::BeginDisabled(!patch->IsEnabled());
         changed |= ApexUi::CardHeader(ApexUi::IconId::UserRound, "Sim Occlusion", "Softer shade on Sims and hair",
-                                     "Adjust occlusion on Sims separately from the scene", &g.p.simControls, true, &headerBadge);
+                                     "Adjust occlusion on Sims separately from the scene", &g.p.simControls);
         ImGui::EndDisabled();
         if (g.p.simControls || !patch->IsEnabled()) ApexUi::CardDivider();
         if (!patch->IsEnabled())
