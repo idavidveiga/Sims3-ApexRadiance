@@ -1,8 +1,11 @@
 #pragma once
 // Diagnostic for the native lot LOD visibility metric used by LotLodScoring.
-// Dedicated test builds can run at the stock Lot LOD dist. 70 or temporarily at 100.
+// Dedicated test builds can temporarily override the Lot LOD distance and, when explicitly requested,
+// WorldManager Max Active Lots. Each controlled write is guarded against the observed baseline,
+// maintained only while Apex still owns the value, and restored on a clean unload.
+//
 // The metric function is derived from the verified camera-bias JZ and accepted only if LotLodScoring
-// contains exactly one CALL to it. The 100 build restores the original value when unloaded cleanly.
+// contains exactly one CALL to it.
 
 #include <string>
 

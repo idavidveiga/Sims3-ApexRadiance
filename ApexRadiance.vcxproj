@@ -57,7 +57,8 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(ApexLotLodProbe)'=='true'">
     <ApexLotLodTestValue Condition="'$(ApexLotLodTestValue)'==''">70</ApexLotLodTestValue>
-    <ApexProbeDefines>APEX_LOT_LOD_DISTANCE_PROBE;APEX_LOT_LOD_TEST_VALUE=$(ApexLotLodTestValue)</ApexProbeDefines>
+    <ApexLotLodMaxActiveDefine Condition="'$(ApexLotLodTestMaxActive)'!=''">APEX_LOT_LOD_TEST_MAX_ACTIVE=$(ApexLotLodTestMaxActive);</ApexLotLodMaxActiveDefine>
+    <ApexProbeDefines>APEX_LOT_LOD_DISTANCE_PROBE;APEX_LOT_LOD_TEST_VALUE=$(ApexLotLodTestValue);$(ApexLotLodMaxActiveDefine)</ApexProbeDefines>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

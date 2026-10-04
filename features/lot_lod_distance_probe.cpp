@@ -18,6 +18,10 @@
 #define APEX_LOT_LOD_TEST_VALUE 70
 #endif
 
+#ifndef APEX_LOT_LOD_TEST_MAX_ACTIVE
+#define APEX_LOT_LOD_TEST_MAX_ACTIVE 0
+#endif
+
 namespace {
 
 using FnScoring = uint64_t(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t, uint32_t);
@@ -43,6 +47,11 @@ std::atomic<uint64_t> g_demotions{0};
 constexpr float kBaselineLodDist = 70.0f;
 constexpr float kTestLodDist = static_cast<float>(APEX_LOT_LOD_TEST_VALUE);
 constexpr bool kChangesLodDist = APEX_LOT_LOD_TEST_VALUE != 70;
+constexpr int kBaselineMaxActive = 8;
+constexpr int kTestMaxActive = static_cast<int>(APEX_LOT_LOD_TEST_MAX_ACTIVE);
+constexpr bool kChangesMaxActive = APEX_LOT_LOD_TEST_MAX_ACTIVE > 0;
+static_assert(APEX_LOT_LOD_TEST_MAX_ACTIVE >= 0 && APEX_LOT_LOD_TEST_MAX_ACTIVE <= 128,
+              "APEX_LOT_LOD_TEST_MAX_ACTIVE must be 0 (disabled) or 1..128");
 // Steam: metric 0x00C62D80, camera-bias JZ 0x00C63015. S3SS has the same JZ pattern on Retail/Steam/EA.
 // We only accept this relation when LotLodScoring also contains exactly one CALL to the derived function.
 constexpr uintptr_t kMetricToBiasJzDelta = 0x295;
@@ -55,6 +64,13 @@ void* g_overrideWorld = nullptr;
 float g_originalLodDist = 0.0f;
 bool g_originalLodValid = false;
 bool g_driftLogged = false;
+
+std::atomic<bool> g_maxActiveOverrideApplied{false};
+std::atomic<bool> g_maxActiveOverrideAbandoned{false};
+void* g_maxActiveOverrideWorld = nullptr;
+int g_originalMaxActive = 0;
+bool g_originalMaxActiveValid = false;
+bool g_maxActiveDriftLogged = false;
 
 std::mutex g_snapshotMtx;
 void* g_world = nullptr;
@@ -201,6 +217,24 @@ bool WriteExpectedLodDistance(void* world, float desired, float expected) {
     return MemPatch::WriteBytes(addr, desiredBytes, nullptr, &expectedBytes);
 }
 
+bool ReadMaxActive(void* world, int& value) {
+    if (!world) return false;
+    __try {
+        value = *reinterpret_cast<const int*>(static_cast<const uint8_t*>(world) + 0xE4);
+        return value >= 0 && value <= 128;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool WriteExpectedMaxActive(void* world, int desired, int expected) {
+    if (!world) return false;
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(world) + 0xE4;
+    const DWORD d = static_cast<DWORD>(desired);
+    const DWORD e = static_cast<DWORD>(expected);
+    return MemPatch::WriteDWORD(addr, d, nullptr, &e);
+}
+
 void TryApplyOrMaintainTestValue(void* world, float observed) {
     if (!world || g_overrideAbandoned.load(std::memory_order_acquire)) return;
 
@@ -258,6 +292,73 @@ void TryApplyOrMaintainTestValue(void* world, float observed) {
 
     g_overrideAbandoned.store(true, std::memory_order_release);
     LOG_WARNING(std::format("[LotLodMetricProbe] Another owner changed Lot LOD dist. to {:.3f}; Apex stopped maintaining the test", observed));
+}
+
+void TryApplyOrMaintainMaxActive(void* world, int observed) {
+    if constexpr (!kChangesMaxActive) return;
+    if (!world || g_maxActiveOverrideAbandoned.load(std::memory_order_acquire)) return;
+
+    if (!g_maxActiveOverrideApplied.load(std::memory_order_acquire)) {
+        if (observed != kBaselineMaxActive) {
+            g_maxActiveOverrideAbandoned.store(true, std::memory_order_release);
+            LOG_WARNING(std::format("[LotLodMetricProbe] Controlled Max Active Lots test NOT applied: initial value was {}, expected baseline {}",
+                                    observed, kBaselineMaxActive));
+            return;
+        }
+        if (!WriteExpectedMaxActive(world, kTestMaxActive, observed)) {
+            g_maxActiveOverrideAbandoned.store(true, std::memory_order_release);
+            LOG_WARNING("[LotLodMetricProbe] Controlled Max Active Lots test NOT applied: guarded write of WorldManager+0xE4 failed");
+            return;
+        }
+        g_maxActiveOverrideWorld = world;
+        g_originalMaxActive = observed;
+        g_originalMaxActiveValid = true;
+        g_maxActiveOverrideApplied.store(true, std::memory_order_release);
+        LOG_INFO(std::format("[LotLodMetricProbe] Controlled test applied: Max Active Lots {} -> {} at WorldManager+0xE4 ({:#010x})",
+                             observed, kTestMaxActive, reinterpret_cast<uintptr_t>(world) + 0xE4));
+        return;
+    }
+
+    if (world != g_maxActiveOverrideWorld) {
+        g_maxActiveOverrideAbandoned.store(true, std::memory_order_release);
+        LOG_WARNING("[LotLodMetricProbe] WorldManager changed while the Max Active Lots test was active; Apex stopped maintaining it");
+        return;
+    }
+    if (observed == kTestMaxActive) return;
+
+    if (observed == g_originalMaxActive) {
+        if (WriteExpectedMaxActive(world, kTestMaxActive, observed)) {
+            if (!g_maxActiveDriftLogged) {
+                LOG_INFO(std::format("[LotLodMetricProbe] Max Active Lots drifted {} -> {}; maintained at test value",
+                                     observed, kTestMaxActive));
+                g_maxActiveDriftLogged = true;
+            }
+            return;
+        }
+    }
+
+    g_maxActiveOverrideAbandoned.store(true, std::memory_order_release);
+    LOG_WARNING(std::format("[LotLodMetricProbe] Another owner changed Max Active Lots to {}; Apex stopped maintaining the test", observed));
+}
+
+void RestoreMaxActiveIfOwned() {
+    if constexpr (!kChangesMaxActive) return;
+    if (!g_maxActiveOverrideApplied.load(std::memory_order_acquire) || !g_originalMaxActiveValid || !g_maxActiveOverrideWorld) return;
+
+    int current = 0;
+    if (!ReadMaxActive(g_maxActiveOverrideWorld, current)) {
+        LOG_WARNING("[LotLodMetricProbe] Max Active Lots restore skipped: WorldManager+0xE4 is unreadable");
+        return;
+    }
+    if (current != kTestMaxActive) {
+        LOG_INFO(std::format("[LotLodMetricProbe] Max Active Lots restore skipped: current value is {}, so Apex no longer owns it", current));
+        return;
+    }
+    if (WriteExpectedMaxActive(g_maxActiveOverrideWorld, g_originalMaxActive, current)) {
+        LOG_INFO(std::format("[LotLodMetricProbe] Restored Max Active Lots {} -> {}", current, g_originalMaxActive));
+    } else {
+        LOG_WARNING("[LotLodMetricProbe] Max Active Lots restore failed; WorldManager+0xE4 was left unchanged");
+    }
 }
 
 void RestoreTestValueIfOwned() {
@@ -382,6 +483,7 @@ uint64_t __fastcall HookScoring(void* self, void* edx, uint32_t dt, uint32_t cam
 
     if (haveSettings) {
         TryApplyOrMaintainTestValue(self, lod);
+        TryApplyOrMaintainMaxActive(self, maxActive);
         haveSettings = ReadWorldSnapshot(self, lod, bias, maxActive, terrain, cameraThreshold) &&
                        PlausibleWorldSettings(lod, bias, maxActive, terrain, cameraThreshold);
     }
@@ -571,6 +673,12 @@ bool Start(std::string* error) {
     g_originalLodDist = 0.0f;
     g_originalLodValid = false;
     g_driftLogged = false;
+    g_maxActiveOverrideApplied.store(false, std::memory_order_relaxed);
+    g_maxActiveOverrideAbandoned.store(false, std::memory_order_relaxed);
+    g_maxActiveOverrideWorld = nullptr;
+    g_originalMaxActive = 0;
+    g_originalMaxActiveValid = false;
+    g_maxActiveDriftLogged = false;
     g_running.store(true, std::memory_order_release);
 
     if constexpr (kChangesLodDist) {
@@ -580,12 +688,17 @@ bool Start(std::string* error) {
         LOG_INFO(std::format("[LotLodMetricProbe] ACTIVE on {}: scoring={:#010x}, metric={:#010x}, detailRequest={:#010x}; READ-ONLY Lot LOD dist. baseline {:.3f}",
                              GetGameVersionName(), g_scoringAddr, g_metricAddr, g_detailAddr, kBaselineLodDist));
     }
+    if constexpr (kChangesMaxActive) {
+        LOG_INFO(std::format("[LotLodMetricProbe] Controlled Max Active Lots test configured: {} -> {} at WorldManager+0xE4",
+                             kBaselineMaxActive, kTestMaxActive));
+    }
     return true;
 }
 
 void Stop() {
     if (!g_running.exchange(false, std::memory_order_acq_rel)) return;
 
+    RestoreMaxActiveIfOwned();
     RestoreTestValueIfOwned();
 
     if (g_origScoring && g_origDetail && g_origMetric) {
@@ -602,10 +715,11 @@ void Stop() {
         }
     }
 
-    LOG_INFO(std::format("[LotLodMetricProbe] Stopped: {} scoring calls, {} metric calls ({} lot-identified), {} Detailed View ON, {} OFF; Lot LOD test value {:.3f}",
+    LOG_INFO(std::format("[LotLodMetricProbe] Stopped: {} scoring calls, {} metric calls ({} lot-identified), {} Detailed View ON, {} OFF; Lot LOD test value {:.3f}; Max Active Lots test {}",
                          g_scoringCalls.load(std::memory_order_relaxed), g_metricCalls.load(std::memory_order_relaxed),
                          g_metricIdentified.load(std::memory_order_relaxed), g_promotions.load(std::memory_order_relaxed),
-                         g_demotions.load(std::memory_order_relaxed), kTestLodDist));
+                         g_demotions.load(std::memory_order_relaxed), kTestLodDist,
+                         kChangesMaxActive ? std::to_string(kTestMaxActive) : std::string("disabled")));
     g_origScoring = nullptr;
     g_origDetail = nullptr;
     g_origMetric = nullptr;
