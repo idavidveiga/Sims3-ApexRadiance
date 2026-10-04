@@ -142,6 +142,42 @@ int LampScaleAfter(const std::vector<DWORD>& t, const std::vector<Ins>& ins, siz
 
 namespace ShaderPatches {
 
+int BloomThresholdConst(const std::vector<DWORD>& t) {
+    if (t.empty() || (t[0] & 0xFFFF0000u) != 0xFFFF0000u) return -1;
+    const auto ins = Parse(t);
+    if (ins.empty()) return -1;
+
+    int threshold = -1, matches = 0, alphaWrites = 0;
+    for (const Ins& x : ins) {
+        if (x.op == kDcl || x.op == kDef || x.op == kDefI || x.op == kDefB || x.len < 1) continue;
+        const DWORD dst = t[x.at + 1];
+        if (!IsReg(dst, kColorOut, 0) || !(WMask(dst) & 0x8)) continue;
+        alphaWrites++;
+
+        // Captured TS3 bloom tail: add_sat oC0.w, rL.w, -cK.x
+        if (x.op != kAdd || x.len != 3 || WMask(dst) != 0x8 || !(dst & 0x00100000u)) continue;
+        const DWORD a = t[x.at + 2], b = t[x.at + 3];
+        if (Type(a) != kTemp || Swz(a) != kSwzW || (a & 0x0F002000u)) continue;
+        if (Type(b) != kConst || Swz(b) != kSwzX || (b & 0x2000u) || (b & 0x0F000000u) != 0x01000000u) continue;
+        threshold = static_cast<int>(Num(b));
+        matches++;
+    }
+    if (alphaWrites != 1 || matches != 1 || threshold < 0) return -1;
+
+    int uses = 0;
+    for (const Ins& x : ins) {
+        if (x.op == kDef && IsReg(t[x.at + 1], kConst, static_cast<DWORD>(threshold))) return -1;
+        if (x.op == kDcl || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; k++) {
+            const DWORD r = t[x.at + k];
+            if (!(r & 0x80000000u) || Type(r) != kConst) continue;
+            if (r & 0x2000u) return -1;
+            if (Num(r) == static_cast<DWORD>(threshold)) uses++;
+        }
+    }
+    return uses == 1 ? threshold : -1;
+}
+
 bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst) {
     if (t.empty() || t[0] != 0xFFFE0300) return false;
     const auto ins = Parse(t);
