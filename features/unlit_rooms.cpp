@@ -30,6 +30,7 @@
 #include "level_light_share.h"
 #include "object_light_bridge.h"
 #include "room_ambient_policy.h"
+#include "s3ss_detect.h"
 #include <windows.h>
 #include <cmath>
 #include <cstring>
@@ -49,6 +50,8 @@ Vec4 g_fill;                    // Apex's fill light colour
 volatile BYTE g_fillGate = 1;   // Apex's gate byte
 Vec4 g_base[2];                 // the game's unlit-room colours (read through the original pointers)
 bool g_baseDefault[2] = {};     // the default was used (the game's vector was all zero or unreadable)
+bool g_compatChecked = false;
+S3SSDetect::RoomAmbientCorrection g_compat;
 constexpr float kDefaultColour[4] = {0.15f, 0.15f, 0.30f, 0.0f};
 constexpr float kGameFill[4] = {0.8f, 0.8f, 1.0f, 0.8f}; // FUN_006b7e70: (0x00F9D514, 0x00F9D514, 1.0, 0x00F9D514)
 
@@ -160,6 +163,7 @@ struct BaseRec {
     float ce[4];     // the colour added (C, scaled)
     float res[2][4]; // what was written: [0] the +0x110 result, [1] the +0x120 one
     bool has[2];
+    bool discardOnQueue = false; // retire this base only after its replacement solve was accepted
 };
 std::mutex g_baseMx;
 std::unordered_map<uintptr_t, BaseRec> g_baseRooms; // by room address
@@ -217,6 +221,7 @@ void NoteBase(BYTE* room, const float* r, int slot, const float* ce, int which) 
     std::memcpy(rec.ce, ce, sizeof rec.ce);
     std::memcpy(rec.res[which], r, sizeof rec.res[which]);
     rec.has[which] = true;
+    rec.discardOnQueue = false; // a fresh native result must survive an older queue acknowledgement
 }
 template <int Which> float* __fastcall BaseHook(BYTE* room, void*, float* out, const float* lamp, int pow) {
     float* r = reinterpret_cast<TopUp_t>(g_topUp)(room, out, lamp, pow);
@@ -344,7 +349,8 @@ bool RetintUnlit(unsigned char* room, int& state, int slot) {
         }
         for (int i = 0; i < 2; i++) {
             const int to = slot >= 0 ? slot : i; // the room's own family (lot test); without it, the list that matched
-            if (Same(amb, g_target[to].v)) return true; // already the new colour
+            // Same's loose tolerance identifies owned colours; it must not swallow small slider steps.
+            if (Same(amb, g_target[to].v) && Near(amb, g_target[to].v, 1e-7f)) return true;
             for (const Vec4& k : g_known[i])
                 if (Same(amb, k.v)) { // a colour Apex or the game set (either family: a room taken into the wrong one comes back)
                     const bool second = Same(amb2, k.v);
@@ -394,7 +400,7 @@ bool VisitRoom(unsigned char* room, void* p) {
             if (r == 1) ctx.moved++;
             if (r == 2) {
                 const bool send = RequestRetintSolve(room, ctx.rest);
-                if (send) g_baseRooms.erase(it);
+                it->second.discardOnQueue = send;
                 return send;
             }
             if (r == 3) g_baseRooms.erase(it);
@@ -405,8 +411,19 @@ bool VisitRoom(unsigned char* room, void* p) {
     return ctx.baseOn ? RequestRetintSolve(room, ctx.rest) : false;
 }
 void RetintQueueResult(unsigned char* room, bool queued, void*) {
+    const uintptr_t key = reinterpret_cast<uintptr_t>(room);
+    const auto sent = g_retintSent.find(key);
+    if (sent != g_retintSent.end()) {
+        std::lock_guard<std::mutex> lk(g_baseMx);
+        const auto base = g_baseRooms.find(key);
+        if (base != g_baseRooms.end() && base->second.discardOnQueue
+            && base->second.mgr == sent->second.mgr && base->second.id == sent->second.id) {
+            if (queued) g_baseRooms.erase(base);
+            else base->second.discardOnQueue = false;
+        }
+    }
     if (!queued) {
-        g_retintSent.erase(reinterpret_cast<uintptr_t>(room));
+        g_retintSent.erase(key);
         g_retryRetint = true;
     }
 }
@@ -426,11 +443,24 @@ bool Retint(bool rest) {
     return ctx.retinted != 0 || ctx.moved != 0 || sent != 0;
 }
 
+Vec4 ControlBase(int slot) {
+    Vec4 base = g_base[slot];
+    // S3SS may already have written the saved RGB before Apex starts. Correct only that exact
+    // value in the blue family while this feature is enabled; never write native game globals.
+    if (slot == 1 && g_compat.found) {
+        bool matches = true;
+        for (int k = 0; k < 3; ++k) matches &= std::fabs(base.v[k] - g_compat.rgb[k]) < 1e-6f;
+        if (matches) for (int k = 0; k < 3; ++k) base.v[k] = kDefaultColour[k];
+    }
+    return base;
+}
+
 void Compute() {
     for (int i = 0; i < 2; i++) {
-        const float grey = Luma(g_base[i].v);
-        for (int k = 0; k < 3; k++) g_colour[i].v[k] = g_light * (grey + g_blue * (g_base[i].v[k] - grey));
-        g_colour[i].v[3] = g_light * g_base[i].v[3];
+        const Vec4 base = ControlBase(i);
+        const float grey = Luma(base.v);
+        for (int k = 0; k < 3; k++) g_colour[i].v[k] = g_light * (grey + g_blue * (base.v[k] - grey));
+        g_colour[i].v[3] = g_light * base.v[3];
     }
     // The game's fill light stays as it is here: at draw time it is one of the rig's dim bluish slots, turned (night-gated)
     // with the others by FurnitureColour (review 30/09, M2: it was turned twice at night and dimmed by day)
@@ -546,6 +576,10 @@ void Uninstall() {
 
 void Set(bool on, float light, float blue) {
     if (!g_ready) return;
+    if (on && !g_compatChecked) {
+        g_compat = S3SSDetect::CorrectRoomAmbientOverride();
+        g_compatChecked = true;
+    }
     light = std::fmin(std::fmax(light, 0.0f), 1.0f);
     blue = std::fmin(std::fmax(blue, 0.0f), 1.0f);
     if (on == g_on && (!on || (std::fabs(light - g_light) < 1e-4f && std::fabs(blue - g_blue) < 1e-4f))) return;
@@ -564,14 +598,14 @@ void OnPresent() {
     const DWORD now = GetTickCount();
     // Floor/lot streaming can replace rooms without changing either slider.
     // Retry known colours, including rooms skipped while their solve was active.
-    if ((g_on || g_retryRetint) && static_cast<int32_t>(now - g_nextReconcile) >= 0) {
+    if ((g_on || g_retryRetint) && (!g_nextReconcile || static_cast<int32_t>(now - g_nextReconcile) >= 0)) {
         g_nextReconcile = now + 1000;
         const bool retry = g_retryRetint && !g_retintDue && now - g_changedAt > 400;
         g_retryRetint = false;
         if (Retint(retry)) ObjectLightBridge::RequestRigRefresh();
     }
     // The game may set its colours after Apex started (a world load): follow them
-    if (static_cast<int32_t>(now - g_nextBaseCheck) >= 0) {
+    if (!g_nextBaseCheck || static_cast<int32_t>(now - g_nextBaseCheck) >= 0) {
         g_nextBaseCheck = now + 2000;
         if (ReadBases()) {
             if (g_on) Compute();
@@ -636,10 +670,11 @@ float FurnitureTint() { return FurnitureActive() ? FurnitureTintNow() : 1.0f; }
 void FurnitureCubeColour(float* rgb) {
     rgb[0] = rgb[1] = rgb[2] = 1.0f;
     if (!FurnitureActive()) return;
-    const float grey = Luma(g_base[1].v);
+    const Vec4 base = ControlBase(1);
+    const float grey = Luma(base.v);
     if (!(grey > 1e-6f)) return;
     const float t = FurnitureTintNow();
-    for (int k = 0; k < 3; k++) rgb[k] = std::fmax(1.0f + t * (g_base[1].v[k] / grey - 1.0f), 0.0f);
+    for (int k = 0; k < 3; k++) rgb[k] = std::fmax(1.0f + t * (base.v[k] / grey - 1.0f), 0.0f);
 }
 void SetNightLevel(float level) { g_night = level; }
 void SetDrawDark(bool dark) { g_drawDark = dark; }

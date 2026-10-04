@@ -17,15 +17,14 @@ its `disableFillLights` removes the fill light on furniture. This card controls 
 | UI label (Lighting > Buildings > Rooms at Night) | TOML key | Type | Default | Range | Notes |
 |---|---|---|---|---|---|
 | Adjust the background light | `comodosEscurosSemLuz` | bool | `true` | - | Off: the code reads the game's colours again (the patches are removed). |
-| Brightness | `luzQueSobraNosComodos` | float | `0.35` | 0..1 | Share of the game's unlit-room colour, on walls, floors and furniture (its [NoLight] and fill rig lights and the ambient cube, x night level). 100% = the game. |
-| Blue tint | `azulNosComodos` | float | `0.2` | 0..1 | 0 = a grey of the same luminance, 1 = the game's blue. Since 30/09 the same on furniture (its [NoLight] and fill rig lights and the ambient cube, x night level), no longer scaled by "On furniture". |
+| Brightness | `luzQueSobraNosComodos` | float | `0.35` | 0.1..0.8 (10–80%) | Share of the game's unlit-room colour, on walls, floors and furniture (its [NoLight] and fill rig lights and the ambient cube, x night level). |
+| Blue tint | `azulNosComodos` | float | `0.0` | 0..1 | 0 = a grey of the same luminance, 1 = the game's blue. Since 30/09 the same on furniture (its [NoLight] and fill rig lights and the ambient cube, x night level), no longer scaled by "On furniture". |
 | (removed 30/09) | `efeitoNosMoveis` | | | | "On furniture", how far furniture followed the Brightness, was removed: furniture now follows Brightness and Blue tint exactly as the walls (see the last section). The key is ignored if still in a file; it had replaced `luzSuaveNosMoveis` earlier the same day. |
 
 Applied live: `UnlitRooms::Set` every frame; 0.6 s after the last change every room of every loaded lot lights again
 (`LevelLightShare::RelightAllRooms`) and the rigs in the world light cells gather again
 (`ObjectLightBridge::RequestRigRefresh`). Room-mode rigs (furniture inside) keep their fill until they gather again (a
-lamp of the room switched, the object moved, the lot loaded). Reset sets the defaults above. The defaults are a first
-guess, to be tuned in game.
+lamp of the room switched, the object moved, the lot loaded). Reset sets the defaults above. The defaults use 35% brightness and neutral (0%) blue tint; the slider bounds are 10–80% for brightness and 0–100% for blue.
 
 ## How it works (reverse engineering, TS3W.exe Steam 1.67.2)
 
@@ -296,3 +295,76 @@ Offline production-code harnesses pass the busy-to-idle transition, per-target d
 
 ### Release 2.5.3 state
 The release carries the test005 recovery path and subsequent performance changes retained in test007/test008. The user's gameplay feedback reported Rooms at Night working well in these tests; this is scenario-specific feedback, not exhaustive game-version coverage. The adjustment row no longer shows Experimental by explicit user request. Brightness, Blue tint, config keys and reset defaults are unchanged.
+
+### Reliability audit (2026-10-03)
+
+The player reported an intermittent response in 2.5.6, then confirmed that both controls worked after restarting with the
+new build. `unlit_rooms.cpp`, `room_ambient_policy.h`, `level_light_share.cpp` and `object_light_bridge.cpp` are identical
+between the published 2.5.5 and 2.5.6 tags. The audit does not establish which runtime event caused that earlier symptom.
+Three pre-existing updater weaknesses were reproduced offline and corrected:
+
+- A lit-room base used to be erased when its restoring solve was requested, before the room queue acknowledged it.
+  If queuing failed while the feature was disabled, the next pass no longer knew that this lit room needed restoration.
+  The base now survives rejection and is retired only on a successful acknowledgement of the same manager/id. A fresh
+  result captured by `NoteBase` cancels retirement, so an older acknowledgement cannot erase the new base.
+- The `2e-4` RGB tolerance for recognising owned colours also served as the already-at-target test. Small accepted
+  slider steps, particularly with the first lot family's grey `.01` base, could therefore be skipped. The early exit now
+  also requires a tight target comparison; the conservative ownership tolerance and native-solve fallback are retained.
+- An unset periodic deadline (`0`) was compared as an ordinary tick deadline. Above the signed tick range (about
+  24.9 days of Windows uptime), world-reset reconciliation and late-base reads could fail to start. Unset deadlines are
+  now explicitly immediately eligible; real deadlines still use wrap-safe signed comparisons.
+
+The maintained harness in `tools/room_ambient_test/unlit_rooms_recovery_test.cpp` includes the actual production updater,
+with controlled x86 room buffers, time, native queue outcomes, group service responses and patch-write fixtures. It
+reproduced the rejected restoration, small-step and high-uptime failures before their corresponding fixes. After the
+fixes, 1,269 checks pass, plus 89 existing policy checks (1,358 total, zero failures). Coverage includes native top-up
+fixtures, both lot families and ambient samples, 0%-100% slider sweeps, busy-to-idle recovery, history eviction, repeated
+targets, identity reuse, world resets, late game-base initialisation, partial patch rollback, disabled recovery, clock
+wrap, daylight/night/dark-room furniture factors, neutral and blue cube colour, and preservation of actual lamp RGB.
+An unchanged reconciliation also verifies that it does not request another object-rig refresh.
+
+The connected-group tests cover delegation to the group updater; they do not execute the native group's solves or GPU
+draws. Binary hooks, actual lot enumeration, material response, other mods and DXVK still require a running-game test.
+No shader, lighting formula, default, setting key or saved-profile layout changed. Test instructions and the reproducible
+runner are documented in `tools/room_ambient_test/README.md`. Offline checks and a successful build do not guarantee
+every possible runtime state.
+
+### Inherited dark grey base (2026-10-03, running-game inspection)
+
+The installed recovery binary was verified against its build SHA-256. Only one Apex ASI was loaded alongside the
+official Sims3SettingsSetter. With Brightness and Blue tint both saved at 1.0, read-only inspection confirmed:
+
+| Colour | Original RGB | RGB through Apex's patched reader |
+| --- | --- | --- |
+| First family (`0x011D0B60`) | .01, .01, .01 | .01, .01, .01 |
+| Second family (`0x011D0B40`) | .01, .01, .01 | .01, .01, .01 |
+
+S3SS's separate `[settings.'BradyBunchBlue RGB']` saves that same grey (.01, .01, .01). This saved debug setting is
+independent of `[patches.BradyBunchBegone].enabled`: S3SS applies saved settings when registered, and its Vector3 setter
+writes their three RGB components. Disabling BBB therefore does not necessarily restore the game's blue ambient.
+Apex currently inherits the original pointers' colour rather than overriding another mod's saved RGB. At 100% it
+passes this inherited colour unchanged; Blue tint interpolates between that colour and its own luminance grey, which
+is identical when all RGB components are equal. The standard second-family (.15, .15, .30) has luma .16083, about
+16.083 times the inherited grey's .01. This is an ambient-component comparison, not a total screen-brightness ratio.
+
+The maintained reference test reproduces the live RGB and fourth components, verifies scaling exactly once, and then
+restores the standard second-family blue without promoting the legitimately grey first family. It passes 63 checks
+against both v2.5.5 production source and the current source, with identical numerical brightness responses. The full
+current suite now passes 1,332 updater checks plus 89 policy checks (1,421 total). The current compatibility behaviour
+explains why the slider cannot brighten past the externally darkened baseline or visibly restore blue in that session;
+it does not imply that every prior intermittent report has the same cause. No new brightness formula or external
+configuration change was made during this inspection.
+
+After the player explicitly requested disabling this S3SS adjustment, only the saved `BradyBunchBlue RGB` table was
+removed from the local S3SS TOML. `BradyBunchBegone` remains disabled and every other parsed setting was verified
+unchanged; the original config was backed up in folder `336-disable-s3ss-ambient-rgb`. No live memory was changed.
+The running session retains the already-applied RGB until restart. Confirmation that native blue is restored on the
+next startup and visibly follows the controls is pending. This local fix does not change Apex's compatibility policy.
+
+## Room controls and automatic S3SS compatibility (2026-10-03)
+
+Brightness now has a player-facing range of 10-80%, with the existing 35% default. Registered settings and the menu share those bounds; legacy config/profile values are clamped on load without renaming their keys. Blue tint defaults and resets to 0%; explicit saved values remain valid.
+
+On the first enable in each process, official S3SS presence triggers a narrowly scoped correction: remove the saved `settings.BradyBunchBlue RGB` section after creating a content-specific backup in the Apex Radiance folder. Invalid or unsupported RGB values are left untouched. Other TOML values and patch switches are preserved; ordinary standalone sections retain comments and layout. Alternate TOML layouts use semantic formatting. A concurrent config change observed before writing aborts the write.
+
+If S3SS already applied that RGB, Apex uses the original blue baseline (0.15, 0.15, 0.30) only for the second room family when its current RGB exactly matches the removed override. Native globals, alpha, and the legitimate first grey family are preserved. Walls and furniture use the same effective baseline. Disabling the feature restores the actual native baseline; the disk correction takes full effect after restarting the game. The compatibility scan runs once per process, avoiding per-frame file I/O. S3SS saving another override later in the same process is cleaned on the next launch.

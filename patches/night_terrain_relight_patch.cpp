@@ -175,7 +175,7 @@ bool g_wallAlign = true;         // walls lit where their light is drawn: no ste
 bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
 bool g_unlitOn = true;           // rooms with every lamp off: Apex's light instead of the game's blue glow (UnlitRooms)
 float g_unlitLight = 0.35f;      // how much of the game's unlit-room light stays
-float g_unlitBlue = 0.2f;        // how much of its blue tint (0 = grey)
+float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 1.0f;
@@ -1608,9 +1608,9 @@ class NightTerrainRelightPatch : public ApexPatch {
             S3SS_TR("Forca da luz das lampadas nos telhados.", "How strongly lamps light roofs."));
         RegisterBoolSetting(&g_unlitOn, "comodosEscurosSemLuz", true,
             "Rooms with every lamp off keep only a little light (set below) instead of the game's blue glow.");
-        RegisterFloatSetting(&g_unlitLight, "luzQueSobraNosComodos", SettingWidget::Slider, 0.35f, 0.0f, 1.0f,
-            "How much of the game's light stays in a room with every lamp off, on walls, floors and furniture (1 = the game).");
-        RegisterFloatSetting(&g_unlitBlue, "azulNosComodos", SettingWidget::Slider, 0.2f, 0.0f, 1.0f,
+        RegisterFloatSetting(&g_unlitLight, "luzQueSobraNosComodos", SettingWidget::Slider, 0.35f, 0.1f, 0.8f,
+            "How much of the game's light stays in a room with every lamp off, on walls, floors and furniture.");
+        RegisterFloatSetting(&g_unlitBlue, "azulNosComodos", SettingWidget::Slider, 0.0f, 0.0f, 1.0f,
             "How blue the light left in rooms is, on walls, floors and furniture (1 = the game's blue, 0 = grey).");
         RegisterBoolSetting(&g_waterFilter, "waterSpecularFilter", true, "Stabilize lamp sparkles on water");
         RegisterBoolSetting(&g_waterColorCompression, "waterPreserveLampColors", true, "Preserve bright lamp colors on water");
@@ -2046,7 +2046,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_allFloors = true;
         g_unlitOn = true;
         g_unlitLight = 0.35f;
-        g_unlitBlue = 0.2f;
+        g_unlitBlue = 0.0f;
         g_smoothMaps = true;
         g_smoothMapsGpu = true;
         g_softLotEdges = true;
@@ -2352,11 +2352,22 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Adjust the background light", &g_unlitOn, "Set the ambient glow indoors, with lamps on or off", true);
                 if (g_unlitOn) {
-                    changed |= ApexUi::SliderPercent("Brightness##Unlit", &g_unlitLight, 0.0f, 1.0f, "How bright that background light is, on walls and furniture; 100% is the game", 0.35f);
-                    changed |= ApexUi::SliderPercent("Blue tint##Unlit", &g_unlitBlue, 0.0f, 1.0f, "0% is neutral grey, 100% is the game's blue, on walls and furniture", 0.2f);
+                    changed |= ApexUi::SliderPercent("Brightness##Unlit", &g_unlitLight, 0.1f, 0.8f, "How bright that background light is, on walls and furniture", 0.35f);
+                    changed |= ApexUi::SliderPercent("Blue tint##Unlit", &g_unlitBlue, 0.0f, 1.0f, "0% is neutral grey, 100% is the game's blue, on walls and furniture", 0.0f);
                 }
                 return changed;
             });
+            ApexUi::Gap(ApexUi::kSpace2);
+            if (ApexUi::BeginCard("##S3SSCompatibility")) {
+                ApexUi::CardHeader(ApexUi::IconId::Puzzle, "Sims3SettingsSetter compatibility",
+                    "When this feature is on, Apex backs up and removes a conflicting S3SS room-light override", nullptr, nullptr);
+                ApexUi::CardDivider();
+                if (ApexUi::BeginAdvanced("##S3SSCompatibilityDetails", "What changes")) {
+                    ApexUi::MutedText("Only the saved room-light color is removed. Other S3SS settings and switches stay as they are. The backup is saved in the Apex Radiance folder. Apex corrects the current session immediately; the saved S3SS change takes effect the next time the game starts.");
+                    ApexUi::EndAdvanced();
+                }
+            }
+            ApexUi::EndCard();
             // 30/09 (user: "a button to recalculate these lights when they bug"): the "Refresh the lighting" shortcut as a button
             const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Refresh));
             const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -2394,11 +2405,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         using ApexUi::IconId;
         ImGui::PushID("NightSnow");
         if (ApexUi::BeginCard("##Card")) {
-            ApexUi::CardHeader(IconId::Snowflake, "Snow", "Sidewalks in winter", nullptr, nullptr);
+            ApexUi::CardHeader(IconId::Snowflake, "Snow", "Footsteps reveal the sidewalk beneath the snow", nullptr, nullptr);
             ApexUi::CardDivider();
             Edit([] {
                 ImGui::BeginDisabled(!g_bridge);
-                bool changed = ApexUi::SliderPercent("Walked-on sidewalks", &g_sidewalkClear, 0.0f, 1.0f, "How much sidewalk shows through the snow; 0% is the game's look", 0.5f);
+                bool changed = ApexUi::SliderPercent("Sidewalk visibility", &g_sidewalkClear, 0.0f, 1.0f,
+                    "How much sidewalk shows where Sims have walked; 0% keeps the game's original look", 0.5f);
                 ImGui::EndDisabled();
                 if (!g_bridge) {
                     ApexUi::IconNote(IconId::Info, "Needs \"Street lamps light lots\" (Lighting page, Ground tab)");

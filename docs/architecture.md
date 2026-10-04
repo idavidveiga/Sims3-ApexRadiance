@@ -1161,7 +1161,7 @@ With the performance patches gone, the guard mainly protects Night Lighting's ga
   - `apex_radiance_imgui.ini`;
   - dev outputs: `ApexRadiance_Hitches.txt`, `ApexRadiance_FrameCapture.txt`, `ApexRadiance_LightDiag.txt`,
     `ApexRadiance_LightProbe.txt`, `LightProbe\`, `ApexRadiance_Censo.txt`, `Censo\`, `ShadersRecusados\`.
-  - It never writes `S3SS.toml`, `S3SS_LOG.txt` or anything in the previous standalone's `...\S3SS\Apex\` folder.
+  - It only writes `S3SS.toml` for the backed-up room-ambient RGB correction; it never writes `S3SS_LOG.txt` or anything in the previous standalone's `...\S3SS\Apex\` folder.
 - **Schema:** the table names are kept, so settings carry over:
   - `[qol.picture]`; `[qol.frame_profiler]` (dev);
   - `[patches.<Name>]` for NightTerrainRelight, EdgeSmoothing, DepthBlur, FrameCapture (dev) and LotMapProbe (dev);
@@ -1310,3 +1310,5 @@ The local overlay revision (`framework/overlay_clock.h`, `framework/overlay.cpp`
 The approved stage-based presentation adds no hooks, timers, threads or persisted setting keys. `ReportStages` reflects recording, pending receipt, description editing and successful completion; it is not navigation. `ReportCaptureTools` draws only while recording and shares the recording card. Start and comparison no longer hide the overlay; Return to game and point aiming do so explicitly. Point return behavior remains owned by the existing probe completion path. Library contents and sharing guidance are inline cards; only removal uses a confirmation dialog. Receipt notes are cached from reading/editing and contents are enumerated on first expansion, with separate cache identity from library details. Restoring comparison remains available after capture controls disappear.
 
 Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [features/edge-smoothing.md](features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
+
+Compatibility exception: with Rooms at Night enabled, Apex backs up S3SS.toml in the Apex Radiance folder and removes only the saved `settings.BradyBunchBlue RGB` override. All other settings and patch switches are preserved.

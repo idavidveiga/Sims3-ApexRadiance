@@ -6,10 +6,11 @@
 //  - the old combined build: the same two plus the old "Apex Edition" product name;
 //  - the previous standalone build: the old product name alone (or its file name S3SSApex.asi).
 // The needles are kept encoded in this binary so that Apex itself (or a second copy of it) never matches them.
-// Also: the per-process instance mutexes, and S3SS's settings read from S3SS.toml (read-only, never written).
+// Also: the per-process instance mutexes, and S3SS's settings read from S3SS.toml (read-only except the backed-up room-ambient correction).
 #include <windows.h>
 #include <cstdint>
 #include <string>
+#include <array>
 
 namespace S3SSDetect {
 
@@ -44,6 +45,9 @@ Instance AcquireInstanceMutex();
 // S3SS.toml (read-only): [patches.<name>].enabled and overlay configuration.
 bool S3SSPatchEnabled(const char* patchName);
 bool S3SSOverlayDisabled();
+// Narrow compatibility exception: back up and remove the saved room-ambient RGB override.
+struct RoomAmbientCorrection { bool found = false; bool saved = false; std::array<float, 3> rgb{}; };
+RoomAmbientCorrection CorrectRoomAmbientOverride();
 // S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
 // elsewhere: game_addresses.h) no longer holds its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.
 // Call it before Apex writes its own patch there (the byte test cannot tell the two apart).

@@ -50,7 +50,7 @@ Other winter items, documented elsewhere: snowy roads and sidewalk trodden snow 
 | Smooth light on the ground | `mapaDeLuzSuavizado` | bool | true | | all atlas readers |
 | Fences, railings and stairs get the ground light | `cercasComLuzDoChao` | bool | true | | snow on fence tops (class 8) and stair tops (class 9) |
 | Fence light strength | `forcaNasCercas` | float | 1.0 | 0.25..2 | strength of the atlas term on class 8 / 9 snow |
-| Trodden snow on sidewalks | `calcadaComNevePisada` | float | 0.5 | 0..1 | snowy sidewalks ([roads.md](roads.md)) |
+| Sidewalk visibility | `calcadaComNevePisada` | float | 0.5 | 0..1 | how much sidewalk shows where Sims have walked ([roads.md](roads.md)) |
 
 The lot snow pass and snow on floors have no strength slider: the atlas enters at the game's own lamp scale.
 
