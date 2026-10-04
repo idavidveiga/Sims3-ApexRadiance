@@ -475,6 +475,9 @@ bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
 // released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
 // copy (review 25/09).
 std::vector<IUnknown*> g_pinned;
+// Exact day-only cinema/theatre marquee shader captured with F7 on the lit sign. Keep it as an orthogonal tag rather
+// than a PsClass so its normal WorldCandidate/object classification and all existing dispatch behaviour stay intact.
+std::unordered_set<IDirect3DPixelShader9*> g_cinemaMarqueeDayPs;
 
 PsClass Classify(IDirect3DPixelShader9* ps) {
     if (!ps) return PsClass::Other;
@@ -486,6 +489,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         std::vector<BYTE> code(size);
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            if (IsShader(kCinemaMarqueeDayPs, code.data(), size)) g_cinemaMarqueeDayPs.insert(ps);
             if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
             else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
                 c = PsClass::WorldMultiLight;
@@ -588,6 +592,7 @@ bool g_curVsIsObject = false;
 // so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
 struct VsInfo {
     bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool cinemaMarqueeDay = false; // exact EA 1.69 cinema/theatre marquee VS paired with kCinemaMarqueeDayPs
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -617,6 +622,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
         if (SUCCEEDED(vs->GetFunction(code.data(), &size))) {
             auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
             info.worldMultiLight = is(kWorldMultiLightVs);
+            info.cinemaMarqueeDay = is(kCinemaMarqueeDayVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -2181,6 +2187,32 @@ template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw)
     return true;
 }
 
+// Full-day bloom guard for the base-game cinema/theatre marquee. F7 at pixel (1871,491), EA 1.69, captured
+// VS BFFCCC56/1060 + PS D5ED0EF3/864. The PS writes bloom as saturate(luminance - c4.x); c4 is read nowhere else in
+// that exact bytecode, and the capture had c4.x = 1.3. At night the object selects different, lamp-enabled pixel
+// shaders, so only this confirmed full-day pair is touched. RGB, depth, stencil and every night draw stay vanilla.
+std::atomic<int> g_cinemaDayBloomSuppressed{0};
+template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9* dev, DrawFn draw) {
+    if (g_night.load(std::memory_order_relaxed) > 0.01f) return false;
+    if (!g_curVsInfo || !g_curVsInfo->cinemaMarqueeDay || !g_cinemaMarqueeDayPs.count(g_curPs)) return false;
+    if (RigTracker::CurrentMode() != 2) return false;
+
+    float old[4] = {};
+    if (FAILED(dev->GetPixelShaderConstantF(4, old, 1))) return false;
+    // The captured material uses the normal TS3 bloom threshold range. Refuse if another build reuses the bytecode in
+    // an unexpected state instead of blindly changing a register.
+    if (!(old[0] >= 0.5f && old[0] <= 5.0f)) return false;
+
+    float noBloom[4] = {1000.0f, old[1], old[2], old[3]};
+    g_inOwnCall = true;
+    SetPsConst(dev, 4, noBloom, 1);
+    draw();
+    SetPsConst(dev, 4, old, 1);
+    g_inOwnCall = false;
+    g_cinemaDayBloomSuppressed.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 template <typename DrawFn> bool DrawFloor(IDirect3DDevice9* dev, DrawFn draw) {
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
@@ -2481,6 +2513,7 @@ enum class ClaimSource : uint8_t {
     LakeLampFix,
     FoliageMoonShadowPS,
     ExteriorWallGain,
+    CinemaMarqueeDayBloomGuard,
     RoadLight,
     FloorLight,
     OutdoorFloorLight,
@@ -2507,6 +2540,7 @@ constexpr std::array<const char*, kClaimSourceCount> kClaimSourceNames = {
     "LakeLampFix",
     "FoliageMoonShadowPS",
     "ExteriorWallGain",
+    "CinemaMarqueeDayBloomGuard",
     "RoadLight",
     "FloorLight",
     "OutdoorFloorLight",
@@ -2546,6 +2580,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
     if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
+    if (DrawCinemaMarqueeDayBloomGuard(dev, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
     if (g_curVsIsRoad) return DrawRoad(dev, draw) ? NoteClaim(ClaimSource::RoadLight) : kContinue;
     if (g_curVsIsFloor) return DrawFloor(dev, draw) ? NoteClaim(ClaimSource::FloorLight) : kContinue;
     if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? NoteClaim(ClaimSource::OutdoorFloorLight) : kContinue;
@@ -3733,9 +3768,9 @@ std::string FurnitureDiag() {
 }
 
 std::string ObjectStatus() {
-    return std::format("moon shadow on objects: {} | draws fixed: {} | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
-                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(),
-                       g_nightFurnitureTinted.load());
+    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema marquee day bloom suppressed: {} | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
+                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(),
+                       g_nightFurniture.load(), g_nightFurnitureTinted.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -3796,6 +3831,7 @@ void Shutdown(bool keepChunkMaps) {
     g_roofFix = false;
     g_compileTried = false;
     g_classCache.clear();
+    g_cinemaMarqueeDayPs.clear();
     g_basisPs.clear();
     g_rigLookup.Clear();
     g_rigPsInfo.clear(); // shader addresses are reused after a restart of the feature (review M3)
