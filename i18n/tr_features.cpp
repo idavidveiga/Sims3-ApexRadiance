@@ -11,6 +11,46 @@ namespace {
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
     // ---- Performance feature descriptions (hover) ----
+    {"Keeps nearby lots eligible for full detail farther away and allows more of them to remain detailed at once. "
+     "Validated baseline: distance 300 and 16 detailed lots. Part of " APEX_PRODUCT_NAME ".",
+     "Mantém lotes próximos elegíveis para detalhe completo a uma distância maior e permite que mais deles permaneçam detalhados ao mesmo tempo. "
+     "Base validada: distância 300 e 16 lotes detalhados. Parte do " APEX_PRODUCT_NAME ".",
+     "Mantiene los solares cercanos elegibles para detalle completo a mayor distancia y permite que más de ellos permanezcan detallados al mismo tiempo. "
+     "Base validada: distancia 300 y 16 solares detallados. Parte de " APEX_PRODUCT_NAME ".",
+     "Garde les terrains proches éligibles au détail complet à plus grande distance et permet à davantage d'entre eux de rester détaillés en même temps. "
+     "Base validée : distance 300 et 16 terrains détaillés. Fait partie d'" APEX_PRODUCT_NAME "."},
+    {"Loads nearby lots into full detail gradually instead of letting several lot-detail transitions start together. Uses the game's own "
+     "native Lot LoD throttle and a 5.0 camera-speed threshold; no lot loader is replaced. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Carrega os lotes próximos em detalhe completo de forma gradual, em vez de deixar várias transições de detalhe começarem juntas. Usa o próprio "
+     "controle nativo de LoD dos lotes e um limite de velocidade da câmera de 5,0; nenhum carregador de lotes é substituído. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Carga gradualmente los solares cercanos con detalle completo, en vez de permitir que varias transiciones de detalle comiencen a la vez. Usa el "
+     "control LoD nativo de solares y un umbral de velocidad de cámara de 5,0; no reemplaza el cargador de solares. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Charge progressivement les terrains proches en détail complet au lieu de laisser plusieurs transitions de détail démarrer ensemble. Utilise la "
+     "limitation LoD native des terrains et un seuil de vitesse caméra de 5,0 ; aucun chargeur de terrain n'est remplacé. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"Pauses lot-detail streaming while the neighborhood map is open, then resumes it after the map closes. This avoids doing lot "
+     "streaming work during the map transition. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Pausa o streaming de detalhes dos lotes enquanto o mapa da vizinhança está aberto e retoma depois que ele fecha. Isso evita trabalho de "
+     "streaming de lotes durante a transição do mapa. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Pausa el streaming de detalle de solares mientras el mapa del barrio está abierto y lo reanuda al cerrarlo. Esto evita trabajo de "
+     "streaming de solares durante la transición del mapa. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Suspend le streaming détaillé des terrains pendant l'ouverture de la carte du quartier, puis le reprend à sa fermeture. Cela évite du "
+     "travail de streaming pendant la transition de la carte. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"Builds regular objects of a lot in small continuation windows instead of one large burst when the lot enters detailed view. "
+     "Building and apartment shells, large exterior geometry and flora stay synchronous. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Constrói os objetos comuns de um lote em pequenas etapas de continuação, em vez de uma carga grande quando o lote entra em detalhe. "
+     "Estruturas de prédios e apartamentos, geometria externa grande e vegetação continuam síncronas. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Construye los objetos normales de un solar en pequeñas etapas de continuación, en vez de una carga grande cuando el solar entra en detalle. "
+     "Las estructuras de edificios y apartamentos, la geometría exterior grande y la vegetación siguen siendo síncronas. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Construit les objets ordinaires d'un terrain par petites étapes de continuation au lieu d'un gros bloc lors du passage en vue détaillée. "
+     "Les structures de bâtiments et d'appartements, la grande géométrie extérieure et la végétation restent synchrones. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"Disables the camera-view distance bias in the lot visibility metric so lots do not load or unload purely because the viewing angle changes. "
+     "Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Desativa o viés de distância ligado ao ângulo da câmera na métrica de visibilidade dos lotes, para que eles não carreguem ou descarreguem apenas porque o ângulo mudou. "
+     "Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Desactiva el sesgo de distancia ligado al ángulo de la cámara en la métrica de visibilidad de los solares, para que no se carguen o descarguen solo porque cambió el ángulo. "
+     "Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Désactive le biais de distance lié à l'angle de caméra dans la métrique de visibilité des terrains, afin qu'ils ne se chargent ou déchargent pas uniquement parce que l'angle change. "
+     "Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Remembers which of the game's packages holds each file the game asks for, so it does not search every package again. Fewer small "
      "stutters when objects, textures and lots load. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
      "Memoriza qual pacote do jogo contém cada arquivo que o jogo pede, para não procurar em todos os pacotes de novo. Menos travadas "
