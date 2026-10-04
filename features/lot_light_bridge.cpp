@@ -494,7 +494,9 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
             const bool cinemaMain = IsShader(kCinemaMarqueeDayPs, code.data(), size);
-            const bool cinemaPanel = IsShader(kCinemaMarqueePanelDayPs, code.data(), size);
+            const bool cinemaPanelDay = IsShader(kCinemaMarqueePanelDayPs, code.data(), size);
+            const bool cinemaPanelNight = IsShader(kCinemaMarqueePanelNightPs, code.data(), size);
+            const bool cinemaPanel = cinemaPanelDay || cinemaPanelNight;
             if (cinemaMain || cinemaPanel) {
                 std::vector<DWORD> tokens(size / 4);
                 std::memcpy(tokens.data(), code.data(), size);
@@ -503,7 +505,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                     g_cinemaMarqueeDayPs[ps] = static_cast<DWORD>(threshold);
                     if (cinemaPanel) g_cinemaMarqueePanelDayPs.insert(ps);
                 } else {
-                    LOG_WARNING(std::format("[LotLightBridge] Cinema daytime bloom guard: exact PS {:08X}/{} found but its isolated bloom threshold was not proven",
+                    LOG_WARNING(std::format("[LotLightBridge] Cinema bloom guard: exact PS {:08X}/{} found but its isolated bloom threshold was not proven",
                                             ShaderHash(code.data(), size), size));
                 }
             }
@@ -2222,15 +2224,13 @@ template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw)
     return true;
 }
 
-// Full-day bloom guard for the base-game cinema/theatre facade. The main marquee was captured directly by F7 as
-// BFFCCC56/1060 + D5ED0EF3/864. The remaining narrow centre panel correlates day BFFCCC56 + 4E570819/500 with the
-// F7-captured night BFFCCC56 + 36F5E915/1296 at the same geometry. Both day PS variants end in the TS3 luminance bloom
-// form proven by BloomThresholdConst(); changing that isolated cK.x cannot alter RGB. The panel variant is additionally
-// limited to a tiny <=4-primitive draw. Twilight/night and every lamp-enabled night shader remain completely vanilla.
+// Full-day bloom guard for the base-game cinema/theatre facade. The exact VS is BFFCCC56/1060. The main marquee
+// uses D5ED0EF3/864; the narrow centre panel uses 4E570819/500 by day and the F7-captured 36F5E915/1296 at night.
+// Every PS must still independently prove the isolated TS3 luminance-bloom threshold through BloomThresholdConst();
+// changing that cK.x only suppresses bloom alpha and leaves RGB intact. The centre panel stays limited to <=4 primitives.
 std::atomic<int> g_cinemaDayBloomSuppressed{0};
 std::atomic<int> g_cinemaPanelDayBloomSuppressed{0};
 template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9* dev, UINT primitiveCount, DrawFn draw) {
-    if (g_night.load(std::memory_order_relaxed) > 0.01f) return false;
     if (!g_curVsInfo || !g_curVsInfo->cinemaMarqueeDay) return false;
     const auto it = g_cinemaMarqueeDayPs.find(g_curPs);
     if (it == g_cinemaMarqueeDayPs.end() || RigTracker::CurrentMode() != 2) return false;
