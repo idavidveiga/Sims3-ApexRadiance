@@ -729,24 +729,26 @@ void PerformanceCard() {
             char distanceValue[24];
             std::snprintf(distanceValue, sizeof distanceValue, "%d", Performance::LotDetailDistance());
             ApexUi::SliderOptions distanceOptions;
-            distanceOptions.tooltip = "Native WorldManager Lot LOD distance. Apex validated 200 -> ~40,000 and 300 -> ~90,000 in the squared-distance metric.";
+            distanceOptions.tooltip = "Native WorldManager Lot LOD distance. Range 70-300; the slider snaps in 10-unit steps. Apex validated the 200 and 300 distance cutoffs in-game.";
             distanceOptions.valueText = distanceValue;
-            distanceOptions.leftLabel = "Original 70";
-            distanceOptions.rightLabel = "Farther";
+            distanceOptions.leftLabel = "70 (game)";
+            distanceOptions.rightLabel = "300 (Apex)";
             distanceOptions.defaultValue = 300.0f;
-            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 300.0f, distanceOptions))
-                Performance::SetLotDetailDistance(static_cast<int>(std::lround(distance)));
+            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 300.0f, distanceOptions)) {
+                const int snappedDistance = std::clamp(70 + static_cast<int>(std::lround((distance - 70.0f) / 10.0f)) * 10, 70, 300);
+                Performance::SetLotDetailDistance(snappedDistance);
+            }
 
             float maxLots = static_cast<float>(Performance::MaximumDetailedLots());
             char maxLotsValue[24];
             std::snprintf(maxLotsValue, sizeof maxLotsValue, "%d", Performance::MaximumDetailedLots());
             ApexUi::SliderOptions maxLotsOptions;
-            maxLotsOptions.tooltip = "Native Max Active Lots capacity. 16 was validated in-game at the same dense camera point that saturated at 8.";
+            maxLotsOptions.tooltip = "Native Max Active Lots capacity. Validated range 8-16; the slider moves one lot at a time. 16 was verified at the same dense camera point that saturated at 8.";
             maxLotsOptions.valueText = maxLotsValue;
-            maxLotsOptions.leftLabel = "Fewer";
-            maxLotsOptions.rightLabel = "More";
+            maxLotsOptions.leftLabel = "8 (game)";
+            maxLotsOptions.rightLabel = "16 (Apex)";
             maxLotsOptions.defaultValue = 16.0f;
-            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 1.0f, 16.0f, maxLotsOptions))
+            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 8.0f, 16.0f, maxLotsOptions))
                 Performance::SetMaximumDetailedLots(static_cast<int>(std::lround(maxLots)));
         }
 

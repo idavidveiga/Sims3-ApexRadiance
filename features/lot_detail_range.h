@@ -16,7 +16,8 @@ inline constexpr int kDefaultDistance = 300;
 inline constexpr int kDefaultMaxActiveLots = 16;
 inline constexpr int kMinDistance = 70;
 inline constexpr int kMaxDistance = 300;
-inline constexpr int kMinActiveLots = 1;
+inline constexpr int kDistanceStep = 10;
+inline constexpr int kMinActiveLots = 8;
 inline constexpr int kMaxActiveLots = 16;
 
 bool Start(int distance, int maxActiveLots, std::string* error = nullptr);
