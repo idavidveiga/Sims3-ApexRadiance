@@ -1767,6 +1767,8 @@ template <typename DrawFn, typename PatchFn>
 bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch, float posScale,
                       std::atomic<int>& drawn) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // by day, keep the game's normal snow/object lighting; only the night ground light is added
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -1777,7 +1779,7 @@ bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDi
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.snow.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.snow.strengthConst, oldB, 1);
-    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
+    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -1854,6 +1856,8 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     // rig modes 2 (outdoors) and 1 (roofless fenced areas) both draw with the exterior technique (rig report 25/09)
     const int rigMode = RigTracker::CurrentMode();
     if (!g_objPixel.load(std::memory_order_relaxed) || (rigMode != 2 && rigMode != 1)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // full daylight: do not replace the game's object rig just because the smooth ground atlas exists
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -1864,7 +1868,9 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.obj.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.obj.strengthConst, oldB, 1);
-    const float s[4] = {g_objPixelStrength.load(std::memory_order_relaxed), 0, 0, 0};
+    // Fade only the added ground-atlas term with the real day/night state. Per-pixel lamps still follow the game's
+    // own live lamp colours/intensities, while full night remains byte-for-byte equivalent in strength.
+    const float s[4] = {g_objPixelStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
     // Per-pixel lamps ("Counters" request): the same world lamps for every piece, chosen by the object's position (the
     // VS world triple's translation), so neighbouring pieces of a modular object get the same lamps.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
