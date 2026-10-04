@@ -2124,20 +2124,58 @@ template <typename DrawFn> bool DrawSnowRelief(IDirect3DDevice9* dev, DrawFn dra
 }
 
 // Outdoor walls (wall_lamp_table.h): the baked lamp light's scale cK.x times "Forca nas paredes" for this draw.
+// ExteriorWall shaders derive output alpha from final luminance; that alpha is the game's bloom mask. Raising cK.x for
+// RGB therefore also raised bloom on the whole wall/foundation. Keep the game's alpha, and apply Apex's gain only to RGB.
 std::atomic<int> g_wallDrawn{0};
+std::atomic<int> g_wallBloomPreserved{0};
+std::atomic<int> g_wallBloomFallback{0};
 template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw) {
     const float gain = g_wallGain.load(std::memory_order_relaxed);
     if (gain == 1.0f) return false;
     auto it = g_wallConst.find(g_curPs);
     if (it == g_wallConst.end()) return false;
+
     float c[4], old[4];
     if (FAILED(dev->GetPixelShaderConstantF(it->second, old, 1))) return false;
     std::memcpy(c, old, sizeof(c));
     c[0] *= gain;
+
+    DWORD colorMask = 0, blend = FALSE, zWrite = FALSE, stencilWriteMask = 0;
+    const bool haveStates =
+        SUCCEEDED(dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colorMask)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_STENCILWRITEMASK, &stencilWriteMask));
+
+    const DWORD alphaMask = colorMask & D3DCOLORWRITEENABLE_ALPHA;
+    const DWORD rgbMask = colorMask & (D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+
     g_inOwnCall = true;
-    SetPsConst(dev, it->second, c, 1);
-    draw();
-    SetPsConst(dev, it->second, old, 1);
+    if (haveStates && alphaMask && !blend) {
+        // Pass 1 writes only the vanilla bloom alpha. It must not consume depth/stencil writes because pass 2 is the
+        // actual wall draw for geometry state. Opaque ExteriorWall draws have blending off; blended variants deliberately
+        // stay on the old one-pass path below rather than risk changing their compositing semantics.
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, alphaMask);
+        if (zWrite) dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        if (stencilWriteMask) dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+        draw(); // game's original cK.x -> original bloom mask
+        if (stencilWriteMask) dev->SetRenderState(D3DRS_STENCILWRITEMASK, stencilWriteMask);
+        if (zWrite) dev->SetRenderState(D3DRS_ZWRITEENABLE, zWrite);
+
+        // Pass 2 is the normal geometry write, but RGB only, with Apex's stronger baked lamp term.
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, rgbMask);
+        SetPsConst(dev, it->second, c, 1);
+        draw();
+        SetPsConst(dev, it->second, old, 1);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, colorMask);
+        g_wallBloomPreserved.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // If the wall is blended, alpha is not writable, or a state query failed, preserve the exact previous behaviour.
+        SetPsConst(dev, it->second, c, 1);
+        draw();
+        SetPsConst(dev, it->second, old, 1);
+        g_wallBloomFallback.fetch_add(1, std::memory_order_relaxed);
+    }
     g_inOwnCall = false;
     g_wallDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -3394,7 +3432,10 @@ void SetWallGain(float gain) {
     if (was != (gain != 1.0f)) UpdateHooks();
 }
 
-std::string WallStatus() { return std::format("outside walls: strength {:.2f} | draws: {} | variants seen: {}", g_wallGain.load(), g_wallDrawn.load(), g_wallConst.size()); }
+std::string WallStatus() {
+    return std::format("outside walls: strength {:.2f} | draws: {} | vanilla bloom alpha preserved: {} | fallback: {} | variants seen: {}",
+                       g_wallGain.load(), g_wallDrawn.load(), g_wallBloomPreserved.load(), g_wallBloomFallback.load(), g_wallConst.size());
+}
 
 std::string WaterStatus() {
     return std::format("water: {} | draws with reflection: {}", g_waterFix.load() ? (g_waterPs ? "active" : "waiting") : "off", g_waterDrawn.load());
