@@ -44,9 +44,13 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
     struct V { float pos[4], col[4]; };
     const V vertices[] = {{{-1,1,.6f,1},{1,1,1,0}},{{1,1,.6f,1},{1,1,1,1}},
                           {{-1,-1,.6f,1},{1,1,1,0}},{{1,-1,.6f,1},{1,1,1,1}}};
-    for (const int kind : {2,1,0}) for (const bool sm3 : {false,true}) {
+    // Exercise shader generation for blended body as well as hair. Hand-filled
+    // composite textures alone cannot catch a body-mask generator rejection.
+    for (const int kind : {3,2,1,0}) for (const bool sm3 : {false,true}) {
+        const bool hair = kind == 1 || kind == 2;
+        const bool transparent = kind >= 2;
         auto v = Compile(material,"VS",sm3?"vs_3_0":"vs_2_0"), p = Compile(material,"PS",sm3?"ps_3_0":"ps_2_0");
-        check(ShaderPatches::MakeAoReceiverMask(v,p,kind!=0,kind==2));
+        check(ShaderPatches::MakeAoReceiverMask(v,p,hair,transparent));
         IDirect3DVertexShader9* vs = nullptr; IDirect3DPixelShader9* ps = nullptr;
         check(SUCCEEDED(dev->CreateVertexShader(v.data(),&vs))); check(SUCCEEDED(dev->CreatePixelShader(p.data(),&ps)));
         dev->SetRenderTarget(0,target); dev->SetDepthStencilSurface(ds); dev->SetVertexDeclaration(decl);
@@ -59,10 +63,12 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
         dev->BeginScene(); check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)))); dev->EndScene();
         const auto pixels = ReadMask(dev,target);
         check(pixels[(16*32+4)*2] == 0);
-        check(std::fabs(pixels[(16*32+27)*2]-(kind!=0?-.6f:.6f)) < 2.4e-7f);
-        const float coverage = pixels[(16*32+27)*2+1];
-        check(kind==2 ? coverage>.8f && coverage<1.0f : coverage==1.0f);
-        // A depth-writing material using LESS passes once, then rejects its own replay.
+        const size_t sample = (16*32+27)*2;
+        check(std::fabs(pixels[sample+(hair && !transparent ? 1 : 0)]-(hair && transparent?-.6f:.6f)) < 2.4e-7f);
+        const float other = pixels[sample+(hair && !transparent ? 0 : 1)];
+        check(transparent ? other>.8f && other<1.0f : other==1.0f);
+        // Raw GPU comparison semantics. The separate production replay fixture
+        // covers the actual Early-hook order (mask first, original draw second).
         dev->SetRenderState(D3DRS_ZWRITEENABLE,TRUE);
         dev->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESS);
         dev->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0,1,0);
@@ -73,7 +79,7 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
         check(ReadMask(dev,target)[(16*32+27)*2]==0);
         dev->SetRenderState(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
         dev->BeginScene(); check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V)))); dev->EndScene();
-        check(std::fabs(ReadMask(dev,target)[(16*32+27)*2]-(kind!=0?-.6f:.6f))<2.4e-7f);
+        check(std::fabs(ReadMask(dev,target)[(16*32+27)*2+(hair && !transparent ? 1 : 0)]-(hair && transparent?-.6f:.6f))<2.4e-7f);
         if (vs) vs->Release(); if (ps) ps->Release();
     }
     // Compile the actual AO shaders, then render the actual composite against the mask.
@@ -135,8 +141,8 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
     auto put=[&](IDirect3DTexture9* t,float r,float green) {
         t->LockRect(0,&lock,nullptr,0); auto* f=static_cast<float*>(lock.pBits); f[0]=r; f[1]=green; t->UnlockRect(0);
     };
-    auto render=[&](float bodyDepth,float body,float hair,float cap,float transparentDepth,float alpha,float scene,bool enabled) {
-        put(receiver,bodyDepth,1); put(hairMask,transparentDepth,alpha);
+    auto render=[&](float bodyDepth,float body,float hair,float cap,float transparentDepth,float alpha,float scene,bool enabled,float otherHairDepth=1) {
+        put(receiver,bodyDepth>0?bodyDepth:1,bodyDepth<0?-bodyDepth:otherHairDepth); put(hairMask,transparentDepth,alpha);
         depth->LockRect(0,&lock,nullptr,0); *static_cast<float*>(lock.pBits)=scene; depth->UnlockRect(0);
         const float setting[4]={body,enabled?1.0f:0.0f,hair,cap};
         const float extra[4]={0,enabled&&transparentDepth!=0?1.0f:0.0f,0,0};
@@ -169,6 +175,10 @@ static unsigned RenderChecks(IDirect3DDevice9* dev, unsigned& checks) {
     const auto bodyHalf=render(0,0,1,1,.5f,.5f,.6f,true);
     check(bodyHalf>original && bodyHalf<128);
     check(render(0,0,1,1,.5f,1,.3f,true)==original); // foreground rejects body overlay
+    check(render(.6f,0,0,1,0,0,.6f,true,.6f)==original); // coplanar body/hair cannot select a class safely
+    check(render(.6f,0,0,1,0,0,.6f,true,.60000012f)==original); // ambiguous within final-depth tolerance
+    check(render(.8f,1,0,1,0,0,.6f,true,.6f)==128); // nearer hair wins over farther body
+    check(render(.6f,0,1,1,0,0,.6f,true,.8f)==128); // nearer body wins over farther hair
     dev->SetTexture(5,nullptr); dev->SetTexture(6,nullptr); receiver->Release(); hairMask->Release();
     dev->SetTexture(0,nullptr); dev->SetTexture(3,nullptr); dev->SetTexture(4,nullptr); dev->SetTexture(5,nullptr);
     composite->Release(); colour->Release(); ao->Release(); depth->Release(); result->Release(); cpu->Release();
@@ -239,15 +249,18 @@ int main(int argc, char** argv) {
         }
         if (v) v->Release(); if (p) p->Release();
     }
+    unsigned blendedAccepted = 0, blendedRefused = 0;
     for(const auto& [vi,pi]:pairs) {
-        if(!std::any_of(std::begin(kSimHairReceiverPs),std::end(kSimHairReceiverPs),
-                       [&](const ShaderId& id){return IsShader(id,blobs[pi].data(),blobs[pi].size()*4);}))continue;
+        const bool hair=std::any_of(std::begin(kSimHairReceiverPs),std::end(kSimHairReceiverPs),
+                       [&](const ShaderId& id){return IsShader(id,blobs[pi].data(),blobs[pi].size()*4);});
         auto vs=blobs[vi],ps=blobs[pi];
         ++checks;
-        if(!ShaderPatches::MakeAoReceiverMask(vs,ps,true,true)) {
+        if(!ShaderPatches::MakeAoReceiverMask(vs,ps,hair,true)) {
+            ++blendedRefused;
             if(vs!=blobs[vi] || ps!=blobs[pi])++failed;
             continue;
         }
+        ++blendedAccepted;
         IDirect3DVertexShader9* v=nullptr; IDirect3DPixelShader9* p=nullptr;
         checks+=2;
         if(FAILED(dev->CreateVertexShader(vs.data(),&v)) || FAILED(dev->CreatePixelShader(ps.data(),&p)))++failed;
@@ -264,5 +277,6 @@ int main(int argc, char** argv) {
     dev->Release(); d3d->Release(); DestroyWindow(window);
     std::printf("Blobs: %zu; pairs: %zu; accepted: %u; safely refused: %u; checks: %u; failures: %u\n",
                 blobs.size(), pairs.size(), accepted, refused, checks, failed);
+    std::printf("Blended receivers: accepted %u; safely refused %u (body and hair).\n", blendedAccepted, blendedRefused);
     return failed || !accepted ? 1 : 0;
 }

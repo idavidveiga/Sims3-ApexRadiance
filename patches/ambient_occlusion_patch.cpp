@@ -263,8 +263,10 @@ float4 CompositePS(float2 uv : TEXCOORD0, float2 vpos : VPOS) : COLOR0
     float3 coverage = 0;
     [branch] if (cSim.y > 0.5) {
         float2 receiver = tex2Dlod(sSim, float4(uv, 0, 0)).rg;
-        if (abs(receiver.x) > 0 && abs(abs(receiver.x) - sceneDepth) <= 2.4e-7) {
-            bool hair = receiver.x < 0;
+        bool body = receiver.x >= 0 && receiver.x < 1 && abs(receiver.x - sceneDepth) <= 2.4e-7;
+        bool hair = receiver.y >= 0 && receiver.y < 1 && abs(receiver.y - sceneDepth) <= 2.4e-7;
+        // Coplanar classes are ambiguous: preserve the original scene shade.
+        if (body != hair) {
             v = 1 - min((1 - original) * (hair ? cSim.z : cSim.x), cSim.w);
             coverage = hair ? float3(0, 1, 0) : float3(0, 0.5, 1);
         }
@@ -379,6 +381,7 @@ struct SimMaskState {
     IDirect3DSurface9* hairSurface = nullptr;
     UINT width = 0, height = 0;
     bool cleared = false, failed = false;
+    bool blendChecked = false, minBlend = false;
     bool hairCleared = false;
     bool shaderKnown = false, shaderIsSim = false;
     unsigned draws = 0, lastDraws = 0, refused = 0;
@@ -406,6 +409,22 @@ void ReleaseSimMask() {
         SafeRelease(copy.vs); SafeRelease(copy.ps);
     }
     simMask = {};
+}
+
+bool SupportsSimMinBlend(IDirect3DDevice9* dev) {
+    if (simMask.blendChecked) return simMask.minBlend;
+    simMask.blendChecked = true;
+    D3DCAPS9 caps{};
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    IDirect3D9* d3d = nullptr;
+    D3DDISPLAYMODE display{};
+    simMask.minBlend = SUCCEEDED(dev->GetDeviceCaps(&caps)) && (caps.PrimitiveMiscCaps & D3DPMISCCAPS_BLENDOP) &&
+        SUCCEEDED(dev->GetCreationParameters(&creation)) && SUCCEEDED(dev->GetDirect3D(&d3d)) && d3d &&
+        SUCCEEDED(d3d->GetAdapterDisplayMode(creation.AdapterOrdinal, &display)) &&
+        SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal, creation.DeviceType, display.Format,
+                  D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING, D3DRTYPE_TEXTURE, D3DFMT_G32R32F));
+    SafeRelease(d3d);
+    return simMask.minBlend;
 }
 
 template <typename Shader> std::vector<DWORD> ReadSimShader(Shader* shader) {
@@ -467,10 +486,11 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
     ExtraHooks::RawGetDepthStencilSurface(dev, &ds);
     dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb);
     dev->GetRenderTarget(1, &extra);
-    DWORD z = 0, write = 0, blend = 0;
+    DWORD z = 0, write = 0, blend = 0, colourWrite = 0;
     const bool stateRead = SUCCEEDED(dev->GetRenderState(D3DRS_ZENABLE, &z)) &&
                            SUCCEEDED(dev->GetRenderState(D3DRS_ZWRITEENABLE, &write)) &&
-                           SUCCEEDED(dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend));
+                           SUCCEEDED(dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend)) &&
+                           SUCCEEDED(dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colourWrite));
     bool transparent = false;
     if (stateRead && blend && (accepted != 2 || g.p.transparentHair) && simMask.hairSurface) {
         DWORD src = 0, dst = 0, op = 0;
@@ -478,7 +498,9 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
                       SUCCEEDED(dev->GetRenderState(D3DRS_DESTBLEND, &dst)) && dst == D3DBLEND_INVSRCALPHA &&
                       SUCCEEDED(dev->GetRenderState(D3DRS_BLENDOP, &op)) && op == D3DBLENDOP_ADD;
     }
-    const bool main = stateRead && rt && rt == bb && ds && ds == DepthShare::Surface() && z && ((write && !blend) || transparent) && !extra;
+    // Visibility-only copies (including the F7 query) do not contribute scene RGB.
+    const bool main = stateRead && rt && rt == bb && ds && ds == DepthShare::Surface() && z &&
+                      (colourWrite & 7) && ((write && !blend) || transparent) && !extra;
     SafeRelease(bb); SafeRelease(extra);
     if (!main) { SafeRelease(rt); SafeRelease(ds); ps->Release(); return; }
     IDirect3DVertexShader9* vs = nullptr;
@@ -486,30 +508,38 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
     auto* copy = SimCopy(dev, vs, ps, accepted == 2, transparent);
     if (copy && copy->ps && copy->vs) {
         D3DVIEWPORT9 vp{};
-        if (FAILED(dev->GetViewport(&vp)) || vp.MinZ != 0.0f || vp.MaxZ != 1.0f) {
+        RECT scissor{};
+        if (FAILED(dev->GetViewport(&vp)) || FAILED(dev->GetScissorRect(&scissor)) || vp.MinZ != 0.0f || vp.MaxZ != 1.0f) {
             SafeRelease(vs); SafeRelease(ps); SafeRelease(rt); SafeRelease(ds); return;
         }
         constexpr D3DRENDERSTATETYPE states[] = {D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE,
             D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_COLORWRITEENABLE, D3DRS_STENCILWRITEMASK, D3DRS_SCISSORTESTENABLE,
-            D3DRS_ZFUNC};
+            D3DRS_ZFUNC, D3DRS_SRCBLEND, D3DRS_DESTBLEND, D3DRS_BLENDOP};
         DWORD saved[std::size(states)]{};
         for (size_t i = 0; i < std::size(states); ++i)
             if (FAILED(dev->GetRenderState(states[i], &saved[i]))) {
                 SafeRelease(vs); SafeRelease(ps); SafeRelease(rt); SafeRelease(ds); return;
             }
+        // MIN models nearest-surface depth writers. Other comparison modes can
+        // select a farther/last fragment and must retain the original scene AO.
+        if (!transparent && saved[8] != D3DCMP_LESS && saved[8] != D3DCMP_LESSEQUAL) {
+            SafeRelease(vs); SafeRelease(ps); SafeRelease(rt); SafeRelease(ds); return;
+        }
         auto* target = transparent ? simMask.hairSurface : simMask.surface;
         bool& cleared = transparent ? simMask.hairCleared : simMask.cleared;
         bool ok = SUCCEEDED(D3D9Hooks::CallOriginalSetRenderTarget(dev, 0, target));
         if (!cleared && ok) {
             ok = SUCCEEDED(dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE)) &&
-                 SUCCEEDED(dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0, 1, 0));
+                 SUCCEEDED(dev->Clear(0, nullptr, D3DCLEAR_TARGET, transparent ? 0 : 0xFFFFFFFFu, 1, 0));
             cleared = ok;
         }
         ok = SUCCEEDED(dev->SetViewport(&vp)) && ok;
-        // The original draw already wrote depth. LESS must accept its equal-depth replay;
-        // keep every other comparison and restore the game's state afterwards.
-        const DWORD replayZ = write && saved[8] == D3DCMP_LESS ? D3DCMP_LESSEQUAL : saved[8];
-        const DWORD maskStates[] = {FALSE, FALSE, FALSE, FALSE, FALSE, 15, 0, saved[7], replayZ};
+        // SetRenderTarget resets both the viewport and the scissor rectangle.
+        ok = SUCCEEDED(dev->SetScissorRect(&scissor)) && ok;
+        // Early hooks run before the original draw. Preserve its exact depth test:
+        // widening LESS would mark coplanar fragments whose colour draw is rejected.
+        const DWORD maskStates[] = {FALSE, transparent ? 0u : 1u, FALSE, FALSE, FALSE, 15, 0, saved[7], saved[8],
+                                   D3DBLEND_ONE, D3DBLEND_ONE, D3DBLENDOP_MIN};
         for (size_t i = 0; i < std::size(states); ++i) ok = SUCCEEDED(dev->SetRenderState(states[i], maskStates[i])) && ok;
         ok = ok && SUCCEEDED(D3D9Hooks::CallOriginalSetVertexShader(dev, copy->vs)) &&
                    SUCCEEDED(D3D9Hooks::CallOriginalSetPixelShader(dev, copy->ps));
@@ -519,6 +549,7 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
         D3D9Hooks::CallOriginalSetRenderTarget(dev, 0, rt);
         ExtraHooks::RawSetDepthStencilSurface(dev, ds);
         dev->SetViewport(&vp);
+        dev->SetScissorRect(&scissor);
         for (size_t i = 0; i < std::size(states); ++i) dev->SetRenderState(states[i], saved[i]);
         if (ok) ++simMask.draws;
         else { simMask.failed = true; LOG_WARNING("[AO] Sim receiver mask disabled after a device failure"); }
@@ -1065,6 +1096,11 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!WantSimMask()) {
         if (simMask.texture || !simMask.known.empty()) ReleaseSimMask();
     } else if (g.ready && !simMask.texture && !simMask.failed) {
+        if (!SupportsSimMinBlend(dev)) {
+            simMask.failed = true;
+            LOG_WARNING("[AO] Nearest Sim receiver blending unavailable; retaining original shade");
+            return;
+        }
         const HRESULT hr = dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F,
                                              D3DPOOL_DEFAULT, &simMask.texture, nullptr);
         if (FAILED(hr) || FAILED(simMask.texture->GetSurfaceLevel(0, &simMask.surface))) {
@@ -1125,7 +1161,7 @@ void SimOcclusion::RenderUI(ApexPatch* patch) {
                 changed |= ApexUi::SwitchRow("Transparent hair", &g.p.transparentHair,
                                             "Also adjust supported transparent hair strands", defaults.transparentHair);
                 ApexUi::SwitchRow("Show Sim coverage", &g.showSimMask,
-                                  "Blue shows Sims, green shows hair, black is unrecognized; preview is not saved");
+                                  "Blue: Sim controls; green: hair controls; black: original scene shade");
                 ApexUi::EndAdvanced();
             }
             if (WantSimMask() && simMask.failed)

@@ -177,6 +177,8 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst = nullptr, int* 
 bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord);
 
 // AO receiver mask: paired shader copies preserve geometry/alpha rejection, writing clip z/w to colour.
+// Opaque R/G hold body/hair depth (other channel = 1) for MIN blending.
+// Transparent R uses signed depth (negative hair); G retains original alpha coverage.
 // Rejects unsupported models, occupied interpolators, extra colour/depth outputs and early returns.
 // Inputs remain unchanged on failure.
 bool MakeAoReceiverMask(std::vector<DWORD>& vs, std::vector<DWORD>& ps, bool hair = false, bool transparent = false);

@@ -569,4 +569,6 @@ Refresh lighting is also available without Developer mode in Lighting > Overview
 
 The shared Refresh lighting card also provides Refresh lights (Lightbulb), using the same existing full refresh path as Ctrl+Shift+F9 (terrain, rooms, lots and object rigs).
 
+Sim Occlusion coverage preview uses blue for pixels adjusted by Sim controls, green for hair controls and black for original scene AO. A black region is outside the separate controls, not necessarily a region without AO. The preview remains temporary; defaults, profiles and the separate Sim/hair intensity sliders are unchanged.
+
 Profile apply selection opens with a 140 ms smoothstep opacity transition; its layout remains at the final size. The footer uses the regular description face at kSmallScale. Advanced sections immediately after CardDivider reuse that divider rather than drawing a second hairline.

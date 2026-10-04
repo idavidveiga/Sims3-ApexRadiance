@@ -447,7 +447,7 @@ const I18n::Entry kEntries[] = {
     {"Transparent hair", "Cabelo transparente", "Cabello transparente", "Cheveux transparents"},
     {"Also adjust supported transparent hair strands", "Também ajusta mechas transparentes compatíveis", "También ajusta mechones transparentes compatibles", "Ajuste aussi les mèches transparentes compatibles"},
     {"Show Sim coverage", "Mostrar cobertura dos Sims", "Mostrar cobertura de los Sims", "Afficher la couverture des Sims"},
-    {"Blue shows Sims, green shows hair, black is unrecognized; preview is not saved", "Azul mostra Sims, verde mostra cabelo, preto não foi reconhecido; prévia não é salva", "Azul muestra Sims, verde cabello, negro no reconocido; la vista previa no se guarda", "Bleu : Sims, vert : cheveux, noir : non reconnu ; aperçu non enregistré"},
+    {"Blue: Sim controls; green: hair controls; black: original scene shade", "Azul: controles dos Sims; verde: controles do cabelo; preto: sombra original da cena", "Azul: controles de Sims; verde: controles del cabello; negro: sombra original de la escena", "Bleu : réglages des Sims ; vert : réglages des cheveux ; noir : ombre originale de la scène"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 

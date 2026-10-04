@@ -2054,7 +2054,6 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst, int* texcoordOu
 }
 
 bool MakeAoReceiverMask(std::vector<DWORD>& vs, std::vector<DWORD>& ps, bool hair, bool transparent) {
-    if (transparent && !hair) return false;
     if (vs.empty() || ps.empty() || vs.back() != 0xFFFFu || ps.back() != 0xFFFFu) return false;
     const bool v3 = vs[0] == 0xFFFE0300u, p3 = ps[0] == 0xFFFF0300u;
     if ((!v3 && vs[0] != 0xFFFE0200u && vs[0] != 0xFFFE0201u) ||
@@ -2126,11 +2125,19 @@ bool MakeAoReceiverMask(std::vector<DWORD>& vs, std::vector<DWORD>& ps, bool hai
     pe.push_back({1, {Op(kDcl, 2), p3 ? (0x80000005u | (static_cast<DWORD>(tc) << 16)) : 0x80000000u,
                      Dst(p3 ? kInput : kTexture, pin)}});
     pe.push_back({1, {Op(kDef, 5), Dst(kConst, cMask), F(hair ? -1.0f : 1.0f), F(1.0f), F(0.0f), F(0.0f)}});
-    pe.push_back({p.size() - 1, {Op(0x06, 2), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, kSwzW),
-                               Op(kMul, 3), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, 0xAA), Src(kTemp, tmp, kSwzX),
-                               Op(kMul, 3), Dst(kTemp, po, 1), Src(kTemp, tmp, kSwzX), Src(kConst, cMask, kSwzX),
-                               Op(kMov, 2), Dst(kTemp, po, 2, true), transparent ? Src(kTemp, po, kSwzW) : Src(kConst, cMask, 0x55),
-                               Op(kMov, 2), Dst(kColorOut, 0), Src(kTemp, po)}});
+    std::vector<DWORD> tail = {Op(0x06, 2), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, kSwzW),
+                              Op(kMul, 3), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, 0xAA), Src(kTemp, tmp, kSwzX)};
+    if (transparent) {
+        tail.insert(tail.end(), {Op(kMul, 3), Dst(kTemp, po, 1), Src(kTemp, tmp, kSwzX), Src(kConst, cMask, kSwzX),
+                                 Op(kMov, 2), Dst(kTemp, po, 2, true), Src(kTemp, po, kSwzW)});
+    } else {
+        // MIN blending selects the nearest body and hair depths independently.
+        // Keep the original alpha in W so the native alpha test still rejects pixels.
+        tail.insert(tail.end(), {Op(kMov, 2), Dst(kTemp, po, 1), hair ? Src(kConst, cMask, 0x55) : Src(kTemp, tmp, kSwzX),
+                                 Op(kMov, 2), Dst(kTemp, po, 2), hair ? Src(kTemp, tmp, kSwzX) : Src(kConst, cMask, 0x55)});
+    }
+    tail.insert(tail.end(), {Op(kMov, 2), Dst(kColorOut, 0), Src(kTemp, po)});
+    pe.push_back({p.size() - 1, std::move(tail)});
     if (!p3) p[0] = 0xFFFF0201u;
     Apply(v, std::move(ve)); Apply(p, std::move(pe));
     vs = std::move(v); ps = std::move(p);
