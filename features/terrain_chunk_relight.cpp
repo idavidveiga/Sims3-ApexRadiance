@@ -32,6 +32,7 @@
 // Every read is guarded (SEH) and every layout fact is re-checked when it is used: any difference refuses the local path
 // and the caller keeps the full rebuild.
 #include "terrain_chunk_relight.h"
+#include "terrain_lighting_policy.h"
 #include "lightmap_smooth.h"
 #include "apex_log.h"
 #include "build_flavor.h"
@@ -325,10 +326,10 @@ bool Queued(uintptr_t chunk) {
 }
 
 // Attaches `id` to the entry of `e.chunk` (in flight or queued), or queues `e` for it. Returns false when it was attached.
-bool Attach(Entry e, int id, bool urgent = false) {
+bool Attach(Entry e, int id, bool urgent = false, bool fresh = false) {
     // An edit may arrive after the in-flight bake read its lamps. Urgent work must run again,
     // rather than being declared complete when that older bake finishes.
-    if (!urgent && g_haveFlight && g_flight.chunk == e.chunk) {
+    if (!urgent && !fresh && g_haveFlight && g_flight.chunk == e.chunk) {
         g_flight.batches.push_back(id);
         return false;
     }
@@ -381,8 +382,11 @@ bool Check(View& v, std::string& why) {
         why = "the terrain changed under the queue";
         return false;
     }
-    if (GatesRaw(v) != 0) {
-        why = "the terrain is not ready for texture renders (loading or edit state)";
+    if (const int gate = GatesRaw(v)) {
+        const char* detail = gate == 1 ? "terrain data +0x1D is not ready" :
+                             gate == 2 ? "terrain data +0x20 is not ready" :
+                             gate == 4 ? "terrain tool +0x6C blocks the sweep" : "terrain gate read failed";
+        why = std::string("the terrain is not ready for texture renders: ") + detail;
         return false;
     }
     return true;
@@ -606,7 +610,7 @@ int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& ch
     return b.id;
 }
 
-int QueueSweep(const float* eyeXZ, std::string& why, std::string& info) {
+int QueueSweep(const float* eyeXZ, std::string& why, std::string& info, bool interactive) {
     View v;
     if (!Check(v, why)) return Refuse(why);
     std::vector<std::pair<float, Entry>> all;
@@ -630,7 +634,8 @@ int QueueSweep(const float* eyeXZ, std::string& why, std::string& info) {
         all.emplace_back(d, std::move(e));
     }
     std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    // the sweep covers every lamp: a pending local queue is dropped; a chunk in flight joins the sweep
+    // This is a new lamp/phase state. A bake already in flight may have read the
+    // previous state: finish it safely, but queue it again for the new batch.
     g_queue.clear();
     g_batches.clear();
     if (g_haveFlight) g_flight.batches.clear();
@@ -644,8 +649,13 @@ int QueueSweep(const float* eyeXZ, std::string& why, std::string& info) {
     b.chunks = b.remaining = static_cast<int>(all.size());
     b.startFrame = g_frame;
     g_batches.push_back(b);
-    for (auto& a : all) Attach(std::move(a.second), b.id);
+    const size_t priority = TerrainLightingPolicy::PreviewPriorityChunks(all.size(), interactive, eyeXZ != nullptr);
+    for (size_t i = priority; i < all.size(); ++i) Attach(std::move(all[i].second), b.id, false, true);
+    // Attach pushes priority work to the front: insert in reverse to retain the
+    // nearest-first order. The existing measured-cost reserve and gates apply.
+    for (size_t i = priority; i > 0; --i) Attach(std::move(all[i - 1].second), b.id, true, true);
     info = std::format("{} chunks, {}", all.size(), eyeXZ ? "nearest to the camera first" : "in grid order");
+    if (priority) info += std::format("; {} nearby chunks prioritized for Build preview", priority);
     g_statSweeps++;
     return b.id;
 }

@@ -37,6 +37,7 @@
 #include "lot_light_bridge.h"
 #include "lightmap_smooth.h"
 #include "terrain_chunk_relight.h"
+#include "terrain_lighting_policy.h"
 #include "render_callbacks.h"
 #include "object_light_bridge.h"
 #include "level_light_share.h"
@@ -180,8 +181,8 @@ bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 1.0f;
 float g_fenceGroundStrength = 1.0f;
-bool g_walls = true;         // outdoor walls get g_wallStrength (off = the game's own wall light, gain 1)
-float g_wallStrength = 2.0f; // outdoor walls: baked lamp light x this (1 = the game)
+bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
+float g_wallStrength = 2.0f; // multiplier of baked wall lamp RGB, independent of the enabled state
 bool g_roofs = true;
 float g_roofStrengthSetting = 0.6f;
 bool g_water = true;
@@ -519,8 +520,8 @@ int QueueAllLotOutdoorRooms(uintptr_t lightMgr) {
 uintptr_t g_rootPtrAddr = 0;
 uintptr_t g_lastCells = 0;
 bool g_lastNight = false;
-bool g_scheduled = false;
-Clock::time_point g_scheduledAt{};
+TerrainLightingPolicy::Cycle g_cycle;
+bool& g_scheduled = g_cycle.pending;
 int g_prevCounter = INT_MIN;
 std::string g_pendingReason;
 bool g_pendingDusk = false; // the armed rebuild is (also) the dusk rebuild
@@ -755,7 +756,17 @@ void NoteEdit(Clock::time_point now, bool user, bool force, const std::string& r
     g_editForce |= force;
 }
 
+void RefreshWorldRigs(const char* reason) {
+    if (!g_worldRigRefreshPending) return;
+    g_worldRigRefreshPending = false;
+    ObjectLightBridge::RequestRigRefresh();
+    if (Recorder::Verbose()) LOG_INFO(std::format("[NightTerrainRelight] Observed world lamp edit: native rig refresh requested {}", reason));
+}
+
 void FinishEdit(const std::string& outcome) {
+    // Terrain completion can precede the edit debounce. It does not cover
+    // native object rigs: consume that independent request before ending the edit.
+    RefreshWorldRigs("before terrain edit completion");
     g_editKickPending = false;
     g_editWait = EditWait::None;
     g_lastEditOutcome = outcome;
@@ -964,8 +975,8 @@ void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool du
         const bool haveEye = g_camOk && ReadEye(eye);
         const float eyeXZ[2] = {eye[0], eye[2]};
         std::string why, info;
-        if (const int id = ChunkRelight::QueueSweep(haveEye ? eyeXZ : nullptr, why, info)) return StartSweep(id, reason, info, now);
-        if (Recorder::Verbose()) LOG_INFO(std::format("[NightTerrainRelight] Paced sweep not possible ({}): {}; full rebuild instead", reason, why));
+        if (const int id = ChunkRelight::QueueSweep(haveEye ? eyeXZ : nullptr, why, info, ChunkRelight::Editing())) return StartSweep(id, reason, info, now);
+        LOG_INFO(std::format("[NightTerrainRelight] Paced sweep not possible ({}): {}; full rebuild instead", reason, why));
     }
     Kick(cells, level, reason, dusk);
 }
@@ -978,16 +989,22 @@ bool EditReady(Clock::time_point now, Clock::time_point first, Clock::time_point
 // The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).
 void DecideEdit(uintptr_t cells, float level, bool night, int c38, Clock::time_point now) {
     const bool worldLampEdit = std::find(g_editUserLots.begin(), g_editUserLots.end(), uint64_t{0}) != g_editUserLots.end();
-    if (!night && g_autoDusk && !worldLampEdit) // an observed world lamp may be lit before the night indicator reaches 1
+    if (TerrainLightingPolicy::DeferDayEdit(night, g_autoDusk, g_editUser, g_editForce, worldLampEdit))
         return FinishEdit(std::format("{}: left to the dusk rebuild (day)", g_editReason));
-    if (g_loadKickPending || (g_scheduled && night))
-        return FinishEdit(std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" : "dusk"));
-    if (!g_pendingReason.empty() && c38 > 0) return FinishEdit(std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason));
+    if (g_loadKickPending || g_scheduled)
+        return FinishEdit(std::format("{}: merged into the {} rebuild", g_editReason, g_loadKickPending ? "load" :
+                                     (g_cycle.target == TerrainLightingPolicy::Phase::Night ? "dusk" : "daylight")));
+    // A countdown does not prove that a new user edit reached the bake. Keep
+    // priority edits alive and queue their footprints rather than consuming them.
+    if (!g_editUser && !g_editForce && !g_pendingReason.empty() && c38 > 0)
+        return FinishEdit(std::format("{}: merged into the armed rebuild ({})", g_editReason, g_pendingReason));
     if (g_bakedDue) return WaitEdit(EditWait::Snapshot, "waiting for the snapshot of the rebuild that just ran");
     // a local relight or paced sweep in progress: its lamps go into the snapshot when it ends, then this change is
     // compared with it (so the same lamps are never queued twice)
-    // A user edit can promote its affected chunks ahead of a background sweep. Other local batches stay serialized.
-    if (ChunkRelight::Busy() && !(g_editUser && g_sweepId != 0)) return WaitEdit(EditWait::Relight, "waiting for the terrain relight in progress");
+    // QueueLocal owns fresh batch membership for an urgent queued/in-flight
+    // chunk. User edits may promote their footprint ahead of arrival work too;
+    // automatic edits and global switches still wait for the current batch.
+    if (ChunkRelight::Busy() && !g_editUser) return WaitEdit(EditWait::Relight, "waiting for the terrain relight in progress");
     std::string diffText = "no snapshot of the last rebuild: rebuilt to be safe";
     std::vector<uint64_t> newLots; // user-driven changes on lots the last rebuild did not have (sorted, unique)
     if (g_editForce)
@@ -1077,7 +1094,7 @@ void OnPresent() {
     if (s.cells != g_lastCells) { // new world
         g_lastCells = s.cells;
         g_lastNight = night;
-        g_scheduled = false;
+        g_cycle.Reset(s.level);
         g_prevCounter = c38;
         g_lotRelightPending = false;
         g_pendingReason.clear();
@@ -1196,14 +1213,9 @@ void OnPresent() {
             LOG_INFO(std::format("[NightTerrainRelight] Night level crossed 0.99 {} ({}; {:.1f} s after the world change; up {} / down {})", night ? "upwards" : "downwards",
                                  LevelText(s.level), MsSince(g_worldAt) / 1000.0, g_crossUp, g_crossDown));
     }
-    if (g_autoDusk && night && !g_lastNight) {
-        if (g_loadKickPending) { // the load rebuild runs at night: it is the dusk rebuild too (one rebuild, not two)
-            if (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Dusk during the world load: merged into the load rebuild");
-        } else {
-            g_scheduled = true;
-            g_scheduledAt = now + std::chrono::milliseconds(static_cast<int>(g_delaySec * 1000.0f));
-        }
-    }
+    const auto cycleMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto phaseDelay = TerrainLightingPolicy::PhaseDelay(static_cast<int64_t>(g_delaySec * 1000.0f), ChunkRelight::Editing());
+    g_cycle.Observe(s.level, cycleMs, phaseDelay, g_autoDusk, g_loadKickPending);
     g_lastNight = night;
 
     if (g_loadKickPending && g_live && now - g_liveAt >= kLiveSettle && (levelSteady || now - g_liveAt >= kLevelWaitMax)) {
@@ -1214,10 +1226,11 @@ void OnPresent() {
         g_pendingLoad = true;
     }
     if (g_kickRequested.exchange(false)) Kick(s.cells, s.level, "button");
-    if (g_scheduled && now >= g_scheduledAt) {
-        g_scheduled = false;
-        if (night) {
-            RebuildAll(s.cells, s.level, "dusk", true, now); // relightPacedSweep: a paced sweep instead of the full rebuild
+    TerrainLightingPolicy::Phase cyclePhase;
+    if (g_cycle.Consume(cycleMs, cyclePhase)) {
+        const bool dusk = cyclePhase == TerrainLightingPolicy::Phase::Night;
+        RebuildAll(s.cells, s.level, dusk ? "dusk" : "daylight transition", dusk, now);
+        if (dusk) {
             if (g_relightLots) { // fallback if the terrain rebuild does not happen
                 g_lotRelightPending = true;
                 g_lotRelightAt = now + std::chrono::seconds(6);
@@ -1339,11 +1352,7 @@ void OnPresent() {
     if (g_editKickPending && EditReady(now, g_editFirstAt, g_editLastAt, g_editUser || g_editForce)) {
         // Native rigs are independent of the terrain bake. Reconcile once for a
         // coalesced observed world edit, even when terrain completion must wait.
-        if (g_worldRigRefreshPending) {
-            g_worldRigRefreshPending = false;
-            ObjectLightBridge::RequestRigRefresh();
-            if (Recorder::Verbose()) LOG_INFO("[NightTerrainRelight] Observed world lamp edit: native rig refresh requested after edit debounce");
-        }
+        RefreshWorldRigs("after edit debounce");
         DecideEdit(s.cells, s.level, night, c38, now);
     }
     RefreshArrivingLots(now, night);
@@ -1370,7 +1379,7 @@ void OnPresent() {
             g_editDiffEnum = -1; // compare again with the updated snapshot
             g_localDone++;
             g_lastLocal = std::format("{}: {}", it->what, d.text);
-            if (!kPublicBuild) LOG_INFO("[NightTerrainRelight] Local relight done: " + g_lastLocal);
+            LOG_INFO("[NightTerrainRelight] Local relight done: " + g_lastLocal);
             g_localBatches.erase(it);
         }
         if (fr.failed) {
@@ -1387,8 +1396,8 @@ void OnPresent() {
     // few chunks, which are smoothed at once).
     const bool armed = !g_pendingReason.empty() && c38 >= 0 && now - g_kickAt < std::chrono::seconds(5);
     const bool localLikely = (g_localRelight || g_editUser) && g_haveBaked && !g_editForce && !g_editLocalRefused && ChunkRelight::LikelyAvailable();
-    const bool editSoon = g_editKickPending && (night || !g_autoDusk) && (g_editUser || g_editForce) && !localLikely;
-    if (g_loadKickPending || (g_scheduled && night) || editSoon || armed) LightmapSmooth::ExpectRebuild(30);
+    const bool editSoon = g_editKickPending && (g_editUser || g_editForce) && !localLikely;
+    if (g_loadKickPending || g_scheduled || editSoon || armed) LightmapSmooth::ExpectRebuild(30);
 
     const bool relightNow = g_relightLotsRequested.exchange(false);
     if (relightNow || (g_lotRelightPending && now >= g_lotRelightAt)) {
@@ -1582,8 +1591,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             S3SS_TR("As paredes externas recebem a luz das lampadas com a forca escolhida (desligado = como o jogo).",
                     "Outside walls get lamp light at the chosen brightness (off = the game's own dim wall light)."));
         RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 2.0f, 0.25f, 4.0f,
-            S3SS_TR("Multiplica a luz das lampadas nas paredes externas (1 = como o jogo). O jogo acende as paredes bem mais fraco que os objetos.",
-                    "How strongly lamps light outside walls (1 = like the game, which lights walls much dimmer than objects)."));
+            S3SS_TR("Intensidade da luz das lampadas nas paredes externas, durante o dia e a noite.",
+                    "Intensity of lamp light on outside walls, by day and night."));
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
             S3SS_TR("Luminarias externas iluminam as paredes e pisos de todos os andares (a luz nao corta mais na linha do piso).",
                     "Outdoor lights reach the walls and floors of every story (no cut at the floor line)."));
@@ -1867,7 +1876,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             // lamps created from now on take the new colour once the slider is let go (OnPresent re-colours the others)
             if (!MenuSliderHeld()) ObjectLightBridge::SetLampTint(g_lampTint, g_lotTintOwn ? g_lotLampTint : g_lampTint);
             LotLightBridge::SetFenceGroundLight(g_fenceGround, g_fenceGroundStrength);
-            LotLightBridge::SetWallGain(g_walls ? g_wallStrength : 1.0f);
+            LotLightBridge::SetWallGain(g_wallStrength, g_walls);
             LotLightBridge::SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength);
             LotLightBridge::SetObjectPixelLights(g_objPixelLights, g_objPixelLightStrength);
             LightmapSmooth::SetGpuPreferred(g_smoothMapsGpu);
@@ -2330,7 +2339,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ApexUi::GroupLabel("WALLS");
                 bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
                 if (g_walls)
-                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "How bright lit walls get; 100% is the game's dim look", 2.0f);
+                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 2.0f);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)

@@ -286,6 +286,77 @@ int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
     return LampScaleAfter(t, ins, static_cast<size_t>(fetch), Num(t[ins[fetch].at + 1]));
 }
 
+bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler) {
+    if (t.empty() || (t[0] != 0xFFFF0200 && t[0] != 0xFFFF0300) || sampler >= 16) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    // Scan assumes normal instruction sizes. Reject malformed declarations first.
+    for (const Ins& x : ins)
+        if ((x.op == kDcl && x.len != 2) || ((x.op == kDef || x.op == kDefI) && x.len != 5) ||
+            (x.op == kDefB && x.len != 2) || IsFlow(x.op) || (t[x.at] & 0x10000000u)) return false;
+    const Usage u = Scan(t, ins);
+    const int tempLimit = t[0] == 0xFFFF0200 ? 12 : 32;
+    if (u.maxTemp + 1 >= tempLimit || u.maxSampler + 1 >= 16 || !u.afterLastSamplerDcl) return false;
+    const Ins* fetch = nullptr;
+    bool declared = false;
+    for (const Ins& x : ins) {
+        if (x.op == kDcl) {
+            if (IsReg(t[x.at + 2], kSampler, sampler)) {
+                if ((t[x.at + 1] & 0x78000000u) != 0x10000000u || declared) return false; // 2D only
+                declared = true;
+            }
+            continue;
+        }
+        if (x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; ++k) {
+            const DWORD r = t[x.at + k];
+            if ((r & 0x80000000u) && (r & 0x2000u)) return false; // relative addressing
+            if (!IsReg(r, kSampler, sampler)) continue;
+            if (fetch || x.op != kTexld || x.len != 3 || k != 3 || (t[x.at] & 0x00FF0000u)) return false;
+            fetch = &x;
+        }
+    }
+    if (!declared || !fetch) return false;
+    const DWORD dest = t[fetch->at + 1], uv = t[fetch->at + 2];
+    if (Type(dest) != kTemp || WMask(dest) != 0xF || (dest & 0x00100000u) ||
+        (Type(uv) != kInput && Type(uv) != kTexture) || (uv & 0x0F002000u) || Swz(uv) != kSwzXYZW) return false;
+    const DWORD spare = static_cast<DWORD>(u.maxSampler + 1), temp = static_cast<DWORD>(u.maxTemp + 1);
+    // Match the original read's partial precision, then replace only alpha.
+    Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, spare)}},
+              {End(*fetch), {Op(kTexld, 3), Dst(kTemp, temp) | (dest & 0x00200000u), uv, Src(kSampler, spare),
+                             Op(kMov, 2), Dst(kTemp, Num(dest), 8), Src(kTemp, temp, kSwzW)}}});
+    extraSampler = spare;
+    return true;
+}
+
+bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst) {
+    // Exact captured native-alpha variant plus the light accumulator pattern.
+    // Unstudied variants keep their existing shader, including compact terrain.
+    if (t.size() != 387 || t[0] != 0xFFFF0300) return false;
+    DWORD hash = 2166136261u;
+    for (DWORD word : t) hash = (hash ^ word) * 16777619u;
+    if (hash != 0x3A0A3E52u) return false;
+    const auto ins = Parse(t);
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 2 >= 32 || u.maxConst >= 223) return false;
+    const Ins* sum = nullptr;
+    for (const Ins& x : ins) {
+        if (x.op == kMad && x.len == 4 && IsReg(t[x.at+1], kTemp, 1) && WMask(t[x.at+1]) == 7 &&
+            IsReg(t[x.at+2], kTemp, 1) && IsReg(t[x.at+3], kConst, 8) && Swz(t[x.at+3]) == kSwzX &&
+            IsReg(t[x.at+4], kTemp, 5)) {
+            if (sum) return false;
+            sum = &x;
+        }
+    }
+    if (!sum) return false;
+    const DWORD tmp = static_cast<DWORD>(u.maxTemp + 1);
+    Apply(t, {{End(*sum), {Op(0x0A, 3), Dst(kTemp, tmp, 7), Src(kTemp, 1), Src(kConst, 223, kSwzY),
+                          Op(kLrp, 4), Dst(kTemp, tmp + 1, 7), Src(kConst, 223, kSwzX), Src(kTemp, tmp), Src(kTemp, 1),
+                          Op(kMov, 2), Dst(kTemp, 1, 7), Src(kTemp, tmp + 1)}}});
+    blendConst = 223;
+    return true;
+}
+
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);

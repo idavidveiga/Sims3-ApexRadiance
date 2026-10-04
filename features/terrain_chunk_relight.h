@@ -48,8 +48,11 @@ bool Editing(); // resolved WorldManager mode 2 (editInGameMode); unknown modes 
 // quarter of the world), the terrain not ready. `chunks` lists "(ix,iz) ..." for the log.
 int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent = false);
 // Phase 2: queues every chunk, nearest to (x, z) first (eye = nullptr: grid order); drops a pending local queue (the
-// sweep covers it). 0 with `why` when not possible (as above, and any chunk without a rebuilt light map).
-int QueueSweep(const float* eyeXZ, std::string& why, std::string& info);
+// sweep covers it). An older in-flight bake is repeated for the new state.
+// Interactive Build preview prioritizes at most four nearest chunks with a known
+// eye; the measured-cost reserve and render gates are unchanged.
+// 0 with `why` when not possible (as above, and any chunk without a rebuilt light map).
+int QueueSweep(const float* eyeXZ, std::string& why, std::string& info, bool interactive = false);
 // A batch is queued or in flight
 bool Busy();
 

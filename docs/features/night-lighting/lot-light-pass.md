@@ -1,5 +1,74 @@
 # Lot light pass (street lamps inside lots)
 
+## Daytime terrain composition candidate (11-52 F7 pair, 2026-10-04)
+
+The 11:52:00 and 11:52:03 probes use identical smoothed lamp and native-alpha
+textures. Effective lamp scales agree: single c7.x=1.21467388, multi
+c3.x=1.10212243 squared. The inner pixel additionally runs terrain material
+passes and the recognized multipass lighting shader with DESTCOLOR/SRCCOLOR
+blending. Its output writes half the illumination to an 8-bit target before
+doubling it during material blending; lighting above 2 is clipped. The single
+shader applies albedo before target clipping and retains that extra light.
+
+Native D3D9 GPU fixtures with both captured shaders reproduce the mismatch:
+the same 0.2 material and 1.35 sunlight produce single 131 vs multi 102 with
+full lamp-map RGB at the captured gain. With lamps absent, both produce 69.
+This is a demonstrated composition discrepancy, not a full reconstruction of
+the player's pixel inputs or proof that every boundary has this cause.
+
+The candidate matches the existing multipass lighting ceiling in the captured
+single variant during daylight, before albedo and fog. Twilight smoothly
+recovers the existing result; full night uses the previous alpha-only shader,
+without the new instructions. Native solar alpha, lamp maps, terrain strength,
+wall/object balance and material passes are unchanged. This matches a hardware
+composition range; it is not a new physical lamp attenuation model.
+
+PatchTerrainDaylightRange requires the studied alpha-patched PS3 shader's size,
+DWORD FNV hash 3A0A3E52 and light-accumulator instruction pattern. Unstudied
+variants remain unchanged. Three ALU instructions, two free temporaries and a
+saved/restored c223 are used, with no texture read, target copy or extra draw.
+Missing shader creation or failed constant access retains the previous shader.
+The shader cache releases on shutdown. Probe text reports the candidate match.
+
+GPU tests compare all RGB pixels at six lamp levels, preserve lamp-free pixels,
+check three twilight weights and zero-weight night identity, and reject foreign
+or mutated bytecode. Current GPU/policy suite: 2,003,751 checks / 0 failures;
+extracted resource suite: 13,642 / 0. Same-lot gameplay and DXVK confirmation
+remain pending; no FPS improvement is claimed.
+
+## Daylight lamp RGB and native solar alpha (2026-10-04)
+
+Current correction: world single/multi-pass shaders can set their lamp RGB factor
+to zero during daytime Build preview even with illuminated map RGB. A separate
+daylight lamp term is applied consistently to world terrain and the terrain part
+of the replacement lot pass. Native lot/window-map scaling remains unchanged.
+The old and new actual replacement HLSL are compared by GPU readback at night
+(one 8-bit LSB tolerance), including soft-edge weights.
+
+The native world light map's alpha is solar visibility, used by both captured
+world variants. Smoothing it together with lamp RGB could change solar shading.
+Supported shaders now sample native alpha on a spare sampler, retaining the
+smoothed RGB. Native filtering, LOD, addressing and sRGB states are cloned for
+that sampler and restored after the draw; failures restore partial changes.
+Unsupported bytecode or D3D9 shader creation keeps the native map. The patched
+copy is cached per pinned game shader and released on shutdown. A supported
+smooth draw adds one texture read and one alpha move. No raw game map is changed.
+
+See [terrain lighting tests](../../../tools/terrain_lighting_test/README.md).
+This correction still needs gameplay validation on the captured scene and DXVK;
+historical user acceptance below concerns the earlier night implementation.
+
+### State and fallback review (2026-10-04)
+
+The regular and snow lot paths initialize atlas coordinates even when smoothing
+is disabled or the atlas is not ready. Previously the chunk fallback calculated
+an unused atlas mapping from uninitialized floats. The regular lot pass also
+requires a successful read of the original c28..c31 constants before replacing
+the draw. A failed read leaves the native draw instead of attempting to restore
+indeterminate constants afterward. Successful draw math and texture selection are
+unchanged. Failure injection checks this fallback; occurrence of the failed API
+read in gameplay has not been established.
+
 > **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) exactly as described (replacement HLSL, atlas mapping of
 > c14, chunk fallback, the three experimental switches). Only the status text differs (Portuguese in v0.1.0) and the
 > pre-creation of the replacement at `CreatePixelShader` (`PrecreatePs`) is post-0.1.0 (v0.1.0 compiles it at the first

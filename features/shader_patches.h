@@ -26,6 +26,12 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
 // instruction), -1 when there is none that scales the map alone.
 int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler);
 
+// Keep native terrain alpha (solar visibility) when smoothing lamp RGB. A single
+// direct light-map read is required; unsupported layouts are left untouched.
+bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler);
+// Captured single-pass variant: match the native multipass lighting range in daylight.
+bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst);
+
 // Snowy floor tiles: the vertex shader already outputs world xz in TEXCOORD0.zw. The pixel shader lights the floor
 // only with the lot light map ("texld rA, v2, s2" ... "mul rB.xyz, rC.w, rA"); add the world light atlas:
 // uv = v0.zw * cK.xy + cK.zw, "max rB.xyz, rB, atlas".

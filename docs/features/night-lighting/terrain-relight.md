@@ -1,5 +1,89 @@
 # Terrain relight (lot lamps in the terrain bake, story gate, dusk rebuild, reconciliation)
 
+## Priority edit follow-up (11-32-34 session, gameplay validation pending)
+
+The installed ASI hash matched the preceding daytime-consistency build. The
+recording stayed at night level 1.00. At 11:32:40.996 a user lamp recolour
+(green to blue) was observed; at 11:32:41.096 the dispatcher consumed it as
+"merged into the armed rebuild". That message is not proof of fresh pixels.
+The recording does not contain a daytime draw probe or a video stream.
+
+Priority lamp edits now retain their reconciliation work when a countdown is
+already armed. They may queue their old/new footprints ahead of unrelated local
+arrival batches as well as background sweeps. QueueLocal's existing fresh
+batch ownership, one-flight rule, measured-cost reserve, queue limits and native
+render gates are preserved. Automatic edits still merge/serialize; loading and
+scheduled phase work still coalesce. The render callback remains responsible for
+completion; no direct synchronous full-world rebuild was added.
+
+The new extracted-dispatch fixture covers both old early exits, the priority
+route, snapshot wait, automatic serialization and load/phase merge. It compiled,
+but its execution was cancelled by the system in this run; approval remains
+pending. Queue and resource fixtures passed. Native D3D9 device creation failed,
+so current GPU pixel validation also remains pending. No gameplay latency is
+established by these fixtures.
+
+## Daylight transition correction (2026-10-04, pending gameplay validation)
+
+The 02-05-41 session captures daytime terrain with the lamp map bound but its
+RGB multiplier zero (`c7.x`, world single pass; `c3.x` squared, multi-pass). A bound
+texture is not evidence of visible lamp light. The recording does not include the
+day/night transition itself, so it cannot establish the precise history of the
+geometric boundary in the screenshot.
+
+Priority lot edits and forced feature changes are no longer discarded by the
+daytime/dusk deferral. Ordinary automatic events retain their streaming,
+animation, comparison and rate guards. The existing automatic terrain rebuild
+setting now reconciles both settled endpoints (>0.99 night, <0.01 day), including
+Build mode preview transitions. Reversing the level cancels a stale delayed target;
+world loading merges the phase work. Each accepted endpoint queues the existing
+paced sweep, retaining its render gates and chunk budget, or the existing full
+fallback. Refusal reasons are logged even without developer mode.
+
+The world's baked lamp RGB receives a daylight term independent of the native
+zero factor. The night formula stays the previous night-weighted gain; the
+multi-pass constant accounts for the game's square. The lot replacement applies
+the same daylight term to terrain RGB while preserving the native lot/window
+map's scale. No solar or sky constants are raised to make lamps brighter.
+
+Tests and limits: [terrain lighting harness](../../../tools/terrain_lighting_test/README.md).
+Compilation and automated pixel readback do not establish game latency or FPS.
+The 80 ms quiet / 500 ms continuous priority debounce, local footprint bounds,
+camera fallback, one-chunk release pacing and safety checks are unchanged.
+
+### Build preview response follow-up (03-15-30 session)
+
+The installed ASI matched the preceding daylight correction. The recording
+reached day at 03:15:36.438, but the sweep started at 03:15:38.362; it reached night
+at 03:15:40.501, but the sweep started at 03:15:42.487. These 1.924 s / 1.986 s waits
+match the saved `atrasoSegundos = 2.0`. The 64-chunk background sweep also retains
+its eight-release-per-second baseline, so full-world completion takes seconds.
+The local lamp change queued in approximately 113 ms; this recording lacks its
+completion log and does not prove input-to-visible latency.
+
+Resolved Build editing (`WorldManager +0x1B4 == 2`) now consumes an endpoint
+without the saved phase delay. Live mode keeps that delay; world loading still
+merges phase work. With a valid camera, at most four nearest sweep chunks receive
+priority. Their existing four-release reserve is available only after a measured
+chunk cost of at most 12 ms; unknown or slower renders keep the baseline. No
+render gate, rolling cap, one-flight limit or free frame is bypassed. Refusal logs
+now distinguish native data gates `+0x1D`/`+0x20` and tool gate `+0x6C`.
+
+A sweep for a new phase no longer counts an older in-flight bake as its own
+completion, even when that bake already signalled completion. The new batch
+queues every chunk again for the current state; the older flight finishes through
+the existing safe path. This prevents false completion across rapid phase changes
+without interrupting native work. Local completion is logged in normal mode too.
+
+Extracted production queue tests cover old-flight ownership, 3,000 randomized
+handoffs, nearest-first ordering, priority bounds, refusal without queue changes,
+gates, caps and changed terrain ownership. Gameplay remains pending: measure
+visible near-camera response, final state after rapid reversals and fallback
+frequency/hitches during Build transitions. This follow-up changes scheduling,
+not the daylight shader strength or falloff. Exterior wall lighting is a separate
+native map/constant path; these terrain captures do not establish its daytime
+lamp contribution. Probe the wall draw before changing that path.
+
 > Current release 2.5.6: world-owned lamp edits reconcile terrain and native object rigs. See [world lamp response](world-lamp-response.md) for the current policy, captured evidence and validation limits. The split-baseline status below is historical; later sections record subsequent work.
 
 ## Historical split baseline

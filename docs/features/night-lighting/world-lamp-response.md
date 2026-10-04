@@ -78,3 +78,26 @@ No FPS gain or instantaneous response is established by the offline tests.
 The final Release x86 build and translation checks passed. The player reported
 the test2 response as correct before publication. Still measure the global rig
 refresh cost and compare repeated edits, streaming, dusk/dawn and indoor lights.
+
+## Private response review (2026-10-04)
+
+A native full terrain rebuild can finish before the 80 ms edit debounce. The
+terrain-covered path previously called `FinishEdit`, ending the pending edit
+before its independent world-lamp rig request was consumed. Objects could retain
+their older native light despite terrain completion. `FinishEdit` now consumes
+that request too; the normal debounce uses the same helper. Each pending request
+is consumed once, and a world reset still discards the previous world's request.
+This changes update correctness, not the lamp colour, gain, falloff or selection.
+
+On world change, the direct lamp pool, selection memo generation, GPU rows and
+enumeration scratch are cleared alongside terrain maps and bake snapshots. The
+next lamp read is requested immediately. New geometry cannot receive cached
+roof/water/object lamp rows from the preceding world while enumeration is pending
+or unsuccessful. The current-world animated-lamp count resets too. New lamp
+observations still follow the original streaming rules.
+
+Regression checks extract the production edit completion, world-change and lamp
+selection functions and substitute engine memory/timing. They cannot establish
+visual latency or global rig-refresh cost. The player reported the latest supplied
+terrain test build as excellent before this additional review; that is qualitative
+acceptance of the tested scene, not validation of these follow-up changes.

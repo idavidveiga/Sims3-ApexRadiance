@@ -1,5 +1,14 @@
 # Walls
 
+## Latest daytime balance candidate (2026-10-04)
+
+After the player reported that the 0.25 daytime response was still too strong,
+the shared daytime surface factor is now 0.08. Wall scale is
+`native * gain + (1-night) * min(gain,1) * 0.08`; full night retains the exact
+previous multiplication. This is visual tuning awaiting gameplay approval.
+The 11-32-34 session stayed at night; it cannot establish a new daytime shader
+failure. Solar constants, materials and terrain intensity remain unchanged.
+
 > **Status in the standalone:** in the v0.1.0 baseline (b84d5f1) as described: level light share (with the cross-storey
 > wall test) and the wall gain table. The per-pixel wall plan (PASSO3) was never implemented in any build.
 
@@ -36,10 +45,10 @@ Two defects:
 | UI label | TOML key | Type | Default | Range | Notes |
 |---|---|---|---|---|---|
 | Outdoor lights reach every story | `luzExternaEntreAndares` | bool | true | | Main. Live: `LevelLightShare::Install/Uninstall` (re-gathers all lots). Full detail in [level-light-share.md](level-light-share.md) |
-| Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | UI 1..4; `LotLightBridge::SetWallGain` clamps 0.25..8 | Adv / Walls and roofs. 1 = the game. Live (pushed every frame) |
+| Lamp light on outside walls | `forcaNasParedes` | float | 2.0 | UI 0.25..4; `LotLightBridge::SetWallGain` clamps 0.25..8 | Buildings / Walls. Lamp RGB multiplier by day and night. Off (`paredesComLuz`) preserves native walls. Live (pushed every frame) |
 
 The wall gain works even with "Street lamps light inside lots" off: `WallGain` is dispatched before the bridge-enabled
-check in `OnDrawInner`, and `UpdateHooks` keeps the draw hooks registered whenever the gain != 1.
+check in `OnDrawInner`, and `UpdateHooks` keeps the draw hooks registered while the wall feature is enabled, including gain 1.
 
 ## How it works
 
@@ -89,8 +98,34 @@ counted as "on another thread".
   nowhere else. None of the other families (InteriorWall, ExteriorWallAOSI, UnlitExteriorWall; 27 variants) matches.
 - K is per variant because in 24 variants c3.x is the **bloom threshold**, not the lamp scale (notes 25/09 16:25).
 - `ClassifyPsCode` -> `WallLampConst(code, size)`: FNV-1a match -> `PsClass::WallGain`, K stored in `g_wallConst[ps]`.
-- Per draw: gain = `g_wallGain` (UI value); if gain == 1, the game draws. Else read `cK`, write `cK.x * gain`, draw,
-  restore `cK`. Counter `g_wallDrawn`. The shader itself is never changed.
+- Per draw: if disabled, the game draws. Otherwise read `cK` and use
+  `TerrainLightingPolicy::WallLampScale`: `native * gain + (1 - night) * min(gain, 1) * 0.25`.
+  At full night the exact previous multiplication is returned without adding zero.
+  The daytime complement is limited to a quarter of the unboosted lamp scale:
+  the 11:13 follow-up confirmed full-day c3.x=1 with the latest installed build,
+  but the user still found the wall too saturated. This is visual tuning; the
+  quarter response requires gameplay approval, not a claimed physical ratio.
+  Saved strengths below 1 remain lower; no saved setting is rewritten.
+  Only `.x` changes; draw once and restore the full constant. Invalid inputs,
+  failed reads, unknown shaders and unchanged scales preserve the native draw.
+  Counter `g_wallDrawn`. The shader itself is never changed.
+
+Daytime F7, 2026-10-04 10:28:03: `PS_265EBE18.bin` is 1372 bytes,
+FNV-over-DWORDs `04956FE9` (ExteriorWall_PS_1119, K=3). The captured
+`c3=(0,0.188235313,0,0)` makes `mad r5.xyz,r1,c3.x,r2` discard all
+lamp RGB sampled from s2. This confirms a rendering-scale defect, independent
+of whether the particular lamp has reached the sampled wall strip. The map
+contains nonzero RGB elsewhere; it is not proof of illumination at that pixel.
+The new daytime term exposes the existing baked lamp RGB without changing
+sun, sky, wall-map alpha, textures or occlusion. A separate enabled state keeps
+Off native even at daytime, while 100% enabled supplies the day term.
+
+Validation uses the actual captured pixel shader on native D3D9 with controlled
+materials/maps: the old zero-factor failure is reproduced, corrected lamp RGB
+is read back by day and twilight, full-night pixels remain identical, and empty
+lamp maps remain unchanged. Extracted production draw tests cover toggles,
+failed reads, constant restoration and invalid factors. This does not replace
+visual validation of the player's lot or establish instant wall-map baking.
 
 ## Files and functions
 

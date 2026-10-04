@@ -1,8 +1,26 @@
 # Objects and rigs (lamp light on outdoor objects)
 
+Latest balance candidate (2026-10-04): the player rejected the 0.25 daytime
+surface response as too bright. The shared SurfaceLampGain daytime endpoint
+is now `min(gain,1) * 0.08`, smoothly returning to the exact saved strength at
+full night. Terrain brightness, native vertex light lower bounds and CPU rig
+boost are unchanged. GPU fixtures verify the recognized object/wall/instanced
+paths under controlled inputs; visual balance in the player's scene is pending.
+
 > Current release 2.5.6: world-owned lamp edits reconcile terrain and native object rigs. See [world lamp response](world-lamp-response.md) for the current policy, captured evidence and validation limits. The split-baseline status below is historical; later sections record subsequent work.
 
 ## Historical split baseline
+
+Private daytime balance follow-up, 2026-10-04: `DrawObjectLamp` now uses
+`TerrainLightingPolicy::SurfaceLampGain` for its ground-map strength and
+per-pixel lamp strength. The full-day value is `0.25 * min(strength, 1)`, then
+it fades smoothly to the exact configured value at full night. Lower strengths
+are never raised. The shared policy now also reaches `DrawInstanced` and the
+snow-on-object path, so instanced furniture uses the same daytime response.
+This adjusts only the added lamp terms, not sunlight, ambient colour, lamp RGB,
+falloff, texture mapping or saved settings. The CPU rig boost remains unchanged:
+the 11:13 session's furniture F7 identified the instanced-structure atlas path,
+not the CPU rig boost. Native or unrecognized object paths remain unmodified.
 
 > **Status at the original split:** the CPU part (`object_light_bridge.cpp`: 9-class rig boost, cap, `RigCtorForce`, fenced
 > yards) and `RigTracker::CurrentMode` are in the v0.1.0 baseline (b84d5f1). The GPU patch is in v0.1.0 in its **older

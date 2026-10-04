@@ -1,5 +1,10 @@
 # Fences, railings, posts and stairs
 
+Latest balance candidate (2026-10-04): SurfaceLampGain now uses a 0.08 daytime
+endpoint after player feedback on the 0.25 candidate. This also applies to the
+captured instanced bench and snow-on-object paths. Full-night math, native vertex
+light lower bounds and solar inputs are unchanged; gameplay validation remains.
+
 > **Status in the standalone:** the v0.1.0 baseline (b84d5f1) has the ground term only: `max(atlas x strength, vC)`
 > (`IsInstancedStructureVs` without `worldY`, `PatchInstancedLamps` without `pixelLamps`, one cache `g_fencePs`). The
 > per-pixel lamps on fences (`worldY`, `g_fenceLampPs`, `AppendPixelLamps`, `RigTracker::CurrentCentre`) are post-0.1.0;
@@ -17,6 +22,23 @@ Related: [objects-and-rigs.md](objects-and-rigs.md) (rig background, per-pixel l
 [world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md), [../../engine/light-objects-and-rigs.md](../../engine/light-objects-and-rigs.md).
 
 ## Purpose
+
+Private daytime follow-up, 2026-10-04: the 11:13:54 F7 of an outdoor bench
+is an instanced-structure draw (three instances, 160 primitives), with patched
+`PS_3019F738.bin` (912 bytes, FNV-over-DWORDs C0F5CCD7). Its lamp term is
+`max(atlas * c13.x, COLOR0)`; c13.x was 0.993083 while night level was zero.
+VS c8..c11 were zero, so the captured object's lamp colour came from the atlas.
+The earlier object-only adjustment did not reach this path.
+
+`DrawInstanced` now supplies the shared `SurfaceLampGain`: quarter response
+at full day (`0.25 * min(strength, 1)`), smooth recovery to the exact configured
+night strength. Snow on objects uses the same policy. Native vertex lighting
+remains the existing lower bound, preserving the shader's original max rule.
+Sunlight, geometry, materials, atlas mapping and saved settings are unchanged.
+The exact captured bench pixel shader is tested on native D3D9 with controlled
+inputs: lower day lamp response, identical full-night pixels, and identical
+lamp-free sunlight pixels. Production DrawInstanced is also extracted for
+device-state restoration and toggle tests. Actual scene appearance is pending.
 
 Two shader families draw fences in the game:
 
