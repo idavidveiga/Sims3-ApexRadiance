@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — Lighting + Bloom Census diagnostic
+
+**Status:** diagnostic/testing  
+**Base with current LOD work:** `8e59f6fb10219fde0cd6041559a91417c9eb2f74`
+
+### What changed
+
+- Added a read-only developer diagnostic named **Lighting + Bloom census**.
+- It records visible draw families for 3 frames and writes `ApexRadiance_LightingBloomCensus.txt`.
+- For each captured row it records:
+  - draw path and rig mode;
+  - whether Apex claimed/replaced the draw;
+  - separate day, twilight and night counts using `g_night`;
+  - representative world position when available;
+  - shader hashes/sizes and light-map textures;
+  - known bloom-mask families (walls, objects, roofs) and possible instanced-structure candidates.
+- The diagnostic does **not** change RGB lighting, bloom strength, shader constants or the rendered image.
+
+### Files changed
+
+- `features/lot_light_bridge.cpp`
+- `features/lot_light_bridge.h`
+- `patches/night_terrain_relight_patch.cpp`
+
+### Output interpretation
+
+Rows with `day/fixed > 0` identify draw families that Apex is still modifying in full daylight.  
+Rows marked `bloom=YES` or `bloom=POSSIBLE` identify the first families to investigate for the game's bloom mask.
+
 ## Unreleased — Fence/stair ground light follows night level
 
 **Status:** testing  
