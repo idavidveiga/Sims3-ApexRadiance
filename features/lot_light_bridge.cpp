@@ -57,6 +57,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -2826,6 +2827,29 @@ struct CensusRow {
     std::string tex;
 };
 std::map<std::pair<IDirect3DVertexShader9*, IDirect3DPixelShader9*>, CensusRow> g_census;
+
+// Lighting + Bloom census: development-only, read-only diagnostic. Unlike the legacy census (shader-pair coverage),
+// this also keeps a coarse world position and the day/twilight/night split so we can see which Apex paths still claim
+// draws in daylight, and which known scene families can feed the game's bloom mask.
+struct LightingBloomRow {
+    int draws = 0, claimed = 0;
+    int dayDraws = 0, dayClaimed = 0;
+    int twilightDraws = 0, twilightClaimed = 0;
+    int nightDraws = 0, nightClaimed = 0;
+    UINT prims = 0;
+    int rig = -1;
+    int bloom = 0; // 0=no known bloom-mask family, 1=known (walls/objects/roofs), 2=possible (instanced structures)
+    float minNight = 1.0f, maxNight = 0.0f;
+    bool havePos = false;
+    float x = 0, y = 0, z = 0;
+    std::string path;
+    std::string tex;
+};
+std::atomic<int> g_lightingBloomFrames{0};
+bool g_lightingBloomPending = false;
+using LightingBloomKey = std::tuple<IDirect3DVertexShader9*, IDirect3DPixelShader9*, int, int>;
+std::map<LightingBloomKey, LightingBloomRow> g_lightingBloom;
+
 std::unordered_map<IDirect3DPixelShader9*, bool> g_psIs3;
 IDirect3DPixelShader9* g_magenta[2] = {}; // ps_2_0, ps_3_0
 bool g_magentaTried = false;
@@ -2851,6 +2875,46 @@ bool LitCandidate(IDirect3DDevice9* dev, std::string& desc) {
     return lit;
 }
 
+const char* LightingBloomPath(int rig) {
+    if (g_curClass == PsClass::ObjectRig) return "ObjectRig";
+    if (g_curClass == PsClass::Roof) return "Roof";
+    if (g_curClass == PsClass::RoofSnow) return "RoofSnow";
+    if (g_curClass == PsClass::Lake) return "Lake";
+    if (g_curClass == PsClass::WallGain) return "ExteriorWall";
+    if (g_curVsIsFoliage) return "Foliage";
+    if (g_curVsIsRoad) return "Road";
+    if (g_curVsIsFloor) return "Floor";
+    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return "OutdoorFloor";
+    if (g_curVsIsInstanced) return "Fence/Stair/Instanced";
+    if (g_curVsIsSnowCover) return "SnowOnObject";
+    if (g_curVsIsSnowRelief) return "SnowOnStair";
+    if (g_curVsIsObject) return rig == 0 ? "IndoorObject" : "OutdoorObject";
+    if (g_curClass == PsClass::LotLightSnow) return "SnowLot";
+    if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) return "WorldCandidate";
+    if (g_curClass == PsClass::LotLight) return "LotLight";
+    return "Other";
+}
+
+int LightingBloomFamily() {
+    // docs/engine/shaders.md: walls, objects and roofs write the game's bloom mask in output alpha.
+    if (g_curClass == PsClass::WallGain || g_curClass == PsClass::Roof || g_curClass == PsClass::RoofSnow || g_curClass == PsClass::ObjectRig || g_curVsIsObject) return 1;
+    // Instanced structures use object-like shader families; keep them visible as "possible" until their alpha path is
+    // captured directly instead of claiming that every variant definitely writes the same mask.
+    if (g_curVsIsInstanced) return 2;
+    return 0;
+}
+
+bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) {
+    float m[3][4] = {};
+    int k = 8;
+    if (g_curVsIsObject && g_curVsInfo && g_curVsInfo->patched.worldK >= 0) k = g_curVsInfo->patched.worldK;
+    if (FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(k), &m[0][0], 3))) return false;
+    x = m[0][3];
+    y = m[1][3];
+    z = m[2][3];
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
+}
+
 bool PsIs3(IDirect3DPixelShader9* ps) {
     if (!ps) return false;
     auto it = g_psIs3.find(ps);
@@ -2868,15 +2932,21 @@ bool PsIs3(IDirect3DPixelShader9* ps) {
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
-    const bool fc = g_falseColor.load(std::memory_order_relaxed), census = g_censusFrames.load(std::memory_order_relaxed) > 0;
-    if (kPublicBuild || (!fc && !census) || g_inOwnCall) return OnDrawTracked(dev, draw);
+    const bool fc = g_falseColor.load(std::memory_order_relaxed);
+    const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
+    const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
+    if (kPublicBuild || (!fc && !census && !lightingBloom) || g_inOwnCall) return OnDrawTracked(dev, draw);
+
     std::string desc;
     const int rig = RigTracker::CurrentMode();
-    const bool candidate = LitCandidate(dev, desc) || rig == 2;
+    const bool litCandidate = LitCandidate(dev, desc) || rig == 2;
+    const int bloomFamily = lightingBloom ? LightingBloomFamily() : 0;
+    const bool candidate = litCandidate || bloomFamily != 0;
     const D3D9Hooks::HookAction r = OnDrawTracked(dev, draw);
     if (!candidate) return r;
     const bool claimed = r == D3D9Hooks::HookAction::Skip;
-    if (census) {
+
+    if (census && litCandidate) {
         CensusRow& row = g_census[{g_curVs, g_curPs}];
         row.draws++;
         row.claimed += claimed ? 1 : 0;
@@ -2884,7 +2954,42 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
         row.rig = rig;
         if (row.tex.empty()) row.tex = desc.empty() ? " (so rig)" : desc;
     }
-    if (claimed || !fc || !g_curPs) return r;
+
+    if (lightingBloom) {
+        float x = 0, y = 0, z = 0;
+        const bool havePos = LightingBloomPosition(dev, x, y, z);
+        const int qx = havePos ? static_cast<int>(std::lround(x * 2.0f)) : 0;
+        const int qz = havePos ? static_cast<int>(std::lround(z * 2.0f)) : 0;
+        LightingBloomRow& row = g_lightingBloom[{g_curVs, g_curPs, qx, qz}];
+        row.draws++;
+        row.claimed += claimed ? 1 : 0;
+        row.prims += g_curPrims;
+        row.rig = rig;
+        row.bloom = std::max(row.bloom, bloomFamily);
+        const float night = g_night.load(std::memory_order_relaxed);
+        row.minNight = std::min(row.minNight, night);
+        row.maxNight = std::max(row.maxNight, night);
+        if (night <= 0.01f) {
+            row.dayDraws++;
+            row.dayClaimed += claimed ? 1 : 0;
+        } else if (night >= 0.99f) {
+            row.nightDraws++;
+            row.nightClaimed += claimed ? 1 : 0;
+        } else {
+            row.twilightDraws++;
+            row.twilightClaimed += claimed ? 1 : 0;
+        }
+        if (!row.havePos && havePos) {
+            row.havePos = true;
+            row.x = x;
+            row.y = y;
+            row.z = z;
+        }
+        if (row.path.empty()) row.path = LightingBloomPath(rig);
+        if (row.tex.empty()) row.tex = desc.empty() ? (rig == 2 ? " outdoor rig" : "") : desc;
+    }
+
+    if (claimed || !fc || !litCandidate || !g_curPs) return r;
     if (!g_magentaTried) {
         g_magentaTried = true;
         for (int v = 0; v < 2; v++) {
@@ -2946,6 +3051,56 @@ void WriteCensus() {
     } catch (...) {
     }
     g_census.clear();
+}
+
+void WriteLightingBloomCensus() {
+    try {
+        const std::filesystem::path base = std::filesystem::path(ApexPaths::ApexDirectory());
+        std::ofstream out(base / L"ApexRadiance_LightingBloomCensus.txt", std::ios::trunc);
+        out << APEX_PRODUCT_NAME " Lighting + Bloom Census (read-only diagnostic)\n"
+               "Purpose: show visible draw families that Apex claims during day/twilight/night and known/possible game bloom-mask producers.\n"
+               "Bloom labels are family-level diagnostics, not measured output alpha: YES = documented walls/objects/roofs; POSSIBLE = instanced structures pending direct alpha capture.\n"
+               "Day <= 0.01, Twilight 0.01..0.99, Night >= 0.99 (g_night).\n\n"
+               "columns: path | rig | bloom | draws/fixed | day/fixed | twilight/fixed | night/fixed | night range | triangles | position | VS hash/size | PS hash/size | textures\n\n";
+
+        auto code = [](auto* sh, uint32_t& hash, UINT& size) {
+            std::vector<DWORD> t;
+            size = 0;
+            hash = 0;
+            if (sh && SUCCEEDED(sh->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+                t.resize(size / 4);
+                if (FAILED(sh->GetFunction(t.data(), &size))) t.clear();
+            }
+            uint32_t h = 2166136261u;
+            for (DWORD d : t) h = (h ^ d) * 16777619u;
+            hash = t.empty() ? 0 : h;
+        };
+
+        int dayModifiedRows = 0, bloomRows = 0, totalDraws = 0, totalClaimed = 0;
+        for (const auto& [key, row] : g_lightingBloom) {
+            IDirect3DVertexShader9* vs = std::get<0>(key);
+            IDirect3DPixelShader9* ps = std::get<1>(key);
+            uint32_t vh = 0, ph = 0;
+            UINT vsz = 0, psz = 0;
+            code(vs, vh, vsz);
+            code(ps, ph, psz);
+            totalDraws += row.draws;
+            totalClaimed += row.claimed;
+            dayModifiedRows += row.dayClaimed > 0 ? 1 : 0;
+            bloomRows += row.bloom != 0 ? 1 : 0;
+            const char* bloom = row.bloom == 1 ? "YES" : row.bloom == 2 ? "POSSIBLE" : "no";
+            const std::string pos = row.havePos ? std::format("({:.1f},{:.1f},{:.1f})", row.x, row.y, row.z) : "(unknown)";
+            out << std::format("{:<22} | {:2} | {:8} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:.3f}..{:.3f} | {:7} | {:>22} | VS {:08X}/{} | PS {:08X}/{} |{}\n",
+                               row.path, row.rig, bloom, row.draws, row.claimed, row.dayDraws, row.dayClaimed, row.twilightDraws, row.twilightClaimed,
+                               row.nightDraws, row.nightClaimed, row.minNight, row.maxNight, row.prims, pos, vh, vsz, ph, psz, row.tex);
+        }
+        out << std::format("\nSUMMARY: {} rows, {} draws, {} Apex-claimed draws, {} rows modified in full daylight, {} bloom-family rows.\n",
+                           g_lightingBloom.size(), totalDraws, totalClaimed, dayModifiedRows, bloomRows);
+        out << "Interpretation: rows with day/fixed > 0 are the first candidates for daylight-lighting review. Bloom=YES/POSSIBLE identifies families worth a direct alpha/composite probe next.\n";
+        LOG_INFO(std::format("[LotLightBridge] Lighting + Bloom census written: {} rows, {} daylight-modified", g_lightingBloom.size(), dayModifiedRows));
+    } catch (...) {
+    }
+    g_lightingBloom.clear();
 }
 
 bool g_keepChunks = false; // Shutdown(true): a reinstall keeps the chunk maps, smoothed maps and atlas (same world)
@@ -3147,12 +3302,25 @@ void RequestCensus() {
 
 std::string CensusStatus() { return g_censusPending ? "writing..." : "ready"; }
 
+void RequestLightingBloomCensus() {
+    if (g_lightingBloomPending) return;
+    g_lightingBloom.clear();
+    g_lightingBloomPending = true;
+    g_lightingBloomFrames = 3;
+}
+
+std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
+
 void OnPresent() {
     g_lotDrawTick = GetTickCount();
     if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
         WriteCensus();
         g_censusPending = false;
+    }
+    if (g_lightingBloomPending && g_lightingBloomFrames.load() > 0 && --g_lightingBloomFrames == 0) {
+        WriteLightingBloomCensus();
+        g_lightingBloomPending = false;
     }
     // Lot rectangles for the soft lot edges: every 20 frames, or 5 frames after a lot pass found none (a lot that
     // streamed in) so a new lot gets its feather within a few frames.
