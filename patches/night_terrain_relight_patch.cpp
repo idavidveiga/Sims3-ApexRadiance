@@ -2409,6 +2409,11 @@ class NightTerrainRelightPatch : public ApexPatch {
             if (ImGui::Button("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
+            if (ImGui::Button("Lighting + Bloom census")) LotLightBridge::RequestLightingBloomCensus();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", LotLightBridge::LightingBloomCensusStatus().c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Writes ApexRadiance_LightingBloomCensus.txt. Read-only: records which visible draw families Apex modifies in day/twilight/night and flags known/possible bloom-mask families.");
         }
         if (ImGui::Button("Rebuild terrain light now")) g_kickRequested = true;
         ImGui::SameLine();
