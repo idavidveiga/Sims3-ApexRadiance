@@ -1,5 +1,11 @@
 # Night Lighting
 
+> **Current 2026-10-04 refinement / correction changelog:** [Night Lighting refinement changelog](../night-lighting-changelog.md).
+> It records the current user-facing options, day/night isolation fixes, wall/foundation bloom correction, cinema daytime
+> bloom guards, diagnostics and the final validation target. Older implementation-history notes below are retained as
+> subsystem research context.
+
+
 > **Status in the standalone:** the standalone's Night Lighting starts from **v0.1.0** (commit b84d5f1, 27/09), not from
 > `combined-final`. Everything below that came after v0.1.0 is **not** in the standalone yet and is re-added one change at
 > a time after a user test, fences first: the story gate 0xC294D9 and the relight reconciliation / local relight
