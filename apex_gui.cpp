@@ -1835,8 +1835,7 @@ void ProfilesTab() {
             const bool confirming = s.confirmDelete == name;
             const bool picking = s.loading == name;
             const float loadW = ApexUi::ButtonWidth("Apply", true), delW = ApexUi::ButtonWidth("Delete", true);
-            const float cancelW = ApexUi::ButtonWidth("Cancel", false);
-            const float controlsW = picking ? 0.0f : confirming ? delW + gap + cancelW : loadW + gap + delW;
+            const float controlsW = picking ? 0.0f : delW + gap + loadW;
             const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
             const char* description = confirming ? "Delete this profile?" : picking ? "Choose what to apply" : partsText.c_str();
             ApexUi::SetNextRowUntranslated(); // the name is the user's
@@ -1850,7 +1849,7 @@ void ProfilesTab() {
                         s.listDirty = true;
                     }
                     ImGui::SameLine();
-                    if (ApexUi::TextButton("Cancel")) s.confirmDelete.clear();
+                    if (ApexUi::TextButton("Cancel", nullptr, ButtonKind::Secondary, loadW)) s.confirmDelete.clear();
                 } else if (!picking) {
                     if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
                         s.confirmDelete = name;
@@ -2796,25 +2795,30 @@ void Banner() {
 
 // ---- The start note (user's pick 30/09, "A Ã‚Â· compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
-// takes input; fades out). Wait for the world-live signal and its fade-out delay before starting any launch note.
-// The same active-session readiness gate is shared by all notices and the menu; there is no application-start timer fallback.
-// Each frame counts at most 100 ms so a stall does not use up the note; opening the menu ends it. ----
+// takes input; fades out). It appears during the first loading screen after the first Present.
+// The menu and setup prompts keep their separate loaded-world readiness gate. Each frame counts at most 100 ms so a
+// loading stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 8000;
+constexpr unsigned long long kHintStartMs = 2000; // let the first loading screen settle after Present
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
 
 // Render thread, every frame (Client::AlwaysDraw)
 void UpdateHint() {
-    if (g_startup.load() != Startup::Running || !g_menuAvailable.load()) return;
+    if (g_startup.load() != Startup::Running) return;
     if (!g_hintStarted) {
-        g_hintStarted = true; // the shared readiness gate already waited for the world and the settle delay
+        const unsigned long long firstPresent = ApexD3D::FirstPresentTick();
+        const unsigned long long now = GetTickCount64();
+        if (!firstPresent || now - firstPresent < kHintStartMs) return;
+        g_hintStarted = true;
         if (ApexConfig::GetUi().keyChosen && ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
             g_hintLeftMs = kHintMs;
             g_hintLastDraw = 0;
         }
     }
-    if (g_hintConsidered.load()) return;
+    // Recommendations and key setup use world state and wait for the full menu to become available.
+    if (!g_menuAvailable.load() || g_hintConsidered.load()) return;
     g_hintConsidered.store(true);
     g_recNoteShow = ApexConfig::GetUi().recommendS3SS && AnythingRecommended(); // every start until "Don't show again"
     if (!ApexConfig::GetUi().keyChosen) g_keySetup = true;
@@ -3509,7 +3513,10 @@ class GuiClient final : public Overlay::Client {
     bool eatProbeMouseUp = false; // window thread only: the confirming click must not also select/place a game object
   public:
     void Draw() override {
-        if (!g_menuAvailable.load()) return;
+        if (!g_menuAvailable.load()) {
+            if (HintVisible() && !Captures::ScreenshotPending()) Hint();
+            return;
+        }
         if (g_returnFromProbe.load() && !LightProbe::Busy() && !Captures::ScreenshotPending() && !Captures::Saving()) {
             g_returnFromProbe.store(false);
             g_page = PageReport;
@@ -3575,9 +3582,9 @@ class GuiClient final : public Overlay::Client {
 
     bool AlwaysDraw() override {
         UpdateMenuAvailability();
-        if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return false; }
-        RunShortcuts();
         UpdateHint();
+        if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return HintVisible(); }
+        RunShortcuts();
         // the capture notes (recording, saved, an open session) show with the menu closed too
         return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
                NoticeAnimationsPending() || (!g_profiles.loading.empty() && ImGui::GetTime() - g_profiles.applyOpenedAt < 0.14) || LightProbe::Aiming() || g_returnFromProbe.load();
