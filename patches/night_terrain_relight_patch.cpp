@@ -1809,6 +1809,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             OnPresent();
             LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
             ObjectLightBridge::SetStrength(g_objStrength);
+            ObjectLightBridge::SetNightLevel(g_level);
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();
             LevelLightShare::SetIndoor(g_indoorShare);
@@ -2189,15 +2190,12 @@ class NightTerrainRelightPatch : public ApexPatch {
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
                 return changed;
             });
-            // Smooth ground light is a draw/map-filter choice, not a room/lot-lighting rule. Running the generic F9-style
-            // auto refresh here re-solves every lot and room, including ExteriorWall, even though no wall light setting
-            // changed. That made a harmless A/B of this switch capable of leaving bright wall lightmaps at night.
-            // The object rigs are the only live consumers that benefit from being re-evaluated for this A/B, so refresh
-            // those without touching terrain/lot/room lighting.
+            // Smooth ground light is only a texture/filter choice consumed directly by the draw paths. It must not
+            // re-solve rooms/lots and it also must not dirty object rigs: doing so can re-gather lamp records that are
+            // unrelated to whether the atlas is filtered. The next draw sees the new smoothed/raw map automatically.
             if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
                 NotifySettingChanged();
-                ObjectLightBridge::RequestRigRefresh();
-                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: refreshed object rigs only; terrain, lots, rooms and walls left untouched");
+                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
             }
             Edit([] {
                 ApexUi::GroupLabel("BRIGHTNESS");
