@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — Bloom Alpha Probe
+
+**Status:** diagnostic/testing  
+**LOD base:** `08a1bac1fe53586207437c42bf0ac08d06ec506e` — controlled Lot LOD 300 + Max Active Lots 16
+
+### What changed
+
+- Added **Capture bloom alpha mask** under Developer → Lighting → Census.
+- The probe captures the raw A8R8G8B8 scene alpha at the PostScene boundary, before the game's first depth-disabled draw (normally the bloom composite / UI).
+- It is read-only: no shader constants, lighting values, render states or output RGB are changed.
+- The capture is tagged automatically as Day, Twilight or Night from the current night level.
+- It writes:
+  - `ApexRadiance_BloomAlphaProbe_Day.png/.txt`
+  - `ApexRadiance_BloomAlphaProbe_Twilight.png/.txt`
+  - `ApexRadiance_BloomAlphaProbe_Night.png/.txt`
+- The PNG is the actual scene alpha as grayscale: black = alpha 0, white = alpha 255.
+- The TXT records alpha min/max, mean, percentiles, threshold counts and a 16-bin histogram.
+- One short frame hitch is expected while the GPU render target is copied to system memory.
+
+### Purpose
+
+Use one capture in daylight and one at night, with the same camera, together with `ApexRadiance_LightingBloomCensus.txt`.  
+The census identifies which draw families can write bloom; the alpha probe shows how much bloom mask actually exists on screen.
+
 ## Unreleased — Lighting + Bloom Census diagnostic
 
 **Status:** diagnostic/testing  
