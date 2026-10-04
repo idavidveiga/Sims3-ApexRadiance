@@ -126,6 +126,7 @@
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
     <ClCompile Include="features\lot_lod_streaming.cpp" />
+    <ClCompile Include="features\lot_detail_range.cpp" />
     <ClCompile Include="features\lot_lod_distance_probe.cpp" />
     <ClCompile Include="features\lot_object_throttle.cpp" />
     <ClCompile Include="features\lot_active_threshold.cpp" />
@@ -208,6 +209,7 @@
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
     <ClInclude Include="features\lot_lod_streaming.h" />
+    <ClInclude Include="features\lot_detail_range.h" />
     <ClInclude Include="features\lot_lod_distance_probe.h" />
     <ClInclude Include="features\lot_object_throttle.h" />
     <ClInclude Include="features\lot_active_threshold.h" />

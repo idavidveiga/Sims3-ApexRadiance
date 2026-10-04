@@ -34,6 +34,7 @@
 #include "resource_cache.h"
 #include "lot_lighting_motion.h"
 #include "lot_lod_streaming.h"
+#include "lot_detail_range.h"
 #include "lot_object_throttle.h"
 #include "lot_active_threshold.h"
 #include "lot_visibility_override.h"
@@ -203,6 +204,65 @@ class LotLightingMotionPatch : public ApexPatch {
 
   private:
     int budgetMs_ = Performance::kLotLightingBudgetDefault;
+};
+
+class LotDetailRangePatch;
+std::atomic<LotDetailRangePatch*> g_lotDetailRangePatch{nullptr};
+
+class LotDetailRangePatch : public ApexPatch {
+  public:
+    LotDetailRangePatch() : ApexPatch(Performance::kLotDetailRangeName, nullptr) {
+        RegisterIntSetting(&distance_, "distance", LotDetailRange::kDefaultDistance,
+                           LotDetailRange::kMinDistance, LotDetailRange::kMaxDistance,
+                           "Lot detail distance");
+        RegisterIntSetting(&maxActiveLots_, "maxActiveLots", LotDetailRange::kDefaultMaxActiveLots,
+                           LotDetailRange::kMinActiveLots, LotDetailRange::kMaxActiveLots,
+                           "Maximum detailed lots");
+        g_lotDetailRangePatch.store(this);
+    }
+    ~LotDetailRangePatch() override { g_lotDetailRangePatch.store(nullptr); }
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!LotDetailRange::Start(distance_, maxActiveLots_, &error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        LotDetailRange::Stop();
+        isEnabled = false;
+        return true;
+    }
+
+    void Update() override {
+        ApexPatch::Update();
+        if (isEnabled) LotDetailRange::Tick();
+    }
+
+    int Distance() const { return distance_; }
+    int MaxActiveLots() const { return maxActiveLots_; }
+
+    void SetDistance(int value) {
+        value = std::clamp(value, LotDetailRange::kMinDistance, LotDetailRange::kMaxDistance);
+        if (distance_ == value) return;
+        distance_ = value;
+        NotifySettingChanged();
+    }
+
+    void SetMaxActiveLots(int value) {
+        value = std::clamp(value, LotDetailRange::kMinActiveLots, LotDetailRange::kMaxActiveLots);
+        if (maxActiveLots_ == value) return;
+        maxActiveLots_ = value;
+        NotifySettingChanged();
+    }
+
+  private:
+    int distance_ = LotDetailRange::kDefaultDistance;
+    int maxActiveLots_ = LotDetailRange::kDefaultMaxActiveLots;
 };
 
 class LotLodStreamingPatch : public ApexPatch {
@@ -628,6 +688,21 @@ std::string Performance::LotLightingStatus() { return LotLightingMotion::StatusT
 std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoStatusText(); }
 std::string Performance::LotLodStreamingStatus() { return LotLodStreaming::StatusText(); }
 bool Performance::LotLodStreamingHandledByS3SS() { return LotLodStreaming::HandledByS3SS(); }
+std::string Performance::LotDetailRangeStatus() { return LotDetailRange::StatusText(); }
+int Performance::LotDetailDistance() {
+    if (LotDetailRangePatch* p = g_lotDetailRangePatch.load()) return p->Distance();
+    return LotDetailRange::kDefaultDistance;
+}
+void Performance::SetLotDetailDistance(int value) {
+    if (LotDetailRangePatch* p = g_lotDetailRangePatch.load()) p->SetDistance(value);
+}
+int Performance::MaximumDetailedLots() {
+    if (LotDetailRangePatch* p = g_lotDetailRangePatch.load()) return p->MaxActiveLots();
+    return LotDetailRange::kDefaultMaxActiveLots;
+}
+void Performance::SetMaximumDetailedLots(int value) {
+    if (LotDetailRangePatch* p = g_lotDetailRangePatch.load()) p->SetMaxActiveLots(value);
+}
 std::string Performance::MapViewStreamingBlockerStatus() { return LotLodStreaming::MapViewBlockerStatusText(); }
 bool Performance::MapViewStreamingBlockerHandledByS3SS() { return LotLodStreaming::MapViewBlockerHandledByS3SS(); }
 std::string Performance::LotObjectThrottleStatus() { return LotObjectThrottle::StatusText(); }
@@ -728,13 +803,26 @@ APEX_REGISTER_FEATURE(LotLightingMotionPatch,
                                             "Tool mode (1000 ms) is never changed; nothing is skipped, the room solves resume next frame."},
                        .gameCodeGroup = "LotLightingMotion"});
 
+APEX_REGISTER_FEATURE(LotDetailRangePatch,
+                      {.displayName = "Extended Lot Detail",
+                       .description = "Keeps nearby lots eligible for full detail farther away and allows more of them to remain detailed at once. "
+                                      "Validated baseline: distance 300 and 16 detailed lots. Part of " APEX_PRODUCT_NAME ".",
+                       .category = "Performance",
+                       .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VersionBit(GameVersion::EA),
+                       .technicalDetails = {"EA 1.69 WorldManager+0xDC is the native Lot LOD distance. Controlled probes validated the squared-distance cutoffs: 200 -> ~40,000 and 300 -> ~90,000.",
+                                            "EA 1.69 WorldManager+0xE4 is the independent Max Active Lots capacity. Raising 8 -> 16 produced 16 simultaneous Detailed View lots at the same dense reference point that previously saturated at eight.",
+                                            "Apex captures the original values for each live WorldManager, uses guarded writes, reasserts only a captured game baseline, yields to an unexpected third-party value, and restores only fields it still owns.",
+                                            "The diagnostic metric probe is not used by this production feature."}});
+
 APEX_REGISTER_FEATURE(LotLodStreamingPatch,
                       {.displayName = "Smooth Lot Streaming",
                        .description = "Loads nearby lots into full detail gradually instead of letting several lot-detail transitions start together. Uses the game's own "
                                       "native Lot LoD throttle and a 5.0 camera-speed threshold; no lot loader is replaced. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
-                       .enabledByDefault = false,
+                       .experimental = false,
+                       .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Enables the game's native 'Throttle Lot LoD Transitions' byte. On Steam the test is 0xC6C695 and the byte is 0x11ECBC0; "
                                             "EA 1.69.47 was verified in-game at 0xC6BA15 / 0x1246C50.",

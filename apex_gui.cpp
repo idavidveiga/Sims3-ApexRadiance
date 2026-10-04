@@ -717,19 +717,63 @@ void PerformanceCard() {
     ApexUi::EndCard();
     ImGui::PopID();
 
-    ImGui::PushID("PerformanceStreaming");
+    ImGui::PushID("PerformanceLotDetailStreaming");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Layers, "Streaming", "Loads lots and new objects in smaller steps", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Layers, "Lot detail streaming", "Controls how far, how many and how smoothly lots enter full detail", nullptr, nullptr);
         ApexUi::CardDivider();
+
+        const bool rangeOn = FeatureSwitchRow(Performance::kLotDetailRangeName, "Extended lot detail",
+                                              "Uses the validated Apex range/capacity baseline instead of the game's 70 / 8", true);
+        if (rangeOn) {
+            float distance = static_cast<float>(Performance::LotDetailDistance());
+            char distanceValue[24];
+            std::snprintf(distanceValue, sizeof distanceValue, "%d", Performance::LotDetailDistance());
+            ApexUi::SliderOptions distanceOptions;
+            distanceOptions.tooltip = "Native WorldManager Lot LOD distance. Apex validated 200 -> ~40,000 and 300 -> ~90,000 in the squared-distance metric.";
+            distanceOptions.valueText = distanceValue;
+            distanceOptions.leftLabel = "Original 70";
+            distanceOptions.rightLabel = "Farther";
+            distanceOptions.defaultValue = 300.0f;
+            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 300.0f, distanceOptions))
+                Performance::SetLotDetailDistance(static_cast<int>(std::lround(distance)));
+
+            float maxLots = static_cast<float>(Performance::MaximumDetailedLots());
+            char maxLotsValue[24];
+            std::snprintf(maxLotsValue, sizeof maxLotsValue, "%d", Performance::MaximumDetailedLots());
+            ApexUi::SliderOptions maxLotsOptions;
+            maxLotsOptions.tooltip = "Native Max Active Lots capacity. 16 was validated in-game at the same dense camera point that saturated at 8.";
+            maxLotsOptions.valueText = maxLotsValue;
+            maxLotsOptions.leftLabel = "Fewer";
+            maxLotsOptions.rightLabel = "More";
+            maxLotsOptions.defaultValue = 16.0f;
+            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 1.0f, 16.0f, maxLotsOptions))
+                Performance::SetMaximumDetailedLots(static_cast<int>(std::lround(maxLots)));
+        }
+
         const bool streamingOn = FeatureSwitchRow(Performance::kLotLodStreamingName, "Smooth lot streaming",
-                                                  "Loads nearby lots into full detail gradually to reduce stutters while moving around the world", true);
+                                                  "Reduces rapid lot-detail churn while moving: native transition throttle + camera threshold 5", true);
         if (streamingOn && Performance::LotLodStreamingHandledByS3SS())
             CardNote("Handled by Sims3SettingsSetter: Apex leaves the same streaming settings untouched");
+
+        const bool visibilityOn = FeatureSwitchRow(Performance::kLotVisibilityOverrideName, "Keep lot visibility stable",
+                                                   "Stops camera viewing angle alone from making lots load or unload", true);
+        if (visibilityOn && Performance::LotVisibilityOverrideHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot visibility override untouched");
+        else if (visibilityOn && Performance::LotVisibilityOverrideAlreadyExternal())
+            CardNote("Already applied by another patch: Apex leaves the existing visibility override untouched");
 
         const bool mapBlockerOn = FeatureSwitchRow(Performance::kMapViewStreamingBlockerName, "Pause lot streaming in map view",
                                                    "Stops lot-detail streaming while the neighborhood map is open, then resumes it after closing", true);
         if (mapBlockerOn && Performance::MapViewStreamingBlockerHandledByS3SS())
             CardNote("Handled by Sims3SettingsSetter: Apex leaves the map-view streaming blocker untouched");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
+    ImGui::PushID("PerformanceObjectStreaming");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Object streaming", "Spreads object creation work after a lot begins loading", nullptr, nullptr);
+        ApexUi::CardDivider();
 
         const bool objectThrottleOn = FeatureSwitchRow(Performance::kLotObjectThrottleName, "Spread lot objects while loading",
                                                        "Builds a lot's regular objects in small windows instead of one large burst", true);
@@ -760,18 +804,6 @@ void PerformanceCard() {
             if (ApexUi::Slider("Delay between lot windows", &delay, 0.0f, 500.0f, delayOptions))
                 Performance::SetLotObjectThrottleDelayMs(static_cast<int>(std::lround(delay)));
         }
-
-        const bool activeThresholdOn = FeatureSwitchRow(Performance::kLotActiveThresholdName, "Use LoD active-lot threshold 12",
-                                                            "Sets the internal lot-streaming transition threshold to 12; this does not change the game's Max Active Lots option", true);
-        if (activeThresholdOn && Performance::LotActiveThresholdHandledByS3SS())
-            CardNote("Handled by Sims3SettingsSetter: Apex leaves the LoD active-lot threshold untouched");
-
-        const bool visibilityOn = FeatureSwitchRow(Performance::kLotVisibilityOverrideName, "Keep lot visibility stable",
-                                                   "Stops camera viewing angle alone from making lots load or unload", true);
-        if (visibilityOn && Performance::LotVisibilityOverrideHandledByS3SS())
-            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot visibility override untouched");
-        else if (visibilityOn && Performance::LotVisibilityOverrideAlreadyExternal())
-            CardNote("Already applied by another patch: Apex leaves the existing visibility override untouched");
 
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }

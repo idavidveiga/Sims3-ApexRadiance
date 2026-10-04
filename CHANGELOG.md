@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Lot Streaming production integration
+
+- The validated Lot LOD probe results are now implemented as a normal production feature instead of requiring a diagnostic build.
+- Added **Extended Lot Detail** with persistent controls:
+  - **Lot detail distance**: validated range 70..300, default 300.
+  - **Maximum detailed lots**: range 1..16, default 16.
+- Production writes use the same ownership discipline proven by the probes: capture the live WorldManager baseline, guarded writes, reassert only the captured game baseline, yield to unexpected third-party values, and restore only values Apex still owns.
+- **Smooth Lot Streaming** is now considered validated and defaults on for new configurations: native transition throttle + camera-speed threshold 5.
+- The final controlled A/B reduced Detailed View transitions from 149.3/min to 99.2/min, same-lot reversals within 5 s from 87 to 18, and reversals within 2 s from 48 to 3.
+- Removed the misleading **Use LoD active-lot threshold 12** row from the main Performance menu. The diagnostic/internal feature remains available to development code; the live value was already 12 in the tested game before Apex wrote anything.
+- Split the Performance menu into **Lot detail streaming** and **Object streaming** so lot eligibility/capacity is no longer mixed with object creation throttles.
+- Diagnostic Metric Probe remains compile-time-only and is not included in the normal implementation build.
+
 ## Unreleased — Smooth ground light no longer relights walls
 
 **Status:** testing  

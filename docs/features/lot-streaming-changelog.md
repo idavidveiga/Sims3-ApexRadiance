@@ -216,3 +216,21 @@ The next work is deliberately narrower than the research already completed:
    diagnostic-only path and expose the final user-facing controls in the Performance menu.
 5. **Objects/flora distance research:** intentionally deferred; it is a separate scene/LOD problem and is not part of this
    Lot Streaming refinement pass.
+
+
+## 10. Production integration after validation
+
+After the final controlled OFF vs Smooth comparison, the research baseline was promoted into normal Apex code:
+
+- `WorldManager+0xDC` is now managed by the production **Extended Lot Detail** feature, default **300**.
+- `WorldManager+0xE4` is managed by the same feature, default **16**.
+- Both settings are persisted in `[patches.LotDetailRange]` and can be changed from the Performance menu.
+- The production implementation does **not** install the metric/scoring/detail-request diagnostic hooks.
+- Smooth Lot Streaming is validated as the normal companion behavior: native transition throttle ON + camera threshold 5.
+- The misleading threshold-12 switch is no longer shown in the main menu. The underlying diagnostic feature was kept for development/reference.
+- Lot-object throttling and Scene Node Budget are presented separately under Object streaming.
+
+Final A/B in one game session (300 + 16 held constant):
+- everything OFF: 268 transitions over ~107.7 s = **149.3 transitions/min**; 87 same-lot reversals <=5 s; 48 <=2 s.
+- Smooth ON: 190 transitions over ~114.9 s = **99.2 transitions/min**; 18 same-lot reversals <=5 s; 3 <=2 s.
+- approximate reduction: **34%** transitions/min, **79%** <=5 s reversals, **94%** <=2 s reversals.
