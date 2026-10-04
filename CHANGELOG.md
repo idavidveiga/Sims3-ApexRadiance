@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Object-light boost follows the real night level
+
+**Status:** testing  
+**LOD base:** validated Extended Lot Detail branch (300 distance / 16 detailed lots)
+
+### What changed
+
+- The extra `ObjectLightBridge` ground-footprint boost now follows the live night level.
+- At full daylight (`g_night <= 0.01`), Apex leaves the game's object-light record untouched.
+- During dawn/dusk, only Apex's added boost is multiplied by the night level.
+- At full night (`g_night = 1`), the boost has exactly the same configured strength as before.
+- General object rigs are re-gathered when the night blend changes by about 0.1 and at the exact day/night boundaries, rather than every frame.
+- Toggling **Smooth ground light** no longer requests any object-rig refresh. The switch changes only the smoothed/raw maps consumed by draw paths.
+- No global bloom threshold, wall gain, roof strength, Advanced Rendering setting or LOD value was changed.
+
+### Why
+
+The attributed draw census showed the previously fixed `OutdoorObject` draw path at 0 Apex claims in daylight while bloom was still visible on lamps, signs and props. The object-light bridge modifies the light records before those vanilla draws and previously had no day/night guard, so this change isolates that pre-draw boost without changing night rendering.
+
 ## Unreleased — Lot Streaming production integration
 
 - The validated Lot LOD probe results are now implemented as a normal production feature instead of requiring a diagnostic build.
