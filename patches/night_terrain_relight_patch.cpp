@@ -35,6 +35,7 @@
 #include "hotkeys.h"
 #include "light_probe.h"
 #include "lot_light_bridge.h"
+#include "bloom_alpha_probe.h"
 #include "lightmap_smooth.h"
 #include "terrain_chunk_relight.h"
 #include "render_callbacks.h"
@@ -2414,6 +2415,11 @@ class NightTerrainRelightPatch : public ApexPatch {
             ImGui::TextDisabled("(%s)", LotLightBridge::LightingBloomCensusStatus().c_str());
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Writes ApexRadiance_LightingBloomCensus.txt. Read-only: records which visible draw families Apex modifies in day/twilight/night and flags known/possible bloom-mask families.");
+            if (ImGui::Button("Capture bloom alpha mask")) BloomAlphaProbe::Request(g_level);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", BloomAlphaProbe::Status().c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Read-only diagnostic. Captures the raw scene alpha before the game's bloom composite and writes ApexRadiance_BloomAlphaProbe_Day/Twilight/Night.png + .txt. Expect one short frame hitch from the GPU readback.");
         }
         if (ImGui::Button("Rebuild terrain light now")) g_kickRequested = true;
         ImGui::SameLine();
