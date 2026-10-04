@@ -50,6 +50,11 @@
     <TargetExt>.asi</TargetExt>
   </PropertyGroup>
   <!-- Single build: all tools compiled in, developer mode gated at runtime. ApexPublic is a legacy no-op. -->
+  <PropertyGroup Condition="'$(ApexLotLodProbe)'=='true'">
+    <ApexLotLodTestValue Condition="'$(ApexLotLodTestValue)'==''">70</ApexLotLodTestValue>
+    <ApexLotLodMaxActiveDefine Condition="'$(ApexLotLodTestMaxActive)'!=''">APEX_LOT_LOD_TEST_MAX_ACTIVE=$(ApexLotLodTestMaxActive);</ApexLotLodMaxActiveDefine>
+    <ApexProbeDefines>APEX_LOT_LOD_DISTANCE_PROBE;APEX_LOT_LOD_TEST_VALUE=$(ApexLotLodTestValue);$(ApexLotLodMaxActiveDefine)</ApexProbeDefines>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -71,7 +76,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;$(ApexProbeDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>MaxSpeed</Optimization>
@@ -81,7 +86,7 @@
     <ClCompile>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;$(ApexFlavorDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;_CRT_SECURE_NO_WARNINGS;$(ApexFlavorDefines);$(ApexProbeDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -103,6 +108,7 @@
     <ClCompile Include="features\fast_crc.cpp" />
     <ClCompile Include="features\fast_memory.cpp" />
     <ClCompile Include="features\captures.cpp" />
+    <ClCompile Include="features\bloom_alpha_probe.cpp" />
     <ClCompile Include="features\vulkan_driver_guard.cpp" />
     <ClCompile Include="features\address_space.cpp" />
     <ClCompile Include="features\frame_profiler.cpp" />
@@ -113,6 +119,12 @@
     <ClCompile Include="features\light_probe.cpp" />
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
+    <ClCompile Include="features\lot_lod_streaming.cpp" />
+    <ClCompile Include="features\lot_detail_range.cpp" />
+    <ClCompile Include="features\lot_lod_distance_probe.cpp" />
+    <ClCompile Include="features\lot_object_throttle.cpp" />
+    <ClCompile Include="features\lot_active_threshold.cpp" />
+    <ClCompile Include="features\lot_visibility_override.cpp" />
     <ClCompile Include="features\room_map_padding.cpp" />
     <ClCompile Include="features\unlit_rooms.cpp" />
     <ClCompile Include="features\lamp_mark_filter.cpp" />
@@ -180,6 +192,7 @@
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
     <ClInclude Include="features\captures.h" />
+    <ClInclude Include="features\bloom_alpha_probe.h" />
     <ClInclude Include="features\vulkan_driver_guard.h" />
     <ClInclude Include="features\address_space.h" />
     <ClInclude Include="features\frame_profiler.h" />
@@ -188,6 +201,12 @@
     <ClInclude Include="features\light_probe.h" />
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
+    <ClInclude Include="features\lot_lod_streaming.h" />
+    <ClInclude Include="features\lot_detail_range.h" />
+    <ClInclude Include="features\lot_lod_distance_probe.h" />
+    <ClInclude Include="features\lot_object_throttle.h" />
+    <ClInclude Include="features\lot_active_threshold.h" />
+    <ClInclude Include="features\lot_visibility_override.h" />
     <ClInclude Include="features\room_map_padding.h" />
     <ClInclude Include="features\unlit_rooms.h" />
     <ClInclude Include="features\lamp_mark_filter.h" />

@@ -43,6 +43,9 @@ Instance AcquireInstanceMutex();
 
 // S3SS.toml (read-only): [patches.<name>].enabled and overlay configuration.
 bool S3SSPatchEnabled(const char* patchName);
+// True when [patches.<patchName>] is enabled and its boolean <settingName> is true. If the setting is absent,
+// defaultValue is used (matching S3SS settings that default to on).
+bool S3SSPatchBoolSettingEnabled(const char* patchName, const char* settingName, bool defaultValue = true);
 bool S3SSOverlayDisabled();
 // S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
 // elsewhere: game_addresses.h) no longer holds its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.

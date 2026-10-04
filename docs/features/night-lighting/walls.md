@@ -89,8 +89,10 @@ counted as "on another thread".
   nowhere else. None of the other families (InteriorWall, ExteriorWallAOSI, UnlitExteriorWall; 27 variants) matches.
 - K is per variant because in 24 variants c3.x is the **bloom threshold**, not the lamp scale (notes 25/09 16:25).
 - `ClassifyPsCode` -> `WallLampConst(code, size)`: FNV-1a match -> `PsClass::WallGain`, K stored in `g_wallConst[ps]`.
-- Per draw: gain = `g_wallGain` (UI value); if gain == 1, the game draws. Else read `cK`, write `cK.x * gain`, draw,
-  restore `cK`. Counter `g_wallDrawn`. The shader itself is never changed.
+- Per draw: gain = `g_wallGain` (UI value); if gain == 1, the game draws.
+- Opaque ExteriorWall variants write their **vanilla bloom alpha** first with the game's original `cK.x`, with RGB/depth/stencil writes disabled as appropriate for that alpha-only pass. The authoritative second draw writes RGB with `cK.x * gain` and keeps alpha disabled, so the stronger wall lighting no longer widens the game's luminance-derived bloom mask.
+- Blended/unsupported draws use the previous one-pass path unchanged. `WallStatus` reports preserved vs fallback draws.
+- The game's shader bytecode is still never rewritten.
 
 ## Files and functions
 
@@ -178,8 +180,8 @@ counted as "on another thread".
   line; the side wall around a corner must not be brighter below than above.
 - Dev > Status > "Stories": "Active | outdoor lights carried to other stories: N | stories updated: M | walls on the
   light's story: 9/9 classes, T tests, B blocked [| on another thread: X] [| faults: F]".
-- Dev > Status > "Walls": "outside walls: strength 2.00 | draws: N | variants seen: M". N grows while walls are on
-  screen at night; move the slider to 1 and the walls return to the game's brightness.
+- Dev > Status > "Walls": the status includes `vanilla bloom alpha preserved: N | fallback: F`. In the normal opaque wall case, N must grow while the lit exterior wall/foundation is on screen.
+- Move the wall brightness slider to 1 and the walls return to the game's brightness.
 - Ctrl+Shift+F8 after 10 s still: the storey section lists room 0 of each level with the same outdoor lights and
   samples near each light with the game's wall test and ours.
 - F7 on a wall: PS of 1372 bytes (or another table entry); with the gain on, the draw's c3.x (or c2.x) shows the

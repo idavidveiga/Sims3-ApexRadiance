@@ -214,6 +214,14 @@ bool S3SSPatchEnabled(const char* patchName) {
     return (*root)["patches"][patchName]["enabled"].value_or(false);
 }
 
+bool S3SSPatchBoolSettingEnabled(const char* patchName, const char* settingName, bool defaultValue) {
+    const auto root = ReadS3SSConfig();
+    if (!root) return false;
+    const auto patch = (*root)["patches"][patchName];
+    if (!patch["enabled"].value_or(false)) return false;
+    return patch[settingName].value_or(defaultValue);
+}
+
 bool S3SSOverlayDisabled() {
     const auto root = ReadS3SSConfig();
     if (!root) return false;

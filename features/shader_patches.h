@@ -26,6 +26,10 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
 // instruction), -1 when there is none that scales the map alone.
 int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler);
 
+// TS3 object materials that write bloom as "add_sat oC0.w, rL.w, -cK.x": returns K only when that is the shader's
+// sole alpha write and cK is not defined/read anywhere else, so temporarily changing cK.x cannot alter RGB.
+int BloomThresholdConst(const std::vector<DWORD>& t);
+
 // Snowy floor tiles: the vertex shader already outputs world xz in TEXCOORD0.zw. The pixel shader lights the floor
 // only with the lot light map ("texld rA, v2, s2" ... "mul rB.xyz, rC.w, rA"); add the world light atlas:
 // uv = v0.zw * cK.xy + cK.zw, "max rB.xyz, rB, atlas".
