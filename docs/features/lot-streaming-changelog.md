@@ -114,9 +114,10 @@ baseline for further refinement.
 Apex can enable the game's native **Throttle Lot LoD Transitions** mechanism and maintain a camera-speed threshold. It does
 not replace the game's lot loader.
 
-The currently implemented Apex production feature uses camera threshold 5.0, while the native value observed by the probe
-is 32.0. **5.0 is not considered final by this changelog; it still requires an A/B refinement test with the new 300 + 16
-baseline.**
+The production feature uses camera threshold **5.0**, while the native value observed by the probe is 32.0. The controlled
+300 + 16 A/B validated 5.0 together with the native transition throttle: transition rate fell from 149.3 to 99.2 per minute,
+same-lot reversals within 5 seconds fell from 87 to 18, and reversals within 2 seconds fell from 48 to 3. The 5.0 value is
+therefore the current validated production baseline.
 
 ### 6.2 Transition Max Active Lot Threshold = 12
 
@@ -126,8 +127,9 @@ The feature `LotActiveThreshold` resolves the live setting
 This value controls the native **transition throttle policy**. It is **not** the same field as
 `WorldManager+0xE4 Max Active Lots`.
 
-The value 12 comes from the S3SS LotStreamingOptimizations implementation and still needs to be re-evaluated now that the
-actual Detailed View capacity has been validated at 16.
+The value 12 comes from the S3SS LotStreamingOptimizations implementation. It remains implemented for development/reference,
+but it is **not exposed in the main Performance menu** and it is not part of the validated 300 + 16 production baseline.
+The user-facing capacity control is WorldManager+0xE4 (**Maximum detailed lots**, 8-16).
 
 ### 6.3 Keep Lot Visibility Stable
 
@@ -168,8 +170,8 @@ explicitly.
 | Distance 300 research and cutoff proof | Not part of the current public S3SS LotStreamingOptimizations settings | **Apex research/probe work.** |
 | Max Active Lots 8 -> 16 at WorldManager+0xE4 | Distinct from S3SS's threshold 12 | **Apex research/probe work.** |
 | Metric argument identification, 200^2/300^2 validation, diagnostic logging | No equivalent used for these controlled tests in the compared S3SS patch | **Apex diagnostic/research work.** |
-| Transition throttle + threshold 12 | S3SS implements the same native live settings and uses 12 | **Behavior/value lineage from S3SS; Apex standalone wrapper/resolver/ownership code is its own implementation.** |
-| Camera speed threshold 5.0 | S3SS exposes the same setting with default 5.0 | **Behavior/default lineage from S3SS; still under Apex refinement.** |
+| Transition throttle + threshold 12 | S3SS implements the same native live settings and uses 12 | **Behavior/value lineage from S3SS; Apex standalone wrapper/resolver/ownership code is its own implementation. The threshold-12 control is retained only for development/reference and is not in the main menu.** |
+| Camera speed threshold 5.0 | S3SS exposes the same setting with default 5.0 | **Behavior/default lineage from S3SS; validated by Apex's final 300 + 16 A/B and used by the production Smooth Lot Streaming feature.** |
 | Visibility JZ -> JMP | Same patch behavior is present in S3SS | **Behavior/patch lineage from S3SS; Apex adds its own validation/ownership/restoration layer.** |
 | Map-view blocker | Same feature goal and native skip gate | **S3SS lineage for the feature; Apex standalone implementation differs and avoids the S3SS WorldManager::Update detour.** |
 | Object throttle | S3SS public implementation is the source lineage | **Port/adaptation from S3SS into Apex EntryChain and safety framework.** |
@@ -189,34 +191,33 @@ The accurate answer is **not "none at all" and not "the Lot Streaming code is ju
 
 This distinction should be preserved in future public documentation and credits.
 
-## 8. Current validated baseline for the next ASI
+## 8. Current production baseline
 
-The refinement test build created after this changelog keeps:
+The validated research values are now in the normal production path, without the metric probe:
 
-- Lot LOD distance = **300**;
-- Max Active Lots = **16**;
-- Active Lot Bias = **8.0** (unchanged);
-- Terrain-height threshold = **600** (unchanged);
-- the existing state of object spreading / Scene Node Budget unchanged unless the tester explicitly performs a separate
-  A/B.
+- **Extended Lot Detail**: enabled by default on EA 1.69.
+  - **Lot detail distance**: range **70-300**, default **300**, snapped in 10-unit steps.
+  - **Maximum detailed lots**: range **8-16**, default **16**, one-lot steps.
+  - Apex captures the native values per live WorldManager, writes only guarded expected values, stops maintaining a field
+    if another owner changes it, and restores only fields it still owns.
+- **Smooth Lot Streaming**: enabled by default where supported; native transition throttle ON + camera threshold **5.0**.
+- **Keep Lot Visibility Stable**: optional/experimental; camera-angle bias JZ -> JMP with ownership-safe restoration.
+- **Pause Lot Streaming in Map View**: optional/experimental; uses WorldManager+0x258 while the map is open plus a 1 s exit grace.
+- **Object streaming** remains separate from lot eligibility/capacity:
+  - **Spread Lot Objects While Loading**: optional, default **2 regular objects per window** with **16 ms** between windows;
+  - **Spread New Objects Over Frames**: optional Scene Node Budget applied later in the scene pipeline.
 
-The 300/16 values are still applied through the diagnostic probe so the log can prove the readback and every promotion /
-demotion while the remaining transition behavior is refined.
+Active Lot Bias remains **8.0** and the terrain-height threshold remains **600**; neither is changed by Extended Lot Detail.
 
-## 9. What remains to refine
+## 9. Deferred / separate research
 
-The next work is deliberately narrower than the research already completed:
+The validated Lot Streaming pass is complete. Items intentionally outside this pass are:
 
-1. **Transition threshold 12:** determine whether 12 remains the best throttle point with a true 16-lot capacity, or
-   whether matching it to 16 / another value produces smoother behavior.
-2. **Camera threshold 5 vs native 32:** compare transition churn, visual delay and stutter with 300 + 16 held constant.
-3. **Visibility override A/B:** determine how much the camera-bias JZ->JMP reduces unnecessary lot churn with the new
-   baseline.
-4. **Production integration:** once the three items above are resolved, move the validated 300 / 16 behavior out of the
-   diagnostic-only path and expose the final user-facing controls in the Performance menu.
-5. **Objects/flora distance research:** intentionally deferred; it is a separate scene/LOD problem and is not part of this
-   Lot Streaming refinement pass.
-
+1. **Objects/flora visual distance:** scene/object LOD research, separate from lot Detailed View eligibility.
+2. **Threshold 12 experiments:** the S3SS-derived internal transition threshold remains available only for development/reference;
+   it is not a normal user-facing control.
+3. **Higher-than-validated ranges:** values above distance 300 or more than 16 detailed lots are deliberately not exposed until
+   separately tested for stability and memory behavior.
 
 ## 10. Production integration after validation
 
@@ -224,7 +225,8 @@ After the final controlled OFF vs Smooth comparison, the research baseline was p
 
 - `WorldManager+0xDC` is now managed by the production **Extended Lot Detail** feature, default **300**.
 - `WorldManager+0xE4` is managed by the same feature, default **16**.
-- Both settings are persisted in `[patches.LotDetailRange]` and can be changed from the Performance menu.
+- Both settings are persisted in `[patches.LotDetailRange]` and can be changed from the Performance menu within the validated
+  ranges: distance **70-300** (10-unit steps) and capacity **8-16**.
 - The production implementation does **not** install the metric/scoring/detail-request diagnostic hooks.
 - Smooth Lot Streaming is validated as the normal companion behavior: native transition throttle ON + camera threshold 5.
 - The misleading threshold-12 switch is no longer shown in the main menu. The underlying diagnostic feature was kept for development/reference.
