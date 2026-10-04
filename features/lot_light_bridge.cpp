@@ -2578,6 +2578,7 @@ constexpr std::array<const char*, kClaimSourceCount> kClaimSourceNames = {
     "RoomsAtNightFurniture",
     "FoliageVertex",
 };
+UINT g_curPrims = 0; // primitive count of the current hooked draw; set by both DrawPrimitive and DrawIndexedPrimitive
 uint32_t g_claimSourceMask = 0; // render thread; meaningful only while a development census draw is being attributed
 inline void MarkClaimSource(ClaimSource source) {
     g_claimSourceMask |= 1u << static_cast<unsigned>(source);
@@ -2602,7 +2603,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
     if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
-    if (DrawCinemaMarqueeDayBloomGuard(dev, args.primitiveCount, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
+    if (DrawCinemaMarqueeDayBloomGuard(dev, g_curPrims, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
     if (g_curVsIsRoad) return DrawRoad(dev, draw) ? NoteClaim(ClaimSource::RoadLight) : kContinue;
     if (g_curVsIsFloor) return DrawFloor(dev, draw) ? NoteClaim(ClaimSource::FloorLight) : kContinue;
     if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? NoteClaim(ClaimSource::OutdoorFloorLight) : kContinue;
@@ -2981,7 +2982,6 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
 // (A8R8G8B8 managed, one level, up to 1024: room / wall / floor / lot maps; or a 256x256 DXT5 terrain map) or is drawn
 // with an outdoor rig (RigTracker mode 2). Candidates no fix claimed (OnDrawTracked returned Continue) are painted
 // magenta in false-colour mode, and the census records them per (VS, PS) pair for ApexRadiance_Censo.txt. ----
-UINT g_curPrims = 0;
 std::atomic<bool> g_falseColor{false};
 std::atomic<int> g_censusFrames{0}; // frames left to record
 bool g_censusPending = false;       // write the report when the frames are done
