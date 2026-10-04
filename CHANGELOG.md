@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — Cinema marquee daytime bloom guard
+
+**Status:** testing  
+**LOD base:** validated Extended Lot Detail branch (300 distance / 16 detailed lots)
+
+### What changed
+
+- The exact full-day cinema/theatre marquee shader pair captured on EA 1.69 is now recognised by stable bytecode IDs.
+- In full daylight only (`g_night <= 0.01`), that confirmed shader pair keeps its RGB/depth/stencil output but receives a temporarily raised bloom-threshold constant, forcing only its bloom alpha to zero.
+- The guard also requires the outdoor object rig mode and the captured threshold register to be in the normal TS3 range before acting.
+- At twilight/night the guard does nothing. The cinema selects different lamp-enabled pixel shaders at night, so its night appearance remains entirely vanilla.
+- The Lighting + Bloom census now attributes this path as `CinemaMarqueeDayBloomGuard`, and the object status counts suppressed daytime marquee draws.
+
+### Evidence
+
+F7 on the visibly glowing cinema marquee measured the same pixel twice and identified the final object draw as VS `BFFCCC56/1060` + PS `D5ED0EF3/864`. The PS computes bloom alpha as `saturate(luminance - c4.x)`; the capture had `c4.x = 1.3`, and c4 is used only for that final alpha expression. Day census showed that pair only as an unmodified outdoor-rig path, while the same object used different, larger pixel shaders at night.
+
 ## Unreleased — Wall lighting keeps vanilla bloom alpha
 
 **Status:** testing  
