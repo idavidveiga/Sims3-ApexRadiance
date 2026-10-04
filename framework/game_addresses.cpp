@@ -583,6 +583,8 @@ const Group kGroups[] = {
     {"SceneNodeBudget", {Id::SceneDrainCall, Id::SceneDrain, Id::SceneBoundsCall, Id::SceneNodeBounds, Id::SceneSpatialCall, Id::SceneNodeSpatial, Id::SceneNodeDtor,
                          Id::SceneAddNode, Id::SceneHolderTeardown, Id::CameraRootCall, Id::CameraGetterCall, Id::CameraRootGetter, Id::CameraGetter}},
     {"ObjectIndex", {Id::ObjectById, Id::ObjectTreeWalk, Id::ObjectTreeSearch}},
+    {"RoomLightQueue", {Id::RoomPriorityCall, Id::RoomPriority, Id::LodStepSite, Id::KeepClassA, Id::KeepClassB, Id::RoomPickJump, Id::RoomPick, Id::RoomSolveStep,
+                        Id::StopwatchCtor, Id::StopwatchStart, Id::StopwatchElapsed, Id::PriorityLotObject, Id::PriorityLotTest}},
     {"LotLodStreaming", {Id::LotLodScoring, Id::LotLodThrottleTest, Id::LotLodThrottleFlag, Id::WorldManagerPtr}},
     {"LotLodDistanceProbe", {Id::LotLodScoring, Id::LotDetailRequest}},
     {"LotObjectThrottle", {Id::LotAddObjectsToScene, Id::LotUpdateObjectSceneNode, Id::ScriptMessageScopeCtor, Id::ScriptMessageScopeDtor,
