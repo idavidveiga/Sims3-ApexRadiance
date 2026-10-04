@@ -65,11 +65,9 @@ std::string g_oldStandaloneModule;        // under g_detailLock
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
 enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
-enum WaterSnowTab : int { WaterTab, SnowTab };
 enum SettingsTab : int { SettingsMenu, SettingsShortcuts, SettingsProfiles, SettingsCompatibility, SettingsAbout };
 int g_page = PageOverview;
 int g_lightingTab = LightingLamps;
-int g_waterSnowTab = WaterTab;
 int g_colorTab = Picture::TabBasic;
 constexpr int kColorBandingTab = Picture::TabCount; // Color > Banding: the Banding Fix and Smooth gradients
 int g_settingsTab = SettingsMenu;
@@ -85,19 +83,11 @@ std::atomic<bool> g_menuTextInput{false}; // bare screenshot letters must remain
 float g_alpha = 1.0f;             // the menu's opacity (peek, slider drag fade)
 bool g_waitingForKey = false;     // Settings > Menu: waiting for a new menu key (Esc cancels it, not the menu)
 bool g_holdCompare = false;       // the hold-to-compare button is held this frame
-bool g_menuEverOpened = false;    // this session (the first-launch hint stops)
-bool g_tourChecked = false;       // the welcome tour was considered at the first open of this session
-bool g_tourActive = false;
-int g_tourStep = 0;
-
-bool g_keySetup = false, g_keySetupShown = false, g_keySetupWaiting = false; // the first-start menu key prompt (KeySetupWindow)
-bool g_recNoteShow = false, g_recNoteShown = false; // the first note of a start: DXVK / Sims3SettingsSetter when missing
-int g_recRow = -1; // Shortcuts: the row whose key is being recorded (-1 = none)
-void ShortcutsContent(bool compact);
+int g_recRow = -1;                // Shortcuts: the row whose key is being recorded (-1 = none)
+void ShortcutsContent();
 void ShortcutsTab();
 void LanguageRow();
 void ScreenshotCaptureCard();
-std::atomic<bool> g_hintConsidered{false};
 
 // Undo: the feature state at the last click / key activation in the menu (before any widget saw it), and the toast
 toml::table g_clickSnapshot;
@@ -303,7 +293,7 @@ void DownloadDxvkButton() {
         OpenPage(kDxvkReleasesUrl);
 }
 
-// The missing ones, each with its line and Download (the Overview card and the first-start note)
+// The missing ones, each with its line and Download (Overview and Compatibility settings)
 void RecommendedItems() {
     if (DxvkMissing()) {
         ImGui::TextUnformatted("DXVK");
@@ -356,10 +346,98 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
     CardError(patch->GetLastError());
 }
 
+constexpr const char* kOverviewPerformancePatches[] = {
+    Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName,
+    Performance::kRoomLightQueueName, Performance::kLotLightingName, Performance::kWallShadingName,
+    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName,
+    Performance::kFastMemoryName, Performance::kSceneBudgetName, Performance::kObjectIndexName,
+};
+
+constexpr const char* kOverviewMainPatches[] = {
+    kNightLighting, "AmbientOcclusion", "SceneDither", "DepthBlur", "EdgeSmoothing",
+};
+
+bool PerformanceGroupEnabled() {
+    for (const char* name : kOverviewPerformancePatches) {
+        const ApexPatch* patch = Find(name);
+        if (!patch || !patch->IsEnabled()) return false;
+    }
+    return true;
+}
+
+bool PerformanceGroupAnyEnabled() {
+    for (const char* name : kOverviewPerformancePatches)
+        if (const ApexPatch* patch = Find(name); patch && patch->IsEnabled()) return true;
+    return false;
+}
+
+bool PerformanceGroupSwitchable() {
+    if (Loading()) return false;
+    for (const char* name : kOverviewPerformancePatches)
+        if (!Switchable(Find(name))) return false;
+    return true;
+}
+
+void SetPerformanceGroup(bool on) {
+    if (on) {
+        // Enable Faster Game File Lookups before its Remember Missing Files extension.
+        for (const char* name : kOverviewPerformancePatches)
+            if (ApexPatch* patch = Find(name); patch && Switchable(patch) && !patch->IsEnabled()) SetPatch(patch, true);
+    } else {
+        // Stop the dependent negative cache before turning off its parent.
+        for (auto it = std::rbegin(kOverviewPerformancePatches); it != std::rend(kOverviewPerformancePatches); ++it)
+            if (ApexPatch* patch = Find(*it); patch && Switchable(patch) && patch->IsEnabled()) SetPatch(patch, false);
+    }
+}
+
+bool AllOverviewEffectsEnabled() {
+    for (const char* name : kOverviewMainPatches) {
+        const ApexPatch* patch = Find(name);
+        if (!patch || !patch->IsEnabled()) return false;
+    }
+    return Picture::Get().GetParams().enabled && ShoreOn() && PerformanceGroupEnabled();
+}
+
+bool AnyOverviewEffectEnabled() {
+    for (const char* name : kOverviewMainPatches)
+        if (const ApexPatch* patch = Find(name); patch && patch->IsEnabled()) return true;
+    return Picture::Get().GetParams().enabled || ShoreOn() || PerformanceGroupAnyEnabled();
+}
+
+bool AllOverviewEffectsSwitchable() {
+    if (Loading()) return false;
+    for (const char* name : kOverviewMainPatches)
+        if (!Switchable(Find(name))) return false;
+    return PerformanceGroupSwitchable();
+}
+
+void SetAllOverviewEffects(bool on) {
+    if (!on) SetShore(false); // Disable the reflection before its Night Lights / Depth Blur requirements.
+    for (const char* name : kOverviewMainPatches)
+        if (ApexPatch* patch = Find(name); patch && Switchable(patch) && patch->IsEnabled() != on) SetPatch(patch, on);
+
+    PictureParams picture = Picture::Get().GetParams();
+    if (picture.enabled != on) {
+        picture.enabled = on;
+        Picture::Get().SetParams(picture, true);
+    }
+    SetPerformanceGroup(on);
+    if (on) SetShore(true); // Night Lights and Depth Blur are enabled above.
+}
+
 void OverviewPage() {
     ApexUi::PageTitle("Overview", "See what is in use; click a resource to open its settings");
     RecommendS3SSCard();
     ImGui::PushID("Overview");
+    if (ApexUi::BeginCard("##AllEffects")) {
+        const bool anyEffectOn = AnyOverviewEffectEnabled();
+        const char* state = AllOverviewEffectsEnabled() ? "All effects are on" : anyEffectOn ? "Some effects are on" : "All effects are off";
+        bool allEffects = AllOverviewEffectsEnabled();
+        if (ApexUi::CardHeader(IconId::ListChecks, "All effects", state, "Turn all effects on or off together", &allEffects,
+                               AllOverviewEffectsSwitchable()))
+            SetAllOverviewEffects(allEffects);
+    }
+    ApexUi::EndCard();
     ApexUi::GroupLabel("Lighting");
     if (ApexUi::BeginCard("##Lighting")) {
         bool nameClicked = false;
@@ -370,10 +448,8 @@ void OverviewPage() {
             bool on = ShoreOn();
             if (ApexUi::OverviewRow("WaterReflections", IconId::MirrorRound, "Water Reflections", phrase, kShoreDescription, &on, !Loading(), nullptr, &nameClicked, nullptr, on && g_menuGameAaOn ? "Waiting for game settings" : nullptr, on && g_menuGameAaOn))
                 SetShore(on);
-            if (nameClicked) Go(PageWaterSnow, &g_waterSnowTab, WaterTab);
+            if (nameClicked) Go(PageWaterSnow);
         }
-        OverviewPatchRow(Performance::kRoomLightQueueName, IconId::Lightbulb, "Faster Room Lighting", "Rooms light up sooner on lots and floors", PagePerformance);
-        OverviewPatchRow(Performance::kLotLightingName, IconId::Gauge, "Lot Lighting While Moving", "Lots relight in small steps as you pan", PagePerformance);
     }
     ApexUi::EndCard();
     ApexUi::GroupLabel("Image");
@@ -398,8 +474,11 @@ void OverviewPage() {
     ApexUi::EndCard();
     ApexUi::GroupLabel("Performance");
     if (ApexUi::BeginCard("##PerformanceScreen")) {
-        OverviewPatchRow(Performance::kResourceCacheName, IconId::Gauge, "Faster File Lookups", "Fewer small stutters when things load", PagePerformance);
-
+        bool on = PerformanceGroupEnabled(), nameClicked = false;
+        if (ApexUi::OverviewRow("PerformanceGroup", IconId::Gauge, "Performance", "One switch for all 12 performance options",
+                                nullptr, &on, PerformanceGroupSwitchable(), nullptr, &nameClicked))
+            SetPerformanceGroup(on);
+        if (nameClicked) Go(PagePerformance);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -535,12 +614,15 @@ void SnowTabContent() {
     if (NightLightsReady("snow")) NightLighting::DrawSnowCard();
 }
 
+void WaterSnowContent() {
+    WaterTabContent();
+    if (!ApexUi::FilterActive()) ApexUi::Gap(ApexUi::kSpace3);
+    SnowTabContent();
+}
+
 void WaterSnowPage() {
-    ApexUi::PageTitle("Water & Snow", "Ponds, reflections and winter sidewalks");
-    static const char* const kTabs[] = {"Water", "Snow"};
-    ApexUi::TabBar("##WaterSnowTabs", &g_waterSnowTab, kTabs, IM_COUNTOF(kTabs));
-    if (g_waterSnowTab == SnowTab) SnowTabContent();
-    else WaterTabContent();
+    ApexUi::PageTitle("Water & Snow", "Pond lighting, water reflections and sidewalk snow");
+    WaterSnowContent();
 }
 
 // ---- Image > Color ----
@@ -1396,25 +1478,13 @@ void LanguageRow() {
     const std::string automatic = I18n::Trf("Automatic ({})", I18n::NativeName(I18n::SystemLanguage()));
     const char* labels[] = {automatic.c_str(), I18n::NativeName(I18n::Lang::English), I18n::NativeName(I18n::Lang::Portuguese),
                             I18n::NativeName(I18n::Lang::Spanish), I18n::NativeName(I18n::Lang::French)};
-    int current = ui.language + 1; // -1 automatic -> 0
+    int current = std::clamp(ui.language + 1, 0, IM_ARRAYSIZE(labels) - 1); // -1 automatic -> 0
     ApexUi::SetChangeReporting(false); // a menu preference, not part of the undoable state
-    if (ApexUi::SegmentedRow("Language", "The language of this menu", "##Language", &current, labels, 5, nullptr, nullptr, 0)) {
+    if (ApexUi::SelectRow("Language", "The language of this menu", "##Language", &current, labels, IM_ARRAYSIZE(labels), 220.0f, 0)) {
         ui.language = current - 1;
         ApexConfig::SetUi(ui);
     }
     ApexUi::SetChangeReporting(true);
-}
-
-void StartTour() {
-    g_tourActive = true;
-    g_tourStep = 0;
-    g_search[0] = '\0';
-}
-
-void WelcomeRow() {
-    if (!ApexUi::BeginControlRow("Show the welcome tour again", "Sims3SettingsSetter and your menu key", ApexUi::ButtonWidth("Show##Tour", false))) return;
-    if (ApexUi::TextButton("Show##Tour")) StartTour();
-    ApexUi::EndControlRow();
 }
 
 // "Saved to <file>" in the current language (the path is found once)
@@ -1445,8 +1515,6 @@ void ResetAllRow() {
             const auto previousUi = ApexConfig::GetUi();
             ApexConfig::ApplyFeatureState(defaults);
             ApexConfig::UiSettings uiDefaults;
-            uiDefaults.welcomeDone = previousUi.welcomeDone;
-            uiDefaults.keyChosen = previousUi.keyChosen;
             ApexConfig::SetUi(uiDefaults);
             LOG_INFO("[Menu] All settings reset to their defaults");
             ShowToast(I18n::Tr("All settings reset"), std::move(before), "All settings reset");
@@ -1780,7 +1848,6 @@ void ProfilesTab() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Bookmark, "Profiles", "Save your setup and switch between them", nullptr, nullptr);
         ApexUi::CardDivider();
-        ApexUi::GroupLabel("Save current setup");
         ApexUi::MutedText("Choose the settings to include in this profile.");
         const unsigned saveAvailable = ApexConfig::kProfilePartsAll & (ApexConfig::GetUi().developerMode ? ~0u : ~ApexConfig::kPartDeveloper);
         s.saveParts &= saveAvailable;
@@ -2003,8 +2070,7 @@ const SearchPart* SearchParts(int& count) {
         {"Lighting", "Objects", PageLighting, &g_lightingTab, LightingObjects, ObjectsTabContent},
         {"Lighting", "Buildings", PageLighting, &g_lightingTab, LightingBuildings, BuildingsTabContent},
         {"Lighting", "Stories", PageLighting, &g_lightingTab, LightingStories, StoriesTabContent},
-        {"Water & Snow", "Water", PageWaterSnow, &g_waterSnowTab, WaterTab, WaterTabContent},
-        {"Water & Snow", "Snow", PageWaterSnow, &g_waterSnowTab, SnowTab, SnowTabContent},
+        {"Water & Snow", nullptr, PageWaterSnow, nullptr, 0, WaterSnowContent},
         {"Color", "Banding", PageColor, &g_colorTab, kColorBandingTab, BandingTabContent},
         {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
         {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
@@ -2046,86 +2112,6 @@ void SearchResults() {
         if (clicked >= 0 && clicked < count) {
             Go(parts[clicked].page, parts[clicked].tab, parts[clicked].tabIndex);
             g_search[0] = '\0';
-        }
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-}
-
-// ---- welcome tour ----
-
-void FinishTour() {
-    g_tourActive = false;
-    ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    if (!ui.welcomeDone) {
-        ui.welcomeDone = true; // [ui] welcome_done
-        ApexConfig::SetUi(ui);
-    }
-}
-
-void TourPanel() {
-    const float u = ApexUi::Unit();
-    constexpr int kSteps = 2;
-    g_tourStep = std::clamp(g_tourStep, 0, kSteps - 1);
-    ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace4 * u));
-    ImGui::PushID("WelcomeTour");
-    if (ApexUi::BeginCard("##Card")) {
-        // Step dots and "Step n of N"
-        {
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float r = 3.5f * u, step = 12.0f * u;
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const float lineH = ImGui::GetTextLineHeight();
-            for (int i = 0; i < kSteps; i++)
-                dl->AddCircleFilled(ImVec2(p.x + r + static_cast<float>(i) * step, p.y + lineH * 0.5f), r,
-                                    ImGui::GetColorU32(Col(i == g_tourStep ? VioletTheme::kAccent : VioletTheme::kToggleOff)));
-            const std::string text = I18n::Trf("Welcome \xC2\xB7 step {} of {}", g_tourStep + 1, kSteps);
-            dl->AddText(ImVec2(p.x + static_cast<float>(kSteps) * step + ApexUi::kSpace2 * u, p.y), ImGui::GetColorU32(Col(VioletTheme::kTextMuted)), text.c_str());
-            ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, lineH));
-            ApexUi::Gap(ApexUi::kSpace1);
-        }
-        switch (g_tourStep) {
-        case 0: {
-            ApexUi::CardHeader(IconId::Puzzle, "Sims3SettingsSetter", "A companion mod by sims3fiend", nullptr, nullptr);
-            ApexUi::CardDivider();
-            if (S3SSDetect::Scan().s3ssLoaded) {
-                ApexUi::IconNote(IconId::CircleCheck, "Installed; you're all set", VioletTheme::kAccent);
-            } else {
-                ApexUi::MutedText(kRecommendText);
-                ApexUi::Gap(ApexUi::kSpace1);
-                DownloadS3SSButton();
-            }
-            break;
-        }
-        default:
-            ApexUi::CardHeader(IconId::Keyboard, "Your menu key", "Press it anytime in the game to open this menu", nullptr, nullptr);
-            ApexUi::CardDivider();
-            ShortcutsContent(true);
-            break;
-        }
-
-        // Buttons: Skip (left), Back and Next / Done (right)
-        ApexUi::Gap(ApexUi::kSpace3);
-        const float gap = ImGui::GetStyle().ItemSpacing.x;
-        const bool last = g_tourStep == kSteps - 1;
-        const char* nextLabel = last ? "Done##Tour" : "Next##Tour";
-        const float backW = g_tourStep > 0 ? ApexUi::ButtonWidth("Back##Tour", false) + gap : 0.0f;
-        const float nextW = ApexUi::ButtonWidth(nextLabel, false);
-        const float startX = ImGui::GetCursorPosX(), avail = ImGui::GetContentRegionAvail().x;
-        const float y = ImGui::GetCursorPosY();
-        ImGui::AlignTextToFramePadding();
-        const std::string skip = std::string(I18n::Tr("Skip")) + "###SkipTour"; // the id stays English
-        if (!last && ImGui::TextLink(skip.c_str())) FinishTour();
-        ImGui::SetCursorPos(ImVec2(startX + std::fmax(0.0f, avail - backW - nextW), y));
-        if (g_tourStep > 0) {
-            if (ApexUi::TextButton("Back##Tour")) {
-                g_tourStep--;
-            }
-            ImGui::SameLine();
-        }
-        if (ApexUi::TextButton(nextLabel, nullptr, ButtonKind::Primary)) {
-            if (last) FinishTour();
-            else g_tourStep++;
         }
     }
     ApexUi::EndCard();
@@ -2234,7 +2220,6 @@ bool Header() {
     if (leftEdge() - gap - nameRight < minSearch) showDay = false;
     if (leftEdge() - gap - nameRight < minSearch) showPerf = false;
     const float searchW = std::fmin(leftEdge() - gap - nameRight, maxSearch);
-    const bool tourBlocks = g_tourActive;
 
     if (showDay) {
         ImGui::SetCursorPos(ImVec2(dayX, startY + (tile - daySize.y) * 0.5f));
@@ -2247,9 +2232,7 @@ bool Header() {
         ApexUi::Tooltip("Frame time and frame rate, averaged over recent frames");
     }
     if (searchW >= 60.0f * u) {
-        ImGui::BeginDisabled(tourBlocks);
         SearchBox(leftEdge() - gap - searchW, startY + (tile - ImGui::GetFrameHeight()) * 0.5f, searchW);
-        ImGui::EndDisabled();
     }
     bool keepOpen = true;
     ImGui::SetCursorPos(ImVec2(closeX, startY + (tile - button) * 0.5f));
@@ -2551,11 +2534,9 @@ void MainWindow() {
         const float statusH = StatusBarHeight();
         const float bodyH = std::fmax(ImGui::GetContentRegionAvail().y - statusH - ImGui::GetStyle().ItemSpacing.y, 60.0f * u);
         const float sidebarW = (collapsed ? 44.0f : 170.0f) * u;
-        ImGui::BeginDisabled(g_tourActive); // the tour is modal-like: finish or skip it first
         ImGui::BeginChild("##Sidebar", ImVec2(sidebarW, bodyH), ImGuiChildFlags_None, 0);
         Sidebar(collapsed);
         ImGui::EndChild();
-        ImGui::EndDisabled();
         ImGui::SameLine(0.0f, 0.0f);
         {
             // Hairline between the sidebar and the page
@@ -2566,9 +2547,7 @@ void MainWindow() {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace2 * u, ApexUi::kSpace1 * u));
         ImGui::BeginChild("##Content", ImVec2(0.0f, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
         ImGui::PopStyleVar();
-        if (g_tourActive) {
-            TourPanel();
-        } else if (g_search[0]) {
+        if (g_search[0]) {
             SearchResults();
         } else {
             ImGui::PushID(g_page); // each page's widgets get their own ids
@@ -2795,11 +2774,10 @@ void Banner() {
 
 // ---- The start note (user's pick 30/09, "A Ã‚Â· compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
-// takes input; fades out). It appears during the first loading screen after the first Present.
-// The menu and setup prompts keep their separate loaded-world readiness gate. Each frame counts at most 100 ms so a
-// loading stall does not use up the note; opening the menu ends it. ----
+// takes input; fades out). The current timing starts it shortly after the first Present. Each frame counts at most 100 ms
+// so a loading stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 8000;
-constexpr unsigned long long kHintStartMs = 2000; // let the first loading screen settle after Present
+constexpr unsigned long long kHintStartMs = 2000;
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
@@ -2812,16 +2790,11 @@ void UpdateHint() {
         const unsigned long long now = GetTickCount64();
         if (!firstPresent || now - firstPresent < kHintStartMs) return;
         g_hintStarted = true;
-        if (ApexConfig::GetUi().keyChosen && ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
+        if (ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
             g_hintLeftMs = kHintMs;
             g_hintLastDraw = 0;
         }
     }
-    // Recommendations and key setup use world state and wait for the full menu to become available.
-    if (!g_menuAvailable.load() || g_hintConsidered.load()) return;
-    g_hintConsidered.store(true);
-    g_recNoteShow = ApexConfig::GetUi().recommendS3SS && AnythingRecommended(); // every start until "Don't show again"
-    if (!ApexConfig::GetUi().keyChosen) g_keySetup = true;
 }
 
 bool HintVisible() { return g_hintLeftMs > 0 || NoticeAnimationPending(g_hintNoticeMotion); }
@@ -2852,16 +2825,7 @@ void Hint() {
     EndNoticePill();
 }
 
-// ---- First start: the menu key is picked from three ready choices (user, 30/09: laptops often have the F keys behind Fn) ----
-// Shown once the game draws (Startup::Running) while [ui] key_chosen is false; the overlay is made visible for it so the
-// mouse reaches it, and only this window is drawn. The choices:
-//  - Ctrl+Shift+R: letters work on every keyboard without Fn; R is none of the game's keys we know of (numbers = speed,
-//    W A S D Q E = camera and A / Q move on AZERTY, C = cheats with Ctrl+Shift, M = map), Alt+R is AMD's overlay;
-//  - Ctrl+Shift+Space: the easiest key to find on any keyboard;
-//  - Ctrl+Shift+F11: the key of earlier versions, for keyboards with F keys.
-// "Other combination" waits for any key (Esc goes back). Pressing the current menu key closes it with that key.
-
-
+// Key capture for the optional editor in Settings > Shortcuts.
 // The first key pressed now (with the modifiers held at that moment); false while none
 bool CaptureChord(ApexConfig::KeyChord& out) {
     for (UINT vk = 0x08; vk <= 0xFE; vk++) {
@@ -2917,7 +2881,7 @@ bool CaptureHoldKey(ApexConfig::KeyChord& out) {
     return false;
 }
 
-// ---- Shortcuts: Settings > Shortcuts, the tour step and the first-start corner panel draw the same content ----
+// ---- Shortcuts: Settings > Shortcuts ----
 // A key is recorded by clicking its chip and pressing the combination: while recording, every key press is eaten
 // (Client::HotkeyDown, CaptureKey) so neither the game nor another shortcut sees it; Esc cancels. A combination is refused
 // with a note when it is another action's, the game's cheat console (Ctrl+Shift+C), Windows' own (Alt+F4, Alt+Tab),
@@ -3096,8 +3060,8 @@ void KeyChip(int row) {
     ImGui::PopID();
 }
 
-// Shared key editor for settings search and the first-start panel; compact keeps only the menu and everyday actions.
-void ShortcutsContent(bool compact) {
+// Shared key editor for Settings > Shortcuts.
+void ShortcutsContent() {
     g_recSeenFrame = ImGui::GetFrameCount();
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
     static const char* const kPresets[] = {"Letters", "Numbers", "F keys", "Custom"};
@@ -3122,7 +3086,6 @@ void ShortcutsContent(bool compact) {
     }
     if (g_recRow >= 0) ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
                                         g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
-    if (compact) return;
     ApexUi::GroupLabel("IN THE MENU");
     for (int row : {RowSearch, RowPeek, RowPictureCompare}) {
         if (!ApexUi::BeginControlRow(RowName(row), RowText(row), KeyChipWidth(row))) continue;
@@ -3141,12 +3104,6 @@ void ShortcutsContent(bool compact) {
             KeyChip(RowFrameCapture);
             ApexUi::EndControlRow();
         }
-    }
-    ApexUi::Gap(ApexUi::kSpace2);
-    if (ApexUi::TextButton("Show the note again##Shortcuts", "Shows the shortcuts note at the top center of the screen at the next start")) {
-        ApexConfig::UiSettings u2 = ApexConfig::GetUi();
-        u2.keyChosen = false;
-        ApexConfig::SetUi(u2);
     }
 }
 
@@ -3186,7 +3143,7 @@ void ShortcutsTab() {
         if (ApexUi::BeginCard("##SearchShortcuts")) {
             ApexUi::CardHeader(IconId::Keyboard, "Shortcuts", "Choose keys for the menu and Apex actions", nullptr, nullptr);
             ApexUi::CardDivider();
-            ShortcutsContent(false);
+            ShortcutsContent();
 
         }
         ApexUi::EndCard();
@@ -3271,9 +3228,9 @@ void ShortcutsTab() {
             ApexUi::CardDivider();
             ApexUi::MutedText("Presets change only after you select one. Custom key choices are saved and stay in place.");
             ApexUi::Gap(ApexUi::kSpace2);
-            if (ApexUi::TextButton("Show the note again##Shortcuts", "Shows the shortcuts note at the top center of the screen at the next start")) {
+            if (ApexUi::TextButton("Show the startup hint next time##Shortcuts", "Shows the menu shortcut at the top center of the screen at the next start")) {
                 ApexConfig::UiSettings ui = ApexConfig::GetUi();
-                ui.keyChosen = false;
+                ui.startNote = true;
                 ApexConfig::SetUi(ui);
             }
         }
@@ -3281,97 +3238,6 @@ void ShortcutsTab() {
         ImGui::EndTable();
     }
     ImGui::PopID();
-}
-
-// ---- First start: a note at the top center (the menu key, and "Customize?"); Customize opens the same editor in
-// a small panel there. The overlay is made visible for them so the mouse reaches them (only those windows are drawn;
-// clicks elsewhere still go to the game). Not now, Done, the menu key, or 12 s without an answer end it (key_chosen).
-constexpr unsigned long long kKeyNoteMs = 12000;
-unsigned long long g_keyNoteUntil = 0;
-bool g_keyPanel = false;
-
-// Every start while DXVK or Sims3SettingsSetter is missing (and until "Don't show again"): a note at the top center,
-// before the shortcuts note. Only the missing ones are listed; installed ones show only in Settings > Compatibility.
-void EndRecommendNote() {
-    g_recNoteShow = false;
-    if (g_keySetup) g_keySetupShown = true; // the overlay stays visible for the shortcuts note
-    if (!g_keySetup) Overlay::SetVisible(false);
-}
-void RecommendNoteWindow() {
-    const float u = ApexUi::Unit();
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    PlaceScreenNotice();
-    ImGui::SetNextWindowSize(ImVec2(440.0f * u, 0.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.95f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace3 * u));
-    if (ImGui::Begin("##ApexRecommendNote", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavInputs)) {
-        ApexUi::InlineIcon(IconId::Info, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
-        ImGui::SameLine();
-        ImGui::TextUnformatted(I18n::Tr("Recommended for " APEX_PRODUCT_NAME));
-        ApexUi::MutedText("For the mod to work at its best");
-        ApexUi::Gap(ApexUi::kSpace2);
-        RecommendedItems();
-        if (ApexUi::TextButton("Not now##Recommend")) EndRecommendNote();
-        ImGui::SameLine();
-        if (ApexUi::TextButton("Don't show again##Recommend")) {
-            DontShowRecommended();
-            EndRecommendNote();
-        }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-}
-
-void EndKeySetup(bool openMenu) {
-    ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    if (!ui.keyChosen) {
-        ui.keyChosen = true;
-        ApexConfig::SetUi(ui);
-    }
-    g_keySetup = g_keyPanel = false;
-    g_recRow = -1;
-    Overlay::SetVisible(openMenu);
-}
-
-void KeyNoteWindow() {
-    const unsigned long long now = GetTickCount64();
-    if (!g_keyNoteUntil) g_keyNoteUntil = now + kKeyNoteMs;
-    if (!g_keyPanel && now >= g_keyNoteUntil) {
-        EndKeySetup(false);
-        return;
-    }
-    const float u = ApexUi::Unit();
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    PlaceScreenNotice();
-    ImGui::SetNextWindowBgAlpha(0.95f);
-    if (g_keyPanel) ImGui::SetNextWindowSize(ImVec2(470.0f * u, 0.0f), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace3 * u));
-    if (ImGui::Begin("##ApexKeyNote", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavInputs)) {
-        if (!g_keyPanel) {
-            ApexUi::InlineIcon(IconId::Keyboard, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
-            ImGui::SameLine();
-            ImGui::TextUnformatted(APEX_PRODUCT_NAME);
-            ImGui::TextColored(Col(VioletTheme::kTextMuted), "%s",
-                               I18n::Trf("Menu: {} \xC2\xB7 customize the shortcuts?", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle)).c_str());
-            ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize());
-            if (ApexUi::TextButton("Customize##KeyNote", nullptr, ApexUi::ButtonKind::Primary)) g_keyPanel = true;
-            ImGui::SameLine();
-            if (ApexUi::TextButton("Not now##KeyNote", nullptr, ApexUi::ButtonKind::Primary)) EndKeySetup(false);
-            ImGui::PopFont();
-            const float left = static_cast<float>(g_keyNoteUntil > now ? g_keyNoteUntil - now : 0) / static_cast<float>(kKeyNoteMs);
-            ImGui::ProgressBar(left, ImVec2(-1.0f, 3.0f * u), "");
-        } else {
-            ApexUi::InlineIcon(IconId::Keyboard, ApexUi::kIconMedium * u, ImGui::GetColorU32(Col(VioletTheme::kAccentLight)));
-            ImGui::SameLine();
-            ImGui::TextUnformatted(I18n::Tr(APEX_PRODUCT_NAME " shortcuts"));
-            ApexUi::Gap(ApexUi::kSpace1);
-            ShortcutsContent(true);
-            ApexUi::Gap(ApexUi::kSpace2);
-            if (ApexUi::TextButton("Done##KeyNote", nullptr, ApexUi::ButtonKind::Primary)) EndKeySetup(false);
-        }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
 }
 
 // ---- Compare with the game (its shortcut): Night Lighting, Ambient Occlusion, Depth Blur, Edge Smoothing and the picture filters off, then
@@ -3524,7 +3390,7 @@ class GuiClient final : public Overlay::Client {
         }
         Captures::SetScreenshots(ApexConfig::GetUi().captureScreenshot); // [ui] capture_screenshot
         bool noticeShown = false;
-        const bool noticesAllowed = !BannerNeeded() && !g_recNoteShow && !g_keySetup && !Captures::ScreenshotPending();
+        const bool noticesAllowed = !BannerNeeded() && !Captures::ScreenshotPending();
         if (!Captures::ScreenshotPending()) {
             CaptureTarget();
         }
@@ -3532,51 +3398,12 @@ class GuiClient final : public Overlay::Client {
         const bool compareShown = CompareNote(noticesAllowed && !noticeShown);
         if (!noticeShown) noticeShown = compareShown;
         if (BannerNeeded()) { Banner(); noticeShown = true; }
-        if (g_recNoteShow) {
-            if (!Overlay::IsVisible()) {
-                if (g_recNoteShown) { // closed with the menu key: the menu opens
-                    g_recNoteShow = false;
-                    g_keySetup = false;
-                    Overlay::SetVisible(true);
-                } else {
-                    Overlay::SetVisible(true);
-                    g_recNoteShown = true;
-                }
-            }
-            if (g_recNoteShow) {
-                RecommendNoteWindow();
-                return;
-            }
-        }
-        if (g_keySetup) {
-            if (!Overlay::IsVisible()) {
-                if (g_keySetupShown) EndKeySetup(true); // closed with the menu key: the menu opens, as asked
-                else {
-                    Overlay::SetVisible(true);
-                    g_keySetupShown = true;
-                }
-            }
-            if (g_keySetup) {
-                KeyNoteWindow();
-                return;
-            }
-        }
         if (!Overlay::IsVisible()) {
             if (!noticeShown && HintVisible() && !Captures::ScreenshotPending()) Hint();
             return;
         }
-        g_menuEverOpened = true;
         g_hintLeftMs = 0; // opening the menu ends the start note
         AnimateNotice(g_hintNoticeMotion, false);
-        // The welcome tour was removed (user, 30/09): the shortcuts note of the first start and Settings cover it
-        if (!g_tourChecked) { // the first open ends the "press <key>" corner hint for good
-            g_tourChecked = true;
-            ApexConfig::UiSettings ui = ApexConfig::GetUi();
-            if (!ui.welcomeDone) {
-                ui.welcomeDone = true;
-                ApexConfig::SetUi(ui);
-            }
-        }
         MainWindow();
     }
 
@@ -3586,7 +3413,7 @@ class GuiClient final : public Overlay::Client {
         if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return HintVisible(); }
         RunShortcuts();
         // the capture notes (recording, saved, an open session) show with the menu closed too
-        return BannerNeeded() || HintVisible() || g_keySetup || g_recNoteShow || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
+        return BannerNeeded() || HintVisible() || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
                NoticeAnimationsPending() || (!g_profiles.loading.empty() && ImGui::GetTime() - g_profiles.applyOpenedAt < 0.14) || LightProbe::Aiming() || g_returnFromProbe.load();
     }
 

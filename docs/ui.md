@@ -56,11 +56,11 @@ History: reorganised on 2026-09-28 for players (short plain words, one feature p
 Developer page); the same day it got a design polish (spacing scale, row descriptions, dividers, tinted notes, button
 styles), a full copy rewrite, and the grouped sidebar with tabbed pages below. Later that day (approved from a mockup):
 search, changed markers with per-setting Reset, the undo toast, Profiles, peek, hold to compare, GPU cost
-chips, "Reload save" badges, inline "Turn on" dependencies, the welcome tour, the status bar, the collapsible sidebar,
+chips, "Reload save" badges, inline "Turn on" dependencies, the status bar, the collapsible sidebar,
 colour tracks and keyboard use (sections below).
 
 ## Files
-- `apex_gui.cpp`: window, header, sidebar, pages, search results, Profiles, welcome tour, undo toast, status
+- `apex_gui.cpp`: window, header, sidebar, pages, search results, Profiles, undo toast, status
   bar, first-launch hint. Header: the logo (ui/logo.h: ui/apex_logo.png as a 128x128 texture with mips, ui/logo_data.h; the old violet tile with `APEX_LOGO_LETTER` only if the texture cannot be made), name and tagline (centred on the logo), the search field, Night/Day pill
   (moon / sun), frame-time pill, close (x); all vertically centred on the 32 px tile (narrow windows drop the Night/Day
   pill, then the frame-time pill, to keep the search field at least 110 px). Sidebar 170 px at scale 1 (or the 44 px
@@ -84,17 +84,17 @@ not saved; `Go(page, &tab, n)` opens a page on a tab).
 
 | Page (sidebar icon) | Content |
 |---|---|
-| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). One card listing every feature as a row (icon, name = link to its page and tab, phrase, GPU cost chip, switch; Borderless shows its mode in a pill): Night Lights, Water Reflections ("Needs Night Lights" / "Needs Depth Blur" when one is off), Picture, Depth Blur, Borderless, Edge Smoothing, Faster File Lookups (gauge; `ResourceLookupCache`), Faster Room Lighting (gauge; `RoomLightQueue`, since 2026-09-29), Lot Lighting While Moving (gauge; `LotLightingMotion`); the three open the Performance page. |
+| Overview (layout-dashboard) | Sims3SettingsSetter recommendation card (only while S3SS is not loaded and `[ui] recommend_s3ss` is true; "Download", "Don't show again"). An **All effects** card sits at the top with one switch and a live on / partly on / off summary; it controls the main effect rows and the whole Performance group without adding a saved key. Lighting, Image and Performance stay as separate cards. The Performance card has one switch for all 12 performance features; clicking its name opens SYSTEM > Performance. |
 | WORLD > Lighting (moon-star) | Tabs **Lamps** (Night Lights card: master switch `NightTerrainRelight` + "Lamp color" Pink ... Warm white with a colour track, swatch and "Reload save" badge), **Ground** (Ground & Lots: street lamps light lots, lot lamps light the street, smooth ground light, BRIGHTNESS), **Objects** (every option shown, groups LAMP LIGHT and DOORS, COUNTERS AND FENCES; "Light stairs, railings, columns" has the "Reload save" badge; the DOORS group needs two Ground options: a note naming the missing one(s) and a primary "Turn it on" / "Turn both on"), **Buildings** (Buildings card: groups WALLS and ROOFS; Rooms at Night card (moon, since 2026-09-29): "Darker unlit rooms" + Light left, Blue tint, Soft light on furniture), **Stories** (since 2026-09-29, the user asked for everything about stories in its own tab; Stories card (layers): "Upper floors light the ground" = the separate `SplitLevelGroundLight` feature, shown on and disabled with "Already handled by Sims3SettingsSetter ..." when S3SS's own fix is on; "Outdoor light between floors"; "Seamless walls between floors" and "Indoor light between floors" (Experimental), both disabled with a "Needs ..." note while "Outdoor light between floors" is off). While Night Lights is off, the other tabs show a note and a primary "Turn on Night Lights" button. |
-| WORLD > Water & Snow (waves-horizontal) | Tabs **Water** (Lamp Glow card while Night Lights is on, else "Lamp glow on ponds needs Night Lights" + "Turn on Night Lights"; Water Reflections card = `reflexoNoLago`, with "Needs Night Lights (Lighting page)" / "Needs Depth Blur (Depth Blur page)" and primary "Turn on ..." buttons) and **Snow** (walked-on sidewalks; needs Night Lights; needs "Street lamps light lots": note + "Turn it on"). |
+| WORLD > Water & Snow (waves-horizontal) | One page with three cards: Lamp Glow (lamp lighting on ponds), Water Reflections (`reflexoNoLago`, with the Night Lights / Depth Blur requirements and their "Turn on ..." actions), and Snow (sidewalk visibility where Sims have walked). The snow control needs Night Lights and "Street lamps light lots". |
 | IMAGE > Color (palette) | Tabs Basic, Tones, Color, Detail (Picture) and Banding (30/09). Banding: the Banding Fix card (blend icon; on by default; Strength 0-100%, Moving grain; Smooth gradients = Picture's deband, which follows the Banding Fix switch and runs with Picture off too; a note; Developer > Debug views: coverage counters and "Show covered surfaces"; features/banding-fix.md). Picture tabs: the Picture card header above the rows (switch = `[qol.picture] enabled`; GPU cost chip; hold to compare (eye) and before / after (columns-2) buttons, disabled while Picture is off, never saved). Tabs **Basic** (brightness, contrast, saturation, temperature, sharpness, smooth gradients), **Tones** (midtones, shadows, highlights, blacks), **Color** (tint, vibrance; FILM TONES = split toning, hue sliders on a hue-circle track with a swatch; COLOR MIXER), **Detail** (clarity, vignette, vignette size). Rows stay visible, greyed out, while Picture is off. |
 | IMAGE > Ambient Occlusion (contrast) | New configurations start with the scene AO enabled at Strength 168%, Distance 351 m, High quality, Reach 130% and Keep lamp light 38%; Also in map view is on. Note: turn off the game's own Edge Smoothing; performance note (gauge) "Heavier on the graphics card than other effects: lower the Quality if the game slows down". Advanced includes "Show the shade alone" (not saved); a separate **Sim Occlusion** card below uses the Lucide User Round icon and places its Experimental badge beside its switch. It is off by default. When enabled, Sim intensity and Maximum darkening start at 47%, Hair intensity at 38%, and Transparent hair is on; Advanced also contains Show Sim coverage (not saved). Turning the Sim switch off hides these controls. No page or card reset buttons. Developer > Debug views: status, GPU cost, camera read-out, "Show the shade alone". See features/ambient-occlusion.md. |
 | IMAGE > Depth Blur (aperture) | Note: turn off the game's own Edge Smoothing. Depth Blur card (GPU cost chip): Focus Auto / Fixed (segmented), Blur amount (%); Auto: Sharp area Small / Medium / Large; Fixed: Distance Near / Medium / Far + "Fine-tune distance" (0-100% of 0..0.5) + Transition; Sharp in map view; Advanced (rare knobs): Strength, Quality, Focus speed (Auto only, "0.3 s"), Blur the sky, Glowing lights. Mode-specific rows are drawn (and searchable) only in their mode. |
 | SYSTEM > Edge Smoothing | A single page with SMAA/FXAA controls and the existing game-MSAA compatibility notice. Window/monitor selection, Apex FPS/V-Sync and VRR status are removed. Legacy profile display sections are ignored without moving category bits. |
-| SYSTEM > Performance (gauge; added 2026-09-29) | One card "Performance" ("Fewer stutters while you play"; `PerformanceCard`, no header switch; [features/performance.md](features/performance.md)): switch rows, each drawn by `FeatureSwitchRow` (the feature description on hover of the row, "Not available" / "Starting…" / error notes under it), in this order: "Faster game file lookups" ("Fewer small stutters when objects and textures load"; `ResourceLookupCache`, default off; while it is on, the row "Remember missing files" ("Skips repeated searches for files no package has"; `ResourceLookupMisses`, default off) under it), "Faster file lists" ("Fewer stutters when Sims load outfits and shapes"; `FileListCache`, default off), "Spread lot lighting while moving" ("Lots relight in small steps while the camera moves"; `LotLightingMotion`, default on; while it is on, the slider "Lot lighting time while moving" (1-15, value "3 ms", end labels "Smoother" / "Lights sooner", default 3; `Performance::SetLotLightingBudgetMs`, saved as `budgetWhileMovingMs`)), "Wall shading waits while moving" ("Walls of new lots get their shading when you stop"; `WallShadingWhileMoving`, default on), "Faster texture compression" ("Fewer hitches when the game builds terrain, Sim and lot textures"; `FastTextureCompression`, default off; while it is on, the row "Use several cores" ("Large textures are shared out over several processor cores, with the same result"; `useSeveralCores`, default on) under it), "Faster cache compression" ("Fewer hitches when the game stores Sims and objects in its caches"; `FastCacheCompression`, default off), "Spread new objects over frames" ("Fewer hitches when a lot streams in while the camera moves"; `SceneNodeBudget`, experimental, default off) and "Faster object lookups" ("Fewer hitches when lot lights update; less script work"; `ObjectLookupIndex`, experimental, default off). Only the lot lighting row has a slider; the other tuning is in the Developer card. |
+| SYSTEM > Performance (gauge; added 2026-09-29) | One card "Performance" ("Fewer stutters while you play"; `PerformanceCard`, no header switch; [features/performance.md](features/performance.md)): 12 individual switch rows, none marked Experimental and all on by default when no explicit setting is saved. The dependent "Remember missing files" row stays under "Faster game file lookups"; the "Use several cores" row stays under "Faster texture compression". "Lot lighting time while moving" remains its 1-15 ms slider (default 3); other tuning stays in Developer. Overview groups the 12 switches as a single Performance row and the All effects switch includes that group. |
 | SYSTEM > Report a problem (bug; unified build) | Restored v2.5.3: Capture session hero, always-visible recording/report/point/snapshot tools, dated capture list with Open and two-click confirmed Delete, and sending instructions. No stages, capture/library tabs or compulsory notes. Busy guards and conditional failed-save retry remain; older redesign notes below are historical. |
 | SYSTEM > Developer (wrench; development build only) | ImGui tabs: Lighting (Night Lights status, census (list-checks), diagnostics (stethoscope), light probe (crosshair), counters, the generic list of every option; Every-Story Ground Light state), Profiler (activity; Frame Profiler, the Apex shaders line, then the "Performance" dev card: resource lookup cache counters (with the "Remember missing files" and file list cache lines), "Check 1 answer in N against the game", "Check every answer for 10 s", lot lighting call / camera / budget lines, the wall shading gate lines with the slider "Longest wait of a pass while moving (ms)" (0-10000, default 2000), the texture / cache compression lines, the scene node budget lines with the sliders "Nodes per frame while moving" (8-4096, default 512), "ms per frame while moving" (0.1-10, default 2.0) and "Longest wait (ms)" (16-5000, default 500), and the object lookup index lines with "Check 1 answer in N against the game" (default 64) and "Check every answer for 10 s"; none of these is saved), Capture (camera; Frame Capture), Debug views (bug; Edge Smoothing status / GPU cost / red pixels, Depth Blur status / focus mode and depth / GPU cost / "Show blur amount" / far plane, Picture's 8-bit note and GPU cost). |
-| SYSTEM > Settings (settings) | Tabs **Menu** (control rows: menu key + Change, text size - 100% + Reset steps, "Show the welcome tour again" + Show, Save now), **Shortcuts** (menu/action key rows, optional filtered screenshot shortcut and temporary game-UI hiding), **Profiles** (see "Profiles"), **Compatibility** (rows Game, Sims3SettingsSetter Installed (circle-check) / Not installed, Features; the recommendation + Download while S3SS is missing; "Details" = the raw S3SS summary and settings migration note), **About** (name, version and build in the header; CREDITS). |
+| SYSTEM > Settings (settings) | Tabs **Menu** (control rows: menu key + Change, text size - 100% + Reset steps, Save now), **Shortcuts** (menu/action key rows, optional filtered screenshot shortcut and temporary game-UI hiding), **Profiles** (see "Profiles"), **Compatibility** (rows Game, Sims3SettingsSetter Installed (circle-check) / Not installed, Features; optional recommendations for DXVK/S3SS; "Details" = the raw S3SS summary and settings migration note), **About** (name, version and build in the header; CREDITS). |
 
 Every card is `PushID(<name>)` + `BeginCard("##Card")` ... `EndCard()` + `PopID()`. Every setting is a row drawn by
 `SwitchRow` / `Slider` / `SliderPercent` / `SegmentedRow` whose label is its stable id (unique within its card, `##`
@@ -140,7 +140,9 @@ Setting rows have no icons (all rows in a card look the same).
   text block); `Slider(label, v, min, max, SliderOptions)` (label + value on one line, description, track; options:
   format / scale / offset, fixed value text, end labels, colour swatch, `defaultValue`, a gradient track
   `trackFrom`/`trackTo` or the hue circle `hueTrack`) and `SliderPercent(label, v, min, max, description, default)`;
-  `SegmentedRow(label, description, id, current, labels, count, tooltips, icons, defaultIndex)`;
+  `SegmentedRow(label, description, id, current, labels, count, tooltips, icons, defaultIndex)` and
+  `SelectRow(label, description, id, current, labels, count, width, defaultIndex)` for standard dropdowns; its compact
+  Lucide chevron is drawn inside the neutral field instead of a full-height native arrow button;
   `BeginControlRow(label, description, controlsWidth)` (returns false when the search hides it: then draw nothing and
   skip `EndControlRow`) / `EndControlRow()` for custom controls on the right (menu key, text size, info rows, profiles);
   `OverviewRow(..., chip)`. The description is always visible (no hover tooltip on rows); `SliderCommitted()` =
@@ -174,7 +176,7 @@ Setting rows have no icons (all rows in a card look the same).
 
 State: everything below lives in `apex_gui.cpp` statics (render thread, inside the overlay's ImGui frame) unless a
 `[ui]` key is named. Persisted `[ui]` keys go through `ApexConfig::GetUi` / `SetUi` (saved by the pump thread a second
-later): `welcome_done` (default false; missing = false, so migrated configs see the tour once) and `sidebar_collapsed`
+later): legacy `welcome_done` and `key_chosen` fields (preserved but no longer gate startup); `sidebar_collapsed`
 (default false). Feature state changes go through the features' own paths (`ApexPatch`, `NotifySettingChanged`,
 `PatchManager` unsaved flag, `Picture::SetParams`, `Borderless::SetMode`), so autosave works as before.
 
@@ -183,8 +185,8 @@ Header field "Search settings" (search icon, "Ctrl+F" hint while empty; Esc or t
 only while the menu window has keyboard focus (then ImGui captures the keyboard, so the game never sees it). While the
 query is not empty the content shows **Search**: one card with every matching row, live (the real controls). Matching:
 every word of the query (case-insensitive, ASCII) must appear in the row's visible label or its description. How: the
-page tabs are functions; `SearchResults` calls each one (`SearchParts`, in sidebar order: Lighting tabs, Water & Snow
-tabs, Color header + Color tabs, Depth Blur, Display tabs, Performance, Settings > Menu and Shortcuts) between `ApexUi::BeginFilter` and
+page tabs are functions; `SearchResults` calls each one (`SearchParts`, in sidebar order: Lighting tabs, Water & Snow,
+Color header + Color tabs, Depth Blur, Display tabs, Performance, Settings > Menu and Shortcuts) between `ApexUi::BeginFilter` and
 `EndFilter`. In filter mode the row widgets draw only when they match, each after a small muted breadcrumb link
 ("Lighting › Lamps"); card frames, dividers, notes, buttons, group labels, page titles, tab bars and "Advanced"
 headers draw nothing (buttons inside a visible control row still draw); a card header with a switch becomes a
@@ -271,19 +273,10 @@ DOORS, COUNTERS AND FENCES ("Turn it on" / "Turn both on" for "Street lamps ligh
 ("Turn it on" for "Street lamps light lots"). The game's own Edge Smoothing (Depth Blur, Edge Smoothing) is a game
 option, so it stays a plain note.
 
-### Welcome tour and the first-launch hint
-The first time the menu opens in a session while `[ui] welcome_done` is false, the content area shows the tour (a card
-with step dots; the sidebar and the search field are disabled meanwhile): 1) "Sims3SettingsSetter" ("Installed; you're all set", or the recommendation + Download), 2) "Your menu key" (the key +
-Change). Buttons: Skip (link, step 1), Back, Next, Done; Skip and Done set `welcome_done = true`. Settings > Menu >
-"Show the welcome tour again". The menu is never opened automatically: instead, at every launch (30/09: it used to be only
-while the tour was never done), 2 s after the first D3D Present on the first game loading screen, a
-small non-blocking note (no input, no focus) shows in the top-left corner: the user's pick "A · compact pill" (logo,
-**Apex Radiance is ready** in bold, a dot, "press" and the menu key in light violet; dark pill #15161a at 92%, border
-#CECBF6 at 18%). It stays 8 s of time on screen (each frame counts at most 100 ms, so a loading stall does not use it up)
-or until the menu is opened, and fades out over the last 0.8 s; `Client::AlwaysDraw` keeps ImGui frames going meanwhile.
-Not shown while the first-start key choice is pending.
-Menu availability and first-run setup prompts still wait until the loaded world is stable. The startup note timing is
-independent of feature installation and shader/font initialisation.
+### First start and startup hint
+A new installation starts with Apex's existing feature defaults and the default menu key (Ctrl+Shift+F11). It does not ask the player to choose a key, install another mod, or complete a tour. Two seconds after the first D3D Present, the existing non-interactive hint appears at the top center: **Apex Radiance is ready · press Ctrl+Shift+F11**. It fades after eight seconds on screen or when the menu opens. The hint is shown for existing and new configs, regardless of the legacy `key_chosen` flag; the existing Settings > Menu switch can hide it. Optional shortcut editing stays in Settings > Shortcuts.
+
+Settings > Compatibility retains its optional DXVK and Sims3SettingsSetter recommendations; they no longer interrupt startup. **Lighting > Buildings > Rooms at Night** contains the contained Sims3SettingsSetter compatibility card. When needed, Apex backs up S3SS.toml and removes only its saved room-light RGB override; the collapsed details explain the scope. A runtime match also corrects the affected ambient family for the active session.
 
 **Shortcuts (03/10).** Every Apex action shortcut is intercepted by the overlay before the game sees it. Preset ids and
 serialized values remain stable (`letters`, `numbers`, `fkeys`, `mine`); the visible names are **Letters**, **Numbers**, **F keys**, and **Custom**. A missing `[ui] hotkey_preset` still means the earlier Function keys layout. Selecting a
@@ -321,12 +314,6 @@ is on by default and temporarily toggles F10, captures one frame and restores th
 overlay is suppressed for that frame. This is separate from Report's diagnostic screenshots.
 Search, peek, and Picture compare bindings are also saved under `[ui]` and included in the optional Shortcuts profile
 section; loading an older config or profile that lacks them keeps their defaults.
-
-While `[ui] key_chosen` is false (missing = false: every existing config sees it once), a centered note shows the menu
-key and offers **Customize**. The compact editor uses the same preset names, defaulting to Function row for configs
-without a saved selection; its core action chips can be changed individually. Finishing closes the note and sets
-`key_chosen`; pressing the current menu key also closes it while keeping that key. Settings > Menu: "Shortcuts" (the preset) and the keys of the quick
-actions, then "Menu key" (Change: any key).
 
 ### Status bar
 A thin footer under the sidebar and page (hairline, then one line of small text): left "All changes saved" (circle-check,
@@ -451,7 +438,7 @@ uses a Translation checks card. Lighting and Debug views include visible test gu
 
 ### Defaults available to every user
 The shared public/development menu has a reset entry point on every page. Feature pages reset their entire page, including its internal tabs, after confirmation. Water & Snow resets only its four registered water/snow settings and preserves lighting and upper-floor settings. Display resets edge smoothing and the Apex-managed window mode; externally managed window modes remain under their owner's control. Settings resets menu preferences and shortcuts while preserving the Report diagnostic screenshot preference. Report resets its screenshot preference without deleting any files. Overview and Developer link to the whole-mod reset in Settings > Menu because their contents span features and runtime diagnostics.
-The whole-mod reset restores registered feature defaults, Picture, Apex window mode and UI preferences/shortcuts. Welcome/key setup completion flags are retained to avoid repeating onboarding. Undo restores feature/window state and UI preferences. Captures, reports and saved profiles are never deleted. These controls are translated into English, Portuguese, Spanish and French. Runtime-only developer diagnostics are outside the persisted feature reset scope.
+The whole-mod reset restores registered feature defaults, Picture, Apex window mode and UI preferences/shortcuts. Legacy welcome/key setup flags are retained in older configs but no longer control any prompts. Undo restores feature/window state and UI preferences. Captures, reports and saved profiles are never deleted. These controls are translated into English, Portuguese, Spanish and French. Runtime-only developer diagnostics are outside the persisted feature reset scope.
 
 ### Guided Report page (published 2.5.4)
 Report a problem uses a primary choice/capture/finish card, with all original tools and saved captures in advanced sections. Object capture uses a temporary Violet target at the mouse, the configured key and Esc cancellation. It measures a pixel rather than identifying an entire object. The shared public/private UI preserves existing capture APIs and filenames; see features/bug-reports.md.
@@ -492,8 +479,6 @@ Display > Window retains Borderless and adds experimental V-Sync policy, optiona
 ## Local Sim occlusion UI revision
 
 The Ambient Occlusion page has two cards: scene AO first (Strength, Distance, Quality), then Sim Occlusion (body/hair intensity, maximum darkening and advanced coverage preview). The second depends on scene AO, is experimental and off by default; its switch has a dedicated User Round icon and an Experimental badge, and its controls are hidden while the switch is off. Page and card restore-default buttons, including Overview, Picture/mixer, Depth Blur and Edge Smoothing, are removed. Individual row defaults and the explicit global Settings reset remain. See [features/ambient-occlusion.md](features/ambient-occlusion.md).
-
-The first-start Customize and Not now buttons use the existing bold font and violet primary fill at their original font size and height.
 
 Screenshot capture copy shows the configured intercepted key (C by default) and explains that it produces one filtered photo without a duplicate. The existing Hide game UI in screenshots switch controls temporary native F10 hiding and restoration; off includes the game UI. The destination note uses the shared small description font. Persistence and capture behavior are unchanged.
 

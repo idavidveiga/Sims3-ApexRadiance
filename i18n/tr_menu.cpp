@@ -18,7 +18,6 @@ const I18n::Entry kEntries[] = {
     {"Choose the settings to include in this profile.", "Escolha os ajustes para incluir neste perfil.", "Elige los ajustes que incluir en este perfil.", "Choisissez les réglages à inclure dans ce profil."},
     {"Shortcuts are optional and start unchecked.", "Os atalhos são opcionais e começam desmarcados.", "Los atajos son opcionales y empiezan desmarcados.", "Les raccourcis sont facultatifs et initialement décochés."},
     {"Choose a profile icon", "Escolher ícone do perfil", "Elegir icono del perfil", "Choisir une icône de profil"},
-    {"Save current setup", "Salvar configuração atual", "Guardar configuración actual", "Enregistrer la configuration actuelle"},
     {"Saved profiles", "Perfis salvos", "Perfiles guardados", "Profils enregistrés"},
     {"Choose which saved settings to apply", "Escolha quais ajustes salvos aplicar", "Elige qué ajustes guardados aplicar", "Choisissez les réglages enregistrés à appliquer"},
     {"Title (required)", "Título (obrigatório)", "Título (obligatorio)", "Titre (obligatoire)"},
@@ -109,8 +108,8 @@ const I18n::Entry kEntries[] = {
     {"Lamps", "Lâmpadas", "Lámparas", "Lampes"},
     {"Ground", "Chão", "Suelo", "Sol"},
     {"Water & Snow", "Água e Neve", "Agua y Nieve", "Eau et Neige"},
-    {"Ponds, reflections and winter sidewalks", "Lagos, reflexos e calçadas no inverno", "Estanques, reflejos y aceras en invierno",
-     "Étangs, reflets et trottoirs en hiver"},
+    {"Pond lighting, water reflections and sidewalk snow", "Luz nos lagos, reflexos na água e neve nas calçadas", "Luz en los estanques, reflejos en el agua y nieve en las aceras",
+     "Éclairage des étangs, reflets de l’eau et neige sur les trottoirs"},
     {"Water", "Água", "Agua", "Eau"},
     {"How the game's picture looks", "Como fica a imagem do jogo", "Cómo se ve la imagen del juego", "L'aspect de l'image du jeu"},
     {"Depth Blur", "Desfoque de Profundidade", "Desenfoque de Profundidad", "Flou de Profondeur"},
@@ -245,6 +244,13 @@ const I18n::Entry kEntries[] = {
     {"Lot Lighting While Moving", "Iluminação dos Lotes em Movimento", "Iluminación de Solares en Movimiento", "Éclairage des Terrains en Mouvement"},
     {"Lots relight in small steps as you pan", "Os lotes reacendem aos poucos enquanto você move a câmera",
      "Los solares se iluminan poco a poco mientras mueves la cámara", "Les terrains se rééclairent peu à peu pendant que vous déplacez la caméra"},
+
+    {"All effects", "Todos os efeitos", "Todos los efectos", "Tous les effets"},
+    {"All effects are on", "Todos os efeitos estão ligados", "Todos los efectos están activados", "Tous les effets sont activés"},
+    {"Some effects are on", "Alguns efeitos estão ligados", "Algunos efectos están activados", "Certains effets sont activés"},
+    {"All effects are off", "Todos os efeitos estão desligados", "Todos los efectos están desactivados", "Tous les effets sont désactivés"},
+    {"Turn all effects on or off together", "Ligue ou desligue todos os efeitos de uma vez", "Activa o desactiva todos los efectos a la vez", "Activez ou désactivez tous les effets à la fois"},
+    {"One switch for all 12 performance options", "Um único controle para as 12 opções de desempenho", "Un solo control para las 12 opciones de rendimiento", "Un seul interrupteur pour les 12 options de performance"},
 
     // ---- Sims3SettingsSetter recommendation ----
     {"Recommended: Sims3SettingsSetter", "Recomendado: Sims3SettingsSetter", "Recomendado: Sims3SettingsSetter", "Recommandé : Sims3SettingsSetter"},
@@ -960,6 +966,8 @@ const I18n::Entry kOrganizationEntries[] = {
     {"Intensity of lamp glow and sparkles on ponds", "Intensidade do brilho e dos reflexos das lâmpadas nos lagos", "Intensidad del brillo y los destellos de las lámparas en los estanques", "Intensité de la lueur et des scintillements des lampes sur les étangs"},
     {"Startup menu hint", "Dica do menu ao iniciar", "Ayuda del menú al iniciar", "Rappel du menu au démarrage"},
     {"Shows the menu shortcut when the game starts", "Mostra o atalho do menu ao iniciar o jogo", "Muestra el atajo del menú al iniciar el juego", "Affiche le raccourci du menu au démarrage du jeu"},
+    {"Show the startup hint next time", "Mostrar o aviso inicial na próxima vez", "Mostrar el aviso inicial la próxima vez", "Afficher le message de démarrage la prochaine fois"},
+    {"Shows the menu shortcut at the top center of the screen at the next start", "Mostra o atalho do menu no alto e no centro da tela na próxima vez que o jogo iniciar", "Muestra el atajo del menú en la parte superior central de la pantalla la próxima vez que inicie el juego", "Affiche le raccourci du menu en haut au centre de l’écran au prochain démarrage"},
 };
 const I18n::Table kOrganizationTable(kOrganizationEntries, std::size(kOrganizationEntries));
 }

@@ -4,8 +4,10 @@
 
 The optional Optimize rendering switch and its mode-dependent code paths are removed in the current development
 branch. The renderer always uses the pre-2.5.6 code paths for those operations. Existing performance patches and
-their settings are unaffected. Configurations that still contain `[ui].performance_mode` continue to load; the
-unrecognized key is ignored and is omitted when the configuration is next saved.
+their saved choices are unaffected. The 12 performance switches default on when their `enabled` key is missing;
+an explicit saved off choice remains off. None of the Performance-page switches is marked Experimental. Overview has
+one switch for all 12, and its All effects switch includes that group. Configurations that still contain
+`[ui].performance_mode` continue to load; the unrecognized key is ignored and is omitted when the configuration is next saved.
 
 The published 2.5.6 behavior and validation record are retained in Git history and in the release documentation.
 In-game visual and performance validation of the removal is still required.
@@ -89,25 +91,26 @@ Dev profiler, the user's game, a ~110 s camera test, 1293 hitches:
 ## User-facing settings
 
 Menu: SYSTEM > Performance, card "Performance" ("Fewer stutters while you play"); no header switch, one row per feature
-(the feature description, ending with the credit, on hover of its row). Overview rows "Faster File Lookups" and "Lot
-Lighting While Moving" (switches; the names open the page). Search finds the rows ("Performance" breadcrumb).
+(the feature description, ending with the credit, on hover of its row). All 12 switches are enabled by default when no
+explicit saved value exists, and none is marked Experimental. Overview has one Performance row to toggle all 12; clicking
+its name opens this page. Search finds the individual rows ("Performance" breadcrumb).
 
 | Row (label / description) | Feature / TOML key | Type | Default | Range | Notes |
 |---|---|---|---|---|---|
-| "Faster game file lookups" / "Fewer small stutters when objects and textures load" | `[patches.ResourceLookupCache] enabled` | bool | **false** | - | Experimental. Off until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. |
-| "Faster room lighting" / "Rooms light up sooner when you enter a lot or change floors" | `[patches.RoomLightQueue] enabled` | bool | **true** | - | Experimental (added 2026-09-29). Overview row "Faster Room Lighting". See "How it works: Faster Room Lighting". |
+| "Faster game file lookups" / "Fewer small stutters when objects and textures load" | `[patches.ResourceLookupCache] enabled` | bool | **true** | - | Missing key defaults on. |
+| "Faster room lighting" / "Rooms light up sooner when you enter a lot or change floors" | `[patches.RoomLightQueue] enabled` | bool | **true** | - | Missing key defaults on. See "How it works: Faster Room Lighting". |
 | "Spread lot lighting while moving" / "Lots relight in small steps while the camera moves" | `[patches.LotLightingMotion] enabled` | bool | **true** | - | |
 | "Lot lighting time while moving" (shown while the switch is on) / "The current lot's time per frame while moving; 3 ms is the default" | `[patches.LotLightingMotion] budgetWhileMovingMs` | int | **3** | 1-15 | ms; end labels "Smoother" / "Lights sooner"; 15 = the game's own. Applied live (the hook reads it every call; `Update` clears the reinstall request). Never rename the key. |
-| "Remember missing files" (shown while "Faster game file lookups" is on) / "Skips repeated searches for files no package has" | `[patches.ResourceLookupMisses] enabled` | bool | **false** | - | Experimental. Idle ("Waiting: needs Faster game file lookups") while the lookup cache is off. Includes the write epochs. |
-| "Faster file lists" / "Fewer stutters when Sims load outfits and shapes" | `[patches.FileListCache] enabled` | bool | **false** | - | Experimental. Independent of the lookup cache. |
+| "Remember missing files" (shown while "Faster game file lookups" is on) / "Skips repeated searches for files no package has" | `[patches.ResourceLookupMisses] enabled` | bool | **true** | - | Idle ("Waiting: needs Faster game file lookups") while the lookup cache is off. Includes the write epochs. |
+| "Faster file lists" / "Fewer stutters when Sims load outfits and shapes" | `[patches.FileListCache] enabled` | bool | **true** | - | Independent of the lookup cache. |
 | "Wall shading waits while moving" / "Walls of new lots get their shading when you stop" | `[patches.WallShadingWhileMoving] enabled` | bool | **true** | - | Independent of "Spread lot lighting while moving" (it shares its camera detection). |
-| "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **false** | - | Experimental until the in-game checks below pass; then flip `enabledByDefault` in `patches/performance_patches.cpp`. No Overview row. |
+| "Faster texture compression" / "Fewer hitches when the game builds terrain, Sim and lot textures" | `[patches.FastTextureCompression] enabled` | bool | **true** | - | Missing key defaults on. |
 | "Use several cores" (shown while the switch above is on) / "Large textures are shared out over several processor cores, with the same result" | `[patches.FastTextureCompression] useSeveralCores` | bool | **true** | - | Applied to the next texture (the hook reads it every call; `Update` clears the reinstall request). Off = every texture on the calling thread, as before. Never rename the key. |
-| "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **false** | - | Same. No Overview row. |
-| "Faster Sim building" / "Fewer hitches when Sims are edited or change outfits" | `[patches.FastCasSort] enabled` | bool | **false** | - | Experimental (30/09), off by default until its in-game checks are confirmed. Bit-identical result, checked against the game's function on the first 16 calls. No Overview row. See "How it works: Faster Sim Building". |
-| "Faster memory handling" / "Less waiting when the game hands out and frees memory" | `[patches.FastMemory] enabled` | bool | **false** | - | Experimental (30/09), off by default until tested in game. See "How it works: Faster Memory Handling". The record checksums have no row: they are part of Faster cache compression. |
-| "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **false** | - | Experimental (C6). No Overview row; the tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
-| "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **false** | - | Experimental (C8). No Overview row. |
+| "Faster cache compression" / "Fewer hitches when the game stores Sims and objects in its caches" | `[patches.FastCacheCompression] enabled` | bool | **true** | - | Missing key defaults on. |
+| "Faster Sim building" / "Fewer hitches when Sims are edited or change outfits" | `[patches.FastCasSort] enabled` | bool | **true** | - | Bit-identical result, checked against the game's function on the first 16 calls. See "How it works: Faster Sim Building". |
+| "Faster memory handling" / "Less waiting when the game hands out and frees memory" | `[patches.FastMemory] enabled` | bool | **true** | - | See "How it works: Faster Memory Handling". The record checksums have no row: they are part of Faster cache compression. |
+| "Spread new objects over frames" / "Fewer hitches when a lot streams in while the camera moves" | `[patches.SceneNodeBudget] enabled` | bool | **true** | - | Tuning (nodes / ms per frame, longest wait) is developer-only and not saved. |
+| "Faster object lookups" / "Fewer hitches when lot lights update; less script work" | `[patches.ObjectLookupIndex] enabled` | bool | **true** | - | |
 
 Development build only (not saved): Developer > Profiler > "Performance" card: the cache's counters, "Check 1 answer in
 N against the game" (default 64, 0 = never), "Check every answer for 10 s", the last difference; the lot lighting call,

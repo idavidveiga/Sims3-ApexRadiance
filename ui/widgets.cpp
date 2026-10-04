@@ -1076,6 +1076,61 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
     return changed;
 }
 
+bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
+               float controlWidth, int defaultIndex) {
+    RowDecor d = TakeDecor();
+    if (!RowVisible(label, description)) return false;
+    if (!current || !labels || count <= 0) return false;
+    *current = std::clamp(*current, 0, count - 1);
+    d.hasDefault = defaultIndex != kNoDefaultIndex;
+    d.changed = d.hasDefault && *current != defaultIndex;
+    const float u = Unit();
+    const float startX = ImGui::GetCursorPosX();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float top = RowTop();
+    const float comboWidth = std::fmin(controlWidth * u, std::fmax(120.0f * u, width * 0.5f));
+    const float wrapX = startX + width - comboWidth - kSpace3 * u;
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    LabelInfo li;
+    const float rowH = std::fmax(RowText(label, description, wrapX, std::fmax(wrapX - DecorWidth(d), startX + 40.0f * u), &li), ImGui::GetFrameHeight());
+    const float comboY = top + (rowH - ImGui::GetFrameHeight()) * 0.5f;
+    ImGui::SetCursorPos(ImVec2(startX + width - comboWidth, comboY));
+    ImGui::SetNextItemWidth(comboWidth);
+    const ImVec2 comboPos = ImGui::GetCursorScreenPos();
+    const float comboHeight = ImGui::GetFrameHeight();
+    ImDrawList* const rowDrawList = ImGui::GetWindowDrawList();
+    ImGui::PushID(label);
+    bool changed = false;
+    const bool comboOpen = ImGui::BeginCombo(id, I18n::Tr(labels[*current]), ImGuiComboFlags_NoArrowButton);
+    const bool comboHovered = ImGui::IsItemHovered();
+    const float arrowSize = 12.0f * u;
+    DrawIcon(rowDrawList, IconId::ChevronDown,
+             ImVec2(comboPos.x + comboWidth - 9.0f * u - arrowSize, comboPos.y + (comboHeight - arrowSize) * 0.5f),
+             arrowSize, U32(comboOpen || comboHovered ? VioletTheme::kAccent : VioletTheme::kTextMuted));
+    if (comboOpen) {
+        for (int i = 0; i < count; ++i) {
+            if (ImGui::Selectable(I18n::Tr(labels[i]), *current == i)) {
+                changed = *current != i;
+                *current = i;
+            }
+            if (*current == i) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    d.changed = d.hasDefault && *current != defaultIndex;
+    const ImVec2 rowMin = ToScreen(startX, top);
+    if (RowDecorations(d, li, rowMin, ImVec2(rowMin.x + width, rowMin.y + rowH))) {
+        *current = defaultIndex;
+        changed = true;
+        ReportLabel(label, "{} reset");
+    } else if (changed) {
+        ReportLabel(label, "{} changed");
+    }
+    ImGui::PopID();
+    RowFinish(startX, top + rowH);
+    return changed;
+}
+
 namespace {
 ImGuiID g_dividerWindow = 0;
 int g_dividerFrame = -1;

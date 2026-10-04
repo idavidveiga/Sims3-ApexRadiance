@@ -184,6 +184,10 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
 // by its Reset button). defaultIndex = the default choice (changed dot + Reset), kNoDefaultIndex = none.
 bool SegmentedRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
                   const char* const* tooltips = nullptr, const IconId* icons = nullptr, int defaultIndex = kNoDefaultIndex);
+// Standard single-choice row: label and description on the left, a dropdown on the right, with the same changed
+// marker, hover Reset and search behavior as other setting rows. defaultIndex = the default choice.
+bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
+               float controlWidth = 220.0f, int defaultIndex = kNoDefaultIndex);
 
 // "Advanced" section: a hairline, then a violet chevron row, collapsed by default (the state is kept per id while the
 // game runs). The contents are not indented and use the same rows. When it returns true, submit the contents and call

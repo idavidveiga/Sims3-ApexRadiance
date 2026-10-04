@@ -14,16 +14,9 @@ macros, `apex_*` source files).
 Features: Night Lighting (rebuilt night lamp light on ground, roads, floors, walls, roofs, water, foliage, objects,
 fences, snow; key `NightTerrainRelight`), Every-Story Ground Light (`SplitLevelGroundLight`, lot lamps on any story
 light the ground; part of Night Lighting), Reflections, Picture filters (SDR), Edge Smoothing
-(SMAA/FXAA), Depth Blur, Performance (Faster Game File Lookups `ResourceLookupCache`, off by default
-until tested, with Remember Missing Files `ResourceLookupMisses` (negative entries + write epochs) and Faster File Lists
-`FileListCache` (GetKeyList cache), both off by default until tested; Lot Lighting While Moving `LotLightingMotion`;
-Wall Shading While Moving `WallShadingWhileMoving` (defers the wall AO pass while moving, on by default); Faster Texture
-Compression `FastTextureCompression`, a
-bit-identical rewrite of the game's CPU DXT encoders, and Faster Cache Compression `FastCacheCompression`, a faster
-RefPack compressor in the game's format, both off by default until tested; Spread New Objects Over Frames
-`SceneNodeBudget`, a budgeted copy of the scene's pending-node drain while the camera moves, and Faster Object Lookups
-`ObjectLookupIndex`, a validated index for the object/lot lookup by ID, both experimental and off by default; offline
-tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (developer mode only), plus dev tools (Light Probe
+(SMAA/FXAA), Depth Blur, Performance (12 individually adjustable switches, enabled by default when no saved choice
+exists; none marked experimental; grouped behind one Performance switch in Overview and included in its All effects
+switch; offline tests in `tools\dxt_test` and `tools\refpack_test`; `docs/features/performance.md`), Frame Profiler (developer mode only), plus dev tools (Light Probe
 Ctrl+Shift+F7, Light Diag Ctrl+Shift+F8, Frame Capture Ctrl+Shift+F9, Lot Map Probe, census). Menu: Violet UI
 (sidebar plus feature cards), hotkey Ctrl+Shift+F11. Smooth Streaming, Script GC Scheduler and Service Frame Budget
 were removed (see below).
@@ -80,7 +73,7 @@ See `docs/features/developer-mode.md` for persistence and verification details.
    First start without `ApexRadiance.toml`: copies the previous standalone's `...\S3SS\Apex\Apex.toml` as it is (old
    folder left in place; its `apex_imgui.ini` is not copied), else migrates from `...\S3SS\S3SS.toml` (backup
    `S3SS.toml.pre-split.bak` in the new folder). Official S3SS keeps `...\S3SS\` (`S3SS.toml`, `S3SS_LOG.txt`); Apex
-   Radiance never writes there.
+   Radiance writes there only to remove the backed-up saved room-ambient RGB override when Rooms at Night is enabled.
 
 ## Rules from the user (always)
 - **Back up before modifying** any game, mod, config or source file, into `Backups Sims 3\<numbered folder>`, never
@@ -149,3 +142,5 @@ and needs the user's explicit OK.
 
 ## Local UI attribution decision (2026-10-02)
 The user requested less Sims3SettingsSetter prominence. Do not restore its global footer detection label or the long promotional About paragraph. About leads with @loinyx and keeps only a compact sims3fiend framework-design credit. Compatibility detection remains in its own page; project historical attribution and licenses are retained.
+
+Compatibility exception: with Rooms at Night enabled, Apex backs up S3SS.toml in the Apex Radiance folder and removes only the saved `settings.BradyBunchBlue RGB` override. All other settings and patch switches are preserved.

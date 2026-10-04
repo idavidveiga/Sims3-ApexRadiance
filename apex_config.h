@@ -1,7 +1,7 @@
 #pragma once
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
-//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, welcome_done, sidebar_collapsed
+//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, legacy welcome_done/key_chosen, sidebar_collapsed
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
 //   [patches.<Name>]     one table per feature: enabled + its settings (same keys as before the split)
@@ -33,8 +33,8 @@ struct UiSettings {
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool startNote = true;     // the "Apex Radiance is ready, press <key>" note at every start ([ui] start_note)
     bool captureScreenshot = true; // the Report a problem captures also save Screenshot.png ([ui] capture_screenshot)
-    bool welcomeDone = false;  // the welcome tour was finished or skipped ([ui] welcome_done; missing = false, also for migrated configs)
-    bool keyChosen = false;    // the menu key was picked in the first-start prompt or in Settings ([ui] key_chosen; missing = false: the prompt shows once)
+    bool welcomeDone = false;  // legacy welcome-tour flag, kept when reading and writing older configs
+    bool keyChosen = false;    // legacy first-start key prompt flag; no longer gates the menu or startup hint
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)

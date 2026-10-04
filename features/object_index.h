@@ -1,6 +1,6 @@
 #pragma once
-// Object lookup index (Apex Radiance, feature "ObjectLookupIndex", menu "Faster object lookups"; experimental, off by
-// default; docs/features/performance.md, section "Faster object lookups (C8)").
+// Object lookup index (Apex Radiance, feature "ObjectLookupIndex", menu "Faster object lookups"; enabled by default when
+// no saved value exists; docs/features/performance.md, section "Faster object lookups (C8)").
 //
 // 0x00C62D40 (Steam 1.67.2), thiscall(worldManager, idLo, idHi, int* visited), is the game's "object by ID": 233 direct
 // callers (script natives on the simulation thread, lot lighting, the camera, routing...). It walks the world's object
