@@ -1,5 +1,92 @@
 # Changelog
 
+## Unreleased — Fence/stair ground light follows night level
+
+**Status:** testing  
+**Code change:** `d5fac4b500127dc5be39eb879e3473f102ac5429`  
+**Previous baseline:** `0f89c788e2ed23c5b498ff67e7ca08f24a6835e0`
+
+### What changed
+
+- File: `features/lot_light_bridge.cpp`
+- Function: `DrawInstanced()`
+- Scope: fences, railings, posts and stairs that sample the ground-light atlas.
+- The special ground-light contribution is skipped while `g_night <= 0.01f`.
+- During dusk/dawn, the configured fence/stair strength is multiplied by `g_night`, so the contribution fades in and out with the game's night level.
+
+### Previous behavior
+
+The path only checked whether the fence/stair fix was enabled:
+
+```cpp
+if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+```
+
+The strength was always applied at its full configured value:
+
+```cpp
+const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
+```
+
+Effective value:
+
+```text
+g_fenceStrength
+```
+
+### Current behavior
+
+```cpp
+if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+const float night = g_night.load(std::memory_order_relaxed);
+if (night <= 0.01f) return false;
+```
+
+The strength now follows the night level:
+
+```cpp
+const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
+```
+
+Effective value:
+
+```text
+g_fenceStrength * g_night
+```
+
+### Exact rollback
+
+To restore the previous behavior:
+
+1. Remove these lines from `DrawInstanced()`:
+
+```cpp
+const float night = g_night.load(std::memory_order_relaxed);
+if (night <= 0.01f) return false;
+```
+
+2. Replace:
+
+```cpp
+const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
+```
+
+with:
+
+```cpp
+const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed), 0, 0, 0};
+```
+
+Reverting commit `d5fac4b500127dc5be39eb879e3473f102ac5429` also restores only this code change.
+
+### Unchanged by this correction
+
+- `LightmapSmooth`
+- terrain/ground smoothing
+- lot-light baking
+- snow-on-fence/stair paths
+- other Night Lighting object paths
+
 ## 2.5.4 — 2026-10-02
 
 - Prioritize known visible-lamp colour, intensity and activation changes, including small intensity adjustments and repeated switches.
