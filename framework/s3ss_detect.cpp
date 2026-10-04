@@ -224,13 +224,15 @@ bool S3SSOverlayDisabled() {
 RoomAmbientCorrection CorrectRoomAmbientOverride() {
     RoomAmbientCorrection result;
     if (!Scan().s3ssLoaded) return result;
+    result.status = RoomAmbientCorrectionStatus::ConfigUnavailable;
     const auto path = ApexPaths::S3SSConfigFile();
     std::string original;
     if (!ApexUtil::ReadFileBytes(path, original)) return result;
     const auto correction = S3SSAmbientPolicy::Prepare(original);
-    if (!correction) return result;
+    if (!correction) { result.status = RoomAmbientCorrectionStatus::NoOverride; return result; }
     result.found = true;
     result.rgb = correction->rgb;
+    result.status = RoomAmbientCorrectionStatus::BackupFailed;
     if (!ApexPaths::EnsureApexDirectory()) return result;
     // Content-specific, immutable backup. An existing backup must match before it is reused.
     uint64_t hash = 14695981039346656037ull;
@@ -244,12 +246,17 @@ RoomAmbientCorrection CorrectRoomAmbientOverride() {
         }
     }
     std::string current, error;
+    result.status = RoomAmbientCorrectionStatus::ConfigChanged;
     if (!ApexUtil::ReadFileBytes(path, current) || current != original) {
         LOG_WARNING("[UnlitRooms] S3SS configuration changed during correction; configuration unchanged");
         return result;
     }
+    result.status = RoomAmbientCorrectionStatus::WriteFailed;
     result.saved = ApexUtil::WriteFileAtomic(path, correction->text, &error);
-    if (result.saved) LOG_INFO("[UnlitRooms] Removed S3SS saved BradyBunchBlue RGB override; original backed up in Apex Radiance folder");
+    if (result.saved) {
+        result.status = RoomAmbientCorrectionStatus::Saved;
+        LOG_INFO("[UnlitRooms] Removed S3SS saved BradyBunchBlue RGB override; original backed up in Apex Radiance folder");
+    }
     else LOG_WARNING("[UnlitRooms] Could not remove S3SS saved room-ambient override: " + error);
     return result;
 }

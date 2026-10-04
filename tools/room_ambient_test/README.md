@@ -57,4 +57,4 @@ paths. Check these scenarios in the same scene:
 A passing offline suite establishes the tested logic and fixtures. Visual correctness across every game version,
 material, render backend and third-party mod needs runtime evidence.
 
-The production harness also checks automatic S3SS RGB cleanup (including invalid/inline/CRLF TOML), preservation of unrelated settings, the already-applied RGB baseline, both room families, furniture tint, and 10/35/80% brightness with zero blue. Config file writes remain outside this read-only harness.
+The production harness checks S3SS override preparation (including invalid/inline/CRLF TOML), preservation of unrelated settings, that enabling Rooms at Night never invokes the correction, the explicit correction path and already-applied RGB baseline, both room families, furniture tint, and 10/35/80% brightness with zero blue. Actual config file writes remain outside this read-only harness.

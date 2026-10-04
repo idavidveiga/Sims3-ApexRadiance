@@ -50,7 +50,6 @@ Vec4 g_fill;                    // Apex's fill light colour
 volatile BYTE g_fillGate = 1;   // Apex's gate byte
 Vec4 g_base[2];                 // the game's unlit-room colours (read through the original pointers)
 bool g_baseDefault[2] = {};     // the default was used (the game's vector was all zero or unreadable)
-bool g_compatChecked = false;
 S3SSDetect::RoomAmbientCorrection g_compat;
 constexpr float kDefaultColour[4] = {0.15f, 0.15f, 0.30f, 0.0f};
 constexpr float kGameFill[4] = {0.8f, 0.8f, 1.0f, 0.8f}; // FUN_006b7e70: (0x00F9D514, 0x00F9D514, 1.0, 0x00F9D514)
@@ -576,10 +575,6 @@ void Uninstall() {
 
 void Set(bool on, float light, float blue) {
     if (!g_ready) return;
-    if (on && !g_compatChecked) {
-        g_compat = S3SSDetect::CorrectRoomAmbientOverride();
-        g_compatChecked = true;
-    }
     light = std::fmin(std::fmax(light, 0.0f), 1.0f);
     blue = std::fmin(std::fmax(blue, 0.0f), 1.0f);
     if (on == g_on && (!on || (std::fabs(light - g_light) < 1e-4f && std::fabs(blue - g_blue) < 1e-4f))) return;
@@ -591,6 +586,18 @@ void Set(bool on, float light, float blue) {
     } else
         Unpatch();
     Retarget();
+}
+
+S3SSDetect::RoomAmbientCorrection CorrectS3SSConflict() {
+    auto result = S3SSDetect::CorrectRoomAmbientOverride();
+    if (result.saved) {
+        g_compat = result;
+        if (g_on) {
+            Compute();
+            Retarget();
+        }
+    }
+    return result;
 }
 
 void OnPresent() {

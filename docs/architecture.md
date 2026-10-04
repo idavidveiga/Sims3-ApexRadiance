@@ -1311,4 +1311,4 @@ The approved stage-based presentation adds no hooks, timers, threads or persiste
 
 Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [features/edge-smoothing.md](features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
 
-Compatibility exception: with Rooms at Night enabled, Apex backs up S3SS.toml in the Apex Radiance folder and removes only the saved `settings.BradyBunchBlue RGB` override. All other settings and patch switches are preserved.
+Compatibility exception: the player may explicitly choose the Rooms at Night compatibility action. Only that action backs up S3SS.toml in the Apex Radiance folder and removes the saved `settings.BradyBunchBlue RGB` override so S3SS no longer applies it. Enabling Rooms at Night alone never writes S3SS.toml. All other settings and patch switches are preserved.

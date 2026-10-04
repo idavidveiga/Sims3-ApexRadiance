@@ -19,7 +19,11 @@ static DWORD TestTickCount() { return testTick; }
 #undef GetTickCount
 
 static_assert(sizeof(uintptr_t) == 4, "Room offsets require the game's x86 layout");
-namespace S3SSDetect { RoomAmbientCorrection CorrectRoomAmbientOverride() { return {}; } }
+namespace S3SSDetect {
+RoomAmbientCorrection g_testCorrection{};
+int g_testCorrectionCalls = 0;
+RoomAmbientCorrection CorrectRoomAmbientOverride() { ++g_testCorrectionCalls; return g_testCorrection; }
+}
 
 namespace Fixture {
 int checks = 0, failures = 0, attempts = 0, rigs = 0, warnings = 0;
@@ -67,7 +71,9 @@ void Reset(bool enabled = true, float brightness = 0.35f, float blue = 0.2f) {
     // Previous patch fixtures live in this process only; reset them before reseeding.
     Unpatch();
 #ifndef APEX_ROOM_REFERENCE_SOURCE
-    g_compatChecked = false; g_compat = {};
+    g_compat = {};
+    S3SSDetect::g_testCorrection = {};
+    S3SSDetect::g_testCorrectionCalls = 0;
 #endif
     attempts = rigs = warnings = writes = failWrite = applyGroups = 0;
     queueOk = true; stageUnlit = stageBase = holdsBase = false;
@@ -451,9 +457,19 @@ void CompatibilityTests() {
 #ifndef APEX_ROOM_REFERENCE_SOURCE
     Fixture::Reset();
     for (int k = 0; k < 3; ++k) Fixture::original[1][k] = 0.01f;
-    ReadBases(); g_compat = {true, true, {0.01f, 0.01f, 0.01f}};
-    g_compatChecked = true;
+    ReadBases();
+    S3SSDetect::g_testCorrection = {S3SSDetect::RoomAmbientCorrectionStatus::BackupFailed, true, false, {0.01f, 0.01f, 0.01f}};
     UnlitRooms::Set(true, 0.8f, 1);
+    auto failed = UnlitRooms::CorrectS3SSConflict();
+    Check(!failed.saved && !g_compat.found, "failed backup never changes the active room-light baseline");
+    Fixture::Reset();
+    for (int k = 0; k < 3; ++k) Fixture::original[1][k] = 0.01f;
+    ReadBases();
+    S3SSDetect::g_testCorrection = {S3SSDetect::RoomAmbientCorrectionStatus::Saved, true, true, {0.01f, 0.01f, 0.01f}};
+    UnlitRooms::Set(true, 0.8f, 1);
+    Check(S3SSDetect::g_testCorrectionCalls == 0, "enabling Rooms at Night never edits S3SS automatically");
+    auto result = UnlitRooms::CorrectS3SSConflict();
+    Check(result.saved && S3SSDetect::g_testCorrectionCalls == 1, "explicit compatibility action requests the backed-up correction");
     Check(std::fabs(g_colour[1].v[2] - 0.24f) < 1e-6f, "already applied S3SS override corrected for blue room family");
     Check(std::fabs(g_colour[0].v[0] - 0.008f) < 1e-6f, "legitimate first grey family preserved");
     UnlitRooms::SetNightLevel(1); float cube[3]; UnlitRooms::FurnitureCubeColour(cube);

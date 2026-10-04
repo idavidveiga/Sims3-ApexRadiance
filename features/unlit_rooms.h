@@ -2,12 +2,15 @@
 // Rooms with every lamp off: the light the game leaves in them (its blue glow) and the fill light it adds to furniture,
 // under the player's control (part of Night Lighting; see unlit_rooms.cpp).
 #include <string>
+#include "s3ss_detect.h"
 namespace UnlitRooms {
 bool Install(std::string& error); // finds and checks the game code (nothing is patched until Set turns it on)
 void Uninstall();                 // the game's own colours again
 // Render thread, every frame: on = Apex's colours; light = how much of the game's unlit-room light stays (0..1, walls and
 // furniture alike), blue = how much of its blue tint (0 = grey; furniture too)
 void Set(bool on, float light, float blue);
+// Explicit user action: back up and remove only S3SS's saved BradyBunchBlue RGB override.
+S3SSDetect::RoomAmbientCorrection CorrectS3SSConflict();
 void OnPresent(); // render thread: relights the rooms and objects a moment after a change
 void OnWorldChanged(); // render thread: discard room/lot identities from the previous world
 void OnRoomsChanged(); // render thread: a loaded lot or story manager changed

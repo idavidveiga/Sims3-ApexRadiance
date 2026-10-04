@@ -45,8 +45,14 @@ Instance AcquireInstanceMutex();
 // S3SS.toml (read-only): [patches.<name>].enabled and overlay configuration.
 bool S3SSPatchEnabled(const char* patchName);
 bool S3SSOverlayDisabled();
-// Narrow compatibility exception: back up and remove the saved room-ambient RGB override.
-struct RoomAmbientCorrection { bool found = false; bool saved = false; std::array<float, 3> rgb{}; };
+// Narrow compatibility exception: on explicit user action, back up and remove the saved room-ambient RGB override.
+enum class RoomAmbientCorrectionStatus { S3SSNotLoaded, ConfigUnavailable, NoOverride, BackupFailed, ConfigChanged, WriteFailed, Saved };
+struct RoomAmbientCorrection {
+    RoomAmbientCorrectionStatus status = RoomAmbientCorrectionStatus::S3SSNotLoaded;
+    bool found = false;
+    bool saved = false;
+    std::array<float, 3> rgb{};
+};
 RoomAmbientCorrection CorrectRoomAmbientOverride();
 // S3SS's "Split-Level Lighting Fix" is in place: enabled in S3SS.toml, or GetLotID (0x6BC020 on Steam, found by signature
 // elsewhere: game_addresses.h) no longer holds its original bytes. Apex's own equivalent (patches/split_level_ground_light_patch.cpp) then stays out of the way.
