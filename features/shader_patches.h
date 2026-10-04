@@ -22,9 +22,9 @@ struct RoadPatch {
 };
 bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
 
-// World terrain chunks: the constant cK whose .x scales the chunk light map read from `sampler` (read once, by no other
-// instruction), -1 when there is none that scales the map alone.
-int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler);
+// World terrain chunks: an exclusive cK.x lamp-map multiplier, either linear or
+// squared through a scalar temporary. Unknown/shared layouts return -1.
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler, bool* squared = nullptr);
 
 // Keep native terrain alpha (solar visibility) when smoothing lamp RGB. A single
 // direct light-map read is required; unsupported layouts are left untouched.

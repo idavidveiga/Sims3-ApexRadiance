@@ -268,7 +268,8 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
 
 // World terrain chunks (LightProbe-mundo PS_28CD3DB0: "texld_pp r0, v1, s8" ... "mul_pp r7.xyz, r0, c7.x"; winter
 // LightProbe-m05 PS_295B4ED0: "texld_pp r0, v1, s11" ... "mul_pp r0.xyz, r0, c7.x", with r0.w used in between).
-int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler, bool* squared) {
+    if (squared) *squared = false;
     if (t.empty() || (t[0] & 0xFFFF0000u) != 0xFFFF0000u || ((t[0] >> 8) & 0xFF) < 2) return -1;
     const auto ins = Parse(t);
     if (ins.empty()) return -1;
@@ -283,7 +284,56 @@ int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
         if (x.op == kTexld && x.len == 3 && Type(t[x.at + 1]) == kTemp && (Type(t[x.at + 2]) == kInput || Type(t[x.at + 2]) == kTexture)) fetch = static_cast<int>(i);
     }
     if (reads != 1 || fetch < 0) return -1;
-    return LampScaleAfter(t, ins, static_cast<size_t>(fetch), Num(t[ins[fetch].at + 1]));
+    const DWORD light = Num(t[ins[fetch].at + 1]);
+    const int linear = LampScaleAfter(t, ins, static_cast<size_t>(fetch), light);
+    if (linear >= 0) return linear;
+    // The captured winter multipass material squares its lamp-only c4.x into
+    // a temporary before scaling RGB. Trace that exact dependency, never infer
+    // the exponent from the number of material passes or the shader's name.
+    const Ins* square = nullptr;
+    int constant = -1;
+    for (size_t j = static_cast<size_t>(fetch) + 1; j < ins.size(); ++j) {
+        const Ins& x = ins[j];
+        if (IsFlow(x.op)) return -1;
+        bool readsLight = false;
+        for (size_t k = 2; k <= x.len; ++k)
+            readsLight |= IsReg(t[x.at + k], kTemp, light) && Swz(t[x.at + k]) != kSwzW;
+        if (readsLight) {
+            if (!square || x.op != kMul || x.len != 3 || Type(t[x.at+1]) != kTemp ||
+                WMask(t[x.at+1]) != 7 || (t[x.at+1] & 0x00100000u) ||
+                !IsReg(t[x.at+2], kTemp, light) || Swz(t[x.at+2]) != kSwzXYZW || (t[x.at+2] & 0x0F002000u)) return -1;
+            const DWORD factor = t[x.at+3], dst = t[square->at+1];
+            const DWORD mask = WMask(dst);
+            if (!IsReg(factor, kTemp, Num(dst)) || (factor & 0x0F002000u)) return -1;
+            const DWORD component = Swz(factor) & 3;
+            if (Swz(factor) != component * 0x55u || mask != (1u << component)) return -1;
+            int uses = 0;
+            for (const Ins& y : ins) {
+                if (y.op == kDcl || y.op == kDefI || y.op == kDefB) continue;
+                if (y.op == kDef && IsReg(t[y.at+1], kConst, static_cast<DWORD>(constant))) return -1;
+                for (size_t k = 2; k <= y.len; ++k) {
+                    const DWORD r = t[y.at+k];
+                    if (Type(r) == kConst) {
+                        if (r & 0x2000u) return -1;
+                        if (Num(r) == static_cast<DWORD>(constant)) ++uses;
+                    }
+                }
+            }
+            if (uses != 2) return -1;
+            if (squared) *squared = true;
+            return constant;
+        }
+        if (x.len >= 1 && IsReg(t[x.at+1], kTemp, light) && (WMask(t[x.at+1]) & 7)) return -1;
+        if (square && x.len >= 1 && IsReg(t[x.at+1], kTemp, Num(t[square->at+1])) &&
+            (WMask(t[x.at+1]) & WMask(t[square->at+1]))) { square = nullptr; constant = -1; }
+        if (x.op == kMul && x.len == 3 && Type(t[x.at+1]) == kTemp && !(t[x.at+1] & 0x00100000u) &&
+            Type(t[x.at+2]) == kConst && Swz(t[x.at+2]) == kSwzX && !(t[x.at+2] & 0x0F002000u) &&
+            t[x.at+2] == t[x.at+3]) {
+            square = &x;
+            constant = static_cast<int>(Num(t[x.at+2]));
+        }
+    }
+    return -1;
 }
 
 bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler) {

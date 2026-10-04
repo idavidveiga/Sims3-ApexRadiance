@@ -81,3 +81,11 @@ The queue suite can also run separately:
 
 It executes extracted queue logic against memory/timing fixtures, not the TS3
 engine or driver. The printed source hash identifies the queue source tested.
+# Ground scale regression
+
+`run_ground_scale_checks.ps1 -Captures <2026-10-04 15-33-55 Session>` reads the
+captured s7/s11 shaders, checks linear versus squared constant classification and
+refusal of shared, mixed or saturated multipliers. Native D3D9 readback compares
+both multiplier equations at five day/night weights and eight brightness gains.
+The executable only reads captures and prints results; it does not install files.
+These checks do not substitute for visual gameplay validation.

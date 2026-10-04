@@ -219,6 +219,17 @@ door sills (m71/m72), pool edge (m66).
   `sem o padrao esperado, fica como o jogo`; `[LotLightBridge] Neve: ativo`.
 - F7 on snow: lot pass PS of 1940 bytes (patched) with s12 bound; for class 8/9 draws the `mod:` line.
 
+## Ground brightness across terrain variants
+
+The October 4 capture contains a world terrain lamp-map path using `c4.x * c4.x`
+through a scalar temporary, alongside a linear `c7.x` path. Previously only the
+linear path received Ground brightness, exposing a boundary when the gain differed
+from 100%. The classifier now recognizes the exclusive squared multiplier and the
+runtime uses the existing square-root compensation. This classification depends
+on bytecode, not snow or lot names; shared constants and unknown layouts remain
+unchanged. Native GPU checks verify gain equivalence across day/night weights.
+Visual validation in the game, on snow and grass, remains required.
+
 ## Open items
 
 - VS 436BB272 lot snow variant (needs its own constant mapping: c15 centre, c14 uv).

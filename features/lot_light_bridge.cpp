@@ -2461,12 +2461,16 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
 // found by pattern (ShaderPatches::LightMapScaleConst: c7 in the captured summer and winter chunks, but other variants
 // read the map from other samplers), -1 when there is none that scales the map alone (that shader keeps the game's
 // brightness). Cached per shader (shaders are pinned); render thread only.
-std::unordered_map<IDirect3DPixelShader9*, std::pair<DWORD, int>> g_terrainLampConst; // PS -> (light map sampler, K)
-int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
+struct TerrainLampScale { DWORD sampler; int constant; bool squared; };
+std::unordered_map<IDirect3DPixelShader9*, TerrainLampScale> g_terrainLampConst;
+int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler, bool& squared) {
     auto it = g_terrainLampConst.find(ps);
-    if (it != g_terrainLampConst.end() && it->second.first == sampler) return it->second.second;
-    const int k = ShaderPatches::LightMapScaleConst(ShaderCode(ps), sampler);
-    g_terrainLampConst[ps] = {sampler, k};
+    if (it != g_terrainLampConst.end() && it->second.sampler == sampler) {
+        squared = it->second.squared;
+        return it->second.constant;
+    }
+    const int k = ShaderPatches::LightMapScaleConst(ShaderCode(ps), sampler, &squared);
+    g_terrainLampConst[ps] = {sampler, k, squared};
     LOG_INFO(std::format("[LotLightBridge] Ground brightness: terrain shader {:08X}, light map s{} -> {}", reinterpret_cast<uintptr_t>(ps), sampler,
                          k >= 0 ? std::format("c{}.x", k) : std::string("no lamp-only scale found, left as the game")));
     return k;
@@ -2530,7 +2534,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
             });
             if (!daylight->ps || daylight->nativeAlphaSource != s) daylight = nullptr;
         }
-        const int k = multi ? 3 : TerrainLampConst(g_curPs, s);
+        bool squared = multi;
+        const int k = multi ? 3 : TerrainLampConst(g_curPs, s, squared);
         if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
         if (smooth && FAILED(dev->GetTexture(s, &old))) smooth = nullptr;
@@ -2539,7 +2544,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
                                        g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr, daylight != nullptr);
         g_inOwnCall = true;
         {
-            TerrainConst lampGain(dev, k, multi);
+            TerrainConst lampGain(dev, k, squared);
             if (smooth) {
                 NativeTerrainSampler native(dev, s, alpha->nativeAlphaSampler, old, D3D9Hooks::CallOriginalSetTexture);
                 if (native) {
