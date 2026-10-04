@@ -475,9 +475,11 @@ bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
 // released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
 // copy (review 25/09).
 std::vector<IUnknown*> g_pinned;
-// Exact day-only cinema/theatre marquee shader captured with F7 on the lit sign. Keep it as an orthogonal tag rather
-// than a PsClass so its normal WorldCandidate/object classification and all existing dispatch behaviour stay intact.
-std::unordered_set<IDirect3DPixelShader9*> g_cinemaMarqueeDayPs;
+// Exact full-day cinema/theatre facade shaders. Keep them as orthogonal tags rather than a PsClass so their normal
+// object classification and existing dispatch behaviour stay intact. The map stores the one constant that only controls
+// the luminance-derived bloom alpha; the second set marks the tiny centre-panel variant for an extra primitive-count guard.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_cinemaMarqueeDayPs;
+std::unordered_set<IDirect3DPixelShader9*> g_cinemaMarqueePanelDayPs;
 
 PsClass Classify(IDirect3DPixelShader9* ps) {
     if (!ps) return PsClass::Other;
@@ -489,7 +491,20 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         std::vector<BYTE> code(size);
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
-            if (IsShader(kCinemaMarqueeDayPs, code.data(), size)) g_cinemaMarqueeDayPs.insert(ps);
+            const bool cinemaMain = IsShader(kCinemaMarqueeDayPs, code.data(), size);
+            const bool cinemaPanel = IsShader(kCinemaMarqueePanelDayPs, code.data(), size);
+            if (cinemaMain || cinemaPanel) {
+                std::vector<DWORD> tokens(size / 4);
+                std::memcpy(tokens.data(), code.data(), size);
+                const int threshold = ShaderPatches::BloomThresholdConst(tokens);
+                if (threshold >= 0) {
+                    g_cinemaMarqueeDayPs[ps] = static_cast<DWORD>(threshold);
+                    if (cinemaPanel) g_cinemaMarqueePanelDayPs.insert(ps);
+                } else {
+                    LOG_WARNING(std::format("[LotLightBridge] Cinema daytime bloom guard: exact PS {:08X}/{} found but its isolated bloom threshold was not proven",
+                                            ShaderHash(code.data(), size), size));
+                }
+            }
             if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
             else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
                 c = PsClass::WorldMultiLight;
@@ -2187,29 +2202,36 @@ template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw)
     return true;
 }
 
-// Full-day bloom guard for the base-game cinema/theatre marquee. F7 at pixel (1871,491), EA 1.69, captured
-// VS BFFCCC56/1060 + PS D5ED0EF3/864. The PS writes bloom as saturate(luminance - c4.x); c4 is read nowhere else in
-// that exact bytecode, and the capture had c4.x = 1.3. At night the object selects different, lamp-enabled pixel
-// shaders, so only this confirmed full-day pair is touched. RGB, depth, stencil and every night draw stay vanilla.
+// Full-day bloom guard for the base-game cinema/theatre facade. The main marquee was captured directly by F7 as
+// BFFCCC56/1060 + D5ED0EF3/864. The remaining narrow centre panel correlates day BFFCCC56 + 4E570819/500 with the
+// F7-captured night BFFCCC56 + 36F5E915/1296 at the same geometry. Both day PS variants end in the TS3 luminance bloom
+// form proven by BloomThresholdConst(); changing that isolated cK.x cannot alter RGB. The panel variant is additionally
+// limited to a tiny <=4-primitive draw. Twilight/night and every lamp-enabled night shader remain completely vanilla.
 std::atomic<int> g_cinemaDayBloomSuppressed{0};
-template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9* dev, DrawFn draw) {
+std::atomic<int> g_cinemaPanelDayBloomSuppressed{0};
+template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9* dev, UINT primitiveCount, DrawFn draw) {
     if (g_night.load(std::memory_order_relaxed) > 0.01f) return false;
-    if (!g_curVsInfo || !g_curVsInfo->cinemaMarqueeDay || !g_cinemaMarqueeDayPs.count(g_curPs)) return false;
-    if (RigTracker::CurrentMode() != 2) return false;
+    if (!g_curVsInfo || !g_curVsInfo->cinemaMarqueeDay) return false;
+    const auto it = g_cinemaMarqueeDayPs.find(g_curPs);
+    if (it == g_cinemaMarqueeDayPs.end() || RigTracker::CurrentMode() != 2) return false;
 
+    const bool panel = g_cinemaMarqueePanelDayPs.count(g_curPs) != 0;
+    if (panel && primitiveCount > 4) return false;
+
+    const DWORD thresholdConst = it->second;
     float old[4] = {};
-    if (FAILED(dev->GetPixelShaderConstantF(4, old, 1))) return false;
-    // The captured material uses the normal TS3 bloom threshold range. Refuse if another build reuses the bytecode in
-    // an unexpected state instead of blindly changing a register.
+    if (FAILED(dev->GetPixelShaderConstantF(thresholdConst, old, 1))) return false;
+    // The captures use 1.3. Keep a generous TS3 material range, but fail closed if the constant has an unexpected state.
     if (!(old[0] >= 0.5f && old[0] <= 5.0f)) return false;
 
     float noBloom[4] = {1000.0f, old[1], old[2], old[3]};
     g_inOwnCall = true;
-    SetPsConst(dev, 4, noBloom, 1);
+    SetPsConst(dev, thresholdConst, noBloom, 1);
     draw();
-    SetPsConst(dev, 4, old, 1);
+    SetPsConst(dev, thresholdConst, old, 1);
     g_inOwnCall = false;
     g_cinemaDayBloomSuppressed.fetch_add(1, std::memory_order_relaxed);
+    if (panel) g_cinemaPanelDayBloomSuppressed.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -2580,7 +2602,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
     if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
-    if (DrawCinemaMarqueeDayBloomGuard(dev, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
+    if (DrawCinemaMarqueeDayBloomGuard(dev, args.primitiveCount, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
     if (g_curVsIsRoad) return DrawRoad(dev, draw) ? NoteClaim(ClaimSource::RoadLight) : kContinue;
     if (g_curVsIsFloor) return DrawFloor(dev, draw) ? NoteClaim(ClaimSource::FloorLight) : kContinue;
     if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? NoteClaim(ClaimSource::OutdoorFloorLight) : kContinue;
@@ -3768,9 +3790,9 @@ std::string FurnitureDiag() {
 }
 
 std::string ObjectStatus() {
-    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema marquee day bloom suppressed: {} | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
-                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(),
-                       g_nightFurniture.load(), g_nightFurnitureTinted.load());
+    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema day bloom suppressed: {} (centre panel: {}) | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
+                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(),
+                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -3832,6 +3854,7 @@ void Shutdown(bool keepChunkMaps) {
     g_compileTried = false;
     g_classCache.clear();
     g_cinemaMarqueeDayPs.clear();
+    g_cinemaMarqueePanelDayPs.clear();
     g_basisPs.clear();
     g_rigLookup.Clear();
     g_rigPsInfo.clear(); // shader addresses are reused after a restart of the feature (review M3)
