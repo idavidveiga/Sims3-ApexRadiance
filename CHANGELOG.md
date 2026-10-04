@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — Lot Streaming 300 + 16 validated baseline
+
+**Status:** refinement/testing  
+**Detailed technical changelog:** `docs/features/lot-streaming-changelog.md`
+
+### Validated
+
+- Lot LOD distance is a native eligibility radius stored at `WorldManager+0xDC`; the controlled metric follows the
+  squared-distance cutoff (`200 -> ~40,000`, `300 -> ~90,000`).
+- **300** is the current validated distance baseline.
+- `WorldManager+0xE4` is the independent **Max Active Lots** capacity. Raising it **8 -> 16** produced 16 simultaneous
+  Detailed View lots in the same dense reference area that previously saturated at eight.
+- Active Lot Bias remains 8.0 and is not being tuned yet.
+- The 300 + 16 run remained stable in the captured session; further worlds/saves are still part of validation.
+
+### Provenance
+
+- Distance 300, Max Active Lots 16, the metric probe and the squared-distance validation are Apex research.
+- The native game fields/functions are EA code.
+- S3SS lineage remains explicitly credited where applicable: transition-throttle settings, visibility override,
+  map-view blocking concept and the object throttle.
+- The object throttle is a port/adaptation of S3SS's LotStreamingOptimizations implementation; the standalone Apex
+  framework/integration is rewritten and adds its own validation, ownership and restoration behavior.
+
+### Next refinement
+
+- transition threshold 12 with a real 16-lot capacity;
+- camera speed threshold 5 vs native 32;
+- visibility override A/B;
+- then production/menu integration of the final values.
+
 ## Unreleased — Object ground light follows night level
 
 **Status:** testing  
