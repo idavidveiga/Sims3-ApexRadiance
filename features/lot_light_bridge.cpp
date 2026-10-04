@@ -2431,31 +2431,93 @@ int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
     return k;
 }
 
+// Development Lighting + Bloom census attribution. A single draw can pass through more than one Apex layer
+// (for example Rooms at Night + a smoothed indoor-object draw, or the foliage VS + its pixel fix), so keep a
+// bit mask for this draw rather than only the final family name. The mask is reset only by the top-level
+// diagnostic draw hook and has no effect on rendering.
+enum class ClaimSource : uint8_t {
+    IndoorBasisSmooth,
+    ObjectRigNightFix,
+    RoofLampFix,
+    RoofSnowLampFix,
+    LakeLampFix,
+    FoliageMoonShadowPS,
+    ExteriorWallGain,
+    RoadLight,
+    FloorLight,
+    OutdoorFloorLight,
+    FenceStairGroundLight,
+    SnowOnObjectGroundLight,
+    SnowOnStairGroundLight,
+    IndoorObjectSmooth,
+    OutdoorObjectGroundLight,
+    LotSnowLight,
+    SnowFloorLight,
+    WorldTerrainLight,
+    LotLightAtlas,
+    RoomsAtNightFurniture,
+    FoliageVertex,
+    Count,
+};
+constexpr size_t kClaimSourceCount = static_cast<size_t>(ClaimSource::Count);
+static_assert(kClaimSourceCount <= 32);
+constexpr std::array<const char*, kClaimSourceCount> kClaimSourceNames = {
+    "IndoorBasisSmooth",
+    "ObjectRigNightFix",
+    "RoofLampFix",
+    "RoofSnowLampFix",
+    "LakeLampFix",
+    "FoliageMoonShadowPS",
+    "ExteriorWallGain",
+    "RoadLight",
+    "FloorLight",
+    "OutdoorFloorLight",
+    "FenceStairGroundLight",
+    "SnowOnObjectGroundLight",
+    "SnowOnStairGroundLight",
+    "IndoorObjectSmooth",
+    "OutdoorObjectGroundLight",
+    "LotSnowLight",
+    "SnowFloorLight",
+    "WorldTerrainLight",
+    "LotLightAtlas",
+    "RoomsAtNightFurniture",
+    "FoliageVertex",
+};
+uint32_t g_claimSourceMask = 0; // render thread; meaningful only while a development census draw is being attributed
+inline void MarkClaimSource(ClaimSource source) {
+    g_claimSourceMask |= 1u << static_cast<unsigned>(source);
+}
+inline D3D9Hooks::HookAction NoteClaim(ClaimSource source) {
+    MarkClaimSource(source);
+    return D3D9Hooks::HookAction::Skip;
+}
+
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice9* dev, DrawFn draw) {
     constexpr auto kSkip = D3D9Hooks::HookAction::Skip;
     constexpr auto kContinue = D3D9Hooks::HookAction::Continue;
     if (g_curPsBasis) RoomMapPadding::NoteDraw(dev, g_curPs); // note the room light maps it binds (edge padding)
     // (not for fences / snow relief / rig objects: those draws keep their own fixes)
-    if (g_curPsBasis && !g_curVsIsInstanced && !g_curVsIsSnowRelief && !g_curVsIsObject && DrawBasisSmooth(dev, draw)) return kSkip;
-    if (g_curClass == PsClass::ObjectRig) return DrawObjectRig(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::Roof) return DrawRoof(dev, draw) ? kSkip : kContinue;
+    if (g_curPsBasis && !g_curVsIsInstanced && !g_curVsIsSnowRelief && !g_curVsIsObject && DrawBasisSmooth(dev, draw)) return NoteClaim(ClaimSource::IndoorBasisSmooth);
+    if (g_curClass == PsClass::ObjectRig) return DrawObjectRig(dev, draw) ? NoteClaim(ClaimSource::ObjectRigNightFix) : kContinue;
+    if (g_curClass == PsClass::Roof) return DrawRoof(dev, draw) ? NoteClaim(ClaimSource::RoofLampFix) : kContinue;
     // The snowy roof pixel shader is also the one of snow on stair tops (same bytes, LightProbe-neve-escada); the vertex
     // shader tells them apart (the stair one takes the snow base in TEXCOORD2) and stairs go to DrawSnowRelief below.
-    if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? kSkip : kContinue;
+    if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? NoteClaim(ClaimSource::RoofSnowLampFix) : kContinue;
+    if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? NoteClaim(ClaimSource::LakeLampFix) : kContinue;
+    if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
+    if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
-    if (g_curVsIsRoad) return DrawRoad(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsFloor) return DrawFloor(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsInstanced) return DrawInstanced(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? kSkip : kContinue;
+    if (g_curVsIsRoad) return DrawRoad(dev, draw) ? NoteClaim(ClaimSource::RoadLight) : kContinue;
+    if (g_curVsIsFloor) return DrawFloor(dev, draw) ? NoteClaim(ClaimSource::FloorLight) : kContinue;
+    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? NoteClaim(ClaimSource::OutdoorFloorLight) : kContinue;
+    if (g_curVsIsInstanced) return DrawInstanced(dev, draw) ? NoteClaim(ClaimSource::FenceStairGroundLight) : kContinue;
+    if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? NoteClaim(ClaimSource::SnowOnObjectGroundLight) : kContinue;
+    if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? NoteClaim(ClaimSource::SnowOnStairGroundLight) : kContinue;
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
-    if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
-    if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
-    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
+    if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return NoteClaim(ClaimSource::IndoorObjectSmooth);
+    if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return NoteClaim(ClaimSource::OutdoorObjectGroundLight);
+    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue;
     if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) {
         const bool multi = g_curClass == PsClass::WorldMultiLight;
         if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
@@ -2464,7 +2526,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         const DWORD s = RecordWorldChunk(dev, key, chunk, multi ? 13 : 15);
         if (!s) {
             // not a world terrain chunk: the snow-on-floor pixel shaders (m69, m71) also declare s6+ and land here
-            if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
+            if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return NoteClaim(ClaimSource::SnowFloorLight);
             return D3D9Hooks::HookAction::Continue;
         }
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
@@ -2484,11 +2546,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         }
         g_inOwnCall = false;
         if (old) old->Release();
-        return D3D9Hooks::HookAction::Skip;
+        return NoteClaim(ClaimSource::WorldTerrainLight);
     }
     if (g_curClass != PsClass::LotLight) {
         // snow lying on floor tiles (m69, m71): only draws no pixel-shader class claimed, see ClassifyVs
-        if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
+        if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return NoteClaim(ClaimSource::SnowFloorLight);
         return kContinue;
     }
 
@@ -2553,7 +2615,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     SetPs(dev, original);
     g_inOwnCall = false;
     g_lotDrawn.fetch_add(1, std::memory_order_relaxed);
-    return D3D9Hooks::HookAction::Skip;
+    return NoteClaim(ClaimSource::LotLightAtlas);
 }
 
 // Foliage vertex shaders are swapped around everything else (the pixel side may be patched too): set the patched VS,
@@ -2651,6 +2713,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice
     }
     D3D9Hooks::HookAction r = OnDrawInnerCore(dev, draw);
     if (psSet || vsSet || cubeSet) {
+        MarkClaimSource(ClaimSource::RoomsAtNightFurniture);
         if (r == D3D9Hooks::HookAction::Continue) { // the game's own draw, made here while the constants are turned
             const float tint = UnlitRooms::FurnitureTint();
             float cubeColour[3];
@@ -2815,6 +2878,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
     SetVs(dev, original);
     g_inOwnCall = false;
     g_foliageDrawn.fetch_add(1, std::memory_order_relaxed);
+    MarkClaimSource(ClaimSource::FoliageVertex);
     return D3D9Hooks::HookAction::Skip;
 }
 
@@ -2850,6 +2914,14 @@ struct LightingBloomRow {
     float x = 0, y = 0, z = 0;
     std::string path;
     std::string tex;
+    std::array<int, kClaimSourceCount> sourceTotal{};
+    std::array<int, kClaimSourceCount> sourceDay{};
+    std::array<int, kClaimSourceCount> sourceTwilight{};
+    std::array<int, kClaimSourceCount> sourceNight{};
+    int unknownSourceTotal = 0;
+    int unknownSourceDay = 0;
+    int unknownSourceTwilight = 0;
+    int unknownSourceNight = 0;
 };
 std::atomic<int> g_lightingBloomFrames{0};
 bool g_lightingBloomPending = false;
@@ -2948,6 +3020,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     const bool litCandidate = LitCandidate(dev, desc) || rig == 2;
     const int bloomFamily = lightingBloom ? LightingBloomFamily() : 0;
     const bool candidate = litCandidate || bloomFamily != 0;
+    g_claimSourceMask = 0;
     const D3D9Hooks::HookAction r = OnDrawTracked(dev, draw);
     if (!candidate) return r;
     const bool claimed = r == D3D9Hooks::HookAction::Skip;
@@ -2984,6 +3057,23 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
         } else {
             row.twilightDraws++;
             row.twilightClaimed += claimed ? 1 : 0;
+        }
+        if (claimed) {
+            bool attributed = false;
+            for (size_t i = 0; i < kClaimSourceCount; i++) {
+                if (!(g_claimSourceMask & (1u << static_cast<unsigned>(i)))) continue;
+                attributed = true;
+                row.sourceTotal[i]++;
+                if (night <= 0.01f) row.sourceDay[i]++;
+                else if (night >= 0.99f) row.sourceNight[i]++;
+                else row.sourceTwilight[i]++;
+            }
+            if (!attributed) {
+                row.unknownSourceTotal++;
+                if (night <= 0.01f) row.unknownSourceDay++;
+                else if (night >= 0.99f) row.unknownSourceNight++;
+                else row.unknownSourceTwilight++;
+            }
         }
         if (!row.havePos && havePos) {
             row.havePos = true;
@@ -3066,8 +3156,9 @@ void WriteLightingBloomCensus() {
         out << APEX_PRODUCT_NAME " Lighting + Bloom Census (read-only diagnostic)\n"
                "Purpose: show visible draw families that Apex claims during day/twilight/night and known/possible game bloom-mask producers.\n"
                "Bloom labels are family-level diagnostics, not measured output alpha: YES = documented walls/objects/roofs; POSSIBLE = instanced structures pending direct alpha capture.\n"
-               "Day <= 0.01, Twilight 0.01..0.99, Night >= 0.99 (g_night).\n\n"
-               "columns: path | rig | bloom | draws/fixed | day/fixed | twilight/fixed | night/fixed | night range | triangles | position | VS hash/size | PS hash/size | textures\n\n";
+               "Day <= 0.01, Twilight 0.01..0.99, Night >= 0.99 (g_night).\n"
+               "claim sources are the exact Apex draw path(s) that acted; counts are total/day/twilight/night and one draw may have more than one source.\n\n"
+               "columns: path | rig | bloom | draws/fixed | day/fixed | twilight/fixed | night/fixed | night range | triangles | position | VS hash/size | PS hash/size | claim sources total/day/twilight/night | textures\n\n";
 
         auto code = [](auto* sh, uint32_t& hash, UINT& size) {
             std::vector<DWORD> t;
@@ -3082,7 +3173,7 @@ void WriteLightingBloomCensus() {
             hash = t.empty() ? 0 : h;
         };
 
-        int dayModifiedRows = 0, bloomRows = 0, totalDraws = 0, totalClaimed = 0;
+        int dayModifiedRows = 0, bloomRows = 0, totalDraws = 0, totalClaimed = 0, unknownSourceRows = 0;
         for (const auto& [key, row] : g_lightingBloom) {
             IDirect3DVertexShader9* vs = std::get<0>(key);
             IDirect3DPixelShader9* ps = std::get<1>(key);
@@ -3096,14 +3187,26 @@ void WriteLightingBloomCensus() {
             bloomRows += row.bloom != 0 ? 1 : 0;
             const char* bloom = row.bloom == 1 ? "YES" : row.bloom == 2 ? "POSSIBLE" : "no";
             const std::string pos = row.havePos ? std::format("({:.1f},{:.1f},{:.1f})", row.x, row.y, row.z) : "(unknown)";
-            out << std::format("{:<22} | {:2} | {:8} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:.3f}..{:.3f} | {:7} | {:>22} | VS {:08X}/{} | PS {:08X}/{} |{}\n",
+            std::string sources;
+            for (size_t i = 0; i < kClaimSourceCount; i++) {
+                if (!row.sourceTotal[i]) continue;
+                if (!sources.empty()) sources += ",";
+                sources += std::format("{}={}/{}/{}/{}", kClaimSourceNames[i], row.sourceTotal[i], row.sourceDay[i], row.sourceTwilight[i], row.sourceNight[i]);
+            }
+            if (row.unknownSourceTotal) {
+                if (!sources.empty()) sources += ",";
+                sources += std::format("UNKNOWN={}/{}/{}/{}", row.unknownSourceTotal, row.unknownSourceDay, row.unknownSourceTwilight, row.unknownSourceNight);
+                unknownSourceRows++;
+            }
+            if (sources.empty()) sources = "-";
+            out << std::format("{:<22} | {:2} | {:8} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:.3f}..{:.3f} | {:7} | {:>22} | VS {:08X}/{} | PS {:08X}/{} | {} |{}\n",
                                row.path, row.rig, bloom, row.draws, row.claimed, row.dayDraws, row.dayClaimed, row.twilightDraws, row.twilightClaimed,
-                               row.nightDraws, row.nightClaimed, row.minNight, row.maxNight, row.prims, pos, vh, vsz, ph, psz, row.tex);
+                               row.nightDraws, row.nightClaimed, row.minNight, row.maxNight, row.prims, pos, vh, vsz, ph, psz, sources, row.tex);
         }
-        out << std::format("\nSUMMARY: {} rows, {} draws, {} Apex-claimed draws, {} rows modified in full daylight, {} bloom-family rows.\n",
-                           g_lightingBloom.size(), totalDraws, totalClaimed, dayModifiedRows, bloomRows);
-        out << "Interpretation: rows with day/fixed > 0 are the first candidates for daylight-lighting review. Bloom=YES/POSSIBLE identifies families worth a direct alpha/composite probe next.\n";
-        LOG_INFO(std::format("[LotLightBridge] Lighting + Bloom census written: {} rows, {} daylight-modified", g_lightingBloom.size(), dayModifiedRows));
+        out << std::format("\nSUMMARY: {} rows, {} draws, {} Apex-claimed draws, {} rows modified in full daylight, {} bloom-family rows, {} rows with an unattributed Apex claim.\n",
+                           g_lightingBloom.size(), totalDraws, totalClaimed, dayModifiedRows, bloomRows, unknownSourceRows);
+        out << "Interpretation: rows with day/fixed > 0 are the first candidates for daylight-lighting review. claim sources identify the Apex path that actually acted; Bloom=YES/POSSIBLE identifies families worth a direct alpha/composite probe next.\n";
+        LOG_INFO(std::format("[LotLightBridge] Lighting + Bloom census written: {} rows, {} daylight-modified, {} unattributed", g_lightingBloom.size(), dayModifiedRows, unknownSourceRows));
     } catch (...) {
     }
     g_lightingBloom.clear();
