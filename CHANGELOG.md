@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — Object ground light follows night level
+
+**Status:** testing  
+**LOD base:** `e0a954ed7b1451fc9c05a44b25f6bf5fe67cc914` — LOD 300 + Max Active Lots 16 + bloom diagnostics
+
+### What changed
+
+- `Smooth ground light` remains active for terrain, roads, lots and floors during the day.
+- Outdoor rig objects that consume the smoothed ground-light atlas no longer enter Apex's replacement path in full daylight (`g_night <= 0.01`).
+- During dawn/dusk, only the added ground-atlas term on those objects is multiplied by `g_night`.
+- At full night (`g_night = 1`), object ground-light strength is unchanged.
+- Snow on objects/stair relief now follows the same day/night rule; fences/stairs already had this guard.
+- No global bloom threshold, Advanced Rendering setting, terrain smoothing or RGB lighting was changed.
+
+### Why
+
+The in-game A/B test showed that toggling **Smooth ground light** could remove the unwanted object bloom, but disabling it globally also removes the desired smoothed ground lighting. The fix therefore keeps the smoothed map and stops only its object consumers from replacing normal daytime object lighting.
+
 ## Unreleased — Bloom Alpha Probe
 
 **Status:** diagnostic/testing  
