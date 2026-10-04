@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — Wall lighting keeps vanilla bloom alpha
+
+**Status:** testing  
+**LOD base:** validated Extended Lot Detail branch (300 distance / 16 detailed lots)
+
+### What changed
+
+- Exterior wall/foundation RGB keeps the configured Apex wall-light gain.
+- For opaque ExteriorWall draws, bloom alpha is now written once with the game's original wall-light scale, then RGB is written with Apex's boosted scale.
+- The alpha-only pass cannot write depth or stencil; the RGB pass remains the authoritative geometry draw.
+- Blended/unsupported wall draws deliberately fall back to the previous one-pass behaviour rather than changing their compositing semantics.
+- Developer wall status now reports how many draws preserved vanilla bloom alpha and how many used the fallback.
+- No global bloom threshold, roof lighting, ground lighting, object lighting, Advanced Rendering option or LOD value was changed.
+
+### Why
+
+The day/night bloom probes showed the wall/foundation region saturating the night bloom mask while the attributed census identified `ExteriorWallGain` on every captured wall draw. The game's ExteriorWall shaders derive bloom alpha from final luminance, so multiplying the baked lamp term also multiplied the apparent bloom area. This keeps the RGB correction but decouples Apex's wall gain from bloom.
+
 ## Unreleased — Object-light boost follows the real night level
 
 **Status:** testing  
