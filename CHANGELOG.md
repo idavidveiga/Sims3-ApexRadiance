@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — Smooth ground light no longer relights walls
+
+**Status:** testing  
+**LOD base:** current `feature/lot-lod-streaming` 300x16 refinement branch
+
+### What changed
+
+- Toggling **Smooth ground light** no longer runs the generic F9-style lighting refresh.
+- The switch still changes the smoothed ground-light maps live.
+- It now refreshes only object rigs, which are the live consumers relevant to the original bloom A/B.
+- It no longer forces terrain, lot stories, rooms or exterior walls to be re-solved.
+- The daytime object-ground-light guard remains unchanged: full daylight uses the game's normal object lighting; twilight fades the added ground term with `g_night`; full night keeps the original strength.
+- No global bloom, wall brightness, Advanced Rendering, RGB lighting or LOD value was changed.
+
+### Why
+
+The night regression log showed that an A/B of **Smooth ground light** triggered `RefreshAll`, which rebuilt terrain, lots and every room at `g_night = 1`. The accompanying census showed every captured `ExteriorWall` draw being claimed at night. The switch itself is only a smoothing/filter choice, so it should not cause wall/room relighting.
+
 ## Unreleased — Lot Streaming 300 + 16 validated baseline
 
 **Status:** refinement/testing  
