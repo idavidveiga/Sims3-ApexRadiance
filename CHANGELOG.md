@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — Lighting/bloom refinement consolidated
+
+**Detailed technical changelog:** `docs/features/night-lighting-changelog.md`
+
+- Added the second full-day cinema/theatre facade material to the surgical bloom guard: VS `BFFCCC56/1060` +
+  PS `4E570819/500`, correlated with the captured night panel material `36F5E915/1296`.
+- The cinema guard remains full-day only, requires the exact outdoor object shader path, proves the shader's isolated
+  luminance-bloom threshold before changing it, and applies an additional tiny-draw guard to the centre-panel variant.
+- The captured night cinema shaders remain untouched.
+- Added a dedicated Night Lighting refinement changelog covering the current options, defaults, corrections,
+  diagnostics, implementation areas and final validation checklist.
+- Added/updated EN / PT-BR / ES / FR translations for the validated Lot Streaming controls, tooltips and feature
+  descriptions.
+- Reconciled the Lot Streaming changelog with the current production implementation: validated 70-300 distance range,
+  8-16 detailed-lot capacity, 300/16 defaults, Smooth Lot Streaming threshold 5 validation, and the threshold-12 control
+  retained for development/reference rather than the main menu.
+
 ## Unreleased — Cinema marquee daytime bloom guard
 
 **Status:** testing  
@@ -59,7 +76,7 @@ The attributed draw census showed the previously fixed `OutdoorObject` draw path
 - The validated Lot LOD probe results are now implemented as a normal production feature instead of requiring a diagnostic build.
 - Added **Extended Lot Detail** with persistent controls:
   - **Lot detail distance**: validated range 70..300, default 300.
-  - **Maximum detailed lots**: range 1..16, default 16.
+  - **Maximum detailed lots**: validated range 8..16, default 16.
 - Production writes use the same ownership discipline proven by the probes: capture the live WorldManager baseline, guarded writes, reassert only the captured game baseline, yield to unexpected third-party values, and restore only values Apex still owns.
 - **Smooth Lot Streaming** is now considered validated and defaults on for new configurations: native transition throttle + camera-speed threshold 5.
 - The final controlled A/B reduced Detailed View transitions from 149.3/min to 99.2/min, same-lot reversals within 5 s from 87 to 18, and reversals within 2 s from 48 to 3.
@@ -76,7 +93,7 @@ The attributed draw census showed the previously fixed `OutdoorObject` draw path
 
 - Toggling **Smooth ground light** no longer runs the generic F9-style lighting refresh.
 - The switch still changes the smoothed ground-light maps live.
-- It now refreshes only object rigs, which are the live consumers relevant to the original bloom A/B.
+- It no longer requests an object-rig refresh; the switch changes only the smoothed/raw maps consumed by draw paths.
 - It no longer forces terrain, lot stories, rooms or exterior walls to be re-solved.
 - The daytime object-ground-light guard remains unchanged: full daylight uses the game's normal object lighting; twilight fades the added ground term with `g_night`; full night keeps the original strength.
 - No global bloom, wall brightness, Advanced Rendering, RGB lighting or LOD value was changed.
@@ -109,12 +126,13 @@ The night regression log showed that an A/B of **Smooth ground light** triggered
 - The object throttle is a port/adaptation of S3SS's LotStreamingOptimizations implementation; the standalone Apex
   framework/integration is rewritten and adds its own validation, ownership and restoration behavior.
 
-### Next refinement
+### Current production state
 
-- transition threshold 12 with a real 16-lot capacity;
-- camera speed threshold 5 vs native 32;
-- visibility override A/B;
-- then production/menu integration of the final values.
+- **Extended Lot Detail** exposes the validated distance range 70..300 (default 300, 10-unit steps) and capacity 8..16
+  (default 16).
+- **Smooth Lot Streaming** is validated as the normal companion behaviour: native transition throttle + camera threshold 5.
+- The threshold-12 control is retained only for development/reference and is not shown in the main Performance menu.
+- Object/flora visual-distance research is intentionally separate from this Lot Streaming pass.
 
 ## Unreleased — Object ground light follows night level
 
