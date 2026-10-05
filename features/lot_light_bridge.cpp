@@ -1777,6 +1777,65 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
 // (usually none: VS c4..c11 = 0 in every fence capture), and one rig serves a whole group from its centre. The patched
 // pixel shader (ShaderPatches::PatchInstancedLamps) uses max(vertex lights, ground light atlas at the pixel) instead,
 // so every rail gets the same lamp light as the ground next to it. ----
+// The centre and half extent (xz) of an instanced group: the mean of its instance positions (stream 1, the first float3
+// of each record: world position, as the F7 capture reads them). Read once per (buffer, offset, count, stride) and again
+// every 5 s, since the game may refill a buffer; render thread.
+struct GroupCentre {
+    float x = 0, z = 0, ext = 0;
+    DWORD at = 0;
+    bool ok = false;
+};
+std::unordered_map<uint64_t, GroupCentre> g_groupCentres;
+bool ReadInstancePositions(const BYTE* p, UINT count, UINT stride, GroupCentre& g) {
+    __try {
+        double sx = 0, sz = 0;
+        float minX = 1e30f, maxX = -1e30f, minZ = 1e30f, maxZ = -1e30f;
+        for (UINT i = 0; i < count; i++) {
+            const float* v = reinterpret_cast<const float*>(p + static_cast<size_t>(i) * stride);
+            if (!std::isfinite(v[0]) || !std::isfinite(v[2])) return false;
+            sx += v[0];
+            sz += v[2];
+            minX = std::min(minX, v[0]), maxX = std::max(maxX, v[0]);
+            minZ = std::min(minZ, v[2]), maxZ = std::max(maxZ, v[2]);
+        }
+        g.x = static_cast<float>(sx / count);
+        g.z = static_cast<float>(sz / count);
+        g.ext = 0.5f * std::sqrt((maxX - minX) * (maxX - minX) + (maxZ - minZ) * (maxZ - minZ));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool InstancedGroupCentre(IDirect3DDevice9* dev, float& x, float& z, float& ext) {
+    UINT freq = 0;
+    if (FAILED(dev->GetStreamSourceFreq(0, &freq)) || !(freq & D3DSTREAMSOURCE_INDEXEDDATA)) return false;
+    const UINT count = freq & 0x3FFFFFFFu;
+    IDirect3DVertexBuffer9* vb = nullptr;
+    UINT off = 0, stride = 0;
+    if (FAILED(dev->GetStreamSource(1, &vb, &off, &stride)) || !vb) return false;
+    bool ok = false;
+    if (count > 0 && count <= 4096 && stride >= 12 && stride <= 256) {
+        const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) << 32) ^ (static_cast<uint64_t>(off) << 12) ^ (static_cast<uint64_t>(count) << 1) ^ stride;
+        GroupCentre& g = g_groupCentres[key];
+        const DWORD now = GetTickCount();
+        if (!g.at || now - g.at > 5000) {
+            g.at = now ? now : 1;
+            void* p = nullptr;
+            g.ok = SUCCEEDED(vb->Lock(off, count * stride, &p, D3DLOCK_READONLY)) && p && ReadInstancePositions(static_cast<const BYTE*>(p), count, stride, g);
+            if (p) vb->Unlock();
+        }
+        if (g.ok) {
+            x = g.x;
+            z = g.z;
+            ext = g.ext;
+            ok = true;
+        }
+        if (g_groupCentres.size() > 4096) g_groupCentres.clear(); // groups come and go with lots
+    }
+    vb->Release();
+    return ok;
+}
+
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
     float c[4];
@@ -1787,17 +1846,58 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
-    const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
-                       g_fenceStrength.load(std::memory_order_relaxed)), 0, 0, 0};
+    const float gain = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed), g_fenceStrength.load(std::memory_order_relaxed));
+    const float s[4] = {gain, 0, 0, 0};
+    // Per-pixel lamps (ShaderPatches::PatchInstancedLamps pixelLamps): the lamps chosen around the group's centre, as for
+    // objects; the atlas then only on faces turned up. Without a readable centre: no lamps and the atlas on every face, as
+    // before.
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    float lamps[1 + 2 * N][4] = {}, oldLamps[1 + 2 * N][4] = {}, weight[4] = {0.0f, 1.0f, 1.0f, 0.0f}, oldWeight[4] = {};
+    if (p.inst.pixelLamps) {
+        lamps[0][3] = 1e-4f;
+        for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
+        float gx = 0, gz = 0, ext = 0;
+        if (g_objPixelLamps.load(std::memory_order_relaxed) && InstancedGroupCentre(dev, gx, gz, ext)) {
+            const int n = SelectLamps(gx, gz, 40.0f + std::min(ext, 60.0f));
+            int used = 0;
+            for (int k = 0; k < n && used < static_cast<int>(N); k++) {
+                const float* pr = g_lampData[k];
+                const float* col = g_lampData[16 + k];
+                const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
+                lamps[1 + 2 * used][0] = pr[0];
+                lamps[1 + 2 * used][1] = pr[1];
+                lamps[1 + 2 * used][2] = pr[2];
+                lamps[1 + 2 * used][3] = 1.0f / (r * r);
+                lamps[2 + 2 * used][0] = col[0];
+                lamps[2 + 2 * used][1] = col[1];
+                lamps[2 + 2 * used][2] = col[2];
+                used++;
+            }
+            lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed), g_objPixelLampStrength.load(std::memory_order_relaxed)) *
+                          std::max(g_fenceStrength.load(std::memory_order_relaxed), 0.0f);
+            weight[0] = 1.0f; // atlas x sat(N.y): the fence tops
+            weight[1] = 0.0f;
+        }
+        dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+        dev->GetPixelShaderConstantF(p.inst.groundWeightConst, oldWeight, 1);
+    }
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.inst.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.inst.atlasConst, c, 1);
         SetPsConst(dev, p.inst.strengthConst, s, 1);
+        if (p.inst.pixelLamps) {
+            SetPsConst(dev, p.inst.lampParamConst, &lamps[0][0], 1 + 2 * N);
+            SetPsConst(dev, p.inst.groundWeightConst, weight, 1);
+        }
         SetPs(dev, p.ps);
         draw();
         SetPs(dev, original);
+        if (p.inst.pixelLamps) {
+            SetPsConst(dev, p.inst.groundWeightConst, oldWeight, 1);
+            SetPsConst(dev, p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+        }
         SetPsConst(dev, p.inst.strengthConst, oldB, 1);
         SetPsConst(dev, p.inst.atlasConst, oldA, 1);
     }

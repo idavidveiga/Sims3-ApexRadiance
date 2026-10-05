@@ -69,10 +69,17 @@ bool PatchFoliageVs(std::vector<DWORD>& t);
 bool IsInstancedStructureVs(const std::vector<DWORD>& t);
 // Their pixel shader adds COLOR0 once ("add rD.xyz, rS, vC"): replace it with max(vC, ground light atlas at the pixel's
 // world xz * strength). uv = vT.zw * cA.xy + cA.zw, strength = cB.x.
+// With TEXCOORD2 (world normal xyz, world y w) the patch also gets the objects' per-pixel lamps (pixelLamps; constants
+// lampParamConst = (0, lamp strength, 0, 1e-4), lampConst .. + 2 * kObjectPixelLamps - 1 = per lamp (pos, 1/R^2),
+// (colour, 0)) and the atlas only on faces turned up: max(vC + lamps x strength, atlas x sat(N.y) x cB.x).
 struct InstancedPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
     DWORD strengthConst = 0;
+    bool pixelLamps = false;
+    DWORD lampParamConst = 0;
+    DWORD lampConst = 0;
+    DWORD groundWeightConst = 0; // (a, b, 1, 0): atlas weight sat(N.y * a + b); (1, 0) with lamps, (0, 1) = every face (as before)
 };
 bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out);
 

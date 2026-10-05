@@ -804,6 +804,17 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
         }
     }
     if (colorReg < 0 || tc1Reg < 0) return false;
+    // TEXCOORD2: the world normal (xyz) and the world height (w), from the instanced VS ("mov oT2.xyz, rN", "mov oT2.w, rW.y")
+    int tc2Reg = -1;
+    size_t tc2Dcl = 0;
+    for (const Ins& x : ins) {
+        if (x.op != kDcl) continue;
+        const DWORD use = t[x.at + 1] & 0x1F, idx = (t[x.at + 1] >> 16) & 0xF, r = t[x.at + 2];
+        if (Type(r) == kInput && use == 5 && idx == 2) {
+            tc2Reg = static_cast<int>(Num(r));
+            tc2Dcl = x.at + 2;
+        }
+    }
     // the single "add rD.xyz, rS, vC" (lamps added to sun x shadow + ambient)
     int add = -1, found = 0, slot = 0;
     for (size_t i = 0; i < ins.size(); i++) {
@@ -823,9 +834,52 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
     out.atlasSampler = E;
     out.atlasConst = cA;
     out.strengthConst = cB;
+    out.pixelLamps = false;
     t[tc1Dcl] = (t[tc1Dcl] & ~0x000F0000u) | 0x000F0000u; // vT.xy -> vT (zw = world xz)
     const Ins& A = ins[add];
     t[A.at + slot] = Src(kTemp, T); // add rD.xyz, rS, vC  ->  add rD.xyz, rS, rT
+    // Per-pixel lamps (user 05/10: fences looked lit far from a lamp, faces turned away included): with the normal and the
+    // height in TEXCOORD2, the same lamps as objects (PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2 at the
+    // pixel), and the ground atlas only on faces turned up (the fence tops: x sat(N.y)), since the atlas is the light
+    // lying on the ground and has no direction. T = max(vC + lamps x cS.y, atlas x sat(N.y) x cB.x).
+    if (tc2Reg >= 0 && u.maxConst + 4 + 2 * kObjectPixelLamps < 224 && u.maxTemp + 7 < 32) {
+        const DWORD cH = cA + 2, cS = cA + 3, cL = cA + 4;
+        const DWORD N = T + 1, G = T + 2, P = T + 3, LA = T + 4, LB = T + 5, Q = T + 6, V2 = static_cast<DWORD>(tc2Reg);
+        constexpr DWORD kNeg = 0x01000000u, kNrmOp = 0x24;
+        out.pixelLamps = true;
+        out.lampParamConst = cS;
+        out.lampConst = cL;
+        out.groundWeightConst = cH;
+        t[tc2Dcl] = (t[tc2Dcl] & ~0x000F0000u) | 0x000F0000u; // vT2.xyz -> vT2 (w = world y)
+        std::vector<DWORD> code = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
+                                   Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
+                                   Op(kNrmOp, 2), Dst(kTemp, N, 0x7), Src(kInput, V2),
+                                   Op(kMad, 4), Dst(kTemp, G, 0x8, true), Src(kTemp, N, kSwzY), Src(kConst, cH, kSwzX), Src(kConst, cH, kSwzY), // sat(N.y)
+                                   Op(kMul, 3), Dst(kTemp, G, 0x8), Src(kTemp, G, kSwzW), Src(kConst, cB, kSwzX),
+                                   Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, G, kSwzW),
+                                   Op(kMov, 2), Dst(kTemp, P, 0x5), Src(kInput, V, 0xFA /* zzww: x = world x, z = world z */),
+                                   Op(kMov, 2), Dst(kTemp, P, 0x2), Src(kInput, V2, kSwzW)};
+        for (DWORD k = 0; k < kObjectPixelLamps; k++) {
+            const DWORD cp = cL + 2 * k, cc = cp + 1;
+            code.insert(code.end(), {Op(kAdd, 3), Dst(kTemp, LA, 0x7), Src(kConst, cp), Src(kTemp, P) | kNeg,      // l = lamp - pixel
+                                     Op(kDp3, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA), Src(kTemp, LA),             // d^2
+                                     Op(kMax, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA, kSwzW), Src(kConst, cS, kSwzW),
+                                     Op(0x07 /* rsq */, 2), Dst(kTemp, LB, 0x8), Src(kTemp, LA, kSwzW),
+                                     Op(kMul, 3), Dst(kTemp, LA, 0x7), Src(kTemp, LA), Src(kTemp, LB, kSwzW),      // normalize
+                                     Op(kDp3, 3), Dst(kTemp, LB, 0x1, true), Src(kTemp, N), Src(kTemp, LA),        // sat(N.l)
+                                     Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LA, kSwzW), Src(kConst, cp, kSwzW),
+                                     Op(kAdd, 3), Dst(kTemp, LB, 0x2, true), Src(kTemp, LB, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
+                                     Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LB, kSwzY), Src(kTemp, LB, kSwzY),
+                                     Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, kSwzY)});
+            if (k == 0) code.insert(code.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX)});
+            else code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX), Src(kTemp, Q)});
+        }
+        code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, LA, 0x7), Src(kTemp, Q), Src(kConst, cS, kSwzY), Src(kInput, C),
+                                 Op(kMax, 3), Dst(kTemp, T, 0x7), Src(kTemp, LA), Src(kTemp, T)});
+        Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
+                  {A.at, code}});
+        return true;
+    }
     Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
               {A.at, {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                       Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
