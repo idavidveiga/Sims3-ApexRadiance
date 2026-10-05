@@ -352,6 +352,7 @@ void LoadSettings() {
         kPublicBuild.store(!u.developerMode, std::memory_order_relaxed);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // retained for compatibility; no longer controls startup UI
         u.keyChosen = (*ui)["key_chosen"].value_or(false);
+        u.startProfileDone = (*ui)["start_profile_done"].value_or(true); // only new installations (no [ui] yet) see the welcome page
         const std::string preset = (*ui)["hotkey_preset"].value_or(std::string());
         u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
         u.minePresetBase = static_cast<int>((*ui)["mine_base"].value_or(int64_t{0}));
@@ -431,6 +432,7 @@ bool Save(std::string* error) {
         ui.insert("developer_mode", u.developerMode);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("key_chosen", u.keyChosen);
+        ui.insert("start_profile_done", u.startProfileDone);
         static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
         if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) ui.insert("hotkey_preset", kPresetKeys[u.hotkeyPreset]);
         if (u.hotkeyPreset == 3) ui.insert("mine_base", static_cast<int64_t>(u.minePresetBase));

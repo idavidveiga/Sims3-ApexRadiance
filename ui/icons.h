@@ -97,6 +97,37 @@ enum class IconId : int {
     Cat, // cat
     Dog, // dog
     Skull, // skull
+    Rocket, // rocket
+    Bed, // bed
+    Bath, // bath
+    Sofa, // sofa
+    Lamp, // lamp
+    LampDesk, // lamp-desk
+    LampFloor, // lamp-floor
+    LampCeiling, // lamp-ceiling
+    Baby, // baby
+    Users, // users
+    Shirt, // shirt
+    ChefHat, // chef-hat
+    Utensils, // utensils
+    Cake, // cake
+    Wine, // wine
+    Guitar, // guitar
+    BookOpen, // book-open
+    Briefcase, // briefcase
+    GraduationCap, // graduation-cap
+    Car, // car
+    TreePalm, // tree-palm
+    Tent, // tent
+    Sprout, // sprout
+    Fish, // fish
+    PawPrint, // paw-print
+    Gift, // gift
+    PartyPopper, // party-popper
+    Crown, // crown
+    Sunset, // sunset
+    CloudRain, // cloud-rain
+    WandSparkles, // wand-sparkles
     Count,
     None = Count, // "no icon" for widgets that take an optional one
 };

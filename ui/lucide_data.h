@@ -526,6 +526,229 @@ inline constexpr Element kSkull[] = {
     {Kind::Circle, nullptr, {15.0f, 12.0f, 1.0f}, false},
     {Kind::Circle, nullptr, {9.0f, 12.0f, 1.0f}, false},
 };
+// rocket (added by hand from Lucide's rocket.svg)
+inline constexpr Element kRocket[] = {
+    {Kind::Path, "M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z", {}, false},
+    {Kind::Path, "m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z", {}, false},
+    {Kind::Path, "M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0", {}, false},
+    {Kind::Path, "M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5", {}, false},
+};
+// Profile icons (2026-10-05): copied from third_party/lucide/icons/<name>.svg
+// bed.svg
+inline constexpr Element kBed[] = {
+    {Kind::Path, "M2 4v16", {}, false},
+    {Kind::Path, "M2 8h18a2 2 0 0 1 2 2v10", {}, false},
+    {Kind::Path, "M2 17h20", {}, false},
+    {Kind::Path, "M6 8v9", {}, false},
+};
+// bath.svg
+inline constexpr Element kBath[] = {
+    {Kind::Path, "M10 4 8 6", {}, false},
+    {Kind::Path, "M17 19v2", {}, false},
+    {Kind::Path, "M2 12h20", {}, false},
+    {Kind::Path, "M7 19v2", {}, false},
+    {Kind::Path, "M9 5 7.621 3.621A2.121 2.121 0 0 0 4 5v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5", {}, false},
+};
+// sofa.svg
+inline constexpr Element kSofa[] = {
+    {Kind::Path, "M20 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v3", {}, false},
+    {Kind::Path, "M2 16a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5a2 2 0 0 0-4 0v1.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V11a2 2 0 0 0-4 0z", {}, false},
+    {Kind::Path, "M4 18v2", {}, false},
+    {Kind::Path, "M20 18v2", {}, false},
+    {Kind::Path, "M12 4v9", {}, false},
+};
+// lamp.svg
+inline constexpr Element kLamp[] = {
+    {Kind::Path, "M12 12v6", {}, false},
+    {Kind::Path, "M4.077 10.615A1 1 0 0 0 5 12h14a1 1 0 0 0 .923-1.385l-3.077-7.384A2 2 0 0 0 15 2H9a2 2 0 0 0-1.846 1.23Z", {}, false},
+    {Kind::Path, "M8 20a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1z", {}, false},
+};
+// lamp-desk.svg
+inline constexpr Element kLampDesk[] = {
+    {Kind::Path, "M10.293 2.293a1 1 0 0 1 1.414 0l2.5 2.5 5.994 1.227a1 1 0 0 1 .506 1.687l-7 7a1 1 0 0 1-1.687-.506l-1.227-5.994-2.5-2.5a1 1 0 0 1 0-1.414z", {}, false},
+    {Kind::Path, "m14.207 4.793-3.414 3.414", {}, false},
+    {Kind::Path, "M3 20a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z", {}, false},
+    {Kind::Path, "m9.086 6.5-4.793 4.793a1 1 0 0 0-.18 1.17L7 18", {}, false},
+};
+// lamp-floor.svg
+inline constexpr Element kLampFloor[] = {
+    {Kind::Path, "M12 10v12", {}, false},
+    {Kind::Path, "M17.929 7.629A1 1 0 0 1 17 9H7a1 1 0 0 1-.928-1.371l2-5A1 1 0 0 1 9 2h6a1 1 0 0 1 .928.629z", {}, false},
+    {Kind::Path, "M9 22h6", {}, false},
+};
+// lamp-ceiling.svg
+inline constexpr Element kLampCeiling[] = {
+    {Kind::Path, "M12 2v5", {}, false},
+    {Kind::Path, "M14.829 15.998a3 3 0 1 1-5.658 0", {}, false},
+    {Kind::Path, "M20.92 14.606A1 1 0 0 1 20 16H4a1 1 0 0 1-.92-1.394l3-7A1 1 0 0 1 7 7h10a1 1 0 0 1 .92.606z", {}, false},
+};
+// baby.svg
+inline constexpr Element kBaby[] = {
+    {Kind::Path, "M10 16c.5.3 1.2.5 2 .5s1.5-.2 2-.5", {}, false},
+    {Kind::Path, "M15 12h.01", {}, false},
+    {Kind::Path, "M19.38 6.813A9 9 0 0 1 20.8 10.2a2 2 0 0 1 0 3.6 9 9 0 0 1-17.6 0 2 2 0 0 1 0-3.6A9 9 0 0 1 12 3c2 0 3.5 1.1 3.5 2.5s-.9 2.5-2 2.5c-.8 0-1.5-.4-1.5-1", {}, false},
+    {Kind::Path, "M9 12h.01", {}, false},
+};
+// users.svg
+inline constexpr Element kUsers[] = {
+    {Kind::Path, "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", {}, false},
+    {Kind::Path, "M16 3.128a4 4 0 0 1 0 7.744", {}, false},
+    {Kind::Path, "M22 21v-2a4 4 0 0 0-3-3.87", {}, false},
+    {Kind::Circle, nullptr, {9.0f, 7.0f, 4.0f}, false},
+};
+// shirt.svg
+inline constexpr Element kShirt[] = {
+    {Kind::Path, "M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z", {}, false},
+};
+// chef-hat.svg
+inline constexpr Element kChefHat[] = {
+    {Kind::Path, "M17 21a1 1 0 0 0 1-1v-5.35c0-.457.316-.844.727-1.041a4 4 0 0 0-2.134-7.589 5 5 0 0 0-9.186 0 4 4 0 0 0-2.134 7.588c.411.198.727.585.727 1.041V20a1 1 0 0 0 1 1Z", {}, false},
+    {Kind::Path, "M6 17h12", {}, false},
+};
+// utensils.svg
+inline constexpr Element kUtensils[] = {
+    {Kind::Path, "M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2", {}, false},
+    {Kind::Path, "M7 2v20", {}, false},
+    {Kind::Path, "M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7", {}, false},
+};
+// cake.svg
+inline constexpr Element kCake[] = {
+    {Kind::Path, "M20 21v-8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8", {}, false},
+    {Kind::Path, "M4 16s.5-1 2-1 2.5 2 4 2 2.5-2 4-2 2.5 2 4 2 2-1 2-1", {}, false},
+    {Kind::Path, "M2 21h20", {}, false},
+    {Kind::Path, "M7 8v3", {}, false},
+    {Kind::Path, "M12 8v3", {}, false},
+    {Kind::Path, "M17 8v3", {}, false},
+    {Kind::Path, "M7 4h.01", {}, false},
+    {Kind::Path, "M12 4h.01", {}, false},
+    {Kind::Path, "M17 4h.01", {}, false},
+};
+// wine.svg
+inline constexpr Element kWine[] = {
+    {Kind::Path, "M8 22h8", {}, false},
+    {Kind::Path, "M7 10h10", {}, false},
+    {Kind::Path, "M12 15v7", {}, false},
+    {Kind::Path, "M12 15a5 5 0 0 0 5-5c0-2-.5-4-2-8H9c-1.5 4-2 6-2 8a5 5 0 0 0 5 5Z", {}, false},
+};
+// guitar.svg
+inline constexpr Element kGuitar[] = {
+    {Kind::Path, "m11.9 12.1 4.514-4.514", {}, false},
+    {Kind::Path, "M20.1 2.3a1 1 0 0 0-1.4 0l-1.114 1.114A2 2 0 0 0 17 4.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 17.828 7h1.344a2 2 0 0 0 1.414-.586L21.7 5.3a1 1 0 0 0 0-1.4z", {}, false},
+    {Kind::Path, "m6 16 2 2", {}, false},
+    {Kind::Path, "M8.23 9.85A3 3 0 0 1 11 8a5 5 0 0 1 5 5 3 3 0 0 1-1.85 2.77l-.92.38A2 2 0 0 0 12 18a4 4 0 0 1-4 4 6 6 0 0 1-6-6 4 4 0 0 1 4-4 2 2 0 0 0 1.85-1.23z", {}, false},
+};
+// book-open.svg
+inline constexpr Element kBookOpen[] = {
+    {Kind::Path, "M12 5v16", {}, false},
+    {Kind::Path, "M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z", {}, false},
+};
+// briefcase.svg
+inline constexpr Element kBriefcase[] = {
+    {Kind::Path, "M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16", {}, false},
+    {Kind::Rect, nullptr, {2.0f, 6.0f, 20.0f, 14.0f, 2.0f}, false},
+};
+// graduation-cap.svg
+inline constexpr Element kGraduationCap[] = {
+    {Kind::Path, "M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z", {}, false},
+    {Kind::Path, "M22 10v6", {}, false},
+    {Kind::Path, "M6 12.5V16a6 3 0 0 0 12 0v-3.5", {}, false},
+};
+// car.svg
+inline constexpr Element kCar[] = {
+    {Kind::Path, "M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2", {}, false},
+    {Kind::Circle, nullptr, {7.0f, 17.0f, 2.0f}, false},
+    {Kind::Path, "M9 17h6", {}, false},
+    {Kind::Circle, nullptr, {17.0f, 17.0f, 2.0f}, false},
+};
+// tree-palm.svg
+inline constexpr Element kTreePalm[] = {
+    {Kind::Path, "M13 8c0-2.76-2.46-5-5.5-5S2 5.24 2 8h2l1-1 1 1h4", {}, false},
+    {Kind::Path, "M13 7.14A5.82 5.82 0 0 1 16.5 6c3.04 0 5.5 2.24 5.5 5h-3l-1-1-1 1h-3", {}, false},
+    {Kind::Path, "M5.89 9.71c-2.15 2.15-2.3 5.47-.35 7.43l4.24-4.25.7-.7.71-.71 2.12-2.12c-1.95-1.96-5.27-1.8-7.42.35", {}, false},
+    {Kind::Path, "M11 15.5c.5 2.5-.17 4.5-1 6.5h4c2-5.5-.5-12-1-14", {}, false},
+};
+// tent.svg
+inline constexpr Element kTent[] = {
+    {Kind::Path, "M3.5 21 14 3", {}, false},
+    {Kind::Path, "M20.5 21 10 3", {}, false},
+    {Kind::Path, "M15.5 21 12 15l-3.5 6", {}, false},
+    {Kind::Path, "M2 21h20", {}, false},
+};
+// sprout.svg
+inline constexpr Element kSprout[] = {
+    {Kind::Path, "M14 9.536V7a4 4 0 0 1 4-4h1.5a.5.5 0 0 1 .5.5V5a4 4 0 0 1-4 4 4 4 0 0 0-4 4c0 2 1 3 1 5a5 5 0 0 1-1 3", {}, false},
+    {Kind::Path, "M4 9a5 5 0 0 1 8 4 5 5 0 0 1-8-4", {}, false},
+    {Kind::Path, "M5 21h14", {}, false},
+};
+// fish.svg
+inline constexpr Element kFish[] = {
+    {Kind::Path, "M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.47-3.44 6-7 6s-7.56-2.53-8.5-6Z", {}, false},
+    {Kind::Path, "M18 12v.5", {}, false},
+    {Kind::Path, "M16 17.93a9.77 9.77 0 0 1 0-11.86", {}, false},
+    {Kind::Path, "M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .23 6.5-1.24 1.5-1.24 5-.23 6.5C5.58 18.03 7 16 7 13.33", {}, false},
+    {Kind::Path, "M10.46 7.26C10.2 5.88 9.17 4.24 8 3h5.8a2 2 0 0 1 1.98 1.67l.23 1.4", {}, false},
+    {Kind::Path, "m16.01 17.93-.23 1.4A2 2 0 0 1 13.8 21H9.5a5.96 5.96 0 0 0 1.49-3.98", {}, false},
+};
+// paw-print.svg
+inline constexpr Element kPawPrint[] = {
+    {Kind::Circle, nullptr, {11.0f, 4.0f, 2.0f}, false},
+    {Kind::Circle, nullptr, {18.0f, 8.0f, 2.0f}, false},
+    {Kind::Circle, nullptr, {20.0f, 16.0f, 2.0f}, false},
+    {Kind::Path, "M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z", {}, false},
+};
+// gift.svg
+inline constexpr Element kGift[] = {
+    {Kind::Path, "M12 7v14", {}, false},
+    {Kind::Path, "M20 11v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8", {}, false},
+    {Kind::Path, "M7.5 7a1 1 0 0 1 0-5A4.8 8 0 0 1 12 7a4.8 8 0 0 1 4.5-5 1 1 0 0 1 0 5", {}, false},
+    {Kind::Rect, nullptr, {3.0f, 7.0f, 18.0f, 4.0f, 1.0f}, false},
+};
+// party-popper.svg
+inline constexpr Element kPartyPopper[] = {
+    {Kind::Path, "M5.8 11.3 2 22l10.7-3.79", {}, false},
+    {Kind::Path, "M4 3h.01", {}, false},
+    {Kind::Path, "M22 8h.01", {}, false},
+    {Kind::Path, "M15 2h.01", {}, false},
+    {Kind::Path, "M22 20h.01", {}, false},
+    {Kind::Path, "m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10", {}, false},
+    {Kind::Path, "m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11c-.11.7-.72 1.22-1.43 1.22H17", {}, false},
+    {Kind::Path, "m11 2 .33.82c.34.86-.2 1.82-1.11 1.98C9.52 4.9 9 5.52 9 6.23V7", {}, false},
+    {Kind::Path, "M11 13c1.93 1.93 2.83 4.17 2 5-.83.83-3.07-.07-5-2-1.93-1.93-2.83-4.17-2-5 .83-.83 3.07.07 5 2Z", {}, false},
+};
+// crown.svg
+inline constexpr Element kCrown[] = {
+    {Kind::Path, "M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z", {}, false},
+    {Kind::Path, "M5 21h14", {}, false},
+};
+// sunset.svg
+inline constexpr Element kSunset[] = {
+    {Kind::Path, "M12 10V2", {}, false},
+    {Kind::Path, "m4.93 10.93 1.41 1.41", {}, false},
+    {Kind::Path, "M2 18h2", {}, false},
+    {Kind::Path, "M20 18h2", {}, false},
+    {Kind::Path, "m19.07 10.93-1.41 1.41", {}, false},
+    {Kind::Path, "M22 22H2", {}, false},
+    {Kind::Path, "m16 6-4 4-4-4", {}, false},
+    {Kind::Path, "M16 18a4 4 0 0 0-8 0", {}, false},
+};
+// cloud-rain.svg
+inline constexpr Element kCloudRain[] = {
+    {Kind::Path, "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", {}, false},
+    {Kind::Path, "M16 14v6", {}, false},
+    {Kind::Path, "M8 14v6", {}, false},
+    {Kind::Path, "M12 16v6", {}, false},
+};
+// wand-sparkles.svg
+inline constexpr Element kWandSparkles[] = {
+    {Kind::Path, "m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72", {}, false},
+    {Kind::Path, "m14 7 3 3", {}, false},
+    {Kind::Path, "M5 6v4", {}, false},
+    {Kind::Path, "M19 14v4", {}, false},
+    {Kind::Path, "M10 2v2", {}, false},
+    {Kind::Path, "M7 8H3", {}, false},
+    {Kind::Path, "M21 16h-4", {}, false},
+    {Kind::Path, "M11 3H9", {}, false},
+};
 
 inline constexpr IconData kIcons[] = {
     {"activity", kActivity, static_cast<int>(sizeof(kActivity) / sizeof(kActivity[0]))},
@@ -609,6 +832,37 @@ inline constexpr IconData kIcons[] = {
     {"cat", kCat, static_cast<int>(sizeof(kCat) / sizeof(kCat[0]))},
     {"dog", kDog, static_cast<int>(sizeof(kDog) / sizeof(kDog[0]))},
     {"skull", kSkull, static_cast<int>(sizeof(kSkull) / sizeof(kSkull[0]))},
+    {"rocket", kRocket, static_cast<int>(sizeof(kRocket) / sizeof(kRocket[0]))},
+    {"bed", kBed, static_cast<int>(sizeof(kBed) / sizeof(kBed[0]))},
+    {"bath", kBath, static_cast<int>(sizeof(kBath) / sizeof(kBath[0]))},
+    {"sofa", kSofa, static_cast<int>(sizeof(kSofa) / sizeof(kSofa[0]))},
+    {"lamp", kLamp, static_cast<int>(sizeof(kLamp) / sizeof(kLamp[0]))},
+    {"lamp-desk", kLampDesk, static_cast<int>(sizeof(kLampDesk) / sizeof(kLampDesk[0]))},
+    {"lamp-floor", kLampFloor, static_cast<int>(sizeof(kLampFloor) / sizeof(kLampFloor[0]))},
+    {"lamp-ceiling", kLampCeiling, static_cast<int>(sizeof(kLampCeiling) / sizeof(kLampCeiling[0]))},
+    {"baby", kBaby, static_cast<int>(sizeof(kBaby) / sizeof(kBaby[0]))},
+    {"users", kUsers, static_cast<int>(sizeof(kUsers) / sizeof(kUsers[0]))},
+    {"shirt", kShirt, static_cast<int>(sizeof(kShirt) / sizeof(kShirt[0]))},
+    {"chef-hat", kChefHat, static_cast<int>(sizeof(kChefHat) / sizeof(kChefHat[0]))},
+    {"utensils", kUtensils, static_cast<int>(sizeof(kUtensils) / sizeof(kUtensils[0]))},
+    {"cake", kCake, static_cast<int>(sizeof(kCake) / sizeof(kCake[0]))},
+    {"wine", kWine, static_cast<int>(sizeof(kWine) / sizeof(kWine[0]))},
+    {"guitar", kGuitar, static_cast<int>(sizeof(kGuitar) / sizeof(kGuitar[0]))},
+    {"book-open", kBookOpen, static_cast<int>(sizeof(kBookOpen) / sizeof(kBookOpen[0]))},
+    {"briefcase", kBriefcase, static_cast<int>(sizeof(kBriefcase) / sizeof(kBriefcase[0]))},
+    {"graduation-cap", kGraduationCap, static_cast<int>(sizeof(kGraduationCap) / sizeof(kGraduationCap[0]))},
+    {"car", kCar, static_cast<int>(sizeof(kCar) / sizeof(kCar[0]))},
+    {"tree-palm", kTreePalm, static_cast<int>(sizeof(kTreePalm) / sizeof(kTreePalm[0]))},
+    {"tent", kTent, static_cast<int>(sizeof(kTent) / sizeof(kTent[0]))},
+    {"sprout", kSprout, static_cast<int>(sizeof(kSprout) / sizeof(kSprout[0]))},
+    {"fish", kFish, static_cast<int>(sizeof(kFish) / sizeof(kFish[0]))},
+    {"paw-print", kPawPrint, static_cast<int>(sizeof(kPawPrint) / sizeof(kPawPrint[0]))},
+    {"gift", kGift, static_cast<int>(sizeof(kGift) / sizeof(kGift[0]))},
+    {"party-popper", kPartyPopper, static_cast<int>(sizeof(kPartyPopper) / sizeof(kPartyPopper[0]))},
+    {"crown", kCrown, static_cast<int>(sizeof(kCrown) / sizeof(kCrown[0]))},
+    {"sunset", kSunset, static_cast<int>(sizeof(kSunset) / sizeof(kSunset[0]))},
+    {"cloud-rain", kCloudRain, static_cast<int>(sizeof(kCloudRain) / sizeof(kCloudRain[0]))},
+    {"wand-sparkles", kWandSparkles, static_cast<int>(sizeof(kWandSparkles) / sizeof(kWandSparkles[0]))},
 };
 
 } // namespace ApexUi::LucideData

@@ -53,6 +53,11 @@ constexpr const char* kHookName = "DepthBlur";
 constexpr D3DFORMAT kFmtINTZ = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
 constexpr int kRetryFrames = 120;
 constexpr float kMapFadeSeconds = 0.3f;
+// With the blur on as soon as the world gate opened (WorldSession::Settled, 3 s), the whole screen was blurred for about a
+// second at the end of a load, before the world showed (user report, 2026-10-05; the cause, unfinished first frames, is
+// inferred, not measured). So the blur waits this long after the gate opens and then fades in.
+constexpr unsigned long long kWorldHoldMs = 2000;
+constexpr float kWorldFadeInSeconds = 1.0f;
 // The game's projection: d = A - near * A / z (LightProbe-m80; docs/engine/camera-and-map-view.md)
 constexpr float kDepthA = 1.00008f;
 // Only for the Developer read-out in metres: near changes with zoom (0.2 - 0.3), so the value is approximate
@@ -301,6 +306,7 @@ struct BlurState {
     unsigned framesBlurred = 0;
     int lastTaps = 0;
     float mapFade = 0.0f;         // 0 = normal view, 1 = map view (blur fully off), eased over kMapFadeSeconds
+    float worldIn = 0.0f;         // 0 = just loaded (blur off), 1 = full blur; kWorldHoldMs then kWorldFadeInSeconds
     LARGE_INTEGER lastFadeTick{}; // time of the previous frame step
     bool mapOpen = false;         // last map view state read from the game
 
@@ -816,7 +822,7 @@ void RunBlur(IDirect3DDevice9* dev, float dt) {
     const float ease = g.focusSnap ? 1.0f : 1.0f - std::exp(-dt / tau);
 
     const float c[kPSConsts][4] = {
-        {g.p.start, g.p.range, g.p.strength * (1.0f - g.mapFade), g.p.farPlane},
+        {g.p.start, g.p.range, g.p.strength * (1.0f - g.mapFade) * g.worldIn, g.p.farPlane},
         {static_cast<float>(hw), static_cast<float>(hh), 1.0f / static_cast<float>(hw), 1.0f / static_cast<float>(hh)},
         {1.0f, 0.0f, maxRadius, g.p.glowLights ? kLampGain : 0.0f},
         {g.p.blurSky ? 1.0f : 0.0f, (!kPublicBuild && g.p.debugView) ? 1.0f : 0.0f, g.linearLight ? 1.0f : 0.0f, autoFocus ? 1.0f : 0.0f},
@@ -926,11 +932,22 @@ void BlurEffect(IDirect3DDevice9* dev) {
         g.lastFadeTick = {};
         g.mapOpen = false;
         g.mapFade = 0;
+        g.worldIn = 0;
         return;
+    }
+    {
+        const unsigned long long since = GetTickCount64() - g.world.activeAt; // ready: at least the 3 s settle
+        const float t = (static_cast<float>(since) - 3000.0f - static_cast<float>(kWorldHoldMs)) / (kWorldFadeInSeconds * 1000.0f);
+        g.worldIn = t <= 0.0f ? 0.0f : t >= 1.0f ? 1.0f : t * t * (3.0f - 2.0f * t);
+        if (g.worldIn <= 0.0f) { // still settling after the load: no pass, autofocus starts from the first faded frame
+            g.focusSnap = true;
+            g.lastFadeTick = {};
+            return;
+        }
     }
     const float dt = StepTime();
     StepMapFade(dt);
-    if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
+    if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) * g.worldIn <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
 
     const int key = g.p.quality;
     if (key != g.qKey) {
@@ -963,6 +980,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g.lastFadeTick = {};
         g.mapOpen = false;
         g.mapFade = 0;
+        g.worldIn = 0;
     }
     if (!g.ready && --g.retryCountdown <= 0) {
         g.retryCountdown = kRetryFrames;
