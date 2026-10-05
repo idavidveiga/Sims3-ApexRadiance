@@ -154,6 +154,37 @@ uint64_t LotOf(const BYTE* room) {
 }
 uint64_t g_lastLot = 0; // the lot of the room that was current at the end of the last pick (render thread)
 
+// A lamp edit's rooms from the first waiting one to the last solved (05/10, to tune "Lamp edits first"): the time, the
+// frames and how long the game solved rooms meanwhile (its own per-class solve time 0x011D1200..08, Steam addresses), one
+// log line per edit (a drag is one edit while its rooms keep waiting). Render thread.
+struct EditBurst {
+    bool on = false;
+    DWORD start = 0;
+    long frames = 0;
+    long long drainMicros = 0;
+    float solved = 0.0f;
+};
+EditBurst g_burst;
+float GameSolveMs() {
+    float t[3] = {};
+    return GameAddr::IsFixed() && MemPatch::ReadBytes(0x011D1200, t, sizeof t) ? t[0] + t[1] + t[2] : 0.0f;
+}
+void NoteEditBurst(bool lampEdit) {
+    if (lampEdit) {
+        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs()};
+        g_burst.frames++;
+        return;
+    }
+    if (!g_burst.on) return;
+    g_burst.on = false;
+    const DWORD ms = GetTickCount() - g_burst.start;
+    const float solved = GameSolveMs() - g_burst.solved;
+    const float drained = static_cast<float>(g_drainMicros.load(std::memory_order_relaxed) - g_burst.drainMicros) / 1000.0f;
+    LOG_INFO(std::format("[RoomLightQueue] Lamp edit: its rooms settled after {} ms over {} frames; the game solved rooms for {:.0f} ms ({:.1f} ms a frame), "
+                         "{:.0f} ms of it right after the pick",
+                         ms, g_burst.frames, solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained));
+}
+
 void __fastcall PickHook(BYTE* tree) {
     const auto pick = reinterpret_cast<Pick_t>(kPick);
     BYTE* before = tree ? CurrentRoom(tree) : nullptr;
@@ -166,6 +197,7 @@ void __fastcall PickHook(BYTE* tree) {
     // edit's room still current from the last frame is solved further here too (the lot pass goes on with it anyway), so a
     // dragged lamp's light follows it within a frame or two
     const bool lampEdit = LevelLightShare::LampEditPending();
+    NoteEditBurst(lampEdit);
     BYTE* room = DrainableRoom(tree);
     if (before && !(lampEdit && room == before && LevelLightShare::LampUrgency(room) > 1.0f)) room = nullptr;
     if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;

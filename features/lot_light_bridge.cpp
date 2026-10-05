@@ -3424,7 +3424,7 @@ void OnPresent() {
             RefreshLotRects();
         }
     }
-    const bool editReady = g_lampEditRefresh && g_lotDrawTick - g_lampReadTick >= 50;
+    const bool editReady = g_lampEditRefresh && g_lotDrawTick - g_lampReadTick >= 33; // a lamp edited or dragged: about every other frame
     if (++g_lampFrame < 20 && !g_lampRefreshNow && !editReady) return;
     g_lampFrame = 0;
     g_lampRefreshNow = false;

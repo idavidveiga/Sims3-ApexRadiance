@@ -991,12 +991,12 @@ void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool du
     Kick(cells, level, reason, dusk);
 }
 
-// A user-driven change goes ahead 80 ms after its last step, or every 150 ms while it goes on (a lamp dragged in Build
-// mode: since 05/10 a move reads the lamp list again within 50 ms, so the steps never leave 80 ms quiet and the 500 ms of
-// before made the ground follow the lamp only twice a second)
+// A user-driven change goes ahead 50 ms after its last step, or every 100 ms while it goes on (a lamp dragged in Build
+// mode: since 05/10 a move reads the lamp list again within 33 ms, so the steps never leave a quiet gap, and the 500 ms of
+// before made the ground follow the lamp only twice a second; 100 ms stays under the local relight's 12 chunks a second)
 bool EditReady(Clock::time_point now, Clock::time_point first, Clock::time_point last, bool priority) {
-    return now - last >= (priority ? std::chrono::milliseconds(80) : kEditQuiet)
-        || (priority && now - first >= std::chrono::milliseconds(150));
+    return now - last >= (priority ? std::chrono::milliseconds(50) : kEditQuiet)
+        || (priority && now - first >= std::chrono::milliseconds(100));
 }
 
 // The pending lamp change, once quiet (render thread; c38 = cells+0x38 this frame).

@@ -63,6 +63,7 @@
 // Part of Apex Radiance. Credits: @loinyx
 
 #include "lot_lighting_motion.h"
+#include "level_light_share.h"
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "d3d9_hooks.h"
@@ -90,6 +91,7 @@ using SlotChain::Site;
 constexpr float kPriorityMs = 15.0f;       // the game's budget for a priority lot (0x00ADB120, constant 0x00F9A62C)
 constexpr float kLeaveAloneMs = 100.0f;    // budgets from here up (the tool mode's 1000, the synchronous solve's 60,000) are the game's
 constexpr float kMinMs = 0.25f;            // never below
+constexpr float kLampEditMs = 25.0f;       // the lot being played while a lamp edit's rooms wait, camera still (LevelLightShare)
 constexpr uint64_t kHoldMs = 300;          // "moving" lasts this long after the last camera change
 constexpr float kMoveEpsilon = 0.005f;     // metres; smaller eye changes are not motion
 constexpr uint64_t kDriftWindowMs = 100;   // slow motion: the eye moved more than kMoveEpsilon within this window
@@ -207,11 +209,15 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     float out = game;
     // a lamp just switched on or off: the rooms relight at the game's own pace for a moment, even while moving
     const bool boosted = now < g_boostUntil.load(std::memory_order_relaxed);
-    if (!boosted && MovingAt(now) && game > 0.0f && game < kLeaveAloneMs) {
+    const bool moving = MovingAt(now);
+    if (!boosted && moving && game > 0.0f && game < kLeaveAloneMs) {
         const float scaled = game * (static_cast<float>(g_budgetMs.load(std::memory_order_relaxed)) / kPriorityMs);
         out = std::max(kMinMs, std::min(game, scaled));
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
     }
+    // A lamp being edited in Build mode (05/10, user: "make the corrections in Build mode even more instant"): its rooms
+    // waiting for or in their solve get 25 ms of the lot being played per frame instead of 15, camera still
+    if (!moving && game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::LampEditPending()) out = std::max(out, kLampEditMs);
     g_lastGame.store(std::bit_cast<uint32_t>(game), std::memory_order_relaxed);
     g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
     return out;
