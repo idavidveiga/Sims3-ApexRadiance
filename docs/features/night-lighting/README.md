@@ -112,6 +112,7 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Stories > Outdoor light between floors | `luzExternaEntreAndares` | bool | on | | Outdoor lamps light every story ([level-light-share](level-light-share.md)) |
 | Stories > Indoor light between floors | `luzInternaEntreAndares` | bool | on | | Indoor lamps through stairwells and open floors; needs the switch above |
 | Stories > Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Test: outdoor floors (decks, yards without a roof) lose the ground light blocked by walls; relights every room when changed |
+| Stories > Walls block light on objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Test: outdoor objects drop per-pixel lamps with an outside wall in between, and their ground light is scaled by the unblocked share |
 | Stories > Floor detail > Seamless walls between floors | `paredesSemEmendaEntreAndares` | bool | on | | Walls lit at the heights the game draws their light; needs outdoor light between floors |
 | Stories > Floor detail > Every floor in full detail | `todosOsAndaresEmDetalhe` | bool | on | | Every floor of the active lot solved in full detail |
 | Water & Snow > Lamp Glow > Lamps glow on ponds | `lagosRefletemLampadas` | bool | on | | Pond lamp pass ([water](water.md)) |

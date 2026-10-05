@@ -2792,7 +2792,65 @@ __declspec(naked) void OutdoorAlphaThunk() {
     }
 }
 float Lum3(const float* c) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; }
+// Walls block light on objects (user 05/10, F7: a telescope in a yard without a roof, behind a wall, took the red wall
+// lamp outside through Apex's per-pixel object lamps; the game's own rig had that lamp too). Objects are drawn on the
+// render thread and the walls live on the light tree thread, so room 0's walls of each story (its LightingWall list
+// room+0xD8..+0xDC: every outside face, yards included) are copied here when that room is solved: start +0x110 (world),
+// along +0xF0 (world), 3 m high ([0x00FF37DC], the height the wall samples use). WallBlocks tests a lamp-to-object
+// segment against the copy on the render thread.
+struct WallSeg {
+    float x0, z0, x1, z1, y0, y1;
+};
+std::mutex g_wallSnapMx;
+std::unordered_map<uintptr_t, std::vector<WallSeg>> g_wallSnap; // story manager -> its outside walls
+std::atomic<uint32_t> g_wallSnapGen{1};
+std::atomic<bool> g_objectWallsOn{true};
+constexpr int kMaxStoryWalls = 4096;
+WallSeg g_wallRead[kMaxStoryWalls]; // light tree thread only
+// -1 when the room cannot be read
+int ReadStoryWalls(const BYTE* room0, uintptr_t& mgr) {
+    int n = 0;
+    __try {
+        mgr = *reinterpret_cast<const uintptr_t*>(room0);
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room0 + 0xD8), e = *reinterpret_cast<const uintptr_t*>(room0 + 0xDC);
+        if (!mgr || e < b || (e - b) / 4 > static_cast<uintptr_t>(kMaxStoryWalls)) return -1;
+        for (uintptr_t p = b; p < e; p += 4) {
+            const uintptr_t w = *reinterpret_cast<const uintptr_t*>(p);
+            if (!w) continue;
+            const float* o = reinterpret_cast<const float*>(w + 0x110);
+            const float* d = reinterpret_cast<const float*>(w + 0xF0);
+            const float* nn = reinterpret_cast<const float*>(w + 0x150); // the face normal: the origin sits 5 cm out on it, the wall line is behind
+            if (!std::isfinite(o[0]) || !std::isfinite(o[1]) || !std::isfinite(o[2]) || !std::isfinite(d[0]) || !std::isfinite(d[2]) || !std::isfinite(nn[0]) || !std::isfinite(nn[2])) continue;
+            const float cx = o[0] - nn[0] * 0.05f, cz = o[2] - nn[2] * 0.05f;
+            g_wallRead[n++] = {cx, cz, cx + d[0], cz + d[2], o[1], o[1] + 3.0f};
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+void CaptureStoryWalls(BYTE* room0) {
+    uintptr_t mgr = 0;
+    const int n = ReadStoryWalls(room0, mgr);
+    if (n < 0) return;
+    std::vector<WallSeg> segs(g_wallRead, g_wallRead + n);
+    std::lock_guard<std::mutex> lk(g_wallSnapMx);
+    auto& slot = g_wallSnap[mgr];
+    const bool same = slot.size() == segs.size() && (segs.empty() || std::memcmp(slot.data(), segs.data(), segs.size() * sizeof(WallSeg)) == 0);
+    if (same) return;
+    slot = std::move(segs);
+    g_wallSnapGen.fetch_add(1, std::memory_order_relaxed);
+}
+
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
+    // the first sample of a batch of room 0: its story's outside walls, for WallBlocks (light tree thread)
+    if (g_objectWallsOn.load(std::memory_order_relaxed) && *reinterpret_cast<const int*>(room + 0xC) == 0 && kBatchSamples &&
+        ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        __try {
+            if (*reinterpret_cast<const uintptr_t*>(kBatchSamples) == reinterpret_cast<uintptr_t>(sample)) CaptureStoryWalls(room);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
     float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
     if (!g_floorMaskReady || !room[0x18]) return r;
     out[3] = 0.0f; // outdoor: the game's alpha 0, unless the mask below applies
@@ -4552,6 +4610,11 @@ void Uninstall() {
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
     g_floorMaskReady = false;
+    {
+        std::lock_guard<std::mutex> lk(g_wallSnapMx);
+        g_wallSnap.clear();
+    }
+    g_wallSnapGen.fetch_add(1);
     g_evalClasses = 0;
     if (!kPublicBuild) {
         EntryChain::Remove(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare);
@@ -4732,6 +4795,74 @@ void SetIndoor(bool on) {
 }
 
 bool AllFloorsDetailed() { return g_installed.load(std::memory_order_relaxed) && g_lodReady && g_allFloors.load(std::memory_order_relaxed); }
+// Render thread: the copy of the outside walls (CaptureStoryWalls) as a 4 m grid, rebuilt when the copy changes
+namespace {
+struct WallGrid {
+    uint32_t gen = 0;
+    std::vector<WallSeg> segs;
+    std::unordered_map<int64_t, std::vector<int>> cells;
+    std::vector<uint32_t> seen; // per segment: the query that last tested it (a segment spans several cells)
+    uint32_t query = 0;
+} g_grid;
+constexpr float kCell = 4.0f;
+int64_t CellKey(int cx, int cz) { return (static_cast<int64_t>(cx) << 32) ^ static_cast<uint32_t>(cz); }
+void RefreshGrid() {
+    const uint32_t gen = g_wallSnapGen.load(std::memory_order_relaxed);
+    if (gen == g_grid.gen) return;
+    g_grid.gen = gen;
+    g_grid.segs.clear();
+    g_grid.cells.clear();
+    {
+        std::lock_guard<std::mutex> lk(g_wallSnapMx);
+        for (const auto& [mgr, v] : g_wallSnap) g_grid.segs.insert(g_grid.segs.end(), v.begin(), v.end());
+    }
+    g_grid.seen.assign(g_grid.segs.size(), 0);
+    for (int i = 0; i < static_cast<int>(g_grid.segs.size()); i++) {
+        const WallSeg& s = g_grid.segs[i];
+        const int x0 = static_cast<int>(std::floor(std::min(s.x0, s.x1) / kCell)), x1 = static_cast<int>(std::floor(std::max(s.x0, s.x1) / kCell));
+        const int z0 = static_cast<int>(std::floor(std::min(s.z0, s.z1) / kCell)), z1 = static_cast<int>(std::floor(std::max(s.z0, s.z1) / kCell));
+        for (int cx = x0; cx <= x1; cx++)
+            for (int cz = z0; cz <= z1; cz++) g_grid.cells[CellKey(cx, cz)].push_back(i);
+    }
+}
+} // namespace
+
+bool WallBlocks(const float lamp[3], const float point[3]) {
+    if (!g_objectWallsOn.load(std::memory_order_relaxed) || !g_installed.load(std::memory_order_relaxed)) return false;
+    RefreshGrid();
+    if (g_grid.segs.empty()) return false;
+    const float ax = lamp[0], az = lamp[2], bx = point[0], bz = point[2];
+    const float rx = bx - ax, rz = bz - az;
+    if (std::fabs(rx) + std::fabs(rz) > 200.0f) return false; // not a lamp in reach
+    if (++g_grid.query == 0) {
+        std::fill(g_grid.seen.begin(), g_grid.seen.end(), 0u);
+        g_grid.query = 1;
+    }
+    const int x0 = static_cast<int>(std::floor(std::min(ax, bx) / kCell)), x1 = static_cast<int>(std::floor(std::max(ax, bx) / kCell));
+    const int z0 = static_cast<int>(std::floor(std::min(az, bz) / kCell)), z1 = static_cast<int>(std::floor(std::max(az, bz) / kCell));
+    for (int cx = x0; cx <= x1; cx++)
+        for (int cz = z0; cz <= z1; cz++) {
+            const auto it = g_grid.cells.find(CellKey(cx, cz));
+            if (it == g_grid.cells.end()) continue;
+            for (int i : it->second) {
+                if (g_grid.seen[i] == g_grid.query) continue;
+                g_grid.seen[i] = g_grid.query;
+                const WallSeg& s = g_grid.segs[i];
+                const float sx = s.x1 - s.x0, sz = s.z1 - s.z0;
+                const float den = rx * sz - rz * sx;
+                if (std::fabs(den) < 1e-6f) continue; // parallel
+                const float qx = s.x0 - ax, qz = s.z0 - az;
+                const float t = (qx * sz - qz * sx) / den; // along lamp -> point
+                const float u = (qx * rz - qz * rx) / den; // along the wall
+                if (t <= 0.001f || t >= 0.999f || u < 0.0f || u > 1.0f) continue;
+                const float y = lamp[1] + t * (point[1] - lamp[1]); // the ray's height where it crosses the wall line
+                if (y > s.y0 + 0.02f && y < s.y1 - 0.02f) return true;
+            }
+        }
+    return false;
+}
+void SetObjectWalls(bool on) { g_objectWallsOn.store(on, std::memory_order_relaxed); }
+
 void SetFloorWalls(bool on) {
     if (g_floorWallsOn.exchange(on) != on && g_installed.load() && g_floorMaskReady) RelightAllRooms(on ? "Walls block light on floors on" : "Walls block light on floors off");
 }

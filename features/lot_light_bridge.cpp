@@ -1913,8 +1913,9 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.obj.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.obj.strengthConst, oldB, 1);
-    const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
+    float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
                        g_objPixelStrength.load(std::memory_order_relaxed)), 0, 0, 0};
+    float groundShare = 1.0f; // the share of the nearby lamps' light no wall blocks (below)
     // Per-pixel lamps ("Counters" request): the same world lamps for every piece, chosen by the object's position (the
     // VS world triple's translation), so neighbouring pieces of a modular object get the same lamps.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
@@ -1932,19 +1933,31 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
         float m[3][4];
         if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
             const int n = SelectLamps(m[0][3], m[2][3], 40.0f);
-            nLamps = std::min(n, static_cast<int>(N));
-            for (int k = 0; k < n && k < static_cast<int>(N); k++) {
+            // Walls block light on objects (LevelLightShare::WallBlocks, user 05/10): a lamp with an outside wall between it
+            // and the object's middle (its origin + 0.5 m) is left out, and the next one takes its slot. The ground light
+            // (the atlas, which has no walls) is scaled by the share of the nearby lamps' light that is not blocked.
+            const float obj[3] = {m[0][3], m[1][3] + 0.5f, m[2][3]};
+            float seen = 0.0f, all = 0.0f;
+            for (int k = 0; k < n; k++) {
                 const float* pr = g_lampData[k];
                 const float* col = g_lampData[16 + k];
                 const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
-                lamps[1 + 2 * k][0] = pr[0];
-                lamps[1 + 2 * k][1] = pr[1];
-                lamps[1 + 2 * k][2] = pr[2];
-                lamps[1 + 2 * k][3] = 1.0f / (r * r);
-                lamps[2 + 2 * k][0] = col[0];
-                lamps[2 + 2 * k][1] = col[1];
-                lamps[2 + 2 * k][2] = col[2];
+                const float dx = pr[0] - obj[0], dy = pr[1] - obj[1], dz = pr[2] - obj[2];
+                const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
+                all += w;
+                if (LevelLightShare::WallBlocks(pr, obj)) continue;
+                seen += w;
+                if (nLamps >= static_cast<int>(N)) continue;
+                const int slot = nLamps++;
+                lamps[1 + 2 * slot][0] = pr[0];
+                lamps[1 + 2 * slot][1] = pr[1];
+                lamps[1 + 2 * slot][2] = pr[2];
+                lamps[1 + 2 * slot][3] = 1.0f / (r * r);
+                lamps[2 + 2 * slot][0] = col[0];
+                lamps[2 + 2 * slot][1] = col[1];
+                lamps[2 + 2 * slot][2] = col[2];
             }
+            if (all > 1e-5f) groundShare = std::clamp(seen / all, 0.0f, 1.0f);
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
@@ -1952,6 +1965,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
             zeroRig = true;
         }
     }
+    s[0] *= groundShare;
     if (LightProbe::Capturing()) g_objDrawInfo = DescribeObjectDraw(dev, p.obj, rigMode, zeroRig, wk, vl, lamps, nLamps);
     dev->GetPixelShaderConstantF(p.obj.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
     IDirect3DPixelShader9* originalPs = g_curPs;

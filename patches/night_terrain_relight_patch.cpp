@@ -175,6 +175,7 @@ bool g_indoorShare = true;       // indoor lamps light the story above or below 
 bool g_wallAlign = true;         // walls lit where their light is drawn: no step at the floor line (LevelLightShare::SetWallAlign)
 bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
 bool g_floorWalls = true;       // walls block lamp light on outdoor floors (LevelLightShare::SetFloorWalls)
+bool g_objectWalls = true;      // walls block lamp light on outdoor objects (LevelLightShare::SetObjectWalls)
 bool g_unlitOn = true;           // rooms with every lamp off: Apex's light instead of the game's blue glow (UnlitRooms)
 float g_unlitLight = 0.35f;      // how much of the game's unlit-room light stays
 float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
@@ -1610,6 +1611,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             "Walls are lit at the heights the game draws their light at, so the walls above and below a floor line meet on the same light (needs \"Outdoor light between floors\").");
         RegisterBoolSetting(&g_floorWalls, "paredesBloqueiamLuzNosPisos", true,
             "Walls stop lamp light on outdoor floors: decks and yards without a roof behind a wall stay dark (relights the rooms when changed).");
+        RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
+            "Walls stop lamp light on outdoor objects: furniture in a yard without a roof behind a wall stays dark.");
         RegisterBoolSetting(&g_allFloors, "todosOsAndaresEmDetalhe", true,
             "Every floor of the lot being played is lit in full detail, so changing floors keeps the light instead of solving it again (more work when entering a lot).");
         RegisterBoolSetting(&g_objPixel, "objetosDeForaComLuzDoChao", true,
@@ -1854,6 +1857,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LevelLightShare::SetWallAlign(g_wallAlign);
             LevelLightShare::SetAllFloors(g_allFloors);
             LevelLightShare::SetFloorWalls(g_floorWalls);
+            LevelLightShare::SetObjectWalls(g_objectWalls);
             UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);
             UnlitRooms::SetNightLevel(std::fmax(g_menuLevel.load(), 0.0f));
             UnlitRooms::OnPresent();
@@ -2066,6 +2070,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_wallAlign = true;
         g_allFloors = true;
         g_floorWalls = true;
+        g_objectWalls = true;
         g_unlitOn = true;
         g_unlitLight = 0.35f;
         g_unlitBlue = 0.0f;
@@ -2211,6 +2216,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 // a room can show its old light for a moment; switching floors solves the rooms shown again
                 if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
                 changed |= ApexUi::SwitchRow("Walls block light on floors", &g_floorWalls, "Decks and yards without a roof stay dark behind a wall", true);
+                changed |= ApexUi::SwitchRow("Walls block light on objects", &g_objectWalls, "Furniture behind a wall gets no light from the lamp outside", true);
                 if (ApexUi::BeginAdvanced("StoryDetail", "Floor detail")) {
                     changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
                     changed |= ApexUi::SwitchRow("Every floor in full detail", &g_allFloors, "Changing floors keeps the light; entering a lot takes a little longer", true);
