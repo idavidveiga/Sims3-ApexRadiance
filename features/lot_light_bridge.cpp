@@ -2813,10 +2813,7 @@ std::atomic<long> g_indoorMaterialSeamSwaps{0};
 struct IndoorMaterialKey {
     int32_t x = 0, y = 0, z = 0; // object world translation, millimetres
     IDirect3DPixelShader9* ps = nullptr;
-    IDirect3DBaseTexture9* s3 = nullptr;
-    IDirect3DBaseTexture9* s4 = nullptr;
-    IDirect3DBaseTexture9* s7 = nullptr;
-    IDirect3DBaseTexture9* s8 = nullptr;
+    uint64_t s3 = 0, s4 = 0, s7 = 0, s8 = 0; // sampled content signatures, not COM pointer identity
     bool operator==(const IndoorMaterialKey&) const = default;
 };
 struct IndoorMaterialKeyHash {
@@ -2824,11 +2821,15 @@ struct IndoorMaterialKeyHash {
         size_t h = static_cast<size_t>(static_cast<uint32_t>(k.x));
         h ^= static_cast<size_t>(static_cast<uint32_t>(k.y)) * 16777619u;
         h ^= static_cast<size_t>(static_cast<uint32_t>(k.z)) * 2166136261u;
-        auto mix = [&](const void* p) {
+        auto mixPtr = [&](const void* p) {
             const size_t v = reinterpret_cast<size_t>(p);
             h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
         };
-        mix(k.ps); mix(k.s3); mix(k.s4); mix(k.s7); mix(k.s8);
+        auto mix64 = [&](uint64_t v) {
+            const size_t folded = static_cast<size_t>(v) ^ static_cast<size_t>(v >> 32);
+            h ^= folded + 0x9e3779b9u + (h << 6) + (h >> 2);
+        };
+        mixPtr(k.ps); mix64(k.s3); mix64(k.s4); mix64(k.s7); mix64(k.s8);
         return h;
     }
 };
@@ -2837,6 +2838,55 @@ struct IndoorAuxPair {
     IDirect3DBaseTexture9* s6 = nullptr;
 };
 std::unordered_map<IndoorMaterialKey, IndoorAuxPair, IndoorMaterialKeyHash> g_indoorMaterialAux;
+std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_indoorTextureSig;
+
+// The game may instantiate the same material texture more than once (different COM pointers with byte-identical
+// contents). Pointer identity therefore cannot join the two stories of a multi-storey object. Build a small signature
+// from a few blocks of level 0 and cache it per texture; these material maps are MANAGED/SYS textures, so the read happens
+// only once per unique texture object and does not copy the whole image.
+uint64_t IndoorTextureSignature(IDirect3DBaseTexture9* base) {
+    if (!base || base->GetType() != D3DRTYPE_TEXTURE) return 0;
+    auto found = g_indoorTextureSig.find(base);
+    if (found != g_indoorTextureSig.end()) return found->second;
+
+    IDirect3DTexture9* tex = static_cast<IDirect3DTexture9*>(base);
+    D3DSURFACE_DESC d{};
+    uint64_t h = 1469598103934665603ull;
+    auto mixByte = [&](uint8_t b) { h = (h ^ b) * 1099511628211ull; };
+    auto mix32 = [&](uint32_t v) {
+        for (int k = 0; k < 4; k++) mixByte(static_cast<uint8_t>((v >> (k * 8)) & 0xff));
+    };
+    mix32(base->GetLevelCount());
+    if (FAILED(tex->GetLevelDesc(0, &d))) {
+        h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(base));
+    } else {
+        mix32(static_cast<uint32_t>(d.Format));
+        mix32(d.Width);
+        mix32(d.Height);
+        D3DLOCKED_RECT lr{};
+        if (SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)) && lr.pBits && lr.Pitch) {
+            const bool dxt = d.Format == D3DFMT_DXT1 || d.Format == D3DFMT_DXT3 || d.Format == D3DFMT_DXT5;
+            const UINT rows = dxt ? std::max<UINT>(1, (d.Height + 3) / 4) : std::max<UINT>(1, d.Height);
+            const size_t pitch = static_cast<size_t>(lr.Pitch < 0 ? -lr.Pitch : lr.Pitch);
+            const uint8_t* bits = static_cast<const uint8_t*>(lr.pBits);
+            const UINT rowAt[3] = {0, rows / 2, rows - 1};
+            for (UINT ri : rowAt) {
+                const uint8_t* row = bits + static_cast<size_t>(ri) * pitch;
+                const size_t span = std::min<size_t>(64, pitch);
+                const size_t colAt[3] = {0, pitch > span ? (pitch - span) / 2 : 0, pitch > span ? pitch - span : 0};
+                for (size_t col : colAt)
+                    for (size_t n = 0; n < span; n++) mixByte(row[col + n]);
+            }
+            tex->UnlockRect(0);
+        } else {
+            // Safe fallback: no cross-instance match for an unusual non-lockable texture.
+            h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(base));
+        }
+    }
+    base->AddRef();
+    g_indoorTextureSig.emplace(base, h);
+    return h;
+}
 
 bool TextureShape(IDirect3DBaseTexture9* t, D3DFORMAT fmt, UINT w, UINT h, UINT levels) {
     if (!t || t->GetType() != D3DRTYPE_TEXTURE || t->GetLevelCount() != levels) return false;
@@ -2850,6 +2900,9 @@ void ClearIndoorMaterialAux() {
         if (p.s6) p.s6->Release();
     }
     g_indoorMaterialAux.clear();
+    for (auto& [t, sig] : g_indoorTextureSig)
+        if (t) t->Release();
+    g_indoorTextureSig.clear();
 }
 
 IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
@@ -2882,12 +2935,16 @@ IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
         return out;
     }
 
-    if (g_indoorMaterialAux.size() > 512) ClearIndoorMaterialAux();
-    IndoorMaterialKey key{wx, wy, wz, g_curPs, s3, s4, s7, s8};
+    if (g_indoorMaterialAux.size() > 512 || g_indoorTextureSig.size() > 1024) ClearIndoorMaterialAux();
+    const uint64_t sig3 = IndoorTextureSignature(s3);
+    const uint64_t sig4 = IndoorTextureSignature(s4);
+    const uint64_t sig7 = IndoorTextureSignature(s7);
+    const uint64_t sig8 = IndoorTextureSignature(s8);
+    IndoorMaterialKey key{wx, wy, wz, g_curPs, sig3, sig4, sig7, sig8};
     auto it = g_indoorMaterialAux.find(key);
     if (it == g_indoorMaterialAux.end()) {
-        // Transfer the references returned by GetTexture for s2/s6 to the cache. The material-map references are only
-        // used as stable identity keys and are released immediately.
+        // Transfer the references returned by GetTexture for s2/s6 to the cache. The other material maps are represented
+        // by content signatures above, so duplicate D3D texture objects for byte-identical resources still match.
         g_indoorMaterialAux.emplace(key, IndoorAuxPair{s2, s6});
         s3->Release(); s4->Release(); s7->Release(); s8->Release();
         return out;
