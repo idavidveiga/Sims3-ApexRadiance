@@ -2242,18 +2242,43 @@ void SearchResults() {
 
 // ---- window parts ----
 
-// The search field in the header: a search icon inside, the "Ctrl+F" hint while empty, a clear button while not
-void SearchBox(float x, float y, float width) {
+// The window chrome: one control height for everything in the header, every part centred on its band, hairlines from
+// edge to edge of the window. Sizes in units (ApexUi::Unit()).
+constexpr float kHeaderH = 52.0f;     // header band
+constexpr float kFooterH = 38.0f;     // footer band
+constexpr float kChromeCtrl = 30.0f;  // header controls: logo, search, pills, close
+constexpr float kFooterCtrl = 26.0f;  // footer controls: collapse, version
+constexpr float kChromePadX = 14.0f;  // left and right padding of the header and the footer
+
+// A full-width 1 px horizontal hairline of the window (outside the content clip rect, so it touches both borders)
+void ChromeHLine(float y) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    dl->PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
+    dl->AddRectFilled(ImVec2(wp.x, std::floor(y)), ImVec2(wp.x + ws.x, std::floor(y) + 1.0f), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
+    dl->PopClipRect();
+}
+
+// The vertical 1 px hairline between the sidebar and the page, from one horizontal hairline to the other
+void ChromeVLine(float x, float y0, float y1) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    dl->PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
+    dl->AddRectFilled(ImVec2(std::floor(x), std::floor(y0)), ImVec2(std::floor(x) + 1.0f, std::floor(y1)), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
+    dl->PopClipRect();
+}
+
+// The search field in the header: a search icon inside, the "Ctrl+F" hint while empty, a clear button while not.
+// Screen position (x, y), size width x h.
+void SearchBox(float x, float y, float width, float h) {
     const float u = ApexUi::Unit();
-    const float h = ImGui::GetFrameHeight();
     const float is = VioletTheme::kControlIcon * u;
     const bool hasText = g_search[0] != '\0';
-    const float clearW = hasText ? h : 0.0f;
-    ImGui::SetCursorPos(ImVec2(x, y));
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u, ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u, std::fmax(0.0f, (h - ImGui::GetFontSize()) * 0.5f)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, h * 0.5f);
-    ImGui::SetNextItemWidth(std::fmax(width - clearW, 40.0f * u));
+    ImGui::SetNextItemWidth(width);
     if (g_focusSearch) {
         ImGui::SetKeyboardFocusHere();
         g_focusSearch = false;
@@ -2261,101 +2286,112 @@ void SearchBox(float x, float y, float width) {
     const char* placeholder = I18n::Tr("Search settings");
     ImGui::InputTextWithHint("##Search", placeholder, g_search, sizeof g_search, ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_AutoSelectAll);
     const bool active = ImGui::IsItemActive();
+    const float fh = ImGui::GetItemRectSize().y;
     ImGui::PopStyleVar(2);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImU32 muted = ImGui::GetColorU32(Col(VioletTheme::kTextMuted));
-    ApexUi::DrawIcon(dl, IconId::Search, ImVec2(p.x + ApexUi::kSpace3 * u, p.y + (h - is) * 0.5f), is, active ? ImGui::GetColorU32(Col(VioletTheme::kAccentLight)) : muted);
+    ApexUi::DrawIcon(dl, IconId::Search, ImVec2(p.x + ApexUi::kSpace3 * u, std::floor(p.y + (fh - is) * 0.5f)), is,
+                     active ? ImGui::GetColorU32(Col(VioletTheme::kAccentLight)) : muted);
     if (!hasText && !active) {
         ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
         const char* hint = "Ctrl+F";
         const ImVec2 ts = ImGui::CalcTextSize(hint);
-        const float hx = p.x + width - ts.x - 10.0f * u;
-        if (hx > p.x + ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u + ImGui::CalcTextSize(placeholder).x + 8.0f * u) // only when it fits after the placeholder
-            dl->AddText(ImVec2(hx, p.y + (h - ts.y) * 0.5f), muted, hint);
+        const float hx = p.x + width - ts.x - ApexUi::kSpace3 * u;
+        if (hx > p.x + ApexUi::kSpace3 * u + is + ApexUi::kSpace2 * u + ImGui::CalcTextSize(placeholder).x + 8.0f * u) // only when it fits
+            dl->AddText(ImVec2(hx, std::floor(p.y + (fh - ts.y) * 0.5f)), muted, hint);
         ImGui::PopFont();
     }
     if (hasText) {
-        ImGui::SameLine(0.0f, 0.0f);
-        if (ApexUi::IconButton("##ClearSearch", IconId::X, "Clear the search (Esc)", false, h / u)) g_search[0] = '\0';
+        // The clear button sits inside the field's right end
+        const float cb = std::floor(fh - 6.0f * u);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + width - cb - 3.0f * u, p.y + std::floor((fh - cb) * 0.5f)));
+        if (ApexUi::IconButton("##ClearSearch", IconId::X, "Clear the search (Esc)", false, cb / u)) g_search[0] = '\0';
     }
 }
 
-// The header, one bar: the logo and name (left); the search field, the night/day and frame-time pills and close
-// (right). Every part is centred on one row of fixed height. Returns false when the close button was pressed.
-bool Header() {
+// A status pill of the header at the header's control height (the shared Pill is shorter). Screen position.
+void HeaderPill(const char* text, bool highlighted, IconId icon, float x, float y, float h, const char* tooltip) {
+    const float u = ApexUi::Unit();
+    const ImVec2 size(ApexUi::PillSize(text, icon != IconId::None).x, h);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushID(text);
+    ImGui::InvisibleButton("##HeaderPill", size);
+    ImGui::PopID();
+    if (tooltip) ApexUi::Tooltip(tooltip);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + size.x, y + h), ImGui::GetColorU32(Col(highlighted ? VioletTheme::kAccentDark : VioletTheme::kSelectedBg)), h * 0.5f);
+    const ImU32 col = ImGui::GetColorU32(Col(highlighted ? VioletTheme::kAccentLight : VioletTheme::kTextMuted));
+    ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
+    float tx = x + 9.0f * u;
+    if (icon != IconId::None) {
+        const float s = ApexUi::kIconSmall * u;
+        ApexUi::DrawIcon(dl, icon, ImVec2(tx, std::floor(y + (h - s) * 0.5f)), s, col);
+        tx += s + ApexUi::kSpace1 * u;
+    }
+    dl->AddText(ImVec2(tx, std::floor(y + (h - ImGui::GetFontSize()) * 0.5f)), col, I18n::Tr(text));
+    ImGui::PopFont();
+}
+
+// The header band (screen origin = the window's top-left, width w, height h): the logo and name (left); the search
+// field, the night/day and frame-time pills and close (right). Every part has the same height and is centred on the
+// band. Returns false when the close button was pressed.
+bool Header(ImVec2 origin, float w, float h) {
     const float u = ApexUi::Unit();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float startX = ImGui::GetCursorPosX(), startY = ImGui::GetCursorPosY();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float rowH = 36.0f * u;
-    const float tile = 28.0f * u;
-    auto centredY = [&](float h) { return startY + std::floor((rowH - h) * 0.5f); };
+    const float pad = kChromePadX * u;
+    const float c = std::floor(kChromeCtrl * u);
+    const float cy = origin.y + h * 0.5f;
+    const float top = std::floor(cy - c * 0.5f);
+    const float gap = ApexUi::kSpace2 * u;
 
     // Logo (ui/logo.h); the plain tile with the letter when its texture could not be made
-    const ImVec2 t0(p.x + ApexUi::kSpace1 * u, p.y + std::floor((rowH - tile) * 0.5f)), t1(t0.x + tile, t0.y + tile);
+    const ImVec2 t0(std::floor(origin.x + pad), top), t1(t0.x + c, t0.y + c);
     if (!ApexUi::DrawLogo(dl, t0, t1)) {
         dl->AddRectFilled(t0, t1, ImGui::GetColorU32(Col(VioletTheme::kAccent)), ApexUi::kSpace2 * u);
         ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * 1.2f);
         const ImVec2 letter = ImGui::CalcTextSize(APEX_LOGO_LETTER);
-        dl->AddText(ImVec2(t0.x + (tile - letter.x) * 0.5f, t0.y + (tile - letter.y) * 0.5f), IM_COL32_WHITE, APEX_LOGO_LETTER);
+        dl->AddText(ImVec2(std::floor(t0.x + (c - letter.x) * 0.5f), std::floor(t0.y + (c - letter.y) * 0.5f)), IM_COL32_WHITE, APEX_LOGO_LETTER);
         ImGui::PopFont();
     }
-
-    // Name, centred on the row by its measured height (saving is shown in the footer)
     ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * 1.1f);
     const ImVec2 nameSize = ImGui::CalcTextSize(APEX_PRODUCT_NAME);
-    const float textX = t1.x + ApexUi::kSpace2 * u;
-    dl->AddText(ImVec2(textX, p.y + std::floor((rowH - nameSize.y) * 0.5f)), ImGui::GetColorU32(Col(VioletTheme::kText)), APEX_PRODUCT_NAME);
+    const float nameX = t1.x + ApexUi::kSpace3 * u;
+    dl->AddText(ImVec2(nameX, std::floor(cy - nameSize.y * 0.5f)), ImGui::GetColorU32(Col(VioletTheme::kText)), APEX_PRODUCT_NAME);
     ImGui::PopFont();
-    const float nameRight = textX - p.x + startX + nameSize.x + ApexUi::kSpace4 * u;
+    const float nameRight = nameX + nameSize.x + ApexUi::kSpace4 * u * 1.5f;
 
-    // Right side, laid out from the right edge: [search] [night/day] [frame time] [close]
-    const float gap = 6.0f * u;
-    const float button = 28.0f * u;
-    const float closeX = startX + width - button;
-
+    // Right side, from the right edge: [close] [frame time] [night/day] [search]
+    const float closeX = std::floor(origin.x + w - pad - c);
     const ImGuiIO& io = ImGui::GetIO();
     char perf[48];
     const float fps = io.Framerate;
     std::snprintf(perf, sizeof perf, "%.1f ms \xC2\xB7 %.0f fps", fps > 0.0f ? 1000.0f / fps : 0.0f, fps);
-    const ImVec2 perfSize = ApexUi::PillSize(perf, false);
-    const float perfX = closeX - gap - perfSize.x;
-
+    const float perfW = ApexUi::PillSize(perf, false).x;
+    const float perfX = std::floor(closeX - gap - perfW);
     float level = 0.0f;
     const bool haveLevel = NightLighting::MenuNightLevel(level);
     const bool night = level > 0.5f;
     const char* dayText = night ? "Night" : "Day";
-    const ImVec2 daySize = ApexUi::PillSize(dayText, true);
-    const float dayX = perfX - gap - daySize.x;
+    const float dayW = ApexUi::PillSize(dayText, true).x;
+    const float dayX = std::floor(perfX - gap - dayW);
 
-    // The search field gets the room left of the pills (at most 260 units); narrow windows drop the pills first
-    const float minSearch = 110.0f * u, maxSearch = 260.0f * u;
-    const float searchGap = ApexUi::kSpace2 * u;
+    // The search field gets the room left of the pills (at most 280 units); narrow windows drop the pills first
+    const float minSearch = 120.0f * u, maxSearch = 280.0f * u;
     bool showDay = haveLevel, showPerf = true;
     auto leftEdge = [&] { return showDay ? dayX : showPerf ? perfX : closeX; };
-    if (leftEdge() - searchGap - nameRight < minSearch) showDay = false;
-    if (leftEdge() - searchGap - nameRight < minSearch) showPerf = false;
-    const float searchW = std::fmin(leftEdge() - searchGap - nameRight, maxSearch);
+    if (leftEdge() - gap - nameRight < minSearch) showDay = false;
+    if (leftEdge() - gap - nameRight < minSearch) showPerf = false;
+    const float searchW = std::floor(std::fmin(leftEdge() - gap - nameRight, maxSearch));
 
-    if (showDay) {
-        ImGui::SetCursorPos(ImVec2(dayX, centredY(daySize.y)));
-        ApexUi::Pill(dayText, night, night ? IconId::Moon : IconId::Sun);
-        ApexUi::Tooltip(I18n::Trf("How dark the game thinks it is: {:.2f} (0 is day, 1 is night)", level).c_str());
-    }
-    if (showPerf) {
-        ImGui::SetCursorPos(ImVec2(perfX, centredY(perfSize.y)));
-        ApexUi::Pill(perf, false);
-        ApexUi::Tooltip("Frame time and frame rate, averaged over recent frames");
-    }
-    if (searchW >= 60.0f * u) SearchBox(leftEdge() - searchGap - searchW, centredY(ImGui::GetFrameHeight()), searchW);
+    if (showDay)
+        HeaderPill(dayText, night, night ? IconId::Moon : IconId::Sun, dayX, top, c,
+                   I18n::Trf("How dark the game thinks it is: {:.2f} (0 is day, 1 is night)", level).c_str());
+    if (showPerf) HeaderPill(perf, false, IconId::None, perfX, top, c, I18n::Tr("Frame time and frame rate, averaged over recent frames"));
+    if (searchW >= 60.0f * u) SearchBox(std::floor(leftEdge() - gap - searchW), top, searchW, c);
     bool keepOpen = true;
-    ImGui::SetCursorPos(ImVec2(closeX, centredY(button)));
+    ImGui::SetCursorScreenPos(ImVec2(closeX, top));
     const std::string closeTip = I18n::Trf("Close (Esc); {} opens it again", ApexConfig::KeyChordText(ApexConfig::GetUi().toggle));
-    if (ApexUi::IconButton("##Close", IconId::X, closeTip.c_str(), false, 28.0f)) keepOpen = false;
-    // The next item starts below the row
-    ImGui::SetCursorPos(ImVec2(startX, startY + rowH));
-    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    if (ApexUi::IconButton("##Close", IconId::X, closeTip.c_str(), false, c / u)) keepOpen = false;
     return keepOpen;
 }
 
@@ -2590,10 +2626,10 @@ void VersionButton(float x, float y, float h) {
     ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
     const std::string label = std::string("v") + APEX_VERSION_NUMBER;
     const bool unseen = ChangelogUnseen();
-    const float dot = 6.0f * u, padX = ApexUi::kSpace2 * u;
+    const float dot = 6.0f * u, padX = ApexUi::kSpace3 * u;
     const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
     const float w = padX * 2.0f + (unseen ? dot + 6.0f * u : 0.0f) + ts.x;
-    ImGui::SetCursorPos(ImVec2(x, y));
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton("##Version", ImVec2(w, h));
     const bool hovered = ImGui::IsItemHovered();
@@ -2620,8 +2656,8 @@ void VersionButton(float x, float y, float h) {
             ApexConfig::SetUi(ui);
         }
     }
-    // The popover opens above the button, its right edge on the button's
-    ImGui::SetNextWindowPos(ImVec2(p.x + w, p.y - ApexUi::kSpace1 * u), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    // The popover opens above the button, centred on it
+    ImGui::SetNextWindowPos(ImVec2(p.x + w * 0.5f, p.y - ApexUi::kSpace2 * u), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
     ImGui::SetNextWindowSize(ImVec2(380.0f * u, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * u, ApexUi::kSpace3 * u));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 12.0f * u);
@@ -2665,55 +2701,60 @@ void VersionButton(float x, float y, float h) {
     ImGui::PopStyleVar(2);
 }
 
-// The footer, one line: the collapse button and the saving state (left); the peek hint and the version (right)
-void StatusBar(float height, bool collapsed) {
+// The version button's width (the label and, while What's new is unread, its dot)
+float VersionButtonWidth() {
     const float u = ApexUi::Unit();
-    const float startX = ImGui::GetCursorPosX(), startY = ImGui::GetCursorPosY();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetContentRegionAvail().x;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p.x, std::floor(p.y)), ImVec2(p.x + w, std::floor(p.y) + 1.0f), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)));
+    ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
+    const float w = ApexUi::kSpace3 * u * 2.0f + (ChangelogUnseen() ? 12.0f * u : 0.0f) + ImGui::CalcTextSize("v" APEX_VERSION_NUMBER).x;
+    ImGui::PopFont();
+    return std::floor(w);
+}
 
-    const float rowH = height - 2.0f * u;
-    const float bs = 26.0f * u;
-    const float by = startY + 2.0f * u + std::floor((rowH - bs) * 0.5f);
-    ImGui::SetCursorPos(ImVec2(startX, by));
-    if (ApexUi::IconButton("##CollapseSidebar", collapsed ? IconId::ChevronsRight : IconId::ChevronsLeft, collapsed ? "Expand the sidebar" : "Collapse the sidebar",
-                           false, 26.0f)) {
+// The footer band (screen origin, width w, height h), one line centred on the band: the sidebar button and the saving
+// state (left), the version (centre, opens What's new), the hide hint (right). Parts that do not fit are dropped from
+// the right hint first, then the saving text.
+void StatusBar(ImVec2 origin, float w, float h, bool collapsed) {
+    const float u = ApexUi::Unit();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float pad = kChromePadX * u;
+    const float bs = std::floor(kFooterCtrl * u);
+    const float cy = origin.y + h * 0.5f;
+    const float top = std::floor(cy - bs * 0.5f);
+
+    // Left: show or hide the sidebar labels
+    ImGui::SetCursorScreenPos(ImVec2(std::floor(origin.x + pad - 4.0f * u), top));
+    if (ApexUi::IconButton("##CollapseSidebar", collapsed ? IconId::PanelLeftOpen : IconId::PanelLeftClose,
+                           collapsed ? "Show the sidebar labels" : "Show only the sidebar icons", false, kFooterCtrl)) {
         ApexConfig::UiSettings ui = ApexConfig::GetUi();
         ui.sidebarCollapsed = !collapsed; // [ui] sidebar_collapsed
         ApexConfig::SetUi(ui);
     }
+    const float leftX = std::floor(origin.x + pad - 4.0f * u + bs + ApexUi::kSpace2 * u);
 
-    // The version at the right end
-    ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
-    const float vw = ApexUi::kSpace2 * u * 2.0f + (ChangelogUnseen() ? 12.0f * u : 0.0f) + ImGui::CalcTextSize("v" APEX_VERSION_NUMBER).x;
-    ImGui::PopFont();
-    VersionButton(startX + w - vw, by, bs);
-    const float rightEdge = p.x + w - vw - ApexUi::kSpace2 * u;
+    // Centre: the version
+    const float vw = VersionButtonWidth();
+    const float vx = std::floor(origin.x + (w - vw) * 0.5f);
+    VersionButton(vx, top, bs);
 
     ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
-    const float lineH = ImGui::GetTextLineHeight();
-    const float textY = p.y + 2.0f * u + std::floor((rowH - lineH) * 0.5f);
-    const float is = 12.0f * u, ig = 5.0f * u;
+    const float lineH = ImGui::GetFontSize();
+    const float textY = std::floor(cy - lineH * 0.5f);
+    const float is = ApexUi::kIconSmall * u, ig = 5.0f * u;
     const ImU32 muted = ImGui::GetColorU32(Col(VioletTheme::kTextMuted));
-    const float leftX = p.x + bs + ApexUi::kSpace2 * u;
     const bool saving = ApexConfig::SavePending();
     const char* left = I18n::Tr(saving ? "Saving\xE2\x80\xA6" : "All changes saved");
     const float leftW = is + ig + ImGui::CalcTextSize(left).x;
     const std::string right = I18n::Trf("Hold {} to hide the menu", ApexConfig::KeyChordText(ApexConfig::GetUi().peekKey));
     const float rightW = ImGui::CalcTextSize(right.c_str()).x;
-    const bool showLeft = leftX + leftW <= rightEdge;
-    const bool showRight = leftX + leftW + ApexUi::kSpace4 * u + rightW <= rightEdge;
-    if (showLeft) {
-        ApexUi::DrawIcon(dl, saving ? IconId::Save : IconId::CircleCheck, ImVec2(leftX, textY + (lineH - is) * 0.5f), is,
+    const float rightX = std::floor(origin.x + w - pad - rightW);
+    const float gap = ApexUi::kSpace4 * u;
+    if (leftX + leftW + gap <= vx) {
+        ApexUi::DrawIcon(dl, saving ? IconId::Save : IconId::CircleCheck, ImVec2(leftX, std::floor(cy - is * 0.5f)), is,
                          saving ? muted : ImGui::GetColorU32(Col(VioletTheme::kSuccess)));
         dl->AddText(ImVec2(leftX + is + ig, textY), saving ? muted : ImGui::GetColorU32(Col(VioletTheme::kSuccess, 0.85f)), left);
     }
-    if (showRight) dl->AddText(ImVec2(rightEdge - rightW, textY), muted, right.c_str());
+    if (vx + vw + gap <= rightX) dl->AddText(ImVec2(rightX, textY), muted, right.c_str());
     ImGui::PopFont();
-    ImGui::SetCursorPos(ImVec2(startX, startY + height));
-    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 // The undo toast at the bottom right of the window, above the status bar: "<what changed>  Undo", about 4 s (fading;
@@ -2791,8 +2832,12 @@ void MainWindow() {
     const bool dragging = ApexUi::SliderDragging();
     // The configurable peek key hides the menu and makes it inert (never while typing or dragging).
     const auto uiKeys = ApexConfig::GetUi();
-    const bool peek = g_menuHovered && HoldShortcutDown(uiKeys.peekKey) &&
+    // It starts over the menu and lasts while the key is held: the hidden window is not hovered, so testing the hover
+    // every frame would show it again on the next frame and the menu would blink.
+    static bool peeking = false;
+    const bool peek = (g_menuHovered || peeking) && HoldShortcutDown(uiKeys.peekKey) &&
                       !io.WantTextInput && !dragging && !ImGui::IsAnyItemActive();
+    peeking = peek;
     if (g_menuFocused && !peek) {
         // Esc: clears the search, then closes the menu (never while a field is being
         // edited or the menu key is being chosen)
@@ -2820,7 +2865,8 @@ void MainWindow() {
     ImGui::SetNextWindowSize(ImVec2(560.0f * u, 640.0f * u), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(400.0f * u, 300.0f * u), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, g_alpha);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace3 * u, ApexUi::kSpace3 * u));
+    // No window padding: the header, the footer and the hairlines run from border to border; each part pads itself
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     bool open = true;
     // "###ApexWindow": its own id (S3SS's window is ###S3SSWindow), stable whatever the visible name
     const bool drawn = ImGui::Begin(APEX_PRODUCT_NAME "###ApexWindow", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
@@ -2833,25 +2879,27 @@ void MainWindow() {
     if (drawn) {
         ImGui::BeginDisabled(peek);
         const bool collapsed = ApexConfig::GetUi().sidebarCollapsed;
-        const float sidebarW = (collapsed ? 44.0f : 170.0f) * u;
-        open = Header();
-        ImGui::Separator();
+        // Bands, in screen space: header | (sidebar | page) | footer, separated by 1 px hairlines that meet
+        const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+        const float headerH = std::floor(kHeaderH * u), footerH = std::floor(kFooterH * u);
+        const float sidebarW = std::floor((collapsed ? 56.0f : 184.0f) * u);
+        const float bodyTop = wp.y + headerH + 1.0f;
+        const float footerTop = std::floor(wp.y + ws.y - footerH);
+        const float bodyH = std::fmax(footerTop - bodyTop, 60.0f * u);
+        open = Header(wp, ws.x, headerH);
+        ChromeHLine(wp.y + headerH);
+        ChromeHLine(footerTop);
+        ChromeVLine(wp.x + sidebarW, wp.y + headerH, footerTop);
 
-        // Sidebar (fixed width, or the icon rail) and the page (scrolls in its own child), then the footer
-        const float statusH = StatusBarHeight();
-        const float bodyH = std::fmax(ImGui::GetContentRegionAvail().y - statusH - ImGui::GetStyle().ItemSpacing.y, 60.0f * u);
-        ImGui::BeginChild("##Sidebar", ImVec2(sidebarW, bodyH), ImGuiChildFlags_None, 0);
+        ImGui::SetCursorScreenPos(ImVec2(wp.x, bodyTop));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace2 * u, ApexUi::kSpace3 * u));
+        ImGui::BeginChild("##Sidebar", ImVec2(sidebarW, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+        ImGui::PopStyleVar();
         Sidebar(collapsed);
         ImGui::EndChild();
-        ImGui::SameLine(0.0f, 0.0f);
-        {
-            // Hairline between the sidebar and the page
-            const ImVec2 a = ImGui::GetCursorScreenPos();
-            ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x + 6.0f * u, a.y), ImVec2(a.x + 6.0f * u, a.y + bodyH), ImGui::GetColorU32(Col(VioletTheme::kCardBorder)), 1.0f);
-        }
-        ImGui::SameLine(0.0f, ApexUi::kSpace3 * u);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace2 * u, ApexUi::kSpace1 * u));
-        ImGui::BeginChild("##Content", ImVec2(0.0f, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+        ImGui::SetCursorScreenPos(ImVec2(wp.x + sidebarW + 1.0f, bodyTop));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * u, ApexUi::kSpace3 * u));
+        ImGui::BeginChild("##Content", ImVec2(ws.x - sidebarW - 1.0f, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
         ImGui::PopStyleVar();
         if (g_search[0]) {
             SearchResults();
@@ -2863,9 +2911,11 @@ void MainWindow() {
             ImGui::PopID();
         }
         ImGui::EndChild();
-        const float statusTop = ImGui::GetCursorScreenPos().y;
-        StatusBar(statusH, collapsed);
-        DrawToast(statusTop);
+        StatusBar(ImVec2(wp.x, footerTop + 1.0f), ws.x, footerH - 1.0f, collapsed);
+        // Leave the cursor at the window's end so ImGui does not grow the window
+        ImGui::SetCursorScreenPos(ImVec2(wp.x, wp.y + ws.y - 1.0f));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        DrawToast(footerTop);
         DeveloperConfirmation();
         ImGui::EndDisabled();
 
@@ -2878,7 +2928,7 @@ void MainWindow() {
     ImGui::PopStyleVar(); // Alpha
 
     // Peek and hold-to-compare belong to the menu while the pointer is over it; not while typing.
-    g_keysOverMenu.store(g_menuHovered && !io.WantTextInput);
+    g_keysOverMenu.store((g_menuHovered || peeking) && !io.WantTextInput);
     g_menuTextInput.store(io.WantTextInput);
 
     // The last change of the frame becomes the undo toast (with the state from before the click)

@@ -128,6 +128,8 @@ enum class IconId : int {
     Sunset, // sunset
     CloudRain, // cloud-rain
     WandSparkles, // wand-sparkles
+    PanelLeftClose, // panel-left-close
+    PanelLeftOpen, // panel-left-open
     Count,
     None = Count, // "no icon" for widgets that take an optional one
 };

@@ -750,6 +750,19 @@ inline constexpr Element kWandSparkles[] = {
     {Kind::Path, "M11 3H9", {}, false},
 };
 
+// panel-left-close
+inline constexpr Element kPanelLeftClose[] = {
+    {Kind::Rect, nullptr, {3.0f, 3.0f, 18.0f, 18.0f, 2.0f}, false},
+    {Kind::Path, "M9 3v18", {}, false},
+    {Kind::Path, "m16 15-3-3 3-3", {}, false},
+};
+// panel-left-open
+inline constexpr Element kPanelLeftOpen[] = {
+    {Kind::Rect, nullptr, {3.0f, 3.0f, 18.0f, 18.0f, 2.0f}, false},
+    {Kind::Path, "M9 3v18", {}, false},
+    {Kind::Path, "m14 9 3 3-3 3", {}, false},
+};
+
 inline constexpr IconData kIcons[] = {
     {"activity", kActivity, static_cast<int>(sizeof(kActivity) / sizeof(kActivity[0]))},
     {"aperture", kAperture, static_cast<int>(sizeof(kAperture) / sizeof(kAperture[0]))},
@@ -863,6 +876,8 @@ inline constexpr IconData kIcons[] = {
     {"sunset", kSunset, static_cast<int>(sizeof(kSunset) / sizeof(kSunset[0]))},
     {"cloud-rain", kCloudRain, static_cast<int>(sizeof(kCloudRain) / sizeof(kCloudRain[0]))},
     {"wand-sparkles", kWandSparkles, static_cast<int>(sizeof(kWandSparkles) / sizeof(kWandSparkles[0]))},
+    {"panel-left-close", kPanelLeftClose, static_cast<int>(sizeof(kPanelLeftClose) / sizeof(kPanelLeftClose[0]))},
+    {"panel-left-open", kPanelLeftOpen, static_cast<int>(sizeof(kPanelLeftOpen) / sizeof(kPanelLeftOpen[0]))},
 };
 
 } // namespace ApexUi::LucideData
