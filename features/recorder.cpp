@@ -111,6 +111,7 @@ void Status(DWORD now) {
 
 void Start() {
     g_on = true;
+    LevelLightShare::BeginSeamRecording();
     g_lines.clear();
     for (auto& s : g_lastStatusText) s.clear();
     g_startTick = GetTickCount();
@@ -139,6 +140,7 @@ void Start() {
 
 void Stop() {
     g_on = false;
+    const std::string wallSeams = LevelLightShare::EndSeamRecording(true);
     const DWORD end = GetTickCount();
     Status(end);
     LOG_INFO("[Recorder] Recording stopped");
@@ -181,6 +183,7 @@ void Stop() {
         out << "\n==== ApexRadiance.toml at the start of the recording ====\n" << g_settingsAtStart << '\n';
     }
     Captures::WriteText(folder / L"Recording.txt", out.str());
+    Captures::WriteText(folder / L"Wall seams.csv", wallSeams);
     LOG_INFO(std::format("[Recorder] Saved {} lines to Captures\\{}", all.size(), name));
     Captures::Finish(folder, std::format("a recording of {:.0f} s of the lighting", (end - g_startTick) / 1000.0), Captures::CaptureKind::Recording);
     g_saved = name;
@@ -208,6 +211,7 @@ void OnPresent() {
     if (g_cancelRequest.exchange(false)) {
         if (g_on) {
             g_on = false;
+            LevelLightShare::EndSeamRecording(false);
             g_lines.clear();
             g_settingsAtStart.clear();
             g_saved.clear();

@@ -113,7 +113,7 @@ std::atomic<int> g_fenceDrawn{0};
 std::atomic<bool> g_objPixel{true},g_objPixelLamps{true};
 std::atomic<float> g_objPixelStrength{1},g_objPixelLampStrength{1};
 std::atomic<int> g_objLampDrawn{0};
-struct ObjectVsInfo {struct {int vertexLight=20,worldK=8;} patched;} objectVsInfo;
+struct ObjectVsInfo {bool contractedLotUv=false;struct {int vertexLight=20,worldK=8;} patched;} objectVsInfo;
 ObjectVsInfo* g_curVsInfo=&objectVsInfo;
 FakeShader nativeVs{3},replacementVs{4};FakeShader* g_curVs=&nativeVs;
 float g_lampData[33][4]{};
@@ -128,6 +128,7 @@ int checks=0,failures=0;
 void Check(bool value,const char* text) { ++checks; if(!value) { ++failures; if(failures<30) std::printf("FAIL: %s\n",text); } }
 template<class T> bool Same(const T& a,const T& b) { return !std::memcmp(&a,&b,sizeof(T)); }
 void ResetGlobals() {
+    objectVsInfo.contractedLotUv=false;
     g_wallGain=1;g_groundGain=1;g_roadGain=1;g_lotMapGain=1;g_night=1;
     g_wallDrawn=0;g_groundGainDraws=0;g_lotDrawn=0;g_lotMissing=0;g_edgeMatched=0;g_edgeUnmatched=0;
     g_softEdges=false;g_wallEnabled=true;g_inOwnCall=false;g_lotRectMiss=false;g_haveLastEdgeRect=false;g_objDrawInfo.clear();
@@ -184,6 +185,21 @@ void WallChecks() {
 }
 void LotChecks() {
     const int before=checks;FakeTexture chunk{3},atlas{4},oldTexture{5};
+    for(bool recognised: {false,true}) for(int scenario=0;scenario<5;++scenario) {
+        ResetGlobals();auto d=Device();objectVsInfo.contractedLotUv=recognised;
+        g_chunks[{128,128}]={&chunk};d.vertex[12]={1.f/64,1.f/64,1,1};
+        if(scenario==1)d.failVertexRead=12;
+        if(scenario==2)d.vertex[12][1]=1.f/32;
+        if(scenario==3)d.vertex[12][0]=NAN;
+        if(scenario==4)d.vertex[12][0]=0;
+        const auto savedPixel=d.pixel;const auto savedVertex=d.vertex;
+        const bool align=recognised&&scenario==0;
+        Check(ExtractedLotBranch(&d,[&]{
+            Check(d.pixel[31][2]==(align?1.f/63:0),"lot inverse scale guarded by verified VS and valid constants");
+            Check(d.pixel[31][3]==(align?-(1.f/64)*(16.f/63):0),"unsupported lot UV stays native");
+        })==D3D9Hooks::HookAction::Skip,"UV fallback retains normal draw");
+        Check(Same(d.pixel,savedPixel)&&Same(d.vertex,savedVertex),"lot UV correction restores constants including invalid values");
+    }
     for(bool haveAtlas: {false,true}) for(bool feather: {false,true}) for(float night: {0.f,.25f,1.f}) for(float gain: {1.f,2.f}) {
         ResetGlobals();auto d=Device();g_night=night;g_groundGain=gain;g_lotMapGain=1.3f;fixtureAtlas=haveAtlas?&atlas:nullptr;
         fixtureHasRect=feather;fixtureFeather=feather;fixtureCapture=true;g_softEdges=true;

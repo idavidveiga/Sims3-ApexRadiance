@@ -14,6 +14,7 @@ S3SSDetect::RoomAmbientCorrection CorrectS3SSConflict();
 void OnPresent(); // render thread: relights the rooms and objects a moment after a change
 void OnWorldChanged(); // render thread: discard room/lot identities from the previous world
 void OnRoomsChanged(); // render thread: a loaded lot or story manager changed
+void OnRoomChanged(uintptr_t room); // render thread: structure changed; address is a cache key, never dereferenced
 // Any thread: the weight of the ambient cube on furniture drawn by Apex's indoor-object shader (lot_light_bridge): the
 // Brightness (blended by the night level) while on, 1 while off (their lamp light comes from the room maps, not this)
 float FurnitureAmbient();

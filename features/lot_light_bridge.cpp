@@ -162,7 +162,10 @@ float4 main(PSIn i) : COLOR0 {
     float2 e = min(lp, float2(cLotX.w, cLotZ.w) - lp);             // distance to the nearer edge on each axis
     float w = saturate(min(e.x, e.y) * cEdge.x + cEdge.y);
     w = w * w * (3 - 2 * w);
-    float3 lamps = lerp(terrain, max(tex2D(sLot, i.lotUv).rgb * cLotGain.x * c3.x, terrain), w);
+    // The studied VS maps local xz as (xz * 63/64 + 1/4) * VS c12.
+    // Undo that contraction for the CPU floor map; zero z/w retains unsupported VS mapping.
+    float2 lotUv = i.lotUv * (1 + cLotGain.z) + cLotGain.w;
+    float3 lamps = lerp(terrain, max(tex2D(sLot, lotUv).rgb * cLotGain.x * c3.x, terrain), w);
     float3 col = sun * c0.rgb + lamps;
     col = texCUBE(sSky, i.normal).rgb * c4.x + col;
     return float4(col * 0.5, 0);
@@ -615,6 +618,7 @@ bool g_curVsIsObject = false;
 struct VsInfo {
     bool worldMultiLight = false; // exact captured summer multi-pass light VS
     bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
+    bool contractedLotUv = false; // exact regular lot VS; CPU floor samples use uncontracted local xz
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -645,6 +649,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
             info.worldMultiLight = is(kWorldMultiLightVs);
             info.worldCompact = is(kWorldCompactVs);
+            info.contractedLotUv = is(kLotLightVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -2615,8 +2620,15 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
                                               rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
                                 : std::string("mod draw: lot light pass | soft edges: ") + (g_softEdges.load() ? "NOT applied, lot rectangle not found" : "off (option)");
-    const float lotGain[4] = {LotMapGain(), TerrainLightingPolicy::DayLampScale(g_night.load(std::memory_order_relaxed),
+    float lotGain[4] = {LotMapGain(), TerrainLightingPolicy::DayLampScale(g_night.load(std::memory_order_relaxed),
                                                                                          g_groundGain.load(std::memory_order_relaxed)), 0, 0};
+    float lotUvScale[4]{};
+    if (g_curVsInfo && g_curVsInfo->contractedLotUv && SUCCEEDED(dev->GetVertexShaderConstantF(12, lotUvScale, 1))
+        && std::isfinite(lotUvScale[0]) && lotUvScale[0] > 0 && lotUvScale[0] <= 1
+        && lotUvScale[0] == lotUvScale[1]) {
+        lotGain[2] = 1.0f / 63.0f;
+        lotGain[3] = -lotUvScale[0] * (16.0f / 63.0f);
+    }
 
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;

@@ -1,5 +1,35 @@
 # Level light share (outdoor lamps on every story)
 
+### Multi-story indoor openings (2026-10-04)
+
+Indoor gathers now consider lamps on all stories 0..7, with adjacent stories first
+under the existing 64-lamp cap. Each intervening floor must expose a nearby opening;
+opening masks and recipient room spans are cached per boundary for that gather.
+This filter does not transmit light by itself. The point solve tests the actual ray
+at every intervening floor, including tile-specific heights. It then tests wall
+segments in the lamp's room and intermediate stories, preserving the native wall
+mode and multiplying transmission. Unknown floors, stale ownership, missing
+intermediate rooms and ambiguous crossing order fail closed. Native light range
+and attenuation are unchanged. The receiving room's wall test remains native.
+
+`tools/terrain_lighting_test/run_indoor_stories_checks.ps1` extracts the production
+floor and wall routines and exercises all story pairs with mock game structures.
+These checks cover open shafts, every solid intermediate floor, wall blocking,
+wall-mode restoration, tile heights and unavailable data. They do not validate
+native game room topology, lamp falloff, visual convergence or performance; repeat
+the user's three-story open-shaft scene in the game before promotion.
+
+The first test build incorrectly required one ray/plane crossing per nominal
+story boundary. Ghost wall rows and split-level tile heights can place a sample
+on the lamp's side of a boundary despite its owning room's story number. Test2
+retains every floor intersection test but builds wall segments from actual
+crossings, including a terminal intermediate-story segment when required.
+Six regression assertions fail on test1 and pass on test2; ordinary adjacent
+results still match the previous implementation. The 16-45-19 recording confirms
+shared ambient RGB and normalization on the red atrium's three rooms, but does not
+by itself identify every component of its visible seam. In-game validation remains
+required; no artificial brightness increase or native attenuation change is used.
+
 ### Lighting response test (2026-10-03)
 
 Changed lamp signatures and lamp-driven lot refreshes request a bounded window reevaluation burst on the light thread,
@@ -494,6 +524,28 @@ parts 1-2 still install and the log says "Calculo por ponto nao confere; sem som
 
 ## Pitfalls and failed approaches
 
+### Indoor story seam investigation (2026-10-04)
+
+Session `2026-10-04 16-58-09 Session`, recording `18-11-40`, runs
+`2.5.6-indoor-stories-test2`. The connected rooms (story 0 room 23, story 1
+room 19, story 2 room 20) converge to identical ambient RGB after lamp edits,
+but their native wall passes finish separately. The first recorded update goes
+from queued rooms at 18:11:30.743 to matching ambient at 18:11:31.399.
+This measures queue-to-ambient convergence, not click-to-visible latency or a
+validated wall-map fix. The player still reports inconsistent indoor walls.
+
+The `indoor-seam-trace` candidate adds `Wall seams.csv` to ordinary recordings.
+It records raw RGB, normalization, estimated curve result, lot/story/room,
+normal, world position and elapsed time for actual wall-edge rows. Collection
+is enabled only by starting a recording, stops on save/cancel, uses a separate
+8,192-entry ring (latest samples retained), and does no quadratic pair matching.
+It does not activate developer mode, alter diagnostic arming, change lighting,
+force solves or change solver budgets. Compare identical positions/normals and
+the latest completed passes; raw samples precede the wall blur and atlas upload,
+so equal raw values do not establish equal displayed atlas pixels. Empty output
+means no qualifying wall-edge solve occurred during the recording. Gameplay
+validation of the capture and the visual seam remain pending.
+
 - First version (25/09 ~09:20) shared lights but had no wall test: the side face of the ground story near a corner became
   lighter than the upper one (m46/m47). Fixed by part 3.
 - The lot-load path gathers room 0 of every story through level 0 (`FUN_006c54e0`, `0x6C5525`): the real story must be read
@@ -825,3 +877,31 @@ Startup refresh checks from 500 ms after world-live: a fresh room enumeration, n
 Session `2026-10-01 17-58-56 Session` shows unlit room 22 following a brightness drag while atrium members 23/19/20 lag, plus inconsistent ambient during the later drag. Code review found a retry gap for busy/unknown rooms and global streaming cache eviction. Rooms at Night recovery, stale identity, merged-base ownership and queue acknowledgement are fixed in the same candidate (see unlit-rooms.md). The installed capture binary SHA256 is 677D742EB3DD9EDB5D02C7A0072184BD3055BF77EC4BAD8E72525C2510AAC1D3; it differs from this chat's test004 baseline. The capture does not uniquely prove every cause of the visual issue.
 
 Validation: 89 existing policy checks; 36 group/startup/priority/cache checks using the extracted production group publisher and cache forgetting function; extracted production pending loop, stale lamp visitor, Rooms at Night visitor/acknowledgement and SEH MoveBase checks. Busy members, inconsistent targets, identity loss, map incompatibility, write failure/rollback, publication allowance, deadline wrap, stale manager entries, retry after busy/queue failure, unchanged merged ownership and disabling the option are covered. In-game appearance, full native thread interactions, convergence after repeated switches and FPS remain unverified.
+# Indoor wall guard candidate (2026-10-04)
+
+The user validated the preceding indoor seam build visually. Subsequent isolated
+captures showed a separate leak from a story-2 lamp into furniture behind walls.
+The native directional basis builder does not perform the receiving room's wall
+test. Imported lamps now test source, intermediate and receiving wall segments;
+fractional transmission scales only that lamp's temporary basis contribution.
+The normal floor/wall point solve retains its existing receiving-room test.
+
+The ground capture also exposed contracted regular-lot UVs sampling the indoor
+row outside a closed wall. The exact recognized vertex shader now inverts that
+contraction when its map constants are valid and square. Unsupported layouts
+retain native coordinates. This changes neither light intensity nor texture-read
+count; it does not modify the world atlas or CPU light-map generation.
+
+Candidate `2.5.6-indoor-wall-guard-test`: Release x86 build succeeded with no
+warnings. Extracted indoor/basis tests: 30,890 checks; resource restoration and
+UV fallback tests: 13,682; UV inversion and production ps_2_0 compilation/device
+acceptance: 128,512. All passed. GPU device: RTX 4070 Ti SUPER. These checks do
+not establish gameplay appearance, DXVK compatibility or frame-time cost.
+In-game validation of both leakage paths remains pending; the preceding
+approved candidate and backup 368 are preserved.
+
+### Raised-room object-map guard (2026-10-05)
+
+The 23:54:37 F7 samples the table at basis texel (15,25); T9 is red there (74,0,0), while the direct rig constants are grey. The 23:58:17 F8 identifies only lamp #2084, story 2 room 16, imported into lower stories. Its tower uses floor heights 3.24/6.24 while the corresponding story minima are 0.99/3.99. Nominal ray segments can miss an exterior wall belonging to the raised part of an intermediate story.
+
+Only imported indoor directional-map lamps now additionally test the full ray against each story's native exterior wall collection. This is a blocking veto, not another attenuation multiplier: the existing segment tests retain glass/soft transmission. The wall/floor batch path is unchanged. A raised-wall fixture failed twice before the guard and passes afterwards; 18,992 extracted checks pass. These mocks establish the regression and control flow, not final gameplay appearance.

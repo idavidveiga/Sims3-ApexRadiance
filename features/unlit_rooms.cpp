@@ -667,6 +667,15 @@ void OnRoomsChanged() {
     g_changedAt = GetTickCount();
 }
 
+void OnRoomChanged(uintptr_t room) {
+    if (!g_ready || !g_on) return;
+    // Allow one fresh recovery after a real structure change, even if the game
+    // kept the same room pointer/id. Do not discard its valid ambient sources.
+    g_retintSent.erase(room);
+    g_nextReconcile = 0;
+    OnRoomsChanged();
+}
+
 float FurnitureAmbient() { return g_patched && g_on ? FurnitureShareNow() : 1.0f; }
 bool FurnitureActive() { return g_patched && g_on && NightNow() > 0.001f; }
 float FurnitureTint() { return FurnitureActive() ? FurnitureTintNow() : 1.0f; }
