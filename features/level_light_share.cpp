@@ -287,8 +287,9 @@ std::atomic<bool> g_diagArmed{false}; // development build: record samples and g
 struct Cross {
     uintptr_t light = 0;
     int floor = 0;       // the light's story
-    int room = 0;        // indoor rooms (4.): the light's room on that story
+    int room = 0;        // the light's room on that story (indoor rooms, 4.; outdoor: 0 or a roofless room)
     uintptr_t level = 0; // indoor rooms: highest boundary floor; other boundaries resolved by current manager
+    bool outdoor = false; // taken by the light between stories of outdoor rooms (part 1): tested against walls, not floors
     bool operator<(const Cross& o) const { return light < o.light; }
 };
 // Per outdoor room (room 0 of floors 0..7), and per indoor room that takes lamps through a stair opening: the lights of
@@ -498,10 +499,16 @@ void FlushDeferred(uintptr_t tracker) {
     for (const DeferredRoom& d : now) QueueRoom(d.tracker, d.level, d.id);
 }
 
-// Room 0 of floors 0..7
+int RooflessRoomIds(uintptr_t mgr, int* ids, int max); // below
+// The outdoor rooms of floors 0..7: room 0, and the roofless rooms when the room update hooks send them (05/10)
 void QueueOutdoorRegather(uintptr_t tracker) {
-    for (int level = 0; level <= 7; level++)
+    for (int level = 0; level <= 7; level++) {
         if (QueueRoom(tracker, level, 0)) g_queued.fetch_add(1, std::memory_order_relaxed);
+        int roofless[256];
+        const int nr = g_indoorReady ? RooflessRoomIds(StoryManager(tracker, level), roofless, static_cast<int>(std::size(roofless))) : 0;
+        for (int k = 0; k < nr; k++)
+            if (QueueRoom(tracker, level, roofless[k])) g_queued.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // Every light registered on a floor: treeLevel+0x90 hash (buckets +0x98, count +0x9C; node +8 -> {begin, end} of entries,
@@ -529,12 +536,81 @@ template <class F> void WalkRegistry(uintptr_t tl, F&& visit) {
     }
 }
 
-// Lights registered on a floor for room 0
+// Roofless outdoor rooms (05/10, user, F8 19:11: a sconce moved into a light well left the wall of the story above dark).
+// Walls, fences or railings that close an outdoor area make a room of its own with +0x18 set (a light well, a fenced yard,
+// a deck behind a railing: room 17 of story 2 in the test house); the game solves it as outdoor, but its lamps are
+// registered for its own id, so the light between stories, which carried only room 0's lamps, never took them, and those
+// rooms never took the other stories' outdoor lamps either. Room 0 and these rooms are a story's outdoor rooms.
+// The ids of a story's roofless rooms (room hash at mgr+0x230: buckets +0x234, count +0x238; node: id +0, room +0x10,
+// next +0x80, as the F8 walks it)
+int RooflessRoomIds(uintptr_t mgr, int* ids, int max) {
+    int n = 0;
+    if (!mgr) return 0;
+    const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+    const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+    for (uint32_t b = 0; rb && rc < 100000 && b < rc && n < max; b++) {
+        int guard = 0;
+        for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && guard++ < 10000 && n < max; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80)) {
+            const int id = *reinterpret_cast<const int*>(rn);
+            const BYTE* room = *reinterpret_cast<const BYTE* const*>(rn + 0x10);
+            if (id > 0 && room && room[0x18] && std::find(ids, ids + n, id) == ids + n) ids[n++] = id;
+        }
+    }
+    return n;
+}
+bool RooflessRoom(uintptr_t mgr, int id) {
+    if (id <= 0 || !mgr) return false;
+    const BYTE* room = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), id));
+    return room && room[0x18];
+}
+
+bool GameTakesLight(uintptr_t entry, uintptr_t light); // below: FUN_006c7820's checks without its room match
+bool ListHolds(const BYTE* room, uintptr_t light) {
+    const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+    const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+    for (const uintptr_t* p = b; p && p < e && p - b < 4096; p++)
+        if (*p == light) return true;
+    return false;
+}
+// Adds to `room` (an outdoor room of story S) the outdoor lamps of the other stories, with the game's checks and adder
+// FUN_006a2060: the lamps of their roofless rooms once, and unless rooflessOnly those of their room 0 (story 0's twice, their
+// weight in story 0's own list). A lamp already in the list stays as it is.
+int AddOutdoorLamps(uintptr_t tracker, int S, BYTE* room, bool rooflessOnly) {
+    int added = 0;
+    for (int other = 0; other <= 7; other++) {
+        if (other == S) continue;
+        const uintptr_t tl = TreeLevel(tracker, other);
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tl);
+        if (!mgr) continue;
+        int roofless[256];
+        const int nr = RooflessRoomIds(mgr, roofless, static_cast<int>(std::size(roofless)));
+        if (rooflessOnly && !nr) continue;
+        WalkRegistry(tl, [&](uintptr_t entry) {
+            const int home = *reinterpret_cast<const int*>(entry + 0x1C);
+            if (home == 0 ? rooflessOnly : std::find(roofless, roofless + nr, home) == roofless + nr) return;
+            const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+            if (!light || !GameTakesLight(entry, light) || ListHolds(room, light)) return;
+            const int times = home == 0 && other == 0 ? 2 : 1;
+            for (int t = 0; t < times; t++) reinterpret_cast<AddRoomLight_t>(kAddRoomLight)(room, reinterpret_cast<void*>(light));
+            added += times;
+        });
+    }
+    return added;
+}
+
+// Lights registered on a floor for its outdoor rooms: room 0 and the roofless rooms
 void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<Cross>& out) {
+    int roofless[256];
+    const int nr = RooflessRoomIds(*reinterpret_cast<const uintptr_t*>(tl), roofless, static_cast<int>(std::size(roofless)));
     WalkRegistry(tl, [&](uintptr_t entry) {
-        if (*reinterpret_cast<const int*>(entry + 0x1C) != 0) return;
+        const int home = *reinterpret_cast<const int*>(entry + 0x1C);
+        if (home != 0 && std::find(roofless, roofless + nr, home) == roofless + nr) return;
         const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
-        if (light && out.size() < 4096) out.push_back(Cross{light, floor});
+        if (!light || out.size() >= 4096) return;
+        Cross c{light, floor};
+        c.room = home;
+        c.outdoor = true;
+        out.push_back(c);
     });
 }
 
@@ -592,8 +668,49 @@ void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
         for (int t = 0; t < times; t++) reinterpret_cast<LevelGather_t>(kLevelGather)(tl, room, 0);
         added += static_cast<int>(ListSize(room) - before);
     }
+    // the lamps of the other stories' roofless rooms (05/10), with their own weight: once
+    if (g_indoorReady) added += AddOutdoorLamps(tracker, roomLevel, room, true);
     if (added) g_shared.fetch_add(added, std::memory_order_relaxed);
     RecordRoom(room, rmgr, tracker, roomLevel);
+}
+
+// A roofless room (id > 0, +0x18 set) takes the outdoor lamps of the other stories: those of their room 0 (story 0's twice,
+// their weight there) and of their roofless rooms (once), with the game's own checks of FUN_006c7820 and its adder
+// FUN_006a2060, after the indoor share (which starts this room's record again). Recorded before the first lamp goes in, so
+// a fault in the middle never leaves a lamp the point solve does not test. Needs the room update hooks (InstallIndoor): they
+// send these rooms again when an outdoor lamp of another story changes.
+void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
+    const int id = *reinterpret_cast<const int*>(room + 0xC);
+    if (id <= 0 || !room[0x18] || !g_indoorReady || !kAddRoomLight) return;
+    const uintptr_t rmgr = *reinterpret_cast<const uintptr_t*>(room);
+    if (!rmgr) return;
+    const int S = *reinterpret_cast<const int*>(rmgr + 0x88);
+    const int level = *reinterpret_cast<const int*>(treeLevel + 0x1A0);
+    const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(treeLevel + 4);
+    if (S < 0 || S > 7 || level < -4 || level > 7 || !tracker || TreeLevel(tracker, level) != reinterpret_cast<uintptr_t>(treeLevel) || StoryManager(tracker, S) != rmgr)
+        return;
+    g_gatherThread = ThreadId();
+    std::vector<Cross> cross;
+    for (int other = 0; other <= 7; other++)
+        if (other != S && StoryManager(tracker, other)) FloorOutdoorLights(TreeLevel(tracker, other), other, cross);
+    if (cross.empty()) return;
+    MaybeClearRooms();
+    RoomInfo& info = g_rooms[reinterpret_cast<uintptr_t>(room)];
+    if (!info.indoor) { // a fresh record (the indoor share made none for this room)
+        info.mgr = rmgr;
+        info.tracker = tracker;
+        info.level = S;
+        info.id = id;
+        info.cross.clear();
+    }
+    std::vector<Cross> fresh; // a lamp the indoor share took through an opening keeps that test
+    for (const Cross& c : cross)
+        if (!std::binary_search(info.cross.begin(), info.cross.end(), c)) fresh.push_back(c);
+    info.cross.insert(info.cross.end(), fresh.begin(), fresh.end());
+    std::sort(info.cross.begin(), info.cross.end());
+    info.cross.erase(std::unique(info.cross.begin(), info.cross.end(), [](const Cross& a, const Cross& b) { return a.light == b.light; }), info.cross.end());
+    const int added = AddOutdoorLamps(tracker, S, room, false);
+    if (added) g_shared.fetch_add(added, std::memory_order_relaxed);
 }
 
 // ---- indoor lamps through stair openings (4.) ----
@@ -2682,6 +2799,19 @@ void AfterChangedWalk(BYTE* tl) {
     // sent now stopping a solve in progress / sent now keeping one (a lamp moved, a player's edit) / now or after the burst
     std::vector<std::pair<int, int>> now, kept, later;
     std::vector<int> own; // rooms of this story a lamp edit changed: the walk just sent them; urgent, gathered in this update
+    // The outdoor rooms of the other stories (room 0 and the roofless rooms, 05/10): they take this story's outdoor lamps
+    std::vector<std::pair<int, int>> outdoorRooms;
+    const uintptr_t mgrL = *reinterpret_cast<const uintptr_t*>(tl);
+    for (int S = 0; S <= 7; S++) {
+        const uintptr_t mgrS = S == L ? 0 : *reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, S));
+        if (!mgrS) continue;
+        outdoorRooms.emplace_back(S, 0);
+        if (g_indoorReady) {
+            int roofless[256];
+            const int nr = RooflessRoomIds(mgrS, roofless, static_cast<int>(std::size(roofless)));
+            for (int k = 0; k < nr; k++) outdoorRooms.emplace_back(S, roofless[k]);
+        }
+    }
     {
         std::lock_guard<std::mutex> lk(g_depsMx);
         for (int i = 0; i < n; i++) {
@@ -2690,7 +2820,8 @@ void AfterChangedWalk(BYTE* tl) {
             if (note || noted) own.push_back(ids[i]); // the lamp's room, and the neighbours the game's mark sent with it
             const DepKey key{tracker, L, ids[i]};
             const auto deps = g_deps.find(key); // rooms of other stories taking its lamps near an opening (room 0 too)
-            if (ids[i] != 0 && deps == g_deps.end()) continue;
+            const bool outdoor = ids[i] == 0 || (g_indoorReady && RooflessRoom(mgrL, ids[i])); // its lamps light the other stories
+            if (!outdoor && deps == g_deps.end()) continue;
             // only when what the other stories take from it really changed (RoomLampSignature). The game marks a room
             // changed for more than a lamp change (the light entry update 0x6C7BA0 does it for any lit lamp whose entry
             // is updated, changed or not; the exact trigger in the test house is not known), and two rooms taking each
@@ -2701,12 +2832,11 @@ void AfterChangedWalk(BYTE* tl) {
                 if (ids[i] == 0) g_outdoorQuiet.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
-            if (ids[i] == 0) own.push_back(0); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
+            if (outdoor) own.push_back(ids[i]); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
             if (change == 1 && note && note->user) change = 3; // colour, intensity, on / off by a player or a Sim: at once
             auto& out = change == 2 ? now : change == 3 ? kept : later;
-            if (ids[i] == 0) // the outside of this floor: room 0 of the other floors 0..7 take its outdoor lamps (part 2)
-                for (int S = 0; S <= 7; S++)
-                    if (S != L && *reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, S))) out.emplace_back(S, 0);
+            // an outdoor room of this floor: the outdoor rooms of the other floors 0..7 take its lamps (part 2)
+            if (outdoor) out.insert(out.end(), outdoorRooms.begin(), outdoorRooms.end());
             if (deps != g_deps.end()) out.insert(out.end(), deps->second.begin(), deps->second.end());
         }
         for (auto* v : {&now, &kept, &later}) { // a room taking lamps of several changed rooms: once
@@ -2789,6 +2919,7 @@ void __fastcall OutdoorGather(BYTE* treeLevel, void*, BYTE* room) {
         NoteRoomStructure(room);
         ShareOutdoorLights(treeLevel, room);
         ShareIndoorLights(treeLevel, room);
+        ShareRooflessLights(treeLevel, room); // after the indoor share, which starts the room's record again
         NoteGatherStamp(room, started);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
@@ -3275,7 +3406,8 @@ std::atomic<bool> g_basisGuardReady{false};
 void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float* colour); // below
 void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light, float* acc) {
     if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
-        if (const RoomInfo* info = SolveInfo(room); info && info->indoor && FindCross(*info, reinterpret_cast<uintptr_t>(light))) {
+        if (const RoomInfo* info = SolveInfo(room); info && info->indoor && FindCross(*info, reinterpret_cast<uintptr_t>(light)) &&
+                                                     !FindCross(*info, reinterpret_cast<uintptr_t>(light))->outdoor) {
             const SolveCtx prev = g_ctx;
             g_ctx = SolveCtx{};
             g_ctx.info = info;
@@ -3324,7 +3456,8 @@ const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* 
 BYTE* g_swapAt = nullptr; // room+0x639 byte changed around the game's wall test (restored on a fault too)
 BYTE g_swapSaved = 0;
 
-float WallPassImpl(uintptr_t tracker, int roomLevel, int home, void* light, const void* sample, bool& culledList) {
+// homeRoom: the lamp's room on its story (0, or a roofless room: its own walls close it, 05/10)
+float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, void* light, const void* sample, bool& culledList) {
     alignas(16) float pos[4];
     reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
     float keep = 1.0f;
@@ -3333,7 +3466,8 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, void* light, cons
         if (floor == roomLevel) continue;
         void* mgr = *reinterpret_cast<void* const*>(TreeLevel(tracker, floor));
         if (!mgr) continue;
-        BYTE* room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, 0));
+        BYTE* room0 = floor == home && homeRoom > 0 ? static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, homeRoom)) : nullptr;
+        if (!room0) room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, 0));
         if (!room0) continue;
         IntVec list{};
         void* idx = nullptr; // null = all walls, as the game does when the batch has no per-light lists
@@ -3359,9 +3493,9 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, void* light, cons
     }
     return keep;
 }
-float WallPass(uintptr_t tracker, int roomLevel, int home, void* light, const void* sample, bool& culledList) {
+float WallPass(uintptr_t tracker, int roomLevel, int home, int homeRoom, void* light, const void* sample, bool& culledList) {
     __try {
-        return WallPassImpl(tracker, roomLevel, home, light, sample, culledList);
+        return WallPassImpl(tracker, roomLevel, home, homeRoom, light, sample, culledList);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         if (g_swapAt) {
             *g_swapAt = g_swapSaved;
@@ -3417,14 +3551,15 @@ void Diag(const RoomInfo& info, void* light, const float* sample, const float* c
 }
 
 void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
-    const int home = HomeFloor(info, reinterpret_cast<uintptr_t>(light));
+    const Cross* cross = FindCross(info, reinterpret_cast<uintptr_t>(light));
+    const int home = cross ? cross->floor : -1;
     float mine = -1.0f;
     bool culledList = false;
     const bool lit = colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f;
     const float before[3] = {colour[0], colour[1], colour[2]};
     if (home >= 0 && lit && g_ctx.flags && g_ctx.flags[0]) { // the game tests 2D walls in this batch: so do we, on the lamp's floor
         g_wallTests.fetch_add(1, std::memory_order_relaxed);
-        mine = WallPass(info.tracker, info.level, home, light, sample, culledList);
+        mine = WallPass(info.tracker, info.level, home, cross->outdoor ? cross->room : 0, light, sample, culledList);
         if (mine <= 0.0f) g_wallBlocked.fetch_add(1, std::memory_order_relaxed);
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
@@ -3641,8 +3776,10 @@ template <int I> void __fastcall LightEvalHook(void* light, void*, const float* 
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
         if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) return;
-        if (g_ctx.info->indoor) IndoorShadow(*g_ctx.info, light, sample, colour);
-        else CrossFloorShadow(*g_ctx.info, light, sample, colour);
+        if (!g_ctx.info->indoor) CrossFloorShadow(*g_ctx.info, light, sample, colour);
+        else if (const Cross* c = FindCross(*g_ctx.info, reinterpret_cast<uintptr_t>(light)); c && c->outdoor)
+            CrossFloorShadow(*g_ctx.info, light, sample, colour); // a roofless room taking an outdoor lamp of another story
+        else IndoorShadow(*g_ctx.info, light, sample, colour);
     }
 }
 using LightEvalHook_t = void(__fastcall*)(void* light, void* edx, const float* sample, const float* normal, float* colour); // = thiscall ret 0xC
