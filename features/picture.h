@@ -74,8 +74,6 @@ struct PictureParams {
     float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f;
     bool dreamy = false;                      // Orton: a soft glow over the whole picture, a little more color
     float dreamyAmount = 0.4f, dreamySoftness = 0.6f, dreamySaturation = 0.3f;
-    bool lightLeaks = false;                  // colored light entering from the side of the frame
-    float leaksAmount = 0.4f, leaksHue = 25.0f, leaksAngle = 0.0f, leaksSize = 0.5f;
     bool sunRays = false;                     // light shafts from the game's sun, blocked by what stands in front of the sky
     bool raysSunColor = true;                 // the colour of the game's sun (orange at sunset); off = raysHue
     bool raysMoon = false;                    // faint shafts from the moon at night
@@ -92,15 +90,12 @@ struct PictureParams {
     bool prism = false;                       // chromatic aberration growing toward the edges
     float prismAmount = 0.35f, prismStart = 0.35f, prismQuality = 0.5f;
     bool grain = false;                       // film grain
-    bool grainMoving = true;                  // a new grain every frame
     float grainAmount = 0.3f, grainSize = 0.3f, grainShadows = 0.5f;
     // Retro and style
     bool retro3dfx = false;                   // late-90s 3D card: 16-bit color, dithering, scanlines, soft pixels
     float fxAmount = 1.0f, fxDepth = 0.5f, fxScanlines = 0.3f, fxDither = 0.6f, fxPixelWidth = 0.3f, fxGamma = 1.0f;
     bool crt = false;                         // old TV: curved glass, phosphor mask, scanlines
     float crtAmount = 1.0f, crtCurvature = 0.3f, crtMask = 0.4f, crtScanlines = 0.4f, crtEdges = 0.4f;
-    bool cartoon = false;                     // comic look: outlines from the depth, fewer tones
-    float cartoonAmount = 1.0f, cartoonOutlines = 0.7f, cartoonSteps = 0.5f, cartoonThickness = 0.3f;
 };
 
 class Picture {

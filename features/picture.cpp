@@ -55,7 +55,7 @@ const char* kShaderSource = R"HLSL(
 sampler2D sFrame : register(s0); // the finished frame (scene + UI), point
 sampler2D sScene : register(s1); // the scene before the UI, point
 sampler2D sBase  : register(s2); // the scene at 1/8 size, bilinear (clarity, glow, dreamy: the smooth local average)
-sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize or Cartoon runs
+sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize or Sun rays runs
 sampler2D sHalf  : register(s4); // the scene at 1/2 size, bilinear (tilt-shift)
 sampler2D sQuart : register(s5); // the scene at 1/4 size, bilinear (tilt-shift, glow, halation)
 float4 cLook   : register(c0);  // x = saturation, y = scene copy valid, z = compare
@@ -75,9 +75,9 @@ float4 cBase   : register(c12); // xy = size of the 1/8 scene, zw = 1 / that siz
 // nothing; the flags, amounts and colours are prepared on the CPU (picture.cpp, OnEndScene).
 float4 cFlagA  : register(c13); // Technicolor 1, Technicolor 2, DPX Cineon, Colourfulness
 float4 cFlagB  : register(c14); // Night Mode, Vintage, Cross-process, Black and white
-float4 cFlagC  : register(c15); // Glow, Halation, Dreamy, Light leaks
+float4 cFlagC  : register(c15); // Glow, Halation, Dreamy
 float4 cFlagD  : register(c16); // Emphasize, Tilt-shift, Prism, Film grain
-float4 cFlagE  : register(c17); // 3DFX, CRT, Cartoon; w = grain seed (0 = still grain)
+float4 cFlagE  : register(c17); // 3DFX, CRT
 float4 cTech1  : register(c18); // x = amount, y = cyan record (0 green .. 1 blue), z = saturation
 float4 cTech2  : register(c19); // rgb = red / green / blue dye, w = amount
 float4 cTech2b : register(c20); // x = saturation, y = brightness gain; z = DPX amount, w = DPX contrast
@@ -92,8 +92,7 @@ float4 cGlow   : register(c28); // x = amount, y = threshold, z = size, w = warm
 float4 cHal    : register(c29); // x = amount, y = threshold
 float4 cHalC   : register(c30); // rgb = halation colour
 float4 cDream  : register(c31); // x = amount, y = softness, z = saturation
-float4 cLeak   : register(c32); // x = amount, y, z = direction (from the centre toward the leak), w = size
-float4 cLeakC  : register(c33); // rgb = leak colour
+// c32, c33: unused (were Light leaks)
 float4 cEmph   : register(c34); // x = amount, y = grey, z = automatic focus, w = manual distance (m)
 float4 cEmph2  : register(c35); // x = zone depth (fraction of the distance), y = softness, z = camera near, w = depth A
 float4 cTilt   : register(c36); // x = amount, y = centre (0 top .. 1 bottom), z = sharp band height, w = saturation
@@ -102,8 +101,8 @@ float4 cGrain  : register(c38); // x = amount, y = grain size (px), z = more in 
 float4 cFx     : register(c39); // x = 3DFX amount, y = levels of red/blue, z = dither, w = scanlines
 float4 cFx2    : register(c40); // x = soft pixels, y = 1 / gamma, z = line period (px), w = levels of green
 float4 cCrt    : register(c41); // x = amount, y = curvature, z = phosphor mask, w = scanlines
-float4 cCrt2   : register(c42); // x = edge darkening, y = line period (px); z = Cartoon amount, w = outlines
-float4 cToon   : register(c43); // x = tone steps, y = outline thickness (px)
+float4 cCrt2   : register(c42); // x = edge darkening, y = line period (px)
+// c43: unused (was Cartoon)
 float4 cFlagF  : register(c44); // Sun rays, Fake HDR
 float4 cRays   : register(c45); // x = amount, y = reach (fraction of the way to the sun), z = decay per sample, w = sun marker
 float4 cRays2  : register(c46); // xy = the sun on screen (uv), z = visibility (off screen, night), w = width / height
@@ -348,14 +347,6 @@ float3 LightFilters(float2 uv, float3 g)
         s = Saturate3(s, 1.0 + cDream.z);
         g = lerp(g, s, cDream.x);
     }
-    [branch] if (cFlagC.w > 0.5) // Light leaks: colored light entering from one side of the frame
-    {
-        float2 q = (uv - 0.5) * float2(cSize.y * cSize.z, 1.0);
-        float t = dot(q, cLeak.yz) + 0.5;
-        float band = 0.6 + 0.4 * sin(dot(q, cLeak.zy) * 7.0 + 1.3);
-        float k = smoothstep(1.0 - cLeak.w, 1.25, t) * band;
-        g += cLeakC.rgb * k * cLeak.x;
-    }
     [branch] if (cFlagF.x > 0.5 && cRays2.z > 0.0) // Sun rays: the sky marched toward the game's sun
     {
         // Volumetric light scattering in screen space: from the pixel toward the sun, sum the sky (the depth's far plane,
@@ -518,25 +509,6 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
 
     [branch] if (scene) g = LightFilters(uv, g);
 
-    // Cartoon: fewer brightness tones, then dark outlines where the depth jumps
-    [branch] if (cFlagE.z > 0.5 && scene)
-    {
-        float L = dot(g, kLum);
-        if (L > 1e-5)
-        {
-            float e = pow(saturate(L), 1.0 / 2.2);
-            float q = (floor(e * cToon.x + 0.5) / cToon.x);
-            g = lerp(g, g * pow(max(q, 0.02), 2.2) / L, cCrt2.z);
-        }
-        float2 o = cToon.y * cSize.xy;
-        float zc = ViewZ(tex2Dlod(sDepth, float4(uv, 0, 0)).r);
-        float z1 = ViewZ(tex2Dlod(sDepth, float4(uv + float2(o.x, 0), 0, 0)).r), z2 = ViewZ(tex2Dlod(sDepth, float4(uv - float2(o.x, 0), 0, 0)).r);
-        float z3 = ViewZ(tex2Dlod(sDepth, float4(uv + float2(0, o.y), 0, 0)).r), z4 = ViewZ(tex2Dlod(sDepth, float4(uv - float2(0, o.y), 0, 0)).r);
-        float jump = max(max(abs(z1 - zc), abs(z2 - zc)), max(abs(z3 - zc), abs(z4 - zc))) / max(zc, 0.1);
-        float edge = saturate((jump - 0.04) * 12.0) * cCrt2.w;
-        g *= 1.0 - edge * cCrt2.z;
-    }
-
     // vignette: darker towards the corners (aspect corrected, 0 at the centre, 1 at a corner)
     [branch] if (cVig.w > 0.5)
     {
@@ -555,7 +527,7 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     [branch] if (cFlagD.w > 0.5 && scene)
     {
         float2 cell = floor(px / cGrain.y);
-        float n = (Hash(cell + cFlagE.w * 61.7) + Hash(cell * 1.37 + 17.3 + cFlagE.w * 23.1)) - 1.0;
+        float n = (Hash(cell) + Hash(cell * 1.37 + 17.3)) - 1.0; // the same grain every frame (a moving grain read as noise)
         float w = lerp(1.0, 1.4 - dot(o, kLum), cGrain.z);
         o += n * cGrain.x * 0.12 * w;
     }
@@ -877,11 +849,11 @@ const FilterBoolKey kFilterBools[] = {
     {"technicolor1", &PictureParams::tech1}, {"technicolor2", &PictureParams::tech2}, {"dpx", &PictureParams::dpx},
     {"colourfulness", &PictureParams::colourful}, {"night_mode", &PictureParams::night}, {"vintage", &PictureParams::vintage},
     {"cross_process", &PictureParams::crossProcess}, {"black_and_white", &PictureParams::bw}, {"glow", &PictureParams::glow},
-    {"halation", &PictureParams::halation}, {"dreamy", &PictureParams::dreamy}, {"light_leaks", &PictureParams::lightLeaks}, {"sun_rays", &PictureParams::sunRays},
+    {"halation", &PictureParams::halation}, {"dreamy", &PictureParams::dreamy}, {"sun_rays", &PictureParams::sunRays},
     {"sun_rays_sun_color", &PictureParams::raysSunColor}, {"sun_rays_moon", &PictureParams::raysMoon}, {"fake_hdr", &PictureParams::fakeHdr},
     {"emphasize", &PictureParams::emphasize}, {"emphasize_auto", &PictureParams::emphAuto}, {"tilt_shift", &PictureParams::tiltShift},
-    {"prism", &PictureParams::prism}, {"grain", &PictureParams::grain}, {"grain_moving", &PictureParams::grainMoving},
-    {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt}, {"cartoon", &PictureParams::cartoon}};
+    {"prism", &PictureParams::prism}, {"grain", &PictureParams::grain},
+    {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt}};
 const FilterFloatKey kFilterFloats[] = {
     {"technicolor1_amount", &PictureParams::tech1Amount}, {"technicolor1_cyan", &PictureParams::tech1Cyan},
     {"technicolor1_saturation", &PictureParams::tech1Saturation}, {"technicolor2_amount", &PictureParams::tech2Amount},
@@ -897,8 +869,7 @@ const FilterFloatKey kFilterFloats[] = {
     {"glow_threshold", &PictureParams::glowThreshold}, {"glow_size", &PictureParams::glowSize}, {"glow_warmth", &PictureParams::glowWarmth},
     {"halation_amount", &PictureParams::halationAmount}, {"halation_threshold", &PictureParams::halationThreshold},
     {"halation_hue", &PictureParams::halationHue}, {"dreamy_amount", &PictureParams::dreamyAmount}, {"dreamy_softness", &PictureParams::dreamySoftness},
-    {"dreamy_saturation", &PictureParams::dreamySaturation}, {"leaks_amount", &PictureParams::leaksAmount}, {"leaks_hue", &PictureParams::leaksHue},
-    {"leaks_angle", &PictureParams::leaksAngle}, {"leaks_size", &PictureParams::leaksSize},
+    {"dreamy_saturation", &PictureParams::dreamySaturation},
     {"sun_rays_amount", &PictureParams::raysAmount}, {"sun_rays_length", &PictureParams::raysLength}, {"sun_rays_density", &PictureParams::raysDensity},
     {"sun_rays_hue", &PictureParams::raysHue}, {"fake_hdr_amount", &PictureParams::hdrAmount}, {"fake_hdr_radius", &PictureParams::hdrRadius},
     {"fake_hdr_shadows", &PictureParams::hdrShadows}, {"fake_hdr_highlights", &PictureParams::hdrHighlights}, {"fake_hdr_halo", &PictureParams::hdrHalo},
@@ -911,9 +882,7 @@ const FilterFloatKey kFilterFloats[] = {
     {"3dfx_amount", &PictureParams::fxAmount}, {"3dfx_color_depth", &PictureParams::fxDepth}, {"3dfx_scanlines", &PictureParams::fxScanlines},
     {"3dfx_dither", &PictureParams::fxDither}, {"3dfx_soft_pixels", &PictureParams::fxPixelWidth}, {"3dfx_gamma", &PictureParams::fxGamma},
     {"crt_amount", &PictureParams::crtAmount}, {"crt_curvature", &PictureParams::crtCurvature}, {"crt_mask", &PictureParams::crtMask},
-    {"crt_scanlines", &PictureParams::crtScanlines}, {"crt_edges", &PictureParams::crtEdges}, {"cartoon_amount", &PictureParams::cartoonAmount},
-    {"cartoon_outlines", &PictureParams::cartoonOutlines}, {"cartoon_steps", &PictureParams::cartoonSteps},
-    {"cartoon_thickness", &PictureParams::cartoonThickness}};
+    {"crt_scanlines", &PictureParams::crtScanlines}, {"crt_edges", &PictureParams::crtEdges}};
 const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tech2Dye}, {"dpx_curve", &PictureParams::dpxCurve}};
 
 const char* const kKeys[] = {"enabled", "exposure", "contrast", "midtones", "shadows", "highlights", "blacks", "temperature", "tint", "saturation", "vibrance",
@@ -1128,16 +1097,16 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fColour = on(q.colourful, q.colourfulAmount), fNight = on(q.night, q.nightAmount), fVintage = on(q.vintage, q.vintageAmount);
     const bool fCross = on(q.crossProcess, q.crossAmount), fBw = on(q.bw, q.bwAmount);
     const bool fGlow = on(q.glow, q.glowAmount), fHal = on(q.halation, q.halationAmount), fDream = on(q.dreamy, q.dreamyAmount);
-    const bool fLeaks = on(q.lightLeaks, q.leaksAmount), fTilt = on(q.tiltShift, q.tiltAmount), fPrism = on(q.prism, q.prismAmount);
+    const bool fTilt = on(q.tiltShift, q.tiltAmount), fPrism = on(q.prism, q.prismAmount);
     const bool fGrain = on(q.grain, q.grainAmount), fFx = on(q.retro3dfx, q.fxAmount), fCrt = on(q.crt, q.crtAmount);
-    const bool wantEmph = on(q.emphasize, q.emphAmount), wantToon = on(q.cartoon, q.cartoonAmount), wantRays = on(q.sunRays, q.raysAmount);
+    const bool wantEmph = on(q.emphasize, q.emphAmount), wantRays = on(q.sunRays, q.raysAmount);
     const bool fHdr = on(q.fakeHdr, q.hdrAmount);
-    // Emphasize, Cartoon and Sun rays read the scene depth: requested only while one of them is on
-    RequestDepth(wantEmph || wantToon || wantRays);
+    // Emphasize and Sun rays read the scene depth: requested only while one of them is on
+    RequestDepth(wantEmph || wantRays);
     RequestSun(wantRays);
-    IDirect3DTexture9* depth = (wantEmph || wantToon || wantRays) ? DepthShare::Texture() : nullptr;
+    IDirect3DTexture9* depth = (wantEmph || wantRays) ? DepthShare::Texture() : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
-    const bool fEmph = wantEmph && depth && camNear > 0.0f, fToon = wantToon && depth && camNear > 0.0f, fRays = wantRays && depth;
+    const bool fEmph = wantEmph && depth && camNear > 0.0f, fRays = wantRays && depth;
     // Sun rays: the game's sun direction (world space, toward the sun) through the camera's view-projection as a point at
     // infinity (w = 0), so the camera position does not matter. Visibility fades when the sun leaves the screen, is behind
     // the camera, or it is night (unless the moon is asked for).
@@ -1257,7 +1226,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetTexture(0, gpu.frameTex);
     dev->SetTexture(1, gpu.sceneTex);
     dev->SetTexture(2, gpu.chainTex[Gpu::kChain - 1]);
-    dev->SetTexture(3, (fEmph || fToon || fRays) ? depth : nullptr);
+    dev->SetTexture(3, (fEmph || fRays) ? depth : nullptr);
     dev->SetTexture(4, gpu.chainTex[0]);
     dev->SetTexture(5, gpu.chainTex[1]);
     dev->SetTexture(6, nullptr); // the sun search result, bound after it is drawn
@@ -1266,7 +1235,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const float fxLevelsRB = std::exp2(std::round(5.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f; // 5 bits .. 3 bits
     const float fxLevelsG = std::exp2(std::round(6.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f;  // 6 bits .. 4 bits
     // Black and white: luminance weights through a colored lens filter (summing to 1, so grey stays grey), and the toning
-    float bwW[3], bwT[3], halC[3], leakC[3];
+    float bwW[3], bwT[3], halC[3];
     {
         float fc[3];
         HueColour(q.bwFilterHue, fc);
@@ -1277,12 +1246,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         for (float& w : bwW) w = sum > 1e-5f ? w / sum : 1.0f / 3.0f;
         SplitToneColour(q.bwToneHue, bwT);
         HueColour(q.halationHue, halC);
-        HueColour(q.leaksHue, leakC);
     }
-    const float leakAngle = std::clamp(q.leaksAngle, -1.0f, 1.0f) * 3.14159265f; // 0 = the right side, +-1 = the left
-    // Film grain: a new pattern every frame when moving, else the same one
-    static unsigned grainFrame = 0;
-    const float grainSeed = q.grainMoving ? static_cast<float>((grainFrame++ * 2654435761u) % 1000u) / 1000.0f + 0.001f : 0.0f;
     // white balance: a gentle red/blue tilt, normalised so white keeps its luminance
     const float tt = std::clamp(q.temperature, -1.0f, 1.0f) * 0.08f;
     const float wbG = 1.0f - std::clamp(q.tint, -1.0f, 1.0f) * 0.06f; // tint: + = magenta (less green), - = green
@@ -1311,9 +1275,9 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {static_cast<float>(gpu.baseW), static_cast<float>(gpu.baseH), 1.0f / static_cast<float>(gpu.baseW), 1.0f / static_cast<float>(gpu.baseH)},
         {fTech1 ? 1.0f : 0.0f, fTech2 ? 1.0f : 0.0f, fDpx ? 1.0f : 0.0f, fColour ? 1.0f : 0.0f},
         {fNight ? 1.0f : 0.0f, fVintage ? 1.0f : 0.0f, fCross ? 1.0f : 0.0f, fBw ? 1.0f : 0.0f},
-        {fGlow ? 1.0f : 0.0f, fHal ? 1.0f : 0.0f, fDream ? 1.0f : 0.0f, fLeaks ? 1.0f : 0.0f},
+        {fGlow ? 1.0f : 0.0f, fHal ? 1.0f : 0.0f, fDream ? 1.0f : 0.0f, 0},
         {fEmph ? 1.0f : 0.0f, fTilt ? 1.0f : 0.0f, fPrism ? 1.0f : 0.0f, fGrain ? 1.0f : 0.0f},
-        {fFx ? 1.0f : 0.0f, fCrt ? 1.0f : 0.0f, fToon ? 1.0f : 0.0f, grainSeed},
+        {fFx ? 1.0f : 0.0f, fCrt ? 1.0f : 0.0f, 0, 0},
         {std::clamp(q.tech1Amount, 0.0f, 1.0f), (std::clamp(q.tech1Cyan, -1.0f, 1.0f) + 1.0f) * 0.5f, std::clamp(q.tech1Saturation, 0.0f, 2.0f), 0},
         {std::clamp(q.tech2Dye[0], 0.0f, 2.0f), std::clamp(q.tech2Dye[1], 0.0f, 2.0f), std::clamp(q.tech2Dye[2], 0.0f, 2.0f), std::clamp(q.tech2Amount, 0.0f, 1.0f)},
         {std::clamp(q.tech2Saturation, 0.0f, 2.0f), std::exp2(std::clamp(q.tech2Brightness, -1.0f, 1.0f) * 0.5f), std::clamp(q.dpxAmount, 0.0f, 1.0f),
@@ -1329,8 +1293,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.halationAmount, 0.0f, 1.0f), std::clamp(q.halationThreshold, 0.0f, 0.95f), 0, 0},
         {halC[0], halC[1], halC[2], 0},
         {std::clamp(q.dreamyAmount, 0.0f, 1.0f), std::clamp(q.dreamySoftness, 0.0f, 1.0f), std::clamp(q.dreamySaturation, 0.0f, 1.0f), 0},
-        {std::clamp(q.leaksAmount, 0.0f, 1.0f), std::cos(leakAngle), std::sin(leakAngle), std::clamp(q.leaksSize, 0.05f, 1.0f)},
-        {leakC[0], leakC[1], leakC[2], 0},
+        {0, 0, 0, 0},
+        {0, 0, 0, 0},
         {std::clamp(q.emphAmount, 0.0f, 1.0f), std::clamp(q.emphGrey, 0.0f, 1.0f), q.emphAuto ? 1.0f : 0.0f, std::clamp(q.emphDistance, 1.0f, 500.0f)},
         {std::clamp(q.emphWidth, 0.0f, 2.0f), std::clamp(q.emphSoftness, 0.05f, 1.0f), camNear, camA},
         {std::clamp(q.tiltAmount, 0.0f, 1.0f), std::clamp(q.tiltCenter, 0.0f, 1.0f), std::clamp(q.tiltWidth, 0.0f, 1.0f), std::clamp(q.tiltSaturation, 0.0f, 1.0f)},
@@ -1339,8 +1303,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.fxAmount, 0.0f, 1.0f), fxLevelsRB, std::clamp(q.fxDither, 0.0f, 1.0f), std::clamp(q.fxScanlines, 0.0f, 1.0f)},
         {std::clamp(q.fxPixelWidth, 0.0f, 1.0f), 1.0f / std::clamp(q.fxGamma, 0.5f, 2.0f), std::max(2.0f, std::round(4.0f * scale)), fxLevelsG},
         {std::clamp(q.crtAmount, 0.0f, 1.0f), std::clamp(q.crtCurvature, 0.0f, 1.0f), std::clamp(q.crtMask, 0.0f, 1.0f), std::clamp(q.crtScanlines, 0.0f, 1.0f)},
-        {std::clamp(q.crtEdges, 0.0f, 1.0f), std::max(2.0f, std::round(4.0f * scale)), std::clamp(q.cartoonAmount, 0.0f, 1.0f), std::clamp(q.cartoonOutlines, 0.0f, 1.0f)},
-        {3.0f + std::round(7.0f * (1.0f - std::clamp(q.cartoonSteps, 0.0f, 1.0f))), 1.0f + std::round(2.0f * std::clamp(q.cartoonThickness, 0.0f, 1.0f) * std::max(1.0f, scale)), 0, 0},
+        {std::clamp(q.crtEdges, 0.0f, 1.0f), std::max(2.0f, std::round(4.0f * scale)), 0, 0},
+        {0, 0, 0, 0},
         {fRays ? 1.0f : 0.0f, fHdr ? 1.0f : 0.0f, sunFind ? 1.0f : 0.0f, 0},
         {std::clamp(q.raysAmount, 0.0f, 1.0f), 0.3f + 0.7f * std::clamp(q.raysLength, 0.0f, 1.0f), 0.90f + 0.09f * std::clamp(q.raysDensity, 0.0f, 1.0f),
          q.raysShowSun ? 1.0f : 0.0f},
@@ -1860,19 +1824,6 @@ void Picture::RenderFiltersUI() {
         percent("Softness", &q.dreamySoftness, 0.0f, 1.0f, "How soft and wide the glow is", kDef.dreamySoftness);
         percent("Saturation", &q.dreamySaturation, 0.0f, 1.0f, "Extra color in the glow", kDef.dreamySaturation);
     });
-    card("LightLeaks", IconId::SunMedium, "Light leaks", "Colored light entering from the side of the frame, like old film", &q.lightLeaks, [&] {
-        percent("Amount", &q.leaksAmount, 0.0f, 1.0f, "How bright the leak is", kDef.leaksAmount);
-        hue("Color", &q.leaksHue, kDef.leaksHue, "Orange and red are the classic film leaks");
-        {
-            ApexUi::SliderOptions o;
-            o.format = "%+.0f\xC2\xB0";
-            o.displayScale = 180.0f;
-            o.tooltip = "Which side the light comes from: 0\xC2\xB0 is the right, 180\xC2\xB0 the left";
-            o.defaultValue = kDef.leaksAngle;
-            slide("Direction", &q.leaksAngle, -1.0f, 1.0f, o);
-        }
-        percent("Size", &q.leaksSize, 0.05f, 1.0f, "How far into the picture the light reaches", kDef.leaksSize);
-    });
     card("SunRays", IconId::Sunset, "Sun rays", "Beams of light from the game's sun, cut by houses, trees and Sims", &q.sunRays, [&] {
         percent("Amount", &q.raysAmount, 0.0f, 1.0f, "How bright the beams are", kDef.raysAmount);
         percent("Length", &q.raysLength, 0.0f, 1.0f, "How far the beams reach from the sun", kDef.raysLength);
@@ -1945,7 +1896,6 @@ void Picture::RenderFiltersUI() {
         percent("Grain size", &q.grainSize, 0.0f, 1.0f, "Fine or coarse grain", kDef.grainSize);
         if (ApexUi::BeginAdvanced("GrainAdvanced")) {
             percent("More in the shadows", &q.grainShadows, 0.0f, 1.0f, "Real film shows more grain in dark areas", kDef.grainShadows);
-            toggle("Moving grain", &q.grainMoving, "A new grain every frame, like film; off keeps it still", kDef.grainMoving);
             ApexUi::EndAdvanced();
         }
     });
@@ -1980,16 +1930,6 @@ void Picture::RenderFiltersUI() {
             percent("Dark edges", &q.crtEdges, 0.0f, 1.0f, "Darker corners of the glass", kDef.crtEdges);
             ApexUi::EndAdvanced();
         }
-    });
-    card("Cartoon", IconId::WandSparkles, "Cartoon", "A comic look: outlines around objects and fewer tones", &q.cartoon, [&] {
-        percent("Amount", &q.cartoonAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.cartoonAmount);
-        percent("Outlines", &q.cartoonOutlines, 0.0f, 1.0f, "How dark the outlines are", kDef.cartoonOutlines);
-        percent("Fewer tones", &q.cartoonSteps, 0.0f, 1.0f, "Higher gives flatter, more cartoon-like shading", kDef.cartoonSteps);
-        if (ApexUi::BeginAdvanced("CartoonAdvanced")) {
-            percent("Outline thickness", &q.cartoonThickness, 0.0f, 1.0f, "Thin or thick outlines", kDef.cartoonThickness);
-            ApexUi::EndAdvanced();
-        }
-        depthNote();
     });
     if (!q.enabled) ImGui::EndDisabled();
     if (changed) SetParams(q, save);
