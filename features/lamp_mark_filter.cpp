@@ -79,6 +79,9 @@ struct LampState {
 };
 constexpr DWORD kEditHoldMs = 2000;
 std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the lamp at its last mark
+// The story (tree level) each lamp marked last: a first mark on another story of the same lot is the lamp moved between
+// stories (05/10, F8 19:22: nothing sent its lot again, and the rooms that gathered while the game registered it missed it)
+std::unordered_map<uintptr_t, uintptr_t> g_lampStory; // light -> tree level (under g_mx)
 
 // A lamp switched on or off, or moved (30/09, user: "also refresh the lighting whenever a lamp is moved, switched off or on,
 // if it costs no performance"): a switch waits 120 ms; a move still waits 300 ms after its last change (a drag:
@@ -173,10 +176,27 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         if (g_sig.size() > 65536) g_sig.clear();
         const LampState now{h, on, {pos[0], pos[1], pos[2]}, room, 0, 0};
         const auto [it, fresh] = g_sig.try_emplace(Key{tl, light}, now);
+        const bool lamp = (type >= 3 && type <= 6) || type == 11;
         if (fresh) {
             std::memcpy(it->second.editable, editable, sizeof editable);
-            if ((type >= 3 && type <= 6) || type == 11) g_editRefresh.store(true, std::memory_order_relaxed);
+            if (lamp) g_editRefresh.store(true, std::memory_order_relaxed);
             g_first.fetch_add(1, std::memory_order_relaxed);
+            if (lamp) { // moved in from another story of the same lot: every room of the lot again, none kept
+                if (g_lampStory.size() > 65536) g_lampStory.clear();
+                uintptr_t& story = g_lampStory[light];
+                const uintptr_t tracker = TrackerOf(tl);
+                if (story && story != tl && tracker && TrackerOf(story) == tracker) {
+                    if (g_lotDue.size() > 1024) g_lotDue.clear();
+                    LotDue& pending = g_lotDue[tracker];
+                    const DWORD tick = GetTickCount();
+                    pending.allRooms = true;
+                    pending.switchOnly = false;
+                    pending.changed = tick;
+                    pending.due = (tick + RoomAmbientPolicy::LampRefreshDelay(false)) | 1;
+                    g_lampEvents.fetch_add(1, std::memory_order_relaxed);
+                }
+                story = tl;
+            }
             return true;
         }
         LampState& was = it->second;
@@ -239,7 +259,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     }
     if (!g_on.load(std::memory_order_relaxed)) {
         g_off.fetch_add(1, std::memory_order_relaxed);
-        if (edit) LevelLightShare::NoteLampMark(tl, room, user);
+        if (edit) LevelLightShare::NoteLampMark(tl, room, user, pure);
         return true;
     }
     g_changed.fetch_add(1, std::memory_order_relaxed);
@@ -247,7 +267,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         g_held.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    if (edit) LevelLightShare::NoteLampMark(tl, room, user);
+    if (edit) LevelLightShare::NoteLampMark(tl, room, user, pure);
     return true;
 }
 
@@ -347,6 +367,7 @@ void Uninstall() {
     g_installed = false;
     std::lock_guard<std::mutex> lk(g_mx);
     g_sig.clear(); // lamps freed while it was out would leave stale keys
+    g_lampStory.clear();
     g_lotDue.clear();
     g_editRefresh.store(false, std::memory_order_relaxed);
 }
@@ -384,11 +405,12 @@ void OnPresent(float nightLevel) {
             run.push_back(r);
         }
     }
-    // the rooms gathered after the change keep their solve (the lamp edit sent them already); lamps that only moved: only
-    // the rooms holding them
+    // the rooms gathered after the change keep their solve (the lamp edit sent them already) for a switch or a lamp that
+    // only moved, and lamps that only moved send only the rooms holding them; a lamp moved into another room or story sends
+    // every room again: a gather made while the game was still registering it missed it (F8 19:22)
     for (const Run& r : run)
-        if (LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved", r.changed,
-                                        r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount) >= 0)
+        if (LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
+                                        r.switchOnly || !r.allRooms ? r.changed : 0, r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount) >= 0)
             g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
     if (!run.empty()) {
         ObjectLightBridge::RequestRigRefresh();

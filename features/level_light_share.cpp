@@ -340,10 +340,13 @@ void NoteSolve(BYTE* room, char event, uintptr_t caller = 0); // development bui
 // once per room update), and a solve in progress is thrown away (FUN_006c4870, nothing committed). So the light of a
 // dragged lamp moved only once the lamp stopped, 5 updates later, after the solves of every story's room 0 in the game's
 // order (F6 of 17:31: the lamp's own story last). Now the rooms a lamp edit sends are urgent for kUrgentMs:
-//  - they gather in the room update that sends them (countdown 1: the pending walk of the same FUN_006c7250 call gathers
-//    them) instead of 5 updates later;
 //  - the scheduler solves them before any other room (RoomLightQueue's priority hook asks LampUrgency): the lamp's own
 //    room first (tier 0), then the rooms of other stories that take its light (tier 1);
+//  - for a lamp already registered in that room that only moved or changed a value (`soon`), they gather in the room
+//    update that sends them (countdown 1: the pending walk of the same FUN_006c7250 call gathers them) instead of 5
+//    updates later. Never for a lamp added, removed, switched or moved into another room or story: the game registers its
+//    new entries over the next updates, and a gather before that misses the lamp (F8 19:22, build f65626e: a sconce moved
+//    up to story 3 was in the lists of stories 0-2 but not in its own story's, gathered at once, nor in story 4's);
 //  - a room being solved whose lamp only moved or changed a value keeps that solve: LampMarkFilter holds the mark
 //    (HoldLampMark) and the room update gives it back once the solve is over (FlushHeldMarks), so the light of a lamp
 //    being dragged follows it solve after solve instead of restarting on every step.
@@ -351,6 +354,7 @@ struct UrgentRoom {
     uintptr_t room, mgr;
     int id, tier;
     DWORD until;
+    bool soon; // the latest edit sending it was a registered lamp that moved or changed a value: gathered at once
 };
 std::mutex g_urgentMx;
 std::vector<UrgentRoom> g_urgent; // the rooms of the lamps edited in the last kUrgentMs (a handful)
@@ -384,7 +388,8 @@ void GatherSoon(void* room) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
-void MarkUrgent(void* room, int tier) {
+// soon: the edit is a registered lamp that moved or changed a value (see above); the latest edit decides
+void MarkUrgent(void* room, int tier, bool soon) {
     uintptr_t mgr = 0;
     int id = 0;
     if (!room || !RoomKey(room, mgr, id)) return;
@@ -394,18 +399,21 @@ void MarkUrgent(void* room, int tier) {
     const auto it = std::find_if(g_urgent.begin(), g_urgent.end(), [room](const UrgentRoom& u) { return u.room == reinterpret_cast<uintptr_t>(room); });
     if (it == g_urgent.end()) {
         if (g_urgent.size() >= 64) g_urgent.erase(g_urgent.begin());
-        g_urgent.push_back(UrgentRoom{reinterpret_cast<uintptr_t>(room), mgr, id, tier, now + kUrgentMs});
+        g_urgent.push_back(UrgentRoom{reinterpret_cast<uintptr_t>(room), mgr, id, tier, now + kUrgentMs, soon});
     } else {
         it->tier = it->mgr == mgr && it->id == id ? std::min(it->tier, tier) : tier;
         it->mgr = mgr;
         it->id = id;
         it->until = now + kUrgentMs;
+        it->soon = soon;
     }
     g_urgentSize.store(static_cast<int>(g_urgent.size()), std::memory_order_relaxed);
     g_urgentMarked.fetch_add(1, std::memory_order_relaxed);
 }
-// The tier of an urgent room (0 = a lamp's own room, 1 = a room taking its light), -1 = not urgent
-int UrgentTier(const void* room) {
+// The urgent entry of a room: its tier (0 = a lamp's own room, 1 = a room taking its light; -1 = not urgent) and whether
+// it may gather at once
+int UrgentTier(const void* room, bool* soon = nullptr) {
+    if (soon) *soon = false;
     if (!room || !g_urgentSize.load(std::memory_order_relaxed)) return -1;
     uintptr_t mgr = 0;
     int id = 0;
@@ -413,15 +421,19 @@ int UrgentTier(const void* room) {
     const DWORD now = GetTickCount();
     std::lock_guard<std::mutex> lk(g_urgentMx);
     for (const UrgentRoom& u : g_urgent)
-        if (u.room == reinterpret_cast<uintptr_t>(room) && u.mgr == mgr && u.id == id && static_cast<int32_t>(now - u.until) < 0) return u.tier;
+        if (u.room == reinterpret_cast<uintptr_t>(room) && u.mgr == mgr && u.id == id && static_cast<int32_t>(now - u.until) < 0) {
+            if (soon) *soon = u.soon;
+            return u.tier;
+        }
     return -1;
 }
 // Rooms the lamp entry update marked for a lamp edit (LampMarkFilter, light tree thread): AfterChangedWalk makes them
-// urgent once the game's walk has sent them. user = a value a player edits (colour, intensity, on / off), not a flicker.
+// urgent once the game's walk has sent them. user = a value a player edits (colour, intensity, on / off), not a flicker;
+// pure = the lamp stayed in that room, on or off as it was (it moved or changed a value): its rooms may gather at once.
 struct LampMarkNote {
     uintptr_t tl;
     int room;
-    bool user;
+    bool user, pure;
 };
 std::mutex g_lampMarkMx;
 std::vector<LampMarkNote> g_lampMarks;
@@ -440,17 +452,19 @@ using MarkRoom_t = void(__thiscall*)(void* treeLevel, int room);
 // The game's refresh from FUN_006c7250 (0x6C73B6..0x6C7426) for one room: it gathers and solves again. Rooms already
 // waiting for their gather keep their countdown (false). The room being solved right now (state 3) is not invalidated:
 // that would throw its solve away (0x69EED0 -> 0x6C4870, 0x69E950(0): nothing committed, 29/09 study); it is sent again
-// once the solve is over (FlushDeferred). urgentTier >= 0: a lamp edit sends it (see "Lamp edits first").
-bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false, int urgentTier = -1) {
+// once the solve is over (FlushDeferred). urgentTier >= 0: a lamp edit sends it (see "Lamp edits first"); soon: that edit
+// is a registered lamp that moved or changed a value.
+bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false, int urgentTier = -1, bool soon = false) {
     const uintptr_t tl = TreeLevel(tracker, level);
     void* mgr = *reinterpret_cast<void* const*>(tl);
     if (!mgr) return false;
     BYTE* room = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, id));
     if (!room) return false;
-    if (urgentTier >= 0) MarkUrgent(room, urgentTier);
-    const bool urgent = urgentTier >= 0 || UrgentTier(room) >= 0;
+    if (urgentTier >= 0) MarkUrgent(room, urgentTier, soon);
+    bool urgentSoon = false;
+    UrgentTier(room, &urgentSoon); // also for a room held while solved and sent now (FlushDeferred)
     if (*reinterpret_cast<const int*>(room + 0xF0) == 1 && *reinterpret_cast<const int*>(room + 0x168) != 0) {
-        if (urgent) GatherSoon(room);
+        if (urgentSoon) GatherSoon(room);
         return false;
     }
     // Only for requeues after a setting or ambient change (defer = true), and only while the room update runs FlushDeferred:
@@ -469,7 +483,7 @@ bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false, int urg
     reinterpret_cast<InvalidateRoom_t>(kInvalidateRoom)(room, 1, 0);
     alignas(16) BYTE out[16] = {};
     reinterpret_cast<SetInsert_t>(kSetInsert)(reinterpret_cast<void*>(tl + 0x28), out, &id, 0);
-    if (urgent) GatherSoon(room);
+    if (urgentSoon) GatherSoon(room);
     if (Recorder::Verbose()) NoteSolve(room, 'Q');
     return true;
 }
@@ -2613,7 +2627,7 @@ void FlushHeldMarks(BYTE* tl) {
     }
     for (int k = 0; k < n; k++)
         if (MarkRoomNow(tl, give[k].room)) {
-            LevelLightShare::NoteLampMark(reinterpret_cast<uintptr_t>(tl), give[k].room, give[k].user);
+            LevelLightShare::NoteLampMark(reinterpret_cast<uintptr_t>(tl), give[k].room, give[k].user, true); // held only for pure edits
             g_heldGiven.fetch_add(1, std::memory_order_relaxed);
         }
 }
@@ -2798,7 +2812,11 @@ void AfterChangedWalk(BYTE* tl) {
     };
     // sent now stopping a solve in progress / sent now keeping one (a lamp moved, a player's edit) / now or after the burst
     std::vector<std::pair<int, int>> now, kept, later;
-    std::vector<int> own; // rooms of this story a lamp edit changed: the walk just sent them; urgent, gathered in this update
+    std::vector<int> own; // rooms of this story a lamp edit changed: the walk just sent them; urgent
+    // Gathered at once (see "Lamp edits first"): this story's rooms whose registered lamp moved or changed a value, with
+    // no lamp added or removed, and the rooms of other stories they send
+    std::vector<int> ownSoon, ownLate;
+    std::vector<std::pair<int, int>> soonRooms;
     // The outdoor rooms of the other stories (room 0 and the roofless rooms, 05/10): they take this story's outdoor lamps
     std::vector<std::pair<int, int>> outdoorRooms;
     const uintptr_t mgrL = *reinterpret_cast<const uintptr_t*>(tl);
@@ -2818,6 +2836,7 @@ void AfterChangedWalk(BYTE* tl) {
             if (ids[i] < 0) continue;
             const LampMarkNote* note = noteOf(ids[i]);
             if (note || noted) own.push_back(ids[i]); // the lamp's room, and the neighbours the game's mark sent with it
+            if (note && note->pure) ownSoon.push_back(ids[i]); // a registered lamp of it moved or changed a value
             const DepKey key{tracker, L, ids[i]};
             const auto deps = g_deps.find(key); // rooms of other stories taking its lamps near an opening (room 0 too)
             const bool outdoor = ids[i] == 0 || (g_indoorReady && RooflessRoom(mgrL, ids[i])); // its lamps light the other stories
@@ -2833,12 +2852,17 @@ void AfterChangedWalk(BYTE* tl) {
                 continue;
             }
             if (outdoor) own.push_back(ids[i]); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
+            const bool soon = note && note->pure && change != 2; // a registered lamp moved or changed a value, none added or removed
+            if (change == 2) ownLate.push_back(ids[i]); // a lamp of it added or removed: its gather waits for the game
             if (change == 1 && note && note->user) change = 3; // colour, intensity, on / off by a player or a Sim: at once
             auto& out = change == 2 ? now : change == 3 ? kept : later;
+            const size_t from = out.size();
             // an outdoor room of this floor: the outdoor rooms of the other floors 0..7 take its lamps (part 2)
             if (outdoor) out.insert(out.end(), outdoorRooms.begin(), outdoorRooms.end());
             if (deps != g_deps.end()) out.insert(out.end(), deps->second.begin(), deps->second.end());
+            if (soon) soonRooms.insert(soonRooms.end(), out.begin() + static_cast<std::ptrdiff_t>(from), out.end());
         }
+        std::sort(soonRooms.begin(), soonRooms.end());
         for (auto* v : {&now, &kept, &later}) { // a room taking lamps of several changed rooms: once
             std::sort(v->begin(), v->end());
             v->erase(std::unique(v->begin(), v->end()), v->end());
@@ -2870,21 +2894,24 @@ void AfterChangedWalk(BYTE* tl) {
         for (const auto* v : {&now, &kept})
             for (const auto& [S, r] : *v) g_depWait.erase(DepKey{tracker, S, r}); // sent now: nothing left to wait for
     }
-    // Lamp edits first: this story's rooms the edit changed were just sent by the game's walk (state 1, countdown 5); the
-    // pending walk that follows in this same update gathers them, and the scheduler takes them first
+    // Lamp edits first: this story's rooms the edit changed were just sent by the game's walk (state 1, countdown 5): the
+    // scheduler takes them first, and for a registered lamp that moved or changed a value the pending walk that follows in
+    // this same update gathers them (a room in both lists waits: a lamp of it was added or removed)
     std::sort(own.begin(), own.end());
     own.erase(std::unique(own.begin(), own.end()), own.end());
     for (int id : own)
         if (void* room = RoomOfTreeLevel(tl, id)) {
             const LampMarkNote* note = noteOf(id);
-            MarkUrgent(room, note || id == 0 ? 0 : 1);
-            GatherSoon(room);
+            const bool soon = std::find(ownSoon.begin(), ownSoon.end(), id) != ownSoon.end() && std::find(ownLate.begin(), ownLate.end(), id) == ownLate.end();
+            MarkUrgent(room, note || id == 0 ? 0 : 1, soon);
+            if (soon) GatherSoon(room);
         }
     const int tier = own.empty() ? -1 : 1; // the rooms of other stories taking the edited lamps: right after the lamp's own
     for (const auto& [S, r] : now)
-        if (S != L && QueueRoom(tracker, S, r, false, tier)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
-    for (const auto& [S, r] : kept)
-        if (S != L && QueueRoom(tracker, S, r, true, tier)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+        if (S != L && QueueRoom(tracker, S, r, false, tier, false)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+    for (const auto& p : kept)
+        if (p.first != L && QueueRoom(tracker, p.first, p.second, true, tier, std::binary_search(soonRooms.begin(), soonRooms.end(), p)))
+            g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
     for (const auto& [S, r] : later)
         if (QueueRoom(tracker, S, r, true)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
 }
@@ -5438,16 +5465,17 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
 }
 
 // Lamp edits first (see "Lamp edits first" above)
-void NoteLampMark(uintptr_t tl, int room, bool user) {
+void NoteLampMark(uintptr_t tl, int room, bool user, bool pure) {
     if (!g_installed.load(std::memory_order_relaxed) || !g_indoorReady) return;
     std::lock_guard<std::mutex> lk(g_lampMarkMx);
     for (LampMarkNote& n : g_lampMarks)
         if (n.tl == tl && n.room == room) {
             n.user = n.user || user;
+            n.pure = n.pure && pure; // one lamp of the room switched or moved in: its gather waits
             return;
         }
     if (g_lampMarks.size() >= 256) g_lampMarks.erase(g_lampMarks.begin()); // notes whose update never came
-    g_lampMarks.push_back(LampMarkNote{tl, room, user});
+    g_lampMarks.push_back(LampMarkNote{tl, room, user, pure});
 }
 
 bool HoldLampMark(uintptr_t tl, int room, bool user) {

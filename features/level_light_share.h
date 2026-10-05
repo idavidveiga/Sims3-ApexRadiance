@@ -47,9 +47,10 @@ void RelightAllRooms(const char* why);
 // Watches this lot's completion for a furniture refresh, with a 1500 ms fallback and bounded 6 s lifetime.
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0);
 // Lamp edits first (light tree thread, from LampMarkFilter's lamp entry update): the room this tree level's update marks for
-// a lamp edit (user = colour, intensity or on / off by a player or a Sim, not a flicker) is solved before any other room and
-// gathered in the same update, and so are the rooms of other stories that take its light
-void NoteLampMark(uintptr_t treeLevel, int room, bool user);
+// a lamp edit (user = colour, intensity or on / off by a player or a Sim, not a flicker) is solved before any other room, and
+// so are the rooms of other stories that take its light; pure = the lamp stayed in that room, on or off as it was (moved or
+// changed a value): those rooms gather in the same update (a lamp switched, added or moved into the room waits for the game)
+void NoteLampMark(uintptr_t treeLevel, int room, bool user, bool pure);
 // A lamp that only moved or changed a value while its room is being solved: true = the mark is held and given back by the
 // room update once that solve is over (the light follows a dragged lamp instead of restarting every step)
 bool HoldLampMark(uintptr_t treeLevel, int room, bool user);
