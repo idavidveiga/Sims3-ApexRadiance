@@ -630,11 +630,39 @@ void FloorOutdoorLights(uintptr_t tl, int floor, std::vector<Cross>& out) {
 
 std::atomic<long> g_indoorGen{1}; // bumped when every lot's rooms near openings must gather again (4.: option switched, install)
 
+// What an indoor room saw, at its last gather, of the lamps of the other stories' rooms near the openings between them
+// (ShareIndoorLights; light tree thread): each lamp with where it was and whether it was taken. AuditTakers compares it with
+// the lamps as they are now and sends the room to gather again when they differ (see there).
+struct SeenLamp {
+    uintptr_t light = 0, entry = 0; // entry: for the game's checks at the audit (not compared)
+    int home = 0;                   // the lamp's room on its story
+    float x = 0.0f, z = 0.0f;       // where it is (lot space of the taking room's story)
+    bool reach = false, takes = false;
+};
+struct SeenStory {
+    int story = 0;
+    std::vector<int> rooms;      // that story's rooms near the openings
+    std::vector<SeenLamp> lamps; // their lamps, sorted by light then room
+};
+struct TakerSeen {
+    uintptr_t mgr = 0, tracker = 0;
+    int level = 0, id = 0;
+    std::vector<SeenStory> stories;
+    DWORD sentAt = 0, sendsFrom = 0, backoffUntil = 0; // the audit's sends of this room (at most kAuditSends per 10 s)
+    int sends = 0;
+};
+std::unordered_map<uintptr_t, TakerSeen> g_seen; // room -> what it saw (light tree thread)
+std::atomic<long> g_auditChecks{0}, g_auditSent{0}, g_auditGaveUp{0};
+constexpr float kAuditMoveM = 0.25f; // m: a lamp moved less than this (animated lamps wobble less) needs no audit: its edit sent it
+bool SeenBefore(const SeenLamp& a, const SeenLamp& b) { return a.light != b.light ? a.light < b.light : a.home < b.home; }
+
 // Forget the rooms of a previous world (or when the map grew too big). Never during a point solve: the gather does not
 // run inside it. Indoor entries (4.) stay: their rooms hold lamps of another story and the point solve must keep testing
 // them (a stale entry is rejected by RoomStillSame and replaced at its room's next gather).
 void MaybeClearRooms() {
-    if (!g_clearRooms.exchange(false) && g_rooms.size() <= 8192) return;
+    const bool world = g_clearRooms.exchange(false);
+    if (world || g_seen.size() > 8192) g_seen.clear();
+    if (!world && g_rooms.size() <= 8192) return;
     std::erase_if(g_rooms, [](const auto& kv) { return !kv.second.indoor; });
     if (g_rooms.size() > 8192) {
         g_rooms.clear();
@@ -2122,6 +2150,14 @@ void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
     NoteLotManagers(tracker); // for the ambient of stacked rooms (RoomSolveStartHook knows only the room)
     Xform xf;
     if (!ReadXform(rmgr, xf)) return;
+    // what this gather sees of the other stories' lamps (AuditTakers); the audit's own counts of this room are kept
+    TakerSeen& seen = g_seen[key];
+    if (seen.mgr != rmgr || seen.tracker != tracker || seen.id != id) seen = TakerSeen{};
+    seen.mgr = rmgr;
+    seen.tracker = tracker;
+    seen.level = S;
+    seen.id = id;
+    seen.stories.clear();
     RoomSpan span;
     std::vector<int> rooms;
     struct Candidate {
@@ -2204,6 +2240,8 @@ void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
         NoteDeps(tracker, U, rooms, S, id);
         std::string lamps;
         cands.clear();
+        seen.stories.push_back(SeenStory{U, rooms, {}});
+        std::vector<SeenLamp>& seenLamps = seen.stories.back().lamps; // this story's only (the next push may move it)
         WalkRegistry(tlU, [&](uintptr_t entry) {
             const int home = *reinterpret_cast<const int*>(entry + 0x1C);
             const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
@@ -2220,11 +2258,13 @@ void ShareIndoorLights(BYTE* treeLevel, BYTE* room) {
             const bool wrapped = reaches && EvalWrapped(light);
             const bool takes = wrapped && GameTakesLight(entry, light);
             const bool listed = takes && InList(room, light);
+            if (seenLamps.size() < 4096) seenLamps.push_back(SeenLamp{light, entry, home, lp[0], lp[2], reaches, takes});
             if (log)
                 lamps += std::format(" L{:08X}(room {}, near {}, reach {}, class {}, game {}, listed {})", light, home, closeBy ? 1 : 0, reaches ? 1 : 0, wrapped ? 1 : 0,
                                      takes ? 1 : 0, listed ? 1 : 0);
             if (takes && !listed) cands.push_back(Candidate{dist, light, home});
         });
+        std::sort(seenLamps.begin(), seenLamps.end(), SeenBefore);
         // the nearest lamps first, 64 per room at most
         std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) { return a.dist < b.dist; });
         for (const Candidate& c : cands) {
@@ -2297,6 +2337,106 @@ void QueueOpeningRooms(uintptr_t tracker, std::vector<std::pair<int, int>>* sent
         GatherLog(tracker, std::format("rooms near openings sent to gather again: {} of {} (the others were waiting already) |{}", queued, todo.size(), summary));
 }
 
+// Rooms taking lamps of other stories, checked against those lamps as they are now (05/10, user, atrium house: "the second
+// floor is not receiving the correction"; recording 19:54:44 and its wall seams: at 43.98 s rooms 20, 10, 16, 17, 18 of
+// story 2, 21, 23, 25 of story 0 and story 3's gathered without the sconce of room 19 just under the floor line (41 -> 40
+// lights, 30 -> 29 of another story), while room 19 itself, gathered 0.1 s later, still had it where it was; the upper wall
+// over it went from 2.26 to 0.11 at the line. They gathered while the game was still re-registering the lamp after the edit,
+// and nothing sent them again: the lamp ended exactly as it was before, so no signature changed). What a room saw of the
+// lamps of the rooms near the openings at its gather (TakerSeen) is compared with the registry once the lot's lamps are
+// quiet: a lamp added or gone, moved more than kAuditMoveM, or now taken or not by the game's own checks sends it to gather
+// again.
+// Light tree thread (BeforeRoomUpdate), every kAuditEveryMs per lot; a room is sent at most kAuditSends times in 10 s.
+constexpr DWORD kAuditEveryMs = 100, kAuditQuietMs = 250, kAuditResendMs = 600;
+constexpr int kAuditSends = 3;
+std::atomic<DWORD> g_lampEditAt{0}; // any lamp edit (LampMarkFilter, NoteLampEditing)
+void AuditTakers(uintptr_t tracker, DWORD now) {
+    if (g_seen.empty() || !g_indoorOn.load(std::memory_order_relaxed) || ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return;
+    if (const DWORD edit = g_lampEditAt.load(std::memory_order_relaxed); edit && now - edit < kAuditQuietMs) return; // the edit's own sends first
+    struct Reg {
+        uintptr_t entry, light;
+        int home;
+    };
+    std::vector<Reg> regs[8];
+    bool walked[8] = {};
+    std::vector<SeenLamp> cur;
+    std::vector<std::pair<int, int>> send; // (story, room), sent after the walk over g_seen
+    for (auto it = g_seen.begin(); it != g_seen.end();) {
+        TakerSeen& t = it->second;
+        if (t.tracker != tracker) {
+            ++it;
+            continue;
+        }
+        BYTE* room = reinterpret_cast<BYTE*>(it->first);
+        if (t.level < 0 || t.level > 7 || StoryManager(tracker, t.level) != t.mgr ||
+            reinterpret_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(t.mgr), t.id)) != room) {
+            it = g_seen.erase(it); // its story was rebuilt or the room is gone: its next gather records it again
+            continue;
+        }
+        const int state = RoomState(room);
+        if (t.stories.empty() || state < 2 || state > 5 || (t.backoffUntil && static_cast<int32_t>(now - t.backoffUntil) < 0) ||
+            (t.sentAt && now - t.sentAt < kAuditResendMs)) {
+            ++it; // waiting for its gather (that records it again), or sent a moment ago
+            continue;
+        }
+        Xform xf;
+        if (!ReadXform(t.mgr, xf)) {
+            ++it;
+            continue;
+        }
+        g_auditChecks.fetch_add(1, std::memory_order_relaxed);
+        bool differs = false;
+        for (const SeenStory& s : t.stories) {
+            if (s.story < 0 || s.story > 7) continue;
+            if (!walked[s.story]) {
+                walked[s.story] = true;
+                const uintptr_t tl = TreeLevel(tracker, s.story);
+                if (*reinterpret_cast<const uintptr_t*>(tl))
+                    WalkRegistry(tl, [&](uintptr_t entry) {
+                        if (regs[s.story].size() < 8192)
+                            regs[s.story].push_back(Reg{entry, *reinterpret_cast<const uintptr_t*>(entry + 0x24), *reinterpret_cast<const int*>(entry + 0x1C)});
+                    });
+            }
+            cur.clear();
+            for (const Reg& r : regs[s.story]) {
+                if (!r.light || std::find(s.rooms.begin(), s.rooms.end(), r.home) == s.rooms.end()) continue;
+                float lp[3];
+                ToLocal(xf, reinterpret_cast<const float*>(r.light + 0x120), lp);
+                cur.push_back(SeenLamp{r.light, r.entry, r.home, lp[0], lp[2], false, false});
+            }
+            std::sort(cur.begin(), cur.end(), SeenBefore);
+            differs = cur.size() != s.lamps.size();
+            for (size_t k = 0; k < cur.size() && !differs; k++) {
+                const SeenLamp& was = s.lamps[k];
+                const SeenLamp& is = cur[k];
+                if (is.light != was.light || is.home != was.home || std::fabs(is.x - was.x) > kAuditMoveM || std::fabs(is.z - was.z) > kAuditMoveM) differs = true;
+                else if (was.reach && (EvalWrapped(is.light) && GameTakesLight(is.entry, is.light)) != was.takes) differs = true;
+            }
+            if (differs) break;
+        }
+        if (differs) {
+            if (now - t.sendsFrom > 10000) {
+                t.sendsFrom = now;
+                t.sends = 0;
+            }
+            if (++t.sends > kAuditSends) { // what it sees keeps changing (a lamp switching itself): leave it to the edits for a while
+                t.backoffUntil = (now + 10000) | 1;
+                g_auditGaveUp.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                t.sentAt = now | 1;
+                send.emplace_back(t.level, t.id);
+            }
+        }
+        ++it;
+    }
+    // within kUrgentMs of a lamp edit: urgent, right after the edit's own rooms (solved with them), and gathered in their
+    // story's next update (the lamps are quiet by now); otherwise at the scheduler's own pace (no pause)
+    const DWORD edit = g_lampEditAt.load(std::memory_order_relaxed);
+    const bool afterEdit = edit && now - edit < kUrgentMs;
+    for (const auto& [level, id] : send)
+        if (QueueRoom(tracker, level, id, false, afterEdit ? 1 : -1, afterEdit)) g_auditSent.fetch_add(1, std::memory_order_relaxed);
+}
+
 // The rooms the game found changed on this story (the treeLevel+0x8 set: buckets +0xC, count +0x10, node {id, next})
 int ChangedRooms(const BYTE* tl, int* ids, int max) {
     const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tl + 0xC);
@@ -2330,6 +2470,7 @@ struct LotState {
     DWORD windowsArmed = 0;
     unsigned windowPass = 3;
     int windowStory = -99;
+    DWORD auditAt = 0; // the next AuditTakers of this lot
     std::vector<std::pair<int, int>> watch; // (story, room) sent by the last QueueOpeningRooms
     // The lot's story managers when last seen: a lot whose lighting was rebuilt (the camera left it and came back, or
     // its tracker's address was reused by another lot) is a new lot for this state (user, 29/09: "sometimes I even have
@@ -2564,6 +2705,10 @@ void BeforeRoomUpdate(BYTE* tl) {
             ++lot.windowPass;
         }
         if (due) QueueOpeningRooms(tracker, &lot.watch);
+        else if (!lot.auditAt || static_cast<int32_t>(now - lot.auditAt) >= 0) { // (the rooms near openings just sent record again anyway)
+            lot.auditAt = (now + kAuditEveryMs) | 1;
+            AuditTakers(tracker, now);
+        }
     }
 }
 
@@ -2699,6 +2844,9 @@ uint64_t RoomLampSignature(uintptr_t tl, int room, uint64_t* shapeOut, std::vect
         if (!light) return;
         mixShape(light);
         mix(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
+        // the object's flags the gather's checks read (GameTakesLight): a lamp the other stories could not take for a moment
+        // and that ends as it was still changes this, so they gather again (05/10, see AuditTakers)
+        if (const uintptr_t info = *reinterpret_cast<const uintptr_t*>(entry + 0x20)) mix(*reinterpret_cast<const BYTE*>(info + 0x90) & 0x6);
         dwords(light + 0x10, 4);
         dwords(light + 0xE0, 3);
         dwords(light + 0x120, 3);
@@ -2969,8 +3117,14 @@ struct SolveCtx {
     bool basis = false;             // basis builder has no native wall test: include the recipient segment too
     BYTE soft = 0;                  // the solving room's +0x639 (FUN_0069fc40 reads it: wall height test / soft shadows of this pass)
     float thr = 0.0f;               // the solving room's +0x63C: the game drops a light whose r+g+b is under it (0x69FE40)
+    // The lamp of another story IndoorShadow just let through: the game's own wall test of the solving room that follows
+    // for it (0x69FE93, called with the same lamp position) starts where its ray enters this room's story (GameWallTest)
+    uintptr_t enterLight = 0;
+    float enterLamp[3] = {}, enterAt[3] = {};
 };
 SolveCtx g_ctx;
+bool g_enterReady = false; // GameWallTest is in (Install)
+std::atomic<long> g_enterTests{0};
 struct BatchCentre {
     uintptr_t begin = 0, end = 0;
     alignas(16) float c[4] = {};
@@ -3136,6 +3290,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx.batch = batch && g_ctx.info && (g_copyInBatch || BatchCentreFor(sample));
     g_ctx.soft = room[0x639];
     g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
+    g_ctx.enterLight = 0;
     g_lastRec = -1;
     float* r = reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
     if (batch && !g_ghostSolve && g_recordSeams.load(std::memory_order_relaxed)) RecordRequestedSeam(room, out, static_cast<const float*>(sample));
@@ -3659,9 +3814,16 @@ float IndoorBoundaryPass(const RoomInfo& info, uintptr_t floorLevel, int B, void
     return 1.0f;
 }
 
+// Where a lamp's ray enters the solving room's story (IndoorPassImpl, for GameWallTest)
+struct RayEntry {
+    bool valid = false;
+    float lamp[3] = {}, at[3] = {};
+};
+
 // Test every floor crossed by the real lamp-to-sample ray, then each foreign
-// story's wall segment. The recipient's walls remain the native solve's job.
-float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why) {
+// story's wall segment. The recipient's walls remain the native solve's job,
+// from where the ray enters the recipient's story (entry, GameWallTest).
+float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why, RayEntry* entry) {
     const auto blocked = [&why](int reason) { why = reason; return 0.0f; };
     if (info.level < 0 || info.level > 7 || c.floor < 0 || c.floor > 7 || info.level == c.floor) return blocked(1);
     const int direction = info.level > c.floor ? 1 : -1;
@@ -3692,6 +3854,19 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
     reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
     Xform xf;
     if (!ReadXform(info.mgr, xf)) return blocked(1);
+    // Where the ray enters the solving room's story: its last floor crossing. The game's own 2D wall test of the solving
+    // room, which follows in the point solve (0x69FE93), tests the ray from there (GameWallTest) instead of from the lamp:
+    // this story's walls stand on that floor, and a lamp of another story that lies behind one of them only in plan (under
+    // a ledge, a set-back upper wall, a recess) shines past it. Measured 05/10, atrium house, wall seams of 19:54:44: the
+    // sconces of the lower west wall, 1 m behind the upper story's west wall, lit the upper walls nowhere (0.08-0.16 less
+    // at the floor line all along the opposite wall than the lower room's top row at the same points).
+    if (entry && !g_ctx.basis && count > 0 && currentStory == info.level) {
+        entry->valid = true;
+        for (int k = 0; k < 3; ++k) {
+            entry->lamp[k] = pos[k];
+            entry->at[k] = pos[k] + previous * (sample[k] - pos[k]);
+        }
+    }
     float transmission = 1.0f;
     if (g_ctx.basis) {
         // A raised room's walls can lie beyond the nominal story interval.
@@ -3730,7 +3905,10 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
         }
         BYTE* home = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(manager), roomId));
         if (!home) {
-            if (!g_ctx.basis && std::abs(c.floor - info.level) == 1) return 1.0f; // unchanged native-solve adjacent fallback
+            if (!g_ctx.basis && std::abs(c.floor - info.level) == 1) { // unchanged native-solve adjacent fallback: the game's
+                if (entry) entry->valid = false;                       // wall test keeps the whole ray
+                return 1.0f;
+            }
             return blocked(2);
         }
         alignas(16) float from[4], to[12];
@@ -3754,14 +3932,15 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
     return transmission;
 }
 
-float IndoorPass(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why) {
+float IndoorPass(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why, RayEntry* entry) {
     __try {
-        return IndoorPassImpl(info, c, light, sample, why);
+        return IndoorPassImpl(info, c, light, sample, why, entry);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         if (g_swapAt) {
             *g_swapAt = g_swapSaved;
             g_swapAt = nullptr;
         }
+        if (entry) entry->valid = false;
         g_faults.fetch_add(1, std::memory_order_relaxed);
         why = 1;
         return 0.0f; // never light through a floor that could not be checked
@@ -3777,11 +3956,17 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
     int why = 0;
     if (c) {
         g_indoorTests.fetch_add(1, std::memory_order_relaxed);
-        mine = IndoorPass(info, *c, light, sample, why);
+        RayEntry entry;
+        mine = IndoorPass(info, *c, light, sample, why, g_enterReady ? &entry : nullptr);
         if (why == 1) g_indoorFloorBlocked.fetch_add(1, std::memory_order_relaxed);
         else if (why == 2) g_indoorWallBlocked.fetch_add(1, std::memory_order_relaxed);
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
+        if (mine > 0.0f && entry.valid) { // the game's wall test of this room for this lamp, next: from where the ray enters
+            g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
+            std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
+            std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
+        }
     }
     if (!kPublicBuild) {
         g_lastRec = -1;
@@ -3800,6 +3985,7 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
 template <int I> void __fastcall LightEvalHook(void* light, void*, const float* sample, const float* normal, float* colour) {
     reinterpret_cast<LightEval_t>(g_evalOrig[I])(light, sample, normal, colour);
     if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
         if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) return;
@@ -3814,10 +4000,26 @@ const LightEvalHook_t kEvalHooks[] = {&LightEvalHook<0>, &LightEvalHook<1>, &Lig
                                   &LightEvalHook<4>, &LightEvalHook<5>, &LightEvalHook<6>, &LightEvalHook<7>, &LightEvalHook<8>};
 static_assert(std::size(kEvalHooks) == std::size(kClasses));
 
-// The game's own wall test in LightPointWithAllLights (0x69FE93): result recorded for the diagnostics.
+// The game's own wall test in LightPointWithAllLights (0x69FE93): for a lamp of another story IndoorShadow let through, the
+// solving room's walls are tested from where its ray enters this room's story (IndoorPassImpl), with the game's own list
+// of walls for that lamp; any other light as the game has it. Development build: the result is recorded for F8.
 bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos, const void* sample, float* t) {
-    const bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, lightPos, sample, t);
-    if (g_lastRec >= 0) {
+    const float* from = lightPos;
+    alignas(16) float entered[4];
+    if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed) && g_ctx.enterLight) {
+        // the same lamp: the position the game passes is the one IndoorPassImpl read (vfunc+0x24, bit for bit)
+        if (lightPos && lightPos[0] == g_ctx.enterLamp[0] && lightPos[1] == g_ctx.enterLamp[1] && lightPos[2] == g_ctx.enterLamp[2]) {
+            entered[0] = g_ctx.enterAt[0];
+            entered[1] = g_ctx.enterAt[1];
+            entered[2] = g_ctx.enterAt[2];
+            entered[3] = lightPos[3];
+            from = entered;
+            g_enterTests.fetch_add(1, std::memory_order_relaxed);
+        }
+        g_ctx.enterLight = 0;
+    }
+    const bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
+    if (!kPublicBuild && g_lastRec >= 0 && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lk(g_diagMx);
         if (g_lastRec < static_cast<int>(g_diag.size())) {
             g_diag[g_lastRec].game = ok ? 1 : 0;
@@ -5041,9 +5243,11 @@ bool Install(std::string& error) {
         for (uintptr_t push : kBatchPushesSteam) solveOk = solveOk && std::memcmp(reinterpret_cast<const void*>(push), "\x68\xC8\x8A\x15\x01", 5) == 0;
     for (uintptr_t site : kSolvePointCalls)
         solveOk = solveOk && Redirect(site, kSolvePoint, site == kBatchSolveCall ? reinterpret_cast<const void*>(&SolvePointBatch) : reinterpret_cast<const void*>(&SolvePointSingle));
-    // The game's own wall test is wrapped only to record its result for the F8 diagnostics: development build only (the
-    // public build leaves that CALL as it is; the wrapper only forwarded it).
-    if (!kPublicBuild) solveOk = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
+    // The game's own wall test (GameWallTest): a lamp of another story is tested against the solving room's walls from
+    // where its ray enters that room's story (05/10); development build: its result recorded for F8. Optional: without it
+    // those walls test the whole ray, as before.
+    g_enterReady = solveOk && Redirect(kWallTestCall, kWallTest, reinterpret_cast<const void*>(&GameWallTest));
+    if (solveOk && !g_enterReady) LOG_WARNING("[LevelLightShare] Walls of the lit room from where a lamp of another story enters it: could not patch the game, the whole ray is tested as before");
     if (solveOk) {
         for (size_t i = 0; i < std::size(kClasses); i++) {
             if (!kClasses[i].vtable) continue; // class not found on this build
@@ -5156,6 +5360,7 @@ void Uninstall() {
     g_indoorPatches.clear();
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
+    g_enterReady = false;
     g_floorMaskReady = false;
     {
         std::lock_guard<std::mutex> lk(g_wallSnapMx);
@@ -5537,7 +5742,9 @@ bool LampEditPending() {
 std::atomic<DWORD> g_continuousEditAt{0};
 constexpr DWORD kDragQuietMs = 200;
 void NoteLampEditing(bool continuous) {
-    if (continuous) g_continuousEditAt.store(GetTickCount() | 1, std::memory_order_relaxed);
+    const DWORD now = GetTickCount() | 1;
+    g_lampEditAt.store(now, std::memory_order_relaxed); // AuditTakers waits for the edit's own sends
+    if (continuous) g_continuousEditAt.store(now, std::memory_order_relaxed);
 }
 bool LampDragging() {
     const DWORD at = g_continuousEditAt.load(std::memory_order_relaxed);
@@ -5629,7 +5836,10 @@ std::string Status() {
                                           std::format(", lamp edits first: rooms made urgent {}, gathered at once {}, marks held while their room was solved {} (given back {}), "
                                                       "floor batches with per-lamp wall lists {} (every wall tested {})",
                                                       g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
-                                                      g_maskListFallbacks.load()),
+                                                      g_maskListFallbacks.load()) +
+                                          std::format(", rooms taking lamps of another story checked against them {} (sent to gather again {}, left alone a while {}), "
+                                                      "lamps of another story tested against the lit room's walls from where they enter its story {}{}",
+                                                      g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)"),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
                                                    "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",
