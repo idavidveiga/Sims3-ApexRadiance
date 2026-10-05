@@ -22,6 +22,7 @@
 #include "light_probe.h"
 #include "hotkeys.h"
 #include "s3ss_detect.h"
+#include "unlit_rooms.h"
 #include "shader_cache.h"
 #include "sim_occlusion.h"
 #include "ui/i18n.h"
@@ -745,15 +746,76 @@ void DepthBlurPage() {
 
 // ---- System > Display ----
 
-bool HasConfirmedConflicts() {
+bool GameAaBlocksEffects() {
     if (!g_menuGameAaOn) return false;
     const auto active = [](const char* name) { auto* p = Find(name); return p && p->IsEnabled(); };
     return active("EdgeSmoothing") || active("DepthBlur") || active("AmbientOcclusion") ||
         (active(kNightLighting) && NightLighting::ShoreReflection() > 0.0f);
 }
+
+// S3SS.toml's saved room colour (read-only; S3SSDetect re-reads the file at most every 3 s)
+bool S3SSRoomColourSaved(bool recheck = false) { return S3SSDetect::SavedRoomAmbientOverride(recheck).has_value(); }
+
+// The Attention page and its sidebar entry exist only while one of its items applies
+bool HasAttentionItems() { return GameAaBlocksEffects() || S3SSRoomColourSaved() || g_oldStandalone.load(); }
+
+void S3SSRoomColourItem() {
+    static const char* result = nullptr; // the last correction's outcome, kept while the page is open
+    if (!S3SSRoomColourSaved() && !result) return;
+    ImGui::PushID("AttentionS3SS");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Puzzle, "Saved S3SS room color",
+                           "S3SS keeps a fixed color for the background light in rooms (BradyBunchBlue RGB)", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (S3SSRoomColourSaved()) {
+            if (ApexUi::BeginControlRow("Remove the saved color", "Copies S3SS.toml to the Apex Radiance folder and removes only that color; the rest of S3SS stays as it is",
+                                        ApexUi::ButtonWidth("Back up and correct##S3SSFix", true))) {
+                if (ApexUi::IconTextButton("Back up and correct##S3SSFix", IconId::Save, nullptr, ButtonKind::Primary)) {
+                    switch (UnlitRooms::CorrectS3SSConflict().status) {
+                    case S3SSDetect::RoomAmbientCorrectionStatus::S3SSNotLoaded: result = "Sims3SettingsSetter is not loaded. No changes were made."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::ConfigUnavailable: result = "Could not read S3SS.toml. No changes were made."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::NoOverride: result = "No supported saved room-light color override was found. S3SS was not changed."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::BackupFailed: result = "Apex could not verify the backup. S3SS was not changed."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::ConfigChanged: result = "S3SS.toml changed during correction. No changes were written; try again."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::WriteFailed: result = "Apex could not save the correction. Check the Apex log; the backup is preserved."; break;
+                    case S3SSDetect::RoomAmbientCorrectionStatus::Saved: result = "Correction complete. The backup is in the Apex Radiance folder; restart the game for S3SS to keep the change."; break;
+                    }
+                    S3SSRoomColourSaved(true);
+                }
+                ApexUi::EndControlRow();
+            }
+            ApexUi::MutedText("Rooms at Night already uses the game's blue in its place; removing the color also restores it while Rooms at Night is off");
+        }
+        if (result) ApexUi::IconNote(S3SSRoomColourSaved() ? IconId::TriangleAlert : IconId::CircleCheck, result,
+                                     S3SSRoomColourSaved() ? VioletTheme::kWarning : VioletTheme::kSuccess);
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void OldStandaloneItem() {
+    if (!g_oldStandalone.load()) return;
+    std::string oldModule;
+    {
+        std::lock_guard<std::mutex> lock(g_detailLock);
+        oldModule = g_oldStandaloneModule;
+    }
+    ImGui::PushID("AttentionOldCopy");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::TriangleAlert, "Two copies of the mod",
+                           "An old version, under the previous name, is next to the current one. Only one can run, so the old one stays idle", nullptr, nullptr);
+        ApexUi::CardDivider();
+        ApexUi::MutedText(I18n::Trf("With the game closed, delete {} from Game\\Bin and keep ApexRadiance.asi. This notice goes away on the next start.", oldModule).c_str());
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
 void ConflictsPage() {
-    ApexUi::PageTitle("Conflicts", "Enabled settings that prevent an Apex effect from working");
-    if (!HasConfirmedConflicts()) ApexUi::IconNote(IconId::CircleCheck, "No active conflicts detected");
+    ApexUi::PageTitle("Attention", "Settings outside Apex that need a look");
+    if (!HasAttentionItems()) ApexUi::IconNote(IconId::CircleCheck, "Nothing to fix");
+    S3SSRoomColourItem();
+    OldStandaloneItem();
 }
 
 void AntiAliasingContent() {
@@ -2261,7 +2323,7 @@ void Sidebar(bool collapsed) {
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageEdgeSmoothing, IconId::Spline, "Edge Smoothing", "SYSTEM"},
         {PagePerformance, IconId::Gauge, "Performance", nullptr},
-        {PageConflicts, IconId::TriangleAlert, "Conflicts", nullptr},
+        {PageConflicts, IconId::TriangleAlert, "Attention", nullptr},
         {PageReport, IconId::Bug, "Report a problem", nullptr},
         {PageDeveloper, IconId::Wrench, "Developer", nullptr},
         {PageSettings, IconId::Settings, "Settings", nullptr},
@@ -2271,7 +2333,7 @@ void Sidebar(bool collapsed) {
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     for (const Item& item : items) {
         if (kPublicBuild && item.page == PageDeveloper) continue;
-        if (item.page == PageConflicts && !HasConfirmedConflicts()) continue;
+        if (item.page == PageConflicts && !HasAttentionItems() && g_page != PageConflicts) continue;
         if (item.group) ApexUi::SidebarGroup(item.group, collapsed);
         if (ApexUi::SidebarItem(item.icon, item.label, g_page == item.page && !searching, collapsed)) {
             g_page = item.page;
