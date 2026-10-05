@@ -268,7 +268,8 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
 
 // World terrain chunks (LightProbe-mundo PS_28CD3DB0: "texld_pp r0, v1, s8" ... "mul_pp r7.xyz, r0, c7.x"; winter
 // LightProbe-m05 PS_295B4ED0: "texld_pp r0, v1, s11" ... "mul_pp r0.xyz, r0, c7.x", with r0.w used in between).
-int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler, bool* squared) {
+    if (squared) *squared = false;
     if (t.empty() || (t[0] & 0xFFFF0000u) != 0xFFFF0000u || ((t[0] >> 8) & 0xFF) < 2) return -1;
     const auto ins = Parse(t);
     if (ins.empty()) return -1;
@@ -283,7 +284,127 @@ int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler) {
         if (x.op == kTexld && x.len == 3 && Type(t[x.at + 1]) == kTemp && (Type(t[x.at + 2]) == kInput || Type(t[x.at + 2]) == kTexture)) fetch = static_cast<int>(i);
     }
     if (reads != 1 || fetch < 0) return -1;
-    return LampScaleAfter(t, ins, static_cast<size_t>(fetch), Num(t[ins[fetch].at + 1]));
+    const DWORD light = Num(t[ins[fetch].at + 1]);
+    const int linear = LampScaleAfter(t, ins, static_cast<size_t>(fetch), light);
+    if (linear >= 0) return linear;
+    // The captured winter multipass material squares its lamp-only c4.x into
+    // a temporary before scaling RGB. Trace that exact dependency, never infer
+    // the exponent from the number of material passes or the shader's name.
+    const Ins* square = nullptr;
+    int constant = -1;
+    for (size_t j = static_cast<size_t>(fetch) + 1; j < ins.size(); ++j) {
+        const Ins& x = ins[j];
+        if (IsFlow(x.op)) return -1;
+        bool readsLight = false;
+        for (size_t k = 2; k <= x.len; ++k)
+            readsLight |= IsReg(t[x.at + k], kTemp, light) && Swz(t[x.at + k]) != kSwzW;
+        if (readsLight) {
+            if (!square || x.op != kMul || x.len != 3 || Type(t[x.at+1]) != kTemp ||
+                WMask(t[x.at+1]) != 7 || (t[x.at+1] & 0x00100000u) ||
+                !IsReg(t[x.at+2], kTemp, light) || Swz(t[x.at+2]) != kSwzXYZW || (t[x.at+2] & 0x0F002000u)) return -1;
+            const DWORD factor = t[x.at+3], dst = t[square->at+1];
+            const DWORD mask = WMask(dst);
+            if (!IsReg(factor, kTemp, Num(dst)) || (factor & 0x0F002000u)) return -1;
+            const DWORD component = Swz(factor) & 3;
+            if (Swz(factor) != component * 0x55u || mask != (1u << component)) return -1;
+            int uses = 0;
+            for (const Ins& y : ins) {
+                if (y.op == kDcl || y.op == kDefI || y.op == kDefB) continue;
+                if (y.op == kDef && IsReg(t[y.at+1], kConst, static_cast<DWORD>(constant))) return -1;
+                for (size_t k = 2; k <= y.len; ++k) {
+                    const DWORD r = t[y.at+k];
+                    if (Type(r) == kConst) {
+                        if (r & 0x2000u) return -1;
+                        if (Num(r) == static_cast<DWORD>(constant)) ++uses;
+                    }
+                }
+            }
+            if (uses != 2) return -1;
+            if (squared) *squared = true;
+            return constant;
+        }
+        if (x.len >= 1 && IsReg(t[x.at+1], kTemp, light) && (WMask(t[x.at+1]) & 7)) return -1;
+        if (square && x.len >= 1 && IsReg(t[x.at+1], kTemp, Num(t[square->at+1])) &&
+            (WMask(t[x.at+1]) & WMask(t[square->at+1]))) { square = nullptr; constant = -1; }
+        if (x.op == kMul && x.len == 3 && Type(t[x.at+1]) == kTemp && !(t[x.at+1] & 0x00100000u) &&
+            Type(t[x.at+2]) == kConst && Swz(t[x.at+2]) == kSwzX && !(t[x.at+2] & 0x0F002000u) &&
+            t[x.at+2] == t[x.at+3]) {
+            square = &x;
+            constant = static_cast<int>(Num(t[x.at+2]));
+        }
+    }
+    return -1;
+}
+
+bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler) {
+    if (t.empty() || (t[0] != 0xFFFF0200 && t[0] != 0xFFFF0300) || sampler >= 16) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    // Scan assumes normal instruction sizes. Reject malformed declarations first.
+    for (const Ins& x : ins)
+        if ((x.op == kDcl && x.len != 2) || ((x.op == kDef || x.op == kDefI) && x.len != 5) ||
+            (x.op == kDefB && x.len != 2) || IsFlow(x.op) || (t[x.at] & 0x10000000u)) return false;
+    const Usage u = Scan(t, ins);
+    const int tempLimit = t[0] == 0xFFFF0200 ? 12 : 32;
+    if (u.maxTemp + 1 >= tempLimit || u.maxSampler + 1 >= 16 || !u.afterLastSamplerDcl) return false;
+    const Ins* fetch = nullptr;
+    bool declared = false;
+    for (const Ins& x : ins) {
+        if (x.op == kDcl) {
+            if (IsReg(t[x.at + 2], kSampler, sampler)) {
+                if ((t[x.at + 1] & 0x78000000u) != 0x10000000u || declared) return false; // 2D only
+                declared = true;
+            }
+            continue;
+        }
+        if (x.op == kDef || x.op == kDefI || x.op == kDefB) continue;
+        for (size_t k = 1; k <= x.len; ++k) {
+            const DWORD r = t[x.at + k];
+            if ((r & 0x80000000u) && (r & 0x2000u)) return false; // relative addressing
+            if (!IsReg(r, kSampler, sampler)) continue;
+            if (fetch || x.op != kTexld || x.len != 3 || k != 3 || (t[x.at] & 0x00FF0000u)) return false;
+            fetch = &x;
+        }
+    }
+    if (!declared || !fetch) return false;
+    const DWORD dest = t[fetch->at + 1], uv = t[fetch->at + 2];
+    if (Type(dest) != kTemp || WMask(dest) != 0xF || (dest & 0x00100000u) ||
+        (Type(uv) != kInput && Type(uv) != kTexture) || (uv & 0x0F002000u) || Swz(uv) != kSwzXYZW) return false;
+    const DWORD spare = static_cast<DWORD>(u.maxSampler + 1), temp = static_cast<DWORD>(u.maxTemp + 1);
+    // Match the original read's partial precision, then replace only alpha.
+    Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, spare)}},
+              {End(*fetch), {Op(kTexld, 3), Dst(kTemp, temp) | (dest & 0x00200000u), uv, Src(kSampler, spare),
+                             Op(kMov, 2), Dst(kTemp, Num(dest), 8), Src(kTemp, temp, kSwzW)}}});
+    extraSampler = spare;
+    return true;
+}
+
+bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst) {
+    // Exact captured native-alpha variant plus the light accumulator pattern.
+    // Unstudied variants keep their existing shader, including compact terrain.
+    if (t.size() != 387 || t[0] != 0xFFFF0300) return false;
+    DWORD hash = 2166136261u;
+    for (DWORD word : t) hash = (hash ^ word) * 16777619u;
+    if (hash != 0x3A0A3E52u) return false;
+    const auto ins = Parse(t);
+    const Usage u = Scan(t, ins);
+    if (u.maxTemp + 2 >= 32 || u.maxConst >= 223) return false;
+    const Ins* sum = nullptr;
+    for (const Ins& x : ins) {
+        if (x.op == kMad && x.len == 4 && IsReg(t[x.at+1], kTemp, 1) && WMask(t[x.at+1]) == 7 &&
+            IsReg(t[x.at+2], kTemp, 1) && IsReg(t[x.at+3], kConst, 8) && Swz(t[x.at+3]) == kSwzX &&
+            IsReg(t[x.at+4], kTemp, 5)) {
+            if (sum) return false;
+            sum = &x;
+        }
+    }
+    if (!sum) return false;
+    const DWORD tmp = static_cast<DWORD>(u.maxTemp + 1);
+    Apply(t, {{End(*sum), {Op(0x0A, 3), Dst(kTemp, tmp, 7), Src(kTemp, 1), Src(kConst, 223, kSwzY),
+                          Op(kLrp, 4), Dst(kTemp, tmp + 1, 7), Src(kConst, 223, kSwzX), Src(kTemp, tmp), Src(kTemp, 1),
+                          Op(kMov, 2), Dst(kTemp, 1, 7), Src(kTemp, tmp + 1)}}});
+    blendConst = 223;
+    return true;
 }
 
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
@@ -1980,6 +2101,97 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst, int* texcoordOu
     if (amountConst) *amountConst = static_cast<int>(cA);
     if (texcoordOut) *texcoordOut = free;
     return DitherResult::Ok;
+}
+
+bool MakeAoReceiverMask(std::vector<DWORD>& vs, std::vector<DWORD>& ps, bool hair, bool transparent) {
+    if (vs.empty() || ps.empty() || vs.back() != 0xFFFFu || ps.back() != 0xFFFFu) return false;
+    const bool v3 = vs[0] == 0xFFFE0300u, p3 = ps[0] == 0xFFFF0300u;
+    if ((!v3 && vs[0] != 0xFFFE0200u && vs[0] != 0xFFFE0201u) ||
+        (!p3 && ps[0] != 0xFFFF0200u && ps[0] != 0xFFFF0201u)) return false;
+    const auto vi = Parse(vs), pi = Parse(ps);
+    if (vi.empty() || pi.empty()) return false;
+    constexpr DWORD regBits = 0x70001800u | 0x7FFu;
+    DWORD posType = 4, posNum = 0;
+    bool havePosition = !v3, coord[8] = {}, output[12] = {}, input[10] = {};
+    std::vector<size_t> positionWrites, colourWrites;
+    DWORD colourMask = 0;
+    for (const auto& x : vi) {
+        if (x.op == 0x19 || x.op == 0x1A || x.op == 0x1C || x.op == 0x1E) return false;
+        if (x.op == kDcl && x.len == 2 && Type(vs[x.at + 2]) == kOutput && v3) {
+            const DWORD sem = vs[x.at + 1], r = Num(vs[x.at + 2]);
+            if (r >= 12) return false;
+            output[r] = true;
+            if ((sem & 31) == 0 && ((sem >> 16) & 15) == 0) { posType = kOutput; posNum = r; havePosition = true; }
+            if ((sem & 31) == 5 && ((sem >> 16) & 15) < 8) coord[(sem >> 16) & 15] = true;
+        }
+        if (!v3 && x.op != kDcl && x.op != kDef && x.op != kDefI && x.op != kDefB)
+            for (size_t j = 1; j <= x.len; ++j)
+                if (Type(vs[x.at + j]) == kOutput && Num(vs[x.at + j]) < 8) coord[Num(vs[x.at + j])] = true;
+    }
+    if (!havePosition) return false;
+    for (const auto& x : vi)
+        if (x.op != kDcl && x.op != kDef && x.op != kDefI && x.op != kDefB && x.len &&
+            IsReg(vs[x.at + 1], posType, posNum)) positionWrites.push_back(x.at + 1);
+    for (const auto& x : pi) {
+        if (x.op == 0x19 || x.op == 0x1A || x.op == 0x1C || x.op == 0x1E) return false;
+        if (x.op == kDcl && x.len == 2) {
+            const DWORD r = ps[x.at + 2], sem = ps[x.at + 1];
+            if (p3 && Type(r) == kInput) {
+                if (Num(r) >= 10) return false;
+                input[Num(r)] = true;
+                if ((sem & 31) == 5 && ((sem >> 16) & 15) < 8) coord[(sem >> 16) & 15] = true;
+            }
+        }
+        if (x.op == kDef || x.op == kDefI || x.op == kDefB || x.op == kDcl) continue;
+        for (size_t j = 1; j <= x.len; ++j) {
+            const DWORD r = ps[x.at + j];
+            if (!p3 && Type(r) == kTexture && Num(r) < 8) coord[Num(r)] = true;
+            if (Type(r) == 9 || (Type(r) == kColorOut && Num(r) != 0)) return false;
+        }
+        if (x.len && Type(ps[x.at + 1]) == kColorOut) {
+            colourWrites.push_back(x.at + 1);
+            colourMask |= WMask(ps[x.at + 1]);
+        }
+    }
+    if (positionWrites.empty() || colourWrites.empty() || colourMask != 15) return false;
+    const auto vu = Scan(vs, vi), pu = Scan(ps, pi);
+    if (vu.maxTemp + 1 >= (v3 ? 32 : 12) || pu.maxTemp + 2 >= 32 || pu.maxConst + 1 >= 224) return false;
+    int tc = -1, vo = -1, pin = -1;
+    for (int i = 0; i < 8; ++i) if (!coord[i]) { tc = i; break; }
+    if (tc < 0) return false;
+    if (v3) { for (int i = 0; i < 12; ++i) if (!output[i]) { vo = i; break; } }
+    else vo = tc;
+    if (p3) { for (int i = 0; i < 10; ++i) if (!input[i]) { pin = i; break; } }
+    else pin = tc;
+    if (vo < 0 || pin < 0) return false;
+    auto v = vs, p = ps;
+    const DWORD vp = vu.maxTemp + 1, po = pu.maxTemp + 1, tmp = po + 1, cMask = pu.maxConst + 1;
+    for (const auto at : positionWrites) v[at] = (v[at] & ~regBits) | (Reg(kTemp, vp) & regBits);
+    for (const auto at : colourWrites) p[at] = (p[at] & ~regBits) | (Reg(kTemp, po) & regBits);
+    std::vector<Edit> ve, pe;
+    if (v3) ve.push_back({1, {Op(kDcl, 2), 0x80000005u | (static_cast<DWORD>(tc) << 16), Dst(kOutput, vo)}});
+    ve.push_back({v.size() - 1, {Op(kMov, 2), Dst(posType, posNum), Src(kTemp, vp),
+                               Op(kMov, 2), Dst(kOutput, vo), Src(kTemp, vp)}});
+    pe.push_back({1, {Op(kDcl, 2), p3 ? (0x80000005u | (static_cast<DWORD>(tc) << 16)) : 0x80000000u,
+                     Dst(p3 ? kInput : kTexture, pin)}});
+    pe.push_back({1, {Op(kDef, 5), Dst(kConst, cMask), F(hair ? -1.0f : 1.0f), F(1.0f), F(0.0f), F(0.0f)}});
+    std::vector<DWORD> tail = {Op(0x06, 2), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, kSwzW),
+                              Op(kMul, 3), Dst(kTemp, tmp, 1), Src(p3 ? kInput : kTexture, pin, 0xAA), Src(kTemp, tmp, kSwzX)};
+    if (transparent) {
+        tail.insert(tail.end(), {Op(kMul, 3), Dst(kTemp, po, 1), Src(kTemp, tmp, kSwzX), Src(kConst, cMask, kSwzX),
+                                 Op(kMov, 2), Dst(kTemp, po, 2, true), Src(kTemp, po, kSwzW)});
+    } else {
+        // MIN blending selects the nearest body and hair depths independently.
+        // Keep the original alpha in W so the native alpha test still rejects pixels.
+        tail.insert(tail.end(), {Op(kMov, 2), Dst(kTemp, po, 1), hair ? Src(kConst, cMask, 0x55) : Src(kTemp, tmp, kSwzX),
+                                 Op(kMov, 2), Dst(kTemp, po, 2), hair ? Src(kTemp, tmp, kSwzX) : Src(kConst, cMask, 0x55)});
+    }
+    tail.insert(tail.end(), {Op(kMov, 2), Dst(kColorOut, 0), Src(kTemp, po)});
+    pe.push_back({p.size() - 1, std::move(tail)});
+    if (!p3) p[0] = 0xFFFF0201u;
+    Apply(v, std::move(ve)); Apply(p, std::move(pe));
+    vs = std::move(v); ps = std::move(p);
+    return true;
 }
 
 bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord) {

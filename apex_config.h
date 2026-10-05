@@ -1,7 +1,7 @@
 #pragma once
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
-//   [ui]                 toggle_key ("Ctrl+Shift+F11"), font_scale, recommend_s3ss, welcome_done, key_chosen, sidebar_collapsed
+//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, legacy welcome_done/key_chosen, start_profile_done, sidebar_collapsed, changelog_seen
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
 //   [patches.<Name>]     one table per feature: enabled + its settings (same keys as before the split)
@@ -27,20 +27,32 @@ struct KeyChord {
 };
 
 struct UiSettings {
-    bool performanceMode = true;
     KeyChord toggle;       // opens / closes the Apex menu (default Ctrl+Shift+F11; S3SS uses a bare Insert)
     bool developerMode = false; // applies next game start; enabling requires UI confirmation
     float fontScale = 1.0f;
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool startNote = true;     // the "Apex Radiance is ready, press <key>" note at every start ([ui] start_note)
     bool captureScreenshot = true; // the Report a problem captures also save Screenshot.png ([ui] capture_screenshot)
-    bool welcomeDone = false;  // the welcome tour was finished or skipped ([ui] welcome_done; missing = false, also for migrated configs)
-    bool keyChosen = false;    // the menu key was picked in the first-start prompt or in Settings ([ui] key_chosen; missing = false: the prompt shows once)
+    bool welcomeDone = false;  // legacy welcome-tour flag, kept when reading and writing older configs
+    bool keyChosen = false;    // legacy first-start key prompt flag; no longer gates the menu or startup hint
+    bool startProfileDone = false; // the welcome page was shown ([ui] start_profile_done; false only for a new installation: a config without it counts as true)
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)
+    KeyChord probeKey{0, true, true, false}; // optional override for Light Probe ([ui] probe_key; vk 0 = the preset's)
+    KeyChord diagnosticsKey{0, true, true, false}; // optional override for Light Diag ([ui] diagnostics_key; vk 0 = the preset's)
+    KeyChord recorderKey{0, true, true, false}; // optional override for Recording ([ui] recorder_key; vk 0 = the preset's)
+    KeyChord frameCaptureKey{0, true, true, false}; // optional override for Frame Capture ([ui] frame_capture_key; vk 0 = the preset's)
+    KeyChord searchKey{'F', true, false, false}; // focuses settings search while the menu is open ([ui] search_key)
+    KeyChord peekKey{VK_MENU, false, false, false}; // hold to peek through the menu ([ui] peek_key)
+    KeyChord pictureCompareKey{'B', false, false, false}; // hold to bypass Picture while over the menu ([ui] picture_compare_key)
+    bool screenshotShortcutEnabled = true; // intercept a configurable key for filtered screenshots ([ui] screenshot_shortcut_enabled)
+    KeyChord screenshotKey{VK_F8, false, false, false}; // F8 alone: an extra filtered screenshot (Ctrl+Shift+F8 is the lighting snapshot); the game's own C stays untouched
+    bool screenshotToApexFolder = false; // [ui] screenshot_folder: "game" (Documents\...\The Sims 3\Screenshots) or "apex" (Apex Radiance\Screenshots)
+    bool screenshotHideGameUi = true; // temporarily toggle the game's F10 UI visibility only while taking the screenshot
     int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
+    std::string changelogSeen; // the newest What's new version opened; the version button shows a dot until then ([ui] changelog_seen)
     int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" / "en" / "pt" / "es" / "fr")
 };
 
@@ -85,7 +97,7 @@ void CaptureFeatureState(toml::table& out, bool profileFeaturesOnly = false);
 // settings and on / off through ApexPatch::ApplyTableLive, Picture through SetParams); sections the table does not have stay as they are. Marks unsaved changes and requests a save.
 void ApplyFeatureState(const toml::table& state);
 // Every feature at its defaults, as a CaptureFeatureState table: each setting's default and its default on / off, and
-// Color at its defaults. The window mode and the menu's own preferences (language, key, text size) are not included.
+// Color at its defaults. The menu's own preferences (language, key, text size) are not included.
 void DefaultFeatureState(toml::table& out);
 
 // ---- profiles: Documents\...\Apex Radiance\Profiles\<name>.toml ----
@@ -104,7 +116,7 @@ enum ProfilePart : unsigned {
     kPartEdgeSmoothing = 1u << 3, // Edge Smoothing
     // Bit 4 is reserved for retired window profiles; other category bits do not shift.
     kPartPerformance = 1u << 5,   // the Performance page's features
-    kPartShortcuts = 1u << 6,     // the keyboard shortcuts ([shortcuts] in a profile: menu key, preset, own keys); not saved by default
+    kPartShortcuts = 1u << 6,     // keyboard and screenshot shortcut settings; not saved by default
     kPartDeveloper = 1u << 8, // advanced settings, opt-in and hidden in normal mode
     kPartAmbientOcclusion = 1u << 7, // Ambient Occlusion (after Shortcuts: older saved part masks keep their bits)
 };
@@ -113,7 +125,7 @@ inline constexpr unsigned kProfilePartsAll = ((1u << kProfilePartCount) - 1) & ~
 const char* ProfilePartName(int index); // English, for the menu ("Night Lights")
 unsigned ProfilePartsOf(const toml::table& state);         // the parts a profile table has
 void KeepProfileParts(toml::table& state, unsigned parts); // removes the other parts from a profile table
-bool SaveProfile(const std::string& name, unsigned parts = kProfilePartsAll, std::string* error = nullptr);
+bool SaveProfile(const std::string& name, unsigned parts = kProfilePartsAll, std::string* error = nullptr, const std::string& icon = "bookmark");
 // Parses the profile (does not apply it: see ApplyFeatureState)
 bool ReadProfile(const std::string& name, toml::table& out, std::string* error = nullptr);
 bool DeleteProfile(const std::string& name, std::string* error = nullptr);

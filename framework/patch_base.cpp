@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "build_flavor.h"
 #include "patch_base.h"
 #include "game_addresses.h"
@@ -41,7 +42,7 @@ class FloatOption final : public PatchSetting {
         const std::string id = "##" + key_;
         ImGui::TextUnformatted(description_.empty() ? key_.c_str() : description_.c_str());
         for (const auto& [label, value] : presets_) {
-            if (ImGui::SmallButton((label + id).c_str())) {
+            if (ApexUi::TextButton((label + id).c_str())) {
                 *v_ = value;
                 changed = true;
             }
@@ -86,7 +87,7 @@ class IntOption final : public PatchSetting {
         const std::string id = "##" + key_;
         ImGui::TextUnformatted(description_.empty() ? key_.c_str() : description_.c_str());
         for (const auto& [label, value] : presets_) {
-            if (ImGui::SmallButton((label + id).c_str())) {
+            if (ApexUi::TextButton((label + id).c_str())) {
                 *v_ = value;
                 changed = true;
             }
@@ -125,7 +126,7 @@ class BoolOption final : public PatchSetting {
     }
     bool Draw() override {
         const std::string label = (description_.empty() ? key_ : description_) + "##" + key_;
-        const bool changed = ImGui::Checkbox(label.c_str(), v_);
+        const bool changed = ApexUi::Checkbox(label.c_str(), v_);
         Tooltip("Config key: " + key_);
         return changed;
     }

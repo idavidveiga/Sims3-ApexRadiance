@@ -1141,23 +1141,23 @@ class EdgeSmoothingPatch : public ApexPatch {
             ApexUi::Tooltip("Turn it on in the NVIDIA Control Panel (DSR) or AMD Software (VSR), then pick 1440p or 4K in the game; "
                             "it costs more and the game's interface gets smaller");
         }
-        if (ApexUi::IconTextButton("Reset Edge Smoothing##EdgeSmoothing", IconId::RotateCcw, "Back to SMAA, High quality")) {
-            ApexUi::ReportChange("Edge Smoothing reset");
-            g.p = Params{};
-            changed = true;
-        }
+
         if (changed) NotifySettingChanged();
     }
 
     // Developer page > Debug views
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
-        ImGui::TextWrapped("Status: %s", g.status.c_str());
-        if (g.ready && g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame", g.gpuMs);
-        bool changed = ImGui::Checkbox("Show smoothed pixels in red", &g.p.debugView);
+
+        bool changed = ApexUi::Checkbox("Show smoothed pixels in red", &g.p.debugView);
         ApexUi::Tooltip("Tints every pixel the smoothing changed red, to see which edges it catches");
         if (g.ready) ImGui::TextDisabled("Frames smoothed: %u (with the scene depth %u)", g.framesSmoothed, g.framesWithDepth);
         if (changed) NotifySettingChanged();
+        if (ApexUi::BeginAdvanced("DiagnosticDetails", "Rendering details")) {
+        ImGui::TextWrapped("Status: %s", g.status.c_str());
+        if (g.ready && g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame", g.gpuMs);
+            ApexUi::EndAdvanced();
+        }
     }
 };
 

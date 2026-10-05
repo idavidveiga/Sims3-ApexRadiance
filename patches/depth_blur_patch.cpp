@@ -30,6 +30,8 @@
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "post_scene.h"
+#include "world_session.h"
+#include "night_lighting.h"
 #include "map_view.h"
 #include "shader_cache.h"
 #include "imgui.h"
@@ -52,6 +54,11 @@ constexpr const char* kHookName = "DepthBlur";
 constexpr D3DFORMAT kFmtINTZ = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
 constexpr int kRetryFrames = 120;
 constexpr float kMapFadeSeconds = 0.3f;
+// With the blur on as soon as the world gate opened (WorldSession::Settled, 3 s), the whole screen was blurred for about a
+// second at the end of a load, before the world showed (user report, 2026-10-05; the cause, unfinished first frames, is
+// inferred, not measured). So the blur waits this long after the gate opens and then fades in.
+constexpr unsigned long long kWorldHoldMs = 2000;
+constexpr float kWorldFadeInSeconds = 1.0f;
 // The game's projection: d = A - near * A / z (LightProbe-m80; docs/engine/camera-and-map-view.md)
 constexpr float kDepthA = 1.00008f;
 // Only for the Developer read-out in metres: near changes with zoom (0.2 - 0.3), so the value is approximate
@@ -289,6 +296,7 @@ struct Params {
 };
 
 struct BlurState {
+    WorldSession::Settled world;
     bool active = false; // the depth swap is running (Depth Blur on, or requested by another effect)
     bool blurOn = false; // the Depth Blur patch itself is on
     int requests = 0;    // DepthShare::Request from other effects
@@ -299,6 +307,7 @@ struct BlurState {
     unsigned framesBlurred = 0;
     int lastTaps = 0;
     float mapFade = 0.0f;         // 0 = normal view, 1 = map view (blur fully off), eased over kMapFadeSeconds
+    float worldIn = 0.0f;         // 0 = just loaded (blur off), 1 = full blur; kWorldHoldMs then kWorldFadeInSeconds
     LARGE_INTEGER lastFadeTick{}; // time of the previous frame step
     bool mapOpen = false;         // last map view state read from the game
 
@@ -814,7 +823,7 @@ void RunBlur(IDirect3DDevice9* dev, float dt) {
     const float ease = g.focusSnap ? 1.0f : 1.0f - std::exp(-dt / tau);
 
     const float c[kPSConsts][4] = {
-        {g.p.start, g.p.range, g.p.strength * (1.0f - g.mapFade), g.p.farPlane},
+        {g.p.start, g.p.range, g.p.strength * (1.0f - g.mapFade) * g.worldIn, g.p.farPlane},
         {static_cast<float>(hw), static_cast<float>(hh), 1.0f / static_cast<float>(hw), 1.0f / static_cast<float>(hh)},
         {1.0f, 0.0f, maxRadius, g.p.glowLights ? kLampGain : 0.0f},
         {g.p.blurSky ? 1.0f : 0.0f, (!kPublicBuild && g.p.debugView) ? 1.0f : 0.0f, g.linearLight ? 1.0f : 0.0f, autoFocus ? 1.0f : 0.0f},
@@ -914,12 +923,34 @@ void StepMapFade(float dt) {
     g.mapFade = (g.mapFade < target) ? std::fmin(g.mapFade + step, target) : std::fmax(g.mapFade - step, target);
 }
 
+bool WorldPlayable();
+
 // PostScene effect (order kDepthBlur): after edge smoothing, before the UI
 void BlurEffect(IDirect3DDevice9* dev) {
     if (!g.blurOn || !g.ready || g.inBlur || g.internalPass) return;
+    if (!g.world.ready || !WorldPlayable()) {
+        // Loading/menu depth can be stale. Skip every blur/debug GPU pass and
+        // snap autofocus when gameplay returns, without releasing shared depth.
+        g.focusSnap = true;
+        g.lastFadeTick = {};
+        g.mapOpen = false;
+        g.mapFade = 0;
+        g.worldIn = 0;
+        return;
+    }
+    {
+        const unsigned long long since = GetTickCount64() - g.world.activeAt; // ready: at least the 3 s settle
+        const float t = (static_cast<float>(since) - 3000.0f - static_cast<float>(kWorldHoldMs)) / (kWorldFadeInSeconds * 1000.0f);
+        g.worldIn = t <= 0.0f ? 0.0f : t >= 1.0f ? 1.0f : t * t * (3.0f - 2.0f * t);
+        if (g.worldIn <= 0.0f) { // still settling after the load: no pass, autofocus starts from the first faded frame
+            g.focusSnap = true;
+            g.lastFadeTick = {};
+            return;
+        }
+    }
     const float dt = StepTime();
     StepMapFade(dt);
-    if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
+    if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) * g.worldIn <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
 
     const int key = g.p.quality;
     if (key != g.qKey) {
@@ -944,8 +975,26 @@ void BlurEffect(IDirect3DDevice9* dev) {
     }
 }
 
+// The world is playable: the loaded-world gate, and with Night Lighting running its "load settled" signal (the game's
+// interactive loading screen draws the world while lots still load, behind its own overlay)
+bool WorldPlayable() {
+    if (!WorldSession::IsActive()) return false;
+    const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
+    return !night || !night->IsEnabled() || NightLighting::LoadSettled();
+}
+
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    const bool wasReady = g.world.ready;
+    g.world.Update(WorldPlayable(), GetTickCount64());
+    if (g.world.ready && !wasReady) LOG_INFO("[DepthBlur] World playable: the blur fades in after the hold");
+    if (!g.world.ready) {
+        g.focusSnap = true;
+        g.lastFadeTick = {};
+        g.mapOpen = false;
+        g.mapFade = 0;
+        g.worldIn = 0;
+    }
     if (!g.ready && --g.retryCountdown <= 0) {
         g.retryCountdown = kRetryFrames;
         InitResources(dev);
@@ -959,6 +1008,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
 
 void OnPreReset(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    g.world.Update(false, 0);
     ReleaseResources(dev);
     g.status = "Recreating after a video change...";
 }
@@ -986,6 +1036,7 @@ void StartDepth() {
 
 void StopDepth() {
     if (!g.active) return;
+    g.world.Update(false, 0);
     g.active = false;
     D3D9Hooks::UnregisterAll(kHookName);
     RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
@@ -1087,13 +1138,13 @@ class DepthBlurPatch : public ApexPatch {
 
         if (g.p.autoFocus) {
             static const char* const kAreas[] = {"Small", "Medium", "Large"};
-            static const char* const kAreaTips[] = {"Only the focus stays sharp", "The default", "A wide sharp zone around the focus"};
+            static const char* const kAreaTips[] = {"Only the focus stays sharp", "Some space around the focus stays sharp", "The default; a wide sharp zone around the focus"};
             changed |= ApexUi::SegmentedRow("Sharp area", "How much around the focus stays sharp", "##SharpArea", &g.p.sharpArea, kAreas, 3, kAreaTips, nullptr,
                                             kDefaults.sharpArea);
         } else {
             // Distance: named steps, then fine-tuning (shown as 0-100% of its 0..0.5 range)
             static const char* const kDistances[] = {"Near", "Medium", "Far"};
-            static const char* const kDistanceTips[] = {"The blur starts close to the camera", "The default", "Only the far background blurs"};
+            static const char* const kDistanceTips[] = {"The blur starts close to the camera", "The blur starts at a middle distance", "Only the far background blurs"};
             static constexpr float kDistanceValues[] = {0.25f, 0.349f, 0.45f};
             int distance = -1; // a fine-tuned value matches none of the steps
             for (int i = 0; i < 3; i++)
@@ -1126,7 +1177,7 @@ class DepthBlurPatch : public ApexPatch {
         if (ApexUi::BeginAdvanced("Advanced##DepthBlur")) {
             changed |= ApexUi::SliderPercent("Strength", &g.p.strength, 0.0f, 1.0f, "Scales the blur everywhere; 100% is the default", kDefaults.strength);
             static const char* const kQualities[] = {"Low", "Medium", "High", "Ultra"};
-            static const char* const kQualityTips[] = {"Fastest", "Smoother", "The default", "Smoothest large blur; costs the most"};
+            static const char* const kQualityTips[] = {"Fastest", "The default; smoother", "Smoother still", "Smoothest large blur; costs the most"};
             changed |= ApexUi::SegmentedRow("Quality", "Higher is smoother and costs a bit more", "##Quality", &g.p.quality, kQualities, 4, kQualityTips, nullptr, kDefaults.quality);
             if (g.p.autoFocus) {
                 ApexUi::SliderOptions o;
@@ -1139,19 +1190,26 @@ class DepthBlurPatch : public ApexPatch {
             changed |= ApexUi::SwitchRow("Glowing lights", &g.p.glowLights, "Lamps stay bright in the blur", kDefaults.glowLights);
             ApexUi::EndAdvanced();
         }
-        if (ApexUi::IconTextButton("Reset Depth Blur##DepthBlur", IconId::RotateCcw, "Back to the default focus, blur and look")) {
-            ApexUi::ReportChange("Depth Blur reset");
-            g.p = Params{};
-            changed = true;
-        }
+
         if (changed) NotifySettingChanged();
     }
 
     // Developer page > Debug views
     void RenderDeveloperUI() override {
         SAFE_IMGUI_BEGIN();
-        ImGui::TextWrapped("Status: %s", g.status.c_str());
         bool changed = false;
+
+        changed |= ApexUi::Checkbox("Show blur amount", &g.p.debugView);
+        ApexUi::Tooltip("Shows the blur amount instead of the image: white = blurred, black = sharp; the Auto focus window is tinted violet");
+        ImGui::SetNextItemWidth(120.0f * ApexUi::Unit());
+        if (ImGui::InputFloat("Far plane", &g.p.farPlane, 0.0f, 0.0f, "%.1f")) {
+            g.p.farPlane = std::fmin(std::fmax(g.p.farPlane, 10.0f), 10000.0f);
+            changed = true;
+        }
+        ApexUi::Tooltip("Fixed focus only: the far plane of the curve that turns the depth buffer into distance (10 - 10000)");
+        if (changed) NotifySettingChanged();
+        if (ApexUi::BeginAdvanced("DiagnosticDetails", "Focus and rendering details")) {
+        ImGui::TextWrapped("Status: %s", g.status.c_str());
         // Ask the effect for the focus read-out while this is drawn (the next half second)
         {
             LARGE_INTEGER now, freq;
@@ -1175,15 +1233,8 @@ class DepthBlurPatch : public ApexPatch {
             ImGui::TextDisabled("Blurred frames: %u  |  taps per side: %d  |  blur targets: %s", g.framesBlurred, g.lastTaps, FormatName(g.halfFmt));
         }
         ImGui::TextDisabled("Map view: %s  |  fade %.2f", g.mapOpen ? "open" : "closed", g.mapFade);
-        changed |= ImGui::Checkbox("Show blur amount", &g.p.debugView);
-        ApexUi::Tooltip("Shows the blur amount instead of the image: white = blurred, black = sharp; the Auto focus window is tinted violet");
-        ImGui::SetNextItemWidth(120.0f * ApexUi::Unit());
-        if (ImGui::InputFloat("Far plane", &g.p.farPlane, 0.0f, 0.0f, "%.1f")) {
-            g.p.farPlane = std::fmin(std::fmax(g.p.farPlane, 10.0f), 10000.0f);
-            changed = true;
+            ApexUi::EndAdvanced();
         }
-        ApexUi::Tooltip("Fixed focus only: the far plane of the curve that turns the depth buffer into distance (10 - 10000)");
-        if (changed) NotifySettingChanged();
     }
 };
 

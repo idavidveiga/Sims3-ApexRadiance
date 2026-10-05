@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Faster texture compression: the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical four-blocks-at-a-time
 // version (see fast_dxt.h, features/dxt_codec.h and docs/features/performance.md).
@@ -343,45 +344,49 @@ void RenderDeveloperUI() {
     if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
-    ImGui::TextUnformatted(("Faster texture compression: " + StatusText()).c_str());
-    ImGui::TextDisabled("Textures %llu, blocks %llu (flat-luma %llu, solid %llu), encoded by the game's own function %llu; passed through while off %llu",
-                        static_cast<unsigned long long>(s.images), static_cast<unsigned long long>(s.blocks), static_cast<unsigned long long>(s.powerAxis),
-                        static_cast<unsigned long long>(s.solid), static_cast<unsigned long long>(s.delegated), static_cast<unsigned long long>(s.passedThrough));
-    ImGui::TextDisabled("Apex's encoder %.1f ms in total; checked textures: game %.1f ms, Apex %.1f ms%s", s.fastMs, s.checkedGameMs, s.checkedFastMs,
-                        s.checkedFastMs > 0.0 ? std::format(" ({:.1f}x)", s.checkedGameMs / s.checkedFastMs).c_str() : "");
-    ImGui::TextDisabled("CPU: %s", DxtCodec::CpuFeatureText());
     int every = g_verifyEvery.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Check 1 texture in N against the game##FdVerify", &every, 0, 64)) SetVerifyEvery(every);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Check every texture for 30 s##FdVerifyAll")) VerifyAllFor(30.0);
+    if (ApexUi::DiagnosticIntRow("Check 1 texture in N against the game##FdVerify", &every, 0, 64)) SetVerifyEvery(every);
+    if (ApexUi::BeginControlRow("Validation run", "Adds comparison work while the test is active", ApexUi::ButtonWidth("Check every texture for 30 s##FdVerifyAll", true))) {
+        if (ApexUi::IconTextButton("Check every texture for 30 s##FdVerifyAll", ApexUi::IconId::Scan)) VerifyAllFor(30.0);
+        ApexUi::EndControlRow();
+    }
     const bool all = GetTickCount64() < g_verifyAllUntil.load();
-    ImGui::TextDisabled("Checks: %llu equal, %llu different, %llu too large to check%s", static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches),
+    ImGui::TextWrapped("Checks: %llu equal, %llu different, %llu too large to check%s", static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches),
                         static_cast<unsigned long long>(s.notCheckable), all ? "  [checking every texture]" : "");
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
     // several cores (DxtCodec::Parallel)
     const uint32_t maxWorkers = DxtCodec::Parallel::DefaultWorkers();
+    if (ApexUi::BeginAdvanced("WorkerDetails", "Worker counters")) {
     const char* coresState = !g_severalCores.load() ? "off (Use several cores)" : g_parSelfOff.load() ? "turned itself off (a worker's FP state differed, see the log)" : "on";
-    ImGui::TextDisabled("Several cores: %s; %u worker threads created (up to %u on this processor)", coresState, s.workersCreated, maxWorkers);
-    ImGui::TextDisabled("Split textures %llu (%llu chunks, %.0f%% by workers) in %.1f ms; about %.1f ms saved (summed chunk time minus wall time); on one core because another "
+    ImGui::TextWrapped("Several cores: %s; %u worker threads created (up to %u on this processor)", coresState, s.workersCreated, maxWorkers);
+    ImGui::TextWrapped("Split textures %llu (%llu chunks, %.0f%% by workers) in %.1f ms; about %.1f ms saved (summed chunk time minus wall time); on one core because another "
                         "texture had the workers %llu; FP state mismatches %llu",
                         static_cast<unsigned long long>(s.parallelImages), static_cast<unsigned long long>(s.parallelChunks),
                         s.parallelChunks ? 100.0 * static_cast<double>(s.chunksByWorkers) / static_cast<double>(s.parallelChunks) : 0.0, s.parallelWallMs, s.savedMs,
                         static_cast<unsigned long long>(s.parallelBusy), static_cast<unsigned long long>(s.fpStateMismatches));
+        ApexUi::EndAdvanced();
+    }
     if (maxWorkers) {
         int workers = ParallelWorkers();
-        ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::SliderInt("Worker threads per texture (0 = one core)##FdWorkers", &workers, 0, static_cast<int>(maxWorkers))) SetParallelWorkers(workers);
+            if (ApexUi::DiagnosticIntRow("Worker threads per texture (0 = one core)##FdWorkers", &workers, 0, static_cast<int>(maxWorkers))) SetParallelWorkers(workers);
     } else {
-        ImGui::TextDisabled("This processor has too few logical processors for workers: one core");
+        ImGui::TextWrapped("This processor has too few logical processors for workers: one core");
     }
     int side = ParallelMinSide();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Split textures from (side, pixels)##FdMinSide", &side, 32, 2048, "%d", ImGuiSliderFlags_Logarithmic)) SetParallelMinSide(side);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Default##FdParDefaults")) {
+    if (ApexUi::DiagnosticIntRow("Split textures from (side, pixels)##FdMinSide", &side, 32, 2048, nullptr, ImGuiSliderFlags_Logarithmic)) SetParallelMinSide(side);
+    if (ApexUi::TextButton("Default##FdParDefaults")) {
         SetParallelWorkers(static_cast<int>(maxWorkers));
         SetParallelMinSide(kDefaultMinSide);
+    }
+    if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
+    ImGui::TextWrapped("%s", ("Faster texture compression: " + StatusText()).c_str());
+    ImGui::TextWrapped("Textures %llu, blocks %llu (flat-luma %llu, solid %llu), encoded by the game's own function %llu; passed through while off %llu",
+                        static_cast<unsigned long long>(s.images), static_cast<unsigned long long>(s.blocks), static_cast<unsigned long long>(s.powerAxis),
+                        static_cast<unsigned long long>(s.solid), static_cast<unsigned long long>(s.delegated), static_cast<unsigned long long>(s.passedThrough));
+    ImGui::TextWrapped("Apex's encoder %.1f ms in total; checked textures: game %.1f ms, Apex %.1f ms%s", s.fastMs, s.checkedGameMs, s.checkedFastMs,
+                        s.checkedFastMs > 0.0 ? std::format(" ({:.1f}x)", s.checkedGameMs / s.checkedFastMs).c_str() : "");
+    ImGui::TextWrapped("CPU: %s", DxtCodec::CpuFeatureText());
+        ApexUi::EndAdvanced();
     }
 }
 

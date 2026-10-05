@@ -53,4 +53,7 @@ std::string DiagText(); // F8: samples near the active lot's lights, the game's 
 // Development build: the samples above are recorded only while armed (Developer checkbox, or the first F8 dump arms it)
 void SetDiagArmed(bool on);
 bool DiagArmed();
+// On-demand recorder only: bounded raw wall-edge measurements, no lighting changes.
+void BeginSeamRecording();
+std::string EndSeamRecording(bool save);
 }

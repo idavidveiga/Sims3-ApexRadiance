@@ -10,6 +10,16 @@
 
 namespace VioletTheme {
 
+// Control heights at the reference scale; colour and size are independent.
+inline constexpr float kControlCompact = 30.0f;
+inline constexpr float kControlPrimary = 36.0f;
+inline constexpr float kControlIcon = 16.0f;
+
+inline constexpr float kControlPadding = 10.0f;
+inline constexpr float kPrimaryPadding = 14.0f;
+inline constexpr float kControlIconGap = 6.0f;
+inline constexpr float kCheckboxSize = 20.0f;
+
 // Palette (0xRRGGBB)
 inline constexpr unsigned kAccent = 0x7F77DD;      // violet: toggles on, icons, slider fill, "Advanced"
 inline constexpr unsigned kAccentDark = 0x534AB7;  // highlighted pill, hovered buttons

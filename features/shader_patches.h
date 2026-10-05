@@ -22,9 +22,15 @@ struct RoadPatch {
 };
 bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
 
-// World terrain chunks: the constant cK whose .x scales the chunk light map read from `sampler` (read once, by no other
-// instruction), -1 when there is none that scales the map alone.
-int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler);
+// World terrain chunks: an exclusive cK.x lamp-map multiplier, either linear or
+// squared through a scalar temporary. Unknown/shared layouts return -1.
+int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler, bool* squared = nullptr);
+
+// Keep native terrain alpha (solar visibility) when smoothing lamp RGB. A single
+// direct light-map read is required; unsupported layouts are left untouched.
+bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler);
+// Captured single-pass variant: match the native multipass lighting range in daylight.
+bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst);
 
 // Snowy floor tiles: the vertex shader already outputs world xz in TEXCOORD0.zw. The pixel shader lights the floor
 // only with the lot light map ("texld rA, v2, s2" ... "mul rB.xyz, rC.w, rA"); add the world light atlas:
@@ -169,6 +175,13 @@ DitherResult AddDither2(std::vector<DWORD>& t, int* amountConst = nullptr, int* 
 // vs_1_1 / vs_2_x: every write to oPos goes to a free temp, then oPos and oTk = that position. False when oTk is
 // already written, no free temp, subroutines, or another version (vs_3_0 pairs with ps_3_0 only).
 bool AddScreenPosVs(std::vector<DWORD>& t, int texcoord);
+
+// AO receiver mask: paired shader copies preserve geometry/alpha rejection, writing clip z/w to colour.
+// Opaque R/G hold body/hair depth (other channel = 1) for MIN blending.
+// Transparent R uses signed depth (negative hair); G retains original alpha coverage.
+// Rejects unsupported models, occupied interpolators, extra colour/depth outputs and early returns.
+// Inputs remain unchanged on failure.
+bool MakeAoReceiverMask(std::vector<DWORD>& vs, std::vector<DWORD>& ps, bool hair = false, bool transparent = false);
 
 // Temporal anti-aliasing (temporal_aa.cpp): every write to the position output (oPos, or the vs_3_0 output declared
 // POSITION0) goes to a free temp rP, and at the end rP.xy += c[jitterConst].xy * rP.w, then position = rP: the image moves

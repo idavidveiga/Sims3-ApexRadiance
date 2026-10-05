@@ -9,7 +9,6 @@
 #include "picture.h"
 #include "frame_profiler.h"
 #include "performance.h"
-#include "features/performance_mode.h"
 #include "ui/i18n.h"
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -224,6 +223,7 @@ struct NamedKey {
     const char* name;
 };
 constexpr NamedKey kNamedKeys[] = {
+    {VK_MENU, "Alt"},
     {VK_INSERT, "Insert"},   {VK_DELETE, "Delete"},    {VK_HOME, "Home"},          {VK_END, "End"},           {VK_PRIOR, "PageUp"},       {VK_NEXT, "PageDown"},
     {VK_PAUSE, "Pause"},     {VK_SCROLL, "ScrollLock"}, {VK_OEM_3, "Backtick"},     {VK_OEM_MINUS, "Minus"},   {VK_OEM_PLUS, "Equals"},    {VK_OEM_4, "LeftBracket"},
     {VK_OEM_6, "RightBracket"}, {VK_OEM_5, "Backslash"}, {VK_OEM_1, "Semicolon"},   {VK_OEM_7, "Quote"},       {VK_OEM_COMMA, "Comma"},    {VK_OEM_PERIOD, "Period"},
@@ -277,6 +277,16 @@ bool ParseKeyChord(const std::string& text, KeyChord& out) {
     return true;
 }
 
+// A bare letter, digit or Space would fire while typing Sim, lot or save names: older saves stored a bare C.
+static KeyChord AcceptScreenshotKey(const KeyChord& c) {
+    const bool bare = !c.ctrl && !c.shift && !c.alt &&
+                      ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE);
+    if (!bare) return c;
+    const KeyChord fallback = UiSettings{}.screenshotKey;
+    LOG_INFO("[Config] screenshot_key " + KeyChordText(c) + " is a bare typing key; using " + KeyChordText(fallback));
+    return fallback;
+}
+
 UiSettings GetUi() {
     std::lock_guard<std::mutex> lock(g_uiLock);
     return g_ui;
@@ -288,7 +298,6 @@ void SetUi(const UiSettings& ui) {
         g_ui = ui;
     }
     I18n::SetChoice(ui.language);
-    PerformanceMode::SetEnabled(ui.performanceMode);
     RequestSave();
 }
 
@@ -338,20 +347,31 @@ void LoadSettings() {
         u.fontScale = std::clamp(static_cast<float>((*ui)["font_scale"].value_or(1.0)), 0.5f, 3.0f);
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
         u.startNote = (*ui)["start_note"].value_or(true);
-        u.performanceMode = (*ui)["performance_mode"].value_or(true);
-        PerformanceMode::SetEnabled(u.performanceMode);
         u.captureScreenshot = (*ui)["capture_screenshot"].value_or(true);
         u.developerMode = (*ui)["developer_mode"].value_or(false);
         kPublicBuild.store(!u.developerMode, std::memory_order_relaxed);
-        u.welcomeDone = (*ui)["welcome_done"].value_or(false); // missing (first start, migrated configs): the tour shows
+        u.welcomeDone = (*ui)["welcome_done"].value_or(false); // retained for compatibility; no longer controls startup UI
         u.keyChosen = (*ui)["key_chosen"].value_or(false);
+        u.startProfileDone = (*ui)["start_profile_done"].value_or(true); // only new installations (no [ui] yet) see the welcome page
         const std::string preset = (*ui)["hotkey_preset"].value_or(std::string());
         u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
         u.minePresetBase = static_cast<int>((*ui)["mine_base"].value_or(int64_t{0}));
         KeyChord own;
         if (ParseKeyChord((*ui)["compare_key"].value_or(std::string()), own)) u.compareKey = own;
         if (ParseKeyChord((*ui)["refresh_key"].value_or(std::string()), own)) u.refreshKey = own;
+        if (ParseKeyChord((*ui)["probe_key"].value_or(std::string()), own)) u.probeKey = own;
+        if (ParseKeyChord((*ui)["diagnostics_key"].value_or(std::string()), own)) u.diagnosticsKey = own;
+        if (ParseKeyChord((*ui)["recorder_key"].value_or(std::string()), own)) u.recorderKey = own;
+        if (ParseKeyChord((*ui)["frame_capture_key"].value_or(std::string()), own)) u.frameCaptureKey = own;
+        if (ParseKeyChord((*ui)["search_key"].value_or(std::string()), own)) u.searchKey = own;
+        if (ParseKeyChord((*ui)["peek_key"].value_or(std::string()), own)) u.peekKey = own;
+        if (ParseKeyChord((*ui)["picture_compare_key"].value_or(std::string()), own)) u.pictureCompareKey = own;
+        // screenshot_shortcut_enabled is no longer shown in the menu; a saved false would hide the shortcut for good
+        if (ParseKeyChord((*ui)["screenshot_key"].value_or(std::string()), own)) u.screenshotKey = AcceptScreenshotKey(own);
+        u.screenshotHideGameUi = (*ui)["screenshot_hide_game_ui"].value_or(true);
+        u.screenshotToApexFolder = (*ui)["screenshot_folder"].value_or(std::string("game")) == "apex";
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
+        u.changelogSeen = (*ui)["changelog_seen"].value_or(std::string());
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
         u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
         I18n::SetChoice(u.language);
@@ -409,17 +429,29 @@ bool Save(std::string* error) {
         ui.insert("font_scale", static_cast<double>(u.fontScale));
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("start_note", u.startNote);
-        ui.insert("performance_mode", u.performanceMode);
         ui.insert("capture_screenshot", u.captureScreenshot);
         ui.insert("developer_mode", u.developerMode);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("key_chosen", u.keyChosen);
+        ui.insert("start_profile_done", u.startProfileDone);
         static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
         if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) ui.insert("hotkey_preset", kPresetKeys[u.hotkeyPreset]);
         if (u.hotkeyPreset == 3) ui.insert("mine_base", static_cast<int64_t>(u.minePresetBase));
         if (u.compareKey.vk) ui.insert("compare_key", KeyChordText(u.compareKey));
         if (u.refreshKey.vk) ui.insert("refresh_key", KeyChordText(u.refreshKey));
+        if (u.probeKey.vk) ui.insert("probe_key", KeyChordText(u.probeKey));
+        if (u.diagnosticsKey.vk) ui.insert("diagnostics_key", KeyChordText(u.diagnosticsKey));
+        if (u.recorderKey.vk) ui.insert("recorder_key", KeyChordText(u.recorderKey));
+        if (u.frameCaptureKey.vk) ui.insert("frame_capture_key", KeyChordText(u.frameCaptureKey));
+        ui.insert("search_key", KeyChordText(u.searchKey));
+        ui.insert("peek_key", KeyChordText(u.peekKey));
+        ui.insert("picture_compare_key", KeyChordText(u.pictureCompareKey));
+        ui.insert("screenshot_shortcut_enabled", u.screenshotShortcutEnabled);
+        ui.insert("screenshot_key", KeyChordText(u.screenshotKey));
+        ui.insert("screenshot_hide_game_ui", u.screenshotHideGameUi);
+        ui.insert("screenshot_folder", std::string(u.screenshotToApexFolder ? "apex" : "game"));
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
+        if (!u.changelogSeen.empty()) ui.insert("changelog_seen", u.changelogSeen);
         static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
         ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
         root.insert_or_assign("ui", std::move(ui));
@@ -604,8 +636,19 @@ void ApplyFeatureState(const toml::table& state) {
         if (ParseKeyChord((*sc)["menu_key"].value_or(std::string()), k)) u.toggle = k;
         const std::string preset = (*sc)["preset"].value_or(std::string());
         u.hotkeyPreset = preset == "letters" ? 0 : preset == "numbers" ? 1 : preset == "fkeys" ? 2 : preset == "mine" ? 3 : -1;
+        u.minePresetBase = static_cast<int>((*sc)["mine_base"].value_or(static_cast<int64_t>(u.minePresetBase)));
         u.compareKey = ParseKeyChord((*sc)["compare_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
         u.refreshKey = ParseKeyChord((*sc)["refresh_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.probeKey = ParseKeyChord((*sc)["probe_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.diagnosticsKey = ParseKeyChord((*sc)["diagnostics_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.recorderKey = ParseKeyChord((*sc)["recorder_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        u.frameCaptureKey = ParseKeyChord((*sc)["frame_capture_key"].value_or(std::string()), k) ? k : KeyChord{0, true, true, false};
+        if (ParseKeyChord((*sc)["search_key"].value_or(std::string()), k)) u.searchKey = k;
+        if (ParseKeyChord((*sc)["peek_key"].value_or(std::string()), k)) u.peekKey = k;
+        if (ParseKeyChord((*sc)["picture_compare_key"].value_or(std::string()), k)) u.pictureCompareKey = k;
+        if (ParseKeyChord((*sc)["screenshot_key"].value_or(std::string()), k)) u.screenshotKey = AcceptScreenshotKey(k);
+        u.screenshotHideGameUi = (*sc)["screenshot_hide_game_ui"].value_or(u.screenshotHideGameUi);
+        if (auto f = (*sc)["screenshot_folder"].value<std::string>()) u.screenshotToApexFolder = *f == "apex";
         u.keyChosen = true;
         SetUi(u);
         LOG_INFO("[Config] Shortcuts taken from the profile: menu key " + KeyChordText(u.toggle));
@@ -652,7 +695,7 @@ void ApplyFeatureState(const toml::table& state) {
 // ---- profiles ----
 
 const char* ProfilePartName(int index) {
-    static const char* const kNames[kProfilePartCount] = {"Night Lights", "Color", "Depth Blur", "Edge Smoothing", "", "Performance", "Shortcuts", "Ambient Occlusion", "Development"};
+    static const char* const kNames[kProfilePartCount] = {"Lighting", "Color", "Depth Blur", "Edge Smoothing", "", "Performance", "Shortcuts", "Ambient Occlusion", "Developer"};
     return index >= 0 && index < kProfilePartCount ? kNames[index] : "";
 }
 
@@ -733,7 +776,7 @@ bool ProfileExists(const std::string& name) {
     return !clean.empty() && ApexUtil::FileExists(ProfileFile(clean));
 }
 
-bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
+bool SaveProfile(const std::string& name, unsigned parts, std::string* error, const std::string& icon) {
     const std::string clean = SanitizeProfileName(name);
     if (clean.empty() || clean != name) {
         if (error) *error = "invalid name";
@@ -748,14 +791,27 @@ bool SaveProfile(const std::string& name, unsigned parts, std::string* error) {
             sc.insert("menu_key", KeyChordText(u.toggle));
             static constexpr const char* kPresetKeys[] = {"letters", "numbers", "fkeys", "mine"};
             if (u.hotkeyPreset >= 0 && u.hotkeyPreset < 4) sc.insert("preset", kPresetKeys[u.hotkeyPreset]);
+            if (u.hotkeyPreset == 3) sc.insert("mine_base", static_cast<int64_t>(u.minePresetBase));
             if (u.compareKey.vk) sc.insert("compare_key", KeyChordText(u.compareKey));
             if (u.refreshKey.vk) sc.insert("refresh_key", KeyChordText(u.refreshKey));
+            if (u.probeKey.vk) sc.insert("probe_key", KeyChordText(u.probeKey));
+            if (u.diagnosticsKey.vk) sc.insert("diagnostics_key", KeyChordText(u.diagnosticsKey));
+            if (u.recorderKey.vk) sc.insert("recorder_key", KeyChordText(u.recorderKey));
+            if (u.frameCaptureKey.vk) sc.insert("frame_capture_key", KeyChordText(u.frameCaptureKey));
+            sc.insert("search_key", KeyChordText(u.searchKey));
+            sc.insert("peek_key", KeyChordText(u.peekKey));
+            sc.insert("picture_compare_key", KeyChordText(u.pictureCompareKey));
+            sc.insert("screenshot_shortcut_enabled", u.screenshotShortcutEnabled);
+            sc.insert("screenshot_key", KeyChordText(u.screenshotKey));
+            sc.insert("screenshot_hide_game_ui", u.screenshotHideGameUi);
+            sc.insert("screenshot_folder", std::string(u.screenshotToApexFolder ? "apex" : "game"));
             root.insert_or_assign("shortcuts", std::move(sc));
         }
         KeepProfileParts(root, parts);
         toml::table meta;
         meta.insert("written_by", APEX_PRODUCT_NAME " " APEX_VERSION_STRING);
         meta.insert("profile", clean);
+        meta.insert("icon", icon);
         root.insert_or_assign("meta", std::move(meta));
         if (!ApexPaths::EnsureApexDirectory()) {
             if (error) *error = "the settings folder could not be created";

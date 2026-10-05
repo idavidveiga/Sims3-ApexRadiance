@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Object lookup index (see object_index.h and docs/features/performance.md, section "Faster object lookups (C8)").
 //
@@ -590,27 +591,31 @@ void RenderDeveloperUI() {
         prev = s;
         prevTick = now;
     }
-    ImGui::TextUnformatted(("Faster object lookups: " + StatusText()).c_str());
-    ImGui::TextDisabled("Lookups %llu, from the index %llu, game walks %llu (not found %llu), too old %llu, path changed %llu, passed through %llu",
+    int every = g_verifyEvery.load();
+    if (ApexUi::DiagnosticIntRow("Check 1 answer in N against the game##OiVerify", &every, 0, 1024)) SetVerifyEvery(every);
+    if (ApexUi::BeginControlRow("Validation run", "Adds comparison work while the test is active", ApexUi::ButtonWidth("Check every answer for 10 s##OiVerifyAll", true))) {
+        if (ApexUi::IconTextButton("Check every answer for 10 s##OiVerifyAll", ApexUi::IconId::Scan)) VerifyAllFor(10.0);
+        ApexUi::EndControlRow();
+    }
+    const bool checkingAll = GetTickCount64() < g_verifyAllUntil.load();
+    ImGui::TextWrapped("Checks: %llu equal, %llu different, %llu inconclusive (the tree changed during the check)%s", static_cast<unsigned long long>(s.verified),
+                        static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.inconclusive), checkingAll ? "  [checking every answer]" : "");
+    if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
+    if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
+    ImGui::TextWrapped("%s", ("Faster object lookups: " + StatusText()).c_str());
+    ImGui::TextWrapped("Lookups %llu, from the index %llu, game walks %llu (not found %llu), too old %llu, path changed %llu, passed through %llu",
                         static_cast<unsigned long long>(s.lookups), static_cast<unsigned long long>(s.hits), static_cast<unsigned long long>(s.walks),
                         static_cast<unsigned long long>(s.notFound), static_cast<unsigned long long>(s.expired), static_cast<unsigned long long>(s.rejected),
                         static_cast<unsigned long long>(s.passed));
-    ImGui::TextDisabled("Stored %llu (not stored %llu), entries %u / %u, table restarts %llu; classes recognised: %u container, %u object",
+    ImGui::TextWrapped("Stored %llu (not stored %llu), entries %u / %u, table restarts %llu; classes recognised: %u container, %u object",
                         static_cast<unsigned long long>(s.stored), static_cast<unsigned long long>(s.notStored), s.entries, s.capacity,
                         static_cast<unsigned long long>(s.generation), s.layerClasses, s.objectClasses);
-    ImGui::TextDisabled("Per second: %.0f lookups, %.0f from the index; time in answers %.2f ms, in game walks %.2f ms; saved about %.2f ms", rateLookups, rateHits, rateHitMs,
+    ImGui::TextWrapped("Per second: %.0f lookups, %.0f from the index; time in answers %.2f ms, in game walks %.2f ms; saved about %.2f ms", rateLookups, rateHits, rateHitMs,
                         rateWalkMs, rateSavedMs);
-    ImGui::TextDisabled("Average: game walk %.1f us, answer from the index %.2f us", s.walks ? 1000.0 * s.walkMs / static_cast<double>(s.walks) : 0.0,
+    ImGui::TextWrapped("Average: game walk %.1f us, answer from the index %.2f us", s.walks ? 1000.0 * s.walkMs / static_cast<double>(s.walks) : 0.0,
                         s.hits ? 1000.0 * s.hitMs / static_cast<double>(s.hits) : 0.0);
-    int every = g_verifyEvery.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Check 1 answer in N against the game##OiVerify", &every, 0, 1024)) SetVerifyEvery(every);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Check every answer for 10 s##OiVerifyAll")) VerifyAllFor(10.0);
-    const bool checkingAll = GetTickCount64() < g_verifyAllUntil.load();
-    ImGui::TextDisabled("Checks: %llu equal, %llu different, %llu inconclusive (the tree changed during the check)%s", static_cast<unsigned long long>(s.verified),
-                        static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.inconclusive), checkingAll ? "  [checking every answer]" : "");
-    if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
+        ApexUi::EndAdvanced();
+    }
 }
 
 

@@ -228,6 +228,15 @@ void Start() {
     StartLocked(r);
 }
 
+bool PrecompileComplete() {
+    Registry& r = R();
+    std::unique_lock<std::mutex> lk(r.m, std::try_to_lock);
+    if (!lk.owns_lock() || !r.started) return false;
+    for (const auto& j : r.jobs)
+        if (j->state != Job::Done) return false;
+    return true;
+}
+
 namespace {
 // The bytecode the device actually holds for a shader equals `code` (another mod's CreatePixelShader hook can hand back a
 // different shader: a shader replacer keyed on the bytecode's hash or on the creation order)

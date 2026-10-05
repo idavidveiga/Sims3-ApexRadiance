@@ -40,10 +40,10 @@
 
 namespace {
 
-// Steam 1.67.2 (the only build this part installs on: GameAddr::IsFixed, and every site checked byte by byte)
-constexpr uintptr_t kMarkCall = 0x006C7CD6;   // in FUN_006c7ba0: CALL FUN_006c7160, ecx = entry+0x14 (tree level), push entry+0x1C
-constexpr uintptr_t kMark = 0x006C7160;       // FUN_006c7160: thiscall(treeLevel, int room) ret 4: the room goes into tl+8
-constexpr uintptr_t kLitCall = 0x006C7CB6;    // "mov ecx, edi; call FUN_006bdca0": edi = the light, esi = the entry
+// Steam 1.67.2 values; Install takes them from GameAddr on every build (every site still checked byte by byte)
+uintptr_t kMarkCall = 0x006C7CD6;             // in FUN_006c7ba0: CALL FUN_006c7160, ecx = entry+0x14 (tree level), push entry+0x1C
+uintptr_t kMark = 0x006C7160;                 // FUN_006c7160: thiscall(treeLevel, int room) ret 4: the room goes into tl+8
+uintptr_t kLitCall = 0x006C7CB6;              // "mov ecx, edi; call FUN_006bdca0": edi = the light, esi = the entry
 constexpr uintptr_t kEntryFlag = 0x006C4CF0;  // FUN_006c4cf0(objId): flags every light and occluder entry of an object
 // The light manager's message handlers that flag entries (development build: counted, then the game's call)
 constexpr uintptr_t kFlagSites[5] = {0x006B0A8D, 0x006B0BFA, 0x006B0B33, 0x006B0C9A, 0x006B0D26};
@@ -248,9 +248,17 @@ namespace LampMarkFilter {
 
 bool Install(std::string& why) {
     if (g_installed) return true;
-    if (!GameAddr::IsFixed()) {
-        why = "Rooms keep their light: only on the Steam 1.67.2 game";
-        return false;
+    {
+        using GameAddr::Id;
+        std::string missing;
+        if (!GameAddr::Have({Id::LampLitCall, Id::LampMarkCall, Id::LampMark}, &missing)) {
+            why = "Rooms keep their light: " + GameAddr::NotAvailable(missing);
+            return false;
+        }
+        kLitCall = GameAddr::Get(Id::LampLitCall);
+        kMarkCall = GameAddr::Get(Id::LampMarkCall);
+        kMark = GameAddr::Get(Id::LampMark);
+        g_markTarget = kMark;
     }
     // 0x6C7CB6: 8B CF E8 (mov ecx, edi; call FUN_006bdca0); 0x6C7CCF: 8B 4E 1C 51 8B 4E 14 (mov ecx,[esi+1C]; push ecx; mov ecx,[esi+14])
     const BYTE lit[] = {0x8B, 0xCF, 0xE8}, arg[] = {0x8B, 0x4E, 0x1C, 0x51, 0x8B, 0x4E, 0x14};
@@ -267,7 +275,7 @@ bool Install(std::string& why) {
         return false;
     }
     g_flagsCounted = false;
-    if (!kPublicBuild) { // which messages flag the entries (the floor switch's trigger): all five or none
+    if (!kPublicBuild && GameAddr::IsFixed()) { // (Steam addresses only) which messages flag the entries (the floor switch's trigger): all five or none
         bool all = true;
         for (uintptr_t s : kFlagSites) all = all && CallsTarget(s, kEntryFlag);
         std::vector<MemPatch::PatchLocation> before = g_patches;
