@@ -2855,7 +2855,10 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     if (!g_floorMaskReady || !room[0x18]) return r;
     out[3] = 0.0f; // outdoor: the game's alpha 0, unless the mask below applies
     const float* s = static_cast<const float*>(sample);
-    if (!g_floorWallsOn.load(std::memory_order_relaxed) || s[5] < 0.9f || ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return r;
+    // Every thread (user 05/10: the light between stories "does not work every time"): the game also solves rooms off the
+    // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
+    // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
+    if (!g_floorWallsOn.load(std::memory_order_relaxed) || s[5] < 0.9f) return r;
     BYTE* room0 = nullptr;
     __try {
         const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
