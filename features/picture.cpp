@@ -27,8 +27,6 @@
 #include "ui/i18n.h"
 #include "ui/widgets.h"
 #include "scene_dither.h"
-#include "rig_tracker.h"
-#include "night_lighting.h"
 #include <d3dcompiler.h>
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -55,7 +53,7 @@ const char* kShaderSource = R"HLSL(
 sampler2D sFrame : register(s0); // the finished frame (scene + UI), point
 sampler2D sScene : register(s1); // the scene before the UI, point
 sampler2D sBase  : register(s2); // the scene at 1/8 size, bilinear (clarity, glow, dreamy: the smooth local average)
-sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize or Sun rays runs
+sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize runs
 sampler2D sHalf  : register(s4); // the scene at 1/2 size, bilinear (tilt-shift)
 sampler2D sQuart : register(s5); // the scene at 1/4 size, bilinear (tilt-shift, glow, halation)
 float4 cLook   : register(c0);  // x = saturation, y = scene copy valid, z = compare
@@ -103,21 +101,10 @@ float4 cFx2    : register(c40); // x = soft pixels, y = 1 / gamma, z = line peri
 float4 cCrt    : register(c41); // x = amount, y = curvature, z = phosphor mask, w = scanlines
 float4 cCrt2   : register(c42); // x = edge darkening, y = line period (px)
 // c43: unused (was Cartoon)
-float4 cFlagF  : register(c44); // Sun rays, Fake HDR
-float4 cRays   : register(c45); // x = amount, y = reach (fraction of the way to the sun), z = decay per sample, w = sun marker
-float4 cRays2  : register(c46); // xy = the sun on screen (uv), z = visibility (off screen, night), w = width / height
-float4 cRaysC  : register(c47); // rgb = ray colour
+float4 cFlagF  : register(c44); // y = Fake HDR
+// c45 .. c47: unused (were Sun rays)
 float4 cHdr    : register(c48); // x = amount, y = radius (0 fine .. 1 large), z = shadows, w = highlights
 float4 cHdr2   : register(c49); // x = halo protection, y = saturation
-sampler2D sSun : register(s6); // Sun rays: 1x1, xy = the sun's disc on screen found by SunFindPS (z = found), point
-
-// Sun rays: where the sun is drawn. The game's sun light direction (projected on the CPU, cRays2.xy) is close to the sun
-// disc of the sky but not on it, so SunFindPS looks around that point for the brightest sky and returns its centre.
-float2 SunUv()
-{
-    float4 s = tex2Dlod(sSun, float4(0.5, 0.5, 0, 0));
-    return cFlagF.z > 0.5 && s.z > 0.5 ? s.xy : cRays2.xy;
-}
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
 
 float3 Decode(float3 c)
@@ -205,13 +192,6 @@ float3 Saturate3(float3 g, float s)
 float ViewZ(float d)
 {
     return d >= 1.0 ? 1e5 : cEmph2.z * cEmph2.w / max(cEmph2.w - d, 1e-6);
-}
-
-// Sun rays: 1 where the depth is the sky (the far plane, or anything over 1.5 km such as the sky dome and the sun disc)
-float Sky(float2 p)
-{
-    float d = tex2Dlod(sDepth, float4(p, 0, 0)).r;
-    return d >= 1.0 || ViewZ(d) > 1500.0 ? 1.0 : 0.0;
 }
 
 // Prism: red and blue pulled apart along the line from the centre, the shift growing toward the edges. Several taps
@@ -346,27 +326,6 @@ float3 LightFilters(float2 uv, float3 g)
         float3 s = 1.0 - (1.0 - saturate(g)) * (1.0 - saturate(b) * 0.6);
         s = Saturate3(s, 1.0 + cDream.z);
         g = lerp(g, s, cDream.x);
-    }
-    [branch] if (cFlagF.x > 0.5 && cRays2.z > 0.0) // Sun rays: the sky marched toward the game's sun
-    {
-        // Volumetric light scattering in screen space: from the pixel toward the sun, sum the sky (the depth's far plane,
-        // so houses, trees and Sims block it) on the 1/4 copy, each step weaker; the sky near the sun counts the most
-        float2 sun = SunUv();
-        float2 delta = (sun - uv) * (cRays.y / 24.0);
-        float2 p = uv;
-        float w = 1.0, sum = 0.0;
-        [loop] for (int i = 0; i < 24; i++)
-        {
-            p += delta;
-            float sky = Sky(p);
-            float2 toSun = (p - sun) * float2(cRays2.w, 1.0);
-            float L = dot(Decode(tex2Dlod(sQuart, float4(p, 0, 0)).rgb), kLum);
-            sum += sky * w * (0.35 + L) * exp(-dot(toSun, toSun) * 6.0);
-            w *= cRays.z;
-        }
-        float2 d = (uv - sun) * float2(cRays2.w, 1.0);
-        float fall = saturate(1.0 - length(d) / (0.35 + cRays.y)); // fades away from the sun
-        g += cRaysC.rgb * sum * (1.0 / 24.0) * 3.0 * fall * cRays.x * cRays2.z;
     }
     return g;
 }
@@ -559,53 +518,9 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // a fixed dither (interleaved gradient noise, the same pattern every frame, below one 8-bit step) so the grading does
     // not turn smooth gradients into steps
     if (!posterized) o += (frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
-    // Sun rays > Show where the sun is: a ring at the place the filter put the sun (to check it against the sky)
-    [branch] if (cFlagF.x > 0.5 && cRays.w > 0.5)
-    {
-        float r = length((uv - SunUv()) * float2(cRays2.w, 1.0));
-        if (abs(r - 0.03) < 0.003) o = cRays2.z > 0.0 ? float3(1, 0, 1) : float3(0.4, 0.4, 0.4);
-    }
     if (before) o = f;
     if (divider) o = float3(1, 0, 0);
     return float4(lerp(o, f, ui), 1.0);
-}
-
-// Sun rays: the sun disc near the projected sun light (cRays2.xy), drawn into a 1x1 target before the pass. A 16x16 grid
-// over the 1/8 scene (sky only) finds the brightest sky, then the centre of everything within 10% of it: the disc, not a
-// bright cloud edge. z = 1 when a disc clearly brighter than the sky around it was found, else the projected point is kept.
-float4 SunFindPS(float2 uv : TEXCOORD0) : COLOR0
-{
-    const float R = 0.12;
-    float2 step = float2(R / cRays2.w, R) / 7.5;
-    float mx = 0.0, sumL = 0.0;
-    [loop] for (int y = 0; y < 16; y++)
-    {
-        [loop] for (int x = 0; x < 16; x++)
-        {
-            float2 p = cRays2.xy + (float2(x, y) - 7.5) * step;
-            float sky = Sky(p);
-            float L = dot(Decode(tex2Dlod(sBase, float4(p, 0, 0)).rgb), kLum) * sky;
-            mx = max(mx, L);
-            sumL += L;
-        }
-    }
-    float mean = sumL / 256.0;
-    float2 c = 0.0;
-    float wsum = 0.0;
-    [loop] for (int j = 0; j < 16; j++)
-    {
-        [loop] for (int i = 0; i < 16; i++)
-        {
-            float2 p = cRays2.xy + (float2(i, j) - 7.5) * step;
-            float sky = Sky(p);
-            float L = dot(Decode(tex2Dlod(sBase, float4(p, 0, 0)).rgb), kLum) * sky;
-            float w = saturate((L - mx * 0.9) / max(mx * 0.1, 1e-4));
-            c += p * w;
-            wsum += w;
-        }
-    }
-    bool found = wsum > 0.0 && mx > mean * 1.15 && mx > 0.2;
-    return float4(found ? c / wsum : cRays2.xy, found ? 1.0 : 0.0, 1.0);
 }
 )HLSL";
 
@@ -622,19 +537,6 @@ ShaderCache::Id AddPictureShader() {
     return ShaderCache::Add(std::move(d));
 }
 const ShaderCache::Id kPicturePsId = AddPictureShader();
-// Sun rays: the sun disc search, a second entry of the same source, drawn into a 1x1 target
-ShaderCache::Id AddSunFindShader() {
-    ShaderCache::Desc d;
-    d.tag = "Picture SunFindPS";
-    d.source = kShaderSource;
-    d.sourceName = "picture.hlsl";
-    d.entry = "SunFindPS";
-    d.target = "ps_3_0";
-    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-    d.priority = 0;
-    return ShaderCache::Add(std::move(d));
-}
-const ShaderCache::Id kSunFindPsId = AddSunFindShader();
 
 struct Gpu {
     bool ready = false, compileTried = false;
@@ -648,10 +550,6 @@ struct Gpu {
     IDirect3DSurface9* chainSurf[kChain] = {};
     UINT baseW = 0, baseH = 0;
     IDirect3DPixelShader9* ps = nullptr;
-    // Sun rays: where the sun disc is (1x1, 16-bit float; none when the format is not available: the projected sun is used)
-    IDirect3DPixelShader9* sunPs = nullptr;
-    IDirect3DTexture9* sunTex = nullptr;
-    IDirect3DSurface9* sunSurf = nullptr;
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
     bool qIssued[kQ] = {};
@@ -675,14 +573,6 @@ void RequestDepth(bool on) {
     g_depthRequested = on;
     DepthShare::Request(on);
     PostScene::WantCamera(on);
-}
-
-// Sun rays read the game's sun from the outdoor light rigs (RigTracker), only while the filter is on
-bool g_sunRequested = false;
-void RequestSun(bool on) {
-    if (on == g_sunRequested) return;
-    g_sunRequested = on;
-    RigTracker::WantSun(on);
 }
 
 template <typename T> void SafeRelease(T*& p) {
@@ -849,8 +739,8 @@ const FilterBoolKey kFilterBools[] = {
     {"technicolor1", &PictureParams::tech1}, {"technicolor2", &PictureParams::tech2}, {"dpx", &PictureParams::dpx},
     {"colourfulness", &PictureParams::colourful}, {"night_mode", &PictureParams::night}, {"vintage", &PictureParams::vintage},
     {"cross_process", &PictureParams::crossProcess}, {"black_and_white", &PictureParams::bw}, {"glow", &PictureParams::glow},
-    {"halation", &PictureParams::halation}, {"dreamy", &PictureParams::dreamy}, {"sun_rays", &PictureParams::sunRays},
-    {"sun_rays_sun_color", &PictureParams::raysSunColor}, {"sun_rays_moon", &PictureParams::raysMoon}, {"fake_hdr", &PictureParams::fakeHdr},
+    {"halation", &PictureParams::halation}, {"dreamy", &PictureParams::dreamy}, 
+    {"fake_hdr", &PictureParams::fakeHdr},
     {"emphasize", &PictureParams::emphasize}, {"emphasize_auto", &PictureParams::emphAuto}, {"tilt_shift", &PictureParams::tiltShift},
     {"prism", &PictureParams::prism}, {"grain", &PictureParams::grain},
     {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt}};
@@ -870,8 +760,8 @@ const FilterFloatKey kFilterFloats[] = {
     {"halation_amount", &PictureParams::halationAmount}, {"halation_threshold", &PictureParams::halationThreshold},
     {"halation_hue", &PictureParams::halationHue}, {"dreamy_amount", &PictureParams::dreamyAmount}, {"dreamy_softness", &PictureParams::dreamySoftness},
     {"dreamy_saturation", &PictureParams::dreamySaturation},
-    {"sun_rays_amount", &PictureParams::raysAmount}, {"sun_rays_length", &PictureParams::raysLength}, {"sun_rays_density", &PictureParams::raysDensity},
-    {"sun_rays_hue", &PictureParams::raysHue}, {"fake_hdr_amount", &PictureParams::hdrAmount}, {"fake_hdr_radius", &PictureParams::hdrRadius},
+    
+    {"fake_hdr_amount", &PictureParams::hdrAmount}, {"fake_hdr_radius", &PictureParams::hdrRadius},
     {"fake_hdr_shadows", &PictureParams::hdrShadows}, {"fake_hdr_highlights", &PictureParams::hdrHighlights}, {"fake_hdr_halo", &PictureParams::hdrHalo},
     {"fake_hdr_saturation", &PictureParams::hdrSaturation}, {"emphasize_amount", &PictureParams::emphAmount},
     {"emphasize_distance", &PictureParams::emphDistance}, {"emphasize_width", &PictureParams::emphWidth},
@@ -902,8 +792,6 @@ void Picture::ReleaseResources() {
         SafeRelease(gpu.chainSurf[i]);
         SafeRelease(gpu.chainTex[i]);
     }
-    SafeRelease(gpu.sunSurf);
-    SafeRelease(gpu.sunTex);
     for (int i = 0; i < Gpu::kQ; i++) {
         SafeRelease(gpu.qDisjoint[i]);
         SafeRelease(gpu.qBegin[i]);
@@ -959,14 +847,7 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
     if (!gpu.compileTried) {
         gpu.compileTried = true;
         gpu.ps = CompileShader(dev);
-        std::string msg;
-        if (ShaderCache::CreatePixelShader(dev, kSunFindPsId, &gpu.sunPs, &msg) == ShaderCache::Result::CompileFailed)
-            LOG_WARNING("[Picture] Sun rays: the sun search shader failed to compile (the projected sun is used): " + msg);
     }
-    // optional: without it Sun rays use the projected sun light
-    if (FAILED(dev->CreateTexture(1, 1, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &gpu.sunTex, nullptr)) || !gpu.sunTex ||
-        FAILED(gpu.sunTex->GetSurfaceLevel(0, &gpu.sunSurf)))
-        SafeRelease(gpu.sunTex);
     if (!gpu.ps) {
         ReleaseResources();
         return fail("its shader could not be created");
@@ -1005,7 +886,6 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     if (!dev || !q.enabled) {
         m_gpuMs = -1.0f;
         RequestDepth(false);
-        RequestSun(false);
         // Off: the scene-copy hooks go too (they counted every back buffer draw each frame while off; registered again at
         // the next frame it is on, which reads the current render target)
         if (gpu.hooks) {
@@ -1099,69 +979,17 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fGlow = on(q.glow, q.glowAmount), fHal = on(q.halation, q.halationAmount), fDream = on(q.dreamy, q.dreamyAmount);
     const bool fTilt = on(q.tiltShift, q.tiltAmount), fPrism = on(q.prism, q.prismAmount);
     const bool fGrain = on(q.grain, q.grainAmount), fFx = on(q.retro3dfx, q.fxAmount), fCrt = on(q.crt, q.crtAmount);
-    const bool wantEmph = on(q.emphasize, q.emphAmount), wantRays = on(q.sunRays, q.raysAmount);
+    const bool wantEmph = on(q.emphasize, q.emphAmount);
     const bool fHdr = on(q.fakeHdr, q.hdrAmount);
-    // Emphasize and Sun rays read the scene depth: requested only while one of them is on
-    RequestDepth(wantEmph || wantRays);
-    RequestSun(wantRays);
-    IDirect3DTexture9* depth = (wantEmph || wantRays) ? DepthShare::Texture() : nullptr;
+    // Emphasize reads the scene depth: requested only while it is on
+    RequestDepth(wantEmph);
+    IDirect3DTexture9* depth = wantEmph ? DepthShare::Texture() : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
-    const bool fEmph = wantEmph && depth && camNear > 0.0f, fRays = wantRays && depth;
-    // Sun rays: the game's sun direction (world space, toward the sun) through the camera's view-projection as a point at
-    // infinity (w = 0), so the camera position does not matter. Visibility fades when the sun leaves the screen, is behind
-    // the camera, or it is night (unless the moon is asked for).
-    // The camera or the rigs can be missing for a frame (no outdoor object drawn yet, the camera block not voted): the
-    // last good sun is held for half a second, and the visibility eases in and out, so the beams never blink.
-    struct SunHold {
-        float uv[2] = {-10.0f, -10.0f}, colour[3] = {1.0f, 1.0f, 1.0f}, target = 0.0f, shown = 0.0f;
-        int age = 1000;
-    };
-    static SunHold hold;
-    float sunUv[2] = {-10.0f, -10.0f}, sunVis = 0.0f, raysC[3] = {1.0f, 1.0f, 1.0f};
-    if (fRays) {
-        float dir[3], col[3], vp[4][4];
-        bool seen = false;
-        if (RigTracker::Sun(dir, col) && PostScene::CameraViewProj(vp)) {
-            seen = true;
-            float clip[4];
-            for (int k = 0; k < 4; k++) clip[k] = vp[k][0] * dir[0] + vp[k][1] * dir[1] + vp[k][2] * dir[2];
-            if (clip[3] > 1e-4f) {
-                sunUv[0] = 0.5f + 0.5f * clip[0] / clip[3];
-                sunUv[1] = 0.5f - 0.5f * clip[1] / clip[3];
-                const float out = std::max({-sunUv[0], sunUv[0] - 1.0f, -sunUv[1], sunUv[1] - 1.0f, 0.0f});
-                const float t = std::clamp(out / 0.6f, 0.0f, 1.0f);
-                sunVis = 1.0f - t * t * (3.0f - 2.0f * t);
-                if (clip[3] < 0.05f) sunVis *= clip[3] / 0.05f; // close to 90 degrees from the view: no sudden jump
-            }
-            float level = 0.0f;
-            if (NightLighting::MenuNightLevel(level)) {
-                auto step = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
-                sunVis *= std::max(1.0f - step(0.35f, 0.75f, level), q.raysMoon ? 0.35f * step(0.5f, 0.9f, level) : 0.0f);
-            }
-            const float mx = std::max({col[0], col[1], col[2]});
-            if (mx > 1e-4f)
-                for (int k = 0; k < 3; k++) raysC[k] = col[k] / mx;
-        }
-        if (seen) {
-            hold.age = 0;
-            std::memcpy(hold.uv, sunUv, sizeof hold.uv);
-            std::memcpy(hold.colour, raysC, sizeof hold.colour);
-            hold.target = sunVis;
-        } else if (++hold.age > 30) {
-            hold.target = 0.0f;
-        }
-        hold.shown += (hold.target - hold.shown) * 0.15f;
-        std::memcpy(sunUv, hold.uv, sizeof sunUv);
-        sunVis = hold.shown < 0.002f ? 0.0f : hold.shown;
-        if (q.raysSunColor) std::memcpy(raysC, hold.colour, sizeof raysC);
-        else HueColour(q.raysHue, raysC);
-    } else {
-        hold = SunHold{};
-    }
-    // clarity, glow, halation, dreamy, tilt-shift, sun rays and Fake HDR: the scene (without the UI when the copy exists)
+    const bool fEmph = wantEmph && depth && camNear > 0.0f;
+    // clarity, glow, halation, dreamy, tilt-shift and Fake HDR: the scene (without the UI when the copy exists)
     // reduced to 1/2, 1/4 and 1/8 through 2x2 boxes
     const bool clarity = std::fabs(q.clarity) > 0.001f;
-    if (clarity || fGlow || fHal || fDream || fTilt || fRays || fHdr) {
+    if (clarity || fGlow || fHal || fDream || fTilt || fHdr) {
         IDirect3DSurface9* src = gpu.sceneCopied ? gpu.sceneSurf : gpu.frameSurf;
         for (int i = 0; i < Gpu::kChain; i++) {
             dev->StretchRect(src, nullptr, gpu.chainSurf[i], nullptr, D3DTEXF_LINEAR);
@@ -1170,7 +998,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     }
 
     // save what the pass touches (the game continues from here next frame)
-    constexpr DWORD kSamplers = 7;
+    constexpr DWORD kSamplers = 6;
     constexpr UINT kConsts = 50;
     constexpr D3DRENDERSTATETYPE kRS[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
                                           D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE};
@@ -1226,11 +1054,9 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetTexture(0, gpu.frameTex);
     dev->SetTexture(1, gpu.sceneTex);
     dev->SetTexture(2, gpu.chainTex[Gpu::kChain - 1]);
-    dev->SetTexture(3, (fEmph || fRays) ? depth : nullptr);
+    dev->SetTexture(3, fEmph ? depth : nullptr);
     dev->SetTexture(4, gpu.chainTex[0]);
     dev->SetTexture(5, gpu.chainTex[1]);
-    dev->SetTexture(6, nullptr); // the sun search result, bound after it is drawn
-    const bool sunFind = fRays && sunVis > 0.0f && gpu.sunPs && gpu.sunSurf;
     const float scale = static_cast<float>(gpu.height) / 2160.0f; // pixel sizes were chosen at 4K
     const float fxLevelsRB = std::exp2(std::round(5.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f; // 5 bits .. 3 bits
     const float fxLevelsG = std::exp2(std::round(6.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f;  // 6 bits .. 4 bits
@@ -1305,29 +1131,12 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.crtAmount, 0.0f, 1.0f), std::clamp(q.crtCurvature, 0.0f, 1.0f), std::clamp(q.crtMask, 0.0f, 1.0f), std::clamp(q.crtScanlines, 0.0f, 1.0f)},
         {std::clamp(q.crtEdges, 0.0f, 1.0f), std::max(2.0f, std::round(4.0f * scale)), 0, 0},
         {0, 0, 0, 0},
-        {fRays ? 1.0f : 0.0f, fHdr ? 1.0f : 0.0f, sunFind ? 1.0f : 0.0f, 0},
-        {std::clamp(q.raysAmount, 0.0f, 1.0f), 0.3f + 0.7f * std::clamp(q.raysLength, 0.0f, 1.0f), 0.90f + 0.09f * std::clamp(q.raysDensity, 0.0f, 1.0f),
-         q.raysShowSun ? 1.0f : 0.0f},
-        {sunUv[0], sunUv[1], sunVis, W / H},
-        {raysC[0], raysC[1], raysC[2], 0},
+        {0, fHdr ? 1.0f : 0.0f, 0, 0},
+        {0, 0, 0, 0},
+        {0, 0, 0, 0},
+        {0, 0, 0, 0},
         {std::clamp(q.hdrAmount, 0.0f, 1.0f), std::clamp(q.hdrRadius, 0.0f, 1.0f), std::clamp(q.hdrShadows, 0.0f, 1.0f), std::clamp(q.hdrHighlights, 0.0f, 1.0f)},
         {std::clamp(q.hdrHalo, 0.0f, 1.0f), std::clamp(q.hdrSaturation, 0.0f, 1.0f), 0, 0}};
-    // Sun rays: find the sun disc first (one pixel, into its own 1x1 target), then the pass reads it from s6
-    if (sunFind) {
-        IDirect3DSurface9* rt = nullptr;
-        dev->GetRenderTarget(0, &rt);
-        dev->SetRenderTarget(0, gpu.sunSurf);
-        const D3DVIEWPORT9 one{0, 0, 1, 1, 0.0f, 1.0f};
-        dev->SetViewport(&one);
-        dev->SetPixelShader(gpu.sunPs);
-        dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
-        const QuadVertex s[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {0.5f, -0.5f, 0, 1, 1, 0}, {-0.5f, 0.5f, 0, 1, 0, 1}, {0.5f, 0.5f, 0, 1, 1, 1}};
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, s, sizeof(QuadVertex));
-        dev->SetRenderTarget(0, rt);
-        SafeRelease(rt);
-        dev->SetViewport(&vp);
-        dev->SetTexture(6, gpu.sunTex);
-    }
     // the shader first, then its constants: a hook that looks at the bound shader to handle constants sees this one
     dev->SetPixelShader(gpu.ps);
     dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
@@ -1732,16 +1541,16 @@ void Picture::RenderFiltersUI() {
     };
     auto depthNote = [&] {
         if (q.enabled && !DepthShare::Texture())
-            ApexUi::IconNote(IconId::Info, "Needs the scene depth: turn off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics)");
+            ApexUi::IconNote(IconId::Info, "Needs the scene depth: turn off the game's Edge Smoothing (Options \xE2\x80\xBA Graphics)");
     };
 
     if (!q.enabled) ImGui::BeginDisabled();
     ApexUi::IconNote(IconId::Info, "Filters add up: switch on as many as you like, each with its own strength");
 
-    ApexUi::SectionLabel("COLOR LOOKS");
+    ApexUi::SectionLabel("FILM LOOKS");
     card("Technicolor1", IconId::Palette, "Technicolor 1", "Classic two-strip film: everything turns red or cyan", &q.tech1, [&] {
         percent("Amount", &q.tech1Amount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.tech1Amount);
-        signedAmount("Cyan record", &q.tech1Cyan, kDef.tech1Cyan, "What the cyan half of the picture leans to", "Greener", "Bluer");
+        signedAmount("Cyan side", &q.tech1Cyan, kDef.tech1Cyan, "What the cyan half of the picture leans to", "Greener", "Bluer");
         percent("Saturation", &q.tech1Saturation, 0.0f, 2.0f, "How strong the red and cyan get", kDef.tech1Saturation);
     });
     card("Technicolor2", IconId::Palette, "Technicolor 2", "Three-strip film: rich, dense primary colors", &q.tech2, [&] {
@@ -1766,13 +1575,6 @@ void Picture::RenderFiltersUI() {
             ApexUi::EndAdvanced();
         }
     });
-    card("Colourfulness", IconId::Rainbow, "Colourfulness", "Livelier colors without blowing out the bright ones", &q.colourful, [&] {
-        signedAmount("Amount", &q.colourfulAmount, kDef.colourfulAmount, "More vivid, or more muted", "Muted", "Vivid");
-        if (ApexUi::BeginAdvanced("ColourfulnessAdvanced")) {
-            percent("Protect bright colors", &q.colourfulProtect, 0.0f, 1.0f, "Keeps strong and bright colors from going over the top", kDef.colourfulProtect);
-            ApexUi::EndAdvanced();
-        }
-    });
     card("Vintage", IconId::Image, "Vintage", "A faded old photo: soft blacks, warm cast, washed-out colors", &q.vintage, [&] {
         percent("Amount", &q.vintageAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.vintageAmount);
         percent("Fade", &q.vintageFade, 0.0f, 1.0f, "How grey and lifted the blacks get", kDef.vintageFade);
@@ -1794,6 +1596,14 @@ void Picture::RenderFiltersUI() {
             ApexUi::EndAdvanced();
         }
     });
+    ApexUi::SectionLabel("COLOR AND MOOD");
+    card("Colourfulness", IconId::Rainbow, "Colorfulness", "Livelier colors without blowing out the bright ones", &q.colourful, [&] {
+        signedAmount("Amount", &q.colourfulAmount, kDef.colourfulAmount, "More vivid, or more muted", "Muted", "Vivid");
+        if (ApexUi::BeginAdvanced("ColourfulnessAdvanced")) {
+            percent("Protect bright colors", &q.colourfulProtect, 0.0f, 1.0f, "Keeps strong and bright colors from going over the top", kDef.colourfulProtect);
+            ApexUi::EndAdvanced();
+        }
+    });
     card("NightMode", IconId::Moon, "Night Mode", "A cooler, darker evening tone; lamp light stays warm", &q.night, [&] {
         percent("Amount", &q.nightAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.nightAmount);
         percent("Darkness", &q.nightDarkness, 0.0f, 0.8f, "How much darker the night gets", kDef.nightDarkness, 125.0f);
@@ -1801,7 +1611,7 @@ void Picture::RenderFiltersUI() {
         percent("Keep lamp light", &q.nightKeepLamps, 0.0f, 1.0f, "Lamp-lit and bright areas keep their own color", kDef.nightKeepLamps);
     });
 
-    ApexUi::SectionLabel("LIGHT");
+    ApexUi::SectionLabel("LIGHT AND DETAIL");
     card("Glow", IconId::Lightbulb, "Glow", "A soft halo around lamps, windows and other bright areas", &q.glow, [&] {
         percent("Amount", &q.glowAmount, 0.0f, 1.0f, "How bright the halo is", kDef.glowAmount);
         percent("Threshold", &q.glowThreshold, 0.0f, 0.95f, "How bright something must be to glow; lower makes more of the picture glow", kDef.glowThreshold);
@@ -1823,21 +1633,6 @@ void Picture::RenderFiltersUI() {
         percent("Amount", &q.dreamyAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.dreamyAmount);
         percent("Softness", &q.dreamySoftness, 0.0f, 1.0f, "How soft and wide the glow is", kDef.dreamySoftness);
         percent("Saturation", &q.dreamySaturation, 0.0f, 1.0f, "Extra color in the glow", kDef.dreamySaturation);
-    });
-    card("SunRays", IconId::Sunset, "Sun rays", "Beams of light from the game's sun, cut by houses, trees and Sims", &q.sunRays, [&] {
-        percent("Amount", &q.raysAmount, 0.0f, 1.0f, "How bright the beams are", kDef.raysAmount);
-        percent("Length", &q.raysLength, 0.0f, 1.0f, "How far the beams reach from the sun", kDef.raysLength);
-        percent("Density", &q.raysDensity, 0.0f, 1.0f, "Thin, short beams or dense, long ones", kDef.raysDensity);
-        toggle("Sun color", &q.raysSunColor, "The beams take the sun's own color: white at noon, orange at sunset", kDef.raysSunColor);
-        if (!q.raysSunColor) hue("Beam color", &q.raysHue, kDef.raysHue, "The color of the beams");
-        if (ApexUi::BeginAdvanced("SunRaysAdvanced")) {
-            toggle("Moon rays", &q.raysMoon, "Faint beams from the moon at night", kDef.raysMoon);
-            if (ApexUi::SwitchRow("Show where the sun is", &q.raysShowSun, "A ring where the filter places the sun; grey when it is out of view (not saved)"))
-                changed = true;
-            ApexUi::EndAdvanced();
-        }
-        ApexUi::MutedText("Beams appear only while the sky near the sun is in view");
-        depthNote();
     });
     card("FakeHdr", IconId::Mountain, "Fake HDR", "More detail in dark and bright areas, like an HDR photo", &q.fakeHdr, [&] {
         percent("Amount", &q.hdrAmount, 0.0f, 1.0f, "How strong the effect is", kDef.hdrAmount);

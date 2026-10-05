@@ -74,11 +74,6 @@ struct PictureParams {
     float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f;
     bool dreamy = false;                      // Orton: a soft glow over the whole picture, a little more color
     float dreamyAmount = 0.4f, dreamySoftness = 0.6f, dreamySaturation = 0.3f;
-    bool sunRays = false;                     // light shafts from the game's sun, blocked by what stands in front of the sky
-    bool raysSunColor = true;                 // the colour of the game's sun (orange at sunset); off = raysHue
-    bool raysMoon = false;                    // faint shafts from the moon at night
-    bool raysShowSun = false;                 // a marker where the filter places the sun (to check it; not saved)
-    float raysAmount = 0.5f, raysLength = 0.5f, raysDensity = 0.5f, raysHue = 40.0f;
     bool fakeHdr = false;                     // local contrast: detail in shadows and highlights without halos
     float hdrAmount = 0.5f, hdrRadius = 0.5f, hdrShadows = 0.4f, hdrHighlights = 0.4f, hdrHalo = 0.6f, hdrSaturation = 0.1f;
     // Camera
