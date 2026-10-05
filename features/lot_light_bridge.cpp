@@ -2793,6 +2793,122 @@ ShaderLookupCache<const ShaderPatches::RigPsInfo*> g_rigLookup;
 std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_cubeTintPs;
 std::atomic<long> g_nightFurniture{0}, g_nightFurnitureTinted{0};
+std::atomic<long> g_indoorMaterialSeamSwaps{0};
+
+// Some multi-storey architectural objects are split into several room-mode draws. The captured gym facade (EA 1.69,
+// 2026-10-04) uses the same rig, shader and visible material maps on both sides of the floor line, but binds different
+// auxiliary s2/s6 maps; those maps feed the final RGB and make an otherwise continuous vertical trim jump in brightness.
+// Keep one auxiliary pair for matching parts of the same object/material. This is deliberately narrow: exact sampler
+// formats/sizes from the captured shader family, 12 primitives, room-mode rig, and identical s3/s4/s7/s8 material maps.
+struct IndoorMaterialKey {
+    uintptr_t rig = 0;
+    IDirect3DPixelShader9* ps = nullptr;
+    IDirect3DBaseTexture9* s3 = nullptr;
+    IDirect3DBaseTexture9* s4 = nullptr;
+    IDirect3DBaseTexture9* s7 = nullptr;
+    IDirect3DBaseTexture9* s8 = nullptr;
+    bool operator==(const IndoorMaterialKey&) const = default;
+};
+struct IndoorMaterialKeyHash {
+    size_t operator()(const IndoorMaterialKey& k) const noexcept {
+        size_t h = static_cast<size_t>(k.rig);
+        auto mix = [&](const void* p) {
+            const size_t v = reinterpret_cast<size_t>(p);
+            h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
+        };
+        mix(k.ps); mix(k.s3); mix(k.s4); mix(k.s7); mix(k.s8);
+        return h;
+    }
+};
+struct IndoorAuxPair {
+    IDirect3DBaseTexture9* s2 = nullptr;
+    IDirect3DBaseTexture9* s6 = nullptr;
+};
+std::unordered_map<IndoorMaterialKey, IndoorAuxPair, IndoorMaterialKeyHash> g_indoorMaterialAux;
+
+bool TextureShape(IDirect3DBaseTexture9* t, D3DFORMAT fmt, UINT w, UINT h, UINT levels) {
+    if (!t || t->GetType() != D3DRTYPE_TEXTURE || t->GetLevelCount() != levels) return false;
+    D3DSURFACE_DESC d{};
+    return SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d)) && d.Format == fmt && d.Width == w && d.Height == h;
+}
+
+void ClearIndoorMaterialAux() {
+    for (auto& [k, p] : g_indoorMaterialAux) {
+        if (p.s2) p.s2->Release();
+        if (p.s6) p.s6->Release();
+    }
+    g_indoorMaterialAux.clear();
+}
+
+struct IndoorSeamSwap {
+    IDirect3DBaseTexture9* old2 = nullptr;
+    IDirect3DBaseTexture9* old6 = nullptr;
+    bool active = false;
+};
+
+IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
+    IndoorSeamSwap out;
+    if (!dev || g_curPrims != 12 || RigTracker::CurrentMode() != 0) return out;
+    const uintptr_t rig = RigTracker::CurrentRig();
+    if (!rig || !g_curPs) return out;
+
+    IDirect3DBaseTexture9 *s2 = nullptr, *s3 = nullptr, *s4 = nullptr, *s6 = nullptr, *s7 = nullptr, *s8 = nullptr;
+    if (FAILED(dev->GetTexture(2, &s2)) || FAILED(dev->GetTexture(3, &s3)) || FAILED(dev->GetTexture(4, &s4)) ||
+        FAILED(dev->GetTexture(6, &s6)) || FAILED(dev->GetTexture(7, &s7)) || FAILED(dev->GetTexture(8, &s8))) {
+        if (s2) s2->Release(); if (s3) s3->Release(); if (s4) s4->Release();
+        if (s6) s6->Release(); if (s7) s7->Release(); if (s8) s8->Release();
+        return out;
+    }
+
+    const bool shape = TextureShape(s2, D3DFMT_A8R8G8B8, 1024, 512, 1) &&
+                       TextureShape(s3, D3DFMT_DXT5, 256, 512, 7) &&
+                       TextureShape(s4, D3DFMT_DXT1, 1024, 512, 11) &&
+                       TextureShape(s6, D3DFMT_L8, 1024, 32, 1) &&
+                       TextureShape(s7, D3DFMT_DXT5, 256, 512, 10) &&
+                       TextureShape(s8, D3DFMT_DXT1, 128, 256, 6);
+    if (!shape) {
+        if (s2) s2->Release(); if (s3) s3->Release(); if (s4) s4->Release();
+        if (s6) s6->Release(); if (s7) s7->Release(); if (s8) s8->Release();
+        return out;
+    }
+
+    if (g_indoorMaterialAux.size() > 512) ClearIndoorMaterialAux();
+    IndoorMaterialKey key{rig, g_curPs, s3, s4, s7, s8};
+    auto it = g_indoorMaterialAux.find(key);
+    if (it == g_indoorMaterialAux.end()) {
+        // Transfer the references returned by GetTexture for s2/s6 to the cache. The material-map references are only
+        // used as stable identity keys and are released immediately.
+        g_indoorMaterialAux.emplace(key, IndoorAuxPair{s2, s6});
+        s3->Release(); s4->Release(); s7->Release(); s8->Release();
+        return out;
+    }
+
+    const bool different = it->second.s2 != s2 || it->second.s6 != s6;
+    s3->Release(); s4->Release(); s7->Release(); s8->Release();
+    if (!different) {
+        s2->Release(); s6->Release();
+        return out;
+    }
+
+    out.old2 = s2; // keep the GetTexture references until EndIndoorMaterialSeam restores them
+    out.old6 = s6;
+    SetTex(dev, 2, it->second.s2);
+    SetTex(dev, 6, it->second.s6);
+    out.active = true;
+    const long n = g_indoorMaterialSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 8)
+        LOG_INFO(std::format("[LotLightBridge] Indoor material seam: reused auxiliary s2/s6 for matching room-mode part (rig {:#010x}, swap #{})", rig, n));
+    return out;
+}
+
+void EndIndoorMaterialSeam(IDirect3DDevice9* dev, IndoorSeamSwap& s) {
+    if (!s.active) return;
+    SetTex(dev, 2, s.old2);
+    SetTex(dev, 6, s.old6);
+    if (s.old2) s.old2->Release();
+    if (s.old6) s.old6->Release();
+    s = {};
+}
 const ShaderPatches::RigPsInfo& RigPsInfoFor(IDirect3DPixelShader9* ps) {
     const auto key = reinterpret_cast<std::uintptr_t>(ps);
     const ShaderPatches::RigPsInfo* cached = nullptr;
@@ -2860,7 +2976,9 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice
                 SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), c, 1);
                 SetPs(dev, tinted->ps);
             }
+            IndoorSeamSwap seam = BeginIndoorMaterialSeam(dev);
             draw();
+            EndIndoorMaterialSeam(dev, seam);
             if (tinted) {
                 SetPs(dev, original);
                 SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), tintOld, 1);
@@ -3826,7 +3944,7 @@ std::string FurnitureDiag() {
 std::string ObjectStatus() {
     return std::format("moon shadow on objects: {} | draws fixed: {} | cinema day bloom suppressed: {} (centre panel: {}) | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
                        g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(),
-                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load());
+                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load()) + std::format(" | multi-storey material seam swaps: {}", g_indoorMaterialSeamSwaps.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -3892,6 +4010,7 @@ void Shutdown(bool keepChunkMaps) {
     g_basisPs.clear();
     g_rigLookup.Clear();
     g_rigPsInfo.clear(); // shader addresses are reused after a restart of the feature (review M3)
+    ClearIndoorMaterialAux();
     g_curPsBasis = false;
     RoomMapPadding::Clear();
     g_worldSamplers.clear();
