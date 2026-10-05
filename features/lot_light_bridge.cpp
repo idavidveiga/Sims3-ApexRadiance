@@ -2000,6 +2000,90 @@ std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs;
 std::atomic<bool> g_indoorSmooth{true};
 std::atomic<int> g_basisSmoothDrawn{0}, g_indoorDrawn{0};
 
+// Diagnostic-only temporal probe for the gym's split orange facade. The visual capture showed both halves at the same
+// world transform (1032, 42.9325, 980) but the final room-light map differed after the lighting solve completed.
+// This probe does not replace or bind any texture. It only samples the managed room/basis maps and logs state changes.
+struct IndoorTemporalProbeState {
+    bool have = false;
+    uintptr_t lightMap = 0;
+    uintptr_t basis[4] = {};
+    uint64_t lightSig = 0;
+    uint64_t basisSig[4] = {};
+    uintptr_t ps = 0, vs = 0;
+    int sampler = -1;
+};
+IndoorTemporalProbeState g_indoorTemporalProbe;
+uint32_t g_indoorTemporalFrame = 0;
+int g_indoorTemporalEvents = 0;
+
+uint64_t IndoorTextureSampleSignature(IDirect3DTexture9* tex) {
+    if (!tex) return 0;
+    D3DSURFACE_DESC d{};
+    if (FAILED(tex->GetLevelDesc(0, &d)) || d.Format != D3DFMT_A8R8G8B8 || !d.Width || !d.Height) return 0;
+    D3DLOCKED_RECT lr{};
+    if (FAILED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits || lr.Pitch == 0) return 0;
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint8_t b) { h = (h ^ b) * 1099511628211ull; };
+    const uint8_t* base = static_cast<const uint8_t*>(lr.pBits);
+    const int pitch = lr.Pitch;
+    constexpr int kGrid = 9;
+    for (int gy = 0; gy < kGrid; ++gy) {
+        const UINT y = d.Height > 1 ? static_cast<UINT>((static_cast<uint64_t>(gy) * (d.Height - 1)) / (kGrid - 1)) : 0;
+        const uint8_t* row = base + static_cast<ptrdiff_t>(y) * pitch;
+        for (int gx = 0; gx < kGrid; ++gx) {
+            const UINT x = d.Width > 1 ? static_cast<UINT>((static_cast<uint64_t>(gx) * (d.Width - 1)) / (kGrid - 1)) : 0;
+            const uint8_t* px = row + static_cast<size_t>(x) * 4;
+            mix(px[0]); mix(px[1]); mix(px[2]); mix(px[3]);
+        }
+    }
+    tex->UnlockRect(0);
+    h ^= static_cast<uint64_t>(d.Width) << 32;
+    h ^= static_cast<uint64_t>(d.Height);
+    return h;
+}
+
+void ProbeIndoorRoomMapOverTime(IDirect3DDevice9* dev, int lmSampler, IDirect3DBaseTexture9* lightMap, IDirect3DTexture9* basis[4]) {
+    if (!dev || !lightMap || !g_curVsInfo || g_curVsInfo->patched.worldK < 0 || g_indoorTemporalEvents >= 200) return;
+    float world[3][4] = {};
+    if (FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(g_curVsInfo->patched.worldK), &world[0][0], 3))) return;
+    const float x = world[0][3], y = world[1][3], z = world[2][3];
+    if (std::fabs(x - 1032.0f) > 0.25f || std::fabs(y - 42.9325f) > 0.25f || std::fabs(z - 980.0f) > 0.25f) return;
+    if (lightMap->GetType() != D3DRTYPE_TEXTURE) return;
+
+    IndoorTemporalProbeState now;
+    now.have = true;
+    now.lightMap = reinterpret_cast<uintptr_t>(lightMap);
+    now.lightSig = IndoorTextureSampleSignature(static_cast<IDirect3DTexture9*>(lightMap));
+    now.ps = reinterpret_cast<uintptr_t>(g_curPs);
+    now.vs = reinterpret_cast<uintptr_t>(g_curVs);
+    now.sampler = lmSampler;
+    for (int k = 0; k < 4; ++k) {
+        now.basis[k] = reinterpret_cast<uintptr_t>(basis[k]);
+        now.basisSig[k] = IndoorTextureSampleSignature(basis[k]);
+    }
+
+    const bool changed = !g_indoorTemporalProbe.have ||
+        now.lightMap != g_indoorTemporalProbe.lightMap || now.lightSig != g_indoorTemporalProbe.lightSig ||
+        now.ps != g_indoorTemporalProbe.ps || now.vs != g_indoorTemporalProbe.vs || now.sampler != g_indoorTemporalProbe.sampler ||
+        std::memcmp(now.basis, g_indoorTemporalProbe.basis, sizeof now.basis) != 0 ||
+        std::memcmp(now.basisSig, g_indoorTemporalProbe.basisSig, sizeof now.basisSig) != 0;
+    if (!changed) return;
+
+    const char* reason = !g_indoorTemporalProbe.have ? "first" :
+        (now.lightMap == g_indoorTemporalProbe.lightMap && now.lightSig != g_indoorTemporalProbe.lightSig) ? "same T2 pointer, contents changed" :
+        (now.lightMap != g_indoorTemporalProbe.lightMap) ? "T2 pointer changed" :
+        "shader/basis state changed";
+    ++g_indoorTemporalEvents;
+    LOG_INFO(std::format(
+        "[IndoorTemporalProbe] event {} frame {} tick {}: {} | pos ({:.4f}, {:.4f}, {:.4f}) PS {:08X} VS {:08X} s{} "
+        "T2 {:08X} sig {:016X} | basis {:08X}/{:016X} {:08X}/{:016X} {:08X}/{:016X} {:08X}/{:016X}",
+        g_indoorTemporalEvents, g_indoorTemporalFrame, GetTickCount(), reason, x, y, z,
+        now.ps, now.vs, now.sampler, now.lightMap, now.lightSig,
+        now.basis[0], now.basisSig[0], now.basis[1], now.basisSig[1],
+        now.basis[2], now.basisSig[2], now.basis[3], now.basisSig[3]));
+    g_indoorTemporalProbe = now;
+}
+
 // (w, h, 1/w, 1/h) of a bound map, for the smooth reads' size constant; false when it is not a 2D texture
 bool MapSize(IDirect3DBaseTexture9* t, float out[4]) {
     D3DSURFACE_DESC d{};
@@ -2104,6 +2188,7 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
             t->Release();
     }
     if (lmS < 0) return false; // no room light map with known directional maps (other lots, low lighting quality)
+    ProbeIndoorRoomMapOverTime(dev, lmS, lightMap, basis);
     const bool capToFloorMap = !LevelLightShare::BasisFloorGuardReady();
     // Separate cache entries: live disable/re-enable must never reuse the unguarded variant.
     const int shaderVariant = lmS + (capToFloorMap ? 0 : 8);
@@ -3452,6 +3537,9 @@ void SetWaterFix(bool on, float strength, float reflection, bool filter, bool pr
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
 void OnWorldChanged() {
+    g_indoorTemporalProbe = {};
+    g_indoorTemporalEvents = 0;
+    g_indoorTemporalFrame = 0;
     ClearChunks();
     RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
@@ -3553,6 +3641,7 @@ void RequestLightingBloomCensus() {
 std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
 
 void OnPresent() {
+    ++g_indoorTemporalFrame;
     g_lotDrawTick = GetTickCount();
     if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
