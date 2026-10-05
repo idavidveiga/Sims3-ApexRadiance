@@ -1157,8 +1157,6 @@ void SimOcclusion::RenderUI(ApexPatch* patch) {
             if (ApexUi::BeginAdvanced("Advanced##SimOcclusion")) {
                 changed |= ApexUi::SwitchRow("Transparent hair", &g.p.transparentHair,
                                             "Also adjust supported transparent hair strands", defaults.transparentHair);
-                ApexUi::SwitchRow("Show Sim coverage", &g.showSimMask,
-                                  "Blue: Sim controls; green: hair controls; black: original scene shade");
                 ApexUi::EndAdvanced();
             }
             if (WantSimMask() && simMask.failed)
@@ -1293,7 +1291,6 @@ class AmbientOcclusionPatch : public ApexPatch {
             changed |= ApexUi::SliderPercent("Reach", &g.p.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet", kDefaults.reach);
             changed |= ApexUi::SliderPercent("Keep lamp light", &g.p.protect, 0.0f, 1.0f, "Lamp-lit and bright spots keep more of their light; 0% shades everything alike",
                                              kDefaults.protect);
-            ApexUi::SwitchRow("Show the shade alone", &g.showShade, "Shows only the shade, in grey, to see what it does while you adjust it (not saved)");
             ApexUi::EndAdvanced();
         }
         if (changed) NotifySettingChanged();
@@ -1322,6 +1319,8 @@ class AmbientOcclusionPatch : public ApexPatch {
         SAFE_IMGUI_BEGIN();
 
         ApexUi::Checkbox("Show the shade alone", &g.showShade);
+        ApexUi::Checkbox("Show Sim coverage", &g.showSimMask);
+        ApexUi::Tooltip("Blue: Sim controls; green: hair controls; black: original scene shade. Needs Sim Occlusion on");
         if (ApexUi::TextButton("Save depth and colour##AoCapture")) {
             g.captureRequested = true;
             g.captureNote = g.ready ? "Saving at the next frame..." : "Turn Ambient Occlusion on first";

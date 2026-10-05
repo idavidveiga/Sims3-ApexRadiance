@@ -47,10 +47,8 @@ struct PictureParams {
     float vignetteSize = 0.5f; // where the darkening starts (0 = centre, 1 = corners)
     bool compare = false;     // before/after: the left half unprocessed (not saved)
 
-    // ---- Filters tab: stackable looks in the same pass, each its own switch (all off by default) ----
-    // The three cards' own switches turn a whole group off without losing its filters' settings.
-    bool filmOn = true, lensOn = true, retroOn = true;
-    // Film color
+    // ---- Color > Filters: stackable looks in the same pass, each its own switch (all off by default) ----
+    // Color looks
     bool tech1 = false;                       // two-strip film: a red record and a cyan record
     float tech1Amount = 0.6f, tech1Cyan = 0.0f, tech1Saturation = 1.0f; // cyan: -1 greener .. +1 bluer
     bool tech2 = false;                       // three-strip dye transfer: dense, pure primaries
@@ -63,14 +61,46 @@ struct PictureParams {
     float colourfulAmount = 0.4f, colourfulProtect = 0.7f; // amount -1 (muted) .. +1
     bool night = false;                       // cooler, darker evening tone; lamp light kept
     float nightAmount = 0.6f, nightDarkness = 0.35f, nightBlue = 0.5f, nightKeepLamps = 0.6f;
-    // Lens
+    bool vintage = false;                     // faded photo: lifted blacks, warm, washed-out colors
+    float vintageAmount = 0.7f, vintageFade = 0.5f, vintageWarmth = 0.5f, vintageColors = 0.4f;
+    bool crossProcess = false;                // slide film in negative chemistry: green shadows, yellow highlights
+    float crossAmount = 0.5f, crossContrast = 0.5f;
+    bool bw = false;                          // black and white with a lens filter and a toning
+    float bwAmount = 1.0f, bwFilterHue = 30.0f, bwFilter = 0.5f, bwToneHue = 35.0f, bwTone = 0.0f, bwContrast = 0.0f;
+    // Light
+    bool glow = false;                        // soft halo around bright areas: lamps, windows, sky
+    float glowAmount = 0.4f, glowThreshold = 0.6f, glowSize = 0.5f, glowWarmth = 0.0f;
+    bool halation = false;                    // film's red halo around strong light
+    float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f;
+    bool dreamy = false;                      // Orton: a soft glow over the whole picture, a little more color
+    float dreamyAmount = 0.4f, dreamySoftness = 0.6f, dreamySaturation = 0.3f;
+    bool lightLeaks = false;                  // colored light entering from the side of the frame
+    float leaksAmount = 0.4f, leaksHue = 25.0f, leaksAngle = 0.0f, leaksSize = 0.5f;
+    bool sunRays = false;                     // light shafts from the game's sun, blocked by what stands in front of the sky
+    bool raysSunColor = true;                 // the colour of the game's sun (orange at sunset); off = raysHue
+    bool raysMoon = false;                    // faint shafts from the moon at night
+    bool raysShowSun = false;                 // a marker where the filter places the sun (to check it; not saved)
+    float raysAmount = 0.5f, raysLength = 0.5f, raysDensity = 0.5f, raysHue = 40.0f;
+    bool fakeHdr = false;                     // local contrast: detail in shadows and highlights without halos
+    float hdrAmount = 0.5f, hdrRadius = 0.5f, hdrShadows = 0.4f, hdrHighlights = 0.4f, hdrHalo = 0.6f, hdrSaturation = 0.1f;
+    // Camera
     bool emphasize = false;                   // grey outside a band of distance around the focus
-    float emphAmount = 0.8f, emphDistance = 12.0f, emphWidth = 8.0f, emphSoftness = 0.5f, emphGrey = 0.85f; // metres
+    bool emphAuto = true;                     // focus on what is at the center of the screen
+    float emphAmount = 0.8f, emphDistance = 30.0f, emphWidth = 0.5f, emphSoftness = 0.5f, emphGrey = 0.5f; // width: fraction of the distance
+    bool tiltShift = false;                   // miniature: sharp band, blurred top and bottom
+    float tiltAmount = 0.7f, tiltCenter = 0.55f, tiltWidth = 0.25f, tiltSaturation = 0.25f;
     bool prism = false;                       // chromatic aberration growing toward the edges
     float prismAmount = 0.35f, prismStart = 0.35f, prismQuality = 0.5f;
-    // Retro
+    bool grain = false;                       // film grain
+    bool grainMoving = true;                  // a new grain every frame
+    float grainAmount = 0.3f, grainSize = 0.3f, grainShadows = 0.5f;
+    // Retro and style
     bool retro3dfx = false;                   // late-90s 3D card: 16-bit color, dithering, scanlines, soft pixels
     float fxAmount = 1.0f, fxDepth = 0.5f, fxScanlines = 0.3f, fxDither = 0.6f, fxPixelWidth = 0.3f, fxGamma = 1.0f;
+    bool crt = false;                         // old TV: curved glass, phosphor mask, scanlines
+    float crtAmount = 1.0f, crtCurvature = 0.3f, crtMask = 0.4f, crtScanlines = 0.4f, crtEdges = 0.4f;
+    bool cartoon = false;                     // comic look: outlines from the depth, fewer tones
+    float cartoonAmount = 1.0f, cartoonOutlines = 0.7f, cartoonSteps = 0.5f, cartoonThickness = 0.3f;
 };
 
 class Picture {
@@ -110,7 +140,7 @@ class Picture {
 
     // Tabs of the Color page (menu: Image > Color), in order
     enum Tab : int { TabBasic, TabTones, TabColor, TabDetail, TabFilters, TabCount };
-    // The Filters tab: three cards (Film color, Lens, Retro), each filter a switch row with its own controls
+    // The Filters tab: one card per filter (its switch in the header, its own controls under it), in four sections
     void RenderFiltersUI();
     // The rows of one tab of the Color page (inside a card the menu opens), then "Reset Picture". The menu draws the
     // Picture card header with the on/off switch ([qol.picture] enabled) and the before / after button (compare) above

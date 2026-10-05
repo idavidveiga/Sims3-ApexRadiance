@@ -20,6 +20,8 @@
 #include <windows.h>
 #include <intrin.h>
 #include <atomic>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -44,12 +46,40 @@ InstanceFlush_t oInstanceFlush = nullptr;
 std::vector<MemPatch::PatchLocation> g_patches;
 std::vector<DetourBatch::Hook> g_hooks;
 bool g_installed = false;
+bool g_nightOwns = false;        // Night Lighting asked for the hooks (Install / Uninstall)
+std::atomic<int> g_sunWanted{0}; // the Sun rays filter asked for the sun (WantSun)
 uintptr_t g_rig = 0;
 int g_depth = 0;
 std::atomic<DWORD> g_drawThread{0};
+float g_sunDir[3] = {}, g_sunColour[3] = {};
+std::atomic<DWORD> g_sunTick{0}; // GetTickCount of the latest sun read (0 = none)
+
+int ReadMode(uintptr_t rig);
+
+// Slot 0 of an outdoor rig is the sun (direction +0x10, colour +0x50; every rig carries the same global sun, so one read
+// per tick is enough)
+void ReadSun(uintptr_t rig) {
+    const DWORD now = GetTickCount() | 1;
+    if (now == g_sunTick.load(std::memory_order_relaxed)) return;
+    const int mode = ReadMode(rig);
+    if (mode != 1 && mode != 2) return; // a room-mode rig has its strongest room light in slot 0, not the sun
+    __try {
+        const float* d = reinterpret_cast<const float*>(rig + 0x10);
+        const float* c = reinterpret_cast<const float*>(rig + 0x50);
+        const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (!(len > 0.5f && len < 2.0f)) return; // not a direction: keep the last good one
+        for (int k = 0; k < 3; k++) {
+            g_sunDir[k] = d[k] / len;
+            g_sunColour[k] = std::isfinite(c[k]) ? std::max(c[k], 0.0f) : 0.0f;
+        }
+        g_sunTick.store(now, std::memory_order_relaxed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
 
 void __fastcall BinderThunk(void* rig) {
     g_rig = reinterpret_cast<uintptr_t>(rig);
+    if (rig && g_sunWanted.load(std::memory_order_relaxed) > 0) ReadSun(g_rig);
     reinterpret_cast<Binder_t>(kBinder)(rig);
 }
 
@@ -79,11 +109,7 @@ int ReadMode(uintptr_t rig) {
     }
 }
 
-} // namespace
-
-namespace RigTracker {
-
-bool Install() {
+bool InstallHooks() {
     if (g_installed) return true;
     using GameAddr::Id;
     std::string missing;
@@ -128,7 +154,7 @@ bool Install() {
     return true;
 }
 
-void Uninstall() {
+void RemoveHooks() {
     if (!g_installed) return;
     DetourBatch::RemoveHooks(g_hooks);
     g_hooks.clear();
@@ -137,9 +163,44 @@ void Uninstall() {
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = false;
     g_rig = 0;
+    g_sunTick.store(0);
 }
 
-bool IsInstalled() { return g_installed; }
+} // namespace
+
+namespace RigTracker {
+
+bool Install() {
+    g_nightOwns = true;
+    if (InstallHooks()) return true;
+    g_nightOwns = false;
+    return false;
+}
+
+void Uninstall() {
+    g_nightOwns = false;
+    if (g_sunWanted.load() <= 0) RemoveHooks();
+}
+
+// Night Lighting's view: its hooks are in place (the filter alone installing them does not count)
+bool IsInstalled() { return g_installed && g_nightOwns; }
+
+void WantSun(bool on) {
+    if (on) {
+        if (g_sunWanted.fetch_add(1) == 0) InstallHooks();
+    } else if (g_sunWanted.fetch_sub(1) <= 1) {
+        g_sunWanted.store(0);
+        if (!g_nightOwns) RemoveHooks();
+    }
+}
+
+bool Sun(float dir[3], float colour[3]) {
+    const DWORD t = g_sunTick.load(std::memory_order_relaxed);
+    if (!g_installed || !t || GetTickCount() - t > 2000) return false;
+    std::memcpy(dir, g_sunDir, sizeof g_sunDir);
+    std::memcpy(colour, g_sunColour, sizeof g_sunColour);
+    return true;
+}
 
 int CurrentMode() {
     if (!g_installed || g_depth <= 0 || !g_rig || __readfsdword(0x24) != g_drawThread.load(std::memory_order_relaxed)) return -1;
