@@ -31,6 +31,7 @@
 #include "d3d9_extra_hooks.h"
 #include "post_scene.h"
 #include "world_session.h"
+#include "night_lighting.h"
 #include "map_view.h"
 #include "shader_cache.h"
 #include "imgui.h"
@@ -922,10 +923,12 @@ void StepMapFade(float dt) {
     g.mapFade = (g.mapFade < target) ? std::fmin(g.mapFade + step, target) : std::fmax(g.mapFade - step, target);
 }
 
+bool WorldPlayable();
+
 // PostScene effect (order kDepthBlur): after edge smoothing, before the UI
 void BlurEffect(IDirect3DDevice9* dev) {
     if (!g.blurOn || !g.ready || g.inBlur || g.internalPass) return;
-    if (!g.world.ready || !WorldSession::IsActive()) {
+    if (!g.world.ready || !WorldPlayable()) {
         // Loading/menu depth can be stale. Skip every blur/debug GPU pass and
         // snap autofocus when gameplay returns, without releasing shared depth.
         g.focusSnap = true;
@@ -972,9 +975,19 @@ void BlurEffect(IDirect3DDevice9* dev) {
     }
 }
 
+// The world is playable: the loaded-world gate, and with Night Lighting running its "load settled" signal (the game's
+// interactive loading screen draws the world while lots still load, behind its own overlay)
+bool WorldPlayable() {
+    if (!WorldSession::IsActive()) return false;
+    const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
+    return !night || !night->IsEnabled() || NightLighting::LoadSettled();
+}
+
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
-    g.world.Update(WorldSession::IsActive(), GetTickCount64());
+    const bool wasReady = g.world.ready;
+    g.world.Update(WorldPlayable(), GetTickCount64());
+    if (g.world.ready && !wasReady) LOG_INFO("[DepthBlur] World playable: the blur fades in after the hold");
     if (!g.world.ready) {
         g.focusSnap = true;
         g.lastFadeTick = {};

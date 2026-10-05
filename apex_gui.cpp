@@ -2843,7 +2843,7 @@ void UpdateMenuAvailability() {
         g_worldEpoch.fetch_add(1);
         Captures::OnWorldSessionChanged(); // the game shows its UI again after a load
     }
-    const bool worldLive = session && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::WorldLive());
+    const bool worldLive = session && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::LoadSettled());
     if ((startup != Startup::Running && startup != Startup::RefusedOldBuild) || !worldLive) {
         g_menuLiveAt = 0;
         g_menuAvailable.store(false);

@@ -344,6 +344,12 @@ Clock::time_point g_lotRelightAt{};
 // 1 s, so it never runs during the loading screen with the night level still at 0 (lamps off).
 Clock::time_point g_worldAt{}, g_liveAt{}, g_levelRefAt{};
 bool g_live = false;
+// The load is over: the after-load refresh ran (lots and rooms lit again), or 10 s passed since the world went live. With
+// the game's interactive loading (Options.ini enableinteractiveloading = 1) terrain is drawn and the loading window is gone
+// long before the lots finish (log 2026-10-05: world loaded 10:19:03, after-load refresh 10:19:50), so "live" alone opened
+// the start note and Depth Blur during that screen. Render thread writes, any thread reads.
+std::atomic<bool> g_loadSettled{false};
+constexpr auto kSettleFallback = std::chrono::seconds(10);
 std::string g_liveSignal = "none";
 std::string g_loadInfo = "none";
 float g_levelRef = -1.0f;
@@ -1124,6 +1130,7 @@ void OnPresent() {
         g_loadKickPending = true;
         g_worldAt = now;
         g_live = false;
+        g_loadSettled.store(false);
         g_liveSignal = "none";
         g_levelRef = s.level;
         g_levelRefAt = now;
@@ -1854,6 +1861,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 const bool busy = afterLoad && tick - g_afterLoadStarted < kAfterLoadMax && LevelLightShare::LoadedRoomsBusy();
                 const bool ready = !afterLoad || RoomAmbientPolicy::AfterLoadRefreshReady(tick, g_afterLoadStarted, busy, g_afterLoadQuiet);
                 if (ready) {
+                    if (afterLoad && !g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
                     g_autoRefreshRoomsOnly.store(false);
                     NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad);
                 } else g_autoRefreshAt.store((tick + 200) | 1);
@@ -2677,3 +2685,9 @@ void NightLighting::RefreshSoon() { RequestAutoRefresh(); }
 
 // The world is on screen (its terrain is drawn, or the fallback after the world change); false during load screens
 bool NightLighting::WorldLive() { return g_live; }
+bool NightLighting::LoadSettled() {
+    if (g_loadSettled.load()) return true;
+    if (!g_live || Clock::now() - g_liveAt < kSettleFallback) return false;
+    if (!g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: 10 s after the world went live");
+    return true;
+}
