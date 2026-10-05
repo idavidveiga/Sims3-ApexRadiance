@@ -107,6 +107,12 @@ float4 cHdr    : register(c48); // x = amount, y = radius (0 fine .. 1 large), z
 float4 cHdr2   : register(c49); // x = halo protection, y = saturation
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
 
+// A neighbour or shifted tap for the scene filters: from the scene copy (no UI) when it exists, so a filter that reads
+// around the pixel (deband, prism, sharpen, CRT, 3DFX) never pulls the colour of a button or a panel into the world
+float3 SceneTap(float2 p)
+{
+    return cLook.y > 0.5 ? tex2Dlod(sScene, float4(p, 0, 0)).rgb : tex2Dlod(sFrame, float4(p, 0, 0)).rgb;
+}
 float3 Decode(float3 c)
 {
     return pow(max(c, 0.0), 2.2);
@@ -125,7 +131,7 @@ float3 Deband(float2 uv, float3 c)
         [unroll] for (int i = 0; i < 8; i++)
         {
             float a = (i + ring * 0.5) * 0.7853982;
-            float3 v = tex2Dlod(sFrame, float4(uv + float2(cos(a), sin(a)) * r * cSize.xy, 0, 0)).rgb;
+            float3 v = SceneTap(uv + float2(cos(a), sin(a)) * r * cSize.xy);
             float3 dd = abs(v - c);
             float w = max(dd.r, max(dd.g, dd.b)) < cDeband.x ? 1.0 : 0.0;
             sum += v * w;
@@ -209,7 +215,7 @@ float3 Prism(float2 uv, float3 c)
     {
         float t = (i + 0.5) / n * 2.0 - 1.0; // -1 .. 1
         float3 w = float3(saturate(t + 0.5), 1.0 - abs(t), saturate(0.5 - t));
-        sum += tex2Dlod(sFrame, float4(uv + dir * t, 0, 0)).rgb * w;
+        sum += SceneTap(uv + dir * t) * w;
         wsum += w;
     }
     return sum / wsum;
@@ -369,20 +375,20 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         crtQ *= 1.0 + cCrt.y * 0.12 * dot(crtQ, crtQ) * float2(0.7, 1.0);
         suv = lerp(uv, crtQ * 0.5 + 0.5, cCrt.x);
     }
-    float3 fs = (cFlagE.y > 0.5 && scene) ? tex2Dlod(sFrame, float4(suv, 0, 0)).rgb : f;
+    float3 fs = (cFlagE.y > 0.5 && scene) ? SceneTap(suv) : f;
     fs = (cDeband.w > 0.5 && scene) ? Deband(suv, fs) : fs; // the scene only; the UI keeps its sharp edges
     [branch] if (cFlagD.z > 0.5 && scene) fs = Prism(suv, fs);
     // 3DFX soft pixels: the old cards' output filter blurred each pixel with its horizontal neighbours
     [branch] if (cFlagE.x > 0.5 && cFx2.x > 0.0 && scene)
     {
-        float3 l = tex2Dlod(sFrame, float4(suv - float2(cSize.x, 0), 0, 0)).rgb, r = tex2Dlod(sFrame, float4(suv + float2(cSize.x, 0), 0, 0)).rgb;
+        float3 l = SceneTap(suv - float2(cSize.x, 0)), r = SceneTap(suv + float2(cSize.x, 0));
         fs = lerp(fs, (l + fs * 2.0 + r) * 0.25, saturate(cFx2.x) * cFx.x);
     }
     // sharpening (scene only): the difference to the 4 neighbours added back, limited to their range (no halos)
     [branch] if (cDetail.x > 0.0 && scene)
     {
-        float3 n0 = tex2Dlod(sFrame, float4(uv + float2(cSize.x, 0), 0, 0)).rgb, n1 = tex2Dlod(sFrame, float4(uv - float2(cSize.x, 0), 0, 0)).rgb;
-        float3 n2 = tex2Dlod(sFrame, float4(uv + float2(0, cSize.y), 0, 0)).rgb, n3 = tex2Dlod(sFrame, float4(uv - float2(0, cSize.y), 0, 0)).rgb;
+        float3 n0 = SceneTap(uv + float2(cSize.x, 0)), n1 = SceneTap(uv - float2(cSize.x, 0));
+        float3 n2 = SceneTap(uv + float2(0, cSize.y)), n3 = SceneTap(uv - float2(0, cSize.y));
         float3 lo = min(min(n0, n1), min(n2, n3)), hi = max(max(n0, n1), max(n2, n3));
         fs = clamp(fs + cDetail.x * (fs - (n0 + n1 + n2 + n3) * 0.25), min(lo, fs), max(hi, fs));
     }
