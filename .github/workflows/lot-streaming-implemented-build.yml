@@ -8,6 +8,7 @@ on:
       - test/room-light-queue-ea169
       - test/wallsolve-ea169-probe
       - test/indoor-roommap-temporal-probe
+      - test/indoor-roommap-global-probe
   workflow_dispatch:
 
 jobs:
