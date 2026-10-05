@@ -2003,7 +2003,7 @@ std::atomic<long> g_indoorSharedMapParts{0};
 
 // A tall architectural object can be split into several draws that the game associates with different stories after
 // the final room light maps are built. Captures proved those parts can have a different/null rig while keeping the exact
-// same world matrix, VS, PS and primitive count. Key by that draw identity (falling back to the rig only when the VS has
+// same world matrix, VS and PS. Key by that draw identity (falling back to the rig only when the VS has
 // no readable world matrix), keep the first map/basis set seen in this frame, and reuse it for the other parts. The cache
 // is cleared every Present, so a relight/rebuild is picked up on the next frame rather than pinned.
 struct IndoorFrameMap {
@@ -2036,7 +2036,6 @@ bool IndoorFrameKey(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps, IDirect3DV
     mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ps)));
     mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vs)));
     mix(static_cast<uint64_t>(static_cast<uint32_t>(lmSampler)));
-    mix(static_cast<uint64_t>(g_curPrims));
     out = h;
     return world || RigTracker::CurrentRig();
 }
@@ -2185,9 +2184,9 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
                 sharedObjectMap = true;
                 const long n = g_indoorSharedMapParts.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (n <= 20)
-                    LOG_INFO(std::format("[LotLightBridge] Multi-storey indoor object: reused room-light map at ({:.3f}, {:.3f}, {:.3f}), PS {:#010x}, VS {:#010x}, {} prims (swap #{})",
+                    LOG_INFO(std::format("[LotLightBridge] Multi-storey indoor object: reused room-light map at ({:.3f}, {:.3f}, {:.3f}), PS {:#010x}, VS {:#010x} (swap #{})",
                                          objectPos[0], objectPos[1], objectPos[2], reinterpret_cast<uintptr_t>(g_curPs),
-                                         reinterpret_cast<uintptr_t>(g_curVs), g_curPrims, n));
+                                         reinterpret_cast<uintptr_t>(g_curVs), n));
             }
         }
     }
