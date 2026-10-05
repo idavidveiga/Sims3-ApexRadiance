@@ -40,6 +40,8 @@ struct FloorPatch {
     DWORD atlasConst = 0;
     DWORD mapSampler = 0; // PatchSnowFloor: the sampler of the room light map it found
     int scaleConst = -1;  // K of the game's lamp scale cK.x applied to max(map, atlas), read by no other instruction; -1 unknown
+    int heightConst = -1; // PatchBakedAtlasPs: cH, the atlas weight saturate(map.a * cH.y + cH.x) ((1, 0) = always)
+    bool maskAlpha = false; // PatchBakedAtlasPs: map.a is still readable at the atlas (the floor visibility mask)
 };
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
 // Snow lying on lot floor tiles (LightProbe-m69): the VS writes TEXCOORD7.xy = world xz / 2; the PS gets max(room map, atlas).
@@ -47,6 +49,8 @@ bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
 bool IsSnowFloorVs(const std::vector<DWORD>& t, int& texcoord);
 bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out);
 // Baked-light surfaces (summer outdoor floors): max(light map, atlas at TEXCOORDn.xy = world xz, n from PatchObjectLampVs) before "mad ..., cK.x".
+// The atlas has no walls, so it is weighted by the floor map's alpha (out.heightConst, out.maskAlpha): level_light_share
+// stores there, for outdoor floor texels of the upper stories, the share of their lamps' light that walls block.
 bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out);
 
 // Winter foliage with a shadow map: "lrp rD.w, t5.x, cK.y, rS.w" is the moon shadow that also darkens lamp light.

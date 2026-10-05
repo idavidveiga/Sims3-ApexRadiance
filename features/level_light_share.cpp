@@ -2769,8 +2769,53 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx = prev;
     return r;
 }
+// Walls block light on outdoor floors (user 05/10, F7 + screenshots: a wall lamp outside lit the floor of a yard with no
+// roof behind the wall, and an upper deck behind its half wall). Outdoor floors (room 0 and roofless rooms, which the
+// game solves as outdoor, +0x18) are drawn with max(floor map, ground atlas) by lot_light_bridge DrawFloorAtlas; the
+// atlas carries the outdoor lamps (room 0's list) with no walls, and the game solves floor texels without a wall test.
+// So each outdoor floor texel of a story >= 1 also gets, in its map's alpha (0 for every outdoor texel in the game), the
+// share of room 0's lamp light that walls block there: room 0's list evaluated at the texel with the normal wrapped
+// (w = 1: N.L ignored, only walls decide; a lamp below a floor with a clear path still counts), once with the 2D wall
+// test (all of room 0's walls, plus this file's cross-story test) and once without. The floor shader takes
+// atlas x (1 - alpha). Maps solved before keep alpha 0 and the whole atlas.
+// The alpha reaches the texel through kOutdoorAlpha (0x006A333B: "cmp byte [ebx+18h],0; xorps xmm1,xmm1", xmm1 = an
+// outdoor texel's alpha), which now loads out[3]; out[3] = 0 for every other outdoor sample, as the game had it.
+constexpr uintptr_t kOutdoorAlpha = 0x006A333B;
+const BYTE kOutdoorAlphaBytes[] = {0x80, 0x7B, 0x18, 0x00, 0x0F, 0x57, 0xC9, 0x0F, 0x85}; // cmp byte [ebx+18h],0; xorps xmm1,xmm1; jne
+bool g_floorMaskReady = false;
+std::atomic<bool> g_floorWallsOn{true};
+__declspec(naked) void OutdoorAlphaThunk() {
+    __asm {
+        movss xmm1, dword ptr [esp + 30h] // out[3]: out is [esp+20h] in FUN_006a31d0, +4 for this call's return address
+        cmp byte ptr [ebx + 18h], 0
+        ret
+    }
+}
+float Lum3(const float* c) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; }
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
-    return SolvePoint(room, out, list2D, list3D, flags, sample, true);
+    float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
+    if (!g_floorMaskReady || !room[0x18]) return r;
+    out[3] = 0.0f; // outdoor: the game's alpha 0, unless the mask below applies
+    const float* s = static_cast<const float*>(sample);
+    if (!g_floorWallsOn.load(std::memory_order_relaxed) || s[5] < 0.9f || ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return r;
+    BYTE* room0 = nullptr;
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (*reinterpret_cast<const int*>(mgr + 0x88) < 1) return r; // story 0 is the lot's grass, which floor shaders never read
+        room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), 0));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return r;
+    }
+    if (!room0) return r;
+    alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
+    std::memcpy(wrapped, s, sizeof wrapped);
+    wrapped[7] = 1.0f; // normal w = 1: the lights' evaluation wraps (N.L ignored)
+    char testWalls[2] = {1, 0}, noWalls[2] = {0, 0};
+    SolvePoint(room0, vis, nullptr, nullptr, testWalls, wrapped, true);
+    SolvePoint(room0, all, nullptr, nullptr, noWalls, wrapped, true);
+    const float total = Lum3(all);
+    if (total > 1e-4f) out[3] = std::clamp(1.0f - Lum3(vis) / total, 0.0f, 1.0f);
+    return r;
 }
 float* __fastcall SolvePointSingle(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     return SolvePoint(room, out, list2D, list3D, flags, sample, false);
@@ -4467,6 +4512,16 @@ bool Install(std::string& error) {
             !EntryChain::Install(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateFlagNoteHook), &why))
             LOG_WARNING("[LevelLightShare] Invalidate notes for the F8 journal not installed: " + why);
     }
+    // Walls block light on outdoor floors (see SolvePointBatch): needs the batch call redirected; Steam bytes only
+    g_floorMaskReady = solveOk && GameAddr::IsFixed() && kBatchSolveCall == 0x006A3336 && kRoomById &&
+                       MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kOutdoorAlpha), kOutdoorAlphaBytes, sizeof(kOutdoorAlphaBytes));
+    if (g_floorMaskReady) {
+        BYTE call[7] = {0xE8, 0, 0, 0, 0, 0x90, 0x90};
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&OutdoorAlphaThunk) - (kOutdoorAlpha + 5));
+        std::memcpy(call + 1, &rel, 4);
+        g_floorMaskReady = MemPatch::WriteBytes(kOutdoorAlpha, std::vector<BYTE>(call, call + 7), &g_patches);
+    }
+    LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
@@ -4496,6 +4551,7 @@ void Uninstall() {
     g_indoorPatches.clear();
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
+    g_floorMaskReady = false;
     g_evalClasses = 0;
     if (!kPublicBuild) {
         EntryChain::Remove(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare);
@@ -4676,6 +4732,11 @@ void SetIndoor(bool on) {
 }
 
 bool AllFloorsDetailed() { return g_installed.load(std::memory_order_relaxed) && g_lodReady && g_allFloors.load(std::memory_order_relaxed); }
+void SetFloorWalls(bool on) {
+    if (g_floorWallsOn.exchange(on) != on && g_installed.load() && g_floorMaskReady) RelightAllRooms(on ? "Walls block light on floors on" : "Walls block light on floors off");
+}
+bool FloorWallsActive() { return g_installed.load(std::memory_order_relaxed) && g_floorMaskReady && g_floorWallsOn.load(std::memory_order_relaxed); }
+
 void SetAllFloors(bool on) {
     if (g_allFloors.exchange(on) != on && g_lodReady) RelightAllRooms(on ? "Every floor in full detail on" : "Every floor in full detail off");
 }

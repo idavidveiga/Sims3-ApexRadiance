@@ -610,6 +610,7 @@ struct FloorVs {
     IDirect3DVertexShader9* vs = nullptr;
     bool tried = false;
     int tc = 7;
+    int worldConst = -1; // first row of the world matrix in the game VS (rows k .. k+2; the y row's w = the lot's base height)
 };
 bool g_curVsIsObject = false;
 // Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
@@ -2267,9 +2268,11 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
         UINT size = 0;
         if (SUCCEEDED(g_curVs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
             std::vector<DWORD> t(size / 4);
-            int tc = -1;
-            if (SUCCEEDED(g_curVs->GetFunction(t.data(), &size)) && ShaderPatches::PatchObjectLampVs(t, false, &tc) && SUCCEEDED(dev->CreateVertexShader(t.data(), &fv.vs)))
+            int tc = -1, wk = -1;
+            if (SUCCEEDED(g_curVs->GetFunction(t.data(), &size)) && ShaderPatches::PatchObjectLampVs(t, false, &tc, &wk) && SUCCEEDED(dev->CreateVertexShader(t.data(), &fv.vs))) {
                 fv.tc = tc;
+                fv.worldConst = wk;
+            }
             else
                 fv.vs = nullptr;
         }
@@ -2278,14 +2281,20 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
     if (!fv.vs) return false;
     PatchedPs& p = PatchedFor(dev, g_floorAtlasPs[fv.tc], "Outdoor floor", [tc = fv.tc](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchBakedAtlasPs(t, tc, pp.floor); });
     if (!p.ps) return false;
-    float oldC[4] = {};
+    // The atlas has no walls: it is weighted by 1 - the floor map's alpha, where level_light_share stores the share of the
+    // lamps' light that walls block for the outdoor floor texels of upper stories (0 everywhere else, as the game has it:
+    // the atlas stays whole). Without a readable alpha the weight constant is (1, 0): always 1.
+    const float height[4] = {1.0f, p.floor.maskAlpha && LevelLightShare::FloorWallsActive() ? -1.0f : 0.0f, 0.0f, 0.0f};
+    float oldC[4] = {}, oldH[4] = {};
     dev->GetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+    dev->GetPixelShaderConstantF(static_cast<UINT>(p.floor.heightConst), oldH, 1);
     IDirect3DPixelShader9* originalPs = g_curPs;
     IDirect3DVertexShader9* originalVs = g_curVs;
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.floor.atlasConst, c, 1);
+        SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), height, 1);
         SetVs(dev, fv.vs);
         SetPs(dev, p.ps);
         ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
@@ -2293,6 +2302,7 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
         SetPs(dev, originalPs);
         SetVs(dev, originalVs);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
+        SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), oldH, 1);
     }
     g_inOwnCall = false;
     g_floorAtlasDrawn.fetch_add(1, std::memory_order_relaxed);

@@ -137,6 +137,8 @@ const I18n::Entry kEntries[] = {
     {"Lamps inside shine through stairwells and open floors", "Lâmpadas de dentro passam por vãos de escada e pisos abertos",
      "Las lámparas interiores pasan por huecos de escalera y pisos abiertos",
      "Les lampes intérieures passent par les trémies d'escalier et les sols ouverts"},
+    {"Walls block light on floors", "Paredes bloqueiam a luz nos pisos", "Las paredes bloquean la luz en los suelos", "Les murs bloquent la lumière sur les sols"},
+    {"Decks and yards without a roof stay dark behind a wall", "Decks e pátios sem telhado ficam escuros atrás de uma parede", "Las terrazas y patios sin techo quedan oscuros tras una pared", "Les terrasses et cours sans toit restent sombres derrière un mur"},
     {"Rooms may take a few seconds to update; if one lags, change floors",
      "Os cômodos podem levar alguns segundos para atualizar; se algum demorar, troque de andar",
      "Las habitaciones pueden tardar unos segundos en actualizarse; si alguna tarda, cambia de piso",

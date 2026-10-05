@@ -621,7 +621,7 @@ bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
         afterLastInDcl = End(x);
     }
     if (maxIn < 0 || maxIn >= 9 || !afterLastInDcl) return false;
-    int mad = -1, found = 0;
+    int mad = -1, tex = -1, found = 0;
     DWORD L = 0, K = 0;
     for (size_t i = 0; i < firstFlow; i++) {
         const Ins& x = all[i];
@@ -635,6 +635,7 @@ bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
                 if (y.op == kMad && Type(t[y.at + 1]) == kTemp && WMask(t[y.at + 1]) == 0x7 && IsReg(t[y.at + 2], kTemp, A) && Swz(t[y.at + 2]) == kSwzXYZW &&
                     Type(t[y.at + 3]) == kConst && Swz(t[y.at + 3]) == kSwzX && Type(t[y.at + 4]) == kTemp) {
                     mad = static_cast<int>(j);
+                    tex = static_cast<int>(i);
                     L = A;
                     K = Num(t[y.at + 3]);
                     found++;
@@ -645,24 +646,33 @@ bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
         }
     }
     if (found != 1) return false;
+    // The map's alpha (the floor visibility mask of level_light_share) must still be in L.w at the mad: the texld writes w
+    // and nothing in between writes it. Otherwise the weight constant stays (1, 0) and the atlas whole.
+    out.maskAlpha = (WMask(t[all[tex].at + 1]) & 0x8) != 0;
+    for (int i = tex + 1; i < mad && out.maskAlpha; i++)
+        if (all[i].len > 0 && (t[all[i].at + 1] & 0x80000000u) && IsReg(t[all[i].at + 1], kTemp, L) && (WMask(t[all[i].at + 1]) & 0x8)) out.maskAlpha = false;
     int kUses = 0; // the scale constant is read nowhere else (not a shared constant)
     for (const Ins& x : all) {
         if (x.op == kDef || x.op == kDcl) continue;
         for (size_t k = 1; k <= x.len; k++) kUses += IsReg(t[x.at + k], kConst, K) ? 1 : 0;
     }
-    if (kUses != 1 || u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 1 >= 224 || u.maxTemp + 1 >= 32) return false;
-    const DWORD E = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1), cA = static_cast<DWORD>(u.maxConst + 1);
+    if (kUses != 1 || u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 2 >= 224 || u.maxTemp + 2 >= 32) return false;
+    const DWORD E = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1), T2 = T + 1;
+    const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cH = cA + 1;
     const DWORD V = static_cast<DWORD>(maxIn + 1);
     out.atlasSampler = E;
     out.atlasConst = cA;
+    out.heightConst = static_cast<int>(cH);
     // K scales the map alone (read once, checked above); a def of cK would override what is set
     out.scaleConst = static_cast<int>(K);
     for (const Ins& x : all)
         if (x.op == kDef && IsReg(t[x.at + 1], kConst, K)) out.scaleConst = -1;
-    Apply(t, {{afterLastInDcl, {Op(kDcl, 2), 0x80000005u | (static_cast<DWORD>(texcoord) << 16) /* texcoordN */, Dst(kInput, V, 0x3)}},
+    Apply(t, {{afterLastInDcl, {Op(kDcl, 2), 0x80000005u | (static_cast<DWORD>(texcoord) << 16) /* texcoordN */, Dst(kInput, V, 0x7)}},
               {u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
               {all[mad].at, {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzXYXY), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                              Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
+                             Op(kMad, 4), Dst(kTemp, T2, 0x1, true), Src(kTemp, L, kSwzW), Src(kConst, cH, kSwzY), Src(kConst, cH, kSwzX),
+                             Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, T2, kSwzX),
                              Op(kMax, 3), Dst(kTemp, L, 0x7), Src(kTemp, L), Src(kTemp, T)}}});
     return true;
 }

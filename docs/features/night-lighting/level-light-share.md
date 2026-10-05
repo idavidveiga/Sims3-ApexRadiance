@@ -59,6 +59,7 @@ test. The light solve itself, lamp ranges and attenuation are the game's.
 |---|---|---|---|---|---|
 | Outdoor light between floors | `luzExternaEntreAndares` | bool | on | | Shares outdoor lamps between stories (parts 1 to 3). Installs or removes the whole module live; the other three switches need it |
 | Indoor light between floors | `luzInternaEntreAndares` | bool | on | | Indoor lamps light other stories through openings (part 4). A change sends every lot's rooms near openings to gather again |
+| Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Test (05/10): the outdoor floor texels of stories >= 1 store in their map alpha the share of room 0's lamp light that walls block (normal wrapped, 2D and cross-story wall tests); the floor atlas shader takes atlas x (1 - alpha). Steam bytes at 0x006A333B. A change relights every room |
 | Advanced > Seamless walls between floors | `paredesSemEmendaEntreAndares` | bool | on | | Wall samples at their drawn height and atrium walls blurred across the floor line (part 5). A change relights every room |
 | Advanced > Every floor in full detail | `todosOsAndaresEmDetalhe` | bool | on | | Every room of the played lot gets the top lighting detail on every story, so changing floors keeps the light. More solve work when entering a lot. A change relights every room |
 

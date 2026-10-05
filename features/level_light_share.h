@@ -30,6 +30,10 @@ void SetIndoor(bool on);
 void SetWallAlign(bool on);
 // Every room of the active lot solved at the top LOD class on every story, so a floor change re-solves nothing (default on)
 void SetAllFloors(bool on);
+// Walls block lamp light on outdoor floors (open rooms, decks): the floor map's alpha carries the blocked share of the
+// outdoor lamps (relights every room when it changes); Active = installed, the game code matched and on
+void SetFloorWalls(bool on);
+bool FloorWallsActive();
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text
 void RelightAllRooms(const char* why);
