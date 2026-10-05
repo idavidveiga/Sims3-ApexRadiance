@@ -1849,7 +1849,13 @@ void ProfileIconPicker(IconId& selected) {
                 IconId::Leaf, IconId::Cat, IconId::Dog, IconId::UserRound, IconId::Heart, IconId::Coffee,
                 IconId::Music, IconId::Sun, IconId::Moon, IconId::Cloud, IconId::Snowflake, IconId::Droplet,
                 IconId::Camera, IconId::Image, IconId::Palette, IconId::Lightbulb, IconId::Diamond, IconId::Bookmark,
-                IconId::Skull, IconId::CloudMoon, IconId::MoonStar, IconId::SunMedium, IconId::Sparkles, IconId::Flame
+                IconId::Skull, IconId::CloudMoon, IconId::MoonStar, IconId::SunMedium, IconId::Sparkles, IconId::Flame,
+                // home, Sims life and light (2026-10-05)
+                IconId::Bed, IconId::Sofa, IconId::Bath, IconId::Lamp, IconId::LampDesk, IconId::LampFloor,
+                IconId::LampCeiling, IconId::ChefHat, IconId::Utensils, IconId::Cake, IconId::Wine, IconId::Gift,
+                IconId::Baby, IconId::Users, IconId::Shirt, IconId::PawPrint, IconId::Fish, IconId::Sprout,
+                IconId::Guitar, IconId::BookOpen, IconId::Briefcase, IconId::GraduationCap, IconId::Car, IconId::PartyPopper,
+                IconId::TreePalm, IconId::Tent, IconId::Sunset, IconId::CloudRain, IconId::Crown, IconId::WandSparkles
             };
             for (int i = 0; i < IM_COUNTOF(choices); ++i) {
                 if (i % 6) ImGui::SameLine();
