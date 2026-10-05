@@ -997,6 +997,53 @@ void ResolveEntry(const Entry& e) {
     }
 }
 
+// Diagnostic-only probe for EA/non-Steam builds where the old WallSolve signature misses because it embeds
+// Steam's absolute BatchSamples address. This never fills g_found and never installs a hook: it only logs candidates.
+void ProbeMissingWallSolve() {
+    if (IsFixedBuild() || g_found[Index(Id::WallSolveCall)] || g_found[Index(Id::WallSolve)]) return;
+
+    const uintptr_t wallPass = g_found[Index(Id::WallPass)];
+    const uintptr_t batchSamples = g_found[Index(Id::BatchSamples)];
+    const uintptr_t batchSolveCall = g_found[Index(Id::BatchSolveCall)];
+    if (!wallPass || !batchSamples) {
+        LOG_INFO("[WallSolveProbe] skipped: WallPass or BatchSamples is missing");
+        return;
+    }
+
+    constexpr uintptr_t kSteamCallOffset =
+        static_cast<uintptr_t>(kInfo[Index(Id::WallSolveCall)].steam - kInfo[Index(Id::WallPass)].steam);
+    const uintptr_t predictedCall = wallPass + kSteamCallOffset;
+    LOG_INFO(std::format("[WallSolveProbe] WallPass {:#010x}, BatchSamples {:#010x}, Steam-relative call offset +{:#x} -> predicted call {:#010x}",
+                         wallPass, batchSamples, kSteamCallOffset, predictedCall));
+    LOG_INFO(std::format("[WallSolveProbe] bytes near predicted call {:#010x}: {}", predictedCall, Hex16(predictedCall)));
+
+    int candidates = 0;
+    const uintptr_t end = (wallPass + 0x150 < g_text.end) ? wallPass + 0x150 : g_text.end;
+    for (uintptr_t p = wallPass; p + 12 <= end; ++p) {
+        uint8_t b[12]{};
+        if (!SafeRead(p, b, sizeof b)) continue;
+        if (b[0] != 0x68 || b[5] != 0x8B || b[6] != 0xCE || b[7] != 0xE8) continue;
+        uint32_t pushed = 0;
+        std::memcpy(&pushed, b + 1, sizeof pushed);
+        if (pushed != static_cast<uint32_t>(batchSamples)) continue;
+
+        const uintptr_t call = p + 7;
+        const uintptr_t target = CallTargetAt(call);
+        const bool targetInText = g_text.Has(target);
+        const intptr_t batchDelta = (batchSolveCall && target) ? static_cast<intptr_t>(batchSolveCall) - static_cast<intptr_t>(target) : 0;
+        LOG_INFO(std::format("[WallSolveProbe] candidate {}: push BatchSamples at {:#010x}, CALL {:#010x} -> {:#010x}, in .text {}, BatchSolveCall-target {:#x}{}",
+                             ++candidates, p, call, target, targetInText ? "yes" : "no", batchDelta,
+                             batchDelta == 0x166 ? " (matches Steam +0x166 relation)" : ""));
+        LOG_INFO(std::format("[WallSolveProbe] candidate bytes {:#010x}: {}", call, Hex16(call)));
+    }
+
+    const uintptr_t predictedSolve = batchSolveCall >= 0x166 ? batchSolveCall - 0x166 : 0;
+    LOG_INFO(std::format("[WallSolveProbe] {} candidate(s); BatchSolveCall {:#010x} -> Steam-relation predicted WallSolve {:#010x}{}",
+                         candidates, batchSolveCall, predictedSolve,
+                         predictedSolve && g_text.Has(predictedSolve) ? " (inside .text)" : ""));
+    if (predictedSolve) LOG_INFO(std::format("[WallSolveProbe] bytes near predicted WallSolve {:#010x}: {}", predictedSolve, Hex16(predictedSolve)));
+}
+
 // Cross-checks between entries (non-Steam: a failed check clears the ids concerned)
 void CrossChecks() {
     auto clear = [](std::initializer_list<Id> ids, const char* why) {
@@ -1174,6 +1221,7 @@ void Resolve() {
                          g_text.end, g_readable.size(), prologues));
     if (IsFixedBuild()) LOG_INFO("[Addr] Steam 1.67.2: the fixed addresses are used; the signatures below are only a self-check");
     for (const Entry& e : kTable) ResolveEntry(e);
+    ProbeMissingWallSolve();
     CrossChecks();
     int found = 0, differs = 0;
     for (size_t i = 0; i < Index(Id::Count); i++) {
