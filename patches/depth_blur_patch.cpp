@@ -59,6 +59,8 @@ constexpr float kMapFadeSeconds = 0.3f;
 // inferred, not measured). So the blur waits this long after the gate opens and then fades in.
 constexpr unsigned long long kWorldHoldMs = 2000;
 constexpr float kWorldFadeInSeconds = 1.0f;
+// Fewer depth-writing scene draws than this in a frame: a frozen screen (save screen), not the world (see BlurEffect)
+constexpr int kMinDepthWrites = 48;
 // The game's projection: d = A - near * A / z (LightProbe-m80; docs/engine/camera-and-map-view.md)
 constexpr float kDepthA = 1.00008f;
 // Only for the Developer read-out in metres: near changes with zoom (0.2 - 0.3), so the value is approximate
@@ -937,6 +939,23 @@ void BlurEffect(IDirect3DDevice9* dev) {
         g.mapFade = 0;
         g.worldIn = 0;
         return;
+    }
+    // A frozen screen over a loaded world (user 05/10: the save screen came out fully blurred; the game shows a still
+    // image there and draws almost nothing with depth, so the depth read is not the picture shown): no blur that frame.
+    // A drawn world writes depth in hundreds of draws.
+    {
+        static bool frozen = false;
+        const int writes = PostScene::DepthWritesThisFrame();
+        const bool now = writes < kMinDepthWrites;
+        if (now != frozen) {
+            frozen = now;
+            LOG_INFO(std::format("[DepthBlur] {} ({} depth-writing draws this frame)", now ? "Frozen screen: blur paused" : "World drawn again: blur back", writes));
+        }
+        if (now) {
+            g.focusSnap = true;
+            g.lastFadeTick = {};
+            return;
+        }
     }
     {
         const unsigned long long since = GetTickCount64() - g.world.activeAt; // ready: at least the 3 s settle

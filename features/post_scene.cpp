@@ -28,6 +28,7 @@ bool g_hooks = false;
 IDirect3DSurface9* g_curRT0 = nullptr;     // identity only
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only
 int g_sceneDraws = 0;
+int g_depthWrites = 0; // of those, the ones that write depth (the drawn world; a frozen screen such as the save screen has almost none)
 bool g_done = false;
 bool g_rejectedBoundary = false; // no late composite over UI already drawn after an invalid boundary
 
@@ -136,6 +137,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         s->Release();
     }
     g_sceneDraws = 0;
+    g_depthWrites = 0;
     g_done = false;
     g_rejectedBoundary = false;
     g_nearDraws = 0;
@@ -152,6 +154,9 @@ void OnGameDraw(IDirect3DDevice9* dev) {
     if (z != D3DZB_FALSE) {
         if (g_rejectedBoundary && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
         g_sceneDraws++;
+        DWORD zw = TRUE;
+        dev->GetRenderState(D3DRS_ZWRITEENABLE, &zw);
+        if (zw) g_depthWrites++;
         if (g_nearDraws < kNearDraws && g_cameraWanted.load(std::memory_order_relaxed) > 0) VoteCamera(dev);
         return;
     }
@@ -259,6 +264,8 @@ void WantCamera(bool on) {
 }
 
 float CameraNear() { return g_near; }
+
+int DepthWritesThisFrame() { return g_depthWrites; }
 
 // (row2 . row3) / |row3|^2 of the camera block: 1.00008 in LightProbe-m80, a far plane near 3 km
 float CameraDepthA() {

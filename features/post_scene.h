@@ -23,6 +23,9 @@ void WantCamera(bool on);
 // The camera's near plane of the current frame (metres). Device depth d = A - near * A / z (A = 1.00008 measured, far
 // plane ~3 km); near changes with the camera's zoom and height (0.2 .. 0.3). 0 until a frame was seen.
 float CameraNear();
+// Depth-writing back buffer draws so far this frame (render thread): the world being drawn. A frozen screen (the save
+// screen shows a still image of the world) has almost none.
+int DepthWritesThisFrame();
 // The camera's view-projection of the current frame (world -> clip, rows = c40..c43), false when not seen this frame
 bool CameraViewProj(float vp[4][4]);
 // A of the projection (d = A - near * A / z, so view z / near = A / (A - d)); 1.00008 when unknown
