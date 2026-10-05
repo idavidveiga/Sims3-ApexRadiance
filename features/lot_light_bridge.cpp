@@ -1795,7 +1795,9 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPsConst(dev, p.inst.atlasConst, c, 1);
         SetPsConst(dev, p.inst.strengthConst, s, 1);
         SetPs(dev, p.ps);
+        IndoorSeamSwap seam = BeginIndoorMaterialSeam(dev);
         draw();
+        EndIndoorMaterialSeam(dev, seam);
         SetPs(dev, original);
         SetPsConst(dev, p.inst.strengthConst, oldB, 1);
         SetPsConst(dev, p.inst.atlasConst, oldA, 1);
@@ -2801,7 +2803,7 @@ std::atomic<long> g_indoorMaterialSeamSwaps{0};
 // Keep one auxiliary pair for matching parts of the same object/material. This is deliberately narrow: exact sampler
 // formats/sizes from the captured shader family, 12 primitives, room-mode rig, and identical s3/s4/s7/s8 material maps.
 struct IndoorMaterialKey {
-    uintptr_t rig = 0;
+    int32_t x = 0, y = 0, z = 0; // object world translation, millimetres
     IDirect3DPixelShader9* ps = nullptr;
     IDirect3DBaseTexture9* s3 = nullptr;
     IDirect3DBaseTexture9* s4 = nullptr;
@@ -2811,7 +2813,9 @@ struct IndoorMaterialKey {
 };
 struct IndoorMaterialKeyHash {
     size_t operator()(const IndoorMaterialKey& k) const noexcept {
-        size_t h = static_cast<size_t>(k.rig);
+        size_t h = static_cast<size_t>(static_cast<uint32_t>(k.x));
+        h ^= static_cast<size_t>(static_cast<uint32_t>(k.y)) * 16777619u;
+        h ^= static_cast<size_t>(static_cast<uint32_t>(k.z)) * 2166136261u;
         auto mix = [&](const void* p) {
             const size_t v = reinterpret_cast<size_t>(p);
             h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
@@ -2849,8 +2853,12 @@ struct IndoorSeamSwap {
 IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
     IndoorSeamSwap out;
     if (!dev || g_curPrims != 12 || RigTracker::CurrentMode() != 0) return out;
-    const uintptr_t rig = RigTracker::CurrentRig();
-    if (!rig || !g_curPs) return out;
+    if (!g_curPs || !g_curVsInfo || g_curVsInfo->patched.worldK < 0) return out;
+    float world[3][4] = {};
+    if (FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(g_curVsInfo->patched.worldK), &world[0][0], 3))) return out;
+    const int32_t wx = static_cast<int32_t>(std::lround(world[0][3] * 1000.0f));
+    const int32_t wy = static_cast<int32_t>(std::lround(world[1][3] * 1000.0f));
+    const int32_t wz = static_cast<int32_t>(std::lround(world[2][3] * 1000.0f));
 
     IDirect3DBaseTexture9 *s2 = nullptr, *s3 = nullptr, *s4 = nullptr, *s6 = nullptr, *s7 = nullptr, *s8 = nullptr;
     if (FAILED(dev->GetTexture(2, &s2)) || FAILED(dev->GetTexture(3, &s3)) || FAILED(dev->GetTexture(4, &s4)) ||
@@ -2873,7 +2881,7 @@ IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
     }
 
     if (g_indoorMaterialAux.size() > 512) ClearIndoorMaterialAux();
-    IndoorMaterialKey key{rig, g_curPs, s3, s4, s7, s8};
+    IndoorMaterialKey key{wx, wy, wz, g_curPs, s3, s4, s7, s8};
     auto it = g_indoorMaterialAux.find(key);
     if (it == g_indoorMaterialAux.end()) {
         // Transfer the references returned by GetTexture for s2/s6 to the cache. The material-map references are only
@@ -2897,7 +2905,8 @@ IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
     out.active = true;
     const long n = g_indoorMaterialSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
     if (n <= 8)
-        LOG_INFO(std::format("[LotLightBridge] Indoor material seam: reused auxiliary s2/s6 for matching room-mode part (rig {:#010x}, swap #{})", rig, n));
+        LOG_INFO(std::format("[LotLightBridge] Indoor material seam: reused auxiliary s2/s6 for matching smooth-room-light part at ({:.3f}, {:.3f}, {:.3f}) (swap #{})",
+                             world[0][3], world[1][3], world[2][3], n));
     return out;
 }
 
@@ -2976,9 +2985,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice
                 SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), c, 1);
                 SetPs(dev, tinted->ps);
             }
-            IndoorSeamSwap seam = BeginIndoorMaterialSeam(dev);
             draw();
-            EndIndoorMaterialSeam(dev, seam);
             if (tinted) {
                 SetPs(dev, original);
                 SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), tintOld, 1);
