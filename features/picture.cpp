@@ -558,6 +558,7 @@ struct Gpu {
     bool hooks = false;
     bool frameReady = true;      // the pass has not run yet this frame
     int sceneDraws = 0;          // depth-tested back buffer draws this frame
+    int runDraws = 0;            // depth-tested back buffer draws since the last depth-off one
     bool lastWasScene = false;   // the last back buffer draw was depth-tested
     bool copyAfterStrip = false; // a bloom strip right after the scene: copy once it has drawn
     bool sceneCopied = false;
@@ -608,13 +609,20 @@ void OnGameDraw(IDirect3DDevice9* dev, bool isStripOfTwo) {
     dev->GetRenderState(D3DRS_ZENABLE, &z);
     if (z != D3DZB_FALSE) {
         gpu.sceneDraws++;
+        gpu.runDraws++;
         gpu.lastWasScene = true;
         gpu.copyAfterStrip = false;
         return;
     }
+    const int run = gpu.runDraws;
+    gpu.runDraws = 0;
     if (gpu.sceneDraws < kMinSceneDraws) return;
     if (gpu.lastWasScene) { // depth-tested -> depth-off: possibly the end of the scene
         gpu.lastWasScene = false;
+        // After the first copy, a short depth-tested run is part of the UI, not more scene: the Sim portrait of the pie
+        // menu is drawn in 3D over the UI, and copying after it put the menu into "the scene" (Emphasize turned it grey).
+        // Interiors draw depth-off pieces in the middle of the scene and then many more depth-tested draws: those still copy.
+        if (gpu.sceneCopied && run < kMinSceneDraws) return;
         if (isStripOfTwo) { // the bloom composite strip: part of the scene, copy after it
             gpu.copyAfterStrip = true;
             return;
@@ -642,6 +650,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     }
     gpu.frameReady = true;
     gpu.sceneDraws = 0;
+    gpu.runDraws = 0;
     gpu.lastWasScene = false;
     gpu.copyAfterStrip = false;
     gpu.sceneCopied = false;
@@ -878,7 +887,9 @@ static PictureParams Effective(const PictureParams& q) {
 
 void Picture::BeforeOverlay(IDirect3DDevice9* dev) {
     // the frame ended on the scene (no game UI after it): the copy is the scene as it is now
-    if (Effective(GetParams()).enabled && dev && gpu.frameReady && gpu.sceneDraws >= kMinSceneDraws && (gpu.lastWasScene || gpu.copyAfterStrip)) CopyScene(dev);
+    if (Effective(GetParams()).enabled && dev && gpu.frameReady && gpu.sceneDraws >= kMinSceneDraws &&
+        ((gpu.lastWasScene && (!gpu.sceneCopied || gpu.runDraws >= kMinSceneDraws)) || gpu.copyAfterStrip))
+        CopyScene(dev);
 }
 
 void Picture::OnEndScene(IDirect3DDevice9* dev) {
@@ -1352,6 +1363,9 @@ bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
         for (const auto& k : kFilterArrays)
             if (auto a = x[k.key].as_array())
                 for (size_t i = 0; i < 3 && i < a->size(); i++) (q.*k.field)[i] = static_cast<float>((*a)[i].value_or(static_cast<double>((q.*k.field)[i])));
+        // Emphasize's zone depth was in metres in the first test builds (now a fraction of the focus distance, 0 .. 2):
+        // an old value past the slider's range goes back to the default
+        if (!(q.emphWidth >= 0.0f && q.emphWidth <= 2.0f)) q.emphWidth = PictureParams{}.emphWidth;
     }
     q.compare = false;
     out = q;
