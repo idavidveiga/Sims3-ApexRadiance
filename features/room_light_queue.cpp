@@ -75,9 +75,7 @@ bool g_prioOn = false, g_stepOn = false, g_keepOn = false, g_drainOn = false;
 std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
 
-std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0}, g_settleBursts{0};
-// The longest a lamp edit's rooms are solved in one go once the edit ends (every story together; the pause the user chose)
-constexpr float kSettleMs = 1500.0f;
+std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0};
 std::atomic<long long> g_drainMicros{0};
 
 inline DWORD ThreadId() { return __readfsdword(0x24); }
@@ -200,29 +198,20 @@ void __fastcall PickHook(BYTE* tree) {
     // dragged lamp's light follows it within a frame or two
     const bool lampEdit = LevelLightShare::LampEditPending();
     NoteEditBurst(lampEdit);
-    const bool moving = LotLightingMotion::SampleCameraMoving();
-    // Every story together (05/10, the user's choice): once an edit ends (a lamp switched, dropped, a value let go) every
-    // room it sent that is ready to solve is solved here in one go, a short pause instead of the stories changing one after
-    // another; a lamp still being dragged keeps the per-frame budget, so its own room follows it smoothly
-    const bool settle = lampEdit && !moving && !LevelLightShare::LampDragging();
     BYTE* room = DrainableRoom(tree);
     if (before && !(lampEdit && room == before && LevelLightShare::LampUrgency(room) > 1.0f)) room = nullptr;
-    const bool urgentRoom = room && LevelLightShare::LampUrgency(room) > 1.0f;
-    // a lamp edit's room of the lot being played needs no finished room before it (the user is editing that lot)
-    if (room && (finishedLot ? LotOf(room) != finishedLot : !urgentRoom)) room = nullptr;
+    if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;
     if (room) {
-        const bool burst = settle && urgentRoom;
-        const float budget = moving ? 1.0f : burst ? kSettleMs : lampEdit ? 12.0f : 4.0f;
-        const uint64_t drainLot = LotOf(room);
+        // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
+        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f : lampEdit ? (LevelLightShare::LampDragging() ? 6.0f : 12.0f) : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
-        if (burst) g_settleBursts.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
         reinterpret_cast<SwCtor_t>(kSwCtor)(sw, 4, 0);
         reinterpret_cast<SwStart_t>(kSwStart)(sw);
         const auto elapsed = reinterpret_cast<SwElapsed_t>(kSwElapsed);
         const auto solve = reinterpret_cast<SolveStep_t>(kSolveStep);
         g_drainFrames.fetch_add(1, std::memory_order_relaxed);
-        for (int n = 0; n < (burst ? 128 : 16) && room; n++) {
+        for (int n = 0; n < 16 && room; n++) {
             if (elapsed(sw) >= budget * 0.8f) break;
             solve(room, sw, budget);
             g_drainSolves.fetch_add(1, std::memory_order_relaxed);
@@ -230,8 +219,7 @@ void __fastcall PickHook(BYTE* tree) {
             g_drainFinished.fetch_add(1, std::memory_order_relaxed);
             pick(tree);
             room = DrainableRoom(tree);
-            if (room && LotOf(room) != drainLot) room = nullptr;
-            if (burst && room && LevelLightShare::LampUrgency(room) <= 1.0f) room = nullptr; // only the edit's rooms in one go
+            if (room && LotOf(room) != finishedLot) room = nullptr;
         }
         g_drainMicros.fetch_add(static_cast<long long>(elapsed(sw) * 1000.0f), std::memory_order_relaxed);
     }
@@ -365,9 +353,9 @@ std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
     return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
-                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting, {} edits solved in one go){}",
+                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
-                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_settleBursts.load(), SolveTimes());
+                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), SolveTimes());
 }
 
 void RenderDeveloperUI() {

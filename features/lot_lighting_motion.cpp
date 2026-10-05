@@ -216,8 +216,10 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
     }
     // A lamp being edited in Build mode (05/10, user: "make the corrections in Build mode even more instant"): its rooms
-    // waiting for or in their solve get 25 ms of the lot being played per frame instead of 15, camera still
-    if (!moving && game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::LampEditPending()) out = std::max(out, kLampEditMs);
+    // waiting for or in their solve get 25 ms of the lot being played per frame instead of 15, camera still, once the lamp
+    // is let go (while it is dragged the game's 15 ms: 05/10, recording 20:38:25, moving a lamp had become laggy)
+    if (!moving && game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::LampEditPending() && !LevelLightShare::LampDragging())
+        out = std::max(out, kLampEditMs);
     g_lastGame.store(std::bit_cast<uint32_t>(game), std::memory_order_relaxed);
     g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
     return out;
