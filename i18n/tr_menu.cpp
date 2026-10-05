@@ -184,7 +184,6 @@ const I18n::Entry kEntries[] = {
     {"About", "Sobre", "Acerca de", "À propos"},
     {"Expand the sidebar", "Expandir a barra lateral", "Expandir la barra lateral", "Déplier la barre latérale"},
     {"Collapse the sidebar", "Recolher a barra lateral", "Contraer la barra lateral", "Replier la barre latérale"},
-    {"Version {}", "Versão {}", "Versión {}", "Version {}"},
 
     // ---- header and status bar ----
     {APEX_PRODUCT_TAGLINE, "para The Sims 3", "para Los Sims 3", "pour Les Sims 3"},
@@ -202,7 +201,6 @@ const I18n::Entry kEntries[] = {
     {"All changes saved", "Todas as mudanças salvas", "Todos los cambios guardados", "Toutes les modifications enregistrées"},
     {"Sims3SettingsSetter detected", "Sims3SettingsSetter detectado", "Sims3SettingsSetter detectado", "Sims3SettingsSetter détecté"},
     {"Sims3SettingsSetter not installed", "Sims3SettingsSetter não instalado", "Sims3SettingsSetter no instalado", "Sims3SettingsSetter non installé"},
-    {"Hold Alt to peek", "Segure Alt para espiar", "Mantén Alt para ver detrás", "Maintenez Alt pour voir à travers"},
     {"Undo", "Desfazer", "Deshacer", "Annuler"},
 
     // ---- search ----
@@ -455,7 +453,6 @@ const I18n::Entry kEntries[] = {
     {"Frame Capture", "Captura de quadro", "Captura de fotograma", "Capture d'image"},
     {"Records draw calls for troubleshooting", "Registra chamadas de desenho para diagnóstico", "Registra llamadas de dibujo para diagnosticar problemas", "Enregistre les appels de rendu pour le diagnostic"},
     {"Focuses the settings search field", "Foca o campo de busca das configurações", "Enfoca el campo de búsqueda de ajustes", "Place le curseur dans la recherche des paramètres"},
-    {"Hold the key over the menu to see through it", "Segure a tecla sobre o menu para enxergar o jogo", "Mantén la tecla sobre el menú para ver el juego", "Maintenez la touche sur le menu pour voir le jeu"},
     {"Hold the key over the menu to bypass Picture", "Segure a tecla sobre o menu para ignorar os filtros de imagem", "Mantén la tecla sobre el menú para omitir los filtros de imagen", "Maintenez la touche sur le menu pour ignorer les filtres d'image"},
     {"Choose one key without modifiers for this hold action", "Escolha uma tecla sem modificadores para esta ação", "Elige una sola tecla, sin modificadores, para esta acción", "Choisissez une seule touche sans modificateur pour cette action"},
     {"Windows keys are reserved by Windows", "As teclas Windows são reservadas pelo Windows", "Las teclas Windows están reservadas por Windows", "Les touches Windows sont réservées par Windows"},
@@ -476,7 +473,6 @@ const I18n::Entry kEntries[] = {
     {"IN THE MENU", "DENTRO DO MENU", "DENTRO DEL MENÚ", "DANS LE MENU"},
     {"DEVELOPER TOOLS", "FERRAMENTAS DE DESENVOLVEDOR", "HERRAMIENTAS DE DESARROLLADOR", "OUTILS DE DÉVELOPPEMENT"},
     {"Search the settings", "Buscar nas configurações", "Buscar en los ajustes", "Chercher dans les paramètres"},
-    {"Peek at the game behind the menu", "Espiar o jogo por trás do menu", "Ver el juego detrás del menú", "Voir le jeu derrière le menu"},
     {"Hold Alt", "Segurar Alt", "Mantener Alt", "Maintenir Alt"},
     {"Compare the picture without its filters", "Comparar a imagem sem os filtros", "Comparar la imagen sin sus filtros", "Comparer l'image sans ses filtres"},
     {"Hold B", "Segurar B", "Mantener B", "Maintenir B"},
@@ -1081,4 +1077,37 @@ const I18n::Entry kRefreshLightingCardEntries[] = {
     {"Refresh lots", "Atualizar lotes", "Actualizar solares", "Actualiser les parcelles"},
 };
 const I18n::Table kRefreshLightingCardTable(kRefreshLightingCardEntries, std::size(kRefreshLightingCardEntries));
+}
+
+// The footer and What's new (apex_changelog.cpp)
+namespace {
+const I18n::Entry kWhatsNewEntries[] = {
+    {"What's new", "Novidades", "Novedades", "Nouveautés"},
+    {"What's new in {}", "Novidades da {}", "Novedades de la {}", "Nouveautés de la {}"},
+    {"NEW", "NOVO", "NUEVO", "NOUVEAU"},
+    {"IMPROVEMENTS", "MELHORIAS", "MEJORAS", "AMÉLIORATIONS"},
+    {"FIXES", "CORREÇÕES", "CORRECCIONES", "CORRECTIONS"},
+    {"See all versions", "Ver todas as versões", "Ver todas las versiones", "Voir toutes les versions"},
+    {"Opens the Apex Radiance releases page on GitHub in your browser", "Abre a página de versões do Apex Radiance no GitHub no seu navegador", "Abre la página de versiones de Apex Radiance en GitHub en tu navegador", "Ouvre la page des versions d’Apex Radiance sur GitHub dans votre navigateur"},
+    {"Hold {} to hide the menu", "Segure {} para esconder o menu", "Mantén {} para ocultar el menú", "Maintenez {} pour masquer le menu"},
+    {"Hide the menu while held", "Esconder o menu enquanto segura", "Ocultar el menú mientras se mantiene", "Masquer le menu tant que la touche est maintenue"},
+    {"Hold the key over the menu to hide it and see the game", "Segure a tecla sobre o menu para escondê-lo e ver o jogo", "Mantén la tecla sobre el menú para ocultarlo y ver el juego", "Maintenez la touche sur le menu pour le masquer et voir le jeu"},
+    {"Sim Occlusion: soft contact shadows on Sims, with separate body and hair strength", "Oclusão nos Sims: sombras de contato suaves nos Sims, com intensidade separada para corpo e cabelo", "Oclusión en Sims: sombras de contacto suaves en los Sims, con intensidad separada para cuerpo y pelo", "Occlusion des Sims : ombres de contact douces sur les Sims, avec une intensité distincte pour le corps et les cheveux"},
+    {"A welcome page with ready-made profiles: Performance, Default and Quality", "Uma página de boas-vindas com perfis prontos: Desempenho, Padrão e Qualidade", "Una página de bienvenida con perfiles listos: Rendimiento, Predeterminado y Calidad", "Une page d’accueil avec des profils prêts : Performances, Par défaut et Qualité"},
+    {"An Attention page that appears only when something blocks an effect", "Uma página Atenção que só aparece quando algo bloqueia um efeito", "Una página Atención que solo aparece cuando algo bloquea un efecto", "Une page Attention qui n’apparaît que si quelque chose bloque un effet"},
+    {"What's new: click the version at the bottom of the menu", "Novidades: clique na versão no rodapé do menu", "Novedades: haz clic en la versión al pie del menú", "Nouveautés : cliquez sur la version en bas du menu"},
+    {"Filtered screenshots with F8, saved in the game's Screenshots folder or in Apex Radiance's", "Capturas com filtros no F8, salvas na pasta de capturas do jogo ou na do Apex Radiance", "Capturas con filtros con F8, guardadas en la carpeta de capturas del juego o en la de Apex Radiance", "Captures filtrées avec F8, enregistrées dans le dossier Screenshots du jeu ou dans celui d’Apex Radiance"},
+    {"Menu shortcuts can be changed", "Os atalhos do menu podem ser alterados", "Los atajos del menú se pueden cambiar", "Les raccourcis du menu sont modifiables"},
+    {"Rooms at Night takes a room color saved in Sims3SettingsSetter into account", "Cômodos à Noite considera uma cor de cômodo salva no Sims3SettingsSetter", "Habitaciones de noche tiene en cuenta un color de habitación guardado en Sims3SettingsSetter", "Pièces la nuit tient compte d’une couleur de pièce enregistrée dans Sims3SettingsSetter"},
+    {"Hold Alt over the menu to hide it completely", "Segure Alt sobre o menu para escondê-lo por completo", "Mantén Alt sobre el menú para ocultarlo por completo", "Maintenez Alt sur le menu pour le masquer complètement"},
+    {"A tidier menu header and footer", "Topo e rodapé do menu mais organizados", "Cabecera y pie del menú más ordenados", "En-tête et pied du menu plus soignés"},
+    {"Lighting updates after editing lamps and after day and night changes in Build mode", "A iluminação se atualiza depois de editar luminárias e ao trocar dia e noite no modo Construir", "La iluminación se actualiza tras editar lámparas y al cambiar día y noche en el modo Construir", "L’éclairage se met à jour après la modification des lampes et les changements jour/nuit en mode Construction"},
+    {"Ground brightness applies to every terrain shader", "O brilho do chão vale para todos os shaders de terreno", "El brillo del suelo se aplica a todos los shaders de terreno", "La luminosité du sol s’applique à tous les shaders de terrain"},
+    {"Less lamp light leaks between stories through indoor openings", "Menos luz de luminária vaza entre andares por aberturas internas", "Se filtra menos luz de lámparas entre pisos por aberturas interiores", "Moins de lumière de lampe passe entre les étages par les ouvertures intérieures"},
+    {"Depth Blur and the start note wait until the world has finished loading", "O Desfoque de Profundidade e o aviso de início esperam o mundo terminar de carregar", "El Desenfoque de profundidad y el aviso de inicio esperan a que el mundo termine de cargar", "Le Flou de profondeur et la note de démarrage attendent la fin du chargement du monde"},
+    {"Lamp light on alpha-blended sidewalks", "Luz de luminárias nas calçadas com transparência", "Luz de lámparas en aceras con transparencia", "Lumière des lampes sur les trottoirs transparents"},
+    {"Rendering optimizations are on by default", "As otimizações de renderização vêm ligadas", "Las optimizaciones de renderizado vienen activadas", "Les optimisations du rendu sont activées par défaut"},
+    {"Street lamps outside lots update the lighting after their color changes", "Postes fora dos lotes atualizam a iluminação depois de mudar de cor", "Las farolas fuera de los solares actualizan la iluminación tras cambiar de color", "Les lampadaires hors parcelles mettent à jour l’éclairage après un changement de couleur"},
+};
+const I18n::Table kWhatsNewTable(kWhatsNewEntries, std::size(kWhatsNewEntries));
 }

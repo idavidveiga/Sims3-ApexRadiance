@@ -94,6 +94,7 @@
   <ItemGroup>
     <ClCompile Include="apex_config.cpp" />
     <ClCompile Include="apex_presets.cpp" />
+    <ClCompile Include="apex_changelog.cpp" />
     <ClCompile Include="apex_gui.cpp" />
     <ClCompile Include="apex_main.cpp" />
     <ClCompile Include="features\dxt_codec.cpp" />
@@ -170,6 +171,7 @@
   <ItemGroup>
     <ClInclude Include="apex_config.h" />
     <ClInclude Include="apex_presets.h" />
+    <ClInclude Include="apex_changelog.h" />
     <ClInclude Include="apex_gui.h" />
     <ClInclude Include="apex_version.h" />
     <ClInclude Include="build_flavor.h" />

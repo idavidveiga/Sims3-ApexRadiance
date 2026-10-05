@@ -371,6 +371,7 @@ void LoadSettings() {
         u.screenshotHideGameUi = (*ui)["screenshot_hide_game_ui"].value_or(true);
         u.screenshotToApexFolder = (*ui)["screenshot_folder"].value_or(std::string("game")) == "apex";
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
+        u.changelogSeen = (*ui)["changelog_seen"].value_or(std::string());
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
         u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
         I18n::SetChoice(u.language);
@@ -450,6 +451,7 @@ bool Save(std::string* error) {
         ui.insert("screenshot_hide_game_ui", u.screenshotHideGameUi);
         ui.insert("screenshot_folder", std::string(u.screenshotToApexFolder ? "apex" : "game"));
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
+        if (!u.changelogSeen.empty()) ui.insert("changelog_seen", u.changelogSeen);
         static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
         ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
         root.insert_or_assign("ui", std::move(ui));

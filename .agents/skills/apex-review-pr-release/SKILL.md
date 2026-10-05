@@ -37,4 +37,18 @@ Write a concise review/handoff in the existing PR description when PR updates ar
 
 Before the requested release, confirm that the exact release commit has been reviewed, required checks passed, documentation is consistent, and release-blocking findings are resolved. Write `docs/releases/<version>.md` in the format of `docs/releases/README.md` (summary, new features, changes, fixes, known limitations, upgrade notes), add it to that index, and mark the released features as "Released in <version>" in their Status tables and in `docs/README.md`. Validation pages record the release SHA in *Latest results* for the checks that ran on it. A relevant post-review change invalidates the affected approval/checks; review its delta and rerun appropriate checks. Known limitations must be explicit; an unresolved required check cannot be described as passed. Do not silently bypass the gate.
 
+### In-game What's new (`apex_changelog.cpp`)
+
+Every release also updates the changelog the player opens by clicking the version in the menu footer:
+
+- Add the new version at the top of `kReleases` in `apex_changelog.cpp` with its release date. Keep only the newest versions there; older ones live on the GitHub releases page that "See all versions" opens.
+- Write it from `docs/releases/<version>.md`, sorted into `added` (NEW), `improved` (IMPROVEMENTS) and `fixed` (FIXES). Leave out a section that has no lines.
+- Write each line as one short sentence in the player's words, about 5 to 15 words, saying what they get or what now works. Name the feature by its menu name. No ending period, internal names, addresses, shader or hook details, test counts, or version talk.
+- Use the present tense and plain words, with no marketing adjectives, emoji or "we". A fix line states the behaviour that now works ("Depth Blur waits..."), never "Fixed an issue where...".
+- Merge small related changes into one line. Leave out developer-only changes.
+- The GitHub release notes and the Nexus changelog start from the same lines, so all three match. The README describes the main features only and never lists versions.
+- Use the tone of these examples: "Sim Occlusion: soft contact shadows on Sims, with separate body and hair strength"; "Filtered screenshots with F8, saved in the game's Screenshots folder or in Apex Radiance's"; "Depth Blur and the start note wait until the world has finished loading".
+- Add every line to the What's new table in `i18n/tr_menu.cpp` in pt-BR, Spanish and French, with the same tone.
+- Bump `apex_version.h` so that `APEX_VERSION_NUMBER` matches the newest entry. Then check that the footer shows the new version and that the dot appears once.
+
 Only merge/publish when separately authorized. After publication, verify version and artifact identity against the reviewed build and the project's existing release checks. Do not claim that publication validates gameplay. Report the review result plainly: validated, material limitations remaining, or blocked by a specific unresolved requirement. Ask for missing evidence only when needed to resolve that requirement, after completing independent work.
