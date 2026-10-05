@@ -2001,25 +2001,44 @@ std::atomic<bool> g_indoorSmooth{true};
 std::atomic<int> g_basisSmoothDrawn{0}, g_indoorDrawn{0};
 std::atomic<long> g_indoorSharedMapParts{0};
 
-// One room-mode rig belongs to one object. A tall architectural object can be split into several draws that the game
-// associates with different stories after the final room light maps are built. If each part then feeds DrawIndoorObject
-// a different room map, the per-pixel smooth-light path creates a hard horizontal seam across one continuous object.
-// Keep the first map/basis set seen for one rig+shader within this frame and reuse it for the other parts of that same
-// object. The cache is cleared every Present, so a relight/rebuild is picked up on the next frame rather than pinned.
+// A tall architectural object can be split into several draws that the game associates with different stories after
+// the final room light maps are built. Captures proved those parts can have a different/null rig while keeping the exact
+// same world matrix, VS, PS and primitive count. Key by that draw identity (falling back to the rig only when the VS has
+// no readable world matrix), keep the first map/basis set seen in this frame, and reuse it for the other parts. The cache
+// is cleared every Present, so a relight/rebuild is picked up on the next frame rather than pinned.
 struct IndoorFrameMap {
     IDirect3DBaseTexture9* lightMap = nullptr;
     IDirect3DTexture9* basis[4] = {};
 };
 std::unordered_map<uint64_t, IndoorFrameMap> g_indoorFrameMaps;
 
-uint64_t IndoorFrameKey(uintptr_t rig, IDirect3DPixelShader9* ps, IDirect3DVertexShader9* vs, int lmSampler) {
+bool IndoorFrameKey(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps, IDirect3DVertexShader9* vs, int lmSampler, uint64_t& out, float pos[3]) {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-    mix(static_cast<uint64_t>(rig));
+    bool world = false;
+    float m[3][4] = {};
+    const int wk = g_curVsInfo ? g_curVsInfo->patched.worldK : -1;
+    if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
+        world = true;
+        for (int r = 0; r < 3; r++)
+            for (int col = 0; col < 4; col++) {
+                uint32_t bits = 0;
+                std::memcpy(&bits, &m[r][col], sizeof bits);
+                mix(bits);
+            }
+        pos[0] = m[0][3]; pos[1] = m[1][3]; pos[2] = m[2][3];
+    } else {
+        const uintptr_t rig = RigTracker::CurrentRig();
+        if (!rig) return false;
+        mix(static_cast<uint64_t>(rig));
+        pos[0] = pos[1] = pos[2] = 0.0f;
+    }
     mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ps)));
     mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vs)));
     mix(static_cast<uint64_t>(static_cast<uint32_t>(lmSampler)));
-    return h;
+    mix(static_cast<uint64_t>(g_curPrims));
+    out = h;
+    return world || RigTracker::CurrentRig();
 }
 void ClearIndoorFrameMaps() {
     for (auto& [k, e] : g_indoorFrameMaps) {
@@ -2144,9 +2163,10 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
     IDirect3DBaseTexture9* drawLightMap = lightMap;
     IDirect3DTexture9* drawBasis[4] = {basis[0], basis[1], basis[2], basis[3]};
     bool sharedObjectMap = false;
-    if (const uintptr_t rig = RigTracker::CurrentRig()) {
-        const uint64_t key = IndoorFrameKey(rig, g_curPs, g_curVs, lmS);
-        auto it = g_indoorFrameMaps.find(key);
+    uint64_t objectKey = 0;
+    float objectPos[3] = {};
+    if (IndoorFrameKey(dev, g_curPs, g_curVs, lmS, objectKey, objectPos)) {
+        auto it = g_indoorFrameMaps.find(objectKey);
         if (it == g_indoorFrameMaps.end()) {
             IndoorFrameMap e;
             e.lightMap = lightMap;
@@ -2155,7 +2175,7 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
                 e.basis[k] = basis[k];
                 if (e.basis[k]) e.basis[k]->AddRef();
             }
-            g_indoorFrameMaps.emplace(key, e);
+            g_indoorFrameMaps.emplace(objectKey, e);
         } else {
             bool differs = it->second.lightMap != lightMap;
             for (int k = 0; k < 4; k++) differs = differs || it->second.basis[k] != basis[k];
@@ -2164,8 +2184,10 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
                 for (int k = 0; k < 4; k++) drawBasis[k] = it->second.basis[k];
                 sharedObjectMap = true;
                 const long n = g_indoorSharedMapParts.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (n <= 12)
-                    LOG_INFO(std::format("[LotLightBridge] Multi-storey indoor object: reused one room-light map across parts of rig {:#010x} (swap #{})", rig, n));
+                if (n <= 20)
+                    LOG_INFO(std::format("[LotLightBridge] Multi-storey indoor object: reused room-light map at ({:.3f}, {:.3f}, {:.3f}), PS {:#010x}, VS {:#010x}, {} prims (swap #{})",
+                                         objectPos[0], objectPos[1], objectPos[2], reinterpret_cast<uintptr_t>(g_curPs),
+                                         reinterpret_cast<uintptr_t>(g_curVs), g_curPrims, n));
             }
         }
     }
