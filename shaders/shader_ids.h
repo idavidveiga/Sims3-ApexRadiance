@@ -27,6 +27,7 @@ constexpr ShaderId kRoofSnowPs = {4992, 0x3CEB025Eu};  // snowy roofs
 // The main marquee uses D5ED0EF3. The narrow centre panel uses 4E570819 by day and 36F5E915 at night,
 // all paired with the exact BFFCCC56 object VS.
 constexpr ShaderId kCinemaMarqueeDayPs = {864, 0xD5ED0EF3u};
+constexpr ShaderId kCinemaMarqueeNightPs = {1748, 0xDD77CDE4u}; // main marquee at night; captured 2026-10-04
 constexpr ShaderId kCinemaMarqueePanelDayPs = {500, 0x4E570819u};
 constexpr ShaderId kCinemaMarqueePanelNightPs = {1296, 0x36F5E915u};
 constexpr ShaderId kCinemaMarqueeDayVs = {1060, 0xBFFCCC56u};
