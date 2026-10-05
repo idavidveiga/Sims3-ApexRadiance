@@ -342,9 +342,9 @@ void NoteSolve(BYTE* room, char event, uintptr_t caller = 0); // development bui
 // order (F6 of 17:31: the lamp's own story last). Now the rooms a lamp edit sends are urgent for kUrgentMs:
 //  - the scheduler solves them before any other room (RoomLightQueue's priority hook asks LampUrgency): the lamp's own
 //    room first (tier 0), then the rooms of other stories that take its light (tier 1);
-//  - for a lamp already registered in that room that only moved or changed a value (`soon`), they gather in the room
+//  - for a lamp already registered in that room that moved, switched or changed a value (`soon`), they gather in the room
 //    update that sends them (countdown 1: the pending walk of the same FUN_006c7250 call gathers them) instead of 5
-//    updates later. Never for a lamp added, removed, switched or moved into another room or story: the game registers its
+//    updates later. Never for a lamp added, removed or moved into another room or story: the game registers its
 //    new entries over the next updates, and a gather before that misses the lamp (F8 19:22, build f65626e: a sconce moved
 //    up to story 3 was in the lists of stories 0-2 but not in its own story's, gathered at once, nor in story 4's);
 //  - a room being solved whose lamp only moved or changed a value keeps that solve: LampMarkFilter holds the mark
@@ -388,7 +388,7 @@ void GatherSoon(void* room) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
-// soon: the edit is a registered lamp that moved or changed a value (see above); the latest edit decides
+// soon: the edit is a lamp registered in that room that moved, switched or changed a value (see above); the latest decides
 void MarkUrgent(void* room, int tier, bool soon) {
     uintptr_t mgr = 0;
     int id = 0;
@@ -429,7 +429,7 @@ int UrgentTier(const void* room, bool* soon = nullptr) {
 }
 // Rooms the lamp entry update marked for a lamp edit (LampMarkFilter, light tree thread): AfterChangedWalk makes them
 // urgent once the game's walk has sent them. user = a value a player edits (colour, intensity, on / off), not a flicker;
-// pure = the lamp stayed in that room, on or off as it was (it moved or changed a value): its rooms may gather at once.
+// pure = the lamp stayed in that room (it moved, switched or changed a value): it is registered there, its rooms may gather at once.
 struct LampMarkNote {
     uintptr_t tl;
     int room;
@@ -453,7 +453,7 @@ using MarkRoom_t = void(__thiscall*)(void* treeLevel, int room);
 // waiting for their gather keep their countdown (false). The room being solved right now (state 3) is not invalidated:
 // that would throw its solve away (0x69EED0 -> 0x6C4870, 0x69E950(0): nothing committed, 29/09 study); it is sent again
 // once the solve is over (FlushDeferred). urgentTier >= 0: a lamp edit sends it (see "Lamp edits first"); soon: that edit
-// is a registered lamp that moved or changed a value.
+// is a lamp registered in that room that moved, switched or changed a value.
 bool QueueRoom(uintptr_t tracker, int level, int id, bool defer = false, int urgentTier = -1, bool soon = false) {
     const uintptr_t tl = TreeLevel(tracker, level);
     void* mgr = *reinterpret_cast<void* const*>(tl);
@@ -2836,7 +2836,7 @@ void AfterChangedWalk(BYTE* tl) {
             if (ids[i] < 0) continue;
             const LampMarkNote* note = noteOf(ids[i]);
             if (note || noted) own.push_back(ids[i]); // the lamp's room, and the neighbours the game's mark sent with it
-            if (note && note->pure) ownSoon.push_back(ids[i]); // a registered lamp of it moved or changed a value
+            if (note && note->pure) ownSoon.push_back(ids[i]); // a lamp registered in it moved, switched or changed a value
             const DepKey key{tracker, L, ids[i]};
             const auto deps = g_deps.find(key); // rooms of other stories taking its lamps near an opening (room 0 too)
             const bool outdoor = ids[i] == 0 || (g_indoorReady && RooflessRoom(mgrL, ids[i])); // its lamps light the other stories
@@ -2852,7 +2852,7 @@ void AfterChangedWalk(BYTE* tl) {
                 continue;
             }
             if (outdoor) own.push_back(ids[i]); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
-            const bool soon = note && note->pure && change != 2; // a registered lamp moved or changed a value, none added or removed
+            const bool soon = note && note->pure && change != 2; // a lamp registered in it changed, none added or removed
             if (change == 2) ownLate.push_back(ids[i]); // a lamp of it added or removed: its gather waits for the game
             if (change == 1 && note && note->user) change = 3; // colour, intensity, on / off by a player or a Sim: at once
             auto& out = change == 2 ? now : change == 3 ? kept : later;
@@ -5471,7 +5471,7 @@ void NoteLampMark(uintptr_t tl, int room, bool user, bool pure) {
     for (LampMarkNote& n : g_lampMarks)
         if (n.tl == tl && n.room == room) {
             n.user = n.user || user;
-            n.pure = n.pure && pure; // one lamp of the room switched or moved in: its gather waits
+            n.pure = n.pure && pure; // a lamp of the room moved in from another: its gather waits
             return;
         }
     if (g_lampMarks.size() >= 256) g_lampMarks.erase(g_lampMarks.begin()); // notes whose update never came
@@ -5494,9 +5494,22 @@ bool HoldLampMark(uintptr_t tl, int room, bool user) {
     return true;
 }
 
+// The story the camera shows first, then the ones below it (seen from outside and through the cutaway), then the ones above
+// (05/10, recording 19:42: all lamps of a house switched on, 26 rooms solved over about a second in the queue's order)
+float CameraStoryFactor(const void* room) {
+    __try {
+        const uintptr_t mgr = *static_cast<const uintptr_t*>(room);
+        if (!mgr) return 1.0f;
+        const int level = *reinterpret_cast<const int*>(mgr + 0x88), cam = *reinterpret_cast<const int*>(mgr + 0x284);
+        return level == cam ? 4.0f : level < cam ? 2.0f : 1.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1.0f;
+    }
+}
+
 float LampUrgency(const void* room) {
     const int tier = UrgentTier(room);
-    return tier < 0 ? 1.0f : tier == 0 ? 1.0e6f : 1.0e5f;
+    return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : 1.0e5f) * CameraStoryFactor(room);
 }
 
 bool LampEditPending() {

@@ -169,8 +169,9 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     }
     // Lamp edits first (05/10, LevelLightShare): an edit (moved, recoloured, dimmed, switched) marks its room as urgent;
     // `user` = a value a player or a Sim sets (colour, intensity, on / off), sent to the other stories at once; `pure` = the
-    // same room, on or off as before (a move or a value change): a solve in progress keeps going, the mark is held
-    bool same = false, edit = false, user = false, pure = false;
+    // same room, on or off as before (a move or a value change): a solve in progress keeps going, the mark is held;
+    // `stayed` = the same room (switched too): the lamp is registered there, its rooms gather at once
+    bool same = false, edit = false, user = false, pure = false, stayed = false;
     {
         std::lock_guard<std::mutex> lk(g_mx);
         if (g_sig.size() > 65536) g_sig.clear();
@@ -209,7 +210,8 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         same = was.sig == h;
         const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
         const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin; // NaN: not a move
-        pure = was.on == on && was.room == room;
+        stayed = was.room == room;
+        pure = was.on == on && stayed;
         if (was.on != on || moved || was.room != room) { // the player sees this: its lot lights again (OnPresent)
             if (tick - was.eventsFrom > kSelfWindow) {
                 was.eventsFrom = tick;
@@ -259,7 +261,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     }
     if (!g_on.load(std::memory_order_relaxed)) {
         g_off.fetch_add(1, std::memory_order_relaxed);
-        if (edit) LevelLightShare::NoteLampMark(tl, room, user, pure);
+        if (edit) LevelLightShare::NoteLampMark(tl, room, user, stayed);
         return true;
     }
     g_changed.fetch_add(1, std::memory_order_relaxed);
@@ -267,7 +269,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         g_held.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    if (edit) LevelLightShare::NoteLampMark(tl, room, user, pure);
+    if (edit) LevelLightShare::NoteLampMark(tl, room, user, stayed);
     return true;
 }
 
