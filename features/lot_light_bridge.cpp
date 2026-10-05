@@ -1999,6 +1999,36 @@ std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_basisSmoothPs;
 std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_indoorPs; // sampler 0..7, +8 for guarded maps without floor cap
 std::atomic<bool> g_indoorSmooth{true};
 std::atomic<int> g_basisSmoothDrawn{0}, g_indoorDrawn{0};
+std::atomic<long> g_indoorSharedMapParts{0};
+
+// One room-mode rig belongs to one object. A tall architectural object can be split into several draws that the game
+// associates with different stories after the final room light maps are built. If each part then feeds DrawIndoorObject
+// a different room map, the per-pixel smooth-light path creates a hard horizontal seam across one continuous object.
+// Keep the first map/basis set seen for one rig+shader within this frame and reuse it for the other parts of that same
+// object. The cache is cleared every Present, so a relight/rebuild is picked up on the next frame rather than pinned.
+struct IndoorFrameMap {
+    IDirect3DBaseTexture9* lightMap = nullptr;
+    IDirect3DTexture9* basis[4] = {};
+};
+std::unordered_map<uint64_t, IndoorFrameMap> g_indoorFrameMaps;
+
+uint64_t IndoorFrameKey(uintptr_t rig, IDirect3DPixelShader9* ps, IDirect3DVertexShader9* vs, int lmSampler) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    mix(static_cast<uint64_t>(rig));
+    mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ps)));
+    mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vs)));
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(lmSampler)));
+    return h;
+}
+void ClearIndoorFrameMaps() {
+    for (auto& [k, e] : g_indoorFrameMaps) {
+        if (e.lightMap) e.lightMap->Release();
+        for (auto*& b : e.basis)
+            if (b) b->Release();
+    }
+    g_indoorFrameMaps.clear();
+}
 
 // (w, h, 1/w, 1/h) of a bound map, for the smooth reads' size constant; false when it is not a 2D texture
 bool MapSize(IDirect3DBaseTexture9* t, float out[4]) {
@@ -2111,11 +2141,42 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
                               [lmS, capToFloorMap](std::vector<DWORD>& t, PatchedPs& pp) {
                                   return ShaderPatches::PatchIndoorBasis(t, static_cast<DWORD>(lmS), pp.indoor, capToFloorMap);
                               });
+    IDirect3DBaseTexture9* drawLightMap = lightMap;
+    IDirect3DTexture9* drawBasis[4] = {basis[0], basis[1], basis[2], basis[3]};
+    bool sharedObjectMap = false;
+    if (const uintptr_t rig = RigTracker::CurrentRig()) {
+        const uint64_t key = IndoorFrameKey(rig, g_curPs, g_curVs, lmS);
+        auto it = g_indoorFrameMaps.find(key);
+        if (it == g_indoorFrameMaps.end()) {
+            IndoorFrameMap e;
+            e.lightMap = lightMap;
+            e.lightMap->AddRef();
+            for (int k = 0; k < 4; k++) {
+                e.basis[k] = basis[k];
+                if (e.basis[k]) e.basis[k]->AddRef();
+            }
+            g_indoorFrameMaps.emplace(key, e);
+        } else {
+            bool differs = it->second.lightMap != lightMap;
+            for (int k = 0; k < 4; k++) differs = differs || it->second.basis[k] != basis[k];
+            if (differs && it->second.lightMap) {
+                drawLightMap = it->second.lightMap;
+                for (int k = 0; k < 4; k++) drawBasis[k] = it->second.basis[k];
+                sharedObjectMap = true;
+                const long n = g_indoorSharedMapParts.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (n <= 12)
+                    LOG_INFO(std::format("[LotLightBridge] Multi-storey indoor object: reused one room-light map across parts of rig {:#010x} (swap #{})", rig, n));
+            }
+        }
+    }
+
     float size[4], oldSize[4] = {};
-    const bool scaled = p.ps && IndoorBasisScale(dev, p.indoor, lightMap, basis[0], size);
-    const uintptr_t lightMapPtr = reinterpret_cast<uintptr_t>(lightMap);
-    lightMap->Release();
-    if (!scaled) return false;
+    const bool scaled = p.ps && IndoorBasisScale(dev, p.indoor, drawLightMap, drawBasis[0], size);
+    const uintptr_t lightMapPtr = reinterpret_cast<uintptr_t>(drawLightMap);
+    if (!scaled) {
+        lightMap->Release();
+        return false;
+    }
     // The rig's lights for the diffuse chain (ShaderPatches::PatchIndoorBasis diffuseConst): its unlit-room lights (fill,
     // [NoLight], as the furniture guard has just turned them with Brightness and Blue tint) and 0 for its lamps, which
     // the basis light holds per pixel (so a lamp never counts twice and its light stays smooth across the object). The
@@ -2138,8 +2199,11 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
-        SamplerBind b0(dev, p.indoor.firstSampler, basis[0]), b1(dev, p.indoor.firstSampler + 1, basis[1]);
-        SamplerBind b2(dev, p.indoor.firstSampler + 2, basis[2]), b3(dev, p.indoor.firstSampler + 3, basis[3]);
+        // Keep the room map and its four directional maps from the same story for every part of this object.
+        // Only the texture binding changes; the sampler state of the game's room map stays untouched.
+        if (sharedObjectMap && drawLightMap != lightMap) SetTex(dev, static_cast<DWORD>(lmS), drawLightMap);
+        SamplerBind b0(dev, p.indoor.firstSampler, drawBasis[0]), b1(dev, p.indoor.firstSampler + 1, drawBasis[1]);
+        SamplerBind b2(dev, p.indoor.firstSampler + 2, drawBasis[2]), b3(dev, p.indoor.firstSampler + 3, drawBasis[3]);
         SetPsConst(dev, p.indoor.strengthConst, strength, 1);
         SetPsConst(dev, p.indoor.sizeConst, size, 1);
         if (p.indoor.diffuseConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.diffuseConst), &unlit[0][0], 4);
@@ -2156,8 +2220,10 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
         SetPsConst(dev, p.indoor.sizeConst, oldSize, 1);
         if (p.indoor.diffuseConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.diffuseConst), &oldUnlit[0][0], 4);
         if (p.indoor.tintConst >= 0) SetPsConst(dev, static_cast<UINT>(p.indoor.tintConst), oldTint, 1);
+        if (sharedObjectMap && drawLightMap != lightMap) SetTex(dev, static_cast<DWORD>(lmS), lightMap);
     }
-    g_traceA = TraceA{lightMapPtr, reinterpret_cast<uintptr_t>(basis[0]), size[0], size[1]};
+    g_traceA = TraceA{lightMapPtr, reinterpret_cast<uintptr_t>(drawBasis[0]), size[0], size[1]};
+    lightMap->Release();
     g_inOwnCall = false;
     g_indoorDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -3452,6 +3518,7 @@ void SetWaterFix(bool on, float strength, float reflection, bool filter, bool pr
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
 void OnWorldChanged() {
+    ClearIndoorFrameMaps();
     ClearChunks();
     RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
@@ -3473,8 +3540,8 @@ void SetSoftLotEdges(bool on) { g_softEdges = on; }
 void SetIndoorSmooth(bool on) { g_indoorSmooth = on; }
 
 std::string IndoorSmoothStatus() {
-    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {})", g_indoorSmooth.load() ? "on" : "off",
-                       g_basisSmoothDrawn.load(), g_indoorDrawn.load(), g_indoorUvFromVs.load(), g_indoorUvFallback.load());
+    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {}) | multi-storey parts sharing one room map: {}", g_indoorSmooth.load() ? "on" : "off",
+                       g_basisSmoothDrawn.load(), g_indoorDrawn.load(), g_indoorUvFromVs.load(), g_indoorUvFallback.load(), g_indoorSharedMapParts.load());
 }
 
 void SetGroundBrightness(float ground, float roads, float lotLamps) {
@@ -3553,6 +3620,7 @@ void RequestLightingBloomCensus() {
 std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
 
 void OnPresent() {
+    ClearIndoorFrameMaps();
     g_lotDrawTick = GetTickCount();
     if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
@@ -3830,6 +3898,7 @@ std::string ObjectStatus() {
 }
 
 void Shutdown(bool keepChunkMaps) {
+    ClearIndoorFrameMaps();
     g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
