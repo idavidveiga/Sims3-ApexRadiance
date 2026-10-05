@@ -233,6 +233,16 @@ float Bayer4(float2 px)
 }
 
 // Cheap per-pixel hash (0..1)
+float Hash(float2 p);
+// Smooth value noise (0..1): the hash at the lattice points, blended with a smoothstep
+float GrainNoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = Hash(i), b = Hash(i + float2(1, 0)), c = Hash(i + float2(0, 1)), d = Hash(i + float2(1, 1));
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
 float Hash(float2 p)
 {
     p = frac(p * float2(443.897, 441.423));
@@ -364,7 +374,10 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     float3 s = tex2Dlod(sScene, float4(uv, 0, 0)).rgb;
     float3 d = abs(f - s);
     // no scene copy this frame (the game did not draw its scene into the back buffer): everything is filtered, UI included
-    float ui = cLook.y > 0.5 ? saturate(max(d.r, max(d.g, d.b)) * 64.0) : 0.0;
+    // UI mask (05/10, user: new strong filters still touched translucent panels and text shadows): the scene copy comes
+    // from the same back buffer, so a pixel the UI never touched is identical bit for bit; any change of one 8-bit step
+    // or more is UI and is left exactly as the game drew it. (It was saturate(diff x 64): a soft edge was half filtered.)
+    float ui = cLook.y > 0.5 ? saturate((max(d.r, max(d.g, d.b)) * 255.0 - 0.5) * 2.0) : 0.0;
     bool scene = ui < 0.5;
 
     // CRT: the scene seen through curved glass (sampled further out toward the corners); outside it is black
@@ -488,13 +501,17 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // back to gamma 2.2 for the 8-bit back buffer
     float3 o = pow(saturate(g), 1.0 / 2.2);
     float2 px = floor(uv * cSize.zw);
-    // Film grain: luminance noise in grain-sized cells, stronger in the shadows when asked
+    // Film grain (rebuilt 05/10, user: the old blocky per-cell noise looked like dirt): smooth value noise in two sizes
+    // (the grain and a finer one), multiplying the brightness like silver grain does, strongest in the midtones and
+    // fading in the blacks and whites; "More in the shadows" moves it toward the darker tones. The same grain every frame.
     [branch] if (cFlagD.w > 0.5 && scene)
     {
-        float2 cell = floor(px / cGrain.y);
-        float n = (Hash(cell) + Hash(cell * 1.37 + 17.3)) - 1.0; // the same grain every frame (a moving grain read as noise)
-        float w = lerp(1.0, 1.4 - dot(o, kLum), cGrain.z);
-        o += n * cGrain.x * 0.12 * w;
+        float n = GrainNoise(px / cGrain.y) * 0.65 + GrainNoise(px / (cGrain.y * 0.5) + 17.31) * 0.35;
+        n = (n - 0.5) * 3.2; // about -1 .. 1
+        float L = saturate(dot(o, kLum));
+        float mid = 4.0 * L * (1.0 - L), dark = saturate(1.6 * (1.0 - L)) * saturate(L * 12.0);
+        float w = lerp(mid, dark, cGrain.z);
+        o *= 1.0 + n * cGrain.x * 0.32 * w;
     }
     bool posterized = false;
     [branch] if (cFlagE.x > 0.5 && scene)
@@ -1142,7 +1159,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.emphWidth, 0.0f, 2.0f), std::clamp(q.emphSoftness, 0.05f, 1.0f), camNear, camA},
         {std::clamp(q.tiltAmount, 0.0f, 1.0f), std::clamp(q.tiltCenter, 0.0f, 1.0f), std::clamp(q.tiltWidth, 0.0f, 1.0f), std::clamp(q.tiltSaturation, 0.0f, 1.0f)},
         {std::clamp(q.prismAmount, 0.0f, 1.0f) * 12.0f * scale, std::clamp(q.prismStart, 0.0f, 0.95f), q.prismQuality < 0.34f ? 3.0f : (q.prismQuality < 0.67f ? 5.0f : 9.0f), 0},
-        {std::clamp(q.grainAmount, 0.0f, 1.0f), std::max(1.0f, std::round((1.0f + 3.0f * std::clamp(q.grainSize, 0.0f, 1.0f)) * scale)), std::clamp(q.grainShadows, 0.0f, 1.0f), 0},
+        {std::clamp(q.grainAmount, 0.0f, 1.0f), std::max(0.6f, (0.8f + 2.4f * std::clamp(q.grainSize, 0.0f, 1.0f)) * scale), std::clamp(q.grainShadows, 0.0f, 1.0f), 0},
         {std::clamp(q.fxAmount, 0.0f, 1.0f), fxLevelsRB, std::clamp(q.fxDither, 0.0f, 1.0f), std::clamp(q.fxScanlines, 0.0f, 1.0f)},
         {std::clamp(q.fxPixelWidth, 0.0f, 1.0f), 1.0f / std::clamp(q.fxGamma, 0.5f, 2.0f), std::max(2.0f, std::round(4.0f * scale)), fxLevelsG},
         {std::clamp(q.crtAmount, 0.0f, 1.0f), std::clamp(q.crtCurvature, 0.0f, 1.0f), std::clamp(q.crtMask, 0.0f, 1.0f), std::clamp(q.crtScanlines, 0.0f, 1.0f)},
