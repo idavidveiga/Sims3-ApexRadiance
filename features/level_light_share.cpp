@@ -2865,6 +2865,18 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         return r;
     }
     if (!room0) return r;
+    // The texel's own light, with the walls tested (user 05/10, top view: a yard opened by a gap in its wall becomes part
+    // of room 0, and the game, which never wall-tests floor texels, lit the yard floor right behind the solid wall with
+    // the lamp outside). The same lamps and the real normal, the 2D test on: the light comes in through the gap only.
+    {
+        const char* f = static_cast<const char*>(flags);
+        char walls[2] = {1, f ? f[1] : 0};
+        alignas(16) float tested[4] = {};
+        SolvePoint(room, tested, nullptr, list3D, walls, sample, true);
+        out[0] = tested[0];
+        out[1] = tested[1];
+        out[2] = tested[2];
+    }
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);
     wrapped[7] = 1.0f; // normal w = 1: the lights' evaluation wraps (N.L ignored)
