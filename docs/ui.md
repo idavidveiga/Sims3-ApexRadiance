@@ -197,7 +197,7 @@ Not part of the presets:
 
 | Action | TOML (`[ui]`) | Default |
 |---|---|---|
-| Take a filtered screenshot | `screenshot_key`, `screenshot_shortcut_enabled`, `screenshot_hide_game_ui` | `C` (bare), on, hide UI on |
+| Take a filtered screenshot | `screenshot_key`, `screenshot_folder`, `screenshot_hide_game_ui` | `F8`, `game` (or `apex`), hide UI on (a saved bare letter/digit falls back to the default) |
 | Search the settings | `search_key` | Ctrl+F |
 | Peek at the game behind the menu | `peek_key` | Alt |
 | Compare the picture without its filters | `picture_compare_key` | B |
@@ -209,12 +209,12 @@ Occlusion, Depth Blur, Edge Smoothing and Picture off and back without saving, w
 Recording a key (`ChordProblem`) waits until held keys are released; Esc cancels; recording stops when the editor is not
 drawn. Refused: Esc; bare F10 (the game's interface toggle); Windows and Apps keys; bare Insert (Sims3SettingsSetter's
 menu); Ctrl+Shift+C (the cheat console); Alt+F4 and Alt+Tab; modifiers on the hold rows (peek, picture compare); bare
-letters, digits, Space, Enter, Backspace, Delete, Tab and arrows except on the screenshot and hold rows; duplicates
+letters, digits, Space, Enter, Backspace, Delete, Tab and arrows except on the hold rows; duplicates
 ("Already used by: <row>"). Key chips are at least 150 units wide (`KeyChipWidth`).
 
 Passthrough: bare F10 down and up always reach the game, even with the menu open. After Ctrl+Shift+C opens the game's
-cheat console, no Apex shortcut fires until Enter, Esc or Ctrl+Shift+C closes it. The bare screenshot key passes
-through while a menu text field is active.
+cheat console, no Apex shortcut fires until Enter, Esc or Ctrl+Shift+C closes it; the guess also ends on focus loss,
+when the Apex menu opens, on a world change or after 30 s without typing. The game's own C screenshot is never intercepted.
 
 ## Profiles
 

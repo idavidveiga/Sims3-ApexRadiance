@@ -11,9 +11,9 @@ separate screenshot shortcut saves one filtered PNG, with all Apex effects, to t
 | | |
 |---|---|
 | Availability | Report a problem: Released in 2.5.0. Post-save title and description: Released in 2.5.5 (title optional); required title and Cancel that deletes the new capture: In development (PR #2). Filtered player screenshots: In development (PR #2) |
-| Default | Capture screenshots on (`[ui] capture_screenshot`); screenshot shortcut on, key `C`, game UI hidden |
+| Default | Capture screenshots on (`[ui] capture_screenshot`); screenshot shortcut on, key `F8` (the game's own C is untouched), saved to the game's Screenshots folder, game UI hidden |
 | Menu | System > Report a problem. Settings > Menu > Screenshot capture. Settings > Shortcuts > Report a problem |
-| Configuration | `[ui] capture_screenshot`, `screenshot_shortcut_enabled`, `screenshot_key`, `screenshot_hide_game_ui`, `recorder_key`, `probe_key`, `diagnostics_key` (see [ui.md](../ui.md#shortcuts)) |
+| Configuration | `[ui] capture_screenshot`, `screenshot_folder`, `screenshot_key`, `screenshot_hide_game_ui`, `recorder_key`, `probe_key`, `diagnostics_key` (see [ui.md](../ui.md#shortcuts)) |
 | Source | [`features/captures.h`](../../features/captures.h), [`features/captures.cpp`](../../features/captures.cpp), [`apex_gui.cpp`](../../apex_gui.cpp) (`ReportPage`, `CaptureNote`, `ScreenshotCaptureCard`) |
 
 ## The problem
@@ -77,8 +77,8 @@ Captures saved before the page was opened do not trigger the form.
 | Control | TOML (`[ui]`) | Default | Notes |
 |---|---|---|---|
 | Include a screenshot (Report page) | `capture_screenshot` | true | Adds `Screenshot.png` to every capture |
-| Use Apex screenshot shortcut (Settings > Menu > Screenshot capture) | `screenshot_shortcut_enabled` | true | Replaces the key with one filtered screenshot; the game does not also take its own |
-| Screenshot key | `screenshot_key` | `C` (bare key allowed) | Custom only, not part of the presets; existing saved keys are kept |
+| Save screenshots to | `screenshot_folder` | `game` | `game`: Documents > Electronic Arts > The Sims 3 > Screenshots; `apex`: the Apex Radiance folder > Screenshots |
+| Screenshot key | `screenshot_key` | `F8` | Custom only, not part of the presets; a saved bare letter or digit (e.g. `C`) falls back to the default with a log line |
 | Hide game UI in screenshots | `screenshot_hide_game_ui` | true | Hides the game's interface for the shot, then restores it |
 
 ## Compatibility and interactions

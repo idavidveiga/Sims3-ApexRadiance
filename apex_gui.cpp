@@ -1494,7 +1494,7 @@ std::string AutosaveHint() {
     return I18n::Trf("Saved to {}", path);
 }
 
-// Every feature back to its defaults (not the window mode nor the menu's preferences), after an inline confirmation;
+// Every feature back to its defaults (not the menu's preferences), after an inline confirmation;
 // the undo toast brings the previous settings back
 bool g_confirmResetAll = false;
 
@@ -1502,7 +1502,7 @@ void ResetAllRow() {
     const float resetW = ApexUi::ButtonWidth("Reset all", true), cancelW = ApexUi::ButtonWidth("Cancel##ResetAll", false);
     const float gap = ImGui::GetStyle().ItemSpacing.x;
     const char* description = g_confirmResetAll ? "Restore the whole mod? Captures, reports and saved profiles will stay"
-                                                : "Restore features, colors, window mode, menu preferences and shortcuts. Saved files stay";
+                                                : "Restore features, colors, menu preferences and shortcuts. Saved files stay";
     if (!ApexUi::BeginControlRow("Reset all settings", description, g_confirmResetAll ? resetW + gap + cancelW : resetW)) return;
     if (!g_confirmResetAll) {
         ImGui::BeginDisabled(Loading());
@@ -2592,6 +2592,8 @@ void MainWindow() {
 // Read-only session gate, using the resolved WorldManager global and documented active/mode fields.
 // The render thread publishes a cached bool; the window thread never reads game memory.
 std::atomic<bool> g_menuAvailable{false};
+std::atomic<unsigned> g_worldEpoch{0}; // bumped when the world session starts or ends (load, travel, quit)
+bool g_lastWorldSession = false;
 unsigned long long g_menuLiveAt = 0, g_menuGateCheckedAt = 0;
 bool WorldSessionActive() {
     return WorldSession::IsActive();
@@ -2602,7 +2604,13 @@ void UpdateMenuAvailability() {
     g_menuGateCheckedAt = now;
     const auto startup = g_startup.load();
     const auto* night = Find(kNightLighting);
-    const bool worldLive = WorldSessionActive() && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::WorldLive());
+    const bool session = WorldSessionActive();
+    if (session != g_lastWorldSession) {
+        g_lastWorldSession = session;
+        g_worldEpoch.fetch_add(1);
+        Captures::OnWorldSessionChanged(); // the game shows its UI again after a load
+    }
+    const bool worldLive = session && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::WorldLive());
     if ((startup != Startup::Running && startup != Startup::RefusedOldBuild) || !worldLive) {
         g_menuLiveAt = 0;
         g_menuAvailable.store(false);
@@ -2947,7 +2955,7 @@ std::string ChordProblem(const ApexConfig::KeyChord& c, int row) {
     if (c.vk == 'C' && c.ctrl && c.shift && !c.alt) return "Ctrl+Shift+C is the game's cheat console";
     if ((c.vk == VK_F4 || c.vk == VK_TAB) && c.alt) return "That combination belongs to Windows";
     if ((row == RowPeek || row == RowPictureCompare) && mods) return "Choose one key without modifiers for this hold action";
-    if (row != RowScreenshot && row != RowPeek && row != RowPictureCompare && !mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
+    if (row != RowPeek && row != RowPictureCompare && !mods && ((c.vk >= 'A' && c.vk <= 'Z') || (c.vk >= '0' && c.vk <= '9') || c.vk == VK_SPACE ||
                   c.vk == VK_RETURN || c.vk == VK_BACK || c.vk == VK_DELETE || c.vk == VK_TAB || (c.vk >= VK_LEFT && c.vk <= VK_DOWN)))
         return "Use it with Ctrl, Shift or Alt: alone it would stop that key from typing in the game";
     for (int r = 0; r < RowCount; r++) {
@@ -3108,22 +3116,25 @@ void ScreenshotCaptureCard() {
         ApexConfig::UiSettings ui = ApexConfig::GetUi();
         ApexUi::CardHeader(IconId::Camera, "Screenshot capture", "Save the finished game image with Apex's active effects", nullptr, nullptr);
         ApexUi::CardDivider();
-        if (ApexUi::SwitchRow("Use Apex screenshot shortcut", &ui.screenshotShortcutEnabled,
-                              I18n::Trf("Replaces {} with one filtered screenshot; no duplicate photo", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Screenshot))).c_str())) ApexConfig::SetUi(ui);
-        if (ui.screenshotShortcutEnabled) {
-            if (ApexUi::BeginControlRow(RowName(RowScreenshot), RowText(RowScreenshot), KeyChipWidth(RowScreenshot))) {
-                KeyChip(RowScreenshot);
-                ApexUi::EndControlRow();
-            }
-            if (g_recRow == RowScreenshot)
-                ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
-                                 g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
-            if (ApexUi::SwitchRow("Hide game UI in screenshots", &ui.screenshotHideGameUi,
-                                  "Temporarily hides the game UI for the photo, then restores it; turn off to include it")) ApexConfig::SetUi(ui);
-            ImGui::PushFont(nullptr, VioletTheme::BaseFontSize() * ApexUi::kSmallScale);
-            ApexUi::MutedText("Saves one filtered PNG in the game's Documents > Electronic Arts > The Sims 3 > Screenshots folder");
-            ImGui::PopFont();
+        static const char* const kFolders[] = {"Game's Screenshots folder", "Apex Radiance folder"};
+        static const char* const kFolderTips[] = {"Next to the photos the game takes, in Documents > Electronic Arts > The Sims 3 > Screenshots",
+                                                  "Kept apart from the game's photos, in Documents > Electronic Arts > The Sims 3 > Apex Radiance > Screenshots"};
+        int folder = ui.screenshotToApexFolder ? 1 : 0;
+        if (ApexUi::SegmentedRow("Save screenshots to", "Where the filtered screenshots are saved", "##ShotFolder", &folder, kFolders, 2, kFolderTips, nullptr, 0)) {
+            ui.screenshotToApexFolder = folder == 1;
+            ApexConfig::SetUi(ui);
         }
+        if (ApexUi::BeginControlRow(RowName(RowScreenshot),
+                                    I18n::Trf("Press {} to save one screenshot with Apex's effects", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Screenshot))).c_str(),
+                                    KeyChipWidth(RowScreenshot))) {
+            KeyChip(RowScreenshot);
+            ApexUi::EndControlRow();
+        }
+        if (g_recRow == RowScreenshot)
+            ApexUi::IconNote(IconId::Keyboard, g_recNote.empty() ? I18n::Tr("Press the new combination now; Esc cancels") : g_recNote.c_str(),
+                             g_recNote.empty() ? VioletTheme::kAccent : VioletTheme::kWarning);
+        if (ApexUi::SwitchRow("Hide game UI in screenshots", &ui.screenshotHideGameUi,
+                              "Hides the game interface for the photo, then restores it; turn off to include it")) ApexConfig::SetUi(ui);
     }
     ApexUi::EndCard();
 
@@ -3371,7 +3382,17 @@ void CaptureTarget() {
 std::atomic<bool> g_returnFromProbe{false};
 class GuiClient final : public Overlay::Client {
     bool eatProbeMouseUp = false; // window thread only: the confirming click must not also select/place a game object
-    bool gameCheatConsoleOpen = false; // window thread only: let cheat text pass through instead of firing bare-key shortcuts
+    // Window thread only: the game's cheat console is inferred from Ctrl+Shift+C, so the guess must not stick. It ends on
+    // Enter/Esc, focus loss, the Apex menu opening, a world change, or 30 s without typing.
+    bool cheatConsoleGuess = false;
+    unsigned long long cheatConsoleInputAt = 0;
+    unsigned cheatConsoleEpoch = 0;
+    bool CheatConsoleOpen() {
+        if (cheatConsoleGuess && (Overlay::IsVisible() || cheatConsoleEpoch != g_worldEpoch.load() ||
+                                  GetTickCount64() - cheatConsoleInputAt > 30000))
+            cheatConsoleGuess = false;
+        return cheatConsoleGuess;
+    }
   public:
     void Draw() override {
         if (!g_menuAvailable.load()) {
@@ -3413,7 +3434,7 @@ class GuiClient final : public Overlay::Client {
     }
 
     bool IsToggleKey(WPARAM vk) override {
-        if (gameCheatConsoleOpen) return false; // the game's cheat console owns all keys until Enter, Esc or Ctrl+Shift+C
+        if (CheatConsoleOpen()) return false; // the game's cheat console owns all keys until Enter, Esc or Ctrl+Shift+C
         if (g_recRow >= 0) return false; // being recorded as a shortcut
         const ApexConfig::KeyChord c = ApexConfig::GetUi().toggle;
         if (vk != c.vk) return false;
@@ -3427,9 +3448,10 @@ class GuiClient final : public Overlay::Client {
     bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result) override {
         if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) {
             eatProbeMouseUp = false;
-            gameCheatConsoleOpen = false;
+            cheatConsoleGuess = false;
             LightProbe::CancelAim();
         }
+        if ((msg == WM_CHAR || msg == WM_KEYDOWN) && cheatConsoleGuess) cheatConsoleInputAt = GetTickCount64();
         if (msg == WM_LBUTTONUP && eatProbeMouseUp) {
             eatProbeMouseUp = false;
             *result = 0;
@@ -3454,9 +3476,11 @@ class GuiClient final : public Overlay::Client {
         const bool cheatConsoleChord = vk == 'C' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0 &&
                                        GetKeyState(VK_MENU) >= 0;
         if (cheatConsoleChord) {
-            gameCheatConsoleOpen = !gameCheatConsoleOpen;
-        } else if (gameCheatConsoleOpen && (vk == VK_RETURN || vk == VK_ESCAPE)) {
-            gameCheatConsoleOpen = false;
+            cheatConsoleGuess = !CheatConsoleOpen();
+            cheatConsoleInputAt = GetTickCount64();
+            cheatConsoleEpoch = g_worldEpoch.load();
+        } else if (cheatConsoleGuess && (vk == VK_RETURN || vk == VK_ESCAPE)) {
+            cheatConsoleGuess = false;
         }
     }
 
@@ -3469,13 +3493,13 @@ class GuiClient final : public Overlay::Client {
         const bool holdKey = vk == ui.peekKey.vk && HoldShortcutDown(ui.peekKey);
         const bool pictureKey = vk == ui.pictureCompareKey.vk && HoldShortcutDown(ui.pictureCompareKey);
         return (g_keysOverMenu.load() && (holdKey || pictureKey)) ||
-               (Overlay::IsVisible() && !gameCheatConsoleOpen && !g_menuTextInput.load() && bareScreenshotKey);
+               (Overlay::IsVisible() && !CheatConsoleOpen() && !g_menuTextInput.load() && bareScreenshotKey);
     }
 
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
         if (!g_menuAvailable.load()) return false;
-        if (gameCheatConsoleOpen) return false; // don't steal letters (notably C) from a cheat being typed
+        if (CheatConsoleOpen()) return false; // don't steal letters from a cheat being typed
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
         const auto ui = ApexConfig::GetUi();
         const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
