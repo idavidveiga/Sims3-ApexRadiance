@@ -3119,6 +3119,205 @@ bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) 
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
 }
 
+
+struct ExactSeamKey {
+    uint32_t vs = 0, ps = 0;
+    uint64_t s3 = 0, s4 = 0, s7 = 0, s8 = 0;
+    bool operator==(const ExactSeamKey&) const = default;
+};
+struct ExactSeamKeyHash {
+    size_t operator()(const ExactSeamKey& k) const noexcept {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+        mix(k.vs); mix(k.ps); mix(k.s3); mix(k.s4); mix(k.s7); mix(k.s8);
+        return static_cast<size_t>(h ^ (h >> 32));
+    }
+};
+struct ExactSeamState {
+    IDirect3DBaseTexture9* s2 = nullptr;
+    IDirect3DBaseTexture9* s6 = nullptr;
+    uint64_t s2sig = 0, s6sig = 0;
+    long hits = 0, swaps = 0;
+};
+std::unordered_map<ExactSeamKey, ExactSeamState, ExactSeamKeyHash> g_exactSeam;
+std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_exactTexSig;
+std::atomic<long> g_exactSeamCandidates{0}, g_exactSeamSwaps{0};
+
+template <typename ShaderT>
+uint32_t ExactShaderHash(ShaderT* sh, UINT& bytes) {
+    bytes = 0;
+    if (!sh || FAILED(sh->GetFunction(nullptr, &bytes)) || bytes < 8 || bytes > 65536) return 0;
+    std::vector<DWORD> code(bytes / 4);
+    if (FAILED(sh->GetFunction(code.data(), &bytes))) return 0;
+    uint32_t h = 2166136261u;
+    for (DWORD d : code) h = (h ^ d) * 16777619u;
+    return h;
+}
+
+bool ExactTexDesc(IDirect3DBaseTexture9* t, D3DSURFACE_DESC& d) {
+    return t && t->GetType() == D3DRTYPE_TEXTURE &&
+           SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d));
+}
+
+bool ExactShape(IDirect3DBaseTexture9* t, D3DFORMAT fmt, UINT w, UINT h, UINT levels) {
+    D3DSURFACE_DESC d{};
+    return ExactTexDesc(t, d) && d.Format == fmt && d.Width == w && d.Height == h && t->GetLevelCount() == levels;
+}
+
+uint64_t ExactTextureSignature(IDirect3DBaseTexture9* base) {
+    if (!base || base->GetType() != D3DRTYPE_TEXTURE) return 0;
+    if (auto it = g_exactTexSig.find(base); it != g_exactTexSig.end()) return it->second;
+
+    auto* tex = static_cast<IDirect3DTexture9*>(base);
+    D3DSURFACE_DESC d{};
+    if (FAILED(tex->GetLevelDesc(0, &d))) return 0;
+    D3DLOCKED_RECT lr{};
+    if (FAILED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits || !lr.Pitch) return 0;
+
+    size_t rows = d.Height, rowBytes = 0;
+    if (d.Format == D3DFMT_A8R8G8B8) rowBytes = static_cast<size_t>(d.Width) * 4;
+    else if (d.Format == D3DFMT_L8) rowBytes = d.Width;
+    else if (d.Format == D3DFMT_DXT1) {
+        rows = std::max<size_t>(1, (d.Height + 3) / 4);
+        rowBytes = std::max<size_t>(1, (d.Width + 3) / 4) * 8;
+    } else if (d.Format == D3DFMT_DXT5) {
+        rows = std::max<size_t>(1, (d.Height + 3) / 4);
+        rowBytes = std::max<size_t>(1, (d.Width + 3) / 4) * 16;
+    } else {
+        tex->UnlockRect(0);
+        return 0;
+    }
+
+    const size_t pitch = static_cast<size_t>(lr.Pitch < 0 ? -lr.Pitch : lr.Pitch);
+    rowBytes = std::min(rowBytes, pitch);
+    const auto* p = static_cast<const uint8_t*>(lr.pBits);
+    uint64_t h = 1469598103934665603ull;
+    for (size_t y = 0; y < rows; ++y) {
+        const uint8_t* row = p + y * pitch;
+        for (size_t x = 0; x < rowBytes; ++x) h = (h ^ row[x]) * 1099511628211ull;
+    }
+    tex->UnlockRect(0);
+    h ^= static_cast<uint64_t>(d.Width) << 48;
+    h ^= static_cast<uint64_t>(d.Height) << 32;
+    h ^= static_cast<uint32_t>(d.Format);
+    g_exactTexSig.emplace(base, h);
+    return h;
+}
+
+void ClearExactSeamProbe() {
+    for (auto& [k, s] : g_exactSeam) {
+        if (s.s2) s.s2->Release();
+        if (s.s6) s.s6->Release();
+    }
+    g_exactSeam.clear();
+    g_exactTexSig.clear();
+}
+
+template <typename DrawFn>
+bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::HookAction& result) {
+    // Exact signature of the two Light Captures on the orange multi-storey trim.
+    if (g_inOwnCall || !dev || g_curPrims != 12 || !g_curVs || !g_curPs) return false;
+
+    IDirect3DBaseTexture9* t[9] = {};
+    constexpr int slots[] = {2, 3, 4, 6, 7, 8};
+    bool got = true;
+    for (int s : slots)
+        if (FAILED(dev->GetTexture(s, &t[s])) || !t[s]) { got = false; break; }
+    auto release = [&]() {
+        for (int s : slots) if (t[s]) { t[s]->Release(); t[s] = nullptr; }
+    };
+    if (!got) { release(); return false; }
+
+    const bool shape =
+        ExactShape(t[2], D3DFMT_A8R8G8B8, 1024, 512, 1) &&
+        ExactShape(t[3], D3DFMT_DXT5,       256, 512, 7) &&
+        ExactShape(t[4], D3DFMT_DXT1,      1024, 512, 11) &&
+        ExactShape(t[6], D3DFMT_L8,        1024, 32, 1) &&
+        ExactShape(t[7], D3DFMT_DXT5,       256, 512, 10) &&
+        ExactShape(t[8], D3DFMT_DXT1,       128, 256, 6);
+    if (!shape) { release(); return false; }
+
+    const uint64_t sig3 = ExactTextureSignature(t[3]);
+    const uint64_t sig4 = ExactTextureSignature(t[4]);
+    const uint64_t sig7 = ExactTextureSignature(t[7]);
+    const uint64_t sig8 = ExactTextureSignature(t[8]);
+    const uint64_t sig2 = ExactTextureSignature(t[2]);
+    const uint64_t sig6 = ExactTextureSignature(t[6]);
+    if (!sig3 || !sig4 || !sig7 || !sig8 || !sig2 || !sig6) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            LOG_WARNING("[ExactSeamProbe] Captured draw signature matched, but one or more textures could not be locked for a content signature");
+        }
+        release();
+        return false;
+    }
+
+    UINT vsBytes = 0, psBytes = 0;
+    const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
+    const uint32_t psHash = ExactShaderHash(g_curPs, psBytes);
+    if (!vsHash || !psHash) { release(); return false; }
+
+    ExactSeamKey key{vsHash, psHash, sig3, sig4, sig7, sig8};
+    auto [it, inserted] = g_exactSeam.try_emplace(key);
+    ExactSeamState& state = it->second;
+    ++state.hits;
+    const long n = g_exactSeamCandidates.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    if (inserted || !state.s2 || !state.s6) {
+        state.s2 = t[2]; state.s2->AddRef();
+        state.s6 = t[6]; state.s6->AddRef();
+        state.s2sig = sig2;
+        state.s6sig = sig6;
+        LOG_INFO(std::format(
+            "[ExactSeamProbe] candidate {} FIRST {} | VS {:08X}/{} PS {:08X}/{} | material {:016X} {:016X} {:016X} {:016X} | s2 {:08X}/{:016X} s6 {:08X}/{:016X}",
+            n, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
+            sig3, sig4, sig7, sig8, reinterpret_cast<uintptr_t>(t[2]), sig2, reinterpret_cast<uintptr_t>(t[6]), sig6));
+        release();
+        return false;
+    }
+
+    const bool differs = sig2 != state.s2sig || sig6 != state.s6sig;
+    if (!differs) {
+        if (state.hits <= 6)
+            LOG_INFO(std::format("[ExactSeamProbe] candidate {} SAME auxiliary maps for VS {:08X} PS {:08X}", n, vsHash, psHash));
+        release();
+        return false;
+    }
+
+    ++state.swaps;
+    const long swapNo = g_exactSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (swapNo <= 40)
+        LOG_INFO(std::format(
+            "[ExactSeamProbe] FORCE s2+s6 swap {} {} | VS {:08X}/{} PS {:08X}/{} | s2 {:016X}->{:016X} s6 {:016X}->{:016X}",
+            swapNo, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
+            sig2, state.s2sig, sig6, state.s6sig));
+
+    auto forcedDraw = [&]() {
+        IDirect3DBaseTexture9* before2 = nullptr;
+        IDirect3DBaseTexture9* before6 = nullptr;
+        dev->GetTexture(2, &before2);
+        dev->GetTexture(6, &before6);
+        SetTex(dev, 2, state.s2);
+        SetTex(dev, 6, state.s6);
+        draw();
+        SetTex(dev, 2, before2);
+        SetTex(dev, 6, before6);
+        if (before2) before2->Release();
+        if (before6) before6->Release();
+    };
+
+    result = OnDrawTracked(dev, forcedDraw);
+    if (result == D3D9Hooks::HookAction::Continue) {
+        g_inOwnCall = true;
+        forcedDraw();
+        g_inOwnCall = false;
+        result = D3D9Hooks::HookAction::Skip;
+    }
+    release();
+    return true;
+}
+
 bool PsIs3(IDirect3DPixelShader9* ps) {
     if (!ps) return false;
     auto it = g_psIs3.find(ps);
@@ -3136,6 +3335,9 @@ bool PsIs3(IDirect3DPixelShader9* ps) {
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
+    D3D9Hooks::HookAction exactSeamResult = D3D9Hooks::HookAction::Continue;
+    if (DrawExactCapturedSeamProbe(dev, draw, exactSeamResult)) return exactSeamResult;
+
     const bool fc = g_falseColor.load(std::memory_order_relaxed);
     const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
     const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
@@ -3452,6 +3654,7 @@ void SetWaterFix(bool on, float strength, float reflection, bool filter, bool pr
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
 void OnWorldChanged() {
+    ClearExactSeamProbe();
     ClearChunks();
     RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
@@ -3830,6 +4033,7 @@ std::string ObjectStatus() {
 }
 
 void Shutdown(bool keepChunkMaps) {
+    ClearExactSeamProbe();
     g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
