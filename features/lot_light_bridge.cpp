@@ -3133,15 +3133,39 @@ struct ExactSeamKeyHash {
         return static_cast<size_t>(h ^ (h >> 32));
     }
 };
+enum class ExactSeamMode : int {
+    Original = 0,
+    S2Only = 1,
+    S6Only = 2,
+    ReverseS2S6 = 3,
+};
+
+const char* ExactSeamModeName(ExactSeamMode mode) {
+    switch (mode) {
+    case ExactSeamMode::Original: return "0 Original";
+    case ExactSeamMode::S2Only: return "1 only s2 (reference -> alternate)";
+    case ExactSeamMode::S6Only: return "2 only s6 (reference -> alternate)";
+    case ExactSeamMode::ReverseS2S6: return "3 s2+s6 REVERSED (alternate -> reference)";
+    }
+    return "?";
+}
+
 struct ExactSeamState {
     IDirect3DBaseTexture9* s2 = nullptr;
     IDirect3DBaseTexture9* s6 = nullptr;
+    IDirect3DBaseTexture9* altS2 = nullptr;
+    IDirect3DBaseTexture9* altS6 = nullptr;
     uint64_t s2sig = 0, s6sig = 0;
+    uint64_t altS2sig = 0, altS6sig = 0;
+    bool haveAlt = false;
     long hits = 0, swaps = 0;
 };
 std::unordered_map<ExactSeamKey, ExactSeamState, ExactSeamKeyHash> g_exactSeam;
 std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_exactTexSig;
 std::atomic<long> g_exactSeamCandidates{0}, g_exactSeamSwaps{0};
+std::atomic<int> g_exactSeamMode{static_cast<int>(ExactSeamMode::Original)};
+std::atomic<long> g_exactModeActions[4] = {};
+bool g_exactModeKeyWasDown = false;
 
 template <typename ShaderT>
 uint32_t ExactShaderHash(ShaderT* sh, UINT& bytes) {
@@ -3208,6 +3232,8 @@ void ClearExactSeamProbe() {
     for (auto& [k, s] : g_exactSeam) {
         if (s.s2) s.s2->Release();
         if (s.s6) s.s6->Release();
+        if (s.altS2) s.altS2->Release();
+        if (s.altS6) s.altS6->Release();
     }
     g_exactSeam.clear();
     g_exactTexSig.clear();
@@ -3247,7 +3273,7 @@ bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::H
         static bool logged = false;
         if (!logged) {
             logged = true;
-            LOG_WARNING("[ExactSeamProbe] Captured draw signature matched, but one or more textures could not be locked for a content signature");
+            LOG_WARNING("[ExactSeam4Mode] Captured draw signature matched, but one or more textures could not be locked for a content signature");
         }
         release();
         return false;
@@ -3270,39 +3296,76 @@ bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::H
         state.s2sig = sig2;
         state.s6sig = sig6;
         LOG_INFO(std::format(
-            "[ExactSeamProbe] candidate {} FIRST {} | VS {:08X}/{} PS {:08X}/{} | material {:016X} {:016X} {:016X} {:016X} | s2 {:08X}/{:016X} s6 {:08X}/{:016X}",
+            "[ExactSeam4Mode] candidate {} REFERENCE {} | VS {:08X}/{} PS {:08X}/{} | material {:016X} {:016X} {:016X} {:016X} | s2 {:08X}/{:016X} s6 {:08X}/{:016X}",
             n, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
             sig3, sig4, sig7, sig8, reinterpret_cast<uintptr_t>(t[2]), sig2, reinterpret_cast<uintptr_t>(t[6]), sig6));
         release();
         return false;
     }
 
-    const bool differs = sig2 != state.s2sig || sig6 != state.s6sig;
-    if (!differs) {
-        if (state.hits <= 6)
-            LOG_INFO(std::format("[ExactSeamProbe] candidate {} SAME auxiliary maps for VS {:08X} PS {:08X}", n, vsHash, psHash));
+    const bool isReference = sig2 == state.s2sig && sig6 == state.s6sig;
+    const bool differs = !isReference;
+
+    if (differs && !state.haveAlt) {
+        state.altS2 = t[2]; state.altS2->AddRef();
+        state.altS6 = t[6]; state.altS6->AddRef();
+        state.altS2sig = sig2;
+        state.altS6sig = sig6;
+        state.haveAlt = true;
+        LOG_INFO(std::format(
+            "[ExactSeam4Mode] learned ALTERNATE {} | VS {:08X} PS {:08X} | s2 {:08X}/{:016X} s6 {:08X}/{:016X}",
+            LightingBloomPath(RigTracker::CurrentMode()), vsHash, psHash,
+            reinterpret_cast<uintptr_t>(t[2]), sig2, reinterpret_cast<uintptr_t>(t[6]), sig6));
+    }
+
+    const ExactSeamMode mode = static_cast<ExactSeamMode>(g_exactSeamMode.load(std::memory_order_relaxed));
+    IDirect3DBaseTexture9* force2 = nullptr;
+    IDirect3DBaseTexture9* force6 = nullptr;
+
+    switch (mode) {
+    case ExactSeamMode::Original:
+        break;
+    case ExactSeamMode::S2Only:
+        if (sig2 != state.s2sig) force2 = state.s2;
+        break;
+    case ExactSeamMode::S6Only:
+        if (sig6 != state.s6sig) force6 = state.s6;
+        break;
+    case ExactSeamMode::ReverseS2S6:
+        // Reverse the direction used by #50: once the alternate pair is known, make the REFERENCE draws use it.
+        if (state.haveAlt && isReference) {
+            force2 = state.altS2;
+            force6 = state.altS6;
+        }
+        break;
+    }
+
+    if (!force2 && !force6) {
         release();
         return false;
     }
 
     ++state.swaps;
     const long swapNo = g_exactSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (swapNo <= 40)
+    const int modeIndex = static_cast<int>(mode);
+    const long modeAction = g_exactModeActions[modeIndex].fetch_add(1, std::memory_order_relaxed) + 1;
+    if (modeAction <= 24) {
         LOG_INFO(std::format(
-            "[ExactSeamProbe] FORCE s2+s6 swap {} {} | VS {:08X}/{} PS {:08X}/{} | s2 {:016X}->{:016X} s6 {:016X}->{:016X}",
-            swapNo, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
-            sig2, state.s2sig, sig6, state.s6sig));
+            "[ExactSeam4Mode] APPLY {} action {} (global {}) {} | VS {:08X} PS {:08X} | current s2 {:016X} s6 {:016X} | force {}{}",
+            ExactSeamModeName(mode), modeAction, swapNo, LightingBloomPath(RigTracker::CurrentMode()), vsHash, psHash,
+            sig2, sig6, force2 ? "s2 " : "", force6 ? "s6" : ""));
+    }
 
     auto forcedDraw = [&]() {
         IDirect3DBaseTexture9* before2 = nullptr;
         IDirect3DBaseTexture9* before6 = nullptr;
-        dev->GetTexture(2, &before2);
-        dev->GetTexture(6, &before6);
-        SetTex(dev, 2, state.s2);
-        SetTex(dev, 6, state.s6);
+        if (force2) dev->GetTexture(2, &before2);
+        if (force6) dev->GetTexture(6, &before6);
+        if (force2) SetTex(dev, 2, force2);
+        if (force6) SetTex(dev, 6, force6);
         draw();
-        SetTex(dev, 2, before2);
-        SetTex(dev, 6, before6);
+        if (force2) SetTex(dev, 2, before2);
+        if (force6) SetTex(dev, 6, before6);
         if (before2) before2->Release();
         if (before6) before6->Release();
     };
@@ -3676,8 +3739,10 @@ void SetSoftLotEdges(bool on) { g_softEdges = on; }
 void SetIndoorSmooth(bool on) { g_indoorSmooth = on; }
 
 std::string IndoorSmoothStatus() {
-    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {})", g_indoorSmooth.load() ? "on" : "off",
-                       g_basisSmoothDrawn.load(), g_indoorDrawn.load(), g_indoorUvFromVs.load(), g_indoorUvFallback.load());
+    const auto seamMode = static_cast<ExactSeamMode>(g_exactSeamMode.load(std::memory_order_relaxed));
+    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {}) | seam test: {}",
+                       g_indoorSmooth.load() ? "on" : "off", g_basisSmoothDrawn.load(), g_indoorDrawn.load(),
+                       g_indoorUvFromVs.load(), g_indoorUvFallback.load(), ExactSeamModeName(seamMode));
 }
 
 void SetGroundBrightness(float ground, float roads, float lotLamps) {
@@ -3756,6 +3821,18 @@ void RequestLightingBloomCensus() {
 std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
 
 void OnPresent() {
+    const bool modeKeyDown =
+        (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+        (GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
+        (GetAsyncKeyState(VK_F9) & 0x8000);
+    if (modeKeyDown && !g_exactModeKeyWasDown) {
+        int next = (g_exactSeamMode.load(std::memory_order_relaxed) + 1) & 3;
+        g_exactSeamMode.store(next, std::memory_order_relaxed);
+        const auto mode = static_cast<ExactSeamMode>(next);
+        LOG_INFO(std::format("[ExactSeam4Mode] MODE CHANGED -> {} (Ctrl+Shift+F9)", ExactSeamModeName(mode)));
+    }
+    g_exactModeKeyWasDown = modeKeyDown;
+
     g_lotDrawTick = GetTickCount();
     if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
