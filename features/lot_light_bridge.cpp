@@ -3119,6 +3119,137 @@ bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) 
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
 }
 
+
+struct FacadeT2Key {
+    IDirect3DVertexShader9* vs = nullptr;
+    IDirect3DPixelShader9* ps = nullptr;
+    bool operator==(const FacadeT2Key&) const = default;
+};
+struct FacadeT2KeyHash {
+    size_t operator()(const FacadeT2Key& k) const noexcept {
+        return (reinterpret_cast<size_t>(k.vs) >> 4) ^ (reinterpret_cast<size_t>(k.ps) << 1);
+    }
+};
+struct FacadeT2State {
+    IDirect3DBaseTexture9* firstT2 = nullptr;
+    D3DSURFACE_DESC desc{};
+    long seen = 0;
+    long swaps = 0;
+};
+std::unordered_map<FacadeT2Key, FacadeT2State, FacadeT2KeyHash> g_facadeT2;
+std::atomic<long> g_facadeTargetDraws{0}, g_facadeT2Swaps{0};
+
+void ClearFacadeT2() {
+    for (auto& [k, s] : g_facadeT2)
+        if (s.firstT2) s.firstT2->Release();
+    g_facadeT2.clear();
+}
+
+bool FacadeTargetPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) {
+    if (!LightingBloomPosition(dev, x, y, z)) return false;
+    return std::fabs(x - 1032.0f) <= 0.35f &&
+           std::fabs(y - 42.9325f) <= 0.35f &&
+           std::fabs(z - 980.0f) <= 0.35f;
+}
+
+bool TextureDesc(IDirect3DBaseTexture9* t, D3DSURFACE_DESC& d) {
+    return t && t->GetType() == D3DRTYPE_TEXTURE &&
+           SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d));
+}
+
+std::string FacadeSamplerSummary(IDirect3DDevice9* dev) {
+    std::string out;
+    for (DWORD s = 0; s < 16; ++s) {
+        IDirect3DBaseTexture9* t = nullptr;
+        if (FAILED(dev->GetTexture(s, &t)) || !t) continue;
+        D3DSURFACE_DESC d{};
+        if (TextureDesc(t, d))
+            out += std::format(" s{}={:08X}:{}x{}:fmt{}:L{}", s, reinterpret_cast<uintptr_t>(t), d.Width, d.Height,
+                               static_cast<unsigned>(d.Format), t->GetLevelCount());
+        else
+            out += std::format(" s{}={:08X}:type{}", s, reinterpret_cast<uintptr_t>(t), static_cast<unsigned>(t->GetType()));
+        t->Release();
+    }
+    return out;
+}
+
+template <typename DrawFn>
+bool DrawFacadeTargetT2Probe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::HookAction& result) {
+    if (g_inOwnCall || !dev || !g_curVs || !g_curPs) return false;
+
+    float x = 0, y = 0, z = 0;
+    if (!FacadeTargetPosition(dev, x, y, z)) return false;
+
+    IDirect3DBaseTexture9* t2 = nullptr;
+    if (FAILED(dev->GetTexture(2, &t2)) || !t2) return false;
+
+    D3DSURFACE_DESC d{};
+    if (!TextureDesc(t2, d)) {
+        t2->Release();
+        return false;
+    }
+
+    const FacadeT2Key key{g_curVs, g_curPs};
+    auto [it, inserted] = g_facadeT2.try_emplace(key);
+    FacadeT2State& state = it->second;
+    ++state.seen;
+    const long targetNo = g_facadeTargetDraws.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    if (inserted || !state.firstT2) {
+        state.firstT2 = t2;
+        state.firstT2->AddRef();
+        state.desc = d;
+        LOG_INFO(std::format(
+            "[FacadeT2Probe] target draw {} first for {} at ({:.4f}, {:.4f}, {:.4f}), VS {:08X}, PS {:08X}, {} prims, "
+            "T2 {:08X} {}x{} fmt {} levels {} |{}",
+            targetNo, LightingBloomPath(RigTracker::CurrentMode()), x, y, z,
+            reinterpret_cast<uintptr_t>(g_curVs), reinterpret_cast<uintptr_t>(g_curPs), g_curPrims,
+            reinterpret_cast<uintptr_t>(t2), d.Width, d.Height, static_cast<unsigned>(d.Format), t2->GetLevelCount(),
+            FacadeSamplerSummary(dev)));
+    }
+
+    const bool compatible = state.firstT2 && t2 != state.firstT2 &&
+                            d.Width == state.desc.Width && d.Height == state.desc.Height &&
+                            d.Format == state.desc.Format && t2->GetLevelCount() == state.firstT2->GetLevelCount();
+
+    if (!compatible) {
+        if (t2 != state.firstT2 && state.seen <= 12)
+            LOG_INFO(std::format(
+                "[FacadeT2Probe] target draw {} same VS/PS but T2 not compatible: current {:08X} {}x{} fmt {}, reference {:08X} {}x{} fmt {}",
+                targetNo, reinterpret_cast<uintptr_t>(t2), d.Width, d.Height, static_cast<unsigned>(d.Format),
+                reinterpret_cast<uintptr_t>(state.firstT2), state.desc.Width, state.desc.Height, static_cast<unsigned>(state.desc.Format)));
+        t2->Release();
+        return false;
+    }
+
+    ++state.swaps;
+    const long swapNo = g_facadeT2Swaps.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (swapNo <= 30)
+        LOG_INFO(std::format(
+            "[FacadeT2Probe] FORCE T2 swap {} for {} at ({:.4f}, {:.4f}, {:.4f}), VS {:08X}, PS {:08X}: {:08X} -> {:08X}",
+            swapNo, LightingBloomPath(RigTracker::CurrentMode()), x, y, z,
+            reinterpret_cast<uintptr_t>(g_curVs), reinterpret_cast<uintptr_t>(g_curPs),
+            reinterpret_cast<uintptr_t>(t2), reinterpret_cast<uintptr_t>(state.firstT2)));
+
+    g_inOwnCall = true;
+    SetTex(dev, 2, state.firstT2);
+    g_inOwnCall = false;
+
+    result = OnDrawTracked(dev, draw);
+    if (result == D3D9Hooks::HookAction::Continue) {
+        g_inOwnCall = true;
+        draw();
+        g_inOwnCall = false;
+        result = D3D9Hooks::HookAction::Skip;
+    }
+
+    g_inOwnCall = true;
+    SetTex(dev, 2, t2);
+    g_inOwnCall = false;
+    t2->Release();
+    return true;
+}
+
 bool PsIs3(IDirect3DPixelShader9* ps) {
     if (!ps) return false;
     auto it = g_psIs3.find(ps);
@@ -3136,6 +3267,9 @@ bool PsIs3(IDirect3DPixelShader9* ps) {
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
+    D3D9Hooks::HookAction facadeResult = D3D9Hooks::HookAction::Continue;
+    if (DrawFacadeTargetT2Probe(dev, draw, facadeResult)) return facadeResult;
+
     const bool fc = g_falseColor.load(std::memory_order_relaxed);
     const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
     const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
@@ -3452,6 +3586,7 @@ void SetWaterFix(bool on, float strength, float reflection, bool filter, bool pr
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
 void OnWorldChanged() {
+    ClearFacadeT2();
     ClearChunks();
     RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
@@ -3473,8 +3608,9 @@ void SetSoftLotEdges(bool on) { g_softEdges = on; }
 void SetIndoorSmooth(bool on) { g_indoorSmooth = on; }
 
 std::string IndoorSmoothStatus() {
-    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {})", g_indoorSmooth.load() ? "on" : "off",
-                       g_basisSmoothDrawn.load(), g_indoorDrawn.load(), g_indoorUvFromVs.load(), g_indoorUvFallback.load());
+    return std::format("{} | smooth stairs / instanced draws: {} | indoor objects: {} (map scale from the vertex shader {}, from the map size {}) | facade T2 probe: {} target draws, {} forced swaps",
+                       g_indoorSmooth.load() ? "on" : "off", g_basisSmoothDrawn.load(), g_indoorDrawn.load(),
+                       g_indoorUvFromVs.load(), g_indoorUvFallback.load(), g_facadeTargetDraws.load(), g_facadeT2Swaps.load());
 }
 
 void SetGroundBrightness(float ground, float roads, float lotLamps) {
@@ -3830,6 +3966,7 @@ std::string ObjectStatus() {
 }
 
 void Shutdown(bool keepChunkMaps) {
+    ClearFacadeT2();
     g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
