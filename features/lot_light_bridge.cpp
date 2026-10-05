@@ -3136,12 +3136,27 @@ struct ExactSeamKeyHash {
 struct ExactSeamState {
     IDirect3DBaseTexture9* s2 = nullptr;
     IDirect3DBaseTexture9* s6 = nullptr;
+    IDirect3DBaseTexture9* altS2 = nullptr;
+    IDirect3DBaseTexture9* altS6 = nullptr;
     uint64_t s2sig = 0, s6sig = 0;
+    uint64_t altS2sig = 0, altS6sig = 0;
     long hits = 0, swaps = 0;
 };
 std::unordered_map<ExactSeamKey, ExactSeamState, ExactSeamKeyHash> g_exactSeam;
 std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_exactTexSig;
 std::atomic<long> g_exactSeamCandidates{0}, g_exactSeamSwaps{0};
+DWORD g_seamDiagCycleStart = 0;
+int g_seamDiagLastMode = -1;
+
+const char* SeamDiagModeName(int mode) {
+    switch (mode) {
+    case 0: return "ORIGINAL";
+    case 1: return "ONLY S2 = FIRST SET";
+    case 2: return "ONLY S6 = FIRST SET";
+    case 3: return "S2+S6 = SECOND SET";
+    default: return "?";
+    }
+}
 
 template <typename ShaderT>
 uint32_t ExactShaderHash(ShaderT* sh, UINT& bytes) {
@@ -3208,9 +3223,13 @@ void ClearExactSeamProbe() {
     for (auto& [k, s] : g_exactSeam) {
         if (s.s2) s.s2->Release();
         if (s.s6) s.s6->Release();
+        if (s.altS2) s.altS2->Release();
+        if (s.altS6) s.altS6->Release();
     }
     g_exactSeam.clear();
     g_exactTexSig.clear();
+    g_seamDiagCycleStart = 0;
+    g_seamDiagLastMode = -1;
 }
 
 template <typename DrawFn>
@@ -3278,31 +3297,61 @@ bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::H
     }
 
     const bool differs = sig2 != state.s2sig || sig6 != state.s6sig;
-    if (!differs) {
-        if (state.hits <= 6)
-            LOG_INFO(std::format("[ExactSeamProbe] candidate {} SAME auxiliary maps for VS {:08X} PS {:08X}", n, vsHash, psHash));
+    if (differs && (!state.altS2 || !state.altS6)) {
+        state.altS2 = t[2]; state.altS2->AddRef();
+        state.altS6 = t[6]; state.altS6->AddRef();
+        state.altS2sig = sig2;
+        state.altS6sig = sig6;
+        if (!g_seamDiagCycleStart) g_seamDiagCycleStart = GetTickCount();
+        LOG_INFO(std::format(
+            "[Seam4State] SECOND SET captured {} | VS {:08X}/{} PS {:08X}/{} | s2 {:016X} s6 {:016X}. "
+            "Cycle starts now: ORIGINAL -> ONLY S2 FIRST -> ONLY S6 FIRST -> S2+S6 SECOND, 8 seconds each.",
+            LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes, sig2, sig6));
+    }
+
+    if (!state.altS2 || !state.altS6 || !g_seamDiagCycleStart) {
         release();
         return false;
     }
 
+    const int mode = static_cast<int>(((GetTickCount() - g_seamDiagCycleStart) / 8000u) % 4u);
+    if (mode != g_seamDiagLastMode) {
+        g_seamDiagLastMode = mode;
+        LOG_INFO(std::format("[Seam4State] >>> MODE {}: {} <<<", mode, SeamDiagModeName(mode)));
+    }
+
+    // Mode 0 is a true untouched baseline: let the normal Apex draw path continue without replacing any sampler.
+    if (mode == 0) {
+        release();
+        return false;
+    }
+
+    IDirect3DBaseTexture9* force2 = nullptr;
+    IDirect3DBaseTexture9* force6 = nullptr;
+    if (mode == 1) force2 = state.s2;                  // isolate s2
+    else if (mode == 2) force6 = state.s6;             // isolate s6
+    else if (mode == 3) { force2 = state.altS2; force6 = state.altS6; } // inverse normalization
+
     ++state.swaps;
     const long swapNo = g_exactSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (swapNo <= 40)
+    if (swapNo <= 60)
         LOG_INFO(std::format(
-            "[ExactSeamProbe] FORCE s2+s6 swap {} {} | VS {:08X}/{} PS {:08X}/{} | s2 {:016X}->{:016X} s6 {:016X}->{:016X}",
-            swapNo, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
-            sig2, state.s2sig, sig6, state.s6sig));
+            "[Seam4State] draw {} mode {} ({}) {} | VS {:08X} PS {:08X} | current s2 {:016X} s6 {:016X} | force s2 {} s6 {}",
+            swapNo, mode, SeamDiagModeName(mode), LightingBloomPath(RigTracker::CurrentMode()), vsHash, psHash,
+            sig2, sig6,
+            force2 ? std::format("{:016X}", force2 == state.s2 ? state.s2sig : state.altS2sig) : std::string("ORIGINAL"),
+            force6 ? std::format("{:016X}", force6 == state.s6 ? state.s6sig : state.altS6sig) : std::string("ORIGINAL")));
 
     auto forcedDraw = [&]() {
         IDirect3DBaseTexture9* before2 = nullptr;
         IDirect3DBaseTexture9* before6 = nullptr;
         dev->GetTexture(2, &before2);
         dev->GetTexture(6, &before6);
-        SetTex(dev, 2, state.s2);
-        SetTex(dev, 6, state.s6);
+        if (force2) SetTex(dev, 2, force2);
+        if (force6) SetTex(dev, 6, force6);
         draw();
-        SetTex(dev, 2, before2);
-        SetTex(dev, 6, before6);
+        if (force2) SetTex(dev, 2, before2);
+        if (force6) SetTex(dev, 6, before6);
         if (before2) before2->Release();
         if (before6) before6->Release();
     };
