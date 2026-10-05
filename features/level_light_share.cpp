@@ -5532,6 +5532,18 @@ bool LampEditPending() {
     return false;
 }
 
+// A lamp moved or a value dragged within the last kDragQuietMs (05/10, user's choice "A": while a lamp is dragged its own
+// room follows it frame by frame; once the edit ends, every room it sent is solved in one go, so every story changes together)
+std::atomic<DWORD> g_continuousEditAt{0};
+constexpr DWORD kDragQuietMs = 200;
+void NoteLampEditing(bool continuous) {
+    if (continuous) g_continuousEditAt.store(GetTickCount() | 1, std::memory_order_relaxed);
+}
+bool LampDragging() {
+    const DWORD at = g_continuousEditAt.load(std::memory_order_relaxed);
+    return at && GetTickCount() - at < kDragQuietMs;
+}
+
 void RelightAllRooms(const char* why) {
     LoadAddresses();
     if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert) return;

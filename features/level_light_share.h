@@ -58,6 +58,11 @@ bool HoldLampMark(uintptr_t treeLevel, int room, bool user);
 float LampUrgency(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
+// From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
+void NoteLampEditing(bool continuous);
+// A lamp is being dragged (moved or a value changed within the last 200 ms): its rooms are solved a frame at a time;
+// otherwise the rooms an edit sent are solved all at once (RoomLightQueue), so every story changes together
+bool LampDragging();
 // Rooms at Night: visits every room (id > 0) of every loaded lot (stories -4..7); visit returns true to send the room to
 // gather again. Render thread. Returns the rooms visited; queued = how many were sent.
 int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued,

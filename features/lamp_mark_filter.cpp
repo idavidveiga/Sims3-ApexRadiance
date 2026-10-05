@@ -105,6 +105,8 @@ struct LotDue {
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
 std::atomic<bool> g_editRefresh{false};
+// The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
+std::atomic<float> g_nightLevel{-1.0f};
 
 inline void Mix(uint64_t& h, uint32_t v) { h = (h ^ v) * 1099511628211ull; }
 inline void MixDwords(uint64_t& h, uintptr_t at, int n) {
@@ -251,6 +253,9 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         else if (!same && was.editUntil && static_cast<int32_t>(tick - was.editUntil) < 0) edit = true;
         was.sig = h;
     }
+    // dusk and dawn switch every lamp of every lot: those switches go through the game's own pace (an edit's rooms are solved
+    // all at once, which here would be every lit room of the lot in one pause)
+    if (const float night = g_nightLevel.load(std::memory_order_relaxed); edit && !pure && stayed && night > 0.02f && night < 0.98f) edit = false;
     if (same) {
         if (!g_on.load(std::memory_order_relaxed)) { // off: every mark goes through (the values are still followed)
             g_off.fetch_add(1, std::memory_order_relaxed);
@@ -261,10 +266,14 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     }
     if (!g_on.load(std::memory_order_relaxed)) {
         g_off.fetch_add(1, std::memory_order_relaxed);
-        if (edit) LevelLightShare::NoteLampMark(tl, room, user, stayed);
+        if (edit) {
+            LevelLightShare::NoteLampEditing(pure);
+            LevelLightShare::NoteLampMark(tl, room, user, stayed);
+        }
         return true;
     }
     g_changed.fetch_add(1, std::memory_order_relaxed);
+    if (edit) LevelLightShare::NoteLampEditing(pure); // a drag (moved, value) or a switch: how the edit's rooms are solved
     if (edit && pure && LevelLightShare::HoldLampMark(tl, room, user)) {
         g_held.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -377,6 +386,7 @@ void Uninstall() {
 bool IsInstalled() { return g_installed; }
 
 void OnPresent(float nightLevel) {
+    g_nightLevel.store(nightLevel, std::memory_order_relaxed);
     if (!g_installed) return;
     if (g_editRefresh.exchange(false, std::memory_order_relaxed)) LotLightBridge::RequestLampEditRefresh();
     const DWORD now = GetTickCount();
