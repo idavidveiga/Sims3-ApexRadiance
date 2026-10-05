@@ -2842,6 +2842,17 @@ void CaptureStoryWalls(BYTE* room0) {
     g_wallSnapGen.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Room 0 of the room's story when that story is 1 or higher (story 0 is the lot's grass, which floor shaders never read)
+BYTE* MaskedFloorRoom0(BYTE* room) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (*reinterpret_cast<const int*>(mgr + 0x88) < 1) return nullptr;
+        return static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), 0));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     // the first sample of a batch of room 0: its story's outside walls, for WallBlocks (light tree thread)
     if (g_objectWallsOn.load(std::memory_order_relaxed) && *reinterpret_cast<const int*>(room + 0xC) == 0 && kBatchSamples &&
@@ -2851,35 +2862,24 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
-    float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
-    if (!g_floorMaskReady || !room[0x18]) return r;
-    out[3] = 0.0f; // outdoor: the game's alpha 0, unless the mask below applies
-    const float* s = static_cast<const float*>(sample);
     // Every thread (user 05/10: the light between stories "does not work every time"): the game also solves rooms off the
     // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
     // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
-    if (!g_floorWallsOn.load(std::memory_order_relaxed) || s[5] < 0.9f) return r;
-    BYTE* room0 = nullptr;
-    __try {
-        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
-        if (*reinterpret_cast<const int*>(mgr + 0x88) < 1) return r; // story 0 is the lot's grass, which floor shaders never read
-        room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), 0));
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    const float* s = static_cast<const float*>(sample);
+    BYTE* room0 = g_floorMaskReady && room[0x18] && g_floorWallsOn.load(std::memory_order_relaxed) && s[5] >= 0.9f ? MaskedFloorRoom0(room) : nullptr;
+    if (!room0) {
+        float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
+        if (g_floorMaskReady && room[0x18]) out[3] = 0.0f; // outdoor: the game's alpha 0
         return r;
     }
-    if (!room0) return r;
-    // The texel's own light, with the walls tested (user 05/10, top view: a yard opened by a gap in its wall becomes part
-    // of room 0, and the game, which never wall-tests floor texels, lit the yard floor right behind the solid wall with
-    // the lamp outside). The same lamps and the real normal, the 2D test on: the light comes in through the gap only.
-    {
-        const char* f = static_cast<const char*>(flags);
-        char walls[2] = {1, f ? f[1] : 0};
-        alignas(16) float tested[4] = {};
-        SolvePoint(room, tested, nullptr, list3D, walls, sample, true);
-        out[0] = tested[0];
-        out[1] = tested[1];
-        out[2] = tested[2];
-    }
+    // An outdoor floor texel of a story >= 1: its own light is solved once, with the walls tested (user 05/10, top view:
+    // a yard opened by a gap in its wall becomes part of room 0, and the game, which never wall-tests floor texels, lit the
+    // yard floor right behind the solid wall with the lamp outside). The same lamps and the real normal, the 2D test on:
+    // the light comes in through the gap only. (The game's untested solve is not run: it was replaced anyway.)
+    const char* f = static_cast<const char*>(flags);
+    char walls[2] = {1, f ? f[1] : 0};
+    float* r = SolvePoint(room, out, nullptr, list3D, walls, sample, true);
+    out[3] = 0.0f;
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);
     wrapped[7] = 1.0f; // normal w = 1: the lights' evaluation wraps (N.L ignored)
@@ -4849,6 +4849,12 @@ bool WallBlocks(const float lamp[3], const float point[3]) {
     const float ax = lamp[0], az = lamp[2], bx = point[0], bz = point[2];
     const float rx = bx - ax, rz = bz - az;
     if (std::fabs(rx) + std::fabs(rz) > 200.0f) return false; // not a lamp in reach
+    // A wall crossed within 20 cm of the point is the wall the object sits in (code review 05/10: windows, doors, wall
+    // lamps and wall decor have their origin on their wall's line, so every lamp in front of them crossed it at the very
+    // end of the ray and was dropped; around each sconce only the wall's own baked light was left). Loose objects behind
+    // a wall (a yard's telescope, 1 m or more from it) are still blocked.
+    const float len = std::sqrt(rx * rx + rz * rz);
+    const float tEnd = len > 0.2f ? 1.0f - 0.2f / len : 0.0f;
     if (++g_grid.query == 0) {
         std::fill(g_grid.seen.begin(), g_grid.seen.end(), 0u);
         g_grid.query = 1;
@@ -4869,7 +4875,7 @@ bool WallBlocks(const float lamp[3], const float point[3]) {
                 const float qx = s.x0 - ax, qz = s.z0 - az;
                 const float t = (qx * sz - qz * sx) / den; // along lamp -> point
                 const float u = (qx * rz - qz * rx) / den; // along the wall
-                if (t <= 0.001f || t >= 0.999f || u < 0.0f || u > 1.0f) continue;
+                if (t <= 0.001f || t >= tEnd || u < 0.0f || u > 1.0f) continue;
                 const float y = lamp[1] + t * (point[1] - lamp[1]); // the ray's height where it crosses the wall line
                 if (y > s.y0 + 0.02f && y < s.y1 - 0.02f) return true;
             }
