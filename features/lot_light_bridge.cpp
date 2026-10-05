@@ -1781,40 +1781,54 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
 // of each record: world position, as the F7 capture reads them). Read once per (buffer, offset, count, stride) and again
 // every 5 s, since the game may refill a buffer; render thread.
 struct GroupCentre {
-    float x = 0, z = 0, ext = 0;
+    float x = 0, y = 0, z = 0, ext = 0;
+    float a[3] = {}, b[3] = {}; // the group's two ends (the instance farthest from the centre, then the one farthest from it)
     DWORD at = 0;
     bool ok = false;
 };
 std::unordered_map<uint64_t, GroupCentre> g_groupCentres;
 bool ReadInstancePositions(const BYTE* p, UINT count, UINT stride, GroupCentre& g) {
     __try {
-        double sx = 0, sz = 0;
-        float minX = 1e30f, maxX = -1e30f, minZ = 1e30f, maxZ = -1e30f;
+        double sx = 0, sy = 0, sz = 0;
         for (UINT i = 0; i < count; i++) {
             const float* v = reinterpret_cast<const float*>(p + static_cast<size_t>(i) * stride);
-            if (!std::isfinite(v[0]) || !std::isfinite(v[2])) return false;
+            if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) return false;
             sx += v[0];
+            sy += v[1];
             sz += v[2];
-            minX = std::min(minX, v[0]), maxX = std::max(maxX, v[0]);
-            minZ = std::min(minZ, v[2]), maxZ = std::max(maxZ, v[2]);
         }
         g.x = static_cast<float>(sx / count);
+        g.y = static_cast<float>(sy / count);
         g.z = static_cast<float>(sz / count);
-        g.ext = 0.5f * std::sqrt((maxX - minX) * (maxX - minX) + (maxZ - minZ) * (maxZ - minZ));
+        auto farthest = [&](float fx, float fz, float* out) {
+            float best = -1.0f;
+            for (UINT i = 0; i < count; i++) {
+                const float* v = reinterpret_cast<const float*>(p + static_cast<size_t>(i) * stride);
+                const float d = (v[0] - fx) * (v[0] - fx) + (v[2] - fz) * (v[2] - fz);
+                if (d > best) {
+                    best = d;
+                    out[0] = v[0], out[1] = v[1], out[2] = v[2];
+                }
+            }
+        };
+        farthest(g.x, g.z, g.a);
+        farthest(g.a[0], g.a[2], g.b);
+        g.ext = 0.5f * std::sqrt((g.a[0] - g.b[0]) * (g.a[0] - g.b[0]) + (g.a[2] - g.b[2]) * (g.a[2] - g.b[2]));
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }
-bool InstancedGroupCentre(IDirect3DDevice9* dev, float& x, float& z, float& ext) {
+const GroupCentre* InstancedGroupCentre(IDirect3DDevice9* dev) {
     UINT freq = 0;
-    if (FAILED(dev->GetStreamSourceFreq(0, &freq)) || !(freq & D3DSTREAMSOURCE_INDEXEDDATA)) return false;
+    if (FAILED(dev->GetStreamSourceFreq(0, &freq)) || !(freq & D3DSTREAMSOURCE_INDEXEDDATA)) return nullptr;
     const UINT count = freq & 0x3FFFFFFFu;
     IDirect3DVertexBuffer9* vb = nullptr;
     UINT off = 0, stride = 0;
-    if (FAILED(dev->GetStreamSource(1, &vb, &off, &stride)) || !vb) return false;
-    bool ok = false;
+    if (FAILED(dev->GetStreamSource(1, &vb, &off, &stride)) || !vb) return nullptr;
+    const GroupCentre* result = nullptr;
     if (count > 0 && count <= 4096 && stride >= 12 && stride <= 256) {
+        if (g_groupCentres.size() > 4096) g_groupCentres.clear(); // groups come and go with lots
         const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) << 32) ^ (static_cast<uint64_t>(off) << 12) ^ (static_cast<uint64_t>(count) << 1) ^ stride;
         GroupCentre& g = g_groupCentres[key];
         const DWORD now = GetTickCount();
@@ -1824,16 +1838,10 @@ bool InstancedGroupCentre(IDirect3DDevice9* dev, float& x, float& z, float& ext)
             g.ok = SUCCEEDED(vb->Lock(off, count * stride, &p, D3DLOCK_READONLY)) && p && ReadInstancePositions(static_cast<const BYTE*>(p), count, stride, g);
             if (p) vb->Unlock();
         }
-        if (g.ok) {
-            x = g.x;
-            z = g.z;
-            ext = g.ext;
-            ok = true;
-        }
-        if (g_groupCentres.size() > 4096) g_groupCentres.clear(); // groups come and go with lots
+        if (g.ok) result = &g;
     }
     vb->Release();
-    return ok;
+    return result;
 }
 
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
@@ -1856,13 +1864,19 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     if (p.inst.pixelLamps) {
         lamps[0][3] = 1e-4f;
         for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
-        float gx = 0, gz = 0, ext = 0;
-        if (g_objPixelLamps.load(std::memory_order_relaxed) && InstancedGroupCentre(dev, gx, gz, ext)) {
-            const int n = SelectLamps(gx, gz, 40.0f + std::min(ext, 60.0f));
+        const GroupCentre* g = g_objPixelLamps.load(std::memory_order_relaxed) ? InstancedGroupCentre(dev) : nullptr;
+        if (g) {
+            const int n = SelectLamps(g->x, g->z, 40.0f + std::min(g->ext, 60.0f));
+            // Walls block light on objects applies to fences too (user 05/10: a brick fence behind a tower took the wall
+            // lamp on the other side). One lamp list serves the whole group, so a lamp leaves it only when a wall stands
+            // between it and the group's centre and both its ends (0.5 m above the pieces): a fence wholly behind a wall
+            // loses it, one that only runs past a wall keeps it.
+            const float mid[3] = {g->x, g->y + 0.5f, g->z}, endA[3] = {g->a[0], g->a[1] + 0.5f, g->a[2]}, endB[3] = {g->b[0], g->b[1] + 0.5f, g->b[2]};
             int used = 0;
             for (int k = 0; k < n && used < static_cast<int>(N); k++) {
                 const float* pr = g_lampData[k];
                 const float* col = g_lampData[16 + k];
+                if (LevelLightShare::WallBlocks(pr, mid) && LevelLightShare::WallBlocks(pr, endA) && LevelLightShare::WallBlocks(pr, endB)) continue;
                 const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
                 lamps[1 + 2 * used][0] = pr[0];
                 lamps[1 + 2 * used][1] = pr[1];
