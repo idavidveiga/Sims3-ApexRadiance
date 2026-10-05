@@ -47,6 +47,19 @@ struct NoteKeyHash {
     size_t operator()(const NoteKey& k) const { return std::hash<void*>()(k.basisX) ^ (std::hash<void*>()(k.ps) * 31u); }
 };
 std::unordered_map<NoteKey, uint32_t, NoteKeyHash> g_noted; // -> frame its draw was last looked at (keys never dereferenced)
+
+// Diagnostic-only content probe: room/basis maps are MANAGED textures that the game may rewrite in place after a room
+// solve. Pointer-only logging cannot see that. Sample a small grid from each map every few dozen frames and report only
+// real content changes; this never writes the game's textures.
+struct ContentProbeState {
+    uint32_t lastFrame = 0;
+    uint64_t lm = 0;
+    uint64_t basis[4] = {};
+    bool have = false;
+};
+std::unordered_map<IDirect3DTexture9*, ContentProbeState> g_contentProbe;
+int g_contentChanges = 0;
+
 int g_sets = 0, g_changes = 0;
 long g_released = 0;
 
@@ -70,6 +83,67 @@ bool RoomMapLike(IDirect3DBaseTexture9* t) {
     D3DSURFACE_DESC d{};
     if (FAILED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d))) return false;
     return d.Format == D3DFMT_A8R8G8B8 && d.Pool == D3DPOOL_MANAGED && d.Width >= 8 && d.Height >= 8 && d.Width <= 1024 && d.Height <= 1024;
+}
+
+uint64_t TextureSampleSignature(IDirect3DTexture9* tex) {
+    if (!tex) return 0;
+    D3DSURFACE_DESC d{};
+    if (FAILED(tex->GetLevelDesc(0, &d)) || d.Format != D3DFMT_A8R8G8B8 || !d.Width || !d.Height) return 0;
+    D3DLOCKED_RECT lr{};
+    if (FAILED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits || !lr.Pitch) return 0;
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint8_t b) { h = (h ^ b) * 1099511628211ull; };
+    const uint8_t* base = static_cast<const uint8_t*>(lr.pBits);
+    const size_t pitch = static_cast<size_t>(lr.Pitch < 0 ? -lr.Pitch : lr.Pitch);
+    constexpr int kGrid = 7;
+    for (int gy = 0; gy < kGrid; ++gy) {
+        const UINT y = d.Height > 1 ? static_cast<UINT>((static_cast<uint64_t>(gy) * (d.Height - 1)) / (kGrid - 1)) : 0;
+        const uint8_t* row = base + static_cast<size_t>(y) * pitch;
+        for (int gx = 0; gx < kGrid; ++gx) {
+            const UINT x = d.Width > 1 ? static_cast<UINT>((static_cast<uint64_t>(gx) * (d.Width - 1)) / (kGrid - 1)) : 0;
+            const uint8_t* px = row + static_cast<size_t>(x) * 4;
+            mix(px[0]); mix(px[1]); mix(px[2]); mix(px[3]);
+        }
+    }
+    tex->UnlockRect(0);
+    h ^= static_cast<uint64_t>(d.Width) << 32;
+    h ^= static_cast<uint64_t>(d.Height);
+    return h;
+}
+
+void ProbeContent(IDirect3DTexture9* lm, const BasisSet& set) {
+    if (!lm) return;
+    ContentProbeState& s = g_contentProbe[lm];
+    if (s.lastFrame && g_frame - s.lastFrame < 30) return;
+    s.lastFrame = g_frame;
+
+    const uint64_t lmSig = TextureSampleSignature(lm);
+    uint64_t basisSig[4] = {};
+    for (int k = 0; k < 4; ++k) basisSig[k] = TextureSampleSignature(set.tex[k]);
+
+    if (!s.have) {
+        s.have = true;
+        s.lm = lmSig;
+        std::memcpy(s.basis, basisSig, sizeof basisSig);
+        LOG_INFO(std::format("[RoomMapContentProbe] first room {:08X} sig {:016X} | basis {:08X}/{:016X} {:08X}/{:016X} {:08X}/{:016X} {:08X}/{:016X}",
+                             reinterpret_cast<uintptr_t>(lm), lmSig,
+                             reinterpret_cast<uintptr_t>(set.tex[0]), basisSig[0], reinterpret_cast<uintptr_t>(set.tex[1]), basisSig[1],
+                             reinterpret_cast<uintptr_t>(set.tex[2]), basisSig[2], reinterpret_cast<uintptr_t>(set.tex[3]), basisSig[3]));
+        return;
+    }
+
+    const bool lmChanged = lmSig != s.lm;
+    bool basisChanged = false;
+    for (int k = 0; k < 4; ++k) basisChanged |= basisSig[k] != s.basis[k];
+    if (lmChanged || basisChanged) {
+        ++g_contentChanges;
+        LOG_INFO(std::format("[RoomMapContentProbe] change {} frame {} room {:08X}: sig {:016X} -> {:016X} | basis "
+                             "{:016X}->{:016X} {:016X}->{:016X} {:016X}->{:016X} {:016X}->{:016X}",
+                             g_contentChanges, g_frame, reinterpret_cast<uintptr_t>(lm), s.lm, lmSig,
+                             s.basis[0], basisSig[0], s.basis[1], basisSig[1], s.basis[2], basisSig[2], s.basis[3], basisSig[3]));
+        s.lm = lmSig;
+        std::memcpy(s.basis, basisSig, sizeof basisSig);
+    }
 }
 
 } // namespace
@@ -147,6 +221,7 @@ void NoteDraw(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
         return;
     }
     set.lastSeen = g_frame;
+    ProbeContent(lm, set);
     auto it = g_basisOf.find(lm);
     if (it == g_basisOf.end()) {
         g_basisOf.emplace(lm, set); // keeps every reference
@@ -182,6 +257,7 @@ void OnPresent() {
     for (auto it = g_basisOf.begin(); it != g_basisOf.end();) {
         if (gameLetGo(it->first, 1) || gameLetGo(it->second.tex[0], ours[it->second.tex[0]])) { // the game let go of the map (lot unloaded, story rebuilt)
             if (it->second.tex[0]) ours[it->second.tex[0]]--; // one reference fewer for the entries still to check
+            g_contentProbe.erase(it->first);
             Release(it->second, it->first);
             it = g_basisOf.erase(it);
             g_released++;
@@ -204,11 +280,12 @@ void Clear() {
     g_basisOf.clear();
     g_noted.clear();
     g_psInfo.clear();
+    g_contentProbe.clear();
 }
 
 std::string Status() {
-    return std::format("{} | room light maps with directional maps: {} (directional maps changed {}, released after the game let go {})", g_enabled ? "on" : "off",
-                       g_basisOf.size(), g_changes, g_released);
+    return std::format("{} | room light maps with directional maps: {} (directional maps changed {}, content changes {}, released after the game let go {})", g_enabled ? "on" : "off",
+                       g_basisOf.size(), g_changes, g_contentChanges, g_released);
 }
 
 } // namespace RoomMapPadding
