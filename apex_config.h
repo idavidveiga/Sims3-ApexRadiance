@@ -35,7 +35,7 @@ struct UiSettings {
     bool captureScreenshot = true; // the Report a problem captures also save Screenshot.png ([ui] capture_screenshot)
     bool welcomeDone = false;  // legacy welcome-tour flag, kept when reading and writing older configs
     bool keyChosen = false;    // legacy first-start key prompt flag; no longer gates the menu or startup hint
-    bool startProfileDone = false; // the welcome page (a built-in profile to start with) was answered ([ui] start_profile_done)
+    bool startProfileDone = false; // the welcome page was shown ([ui] start_profile_done; false only for a new installation: a config without it counts as true)
     int hotkeyPreset = -1;     // Hotkeys::Preset of the other shortcuts ([ui] hotkey_preset = "letters" / "numbers" / "fkeys"; missing = -1: the F keys)
     KeyChord compareKey{0, true, true, false}; // the player's own key for Compare ([ui] compare_key; vk 0 = the preset's)
     KeyChord refreshKey{0, true, true, false}; // the player's own key for Refresh ([ui] refresh_key; vk 0 = the preset's)

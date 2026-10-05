@@ -1662,10 +1662,15 @@ struct ProfilesState {
 };
 ProfilesState g_profiles;
 
-// ---- Welcome page: the first menu open offers a built-in profile to start with ([ui] start_profile_done) ----
-bool g_welcomeHidden = false;               // the player went to another page: shown again at the next game start
+// ---- Welcome page: a new installation's first menu open offers a built-in profile to start with. Shown once: the first
+// draw sets [ui] start_profile_done; it stays on screen this session until answered or another page is opened. ----
+int g_welcomeState = -1;                     // -1 not decided yet, 0 not shown, 1 showing
 int g_welcomeChoice = ApexPresets::kDefault; // the selected starting profile (Default, listed second)
-bool WelcomeActive() { return !ApexConfig::GetUi().startProfileDone && !g_welcomeHidden; }
+bool WelcomeActive() {
+    if (g_welcomeState < 0) g_welcomeState = ApexConfig::GetUi().startProfileDone ? 0 : 1;
+    return g_welcomeState == 1;
+}
+void HideWelcome() { g_welcomeState = 0; }
 
 // Only letters, digits, space, - and _ can be typed (the file name is the profile name)
 int ProfileNameFilter(ImGuiInputTextCallbackData* data) {
@@ -2319,7 +2324,7 @@ void Sidebar(bool collapsed) {
         if (item.group) ApexUi::SidebarGroup(item.group, collapsed);
         if (ApexUi::SidebarItem(item.icon, item.label, g_page == item.page && !searching && !WelcomeActive(), collapsed)) {
             g_page = item.page;
-            g_welcomeHidden = true; // the welcome comes back at the next game start until it is answered
+            HideWelcome(); // another page: the welcome is not shown again
             g_search[0] = '\0'; // leaving the search results
         }
     }
@@ -2393,15 +2398,17 @@ void GameAaCompatibilityNotice() {
     ImGui::PopID();
 }
 
-void FinishWelcome() {
+void MarkWelcomeShown() {
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
-    ui.startProfileDone = true; // [ui] start_profile_done
+    if (ui.startProfileDone) return;
+    ui.startProfileDone = true; // [ui] start_profile_done: never shown again
     ApexConfig::SetUi(ui);
 }
 
 // The content area while the welcome is pending: one card with the built-in profiles (the same choice rows as the
 // lighting balance) and two actions. Apply goes through the Saved profiles path, so Undo is offered.
 void WelcomePage() {
+    MarkWelcomeShown();
     ApexUi::PageTitle("Welcome to " APEX_PRODUCT_NAME, "Choose how you want to start");
     ImGui::PushID("Welcome");
     if (ApexUi::BeginCard("##Card")) {
@@ -2423,7 +2430,7 @@ void WelcomePage() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::fmax(0.0f, ImGui::GetContentRegionAvail().x - actionsW));
             if (ApexUi::TextButton("Keep as it is", "Your current settings stay as they are")) {
                 LOG_INFO("[Menu] Welcome: settings kept");
-                FinishWelcome();
+                HideWelcome();
             }
             ImGui::SameLine();
             ImGui::BeginDisabled(Loading());
@@ -2434,7 +2441,7 @@ void WelcomePage() {
                 if (ApexPresets::Read(choice, state)) parts = ApexConfig::ProfilePartsOf(state);
                 LOG_INFO(std::format("[Menu] Welcome: {} chosen", ApexPresets::Get(choice).name));
                 LoadBuiltinProfileNow(choice, parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper));
-                FinishWelcome();
+                HideWelcome();
             }
             ImGui::EndDisabled();
         }
