@@ -1453,6 +1453,7 @@ std::atomic<long> g_alignOdd{0};    // wall pieces left as the game has them (no
 std::atomic<long> g_alignEdges{0};  // wall edge rows kept out of the vertical blur
 std::atomic<long> g_ghostWalls{0};  // walls blurred across their edges with the rows lit beyond them
 std::atomic<long> g_ghostPoints{0}; // points lit beyond the edges
+std::atomic<long> g_ghostExteriorPoints{0}; // ghost points generated for exterior room 0 when it is genuinely class 2
 
 struct WallBlock {
     int x0, y0, x1, y1;
@@ -1518,12 +1519,21 @@ bool g_ghostSolve = false;    // the game's solve is lighting our rows beyond th
 constexpr int kMaxGhosts = 512;
 alignas(16) BYTE g_ghostSamples[kMaxGhosts * 0x30];
 
-// The rooms of an atrium group: their walls meet the other story's walls in view, and both are lit at LOD class 2 (the
-// camera's story, and the story below it raised by 4.). Room 0 is left out: the outside walls of the stories under the
-// camera are lit at class 0 (no blur), so the wall above must end on the exact light at the line, not on a blurred one.
+// Rooms whose wall blur may extend beyond the top/bottom edge. Indoor stacked rooms are the original case.
+// Room 0 used to be excluded on the assumption that exterior walls below the camera always stayed at class 0.
+// EA 1.69 captures of the gym lot disproved that: room 0 on several stories was class 2, and the visible facade
+// therefore kept the game's per-story clamped blur and a hard horizontal lighting seam. Permit exterior room 0 only
+// when it is actually class 2; class 0/1 facades keep the old exact-edge behavior.
 bool GhostRoom(const BYTE* room) {
-    const auto it = g_wallBase.find(reinterpret_cast<uintptr_t>(room));
-    return it != g_wallBase.end() && it->second.id == *reinterpret_cast<const int*>(room + 0xC) && it->second.mgr == *reinterpret_cast<const uintptr_t*>(room);
+    __try {
+        const int id = *reinterpret_cast<const int*>(room + 0xC);
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        const auto it = g_wallBase.find(reinterpret_cast<uintptr_t>(room));
+        if (it != g_wallBase.end() && it->second.id == id && it->second.mgr == mgr) return true;
+        return id == 0 && *reinterpret_cast<const int*>(room + 0xF4) == 2;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 // The game blurs this room's walls in mode 0 (the blur above): its passes, else 0
@@ -1607,6 +1617,7 @@ void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char*
     g_ghostSolve = false;
     for (int s = 0; s < count; s += 2) g.filled[*reinterpret_cast<const uint16_t*>(g_ghostSamples + s * 0x30 + 0x22) >= 2]++;
     g_ghostPoints.fetch_add(count, std::memory_order_relaxed);
+    if (*reinterpret_cast<const int*>(room + 0xC) == 0) g_ghostExteriorPoints.fetch_add(count, std::memory_order_relaxed);
 }
 
 inline uint32_t Avg4(uint32_t a, uint32_t b) { return (a | b) - (((a ^ b) >> 1) & 0x7F7F7F7Fu); }
@@ -4639,7 +4650,8 @@ std::string Status() {
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
                                                    "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",
                                                    g_alignOn ? "on" : "off", g_alignRows.load(), g_alignOdd.load(), g_ghostWalls.load(), g_ghostPoints.load(),
-                                                   g_alignEdges.load()),
+                                                   g_alignEdges.load()) +
+                                         (g_ghostExteriorPoints.load() ? std::format(", exterior room-0 ghost points {}", g_ghostExteriorPoints.load()) : ""),
                        g_otherThread.load() ? std::format(" | on another thread: {}", g_otherThread.load()) : "",
                        g_normCrossOnly.load() || g_normNotFinite.load()
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
