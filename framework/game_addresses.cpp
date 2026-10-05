@@ -1010,7 +1010,7 @@ void ProbeMissingWallSolve() {
         return;
     }
 
-    constexpr uintptr_t kSteamCallOffset =
+    const uintptr_t kSteamCallOffset =
         static_cast<uintptr_t>(kInfo[Index(Id::WallSolveCall)].steam - kInfo[Index(Id::WallPass)].steam);
     const uintptr_t predictedCall = wallPass + kSteamCallOffset;
     LOG_INFO(std::format("[WallSolveProbe] WallPass {:#010x}, BatchSamples {:#010x}, Steam-relative call offset +{:#x} -> predicted call {:#010x}",
