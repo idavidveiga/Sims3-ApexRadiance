@@ -31,7 +31,7 @@ inline bool AmbientMapsCompatible(float norm, float nextNorm, float base, float 
 inline bool RigFallbackDue(std::uint32_t now, std::uint32_t armed, bool sent) {
     return !sent && static_cast<std::uint32_t>(now - armed) >= 1500;
 }
-inline std::uint32_t LampRefreshDelay(bool switchOnly) { return switchOnly ? 120u : 700u; }
+inline std::uint32_t LampRefreshDelay(bool switchOnly) { return switchOnly ? 120u : 300u; }
 inline bool GatherAfterChange(std::uint32_t started, std::uint32_t changed) {
     return static_cast<std::int32_t>(started - changed) > 0;
 }

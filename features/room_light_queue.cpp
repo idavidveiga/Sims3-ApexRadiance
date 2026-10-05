@@ -75,7 +75,7 @@ bool g_prioOn = false, g_stepOn = false, g_keepOn = false, g_drainOn = false;
 std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
 
-std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0};
+std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0};
 std::atomic<long long> g_drainMicros{0};
 
 inline DWORD ThreadId() { return __readfsdword(0x24); }
@@ -117,7 +117,10 @@ float __fastcall PriorityHook(BYTE* room) {
     if (!room || !g_prioOn) return p;
     if (!(p > 0.0f)) return Stranded(room) ? 1.0f : p;
     g_prioCalls.fetch_add(1, std::memory_order_relaxed);
-    return p * Factor(room);
+    // a lamp edit's rooms (moved, switched, recoloured) before any other room: the lamp's own, then the stories taking it
+    const float urgency = LevelLightShare::LampUrgency(room);
+    if (urgency > 1.0f) g_prioUrgent.fetch_add(1, std::memory_order_relaxed);
+    return p * Factor(room) * urgency;
 }
 
 // The current room, when it is a room of the priority lot in state 3 (picked, not started or budget left), else null
@@ -159,10 +162,16 @@ void __fastcall PickHook(BYTE* tree) {
     // Drain only when the room that was current last time is done (so the lot pass of its lot ran: that lot is not paused,
     // 0x00ADB8F0 checks +0x18 / +0x4E) and the new current room is of that same lot and is the priority lot's
     const uint64_t finishedLot = g_lastLot;
-    BYTE* room = before ? nullptr : DrainableRoom(tree);
+    // A lamp edit's rooms waiting (LevelLightShare, "Lamp edits first"): 12 ms instead of 4 with the camera still, and a lamp
+    // edit's room still current from the last frame is solved further here too (the lot pass goes on with it anyway), so a
+    // dragged lamp's light follows it within a frame or two
+    const bool lampEdit = LevelLightShare::LampEditPending();
+    BYTE* room = DrainableRoom(tree);
+    if (before && !(lampEdit && room == before && LevelLightShare::LampUrgency(room) > 1.0f)) room = nullptr;
     if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;
     if (room) {
-        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f : 4.0f;
+        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f : lampEdit ? 12.0f : 4.0f;
+        if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
         reinterpret_cast<SwCtor_t>(kSwCtor)(sw, 4, 0);
         reinterpret_cast<SwStart_t>(kSwStart)(sw);
@@ -310,10 +319,10 @@ std::string SolveTimes() {
 std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
-    return std::format("On | viewed lot first {} ({} of {} priorities raised), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
-                       "{} extra solves, {} finished, {:.1f} ms in all){}",
-                       g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
-                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, SolveTimes());
+    return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
+                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting){}",
+                       g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
+                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), SolveTimes());
 }
 
 void RenderDeveloperUI() {

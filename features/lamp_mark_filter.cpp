@@ -30,6 +30,7 @@
 #include "unlit_rooms.h"
 #include "room_ambient_policy.h"
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -54,7 +55,7 @@ bool g_installed = false, g_flagsCounted = false;
 std::atomic<bool> g_on{true};
 uintptr_t g_markTarget = kMark;
 uintptr_t g_flagTarget = kEntryFlag;
-std::atomic<long> g_first{0}, g_changed{0}, g_kept{0}, g_windows{0}, g_unread{0}, g_off{0};
+std::atomic<long> g_first{0}, g_changed{0}, g_kept{0}, g_windows{0}, g_unread{0}, g_off{0}, g_held{0};
 volatile long g_flagCount[5] = {};
 
 struct Key {
@@ -74,20 +75,29 @@ struct LampState {
     DWORD eventsFrom = 0; // switches on or off seen since this tick (a light that keeps switching itself is left out)
     int events = 0;
     float editable[5] = {}; // base RGB, intensity, enabled; excludes animated fade
+    DWORD editUntil = 0;    // an edit (move, switch, colour) is going on until then: its next changes are part of it
 };
+constexpr DWORD kEditHoldMs = 2000;
 std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the lamp at its last mark
 
 // A lamp switched on or off, or moved (30/09, user: "also refresh the lighting whenever a lamp is moved, switched off or on,
-// if it costs no performance"): a switch waits 120 ms; a move still waits 700 ms after its last change (a drag:
+// if it costs no performance"): a switch waits 120 ms; a move still waits 300 ms after its last change (a drag:
 // once when it stops). At most once per kLotGap per lot; never while dusk/dawn switches every lamp at once.
 // Not the whole world as the shortcut: only the rooms of that lot (every story), on the light tree thread, and the rigs.
+// Since 05/10 the rooms that take an edited lamp are sent at once by the edit itself (LevelLightShare, "Lamp edits first"),
+// so this is the safety net: rooms gathered after the change keep their solve, and for lamps that only moved (same room, on
+// or off as before) only the rooms whose list holds them are sent.
 constexpr DWORD kLotGap = 2000;
 constexpr float kMoveMin = 0.10f; // m: animated lamps wobble less
 constexpr DWORD kSelfWindow = 10000; // ms
 constexpr int kSelfMax = 3;          // more switches on or off than this within kSelfWindow: a light switching itself, left out
+constexpr int kLotLamps = 8;         // lamps that moved, per lot refresh (more: every room of the lot)
 struct LotDue {
     DWORD due = 0, last = 0, changed = 0;
     bool switchOnly = false;
+    bool allRooms = false; // a switch, a lamp into another room, or more than kLotLamps lamps: every room of the lot
+    int lampCount = 0;
+    uintptr_t lamps[kLotLamps] = {};
 };
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
@@ -154,56 +164,91 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
         g_windows.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    std::lock_guard<std::mutex> lk(g_mx);
-    if (g_sig.size() > 65536) g_sig.clear();
-    const LampState now{h, on, {pos[0], pos[1], pos[2]}, room, 0, 0};
-    const auto [it, fresh] = g_sig.try_emplace(Key{tl, light}, now);
-    if (fresh) {
-        std::memcpy(it->second.editable, editable, sizeof editable);
-        if ((type >= 3 && type <= 6) || type == 11) g_editRefresh.store(true, std::memory_order_relaxed);
-        g_first.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
-    LampState& was = it->second;
-    if (std::memcmp(was.editable, editable, sizeof editable) != 0) {
-        std::memcpy(was.editable, editable, sizeof editable);
-        g_editRefresh.store(true, std::memory_order_relaxed);
-    }
-    const bool same = was.sig == h;
-    const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
-    const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin; // NaN: not a move
-    if (was.on != on || moved || was.room != room) { // the player sees this: its lot lights again (OnPresent)
+    // Lamp edits first (05/10, LevelLightShare): an edit (moved, recoloured, dimmed, switched) marks its room as urgent;
+    // `user` = a value a player or a Sim sets (colour, intensity, on / off), sent to the other stories at once; `pure` = the
+    // same room, on or off as before (a move or a value change): a solve in progress keeps going, the mark is held
+    bool same = false, edit = false, user = false, pure = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        if (g_sig.size() > 65536) g_sig.clear();
+        const LampState now{h, on, {pos[0], pos[1], pos[2]}, room, 0, 0};
+        const auto [it, fresh] = g_sig.try_emplace(Key{tl, light}, now);
+        if (fresh) {
+            std::memcpy(it->second.editable, editable, sizeof editable);
+            if ((type >= 3 && type <= 6) || type == 11) g_editRefresh.store(true, std::memory_order_relaxed);
+            g_first.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        LampState& was = it->second;
         const DWORD tick = GetTickCount();
-        if (tick - was.eventsFrom > kSelfWindow) {
-            was.eventsFrom = tick;
-            was.events = 0;
+        if (std::memcmp(was.editable, editable, sizeof editable) != 0) {
+            std::memcpy(was.editable, editable, sizeof editable);
+            g_editRefresh.store(true, std::memory_order_relaxed);
+            user = edit = true;
         }
-        // a light that switches itself on and off (a flickering TV or effect light): not the player (a drag only moves: never left out)
-        const bool selfSwitching = was.on != on && ++was.events > kSelfMax;
-        if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
-        if (const uintptr_t tracker = selfSwitching ? 0 : TrackerOf(tl)) {
-            if (g_lotDue.size() > 1024) g_lotDue.clear();
-            LotDue& pending = g_lotDue[tracker];
-            const bool switchOnly = was.on != on && !moved && was.room == room;
-            pending.switchOnly = pending.due ? pending.switchOnly && switchOnly : switchOnly;
-            pending.changed = tick;
-            pending.due = (tick + RoomAmbientPolicy::LampRefreshDelay(pending.switchOnly)) | 1;
+        same = was.sig == h;
+        const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
+        const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin; // NaN: not a move
+        pure = was.on == on && was.room == room;
+        if (was.on != on || moved || was.room != room) { // the player sees this: its lot lights again (OnPresent)
+            if (tick - was.eventsFrom > kSelfWindow) {
+                was.eventsFrom = tick;
+                was.events = 0;
+            }
+            // a light that switches itself on and off (a flickering TV or effect light): not the player (a drag only moves: never left out)
+            const bool selfSwitching = was.on != on && ++was.events > kSelfMax;
+            if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
+            edit = edit || !selfSwitching;
+            user = user || (was.on != on && !selfSwitching);
+            // the per-pixel lamps (objects, fences, roofs, water) and the ground bake read the lamp list again soon, not at
+            // the next 20-frame enumeration: a dragged lamp's light follows it
+            if (moved && ((type >= 3 && type <= 6) || type == 11)) g_editRefresh.store(true, std::memory_order_relaxed);
+            if (const uintptr_t tracker = selfSwitching ? 0 : TrackerOf(tl)) {
+                if (g_lotDue.size() > 1024) g_lotDue.clear();
+                LotDue& pending = g_lotDue[tracker];
+                const bool switchOnly = was.on != on && !moved && was.room == room;
+                if (!pending.due) { // a new refresh: nothing collected yet
+                    pending.allRooms = false;
+                    pending.lampCount = 0;
+                }
+                if (!pure) pending.allRooms = true; // switched, or into another room: lists change
+                else if (!pending.allRooms && std::find(pending.lamps, pending.lamps + pending.lampCount, light) == pending.lamps + pending.lampCount) {
+                    if (pending.lampCount < kLotLamps) pending.lamps[pending.lampCount++] = light;
+                    else pending.allRooms = true;
+                }
+                pending.switchOnly = pending.due ? pending.switchOnly && switchOnly : switchOnly;
+                pending.changed = tick;
+                pending.due = (tick + RoomAmbientPolicy::LampRefreshDelay(pending.switchOnly)) | 1;
+            }
+            was.on = on;
+            std::memcpy(was.pos, pos, sizeof was.pos); // a slow drag: each 10 cm step counts, the refresh waits for the last
+            was.room = room;
         }
-        was.on = on;
-        std::memcpy(was.pos, pos, sizeof was.pos); // a slow drag: each 10 cm step counts, the refresh waits for the last
-        was.room = room;
+        // the steps of a drag between its 10 cm events are the same edit (an animated lamp never moves 10 cm: never one)
+        if (edit) was.editUntil = (tick + kEditHoldMs) | 1;
+        else if (!same && was.editUntil && static_cast<int32_t>(tick - was.editUntil) < 0) edit = true;
+        was.sig = h;
     }
-    was.sig = h;
-    if (!g_on.load(std::memory_order_relaxed)) { // off: every mark goes through (the values are still followed)
+    if (same) {
+        if (!g_on.load(std::memory_order_relaxed)) { // off: every mark goes through (the values are still followed)
+            g_off.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        g_kept.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (!g_on.load(std::memory_order_relaxed)) {
         g_off.fetch_add(1, std::memory_order_relaxed);
+        if (edit) LevelLightShare::NoteLampMark(tl, room, user);
         return true;
     }
-    if (!same) {
-        g_changed.fetch_add(1, std::memory_order_relaxed);
-        return true;
+    g_changed.fetch_add(1, std::memory_order_relaxed);
+    if (edit && pure && LevelLightShare::HoldLampMark(tl, room, user)) {
+        g_held.fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
-    g_kept.fetch_add(1, std::memory_order_relaxed);
-    return false;
+    if (edit) LevelLightShare::NoteLampMark(tl, room, user);
+    return true;
 }
 
 // At the call: ecx = the tree level, [esp+4] = the room, esi = the entry, edi = the light (the game's registers, kept
@@ -312,7 +357,14 @@ void OnPresent(float nightLevel) {
     if (!g_installed) return;
     if (g_editRefresh.exchange(false, std::memory_order_relaxed)) LotLightBridge::RequestLampEditRefresh();
     const DWORD now = GetTickCount();
-    std::vector<std::pair<uintptr_t, DWORD>> run;
+    struct Run {
+        uintptr_t tracker;
+        DWORD changed;
+        bool switchOnly, allRooms;
+        int lampCount;
+        uintptr_t lamps[kLotLamps];
+    };
+    std::vector<Run> run;
     {
         std::lock_guard<std::mutex> lk(g_mx);
         for (auto& [tracker, d] : g_lotDue) {
@@ -327,11 +379,17 @@ void OnPresent(float nightLevel) {
                 continue;
             }
             d.last = now | 1;
-            run.emplace_back(tracker, d.switchOnly ? d.changed : 0);
+            Run r{tracker, d.changed, d.switchOnly, d.allRooms || d.lampCount == 0, d.lampCount, {}};
+            std::copy(d.lamps, d.lamps + d.lampCount, r.lamps);
+            run.push_back(r);
         }
     }
-    for (const auto& [t, changed] : run)
-        if (LevelLightShare::RelightLot(t, "a lamp switched or moved", changed) >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
+    // the rooms gathered after the change keep their solve (the lamp edit sent them already); lamps that only moved: only
+    // the rooms holding them
+    for (const Run& r : run)
+        if (LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved", r.changed,
+                                        r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount) >= 0)
+            g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
     if (!run.empty()) {
         ObjectLightBridge::RequestRigRefresh();
         // RelightLot watches completion and retains its own bounded fallback.
@@ -343,8 +401,8 @@ bool Enabled() { return g_on.load(std::memory_order_relaxed); }
 std::string Status() {
     if (!g_installed) return "not installed";
     std::string s = std::format("{} | lamp marks kept (the lamp as it was) {}, let through: first sight {}, changed {}, window lights {}, unreadable {}, "
-                                "while off {}",
-                                g_on.load() ? "on" : "off", g_kept.load(), g_first.load(), g_changed.load(), g_windows.load(), g_unread.load(), g_off.load());
+                                "while off {}, held while their room was solved {}",
+                                g_on.load() ? "on" : "off", g_kept.load(), g_first.load(), g_changed.load(), g_windows.load(), g_unread.load(), g_off.load(), g_held.load());
     s += std::format(" | lamps switched or moved {}, lots lit again {} (skipped at dusk or dawn {})", g_lampEvents.load(), g_lotRefreshes.load(), g_lotSkippedDusk.load());
     if (g_flagsCounted) {
         s += " | light entries flagged by message:";

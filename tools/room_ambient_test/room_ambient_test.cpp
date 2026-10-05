@@ -68,7 +68,7 @@ int main() {
     check(!WindowRecheckDue(20000, 100, 3), "window checks stop after bounded passes");
     check(WindowRecheckDue(0x800u, 0xfffffff0u, 1), "window deadline survives tick wrap");
     check(LampRefreshDelay(true) == 120, "switch is reconciled after a short batch");
-    check(LampRefreshDelay(false) == 700, "moving a lamp retains the drag debounce");
+    check(LampRefreshDelay(false) == 300, "moving a lamp retains the drag debounce (the edit itself sends its rooms at once)");
     check(GatherAfterChange(1001, 1000), "gather started after final switch can be retained");
     check(!GatherAfterChange(999, 1000), "gather started before switch cannot be retained");
     check(!GatherAfterChange(1000, 1000), "same millisecond is ambiguous and requeues");
