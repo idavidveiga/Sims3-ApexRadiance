@@ -1,5 +1,17 @@
 # Depth Blur
 
+## Loaded-world guard (PR #2)
+
+Depth Blur skips all blur and debug passes outside an active loaded world
+(resolved WorldManager, +0x41 active, +0x1B4 modes 1..3). Present checks this
+read-only state every frame and requires three continuous seconds before blur
+resumes. A load, missing/unreadable manager, video reset or stopped depth service
+invalidates readiness. Autofocus snaps on return; map fade and frame timing are
+reset so loading depth and a long stall cannot carry into the next scene.
+The shared INTZ resource remains available to other consumers; saved blur
+settings are unchanged. Extracted guards and mock state transitions are tested;
+actual loading-screen transitions still require in-game validation.
+
 > Depth of field without a near field: the scene behind what the camera looks at is blurred, progressively, from the
 > scene depth, and applied to the finished 3D scene **before the game draws any UI**, so pie menus, tooltips, plumbobs
 > and panels stay sharp. Two focus modes: **Auto** (default since 2026-09-28: the focus follows the centre of the screen,
@@ -468,3 +480,5 @@ Depth Blur itself patches no game code. It depends on:
 ## Investigation: distant foliage speckles (2026-10-02)
 
 The user supplied an image with small sharp dark/light points inside blurred trees. A candidate mechanism is the bilateral composite fallback: PrepPS stores the minimum blur amount of each 2x2 block, while CompositePS compares it to full-resolution depth. Thin alpha-tested foliage can produce mismatched blur values; low `wsum` reduces composite alpha and exposes the original pixel. Sparse gather taps are another possible source documented above. This is a code-based hypothesis, not a confirmed diagnosis. No blur shader or visual parameter was changed. Validate using the depth debug view and the same camera with quality levels before changing the fallback, which also protects foreground edges.
+
+The loaded-world flag alone can become true behind the loading UI. The shared gate now also queries the native UI root for loading/startup window id `0x95947678` (constructor `0x00EC7DB9`, removal callback `0x00EC7A60` on Steam). Its service getter is resolved from the `UIManager_GetMainWindowImpl` instruction signature and validated as `mov eax,[global]; ret`. Missing UI state or an unrecognised getter fails closed. It does not remove windows or change the loading process. The menu readiness interval starts only after the window is absent; BlurEffect rechecks immediately. 91 mock checks pass, including a loaded world behind the loading window. Real loading transitions and non-Steam builds still require validation.

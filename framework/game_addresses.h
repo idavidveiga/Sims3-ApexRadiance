@@ -233,6 +233,7 @@ enum class Id : uint16_t {
     TexCreate,
     TexFillCall,              // call FUN_0060d290 (0x0060E1FF): copies every mip level into it (cdecl, 4 args)
     TexFill,
+    UiServiceGetter,          // UIManager_GetMainWindowImpl calls this read-only root-service getter
     Count
 };
 

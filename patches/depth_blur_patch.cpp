@@ -30,6 +30,7 @@
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "post_scene.h"
+#include "world_session.h"
 #include "map_view.h"
 #include "shader_cache.h"
 #include "imgui.h"
@@ -289,6 +290,7 @@ struct Params {
 };
 
 struct BlurState {
+    WorldSession::Settled world;
     bool active = false; // the depth swap is running (Depth Blur on, or requested by another effect)
     bool blurOn = false; // the Depth Blur patch itself is on
     int requests = 0;    // DepthShare::Request from other effects
@@ -917,6 +919,15 @@ void StepMapFade(float dt) {
 // PostScene effect (order kDepthBlur): after edge smoothing, before the UI
 void BlurEffect(IDirect3DDevice9* dev) {
     if (!g.blurOn || !g.ready || g.inBlur || g.internalPass) return;
+    if (!g.world.ready || !WorldSession::IsActive()) {
+        // Loading/menu depth can be stale. Skip every blur/debug GPU pass and
+        // snap autofocus when gameplay returns, without releasing shared depth.
+        g.focusSnap = true;
+        g.lastFadeTick = {};
+        g.mapOpen = false;
+        g.mapFade = 0;
+        return;
+    }
     const float dt = StepTime();
     StepMapFade(dt);
     if ((kPublicBuild || !g.p.debugView) && (g.p.strength * (1.0f - g.mapFade) <= 0.0f || g.p.amount <= 0.0f)) return; // map view / no blur: no GPU work at all
@@ -946,6 +957,13 @@ void BlurEffect(IDirect3DDevice9* dev) {
 
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    g.world.Update(WorldSession::IsActive(), GetTickCount64());
+    if (!g.world.ready) {
+        g.focusSnap = true;
+        g.lastFadeTick = {};
+        g.mapOpen = false;
+        g.mapFade = 0;
+    }
     if (!g.ready && --g.retryCountdown <= 0) {
         g.retryCountdown = kRetryFrames;
         InitResources(dev);
@@ -959,6 +977,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
 
 void OnPreReset(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    g.world.Update(false, 0);
     ReleaseResources(dev);
     g.status = "Recreating after a video change...";
 }
@@ -986,6 +1005,7 @@ void StartDepth() {
 
 void StopDepth() {
     if (!g.active) return;
+    g.world.Update(false, 0);
     g.active = false;
     D3D9Hooks::UnregisterAll(kHookName);
     RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);

@@ -11,6 +11,7 @@
 #include "frame_profiler.h"
 #include "game_version.h"
 #include "game_addresses.h"
+#include "world_session.h"
 #include "night_lighting.h"
 #include "patch_base.h"
 #include "performance.h"
@@ -2593,14 +2594,7 @@ void MainWindow() {
 std::atomic<bool> g_menuAvailable{false};
 unsigned long long g_menuLiveAt = 0, g_menuGateCheckedAt = 0;
 bool WorldSessionActive() {
-    const uintptr_t global = GameAddr::Get(GameAddr::Id::WorldManagerPtr);
-    if (!global) return false;
-    __try {
-        const uintptr_t world = *reinterpret_cast<const uintptr_t*>(global);
-        if (!world || !*reinterpret_cast<const unsigned char*>(world + 0x41)) return false;
-        const int mode = *reinterpret_cast<const int*>(world + 0x1B4);
-        return mode >= 1 && mode <= 3; // loaded world / edit in game / save in game
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    return WorldSession::IsActive();
 }
 void UpdateMenuAvailability() {
     const auto now = GetTickCount64();
@@ -2774,10 +2768,9 @@ void Banner() {
 
 // ---- The start note (user's pick 30/09, "A Ã‚Â· compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
-// takes input; fades out). The current timing starts it shortly after the first Present. Each frame counts at most 100 ms
+// takes input; fades out). Starts only after the loaded-world/menu gate settles. Each frame counts at most 100 ms
 // so a loading stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 8000;
-constexpr unsigned long long kHintStartMs = 2000;
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
@@ -2785,10 +2778,11 @@ unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
 // Render thread, every frame (Client::AlwaysDraw)
 void UpdateHint() {
     if (g_startup.load() != Startup::Running) return;
+    if (!g_menuAvailable.load()) {
+        g_hintLastDraw = 0; // hide and pause a live hint during another load
+        return;
+    }
     if (!g_hintStarted) {
-        const unsigned long long firstPresent = ApexD3D::FirstPresentTick();
-        const unsigned long long now = GetTickCount64();
-        if (!firstPresent || now - firstPresent < kHintStartMs) return;
         g_hintStarted = true;
         if (ApexConfig::GetUi().startNote && !Overlay::IsVisible()) {
             g_hintLeftMs = kHintMs;
@@ -2797,7 +2791,7 @@ void UpdateHint() {
     }
 }
 
-bool HintVisible() { return g_hintLeftMs > 0 || NoticeAnimationPending(g_hintNoticeMotion); }
+bool HintVisible() { return g_menuAvailable.load() && (g_hintLeftMs > 0 || NoticeAnimationPending(g_hintNoticeMotion)); }
 
 void Hint() {
     const unsigned long long now = GetTickCount64();

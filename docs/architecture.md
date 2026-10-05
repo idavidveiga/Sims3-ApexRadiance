@@ -1312,3 +1312,16 @@ The approved stage-based presentation adds no hooks, timers, threads or persiste
 Private RC temporal candidate, 2026-10-02: `2.5.4-rc-temporal-pool-test` retains the report-library RC UI and adds targeted pool jitter protection and phase-aware temporal reprojection. Gameplay validation is pending; not installed or published. See [features/edge-smoothing.md](features/edge-smoothing.md) for evidence, fallback scope, quality tradeoff and checks.
 
 Compatibility exception: the player may explicitly choose the Rooms at Night compatibility action. Only that action backs up S3SS.toml in the Apex Radiance folder and removes the saved `settings.BradyBunchBlue RGB` override so S3SS no longer applies it. Enabling Rooms at Night alone never writes S3SS.toml. All other settings and patch switches are preserved.
+## Startup notice timing (PR #2)
+
+The ready hint starts once per process only after `g_menuAvailable` becomes true:
+an active loaded world, the enabled Night Lights world-live gate, and three
+continuous seconds. First Present alone no longer starts it. Further loads hide
+and pause a running hint; returning does not restart its eight-second lifetime.
+The saved start-note preference and the existing notice design remain intact.
+Depth Blur separately uses the same read-only world fields and a three-second
+settling guard, checked at Present and again before blur. No new game writes or
+hooks are introduced. Mock checks and compilation are not loading-screen visual
+validation.
+
+The startup/Depth Blur gate also checks that the native startup/loading window `0x95947678` is absent. The UI-service getter is resolved through GameAddr and validated before querying the root; missing UI state fails closed. A world-loaded flag alone is insufficient because the world can be active behind the loading screen. See the Depth Blur validation note for remaining gameplay checks.

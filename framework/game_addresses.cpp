@@ -252,6 +252,7 @@ constexpr Info kInfo[] = {
     {"TexCreate", 0x0060CEA0},
     {"TexFillCall", 0x0060E1FF},
     {"TexFill", 0x0060D290},
+    {"UiServiceGetter", 0x0050AB70},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -527,6 +528,7 @@ const Entry kTable[] = {
     {Id::TexCreate, K::Target, W::Text, Id::TexCreateCall, 0, {NOSIG, NOSIG}},
     {Id::TexFillCall, K::Sig, W::Text, None, 0, {{"8A 4D FB 51 8B 55 10 52 8B 45 0C 50 8B 4D 08 51 E8 ?? ?? ?? ?? 83 C4 10", 16, M::At}, NOSIG}},
     {Id::TexFill, K::Target, W::Text, Id::TexFillCall, 0, {NOSIG, NOSIG}},
+    {Id::UiServiceGetter, K::Sig, W::Text, None, 0, {{"56 57 E8 ?? ?? ?? ?? 8B F8 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 10 8B C8 8B 42 04 FF D0 8B F0 85 F6", 9, M::Call}, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
