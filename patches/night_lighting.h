@@ -38,6 +38,7 @@ void DrawStoriesCard(void (*drawUpperFloorRow)());
 void DrawObjectsCard();   // Objects tab (every option shown, in two groups)
 void DrawBuildingsCard(); // Buildings tab (walls and roofs)
 void DrawRoomsCard();     // Buildings tab (rooms with every lamp off)
+void DrawLightDetailCard(); // Buildings tab (lamp light detail on walls and floors, read at startup)
 void DrawWaterCard();     // Water tab: lamp glow on ponds (not the shore reflection)
 void DrawSnowCard();      // Snow tab
 

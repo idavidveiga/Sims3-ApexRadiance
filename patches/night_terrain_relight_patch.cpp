@@ -44,6 +44,7 @@
 #include "room_ambient_policy.h"
 #include "unlit_rooms.h"
 #include "lamp_mark_filter.h"
+#include "light_detail.h"
 #include "rig_tracker.h"
 #include "room_map_padding.h"
 #include "build_flavor.h"
@@ -176,6 +177,7 @@ bool g_wallAlign = true;         // walls lit where their light is drawn: no ste
 bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
 bool g_floorWalls = true;       // walls block lamp light on outdoor floors (LevelLightShare::SetFloorWalls)
 bool g_objectWalls = true;      // walls block lamp light on outdoor objects (LevelLightShare::SetObjectWalls)
+int g_lightDetail = 0;          // lighting texels per metre on walls and floors: 0 the game's, 1 twice (LightDetail; read at startup)
 bool g_unlitOn = true;           // rooms with every lamp off: Apex's light instead of the game's blue glow (UnlitRooms)
 float g_unlitLight = 0.35f;      // how much of the game's unlit-room light stays
 float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
@@ -1616,6 +1618,10 @@ class NightTerrainRelightPatch : public ApexPatch {
             "Walls stop lamp light on outdoor floors: decks and yards without a roof behind a wall stay dark (relights the rooms when changed).");
         RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
             "Walls stop lamp light on outdoor objects: furniture in a yard without a roof behind a wall stays dark.");
+        RegisterEnumSetting(&g_lightDetail, "detalheDaLuz", 0,
+            "How sharp the game's lamp light is on walls and floors. High doubles its detail: rooms take longer to light and use more memory "
+            "(experimental; takes effect after restarting the game).",
+            {"Game", "High"});
         RegisterBoolSetting(&g_allFloors, "todosOsAndaresEmDetalhe", true,
             "Every floor of the lot being played is lit in full detail, so changing floors keeps the light instead of solving it again (more work when entering a lot).");
         RegisterBoolSetting(&g_objPixel, "objetosDeForaComLuzDoChao", true,
@@ -1932,6 +1938,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             std::string markErr;
             if (!LampMarkFilter::Install(markErr)) LOG_WARNING("[NightTerrainRelight] " + markErr);
         }
+        // Light detail: once per session, before any lot is lit (a later change takes effect after a restart)
+        LightDetail::ApplyAtStartup(g_lightDetail);
         if (g_levelShare && !LevelLightShare::IsInstalled()) {
             std::string shareErr;
             if (!LevelLightShare::Install(shareErr)) LOG_WARNING("[NightTerrainRelight] " + shareErr);
@@ -2074,6 +2082,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_allFloors = true;
         g_floorWalls = true;
         g_objectWalls = true;
+        g_lightDetail = 0;
         g_unlitOn = true;
         g_unlitLight = 0.35f;
         g_unlitBlue = 0.0f;
@@ -2367,6 +2376,27 @@ class NightTerrainRelightPatch : public ApexPatch {
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
                     changed |= ApexUi::SliderPercent("Brightness##Roofs", &g_roofStrengthSetting, 0.05f, 2.0f, "Intensity of lamp light on roofs", 0.6f);
+                return changed;
+            });
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    }
+
+    // Lighting > Buildings: how sharp the baked lamp light on walls and floors is (2026-10-05, user: "the lights look low
+    // resolution, create an option to raise their quality"; see light_detail.cpp). Read at startup only.
+    void DrawLightDetailCard() {
+        ImGui::PushID("NightLightDetail");
+        if (ApexUi::BeginCard("##Card")) {
+            ApexUi::CardHeader(ApexUi::IconId::Gem, "Light detail", "How sharp lamp light is on walls and floors", nullptr, nullptr);
+            ApexUi::CardDivider();
+            Edit([] {
+                static const char* const kLevels[] = {"Game", "High"};
+                static const char* const kTips[] = {"The game's own detail", "Twice the detail: rooms take longer to light and use more memory"};
+                ApexUi::SetNextRowBadge("Experimental", "Rooms take about four times longer to light and use more memory");
+                const bool changed = ApexUi::SegmentedRow("Detail", "Sharper light pools and shadow edges on walls and floors", "##LightDetail", &g_lightDetail, kLevels, 2, kTips,
+                                                          nullptr, 0);
+                if (g_lightDetail != LightDetail::Active()) ApexUi::IconNote(ApexUi::IconId::Info, "Restart the game to apply");
                 return changed;
             });
         }
@@ -2668,6 +2698,9 @@ void NightLighting::DrawBuildingsCard() {
 }
 void NightLighting::DrawRoomsCard() {
     if (auto* p = MenuPatch()) p->DrawRoomsCard();
+}
+void NightLighting::DrawLightDetailCard() {
+    if (auto* p = MenuPatch()) p->DrawLightDetailCard();
 }
 void NightLighting::DrawWaterCard() {
     if (auto* p = MenuPatch()) p->DrawWaterCard();

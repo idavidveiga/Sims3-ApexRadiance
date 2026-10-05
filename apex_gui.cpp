@@ -550,6 +550,7 @@ void BuildingsTabContent() {
     if (!NightLightsReady("walls, roofs and rooms")) return;
     NightLighting::DrawBuildingsCard();
     NightLighting::DrawRoomsCard();
+    NightLighting::DrawLightDetailCard();
 }
 
 void LightingPage() {
