@@ -8,6 +8,7 @@ on:
       - test/room-light-queue-ea169
       - test/wallsolve-ea169-probe
       - test/exact-seam-draw-signature
+      - test/exact-seam-four-mode
   workflow_dispatch:
 
 jobs:
