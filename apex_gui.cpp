@@ -1868,13 +1868,6 @@ void ProfilesTab() {
     ProfilesState& s = g_profiles;
     if (s.listDirty) {
         s.list.clear();
-        for (int i = 0; i < ApexPresets::kCount; ++i) { // the built-in profiles first, in the welcome page's order
-            const ApexPresets::Preset& preset = ApexPresets::Get(i);
-            ProfileItem item{preset.name, ApexUi::IconFromName(preset.icon), 0, i};
-            toml::table state;
-            if (ApexPresets::Read(i, state)) item.parts = ApexConfig::ProfilePartsOf(state);
-            s.list.push_back(std::move(item));
-        }
         for (const std::string& name : ApexConfig::ListProfiles()) {
             ProfileItem item{name, IconId::Bookmark, 0};
             toml::table state;
@@ -1882,6 +1875,13 @@ void ProfilesTab() {
                 item.parts = ApexConfig::ProfilePartsOf(state);
                 item.icon = ApexUi::IconFromName(state["meta"]["icon"].value_or(std::string("bookmark")));
             }
+            s.list.push_back(std::move(item));
+        }
+        for (int i = 0; i < ApexPresets::kCount; ++i) { // after the player's own, the built-in profiles in the welcome page's order
+            const ApexPresets::Preset& preset = ApexPresets::Get(i);
+            ProfileItem item{preset.name, ApexUi::IconFromName(preset.icon), 0, i};
+            toml::table state;
+            if (ApexPresets::Read(i, state)) item.parts = ApexConfig::ProfilePartsOf(state);
             s.list.push_back(std::move(item));
         }
         s.listDirty = false;
@@ -1938,13 +1938,13 @@ void ProfilesTab() {
         const float gap = ImGui::GetStyle().ItemSpacing.x;
         ApexUi::CardHeader(IconId::Layers, "Saved profiles", "Choose which saved settings to apply", nullptr, nullptr);
         ApexUi::CardDivider();
-        const bool ownProfiles = s.list.size() > static_cast<size_t>(ApexPresets::kCount);
+        const bool ownProfiles = s.list.size() > static_cast<size_t>(ApexPresets::kCount); // the player's files first, then the built-in ones
         for (const ProfileItem& item : s.list) {
             const std::string& name = item.name;
             const std::string key = item.Key();
             const bool builtin = item.builtin >= 0;
+            if (ownProfiles && &item == &s.list.front()) ApexUi::GroupLabel("YOUR PROFILES");
             if (ownProfiles && item.builtin == 0) ApexUi::GroupLabel("BUILT-IN");
-            if (ownProfiles && !builtin && &item == &s.list[ApexPresets::kCount]) ApexUi::GroupLabel("YOUR PROFILES");
             ImGui::PushID(key.c_str());
             const bool confirming = !builtin && s.confirmDelete == key;
             const bool picking = s.loading == key;
