@@ -2091,6 +2091,14 @@ bool IndoorBasisScale(IDirect3DDevice9* dev, const ShaderPatches::IndoorBasisPat
     return true;
 }
 
+struct IndoorSeamSwap {
+    IDirect3DBaseTexture9* old2 = nullptr;
+    IDirect3DBaseTexture9* old6 = nullptr;
+    bool active = false;
+};
+IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev);
+void EndIndoorMaterialSeam(IDirect3DDevice9* dev, IndoorSeamSwap& s);
+
 template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_indoorSmooth.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
     IDirect3DTexture9* basis[4] = {};
@@ -2843,12 +2851,6 @@ void ClearIndoorMaterialAux() {
     }
     g_indoorMaterialAux.clear();
 }
-
-struct IndoorSeamSwap {
-    IDirect3DBaseTexture9* old2 = nullptr;
-    IDirect3DBaseTexture9* old6 = nullptr;
-    bool active = false;
-};
 
 IndoorSeamSwap BeginIndoorMaterialSeam(IDirect3DDevice9* dev) {
     IndoorSeamSwap out;
