@@ -1568,8 +1568,35 @@ uint32_t BlurPassesFor(const BYTE* room) {
     }
 }
 
+// Diagonal walls (user 05/10, the game's own behaviour with every mod off: a diagonal wall stays dark beside a lamp that
+// lights the straight wall next to it). The bake's normals are right for all 8 directions (FUN_006ab280, research 05/10)
+// and swapping the faces' light strips made diagonals never lit, so the face toward the lamp bakes dark itself: most
+// likely its samples are blocked by the wall's own 2D occluder (the diagonal occluder keys are a tile off, research
+// 05/10; inferred). Each diagonal sample is moved 10 cm out along its own normal, clear of its wall line, before the
+// solve. Straight walls are left alone. Test.
+std::atomic<long> g_diagonalSamples{0};
+long PushDiagonalSamples(uintptr_t batch) {
+    long n = 0;
+    __try {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e < b || (e - b) % 0x30) return 0;
+        for (uintptr_t s = b; s < e; s += 0x30) {
+            float* p = reinterpret_cast<float*>(s);
+            const float nx = p[4], ny = p[5], nz = p[6];
+            if (std::fabs(ny) > 0.1f || std::fabs(nx) < 0.3f || std::fabs(nz) < 0.3f) continue; // diagonal walls only
+            p[0] += nx * 0.1f;
+            p[2] += nz * 0.1f;
+            n++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
 void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
+    if (const long moved = PushDiagonalSamples(reinterpret_cast<uintptr_t>(batch)); moved && g_diagonalSamples.fetch_add(moved, std::memory_order_relaxed) == 0)
+        LOG_INFO("[LevelLightShare] Diagonal walls: samples moved off their wall line (test)");
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
     if (!g_alignOn.load(std::memory_order_relaxed)) return;
