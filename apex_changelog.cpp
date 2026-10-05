@@ -43,7 +43,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
-    {"2.6.0", "", k260Added, k260Improved, k260Fixed},
+    {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
     {"2.5.6", "2026-10-03", k256Added, k256Improved, k256Fixed},
 };
 
