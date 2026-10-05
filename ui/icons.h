@@ -97,6 +97,7 @@ enum class IconId : int {
     Cat, // cat
     Dog, // dog
     Skull, // skull
+    Rocket, // rocket
     Count,
     None = Count, // "no icon" for widgets that take an optional one
 };

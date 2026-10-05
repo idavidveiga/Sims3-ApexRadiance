@@ -526,6 +526,13 @@ inline constexpr Element kSkull[] = {
     {Kind::Circle, nullptr, {15.0f, 12.0f, 1.0f}, false},
     {Kind::Circle, nullptr, {9.0f, 12.0f, 1.0f}, false},
 };
+// rocket (added by hand from Lucide's rocket.svg)
+inline constexpr Element kRocket[] = {
+    {Kind::Path, "M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z", {}, false},
+    {Kind::Path, "m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z", {}, false},
+    {Kind::Path, "M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0", {}, false},
+    {Kind::Path, "M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5", {}, false},
+};
 
 inline constexpr IconData kIcons[] = {
     {"activity", kActivity, static_cast<int>(sizeof(kActivity) / sizeof(kActivity[0]))},
@@ -609,6 +616,7 @@ inline constexpr IconData kIcons[] = {
     {"cat", kCat, static_cast<int>(sizeof(kCat) / sizeof(kCat[0]))},
     {"dog", kDog, static_cast<int>(sizeof(kDog) / sizeof(kDog[0]))},
     {"skull", kSkull, static_cast<int>(sizeof(kSkull) / sizeof(kSkull[0]))},
+    {"rocket", kRocket, static_cast<int>(sizeof(kRocket) / sizeof(kRocket[0]))},
 };
 
 } // namespace ApexUi::LucideData

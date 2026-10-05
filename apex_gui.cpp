@@ -2,6 +2,7 @@
 // The Apex menu (see apex_gui.h).
 #include "apex_gui.h"
 #include "apex_config.h"
+#include "apex_presets.h"
 #include "apex_version.h"
 #include "apex_log.h"
 #include "apex_paths.h"
@@ -1516,6 +1517,7 @@ void ResetAllRow() {
             const auto previousUi = ApexConfig::GetUi();
             ApexConfig::ApplyFeatureState(defaults);
             ApexConfig::UiSettings uiDefaults;
+            uiDefaults.startProfileDone = previousUi.startProfileDone; // the welcome is not repeated
             ApexConfig::SetUi(uiDefaults);
             LOG_INFO("[Menu] All settings reset to their defaults");
             ShowToast(I18n::Tr("All settings reset"), std::move(before), "All settings reset");
@@ -1641,6 +1643,8 @@ struct ProfileItem {
     std::string name;
     IconId icon = IconId::Bookmark;
     unsigned parts = 0; // what the file has (ApexConfig::ProfilePartsOf)
+    int builtin = -1;   // ApexPresets index (shipped with the mod, no file, cannot be deleted); -1 = a file in the Profiles folder
+    std::string Key() const { return builtin >= 0 ? std::format("#builtin{}", builtin) : name; } // file names cannot contain '#'
 };
 struct ProfilesState {
     char name[ApexConfig::kProfileNameMax + 1] = {};
@@ -1657,6 +1661,11 @@ struct ProfilesState {
     double applyOpenedAt = 0.0;
 };
 ProfilesState g_profiles;
+
+// ---- Welcome page: the first menu open offers a built-in profile to start with ([ui] start_profile_done) ----
+bool g_welcomeHidden = false;               // the player went to another page: shown again at the next game start
+int g_welcomeChoice = ApexPresets::kDefault; // the selected starting profile (Default, listed second)
+bool WelcomeActive() { return !ApexConfig::GetUi().startProfileDone && !g_welcomeHidden; }
 
 // Only letters, digits, space, - and _ can be typed (the file name is the profile name)
 int ProfileNameFilter(ImGuiInputTextCallbackData* data) {
@@ -1765,13 +1774,8 @@ void SaveProfileNow(const std::string& name) {
     g_profiles.listDirty = true;
 }
 
-void LoadProfileNow(const std::string& name, unsigned parts) {
-    toml::table state;
-    std::string err;
-    if (!ApexConfig::ReadProfile(name, state, &err)) {
-        ProfileMessage(I18n::Trf("Could not load \"{}\": {}", name, err), true);
-        return;
-    }
+// name: the file's name or a built-in profile's English name (log); shown: as the menu shows it
+void ApplyProfileState(const std::string& name, const std::string& shown, toml::table state, unsigned parts) {
     ApexConfig::KeepProfileParts(state, parts);
     if (const auto* d = state["developer"].as_table(); d && (*d)["enabled"].value_or(true) && !ApexConfig::GetUi().developerMode) {
         g_developerPendingProfile = std::move(state);
@@ -1783,8 +1787,34 @@ void LoadProfileNow(const std::string& name, unsigned parts) {
     ApexConfig::CaptureFeatureState(before);
     ApexConfig::ApplyFeatureState(state);
     LOG_INFO(std::format("[Menu] Profile loaded: {} (parts {:#x})", name, parts));
-    ProfileMessage(I18n::Trf("Loaded \"{}\"", name), false);
+    ProfileMessage(I18n::Trf("Loaded \"{}\"", shown), false);
     ShowToast(I18n::Tr("Profile loaded"), std::move(before), "Profile loaded: " + name);
+}
+
+void LoadProfileNow(const std::string& name, unsigned parts) {
+    toml::table state;
+    std::string err;
+    if (!ApexConfig::ReadProfile(name, state, &err)) {
+        ProfileMessage(I18n::Trf("Could not load \"{}\": {}", name, err), true);
+        return;
+    }
+    ApplyProfileState(name, name, std::move(state), parts);
+}
+
+void LoadBuiltinProfileNow(int index, unsigned parts) {
+    const ApexPresets::Preset& preset = ApexPresets::Get(index);
+    toml::table state;
+    std::string err;
+    if (!ApexPresets::Read(index, state, &err)) {
+        ProfileMessage(I18n::Trf("Could not load \"{}\": {}", I18n::Tr(preset.name), err), true);
+        return;
+    }
+    ApplyProfileState(preset.name, I18n::Tr(preset.name), std::move(state), parts);
+}
+
+void LoadProfileItem(const ProfileItem& item, unsigned parts) {
+    if (item.builtin >= 0) LoadBuiltinProfileNow(item.builtin, parts);
+    else LoadProfileNow(item.name, parts);
 }
 
 // Uses stable Lucide names in metadata; enum positions never enter saved files.
@@ -1833,6 +1863,13 @@ void ProfilesTab() {
     ProfilesState& s = g_profiles;
     if (s.listDirty) {
         s.list.clear();
+        for (int i = 0; i < ApexPresets::kCount; ++i) { // the built-in profiles first, in the welcome page's order
+            const ApexPresets::Preset& preset = ApexPresets::Get(i);
+            ProfileItem item{preset.name, ApexUi::IconFromName(preset.icon), 0, i};
+            toml::table state;
+            if (ApexPresets::Read(i, state)) item.parts = ApexConfig::ProfilePartsOf(state);
+            s.list.push_back(std::move(item));
+        }
         for (const std::string& name : ApexConfig::ListProfiles()) {
             ProfileItem item{name, IconId::Bookmark, 0};
             toml::table state;
@@ -1896,17 +1933,22 @@ void ProfilesTab() {
         const float gap = ImGui::GetStyle().ItemSpacing.x;
         ApexUi::CardHeader(IconId::Layers, "Saved profiles", "Choose which saved settings to apply", nullptr, nullptr);
         ApexUi::CardDivider();
-        if (s.list.empty()) ApexUi::MutedText("No profiles yet");
+        const bool ownProfiles = s.list.size() > static_cast<size_t>(ApexPresets::kCount);
         for (const ProfileItem& item : s.list) {
             const std::string& name = item.name;
-            ImGui::PushID(name.c_str());
-            const bool confirming = s.confirmDelete == name;
-            const bool picking = s.loading == name;
+            const std::string key = item.Key();
+            const bool builtin = item.builtin >= 0;
+            if (ownProfiles && item.builtin == 0) ApexUi::GroupLabel("BUILT-IN");
+            if (ownProfiles && !builtin && &item == &s.list[ApexPresets::kCount]) ApexUi::GroupLabel("YOUR PROFILES");
+            ImGui::PushID(key.c_str());
+            const bool confirming = !builtin && s.confirmDelete == key;
+            const bool picking = s.loading == key;
             const float loadW = ApexUi::ButtonWidth("Apply", true), delW = ApexUi::ButtonWidth("Delete", true);
-            const float controlsW = picking ? 0.0f : delW + gap + loadW;
+            const float controlsW = picking ? 0.0f : builtin ? loadW : delW + gap + loadW;
             const std::string partsText = item.parts ? ProfilePartsText(item.parts) : std::string(I18n::Tr("Nothing this version can load"));
-            const char* description = confirming ? "Delete this profile?" : picking ? "Choose what to apply" : partsText.c_str();
-            ApexUi::SetNextRowUntranslated(); // the name is the user's
+            const char* description = confirming ? "Delete this profile?" : picking ? "Choose what to apply"
+                                    : builtin ? ApexPresets::Get(item.builtin).description : partsText.c_str();
+            if (!builtin) ApexUi::SetNextRowUntranslated(); // the name is the user's; built-in names and descriptions are translated
             if (ApexUi::BeginControlRow(name.c_str(), description, controlsW, item.icon)) {
                 if (confirming) {
                     if (ApexUi::IconTextButton("Delete##Confirm", IconId::Trash2, "Deletes the profile file", ButtonKind::Primary)) {
@@ -1919,14 +1961,16 @@ void ProfilesTab() {
                     ImGui::SameLine();
                     if (ApexUi::TextButton("Cancel", nullptr, ButtonKind::Secondary, loadW)) s.confirmDelete.clear();
                 } else if (!picking) {
-                    if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
-                        s.confirmDelete = name;
-                        s.loading.clear();
+                    if (!builtin) {
+                        if (ApexUi::IconTextButton("Delete", IconId::Trash2)) {
+                            s.confirmDelete = key;
+                            s.loading.clear();
+                        }
+                        ImGui::SameLine();
                     }
-                    ImGui::SameLine();
                     ImGui::BeginDisabled(Loading() || item.parts == 0);
                     if (ApexUi::IconTextButton("Apply", IconId::Download, "Pick which parts of this profile to apply")) {
-                        s.loading = name;
+                        s.loading = key;
                         s.applyOpenedAt = ImGui::GetTime();
                         s.loadParts = item.parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper); // shortcuts only when picked (they belong to the keyboard)
                         s.confirmDelete.clear();
@@ -1970,7 +2014,7 @@ void ProfilesTab() {
                                 ImGui::SameLine();
                                 ImGui::BeginDisabled(Loading() || s.loadParts == 0);
                                 if (ApexUi::IconTextButton("Apply##Picked", IconId::Download, "Apply the checked parts; Undo puts your settings back", ButtonKind::Primary)) {
-                                    LoadProfileNow(name, s.loadParts);
+                                    LoadProfileItem(item, s.loadParts);
                                     s.loading.clear();
                                 }
                                 ImGui::EndDisabled();
@@ -2273,8 +2317,9 @@ void Sidebar(bool collapsed) {
         if (kPublicBuild && item.page == PageDeveloper) continue;
         if (item.page == PageConflicts && !HasConfirmedConflicts()) continue;
         if (item.group) ApexUi::SidebarGroup(item.group, collapsed);
-        if (ApexUi::SidebarItem(item.icon, item.label, g_page == item.page && !searching, collapsed)) {
+        if (ApexUi::SidebarItem(item.icon, item.label, g_page == item.page && !searching && !WelcomeActive(), collapsed)) {
             g_page = item.page;
+            g_welcomeHidden = true; // the welcome comes back at the next game start until it is answered
             g_search[0] = '\0'; // leaving the search results
         }
     }
@@ -2342,6 +2387,56 @@ void GameAaCompatibilityNotice() {
             ImGui::TextWrapped("%s", I18n::Tr("2. Set Edge Smoothing to Off and apply the change."));
             ImGui::TextWrapped("%s", I18n::Tr("3. Return to the game. Apex will check compatibility again."));
             ImGui::TextWrapped("%s", I18n::Tr("Your Apex settings are kept. This notice disappears when the conflict is resolved."));
+        }
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+void FinishWelcome() {
+    ApexConfig::UiSettings ui = ApexConfig::GetUi();
+    ui.startProfileDone = true; // [ui] start_profile_done
+    ApexConfig::SetUi(ui);
+}
+
+// The content area while the welcome is pending: one card with the built-in profiles (the same choice rows as the
+// lighting balance) and two actions. Apply goes through the Saved profiles path, so Undo is offered.
+void WelcomePage() {
+    ApexUi::PageTitle("Welcome to " APEX_PRODUCT_NAME, "Choose how you want to start");
+    ImGui::PushID("Welcome");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::None, "Starting profile", "You can switch later in Settings \xE2\x80\xBA Profiles", nullptr, nullptr);
+        ApexUi::CardDivider();
+        for (int i = 0; i < ApexPresets::kCount; ++i) {
+            const ApexPresets::Preset& preset = ApexPresets::Get(i);
+            ImGui::PushID(i);
+            if (ApexUi::ProfileChoiceRow("Preset", ApexUi::IconFromName(preset.icon), preset.name, preset.description, g_welcomeChoice == i))
+                g_welcomeChoice = i;
+            ImGui::PopID();
+        }
+        ApexUi::CardDivider();
+        ApexUi::Gap(ApexUi::kSpace2);
+        {
+            const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
+            const float gap = ImGui::GetStyle().ItemSpacing.x;
+            const float actionsW = ApexUi::ButtonWidth("Keep as it is", false) + gap + ApexUi::ButtonWidth("Apply##Welcome", true);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::fmax(0.0f, ImGui::GetContentRegionAvail().x - actionsW));
+            if (ApexUi::TextButton("Keep as it is", "Your current settings stay as they are")) {
+                LOG_INFO("[Menu] Welcome: settings kept");
+                FinishWelcome();
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(Loading());
+            if (ApexUi::IconTextButton("Apply##Welcome", IconId::Check, "Undo puts your settings back", ButtonKind::Primary)) {
+                toml::table state;
+                const int choice = g_welcomeChoice;
+                unsigned parts = 0;
+                if (ApexPresets::Read(choice, state)) parts = ApexConfig::ProfilePartsOf(state);
+                LOG_INFO(std::format("[Menu] Welcome: {} chosen", ApexPresets::Get(choice).name));
+                LoadBuiltinProfileNow(choice, parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper));
+                FinishWelcome();
+            }
+            ImGui::EndDisabled();
         }
     }
     ApexUi::EndCard();
@@ -2550,6 +2645,8 @@ void MainWindow() {
         ImGui::PopStyleVar();
         if (g_search[0]) {
             SearchResults();
+        } else if (WelcomeActive()) {
+            WelcomePage();
         } else {
             ImGui::PushID(g_page); // each page's widgets get their own ids
             DrawPage();
