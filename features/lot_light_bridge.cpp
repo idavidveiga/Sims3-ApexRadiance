@@ -1875,7 +1875,10 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             }
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed), g_objPixelLampStrength.load(std::memory_order_relaxed)) *
                           std::max(g_fenceStrength.load(std::memory_order_relaxed), 0.0f);
-            weight[0] = 1.0f; // atlas x sat(N.y): the fence tops
+            // No atlas at all with the lamps (user 05/10: the top of a deck's stone half wall took the ground light pool of
+            // the wall lamp under the deck; the atlas is the light lying on the ground, at no height). Street and lot
+            // lamps are in the lamp list, so fences are lit like walls: by their lamps, with angle and distance.
+            weight[0] = 0.0f;
             weight[1] = 0.0f;
         }
         dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
