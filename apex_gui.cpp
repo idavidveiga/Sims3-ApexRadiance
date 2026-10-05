@@ -698,7 +698,7 @@ void BandingTabContent() {
 
 void ColorPage() {
     ApexUi::PageTitle("Color", "How the game's picture looks");
-    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail", "Banding"};
+    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail", "Filters", "Banding"};
     static_assert(IM_COUNTOF(kTabs) == Picture::TabCount + 1, "one tab name per Picture tab, then Banding");
     ApexUi::TabBar("##ColorTabs", &g_colorTab, kTabs, IM_COUNTOF(kTabs));
     if (g_colorTab == kColorBandingTab) {
@@ -706,6 +706,10 @@ void ColorPage() {
         return;
     }
     PictureHeaderCard();
+    if (g_colorTab == Picture::TabFilters) {
+        Picture::Get().RenderFiltersUI();
+        return;
+    }
     PictureRows(g_colorTab);
 }
 
@@ -2199,6 +2203,7 @@ const SearchPart* SearchParts(int& count) {
         {"Water & Snow", nullptr, PageWaterSnow, nullptr, 0, WaterSnowContent},
         {"Color", "Banding", PageColor, &g_colorTab, kColorBandingTab, BandingTabContent},
         {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
+        {"Color", "Filters", PageColor, &g_colorTab, Picture::TabFilters, [] { Picture::Get().RenderFiltersUI(); }},
         {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
         {"Color", "Tones", PageColor, &g_colorTab, Picture::TabTones, [] { PictureRows(Picture::TabTones); }},
         {"Color", "Color", PageColor, &g_colorTab, Picture::TabColor, [] { PictureRows(Picture::TabColor); }},

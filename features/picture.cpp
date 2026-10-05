@@ -21,6 +21,7 @@
 #include "apex_log.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
+#include "post_scene.h"
 #include "shader_cache.h"
 #include "imgui.h"
 #include "ui/i18n.h"
@@ -65,7 +66,105 @@ float4 cMixA   : register(c9);  // saturation of red, yellow, green, cyan
 float4 cMixB   : register(c10); // x, y = saturation of blue, magenta; z = mixer on
 float4 cVig    : register(c11); // x = amount, y = start radius, z = width / height, w = on
 float4 cBase   : register(c12); // xy = size of the 1/8 scene, zw = 1 / that size
+// Filters (Color > Filters); each is skipped by a branch on its flag, so a filter that is off costs nothing
+sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize runs
+float4 cFlagA  : register(c13); // Technicolor 1, Technicolor 2, DPX, Colourfulness (1 = on)
+float4 cFlagB  : register(c14); // Night Mode, Emphasize, Prism, 3DFX
+float4 cTech1  : register(c15); // x = amount, y = cyan record (0 green .. 1 blue), z = saturation
+float4 cTech2  : register(c16); // rgb = red / green / blue dye, w = amount
+float4 cTech2b : register(c17); // x = saturation, y = brightness gain; z = DPX amount, w = DPX contrast
+float4 cDpx    : register(c18); // rgb = DPX curve per channel, w = DPX saturation
+float4 cColNit : register(c19); // x = Colourfulness amount, y = protect; z = Night amount, w = darkness
+float4 cNitEmp : register(c20); // x = Night blue, y = Night keep lamps; z = Emphasize amount, w = grey
+float4 cEmph   : register(c21); // x = focus distance (m), y = half width (m), z = softness (m), w = camera near
+float4 cPrism  : register(c22); // x = depth A; y = Prism shift (px at a corner), z = start radius, w = samples
+float4 cFx     : register(c23); // x = 3DFX amount, y = levels of red/blue, z = dither, w = scanlines
+float4 cFx2    : register(c24); // x = soft pixels (px), y = 1 / gamma, z = line period (px), w = levels of green
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
+
+// Prism: red and blue pulled apart along the line from the centre, the shift growing toward the edges. Several taps
+// weighted across a small spectrum so the fringes blend instead of doubling the image.
+float3 Prism(float2 uv, float3 c)
+{
+    float2 d = (uv - 0.5) * float2(cSize.y * cSize.z, 1.0); // aspect corrected, 0.5 at the top edge
+    float r = length(d) / length(float2(0.5 * cSize.y * cSize.z, 0.5)); // 1 at a corner
+    float k = smoothstep(cPrism.z, 1.0, r) * cPrism.y;
+    if (k < 0.05) return c;
+    float2 dir = normalize(uv - 0.5 + 1e-6) * k * cSize.xy;
+    float3 sum = 0.0, wsum = 0.0;
+    int n = (int)cPrism.w;
+    [loop] for (int i = 0; i < n; i++)
+    {
+        float t = (i + 0.5) / n * 2.0 - 1.0; // -1 .. 1
+        float3 w = float3(saturate(t + 0.5), 1.0 - abs(t), saturate(0.5 - t));
+        sum += tex2Dlod(sFrame, float4(uv + dir * t, 0, 0)).rgb * w;
+        wsum += w;
+    }
+    return sum / wsum;
+}
+
+// 4x4 ordered dither threshold (-0.5 .. 0.5), the pattern 3D cards of the late 90s used for 16-bit color
+float Bayer2(float2 a)
+{
+    a = floor(a);
+    return frac(a.x / 2.0 + a.y * a.y * 0.75);
+}
+float Bayer4(float2 px)
+{
+    return Bayer2(0.5 * px) * 0.25 + Bayer2(px) - 0.5;
+}
+
+// The film looks, in linear light (1 = white), each blended by its own amount
+float3 FilmColor(float3 g)
+{
+    [branch] if (cFlagA.x > 0.5) // Technicolor 1: two-strip, everything is a red record or a cyan record
+    {
+        float cyan = lerp(g.g, g.b, cTech1.y);
+        float3 t = float3(g.r, cyan, cyan);
+        float L = dot(t, kLum);
+        t = max(lerp(float3(L, L, L), t, cTech1.z), 0.0);
+        g = lerp(g, t, cTech1.x);
+    }
+    [branch] if (cFlagA.y > 0.5) // Technicolor 2: three-strip dye transfer, each dye subtracts its complement
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        float3 other = (e.gbr + e.brg) * 0.5;
+        float3 t = saturate(e + (e - other) * cTech2.rgb * 0.6);
+        t = pow(t, 2.2) * cTech2b.y;
+        float L = dot(t, kLum);
+        t = max(lerp(float3(L, L, L), t, cTech2b.x), 0.0);
+        g = lerp(g, t, cTech2.w);
+    }
+    [branch] if (cFlagA.z > 0.5) // DPX Cineon: a film S curve per channel (normalised so black and white stay)
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        float3 k = (3.0 + 9.0 * cTech2b.w) * cDpx.rgb;
+        float3 s0 = 1.0 / (1.0 + exp(k * 0.5)), s1 = 1.0 / (1.0 + exp(-k * 0.5));
+        float3 t = (1.0 / (1.0 + exp(-k * (e - 0.5))) - s0) / (s1 - s0);
+        t = pow(saturate(t), 2.2);
+        float L = dot(t, kLum);
+        t = max(lerp(float3(L, L, L), t, cDpx.w), 0.0);
+        g = lerp(g, t, cTech2b.z);
+    }
+    [branch] if (cFlagA.w > 0.5) // Colourfulness: more chroma, less for colors that are already strong or bright
+    {
+        float L = dot(g, kLum);
+        float3 d = g - L;
+        float m = max(abs(d.r), max(abs(d.g), abs(d.b)));
+        float f = 1.0 + cColNit.x * (1.0 - cColNit.y * saturate(max(m * 3.0, L)));
+        g = max(L + d * f, 0.0);
+    }
+    [branch] if (cFlagB.x > 0.5) // Night Mode: darker and bluer, with less color; lamp-lit areas keep their light
+    {
+        float L = dot(g, kLum);
+        float3 n = lerp(float3(L, L, L), g, 0.45);
+        n *= float3(1.0 - 0.3 * cNitEmp.x, 1.0 - 0.05 * cNitEmp.x, 1.0 + 0.45 * cNitEmp.x);
+        n *= 1.0 - cColNit.w;
+        float keep = smoothstep(0.25, 0.85, pow(saturate(L), 1.0 / 2.2)) * cNitEmp.y;
+        g = lerp(g, lerp(n, g, keep), cColNit.z);
+    }
+    return g;
+}
 
 float3 Decode(float3 c)
 {
@@ -150,6 +249,13 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // no scene copy this frame (the game did not draw its scene into the back buffer): everything is filtered, UI included
     float ui = cLook.y > 0.5 ? saturate(max(d.r, max(d.g, d.b)) * 64.0) : 0.0;
     float3 fs = (cDeband.w > 0.5 && ui < 0.5) ? Deband(uv, f) : f; // the scene only; the UI keeps its sharp edges
+    [branch] if (cFlagB.z > 0.5 && ui < 0.5) fs = Prism(uv, fs);
+    // 3DFX soft pixels: the old cards' output filter blurred each pixel with its horizontal neighbours
+    [branch] if (cFlagB.w > 0.5 && cFx2.x > 0.0 && ui < 0.5)
+    {
+        float3 l = tex2Dlod(sFrame, float4(uv - float2(cSize.x, 0), 0, 0)).rgb, r = tex2Dlod(sFrame, float4(uv + float2(cSize.x, 0), 0, 0)).rgb;
+        fs = lerp(fs, (l + fs * 2.0 + r) * 0.25, saturate(cFx2.x) * cFx.x);
+    }
     // sharpening (scene only): the difference to the 4 neighbours added back, limited to their range (no halos)
     [branch] if (cDetail.x > 0.0 && ui < 0.5)
     {
@@ -205,6 +311,17 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         float Ls = dot(g, kLum);
         g = max(lerp(float3(Ls, Ls, Ls), g, sat), 0.0);
     }
+    g = FilmColor(g);
+    // Emphasize: grey outside a band of distance around the focus (view distance from the scene depth)
+    [branch] if (cFlagB.y > 0.5 && ui < 0.5)
+    {
+        float dz = tex2Dlod(sDepth, float4(uv, 0, 0)).r;
+        float z = dz >= 1.0 ? 1e6 : cEmph.w * cPrism.x / max(cPrism.x - dz, 1e-6);
+        float t = saturate((abs(z - cEmph.x) - cEmph.y) / cEmph.z);
+        t = t * t * (3.0 - 2.0 * t);
+        float L = dot(g, kLum);
+        g = lerp(g, lerp(g, float3(L, L, L), cNitEmp.w), t * cNitEmp.z);
+    }
     // vignette: darker towards the corners (aspect corrected, 0 at the centre, 1 at a corner)
     [branch] if (cVig.w > 0.5)
     {
@@ -220,7 +337,16 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // frame, below one 8-bit step) so the grading does not turn smooth gradients into steps
     float3 o = pow(saturate(g), 1.0 / 2.2);
     float2 px = floor(uv * cSize.zw);
-    o += (frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+    [branch] if (cFlagB.w > 0.5 && ui < 0.5)
+    {
+        // 3DFX: gamma, 16-bit style color (fewer red/blue levels than green) with an ordered dither, then scanlines
+        float3 a = pow(saturate(o), cFx2.y);
+        float3 lv = float3(cFx.y, cFx2.w, cFx.y);
+        a = floor(a * lv + 0.5 + Bayer4(px) * cFx.z) / lv;
+        float scan = fmod(px.y, cFx2.z) >= cFx2.z * 0.5 ? 1.0 - cFx.w * 0.5 : 1.0;
+        o = lerp(o, saturate(a) * scan, cFx.x);
+    }
+    else o += (frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
     if (before) o = f;
     if (divider) o = float3(1, 0, 0);
     return float4(lerp(o, f, ui), 1.0);
@@ -268,6 +394,15 @@ struct Gpu {
     IDirect3DSurface9* backBuffer = nullptr;
 };
 Gpu gpu;
+
+// Emphasize reads the scene depth: the INTZ swap and the camera are requested only while it is on (reference counted)
+bool g_depthRequested = false;
+void RequestDepth(bool on) {
+    if (on == g_depthRequested) return;
+    g_depthRequested = on;
+    DepthShare::Request(on);
+    PostScene::WantCamera(on);
+}
 
 template <typename T> void SafeRelease(T*& p) {
     if (p) {
@@ -526,6 +661,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const PictureParams raw = GetParams(), q = Effective(raw);
     if (!dev || !q.enabled) {
         m_gpuMs = -1.0f;
+        RequestDepth(false);
         // Off: the scene-copy hooks go too (they counted every back buffer draw each frame while off; registered again at
         // the next frame it is on, which reads the current render target)
         if (gpu.hooks) {
@@ -622,8 +758,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     }
 
     // save what the pass touches (the game continues from here next frame)
-    constexpr DWORD kSamplers = 3;
-    constexpr UINT kConsts = 13;
+    constexpr DWORD kSamplers = 4;
+    constexpr UINT kConsts = 25;
     constexpr D3DRENDERSTATETYPE kRS[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
                                           D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE};
     constexpr D3DSAMPLERSTATETYPE kSS[] = {D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE};
@@ -678,6 +814,21 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetTexture(0, gpu.frameTex);
     dev->SetTexture(1, gpu.sceneTex);
     dev->SetTexture(2, gpu.chainTex[Gpu::kChain - 1]);
+
+    // Filters: effective switches (Picture on, the card on, the filter on, a non-zero amount)
+    auto on = [](bool card, bool f, float amount) { return card && f && std::fabs(amount) > 0.001f; };
+    const bool fTech1 = on(q.filmOn, q.tech1, q.tech1Amount), fTech2 = on(q.filmOn, q.tech2, q.tech2Amount), fDpx = on(q.filmOn, q.dpx, q.dpxAmount);
+    const bool fColour = on(q.filmOn, q.colourful, q.colourfulAmount), fNight = on(q.filmOn, q.night, q.nightAmount);
+    const bool fPrism = on(q.lensOn, q.prism, q.prismAmount), fFx = on(q.retroOn, q.retro3dfx, q.fxAmount);
+    const bool wantEmph = on(q.lensOn, q.emphasize, q.emphAmount);
+    RequestDepth(wantEmph);
+    IDirect3DTexture9* depth = wantEmph ? DepthShare::Texture() : nullptr;
+    const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
+    const bool fEmph = depth && camNear > 0.0f;
+    dev->SetTexture(3, fEmph ? depth : nullptr);
+    const float scale = static_cast<float>(gpu.height) / 2160.0f; // pixel sizes were chosen at 4K
+    const float fxLevelsRB = std::exp2(std::round(5.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f; // 5 bits .. 3 bits
+    const float fxLevelsG = std::exp2(std::round(6.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f;  // 6 bits .. 4 bits
     // white balance: a gentle red/blue tilt, normalised so white keeps its luminance
     const float tt = std::clamp(q.temperature, -1.0f, 1.0f) * 0.08f;
     const float wbG = 1.0f - std::clamp(q.tint, -1.0f, 1.0f) * 0.06f; // tint: + = magenta (less green), - = green
@@ -703,7 +854,21 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {mix(0), mix(1), mix(2), mix(3)},
         {mix(4), mix(5), mixer ? 1.0f : 0.0f, 0},
         {std::clamp(q.vignette, 0.0f, 0.8f), std::clamp(q.vignetteSize, 0.0f, 0.95f), W / H, q.vignette > 0.001f ? 1.0f : 0.0f},
-        {static_cast<float>(gpu.baseW), static_cast<float>(gpu.baseH), 1.0f / static_cast<float>(gpu.baseW), 1.0f / static_cast<float>(gpu.baseH)}};
+        {static_cast<float>(gpu.baseW), static_cast<float>(gpu.baseH), 1.0f / static_cast<float>(gpu.baseW), 1.0f / static_cast<float>(gpu.baseH)},
+        {fTech1 ? 1.0f : 0.0f, fTech2 ? 1.0f : 0.0f, fDpx ? 1.0f : 0.0f, fColour ? 1.0f : 0.0f},
+        {fNight ? 1.0f : 0.0f, fEmph ? 1.0f : 0.0f, fPrism ? 1.0f : 0.0f, fFx ? 1.0f : 0.0f},
+        {std::clamp(q.tech1Amount, 0.0f, 1.0f), (std::clamp(q.tech1Cyan, -1.0f, 1.0f) + 1.0f) * 0.5f, std::clamp(q.tech1Saturation, 0.0f, 2.0f), 0},
+        {std::clamp(q.tech2Dye[0], 0.0f, 2.0f), std::clamp(q.tech2Dye[1], 0.0f, 2.0f), std::clamp(q.tech2Dye[2], 0.0f, 2.0f), std::clamp(q.tech2Amount, 0.0f, 1.0f)},
+        {std::clamp(q.tech2Saturation, 0.0f, 2.0f), std::exp2(std::clamp(q.tech2Brightness, -1.0f, 1.0f) * 0.5f), std::clamp(q.dpxAmount, 0.0f, 1.0f),
+         std::clamp(q.dpxContrast, 0.0f, 1.0f)},
+        {std::clamp(q.dpxCurve[0], 0.5f, 1.5f), std::clamp(q.dpxCurve[1], 0.5f, 1.5f), std::clamp(q.dpxCurve[2], 0.5f, 1.5f), std::clamp(q.dpxSaturation, 0.0f, 2.0f)},
+        {std::clamp(q.colourfulAmount, -1.0f, 1.0f), std::clamp(q.colourfulProtect, 0.0f, 1.0f), std::clamp(q.nightAmount, 0.0f, 1.0f), std::clamp(q.nightDarkness, 0.0f, 0.8f)},
+        {std::clamp(q.nightBlue, 0.0f, 1.0f), std::clamp(q.nightKeepLamps, 0.0f, 1.0f), std::clamp(q.emphAmount, 0.0f, 1.0f), std::clamp(q.emphGrey, 0.0f, 1.0f)},
+        {std::clamp(q.emphDistance, 1.0f, 300.0f), std::clamp(q.emphWidth, 0.0f, 300.0f) * 0.5f,
+         std::max(0.5f, std::clamp(q.emphSoftness, 0.0f, 1.0f) * std::clamp(q.emphDistance, 1.0f, 300.0f)), camNear},
+        {camA, std::clamp(q.prismAmount, 0.0f, 1.0f) * 12.0f * scale, std::clamp(q.prismStart, 0.0f, 0.95f), q.prismQuality < 0.34f ? 3.0f : (q.prismQuality < 0.67f ? 5.0f : 9.0f)},
+        {std::clamp(q.fxAmount, 0.0f, 1.0f), fxLevelsRB, std::clamp(q.fxDither, 0.0f, 1.0f), std::clamp(q.fxScanlines, 0.0f, 1.0f)},
+        {std::clamp(q.fxPixelWidth, 0.0f, 1.0f), 1.0f / std::clamp(q.fxGamma, 0.5f, 2.0f), std::max(2.0f, std::round(4.0f * scale)), fxLevelsG}};
     // the shader first, then its constants: a hook that looks at the bound shader to handle constants sees this one
     dev->SetPixelShader(gpu.ps);
     dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
@@ -862,6 +1027,59 @@ void Picture::ParamsToToml(const PictureParams& q, toml::table& qolTable) {
     pt.insert("clarity", static_cast<double>(q.clarity));
     pt.insert("vignette", static_cast<double>(q.vignette));
     pt.insert("vignette_size", static_cast<double>(q.vignetteSize));
+    {
+        // Color > Filters, in their own sub-table
+        toml::table ft;
+        auto d = [&](const char* k, float v) { ft.insert(k, static_cast<double>(v)); };
+        auto arr = [&](const char* k, const float* v) {
+            toml::array a;
+            for (int i = 0; i < 3; i++) a.push_back(static_cast<double>(v[i]));
+            ft.insert(k, std::move(a));
+        };
+        ft.insert("film_on", q.filmOn);
+        ft.insert("lens_on", q.lensOn);
+        ft.insert("retro_on", q.retroOn);
+        ft.insert("technicolor1", q.tech1);
+        d("technicolor1_amount", q.tech1Amount);
+        d("technicolor1_cyan", q.tech1Cyan);
+        d("technicolor1_saturation", q.tech1Saturation);
+        ft.insert("technicolor2", q.tech2);
+        d("technicolor2_amount", q.tech2Amount);
+        d("technicolor2_saturation", q.tech2Saturation);
+        d("technicolor2_brightness", q.tech2Brightness);
+        arr("technicolor2_dye", q.tech2Dye);
+        ft.insert("dpx", q.dpx);
+        d("dpx_amount", q.dpxAmount);
+        d("dpx_contrast", q.dpxContrast);
+        d("dpx_saturation", q.dpxSaturation);
+        arr("dpx_curve", q.dpxCurve);
+        ft.insert("colourfulness", q.colourful);
+        d("colourfulness_amount", q.colourfulAmount);
+        d("colourfulness_protect", q.colourfulProtect);
+        ft.insert("night_mode", q.night);
+        d("night_amount", q.nightAmount);
+        d("night_darkness", q.nightDarkness);
+        d("night_blue", q.nightBlue);
+        d("night_keep_lamps", q.nightKeepLamps);
+        ft.insert("emphasize", q.emphasize);
+        d("emphasize_amount", q.emphAmount);
+        d("emphasize_distance", q.emphDistance);
+        d("emphasize_width", q.emphWidth);
+        d("emphasize_softness", q.emphSoftness);
+        d("emphasize_grey", q.emphGrey);
+        ft.insert("prism", q.prism);
+        d("prism_amount", q.prismAmount);
+        d("prism_start", q.prismStart);
+        d("prism_quality", q.prismQuality);
+        ft.insert("retro_3dfx", q.retro3dfx);
+        d("3dfx_amount", q.fxAmount);
+        d("3dfx_color_depth", q.fxDepth);
+        d("3dfx_scanlines", q.fxScanlines);
+        d("3dfx_dither", q.fxDither);
+        d("3dfx_soft_pixels", q.fxPixelWidth);
+        d("3dfx_gamma", q.fxGamma);
+        pt.insert("filters", std::move(ft));
+    }
     qolTable.insert_or_assign("picture", std::move(pt));
 }
 
@@ -900,6 +1118,57 @@ bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
     f("vignette_size", q.vignetteSize);
     if (auto a = t["mixer"].as_array())
         for (size_t i = 0; i < 6 && i < a->size(); i++) q.mixer[i] = static_cast<float>((*a)[i].value_or(1.0));
+    if (const toml::table* ft = t["filters"].as_table()) {
+        const toml::table& x = *ft;
+        auto b = [&](const char* k, bool& v) { v = x[k].value_or(v); };
+        auto g = [&](const char* k, float& v) { v = static_cast<float>(x[k].value_or(static_cast<double>(v))); };
+        auto arr = [&](const char* k, float* v) {
+            if (auto a = x[k].as_array())
+                for (size_t i = 0; i < 3 && i < a->size(); i++) v[i] = static_cast<float>((*a)[i].value_or(static_cast<double>(v[i])));
+        };
+        b("film_on", q.filmOn);
+        b("lens_on", q.lensOn);
+        b("retro_on", q.retroOn);
+        b("technicolor1", q.tech1);
+        g("technicolor1_amount", q.tech1Amount);
+        g("technicolor1_cyan", q.tech1Cyan);
+        g("technicolor1_saturation", q.tech1Saturation);
+        b("technicolor2", q.tech2);
+        g("technicolor2_amount", q.tech2Amount);
+        g("technicolor2_saturation", q.tech2Saturation);
+        g("technicolor2_brightness", q.tech2Brightness);
+        arr("technicolor2_dye", q.tech2Dye);
+        b("dpx", q.dpx);
+        g("dpx_amount", q.dpxAmount);
+        g("dpx_contrast", q.dpxContrast);
+        g("dpx_saturation", q.dpxSaturation);
+        arr("dpx_curve", q.dpxCurve);
+        b("colourfulness", q.colourful);
+        g("colourfulness_amount", q.colourfulAmount);
+        g("colourfulness_protect", q.colourfulProtect);
+        b("night_mode", q.night);
+        g("night_amount", q.nightAmount);
+        g("night_darkness", q.nightDarkness);
+        g("night_blue", q.nightBlue);
+        g("night_keep_lamps", q.nightKeepLamps);
+        b("emphasize", q.emphasize);
+        g("emphasize_amount", q.emphAmount);
+        g("emphasize_distance", q.emphDistance);
+        g("emphasize_width", q.emphWidth);
+        g("emphasize_softness", q.emphSoftness);
+        g("emphasize_grey", q.emphGrey);
+        b("prism", q.prism);
+        g("prism_amount", q.prismAmount);
+        g("prism_start", q.prismStart);
+        g("prism_quality", q.prismQuality);
+        b("retro_3dfx", q.retro3dfx);
+        g("3dfx_amount", q.fxAmount);
+        g("3dfx_color_depth", q.fxDepth);
+        g("3dfx_scanlines", q.fxScanlines);
+        g("3dfx_dither", q.fxDither);
+        g("3dfx_soft_pixels", q.fxPixelWidth);
+        g("3dfx_gamma", q.fxGamma);
+    }
     q.compare = false;
     out = q;
     return true;
@@ -1022,6 +1291,176 @@ void Picture::RenderUI(int tab) {
     }
     }
 
+    if (!q.enabled) ImGui::EndDisabled();
+    if (changed) SetParams(q, save);
+}
+
+// Color > Filters: three cards (Film color, Lens, Retro) with a switch each; every filter is a switch row whose own
+// controls show while it is on, fine tuning under Advanced. Rows stay visible, greyed out, while Picture is off.
+void Picture::RenderFiltersUI() {
+    using ApexUi::IconId;
+    static const PictureParams kDef{};
+    PictureParams q = GetParams();
+    bool changed = false, save = false;
+    auto slide = [&](const char* label, float* v, float lo, float hi, const ApexUi::SliderOptions& o) {
+        if (ApexUi::Slider(label, v, lo, hi, o)) changed = true;
+        save |= ApexUi::SliderCommitted();
+    };
+    auto percent = [&](const char* label, float* v, float lo, float hi, const char* desc, float def, float shown = 100.0f) {
+        ApexUi::SliderOptions o;
+        o.format = "%.0f%%";
+        o.displayScale = shown;
+        o.tooltip = desc;
+        o.defaultValue = def;
+        slide(label, v, lo, hi, o);
+    };
+    auto signedAmount = [&](const char* label, float* v, float def, const char* desc, const char* left, const char* right) {
+        ApexUi::SliderOptions o;
+        o.format = "%+.0f";
+        o.displayScale = 100.0f;
+        o.tooltip = desc;
+        o.defaultValue = def;
+        o.leftLabel = left;
+        o.rightLabel = right;
+        slide(label, v, -1.0f, 1.0f, o);
+    };
+    auto metres = [&](const char* label, float* v, float lo, float hi, const char* desc, float def) {
+        ApexUi::SliderOptions o;
+        o.format = "%.0f m";
+        o.tooltip = desc;
+        o.defaultValue = def;
+        slide(label, v, lo, hi, o);
+    };
+    auto filter = [&](const char* name, bool* on, const char* desc) {
+        if (ApexUi::SwitchRow(name, on, desc, ApexUi::BoolDefault(false))) {
+            changed = true;
+            save = true;
+        }
+        return *on;
+    };
+    auto card = [&](const char* id, IconId icon, const char* title, const char* sub, bool* cardOn, auto&& body) {
+        ImGui::PushID(id);
+        if (ApexUi::BeginCard("##Card")) {
+            if (ApexUi::CardHeader(icon, title, sub, nullptr, cardOn, q.enabled)) {
+                changed = true;
+                save = true;
+            }
+            ApexUi::CardDivider();
+            if (!*cardOn) ImGui::BeginDisabled();
+            body();
+            if (!*cardOn) ImGui::EndDisabled();
+        }
+        ApexUi::EndCard();
+        ImGui::PopID();
+    };
+
+    if (!q.enabled) ImGui::BeginDisabled();
+    card("FilmColor", IconId::Palette, "Film color", "Color looks inspired by film stock", &q.filmOn, [&] {
+        ImGui::PushID("Technicolor1");
+        if (filter("Technicolor 1", &q.tech1, "Classic two-strip film: everything turns red or cyan")) {
+            percent("Amount", &q.tech1Amount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.tech1Amount);
+            signedAmount("Cyan record", &q.tech1Cyan, kDef.tech1Cyan, "What the cyan half of the picture leans to", "Greener", "Bluer");
+            percent("Saturation", &q.tech1Saturation, 0.0f, 2.0f, "How strong the red and cyan get", kDef.tech1Saturation);
+        }
+        ImGui::PopID();
+        ImGui::PushID("Technicolor2");
+        if (filter("Technicolor 2", &q.tech2, "Three-strip film: rich, dense primary colors")) {
+            percent("Amount", &q.tech2Amount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.tech2Amount);
+            percent("Saturation", &q.tech2Saturation, 0.0f, 2.0f, "How colorful the film is", kDef.tech2Saturation);
+            signedAmount("Brightness", &q.tech2Brightness, kDef.tech2Brightness, "Film prints were often a little darker or brighter", "Darker", "Brighter");
+            if (ApexUi::BeginAdvanced("Technicolor2Dyes", "Dyes")) {
+                percent("Red dye", &q.tech2Dye[0], 0.0f, 2.0f, "How strongly reds separate from the other colors", kDef.tech2Dye[0]);
+                percent("Green dye", &q.tech2Dye[1], 0.0f, 2.0f, "How strongly greens separate from the other colors", kDef.tech2Dye[1]);
+                percent("Blue dye", &q.tech2Dye[2], 0.0f, 2.0f, "How strongly blues separate from the other colors", kDef.tech2Dye[2]);
+                ApexUi::EndAdvanced();
+            }
+        }
+        ImGui::PopID();
+        ImGui::PushID("DPX");
+        if (filter("DPX Cineon", &q.dpx, "Cinema film curve: rich midtones, soft highlights")) {
+            percent("Amount", &q.dpxAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.dpxAmount);
+            percent("Contrast", &q.dpxContrast, 0.0f, 1.0f, "How steep the film curve is", kDef.dpxContrast);
+            percent("Saturation", &q.dpxSaturation, 0.0f, 2.0f, "How colorful the film is", kDef.dpxSaturation);
+            if (ApexUi::BeginAdvanced("DPXCurves", "Color curves")) {
+                percent("Red curve", &q.dpxCurve[0], 0.5f, 1.5f, "Contrast of the red layer; higher warms the shadows' edges", kDef.dpxCurve[0]);
+                percent("Green curve", &q.dpxCurve[1], 0.5f, 1.5f, "Contrast of the green layer", kDef.dpxCurve[1]);
+                percent("Blue curve", &q.dpxCurve[2], 0.5f, 1.5f, "Contrast of the blue layer; higher cools the shadows", kDef.dpxCurve[2]);
+                ApexUi::EndAdvanced();
+            }
+        }
+        ImGui::PopID();
+        ImGui::PushID("Colourfulness");
+        if (filter("Colourfulness", &q.colourful, "Livelier colors without blowing out the bright ones")) {
+            signedAmount("Amount", &q.colourfulAmount, kDef.colourfulAmount, "More vivid, or more muted", "Muted", "Vivid");
+            if (ApexUi::BeginAdvanced("ColourfulnessAdvanced")) {
+                percent("Protect bright colors", &q.colourfulProtect, 0.0f, 1.0f, "Keeps strong and bright colors from going over the top", kDef.colourfulProtect);
+                ApexUi::EndAdvanced();
+            }
+        }
+        ImGui::PopID();
+        ImGui::PushID("NightMode");
+        if (filter("Night Mode", &q.night, "A cooler, darker evening tone; lamp light stays warm")) {
+            percent("Amount", &q.nightAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.nightAmount);
+            percent("Darkness", &q.nightDarkness, 0.0f, 0.8f, "How much darker the night gets", kDef.nightDarkness, 125.0f);
+            percent("Blue tint", &q.nightBlue, 0.0f, 1.0f, "How blue the night looks", kDef.nightBlue);
+            percent("Keep lamp light", &q.nightKeepLamps, 0.0f, 1.0f, "Lamp-lit and bright areas keep their own color", kDef.nightKeepLamps);
+        }
+        ImGui::PopID();
+    });
+    card("Lens", IconId::Aperture, "Lens", "Camera-like focus and edges", &q.lensOn, [&] {
+        ImGui::PushID("Emphasize");
+        if (filter("Emphasize", &q.emphasize, "Grey outside the focus, full color where you look")) {
+            percent("Amount", &q.emphAmount, 0.0f, 1.0f, "How strong the effect is", kDef.emphAmount);
+            metres("Focus distance", &q.emphDistance, 1.0f, 150.0f, "How far from the camera the colorful zone is", kDef.emphDistance);
+            metres("Focus width", &q.emphWidth, 0.0f, 100.0f, "How deep the colorful zone is", kDef.emphWidth);
+            if (ApexUi::BeginAdvanced("EmphasizeAdvanced")) {
+                percent("Edge softness", &q.emphSoftness, 0.0f, 1.0f, "How gently color fades out past the zone", kDef.emphSoftness);
+                percent("Grey amount", &q.emphGrey, 0.0f, 1.0f, "How grey the areas outside the zone get", kDef.emphGrey);
+                ApexUi::EndAdvanced();
+            }
+            if (q.enabled && q.lensOn && !DepthShare::Texture())
+                ApexUi::IconNote(IconId::Info, "Needs the scene depth: turn off the game's own Edge Smoothing (Options \xE2\x80\xBA Graphics)");
+        }
+        ImGui::PopID();
+        ImGui::PushID("Prism");
+        if (filter("Prism", &q.prism, "Colored fringes toward the edges, like a real lens")) {
+            percent("Amount", &q.prismAmount, 0.0f, 1.0f, "How far the colors split at the corners", kDef.prismAmount);
+            percent("Edge start", &q.prismStart, 0.0f, 0.95f, "Where the fringes begin; lower reaches closer to the center", kDef.prismStart);
+            if (ApexUi::BeginAdvanced("PrismAdvanced")) {
+                ApexUi::SliderOptions o;
+                o.valueText = q.prismQuality < 0.34f ? I18n::Tr("Low") : (q.prismQuality < 0.67f ? I18n::Tr("Medium") : I18n::Tr("High"));
+                o.tooltip = "Smoother color fringes cost a little more";
+                o.defaultValue = kDef.prismQuality;
+                slide("Quality", &q.prismQuality, 0.0f, 1.0f, o);
+                ApexUi::EndAdvanced();
+            }
+        }
+        ImGui::PopID();
+    });
+    card("Retro", IconId::Monitor, "Retro", "Old-hardware styles", &q.retroOn, [&] {
+        ImGui::PushID("3DFX");
+        if (filter("3DFX", &q.retro3dfx, "Late-90s 3D card: 16-bit color, dithering and fine lines")) {
+            percent("Amount", &q.fxAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.fxAmount);
+            {
+                const int bits = 5 - static_cast<int>(std::round(2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f)));
+                char depthText[24];
+                std::snprintf(depthText, sizeof depthText, "%d-bit", bits * 3 + 1);
+                ApexUi::SliderOptions o;
+                o.valueText = depthText;
+                o.tooltip = "Fewer colors give stronger banding and dithering";
+                o.defaultValue = kDef.fxDepth;
+                slide("Color depth", &q.fxDepth, 0.0f, 1.0f, o);
+            }
+            percent("Scanlines", &q.fxScanlines, 0.0f, 1.0f, "Dark lines between rows, like an old monitor", kDef.fxScanlines);
+            if (ApexUi::BeginAdvanced("3DFXAdvanced")) {
+                percent("Dithering", &q.fxDither, 0.0f, 1.0f, "The fine dot pattern that hides the missing colors", kDef.fxDither);
+                percent("Soft pixels", &q.fxPixelWidth, 0.0f, 1.0f, "The slight horizontal blur of the old cards' output", kDef.fxPixelWidth);
+                percent("Gamma", &q.fxGamma, 0.5f, 2.0f, "Brighter or darker midtones, as on old monitors", kDef.fxGamma);
+                ApexUi::EndAdvanced();
+            }
+        }
+        ImGui::PopID();
+    });
     if (!q.enabled) ImGui::EndDisabled();
     if (changed) SetParams(q, save);
 }

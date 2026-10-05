@@ -46,6 +46,31 @@ struct PictureParams {
     float vignette = 0.0f;    // darker corners, 0..0.8
     float vignetteSize = 0.5f; // where the darkening starts (0 = centre, 1 = corners)
     bool compare = false;     // before/after: the left half unprocessed (not saved)
+
+    // ---- Filters tab: stackable looks in the same pass, each its own switch (all off by default) ----
+    // The three cards' own switches turn a whole group off without losing its filters' settings.
+    bool filmOn = true, lensOn = true, retroOn = true;
+    // Film color
+    bool tech1 = false;                       // two-strip film: a red record and a cyan record
+    float tech1Amount = 0.6f, tech1Cyan = 0.0f, tech1Saturation = 1.0f; // cyan: -1 greener .. +1 bluer
+    bool tech2 = false;                       // three-strip dye transfer: dense, pure primaries
+    float tech2Amount = 0.5f, tech2Saturation = 1.0f, tech2Brightness = 0.0f;
+    float tech2Dye[3] = {1.0f, 1.0f, 1.0f};   // strength of the red, green and blue dye
+    bool dpx = false;                         // cinema negative: an S curve per channel
+    float dpxAmount = 0.5f, dpxContrast = 0.5f, dpxSaturation = 1.0f;
+    float dpxCurve[3] = {1.0f, 1.0f, 1.0f};   // contrast of the red, green and blue curve
+    bool colourful = false;                   // livelier colors, brightest ones protected
+    float colourfulAmount = 0.4f, colourfulProtect = 0.7f; // amount -1 (muted) .. +1
+    bool night = false;                       // cooler, darker evening tone; lamp light kept
+    float nightAmount = 0.6f, nightDarkness = 0.35f, nightBlue = 0.5f, nightKeepLamps = 0.6f;
+    // Lens
+    bool emphasize = false;                   // grey outside a band of distance around the focus
+    float emphAmount = 0.8f, emphDistance = 12.0f, emphWidth = 8.0f, emphSoftness = 0.5f, emphGrey = 0.85f; // metres
+    bool prism = false;                       // chromatic aberration growing toward the edges
+    float prismAmount = 0.35f, prismStart = 0.35f, prismQuality = 0.5f;
+    // Retro
+    bool retro3dfx = false;                   // late-90s 3D card: 16-bit color, dithering, scanlines, soft pixels
+    float fxAmount = 1.0f, fxDepth = 0.5f, fxScanlines = 0.3f, fxDither = 0.6f, fxPixelWidth = 0.3f, fxGamma = 1.0f;
 };
 
 class Picture {
@@ -84,7 +109,9 @@ class Picture {
     static const char* const* Keys(size_t& count);
 
     // Tabs of the Color page (menu: Image > Color), in order
-    enum Tab : int { TabBasic, TabTones, TabColor, TabDetail, TabCount };
+    enum Tab : int { TabBasic, TabTones, TabColor, TabDetail, TabFilters, TabCount };
+    // The Filters tab: three cards (Film color, Lens, Retro), each filter a switch row with its own controls
+    void RenderFiltersUI();
     // The rows of one tab of the Color page (inside a card the menu opens), then "Reset Picture". The menu draws the
     // Picture card header with the on/off switch ([qol.picture] enabled) and the before / after button (compare) above
     // the tabs itself. The rows stay visible, greyed out, while Picture is off.
