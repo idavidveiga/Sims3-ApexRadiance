@@ -1736,7 +1736,11 @@ bool WelcomeActive() {
     if (g_welcomeState < 0) g_welcomeState = ApexConfig::GetUi().startProfileDone ? 0 : 1;
     return g_welcomeState >= 1;
 }
-void HideWelcome() { g_welcomeState = 0; }
+void FinishWelcomePreview(); // below, with the welcome's profile preview
+void HideWelcome() {
+    FinishWelcomePreview(); // leaving through the sidebar keeps a previewed profile, with Undo
+    g_welcomeState = 0;
+}
 
 // Only letters, digits, space, - and _ can be typed (the file name is the profile name)
 int ProfileNameFilter(ImGuiInputTextCallbackData* data) {
@@ -2497,6 +2501,14 @@ toml::table g_welcomeBefore;    // the settings when the welcome first drew
 bool g_welcomeHaveBefore = false;
 int g_welcomePreviewed = -1;    // the profile currently applied by the welcome, -1 = none
 
+// A profile previewed and not answered (the welcome left by another page): it stays, and Undo is offered as by Continue
+void FinishWelcomePreview() {
+    if (g_welcomePreviewed < 0) return;
+    LOG_INFO(std::format("[Menu] Welcome: {} kept on leaving", ApexPresets::Get(g_welcomePreviewed).name));
+    ShowToast(I18n::Tr("Profile loaded"), g_welcomeBefore, std::string("Profile loaded: ") + ApexPresets::Get(g_welcomePreviewed).name);
+    g_welcomePreviewed = -1;
+}
+
 void PreviewWelcomePreset(int index) {
     toml::table state;
     std::string err;
@@ -2552,6 +2564,7 @@ void WelcomeProfileStep() {
                 if (g_welcomePreviewed >= 0) {
                     LOG_INFO(std::format("[Menu] Welcome: {} chosen", ApexPresets::Get(g_welcomePreviewed).name));
                     ShowToast(I18n::Tr("Profile loaded"), g_welcomeBefore, std::string("Profile loaded: ") + ApexPresets::Get(g_welcomePreviewed).name);
+                    g_welcomePreviewed = -1;
                 }
                 g_welcomeState = 2;
             }
