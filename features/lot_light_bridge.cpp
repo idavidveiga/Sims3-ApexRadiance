@@ -493,7 +493,9 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         std::vector<BYTE> code(size);
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
-            const bool cinemaMain = IsShader(kCinemaMarqueeDayPs, code.data(), size);
+            const bool cinemaMainDay = IsShader(kCinemaMarqueeDayPs, code.data(), size);
+            const bool cinemaMainNight = IsShader(kCinemaMarqueeNightPs, code.data(), size);
+            const bool cinemaMain = cinemaMainDay || cinemaMainNight;
             const bool cinemaPanelDay = IsShader(kCinemaMarqueePanelDayPs, code.data(), size);
             const bool cinemaPanelNight = IsShader(kCinemaMarqueePanelNightPs, code.data(), size);
             const bool cinemaPanel = cinemaPanelDay || cinemaPanelNight;
