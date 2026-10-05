@@ -2786,7 +2786,7 @@ float* __fastcall SolvePointSingle(BYTE* room, void*, float* out, void* list2D, 
 // lamps are all of another story gets no boost (at most 1): the light coming through an opening is not spread over the
 // whole room, and with none coming the room takes the unlit colour (the top-up), as an empty room does. Any value that is
 // not finite becomes 1. Steam 1.67.2 only (fixed addresses, the call checked).
-constexpr uintptr_t kRoomNorm = 0x006A0230, kRoomNormCall = 0x006A13B4;
+uintptr_t kRoomNorm = 0x006A0230, kRoomNormCall = 0x006A13B4; // resolved by GameAddr at install (these are the Steam values)
 using RoomNorm_t = void(__thiscall*)(BYTE* room, const float* brightest);
 std::atomic<long> g_normNotFinite{0}, g_normCrossOnly{0};
 const Cross* FindCross(const RoomInfo& info, uintptr_t light); // below
@@ -2829,7 +2829,7 @@ void __fastcall RoomNormHook(BYTE* room, void*, const float* brightest) {
 // blocked, it adds nothing. Imported lamps also need wall tests on all ray segments: unlike the floor/wall
 // solve, the basis builder has no recipient wall test of its own. Test008 uses these guarded maps without the
 // floor-map shader cap; the cap remains the fallback if this validated hook is unavailable. Steam 1.67.2 only.
-constexpr uintptr_t kBasisLight = 0x0069F280, kBasisLightCall = 0x006A0C56;
+uintptr_t kBasisLight = 0x0069F280, kBasisLightCall = 0x006A0C56; // resolved by GameAddr at install (these are the Steam values)
 using BasisLight_t = void(__stdcall*)(const float* pos, void* light, float* acc);
 std::atomic<long> g_basisTests{0}, g_basisBlocked{0};
 std::atomic<bool> g_basisGuardReady{false};
@@ -3363,7 +3363,9 @@ bool InstallIndoor(std::string& why) {
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
-    const bool norm = GameAddr::IsFixed() && CallsTarget(kRoomNormCall, kRoomNorm) &&
+    kRoomNormCall = GameAddr::Get(Id::RoomNormCall);
+    kRoomNorm = GameAddr::Get(Id::RoomNorm);
+    const bool norm = GameAddr::Have({Id::RoomNormCall, Id::RoomNorm}) && CallsTarget(kRoomNormCall, kRoomNorm) &&
                       Redirect(kRoomNormCall, kRoomNorm, reinterpret_cast<const void*>(&RoomNormHook), &normPatches);
     if (norm) g_lodPatches.insert(g_lodPatches.end(), normPatches.begin(), normPatches.end());
     else {
@@ -3373,7 +3375,9 @@ bool InstallIndoor(std::string& why) {
     // The floor test in the 4 basis maps (optional; BasisLightHook). 0x006A0C4C: lea edx,[esp+0xC8]; push edx; mov ecx,edi; call
     std::vector<MemPatch::PatchLocation> basisPatches;
     const BYTE basisBytes[] = {0x8D, 0x94, 0x24, 0xC8, 0x00, 0x00, 0x00, 0x52, 0x8B, 0xCF};
-    const bool basis = GameAddr::IsFixed() && std::memcmp(reinterpret_cast<const void*>(kBasisLightCall - sizeof basisBytes), basisBytes, sizeof basisBytes) == 0 &&
+    kBasisLightCall = GameAddr::Get(Id::BasisLightCall);
+    kBasisLight = GameAddr::Get(Id::BasisLight);
+    const bool basis = GameAddr::Have({Id::BasisLightCall, Id::BasisLight}) && std::memcmp(reinterpret_cast<const void*>(kBasisLightCall - sizeof basisBytes), basisBytes, sizeof basisBytes) == 0 &&
                        CallsTarget(kBasisLightCall, kBasisLight) &&
                        Redirect(kBasisLightCall, kBasisLight, reinterpret_cast<const void*>(&BasisLightHook), &basisPatches);
     g_basisGuardReady.store(basis, std::memory_order_relaxed);

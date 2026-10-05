@@ -234,6 +234,13 @@ enum class Id : uint16_t {
     TexFillCall,              // call FUN_0060d290 (0x0060E1FF): copies every mip level into it (cdecl, 4 args)
     TexFill,
     UiServiceGetter,          // UIManager_GetMainWindowImpl calls this read-only root-service getter
+    RoomNormCall,             // CALL FUN_006a0230 thiscall(room, brightest): the room light normalisation (0x006A13B4)
+    RoomNorm,
+    BasisLightCall,           // CALL FUN_0069f280 in the directional basis maps (0x006A0C56)
+    BasisLight,
+    LampLitCall,              // "mov ecx, edi; call FUN_006bdca0" in FUN_006c7ba0 (0x006C7CB6)
+    LampMarkCall,             // CALL FUN_006c7160 thiscall(treeLevel, room) in FUN_006c7ba0 (0x006C7CD6)
+    LampMark,
     Count
 };
 

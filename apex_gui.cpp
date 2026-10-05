@@ -1731,7 +1731,7 @@ ProfilesState g_profiles;
 // draw sets [ui] start_profile_done; it stays on screen this session until answered or another page is opened. When an
 // Attention item applies, a second step ("Before you play") lists them after the profile choice. ----
 int g_welcomeState = -1;                     // -1 not decided yet, 0 not shown, 1 profile step, 2 Before you play
-int g_welcomeChoice = ApexPresets::kDefault; // the selected starting profile (Default, listed second)
+// (the welcome applies a profile when it is clicked: see g_welcomePreviewed)
 bool WelcomeActive() {
     if (g_welcomeState < 0) g_welcomeState = ApexConfig::GetUi().startProfileDone ? 0 : 1;
     return g_welcomeState >= 1;
@@ -2491,44 +2491,70 @@ void MarkWelcomeShown() {
 }
 
 // The content area while the welcome is pending: one card with the built-in profiles (the same choice rows as the
-// lighting balance) and two actions. Apply goes through the Saved profiles path, so Undo is offered.
+// lighting balance). Choosing a profile applies it at once, so the player sees it in the game behind the menu; "Keep my
+// settings" puts back what was there when the welcome opened, "Continue" keeps the profile on screen (Undo is offered).
+toml::table g_welcomeBefore;    // the settings when the welcome first drew
+bool g_welcomeHaveBefore = false;
+int g_welcomePreviewed = -1;    // the profile currently applied by the welcome, -1 = none
+
+void PreviewWelcomePreset(int index) {
+    toml::table state;
+    std::string err;
+    if (!ApexPresets::Read(index, state, &err)) {
+        ProfileMessage(I18n::Trf("Could not load \"{}\": {}", I18n::Tr(ApexPresets::Get(index).name), err), true);
+        return;
+    }
+    ApexConfig::KeepProfileParts(state, ApexConfig::ProfilePartsOf(state) & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper));
+    ApexConfig::ApplyFeatureState(state);
+    g_welcomePreviewed = index;
+    LOG_INFO(std::format("[Menu] Welcome: previewing {}", ApexPresets::Get(index).name));
+}
+
 void WelcomeProfileStep() {
     MarkWelcomeShown();
+    if (!g_welcomeHaveBefore) {
+        ApexConfig::CaptureFeatureState(g_welcomeBefore);
+        g_welcomeHaveBefore = true;
+    }
     ApexUi::PageTitle("Welcome to " APEX_PRODUCT_NAME, "Choose how you want to start");
     ImGui::PushID("Welcome");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::None, "Starting profile", "You can switch later in Settings \xE2\x80\xBA Profiles", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::None, "Starting profile", "Click a profile to see it in the game right away; you can switch later in Settings \xE2\x80\xBA Profiles",
+                           nullptr, nullptr);
         ApexUi::CardDivider();
+        ImGui::BeginDisabled(Loading());
         for (int i = 0; i < ApexPresets::kCount; ++i) {
             const ApexPresets::Preset& preset = ApexPresets::Get(i);
             ImGui::PushID(i);
-            if (ApexUi::ProfileChoiceRow("Preset", ApexUi::IconFromName(preset.icon), preset.name, preset.description, g_welcomeChoice == i))
-                g_welcomeChoice = i;
+            if (ApexUi::ProfileChoiceRow("Preset", ApexUi::IconFromName(preset.icon), preset.name, preset.description, g_welcomePreviewed == i) &&
+                g_welcomePreviewed != i)
+                PreviewWelcomePreset(i);
             ImGui::PopID();
         }
+        ImGui::EndDisabled();
         ApexUi::CardDivider();
         ApexUi::Gap(ApexUi::kSpace2);
         {
             const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
             const float gap = ImGui::GetStyle().ItemSpacing.x;
-            const float actionsW = ApexUi::ButtonWidth("Keep as it is", false) + gap + ApexUi::ButtonWidth("Apply##Welcome", true);
+            const float actionsW = ApexUi::ButtonWidth("Keep my settings", false) + gap + ApexUi::ButtonWidth("Continue##Welcome", true);
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::fmax(0.0f, ImGui::GetContentRegionAvail().x - actionsW));
-            if (ApexUi::TextButton("Keep as it is", "Your current settings stay as they are")) {
+            if (ApexUi::TextButton("Keep my settings", "Puts back the settings you had before choosing a profile")) {
+                if (g_welcomePreviewed >= 0) ApexConfig::ApplyFeatureState(g_welcomeBefore);
                 LOG_INFO("[Menu] Welcome: settings kept");
+                g_welcomePreviewed = -1;
                 g_welcomeState = 2;
             }
             ImGui::SameLine();
-            ImGui::BeginDisabled(Loading());
-            if (ApexUi::IconTextButton("Apply##Welcome", IconId::Check, "Undo puts your settings back", ButtonKind::Primary)) {
-                toml::table state;
-                const int choice = g_welcomeChoice;
-                unsigned parts = 0;
-                if (ApexPresets::Read(choice, state)) parts = ApexConfig::ProfilePartsOf(state);
-                LOG_INFO(std::format("[Menu] Welcome: {} chosen", ApexPresets::Get(choice).name));
-                LoadBuiltinProfileNow(choice, parts & ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper));
+            if (ApexUi::IconTextButton("Continue##Welcome", IconId::Check,
+                                       g_welcomePreviewed >= 0 ? "Keeps the profile you chose; Undo puts your settings back" : "Keeps your current settings",
+                                       ButtonKind::Primary)) {
+                if (g_welcomePreviewed >= 0) {
+                    LOG_INFO(std::format("[Menu] Welcome: {} chosen", ApexPresets::Get(g_welcomePreviewed).name));
+                    ShowToast(I18n::Tr("Profile loaded"), g_welcomeBefore, std::string("Profile loaded: ") + ApexPresets::Get(g_welcomePreviewed).name);
+                }
                 g_welcomeState = 2;
             }
-            ImGui::EndDisabled();
         }
     }
     ApexUi::EndCard();
