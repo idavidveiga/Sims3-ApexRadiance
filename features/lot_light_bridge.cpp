@@ -1795,9 +1795,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPsConst(dev, p.inst.atlasConst, c, 1);
         SetPsConst(dev, p.inst.strengthConst, s, 1);
         SetPs(dev, p.ps);
-        IndoorSeamSwap seam = BeginIndoorMaterialSeam(dev);
         draw();
-        EndIndoorMaterialSeam(dev, seam);
         SetPs(dev, original);
         SetPsConst(dev, p.inst.strengthConst, oldB, 1);
         SetPsConst(dev, p.inst.atlasConst, oldA, 1);
@@ -2159,7 +2157,9 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
             SetVsConst(dev, static_cast<UINT>(vl), &zero[0][0], 4);
         }
         SetPs(dev, p.ps);
+        IndoorSeamSwap seam = BeginIndoorMaterialSeam(dev);
         draw();
+        EndIndoorMaterialSeam(dev, seam);
         SetPs(dev, original);
         if (vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
         SetPsConst(dev, p.indoor.strengthConst, oldS, 1);
