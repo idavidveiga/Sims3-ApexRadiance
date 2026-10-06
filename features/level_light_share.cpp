@@ -3685,6 +3685,8 @@ using BasisLight_t = void(__stdcall*)(const float* pos, void* light, float* acc)
 std::atomic<long> g_basisTests{0}, g_basisBlocked{0};
 std::atomic<bool> g_basisGuardReady{false};
 void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float* colour); // below
+// The time Apex's own tests take inside the game's room solves (LightEvalHook, this hook; ApexSolveMs)
+std::atomic<uint64_t> g_apexSolveCycles{0};
 void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light, float* acc) {
     if (g_installed.load(std::memory_order_relaxed) && g_indoorReady && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
         if (const RoomInfo* info = SolveInfo(room); info && info->indoor && FindCross(*info, reinterpret_cast<uintptr_t>(light)) &&
@@ -3698,7 +3700,9 @@ void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light,
             g_ctx.basis = true;
             alignas(16) float s[12] = {pos[0], pos[1], pos[2], pos[3]}; // the sample: position, no normal
             float pass[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            const uint64_t timedFrom = __rdtsc();
             IndoorShadow(*info, light, s, pass);
+            g_apexSolveCycles.fetch_add(__rdtsc() - timedFrom, std::memory_order_relaxed);
             g_ctx = prev;
             g_basisTests.fetch_add(1, std::memory_order_relaxed);
             if (!(pass[0] > 0.0f)) {
@@ -4085,9 +4089,16 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
     }
 }
 
+// The time Apex's own tests take inside the game's room solves (06/10: is a slow "all the lights" the game's solve or ours?)
+struct ApexCycles {
+    uint64_t t0 = __rdtsc();
+    ~ApexCycles() { g_apexSolveCycles.fetch_add(__rdtsc() - t0, std::memory_order_relaxed); }
+};
+
 template <int I> void __fastcall LightEvalHook(void* light, void*, const float* sample, const float* normal, float* colour) {
     reinterpret_cast<LightEval_t>(g_evalOrig[I])(light, sample, normal, colour);
     if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        const ApexCycles timed;
         g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
@@ -5822,6 +5833,25 @@ float CameraStoryFactor(const void* room) {
 float LampUrgency(const void* room) {
     const int tier = UrgentTier(room);
     return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : 1.0e5f) * CameraStoryFactor(room);
+}
+
+// Apex's share of the room solves so far (LightEvalHook and the basis test), ms: cycles calibrated against the performance
+// counter since the first call (-1 until 100 ms have passed)
+double ApexSolveMs() {
+    static uint64_t c0 = 0;
+    static LARGE_INTEGER q0{};
+    LARGE_INTEGER f{}, q{};
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    const uint64_t c = __rdtsc();
+    if (!c0) {
+        c0 = c;
+        q0 = q;
+        return -1.0;
+    }
+    const double ms = static_cast<double>(q.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+    if (ms < 100.0 || c <= c0) return -1.0;
+    return static_cast<double>(g_apexSolveCycles.load(std::memory_order_relaxed)) / (static_cast<double>(c - c0) / ms);
 }
 
 bool LampEditPending() {

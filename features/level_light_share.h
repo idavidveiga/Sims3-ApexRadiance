@@ -60,6 +60,8 @@ bool HoldLampMark(uintptr_t treeLevel, int room, bool user);
 float LampUrgency(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
+// Apex's own share of the room solves so far, ms (-1 until calibrated); render thread
+double ApexSolveMs();
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
 void NoteLampEditing(bool continuous);
 // A lamp is being dragged (moved or a value changed within the last 200 ms). The one-go solve once an edit ended

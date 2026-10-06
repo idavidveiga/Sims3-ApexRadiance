@@ -225,15 +225,20 @@ struct EditBurst {
     long long drainMicros = 0;
     float solved = 0.0f;
     long quick = 0; // g_quickRooms at the start
+    double apexMs = -1.0; // LevelLightShare::ApexSolveMs at the start
 };
 EditBurst g_burst;
 float GameSolveMs() {
     float t[3] = {};
     return GameAddr::IsFixed() && MemPatch::ReadBytes(0x011D1200, t, sizeof t) ? t[0] + t[1] + t[2] : 0.0f;
 }
+std::string ApexPart(double startMs) {
+    const double now = LevelLightShare::ApexSolveMs();
+    return startMs >= 0.0 && now >= startMs ? std::format("{:.0f} ms", now - startMs) : std::string("not measured yet");
+}
 void NoteEditBurst(bool lampEdit) {
     if (lampEdit) {
-        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed)};
+        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed), LevelLightShare::ApexSolveMs()};
         g_burst.frames++;
         return;
     }
@@ -243,9 +248,9 @@ void NoteEditBurst(bool lampEdit) {
     const float solved = GameSolveMs() - g_burst.solved;
     const float drained = static_cast<float>(g_drainMicros.load(std::memory_order_relaxed) - g_burst.drainMicros) / 1000.0f;
     LOG_INFO(std::format("[RoomLightQueue] Lamp edit: its rooms settled after {} ms over {} frames; the game solved rooms for {:.0f} ms ({:.1f} ms a frame), "
-                         "{:.0f} ms of it right after the pick; {} rooms took the quick pass first",
+                         "{:.0f} ms of it right after the pick; {} rooms took the quick pass first; Apex's own tests inside those solves: {}",
                          ms, g_burst.frames, solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained,
-                         g_quickRooms.load(std::memory_order_relaxed) - g_burst.quick));
+                         g_quickRooms.load(std::memory_order_relaxed) - g_burst.quick, ApexPart(g_burst.apexMs)));
 }
 
 void __fastcall PickHook(BYTE* tree) {
