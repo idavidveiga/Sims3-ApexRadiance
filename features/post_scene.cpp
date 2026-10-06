@@ -25,6 +25,7 @@ constexpr float kDefaultDepthA = 1.00008f; // LightProbe-m80
 std::mutex g_mutex;
 std::vector<std::pair<int, PostScene::Effect>> g_effects; // sorted by order
 bool g_hooks = false;
+bool g_uiDrawSeen = false; // this frame: a depth-off back-buffer draw after scene draws (render thread)
 IDirect3DSurface9* g_curRT0 = nullptr;     // identity only
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only
 int g_sceneDraws = 0;
@@ -141,6 +142,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     g_sceneDraws = 0;
     g_depthWrites = 0;
     g_done = false;
+    g_uiDrawSeen = false;
     g_rejectedBoundary = false;
     g_nearDraws = 0;
     g_nearVotes.clear();
@@ -161,12 +163,13 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
         if (SUCCEEDED(dev->GetRenderState(D3DRS_ZFUNC, &func)) && func == D3DCMP_ALWAYS) return;
     }
     if (z != D3DZB_FALSE) {
-        if (g_rejectedBoundary && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
+        if (g_rejectedBoundary && ctx.ZWriteEnable() && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
         g_sceneDraws++;
         if (ctx.ZWriteEnable()) g_depthWrites++;
         if (g_nearDraws < kNearDraws && g_cameraWanted.load(std::memory_order_relaxed) > 0) VoteCamera(dev);
         return;
     }
+    if (g_sceneDraws > 0) g_uiDrawSeen = true; // a depth-off draw after scene draws: the UI may have started (EndScene fallback off)
     if (g_sceneDraws < kMinSceneDraws) return;
     if (g_rejectedBoundary) return;
     if (!SceneDepthReady(dev)) {
@@ -186,6 +189,7 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
 // ordered effects at the game's EndScene, before Apex's overlay and Picture's scene copy. Keep the draw-triggered path
 // above for frames that do have a depth-off boundary (including its existing interior behavior).
 void AtEndSceneBeforeOverlay(IDirect3DDevice9* dev) {
+    if (g_uiDrawSeen) return; // the UI is already drawn: never run the effects over it (06/10)
     if (!ShaderCache::PrecompileComplete()) return;
     if (!dev || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws || !g_backBuffer || g_curRT0 != g_backBuffer || !SceneDepthReady(dev)) return;
     IDirect3DSurface9* rt = nullptr;
