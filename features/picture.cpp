@@ -1441,7 +1441,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     // Emphasize and the fog read the scene depth: requested only while one of them is on
     RequestDepth(wantEmph || wantFog);
     // the depth copied with the scene (the live one has the Sim portrait's cleared square by now); else the live one
-    IDirect3DTexture9* depth = (wantEmph || wantFog) ? (gpu.depthCopied && gpu.depthTex ? gpu.depthTex : DepthShare::Texture()) : nullptr;
+    IDirect3DTexture9* depth = (wantEmph || wantFog) ? (gpu.depthCopied && gpu.depthTex && !g_atBoundary ? gpu.depthTex : DepthShare::Texture()) : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
     const bool fEmph = wantEmph && depth && camNear > 0.0f;
     const bool fFog = wantFog && depth && camNear > 0.0f;
@@ -1449,7 +1449,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     // reduced to 1/2, 1/4 and 1/8 through 2x2 boxes
     const bool clarity = std::fabs(q.clarity) > 0.001f;
     if (clarity || fGlow || fHal || fDream || fTilt || fHdr || fFog || fAuto) {
-        IDirect3DSurface9* src = gpu.sceneCopied ? gpu.sceneSurf : gpu.frameSurf;
+        IDirect3DSurface9* src = (gpu.sceneCopied && !g_atBoundary) ? gpu.sceneSurf : gpu.frameSurf; // on the finished scene: the frame itself
         for (int i = 0; i < Gpu::kChain; i++) {
             dev->StretchRect(src, nullptr, gpu.chainSurf[i], nullptr, D3DTEXF_LINEAR);
             src = gpu.chainSurf[i];
