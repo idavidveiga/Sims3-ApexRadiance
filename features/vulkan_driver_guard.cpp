@@ -57,44 +57,12 @@ std::string Narrow(const std::wstring& w) {
 
 // AMD registers the same manifest as an implicit LAYER too (VK_LAYER_AMD_switchable_graphics, library amdvlk32.dll; the
 // display adapter's VulkanImplicitLayersWow, 05/10 on the user's PC), and VK_LOADER_DRIVERS_DISABLE does not stop layers:
-// amdvlk32.dll (~85 MB) was still loaded. The layer's own "disable_environment" variable keeps it out. Reads it from every
-// AMD manifest registered for a display adapter; the known name when none can be read.
+// amdvlk32.dll (~85 MB) was still loaded. The layer's own "disable_environment" variable keeps it out: its known name.
+// 2.7.0 read it from every AMD manifest registered for a display adapter (enumerating the display class keys of the
+// registry); BitDefender's generic detection and its resellers flagged that build (Gen:Variant.Fragtor, 8 of 67 on
+// VirusTotal, 06/10), so the name the manifest gives is set directly.
 std::vector<std::pair<std::wstring, std::wstring>> AmdLayerDisables() {
-    std::vector<std::pair<std::wstring, std::wstring>> out;
-    HKEY cls = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, &cls) == ERROR_SUCCESS) {
-        wchar_t sub[64];
-        for (DWORD i = 0;; i++) {
-            DWORD n = static_cast<DWORD>(std::size(sub));
-            if (RegEnumKeyExW(cls, i, sub, &n, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
-            wchar_t paths[2048] = {};
-            DWORD bytes = sizeof paths - sizeof(wchar_t) * 2;
-            if (RegGetValueW(cls, sub, L"VulkanImplicitLayersWow", RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ, nullptr, paths, &bytes) != ERROR_SUCCESS) continue;
-            for (const wchar_t* p = paths; *p; p += wcslen(p) + 1) {
-                std::wstring path = p, lower = path;
-                for (wchar_t& c : lower) c = towlower(c);
-                if (lower.find(L"amd") == std::wstring::npos) continue;
-                HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-                if (f == INVALID_HANDLE_VALUE) continue;
-                char text[16384] = {};
-                DWORD got = 0;
-                ReadFile(f, text, sizeof text - 1, &got, nullptr);
-                CloseHandle(f);
-                const std::string s(text, got);
-                // "disable_environment": { "NAME": "VALUE" }
-                const size_t at = s.find("\"disable_environment\"");
-                if (at == std::string::npos) continue;
-                const size_t q1 = s.find('"', s.find('{', at) + 1), q2 = q1 == std::string::npos ? q1 : s.find('"', q1 + 1);
-                const size_t v1 = q2 == std::string::npos ? q2 : s.find('"', s.find(':', q2) + 1), v2 = v1 == std::string::npos ? v1 : s.find('"', v1 + 1);
-                if (v2 == std::string::npos) continue;
-                std::wstring name(s.begin() + q1 + 1, s.begin() + q2), value(s.begin() + v1 + 1, s.begin() + v2);
-                if (!name.empty() && std::find(out.begin(), out.end(), std::make_pair(name, value)) == out.end()) out.emplace_back(name, value);
-            }
-        }
-        RegCloseKey(cls);
-    }
-    if (out.empty()) out.emplace_back(L"DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", L"1");
-    return out;
+    return {{L"DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", L"1"}};
 }
 
 std::string Decide() {
