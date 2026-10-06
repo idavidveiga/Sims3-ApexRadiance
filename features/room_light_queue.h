@@ -29,6 +29,8 @@ std::string StatusText();
 // the switch takes its new light within a few frames, the camera's story first; the game then refines it to its class.
 void SetQuickPass(bool on);
 bool QuickPass();
+// The rooms of many switched lamps show their quick pass and are being refined (the lot lighting budget stays low meanwhile)
+bool Refining();
 // Development build: status lines
 void RenderDeveloperUI();
 }

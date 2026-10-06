@@ -148,11 +148,15 @@ long g_quickEvent = -1;
 // the burst is refinement, given 4 ms of extra solving a frame instead of 12 so the frame rate holds (the capture: 35-39 ms
 // of solving a frame for 2-3 s while the rooms already showed the right light)
 DWORD g_quickStart = 0;
-bool g_quickShown = false, g_refining = false;
-bool QuickSolved(const BYTE* room) { // its class-0 solve is shown, or it already went on to its class and finished
+bool g_quickShown = false;
+std::atomic<bool> g_refining{false}; // read by the lot lighting budget too (LotLightingMotion)
+// Its class-0 solve finished: the class was set to 0 here and only the end of that solve raises it again ("no middle step"
+// takes it to its class), or the room finished. (06/10: "shown" is not a sign, the step writes the new class there too, so
+// the first version saw the quick pass only when everything was refined.)
+bool QuickSolved(const BYTE* room) {
     __try {
         const int state = *reinterpret_cast<const int*>(room + 0xF0);
-        return state == 4 || state == 5 || (state != 3 && *reinterpret_cast<const int*>(room + 0x100) == 0);
+        return state == 4 || state == 5 || *reinterpret_cast<const int*>(room + 0xF4) > 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return true; // gone
     }
@@ -449,6 +453,7 @@ bool Running() {
 
 void SetQuickPass(bool on) { g_quickPass.store(on, std::memory_order_relaxed); }
 bool QuickPass() { return g_quickPass.load(std::memory_order_relaxed); }
+bool Refining() { return g_refining.load(std::memory_order_relaxed); }
 
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)
 std::string SolveTimes() {

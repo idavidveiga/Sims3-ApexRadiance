@@ -153,3 +153,6 @@ against 1.0 s for class 0.
   of the burst showed their new light (quick pass) after X ms"), the extra solving a frame for the burst drops from 12 ms
   to 4 ms. Measured before (06/10): 35-39 ms of solving a frame for 2-3 s while the rooms already showed the right light;
   Apex's own light tests were 21-33% of those solves (the rest is the game's).
+  Fixed the same day: the quick pass is seen as done when the room's class rose again (the end of its class-0 solve), not by
+  "shown" (the step writes the new class there too, so the first version only saw it at the very end); and while refining,
+  the lot lighting budget (LotLightingMotion's hook, which raised it to 25 ms for a lamp edit) is held at 6 ms.

@@ -64,6 +64,7 @@
 
 #include "lot_lighting_motion.h"
 #include "level_light_share.h"
+#include "room_light_queue.h"
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "d3d9_hooks.h"
@@ -92,6 +93,7 @@ constexpr float kPriorityMs = 15.0f;       // the game's budget for a priority l
 constexpr float kLeaveAloneMs = 100.0f;    // budgets from here up (the tool mode's 1000, the synchronous solve's 60,000) are the game's
 constexpr float kMinMs = 0.25f;            // never below
 constexpr float kLampEditMs = 25.0f;       // the lot being played while a lamp edit's rooms wait, camera still (LevelLightShare)
+constexpr float kRefineMs = 6.0f;          // many lamps' rooms refined after their quick pass (RoomLightQueue::Refining)
 constexpr uint64_t kHoldMs = 300;          // "moving" lasts this long after the last camera change
 constexpr float kMoveEpsilon = 0.005f;     // metres; smaller eye changes are not motion
 constexpr uint64_t kDriftWindowMs = 100;   // slow motion: the eye moved more than kMoveEpsilon within this window
@@ -262,6 +264,9 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     // is let go (while it is dragged the game's 15 ms: 05/10, recording 20:38:25, moving a lamp had become laggy)
     if (!moving && game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::LampEditPending() && !LevelLightShare::LampDragging())
         out = std::max(out, kLampEditMs);
+    // Many lamps switched at once whose rooms already show their quick pass (06/10, RoomLightQueue::Refining): the refinement
+    // runs in the background with kRefineMs, so the frame rate holds (it took 35-44 ms of solving a frame for 2-3 s)
+    if (RoomLightQueue::Refining() && game > 0.0f && game < kLeaveAloneMs) out = std::min(out, std::max(kMinMs, std::min(game, kRefineMs)));
     g_lastGame.store(std::bit_cast<uint32_t>(game), std::memory_order_relaxed);
     g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
     return out;
