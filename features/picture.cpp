@@ -75,7 +75,7 @@ float4 cFlagA  : register(c13); // Technicolor 1, Technicolor 2, DPX Cineon, Col
 float4 cFlagB  : register(c14); // Night Mode, Vintage, Cross-process, Black and white
 float4 cFlagC  : register(c15); // Glow, Halation, Dreamy
 float4 cFlagD  : register(c16); // Emphasize, Tilt-shift, Prism, Film grain
-float4 cFlagE  : register(c17); // 3DFX, CRT
+float4 cFlagE  : register(c17); // 3DFX, CRT, Levels, Filmic pass
 float4 cTech1  : register(c18); // x = amount, y = cyan record (0 green .. 1 blue), z = saturation
 float4 cTech2  : register(c19); // rgb = red / green / blue dye, w = amount
 float4 cTech2b : register(c20); // x = saturation, y = brightness gain; z = DPX amount, w = DPX contrast
@@ -90,7 +90,8 @@ float4 cGlow   : register(c28); // x = amount, y = threshold, z = size, w = warm
 float4 cHal    : register(c29); // x = amount, y = threshold
 float4 cHalC   : register(c30); // rgb = halation colour
 float4 cDream  : register(c31); // x = amount, y = softness, z = saturation
-// c32, c33: unused (were Light leaks)
+float4 cLevels : register(c32); // x = black point, y = white point (encoded 0..1)
+float4 cFilm   : register(c33); // x = Filmic amount, y = fade, z = contrast (0..2), w = bleach
 float4 cEmph   : register(c34); // x = amount, y = grey, z = automatic focus, w = manual distance (m)
 float4 cEmph2  : register(c35); // x = zone depth (fraction of the distance), y = softness, z = camera near, w = depth A
 float4 cTilt   : register(c36); // x = amount, y = centre (0 top .. 1 bottom), z = sharp band height, w = saturation
@@ -100,9 +101,10 @@ float4 cFx     : register(c39); // x = 3DFX amount, y = levels of red/blue, z = 
 float4 cFx2    : register(c40); // x = soft pixels, y = 1 / gamma, z = line period (px), w = levels of green
 float4 cCrt    : register(c41); // x = amount, y = curvature, z = phosphor mask, w = scanlines
 float4 cCrt2   : register(c42); // x = edge darkening, y = line period (px)
-// c43: unused (was Cartoon)
-float4 cFlagF  : register(c44); // y = Fake HDR
-// c45 .. c47: unused (were Sun rays)
+float4 cFilm2  : register(c43); // x = Filmic saturation (-1..1), yzw = red / green / blue curve
+float4 cFlagF  : register(c44); // x = Tint, y = Fake HDR
+float4 cTintF  : register(c45); // rgb = Tint color (luminance 1), w = amount
+// c46, c47: unused (were Sun rays)
 float4 cHdr    : register(c48); // x = amount, y = radius (0 fine .. 1 large), z = shadows, w = highlights
 float4 cHdr2   : register(c49); // x = halo protection, y = saturation
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
@@ -315,6 +317,33 @@ float3 ColorLooks(float3 g)
         float e = saturate(pow(saturate(L), 1.0 / 2.2));
         float3 t = L * lerp(1.0, cBwT.rgb, cBw.z * (1.0 - e * 0.5));
         g = lerp(g, t, cBw.x);
+    }
+    // The next three work on the encoded picture (0..1 as shown), as in a photo editor
+    [branch] if (cFlagE.w > 0.5) // Filmic pass: S-curve contrast, a brightness curve per channel, bleach bypass, saturation, fade
+    {
+        float3 e0 = pow(saturate(g), 1.0 / 2.2);
+        float3 e = e0;
+        e = saturate(lerp(e, e * e * (3.0 - 2.0 * e), cFilm.z));         // toward a smooth S curve (2 = twice as steep)
+        e = pow(e, 1.0 / max(cFilm2.yzw, 0.1));                            // a curve above 1 brightens that channel
+        float L = dot(e, kLum);
+        float3 over = L < 0.5 ? 2.0 * e * L : 1.0 - 2.0 * (1.0 - e) * (1.0 - L); // bleach bypass: overlaid with its own grey
+        e = lerp(e, saturate(over), cFilm.w);
+        L = dot(e, kLum);
+        e = max(lerp(float3(L, L, L), e, 1.0 + cFilm2.x), 0.0);
+        e = lerp(e, 0.06 + e * 0.88, cFilm.y);                             // fade: lifted blacks, softer whites
+        g = pow(saturate(lerp(e0, e, cFilm.x)), 2.2);
+    }
+    [branch] if (cFlagF.x > 0.5) // Tint: the picture's grey in one color (sepia by default), mixed in
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        float L = dot(e, kLum);
+        g = pow(saturate(lerp(e, L * cTintF.rgb, cTintF.w)), 2.2);
+    }
+    [branch] if (cFlagE.z > 0.5) // Levels: the black point goes to black and the white point to white
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        e = saturate((e - cLevels.x) / max(cLevels.y - cLevels.x, 1.0 / 255.0));
+        g = pow(e, 2.2);
     }
     return g;
 }
@@ -775,7 +804,8 @@ const FilterBoolKey kFilterBools[] = {
     {"fake_hdr", &PictureParams::fakeHdr},
     {"emphasize", &PictureParams::emphasize}, {"emphasize_auto", &PictureParams::emphAuto}, {"tilt_shift", &PictureParams::tiltShift},
     {"prism", &PictureParams::prism}, {"grain", &PictureParams::grain},
-    {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt}};
+    {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt},
+    {"filmic_pass", &PictureParams::filmic}, {"tint_filter", &PictureParams::tintFilter}, {"levels", &PictureParams::levels}};
 const FilterFloatKey kFilterFloats[] = {
     {"technicolor1_amount", &PictureParams::tech1Amount}, {"technicolor1_cyan", &PictureParams::tech1Cyan},
     {"technicolor1_saturation", &PictureParams::tech1Saturation}, {"technicolor2_amount", &PictureParams::tech2Amount},
@@ -804,8 +834,13 @@ const FilterFloatKey kFilterFloats[] = {
     {"3dfx_amount", &PictureParams::fxAmount}, {"3dfx_color_depth", &PictureParams::fxDepth}, {"3dfx_scanlines", &PictureParams::fxScanlines},
     {"3dfx_dither", &PictureParams::fxDither}, {"3dfx_soft_pixels", &PictureParams::fxPixelWidth}, {"3dfx_gamma", &PictureParams::fxGamma},
     {"crt_amount", &PictureParams::crtAmount}, {"crt_curvature", &PictureParams::crtCurvature}, {"crt_mask", &PictureParams::crtMask},
-    {"crt_scanlines", &PictureParams::crtScanlines}, {"crt_edges", &PictureParams::crtEdges}};
-const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tech2Dye}, {"dpx_curve", &PictureParams::dpxCurve}};
+    {"crt_scanlines", &PictureParams::crtScanlines}, {"crt_edges", &PictureParams::crtEdges},
+    {"filmic_amount", &PictureParams::filmicAmount}, {"filmic_fade", &PictureParams::filmicFade}, {"filmic_contrast", &PictureParams::filmicContrast},
+    {"filmic_bleach", &PictureParams::filmicBleach}, {"filmic_saturation", &PictureParams::filmicSaturation},
+    {"tint_filter_hue", &PictureParams::tintFilterHue}, {"tint_filter_amount", &PictureParams::tintFilterAmount},
+    {"levels_black", &PictureParams::levelsBlack}, {"levels_white", &PictureParams::levelsWhite}};
+const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tech2Dye}, {"dpx_curve", &PictureParams::dpxCurve},
+                                        {"filmic_curve", &PictureParams::filmicCurve}};
 
 const char* const kKeys[] = {"enabled", "exposure", "contrast", "midtones", "shadows", "highlights", "blacks", "temperature", "tint", "saturation", "vibrance",
                              "shadow_hue", "shadow_tint", "highlight_hue", "highlight_tint", "mixer", "deband", "sharpen", "clarity", "vignette", "vignette_size"};
@@ -1015,6 +1050,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fGrain = on(q.grain, q.grainAmount), fFx = on(q.retro3dfx, q.fxAmount), fCrt = on(q.crt, q.crtAmount);
     const bool wantEmph = on(q.emphasize, q.emphAmount);
     const bool fHdr = on(q.fakeHdr, q.hdrAmount);
+    const bool fFilm = on(q.filmic, q.filmicAmount), fTintF = on(q.tintFilter, q.tintFilterAmount);
+    const bool fLevels = q.levels && (q.levelsBlack > 0.001f || q.levelsWhite < 0.999f);
     // Emphasize reads the scene depth: requested only while it is on
     RequestDepth(wantEmph);
     IDirect3DTexture9* depth = wantEmph ? DepthShare::Texture() : nullptr;
@@ -1095,7 +1132,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const float fxLevelsRB = std::exp2(std::round(5.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f; // 5 bits .. 3 bits
     const float fxLevelsG = std::exp2(std::round(6.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f;  // 6 bits .. 4 bits
     // Black and white: luminance weights through a colored lens filter (summing to 1, so grey stays grey), and the toning
-    float bwW[3], bwT[3], halC[3];
+    float bwW[3], bwT[3], halC[3], tintF[3];
     {
         float fc[3];
         HueColour(q.bwFilterHue, fc);
@@ -1105,6 +1142,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         for (int i = 0; i < 3; i++) sum += (bwW[i] = std::max(0.0f, lum[i] * (1.0f + k * (2.0f * fc[i] - 1.0f))));
         for (float& w : bwW) w = sum > 1e-5f ? w / sum : 1.0f / 3.0f;
         SplitToneColour(q.bwToneHue, bwT);
+        SplitToneColour(q.tintFilterHue, tintF);
         HueColour(q.halationHue, halC);
     }
     // white balance: a gentle red/blue tilt, normalised so white keeps its luminance
@@ -1137,7 +1175,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {fNight ? 1.0f : 0.0f, fVintage ? 1.0f : 0.0f, fCross ? 1.0f : 0.0f, fBw ? 1.0f : 0.0f},
         {fGlow ? 1.0f : 0.0f, fHal ? 1.0f : 0.0f, fDream ? 1.0f : 0.0f, 0},
         {fEmph ? 1.0f : 0.0f, fTilt ? 1.0f : 0.0f, fPrism ? 1.0f : 0.0f, fGrain ? 1.0f : 0.0f},
-        {fFx ? 1.0f : 0.0f, fCrt ? 1.0f : 0.0f, 0, 0},
+        {fFx ? 1.0f : 0.0f, fCrt ? 1.0f : 0.0f, fLevels ? 1.0f : 0.0f, fFilm ? 1.0f : 0.0f},
         {std::clamp(q.tech1Amount, 0.0f, 1.0f), (std::clamp(q.tech1Cyan, -1.0f, 1.0f) + 1.0f) * 0.5f, std::clamp(q.tech1Saturation, 0.0f, 2.0f), 0},
         {std::clamp(q.tech2Dye[0], 0.0f, 2.0f), std::clamp(q.tech2Dye[1], 0.0f, 2.0f), std::clamp(q.tech2Dye[2], 0.0f, 2.0f), std::clamp(q.tech2Amount, 0.0f, 1.0f)},
         {std::clamp(q.tech2Saturation, 0.0f, 2.0f), std::exp2(std::clamp(q.tech2Brightness, -1.0f, 1.0f) * 0.5f), std::clamp(q.dpxAmount, 0.0f, 1.0f),
@@ -1153,8 +1191,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.halationAmount, 0.0f, 1.0f), std::clamp(q.halationThreshold, 0.0f, 0.95f), 0, 0},
         {halC[0], halC[1], halC[2], 0},
         {std::clamp(q.dreamyAmount, 0.0f, 1.0f), std::clamp(q.dreamySoftness, 0.0f, 1.0f), std::clamp(q.dreamySaturation, 0.0f, 1.0f), 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0},
+        {std::clamp(q.levelsBlack, 0.0f, 0.9f), std::clamp(q.levelsWhite, 0.1f, 1.0f), 0, 0},
+        {std::clamp(q.filmicAmount, 0.0f, 1.0f), std::clamp(q.filmicFade, 0.0f, 1.0f), std::clamp(q.filmicContrast, 0.0f, 2.0f), std::clamp(q.filmicBleach, 0.0f, 1.0f)},
         {std::clamp(q.emphAmount, 0.0f, 1.0f), std::clamp(q.emphGrey, 0.0f, 1.0f), q.emphAuto ? 1.0f : 0.0f, std::clamp(q.emphDistance, 1.0f, 500.0f)},
         {std::clamp(q.emphWidth, 0.0f, 2.0f), std::clamp(q.emphSoftness, 0.05f, 1.0f), camNear, camA},
         {std::clamp(q.tiltAmount, 0.0f, 1.0f), std::clamp(q.tiltCenter, 0.0f, 1.0f), std::clamp(q.tiltWidth, 0.0f, 1.0f), std::clamp(q.tiltSaturation, 0.0f, 1.0f)},
@@ -1164,9 +1202,9 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.fxPixelWidth, 0.0f, 1.0f), 1.0f / std::clamp(q.fxGamma, 0.5f, 2.0f), std::max(2.0f, std::round(4.0f * scale)), fxLevelsG},
         {std::clamp(q.crtAmount, 0.0f, 1.0f), std::clamp(q.crtCurvature, 0.0f, 1.0f), std::clamp(q.crtMask, 0.0f, 1.0f), std::clamp(q.crtScanlines, 0.0f, 1.0f)},
         {std::clamp(q.crtEdges, 0.0f, 1.0f), std::max(2.0f, std::round(4.0f * scale)), 0, 0},
-        {0, 0, 0, 0},
-        {0, fHdr ? 1.0f : 0.0f, 0, 0},
-        {0, 0, 0, 0},
+        {std::clamp(q.filmicSaturation, -1.0f, 1.0f), std::clamp(q.filmicCurve[0], 0.5f, 1.5f), std::clamp(q.filmicCurve[1], 0.5f, 1.5f), std::clamp(q.filmicCurve[2], 0.5f, 1.5f)},
+        {fTintF ? 1.0f : 0.0f, fHdr ? 1.0f : 0.0f, 0, 0},
+        {tintF[0], tintF[1], tintF[2], std::clamp(q.tintFilterAmount, 0.0f, 1.0f)},
         {0, 0, 0, 0},
         {0, 0, 0, 0},
         {std::clamp(q.hdrAmount, 0.0f, 1.0f), std::clamp(q.hdrRadius, 0.0f, 1.0f), std::clamp(q.hdrShadows, 0.0f, 1.0f), std::clamp(q.hdrHighlights, 0.0f, 1.0f)},
@@ -1622,6 +1660,19 @@ void Picture::RenderFiltersUI() {
         percent("Amount", &q.crossAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.crossAmount);
         percent("Contrast", &q.crossContrast, 0.0f, 1.0f, "How punchy the shifted colors get", kDef.crossContrast);
     });
+    card("FilmicPass", IconId::Palette, "Filmic pass", "A filmic grade: softer blacks, film contrast and toned-down colors", &q.filmic, [&] {
+        percent("Amount", &q.filmicAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.filmicAmount);
+        percent("Fade", &q.filmicFade, 0.0f, 1.0f, "Lifted blacks and softer whites, like an old print", kDef.filmicFade);
+        percent("Contrast", &q.filmicContrast, 0.0f, 2.0f, "How strong the film curve is; 0% keeps the picture's own contrast", kDef.filmicContrast);
+        percent("Bleach", &q.filmicBleach, 0.0f, 1.0f, "Bleach bypass: harsher contrast with silvery, muted colors", kDef.filmicBleach);
+        signedAmount("Saturation", &q.filmicSaturation, kDef.filmicSaturation, "Fewer or more colors in the look", "Muted", "Vivid");
+        if (ApexUi::BeginAdvanced("FilmicPassCurves", "Color curves")) {
+            const char* names[3] = {"Red curve", "Green curve", "Blue curve"};
+            for (int i = 0; i < 3; i++)
+                percent(names[i], &q.filmicCurve[i], 0.5f, 1.5f, "Above 100% brightens this color in the look, below darkens it", kDef.filmicCurve[i]);
+            ApexUi::EndAdvanced();
+        }
+    });
     card("BlackAndWhite", IconId::Contrast, "Black and white", "Black and white photo, with a lens filter and an optional toning", &q.bw, [&] {
         percent("Amount", &q.bwAmount, 0.0f, 1.0f, "Partly colored, or fully black and white", kDef.bwAmount);
         hue("Filter color", &q.bwFilterHue, kDef.bwFilterHue, "Like a photographer's filter: red darkens skies, yellow softens skin, green lightens leaves");
@@ -1632,6 +1683,10 @@ void Picture::RenderFiltersUI() {
             percent("Tone amount", &q.bwTone, 0.0f, 1.0f, "How strongly the greys take that color; 0% is neutral", kDef.bwTone);
             ApexUi::EndAdvanced();
         }
+    });
+    card("Tint", IconId::Image, "Tint", "The whole picture in one color: sepia by default", &q.tintFilter, [&] {
+        percent("Amount", &q.tintFilterAmount, 0.0f, 1.0f, "How much of the color is mixed in", kDef.tintFilterAmount);
+        hue("Color", &q.tintFilterHue, kDef.tintFilterHue, "Brown for sepia, blue for a cold, moonlit look");
     });
     ApexUi::SectionLabel("COLOR AND MOOD");
     card("Colourfulness", IconId::Rainbow, "Colorfulness", "Livelier colors without blowing out the bright ones", &q.colourful, [&] {
@@ -1646,6 +1701,19 @@ void Picture::RenderFiltersUI() {
         percent("Darkness", &q.nightDarkness, 0.0f, 0.8f, "How much darker the night gets", kDef.nightDarkness, 125.0f);
         percent("Blue tint", &q.nightBlue, 0.0f, 1.0f, "How blue the night looks", kDef.nightBlue);
         percent("Keep lamp light", &q.nightKeepLamps, 0.0f, 1.0f, "Lamp-lit and bright areas keep their own color", kDef.nightKeepLamps);
+    });
+    card("Levels", IconId::Contrast, "Levels", "Set the black and white points: deeper blacks and cleaner whites", &q.levels, [&] {
+        auto level = [&](const char* label, float* v, float def, const char* desc) {
+            ApexUi::SliderOptions o;
+            o.format = "%.0f";
+            o.displayScale = 255.0f;
+            o.tooltip = desc;
+            o.defaultValue = def;
+            slide(label, v, 0.0f, 1.0f, o);
+        };
+        level("Black point", &q.levelsBlack, kDef.levelsBlack, "Everything at or below this level becomes black (0 = unchanged)");
+        level("White point", &q.levelsWhite, kDef.levelsWhite, "Everything at or above this level becomes white (255 = unchanged)");
+        if (q.levelsWhite < q.levelsBlack + 0.02f) q.levelsWhite = std::min(1.0f, q.levelsBlack + 0.02f);
     });
 
     ApexUi::SectionLabel("LIGHT AND DETAIL");

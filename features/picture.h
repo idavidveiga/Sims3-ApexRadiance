@@ -67,6 +67,13 @@ struct PictureParams {
     float crossAmount = 0.5f, crossContrast = 0.5f;
     bool bw = false;                          // black and white with a lens filter and a toning
     float bwAmount = 1.0f, bwFilterHue = 30.0f, bwFilter = 0.5f, bwToneHue = 35.0f, bwTone = 0.0f, bwContrast = 0.0f;
+    bool filmic = false;                      // filmic pass: S-curve contrast, film curves per channel, bleach bypass, fade
+    float filmicAmount = 0.85f, filmicFade = 0.4f, filmicContrast = 1.0f, filmicBleach = 0.0f, filmicSaturation = -0.15f;
+    float filmicCurve[3] = {1.0f, 1.0f, 1.0f}; // brightness curve of the red, green and blue channel
+    bool tintFilter = false;                  // the picture in one color (sepia by default), mixed in
+    float tintFilterHue = 35.0f, tintFilterAmount = 0.58f;
+    bool levels = false;                      // new black and white points, like an editor's Levels
+    float levelsBlack = 16.0f / 255.0f, levelsWhite = 235.0f / 255.0f;
     // Light
     bool glow = false;                        // soft halo around bright areas: lamps, windows, sky
     float glowAmount = 0.4f, glowThreshold = 0.6f, glowSize = 0.5f, glowWarmth = 0.0f;

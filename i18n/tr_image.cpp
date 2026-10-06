@@ -622,6 +622,24 @@ const I18n::Entry kEntries[] = {
     {"Also adjust supported transparent hair strands", "Também ajusta mechas transparentes compatíveis", "También ajusta mechones transparentes compatibles", "Ajuste aussi les mèches transparentes compatibles"},
     {"Show Sim coverage", "Mostrar cobertura dos Sims", "Mostrar cobertura de los Sims", "Afficher la couverture des Sims"},
     {"Blue: Sim controls; green: hair controls; black: original scene shade", "Azul: controles dos Sims; verde: controles do cabelo; preto: sombra original da cena", "Azul: controles de Sims; verde: controles del cabello; negro: sombra original de la escena", "Bleu : réglages des Sims ; vert : réglages des cheveux ; noir : ombre originale de la scène"},
+    // Filters added 06/10: Filmic pass, Tint, Levels
+    {"Filmic pass", "Passe fílmico", "Pase fílmico", "Passe filmique"},
+    {"A filmic grade: softer blacks, film contrast and toned-down colors", "Um tratamento de cinema: pretos mais suaves, contraste de filme e cores mais contidas", "Un etalonaje de cine: negros más suaves, contraste de película y colores más contenidos", "Un étalonnage cinéma : noirs plus doux, contraste de pellicule et couleurs atténuées"},
+    {"Lifted blacks and softer whites, like an old print", "Pretos levantados e brancos mais suaves, como uma foto antiga", "Negros levantados y blancos más suaves, como una copia antigua", "Noirs relevés et blancs adoucis, comme un vieux tirage"},
+    {"How strong the film curve is; 0% keeps the picture's own contrast", "A força da curva de filme; 0% mantém o contraste original da imagem", "La fuerza de la curva de película; 0% mantiene el contraste original de la imagen", "La force de la courbe de pellicule ; 0 % garde le contraste d'origine de l'image"},
+    {"Bleach", "Branqueamento", "Blanqueo", "Blanchiment"},
+    {"Bleach bypass: harsher contrast with silvery, muted colors", "Bleach bypass: contraste mais duro, com cores prateadas e apagadas", "Bleach bypass: contraste más duro, con colores plateados y apagados", "Sans blanchiment : contraste plus dur, couleurs argentées et éteintes"},
+    {"Fewer or more colors in the look", "Menos ou mais cor no visual", "Menos o más color en el aspecto", "Moins ou plus de couleur dans le rendu"},
+    {"Above 100% brightens this color in the look, below darkens it", "Acima de 100% clareia esta cor no visual, abaixo escurece", "Por encima del 100% aclara este color en el aspecto, por debajo lo oscurece", "Au-dessus de 100 % éclaircit cette couleur dans le rendu, en dessous l'assombrit"},
+    {"The whole picture in one color: sepia by default", "A imagem inteira numa cor só: sépia por padrão", "Toda la imagen en un solo color: sepia por defecto", "Toute l'image dans une seule couleur : sépia par défaut"},
+    {"How much of the color is mixed in", "Quanto da cor é misturado", "Cuánto del color se mezcla", "Quelle part de la couleur est mélangée"},
+    {"Brown for sepia, blue for a cold, moonlit look", "Marrom para sépia, azul para um visual frio de luar", "Marrón para sepia, azul para un aspecto frío de luz de luna", "Brun pour le sépia, bleu pour un rendu froid de clair de lune"},
+    {"Levels", "Níveis", "Niveles", "Niveaux"},
+    {"Set the black and white points: deeper blacks and cleaner whites", "Define os pontos de preto e de branco: pretos mais profundos e brancos mais limpos", "Define los puntos de negro y de blanco: negros más profundos y blancos más limpios", "Règle les points noir et blanc : noirs plus profonds et blancs plus nets"},
+    {"Black point", "Ponto de preto", "Punto negro", "Point noir"},
+    {"White point", "Ponto de branco", "Punto blanco", "Point blanc"},
+    {"Everything at or below this level becomes black (0 = unchanged)", "Tudo neste nível ou abaixo vira preto (0 = sem mudança)", "Todo lo que esté en este nivel o por debajo se vuelve negro (0 = sin cambios)", "Tout ce qui est à ce niveau ou en dessous devient noir (0 = inchangé)"},
+    {"Everything at or above this level becomes white (255 = unchanged)", "Tudo neste nível ou acima vira branco (255 = sem mudança)", "Todo lo que esté en este nivel o por encima se vuelve blanco (255 = sin cambios)", "Tout ce qui est à ce niveau ou au-dessus devient blanc (255 = inchangé)"},
 };
 const I18n::Table kTable(kEntries, std::size(kEntries));
 
