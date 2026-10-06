@@ -41,6 +41,9 @@ bool FloorWallsActive();
 // A wall crossed within nearSkip metres of the point is the wall the object sits in and does not block (0.2 m; Windows
 // take outdoor light passes more: a turned window's origin is half a tile inside its wall).
 bool WallBlocks(const float lamp[3], const float point[3], float nearSkip = 0.2f);
+// An outside wall running along (dirX, dirZ) (unit, within about 10 degrees) passes within maxDist metres of the point at
+// its height + 0.5 m (render thread): the object is set in that wall (Windows take outdoor light picks its lamps there)
+bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist);
 void SetObjectWalls(bool on);
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text

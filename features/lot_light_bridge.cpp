@@ -2247,6 +2247,24 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
     return nLamps;
 }
 
+// Windows take outdoor light: the point a wall object picks its lamps at. A window's origin is a corner of its tile, on
+// one side of the wall or the other as it is turned (F7 20-17-15 / 20-17-20, 06/10: the same window turned took other lamps
+// and another ground share, a slightly different tone); the tile's centre, origin + (local X - local Z) / 2, is on the
+// wall line both ways. Used only when an outside wall runs along one of the object's axes through that centre; else the origin.
+void ObjectLampPoint(const float (&m)[3][4], float (&p)[3]) {
+    p[0] = m[0][3];
+    p[1] = m[1][3];
+    p[2] = m[2][3];
+    if (!g_windowOutdoor.load(std::memory_order_relaxed)) return;
+    const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
+    const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
+    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return; // turned about y only, unscaled
+    const float c[3] = {p[0] + 0.5f * (xx - zx), p[1], p[2] + 0.5f * (xz - zz)};
+    if (!LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) && !LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f)) return;
+    p[0] = c[0];
+    p[2] = c[2];
+}
+
 template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn draw) {
     // rig modes 2 (outdoors) and 1 (roofless fenced areas) both draw with the exterior technique (rig report 25/09)
     const int rigMode = RigTracker::CurrentMode();
@@ -2286,7 +2304,9 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
             // line (turned the other way, inside the house), so its own wall must not block every lamp in front of it
             // (F7 19-21-19, 06/10: the turned window's frame got 0 of 19 lamps and no ground light). Off: the 0.2 m as before.
             const float nearSkip = g_windowOutdoor.load(std::memory_order_relaxed) ? kWindowWallSkip : 0.2f;
-            nLamps = PickObjectLamps(m[0][3], m[1][3], m[2][3], lamps, groundShare, nearSkip);
+            float at[3];
+            ObjectLampPoint(m, at);
+            nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, nearSkip);
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
@@ -2400,7 +2420,9 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
     int nLamps = 0;
     float m[3][4] = {};
     if (g_objPixelLamps.load(std::memory_order_relaxed) && wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
-        nLamps = PickObjectLamps(m[0][3], m[1][3], m[2][3], lamps, groundShare, kWindowWallSkip);
+        float at[3];
+        ObjectLampPoint(m, at);
+        nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, kWindowWallSkip);
         lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelLampStrength.load(std::memory_order_relaxed));
     }
     const float strength[4] = {TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelStrength.load(std::memory_order_relaxed)) * groundShare, 0, 0, 0};

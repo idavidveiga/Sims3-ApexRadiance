@@ -6311,6 +6311,31 @@ bool WallBlocks(const float lamp[3], const float point[3], float nearSkip) {
         }
     return false;
 }
+bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist) {
+    if (!g_installed.load(std::memory_order_relaxed)) return false;
+    RefreshGrid();
+    if (g_grid.segs.empty()) return false;
+    const float px = point[0], pz = point[2], y = point[1] + 0.5f;
+    const int cx0 = static_cast<int>(std::floor((px - maxDist) / kCell)), cx1 = static_cast<int>(std::floor((px + maxDist) / kCell));
+    const int cz0 = static_cast<int>(std::floor((pz - maxDist) / kCell)), cz1 = static_cast<int>(std::floor((pz + maxDist) / kCell));
+    for (int cx = cx0; cx <= cx1; cx++)
+        for (int cz = cz0; cz <= cz1; cz++) {
+            const auto it = g_grid.cells.find(CellKey(cx, cz));
+            if (it == g_grid.cells.end()) continue;
+            for (int i : it->second) {
+                const WallSeg& s = g_grid.segs[i];
+                if (y < s.y0 || y > s.y1) continue;
+                const float sx = s.x1 - s.x0, sz = s.z1 - s.z0, len2 = sx * sx + sz * sz;
+                if (len2 < 1e-6f) continue;
+                const float len = std::sqrt(len2);
+                if (std::fabs(sx * dirZ - sz * dirX) > 0.17f * len) continue; // not along the given direction (about 10 degrees)
+                const float t = std::clamp(((px - s.x0) * sx + (pz - s.z0) * sz) / len2, 0.0f, 1.0f);
+                const float dx = s.x0 + t * sx - px, dz = s.z0 + t * sz - pz;
+                if (dx * dx + dz * dz <= maxDist * maxDist) return true;
+            }
+        }
+    return false;
+}
 void SetObjectWalls(bool on) { g_objectWallsOn.store(on, std::memory_order_relaxed); }
 
 void SetFloorWalls(bool on) {
