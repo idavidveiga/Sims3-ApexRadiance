@@ -1,6 +1,7 @@
 #include "shader_lookup_cache.h"
-#include "performance_mode.h"
 #include "world_lamp_policy.h"
+#include "terrain_lighting_policy.h"
+#include "native_terrain_sampler.h"
 // Lot light bridge (part of Night Lighting)
 //
 // Why lot grass has a hard edge next to street lamps (measured with light_probe.cpp):
@@ -156,13 +157,16 @@ float4 main(PSIn i) : COLOR0 {
     float2 d = i.shadowPos.xy - 0.5;
     float edge = saturate(max(abs(d.x), abs(d.y)) * 8 - 3);
     float sun = lerp(avg, 1, edge) * saturate(dot(i.normal, c1.xyz));
-    float3 terrain = tex2D(sTerrain, i.terrainUv.xy).rgb;
+    float3 terrain = tex2D(sTerrain, i.terrainUv.xy).rgb * (c3.x + cLotGain.y);
     float3 uv1 = float3(i.terrainUv.xy, 1);
     float2 lp = float2(dot(uv1, cLotX.xyz), dot(uv1, cLotZ.xyz)); // lot-local metres
     float2 e = min(lp, float2(cLotX.w, cLotZ.w) - lp);             // distance to the nearer edge on each axis
     float w = saturate(min(e.x, e.y) * cEdge.x + cEdge.y);
     w = w * w * (3 - 2 * w);
-    float3 lamps = lerp(terrain, max(tex2D(sLot, i.lotUv).rgb * cLotGain.x, terrain), w) * c3.x;
+    // The studied VS maps local xz as (xz * 63/64 + 1/4) * VS c12.
+    // Undo that contraction for the CPU floor map; zero z/w retains unsupported VS mapping.
+    float2 lotUv = i.lotUv * (1 + cLotGain.z) + cLotGain.w;
+    float3 lamps = lerp(terrain, max(tex2D(sLot, lotUv).rgb * cLotGain.x * c3.x, terrain), w);
     float3 col = sun * c0.rgb + lamps;
     col = texCUBE(sSky, i.normal).rgb * c4.x + col;
     return float4(col * 0.5, 0);
@@ -273,6 +277,25 @@ struct ConstGain {
     }
     ConstGain(const ConstGain&) = delete;
     ConstGain& operator=(const ConstGain&) = delete;
+};
+
+struct TerrainConst {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4]{};
+    TerrainConst(IDirect3DDevice9* d, int reg, bool squared) : dev(d) {
+        if (g_night.load(std::memory_order_relaxed) == 1.0f && g_groundGain.load(std::memory_order_relaxed) == 1.0f) return;
+        if (reg < 0 || FAILED(dev->GetPixelShaderConstantF(reg, old, 1))) return;
+        const float value = TerrainLightingPolicy::LampScale(old[0], g_night.load(std::memory_order_relaxed),
+                                                            g_groundGain.load(std::memory_order_relaxed), squared);
+        if (value == old[0] || !std::isfinite(value)) return;
+        const float c[4] = {value, old[1], old[2], old[3]};
+        if (SUCCEEDED(D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, reg, c, 1))) {
+            k = reg;
+            g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    ~TerrainConst() { if (k >= 0) SetPsConst(dev, k, old, 1); }
 };
 
 std::atomic<int> g_objectDrawn{0};
@@ -455,6 +478,7 @@ bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], c
 // one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
 std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
 std::atomic<float> g_wallGain{1.0f};
+std::atomic<bool> g_wallEnabled{false};
 
 int WallLampConst(const DWORD* t, size_t bytes) {
     uint32_t h = 2166136261u;
@@ -619,6 +643,7 @@ struct VsInfo {
     bool worldMultiLight = false; // exact captured summer multi-pass light VS
     bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
     bool cinemaMarqueeDay = false; // exact EA 1.69 cinema/theatre marquee VS paired with kCinemaMarqueeDayPs
+    bool contractedLotUv = false; // exact regular lot VS; CPU floor samples use uncontracted local xz
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -650,6 +675,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             info.worldMultiLight = is(kWorldMultiLightVs);
             info.worldCompact = is(kWorldCompactVs);
             info.cinemaMarqueeDay = is(kCinemaMarqueeDayVs);
+            info.contractedLotUv = is(kLotLightVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -1288,8 +1314,6 @@ struct LampMemo {
     uint32_t x = 0, z = 0, maxScore = 0;
     int picked = 0, candidates = 0;
     float rows[32][4] = {}; // g_lampData[0..31] as SelectLamps leaves them
-    bool objectRowsReady = false;
-    float objectRows[1 + 2 * ShaderPatches::kObjectPixelLamps][4] = {};
 };
 constexpr uint32_t kLampMemoSize = 512; // direct-mapped, indexed by the top 9 bits of a hash
 static_assert(kLampMemoSize == (1u << (32 - 23)));
@@ -1304,10 +1328,9 @@ uint32_t FloatBits(float f) {
 
 int SelectLampsScan(float x, float z, float maxScore);
 
-int SelectLamps(float x, float z, float maxScore, LampMemo** memo = nullptr) {
+int SelectLamps(float x, float z, float maxScore) {
     const uint32_t bx = FloatBits(x), bz = FloatBits(z), bm = FloatBits(maxScore);
     LampMemo& e = g_lampMemo[((bx * 0x9E3779B1u) ^ (bz * 0x85EBCA77u) ^ (bm * 0xC2B2AE3Du)) >> 23]; // top 9 bits: 512 entries
-    if (memo) *memo = &e;
     if (e.gen == g_lampMemoGen && e.x == bx && e.z == bz && e.maxScore == bm) {
         g_lampMemoHits++;
         g_lastLampCandidates = e.candidates;
@@ -1316,7 +1339,6 @@ int SelectLamps(float x, float z, float maxScore, LampMemo** memo = nullptr) {
     }
     g_lampMemoMisses++;
     const int m = SelectLampsScan(x, z, maxScore);
-    e.objectRowsReady = false;
     e.gen = g_lampMemoGen;
     e.x = bx;
     e.z = bz;
@@ -1607,7 +1629,7 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) 
     // came out dark next to a lit sidewalk), else the home chunk's own map as before. The VS computes the uv as
     // (world.xz - c16.xz) * c15.xy + c15.zw, so for the atlas (uv = world.xz * a.xy + a.zw) c15 becomes
     // (a.xy, a.zw + c16.xz * a.xy) for this draw.
-    float atlasC[4];
+    float atlasC[4]{};
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
     IDirect3DBaseTexture9* terrain = atlas;
     if (!atlas) {
@@ -1655,8 +1677,13 @@ struct PatchedPs {
     ShaderPatches::BasisSmoothPatch smooth;
     DWORD nightConst = 0;
     int cubeTint = -1; // PatchCubeTint
+    DWORD nativeAlphaSampler = 0;
+    DWORD nativeAlphaSource = 0;
+    DWORD terrainDayConst = 0;
 };
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainAlphaPs;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainDayPs;
 std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
 std::atomic<bool> g_objPixel{true};
 std::atomic<float> g_objPixelStrength{1.0f};
@@ -1785,9 +1812,10 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     PatchedPs& p = PatchedFor(dev, g_fencePs, "Fence/stairs", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchInstancedLamps(t, pp.inst); });
     if (!p.ps) return false;
     float oldA[4] = {}, oldB[4] = {};
-    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
-                                      p.inst.atlasConst, p.inst.strengthConst, oldA, oldB, PerformanceMode::Enabled());
-    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
+    dev->GetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
+    dev->GetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
+    const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
+                       g_fenceStrength.load(std::memory_order_relaxed)), 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -1824,9 +1852,10 @@ bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDi
     PatchedPs& p = PatchedFor(dev, cache, what, patch);
     if (!p.ps) return false;
     float oldA[4] = {}, oldB[4] = {};
-    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
-                                      p.snow.atlasConst, p.snow.strengthConst, oldA, oldB, PerformanceMode::Enabled());
-    const float s[4] = {g_fenceStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
+    dev->GetPixelShaderConstantF(p.snow.atlasConst, oldA, 1);
+    dev->GetPixelShaderConstantF(p.snow.strengthConst, oldB, 1);
+    const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
+                       g_fenceStrength.load(std::memory_order_relaxed)), 0, 0, 0};
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -1913,11 +1942,10 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     IDirect3DVertexShader9* vs = ObjectVsFor(dev, g_curVs);
     if (!vs) return false;
     float oldA[4] = {}, oldB[4] = {};
-    PerformanceMode::ReadConstantPair([dev](unsigned reg, float* out, unsigned count) { return SUCCEEDED(dev->GetPixelShaderConstantF(reg, out, count)); },
-                                      p.obj.atlasConst, p.obj.strengthConst, oldA, oldB, PerformanceMode::Enabled());
-    // Fade only the added ground-atlas term with the real day/night state. Per-pixel lamps still follow the game's
-    // own live lamp colours/intensities, while full night remains byte-for-byte equivalent in strength.
-    const float s[4] = {g_objPixelStrength.load(std::memory_order_relaxed) * night, 0, 0, 0};
+    dev->GetPixelShaderConstantF(p.obj.atlasConst, oldA, 1);
+    dev->GetPixelShaderConstantF(p.obj.strengthConst, oldB, 1);
+    const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
+                       g_objPixelStrength.load(std::memory_order_relaxed)), 0, 0, 0};
     // Per-pixel lamps ("Counters" request): the same world lamps for every piece, chosen by the object's position (the
     // VS world triple's translation), so neighbouring pieces of a modular object get the same lamps.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
@@ -1934,21 +1962,24 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     if (pixelLamps) {
         float m[3][4];
         if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
-            LampMemo* memo = nullptr;
-            const int n = SelectLamps(m[0][3], m[2][3], 40.0f, &memo);
+            const int n = SelectLamps(m[0][3], m[2][3], 40.0f);
             nLamps = std::min(n, static_cast<int>(N));
-            if (PerformanceMode::Enabled()) {
-                if (!memo->objectRowsReady) {
-                    PerformanceMode::BuildLampRows<N>(g_lampData, n, memo->objectRows);
-                    memo->objectRowsReady = true;
-                }
-                std::memcpy(lamps, memo->objectRows, sizeof(lamps));
-            } else {
-                PerformanceMode::BuildLampRows<N>(g_lampData, n, lamps);
+            for (int k = 0; k < n && k < static_cast<int>(N); k++) {
+                const float* pr = g_lampData[k];
+                const float* col = g_lampData[16 + k];
+                const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
+                lamps[1 + 2 * k][0] = pr[0];
+                lamps[1 + 2 * k][1] = pr[1];
+                lamps[1 + 2 * k][2] = pr[2];
+                lamps[1 + 2 * k][3] = 1.0f / (r * r);
+                lamps[2 + 2 * k][0] = col[0];
+                lamps[2 + 2 * k][1] = col[1];
+                lamps[2 + 2 * k][2] = col[2];
             }
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
-            lamps[0][1] = g_objPixelLampStrength.load(std::memory_order_relaxed);
+            lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
+                              g_objPixelLampStrength.load(std::memory_order_relaxed));
             zeroRig = true;
         }
     }
@@ -2168,7 +2199,7 @@ template <typename DrawFn> bool DrawSnowRelief(IDirect3DDevice9* dev, DrawFn dra
                             2.0f, g_snowReliefDrawn);
 }
 
-// Outdoor walls (wall_lamp_table.h): the baked lamp light's scale cK.x times "Forca nas paredes" for this draw.
+// Recognized ExteriorWall variants only: lamp RGB gains a daytime contribution.
 // ExteriorWall shaders derive output alpha from final luminance; that alpha is the game's bloom mask. Raising cK.x for
 // RGB therefore also raised bloom on the whole wall/foundation. Keep the game's alpha, and apply Apex's gain only to RGB.
 std::atomic<int> g_wallDrawn{0};
@@ -2176,14 +2207,16 @@ std::atomic<int> g_wallBloomPreserved{0};
 std::atomic<int> g_wallBloomFallback{0};
 template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw) {
     const float gain = g_wallGain.load(std::memory_order_relaxed);
-    if (gain == 1.0f) return false;
+    if (!g_wallEnabled.load(std::memory_order_relaxed)) return false;
     auto it = g_wallConst.find(g_curPs);
     if (it == g_wallConst.end()) return false;
 
     float c[4], old[4];
     if (FAILED(dev->GetPixelShaderConstantF(it->second, old, 1))) return false;
+    if (!std::isfinite(old[0]) || old[0] < 0) return false;
     std::memcpy(c, old, sizeof(c));
-    c[0] *= gain;
+    c[0] = TerrainLightingPolicy::WallLampScale(old[0], g_night.load(std::memory_order_relaxed), gain);
+    if (c[0] == old[0]) return false; // unchanged lamp scale: retain the native draw
 
     DWORD colorMask = 0, blend = FALSE, zWrite = FALSE, stencilWriteMask = 0;
     const bool haveStates =
@@ -2493,24 +2526,20 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
         if (!(mask & (1u << s))) continue;
         IDirect3DBaseTexture9* cand = nullptr;
         if (FAILED(dev->GetTexture(s, &cand)) || !cand) continue;
-        const auto owner = g_chunkOfTexture.find(cand);
-        const bool known = PerformanceMode::Enabled() && owner != g_chunkOfTexture.end();
-        // g_chunks owns the reference; texture type, dimensions and mip count
-        // cannot change while this object remains alive. Contents are not cached.
-        bool ok = known ? owner->second == here : cand->GetType() == D3DRTYPE_TEXTURE && cand->GetLevelCount() <= 5;
-        if (ok && !known) {
+        bool ok = cand->GetType() == D3DRTYPE_TEXTURE && cand->GetLevelCount() <= 5;
+        if (ok) {
             D3DSURFACE_DESC d{};
             ok = SUCCEEDED(static_cast<IDirect3DTexture9*>(cand)->GetLevelDesc(0, &d)) && d.Width == 256 && d.Height == 256 && d.Format != D3DFMT_Q8W8V8U8;
         }
         // Already the map of another chunk (g_chunks holds a reference, so its address cannot belong to a new texture):
         // a leftover, not this chunk's map
         if (ok) {
+            const auto owner = g_chunkOfTexture.find(cand);
             if (owner != g_chunkOfTexture.end() && owner->second != here) {
                 ok = false;
                 g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        else if (known && owner->second != here) g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
         if (ok) {
             t = cand;
             sampler = s;
@@ -2538,12 +2567,16 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
 // found by pattern (ShaderPatches::LightMapScaleConst: c7 in the captured summer and winter chunks, but other variants
 // read the map from other samplers), -1 when there is none that scales the map alone (that shader keeps the game's
 // brightness). Cached per shader (shaders are pinned); render thread only.
-std::unordered_map<IDirect3DPixelShader9*, std::pair<DWORD, int>> g_terrainLampConst; // PS -> (light map sampler, K)
-int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler) {
+struct TerrainLampScale { DWORD sampler; int constant; bool squared; };
+std::unordered_map<IDirect3DPixelShader9*, TerrainLampScale> g_terrainLampConst;
+int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler, bool& squared) {
     auto it = g_terrainLampConst.find(ps);
-    if (it != g_terrainLampConst.end() && it->second.first == sampler) return it->second.second;
-    const int k = ShaderPatches::LightMapScaleConst(ShaderCode(ps), sampler);
-    g_terrainLampConst[ps] = {sampler, k};
+    if (it != g_terrainLampConst.end() && it->second.sampler == sampler) {
+        squared = it->second.squared;
+        return it->second.constant;
+    }
+    const int k = ShaderPatches::LightMapScaleConst(ShaderCode(ps), sampler, &squared);
+    g_terrainLampConst[ps] = {sampler, k, squared};
     LOG_INFO(std::format("[LotLightBridge] Ground brightness: terrain shader {:08X}, light map s{} -> {}", reinterpret_cast<uintptr_t>(ps), sampler,
                          k >= 0 ? std::format("c{}.x", k) : std::string("no lamp-only scale found, left as the game")));
     return k;
@@ -2653,22 +2686,54 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
             return D3D9Hooks::HookAction::Continue;
         }
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
-        // "Ground brightness": the chunk map's lamp scale times the gain, with or without the smoothed map
+        // Native terrain alpha carries solar visibility. Smooth lamp RGB only.
+        PatchedPs* alpha = nullptr;
+        if (smooth) {
+            alpha = &PatchedFor(dev, g_terrainAlphaPs, "Terrain native solar alpha", [s](std::vector<DWORD>& t, PatchedPs& p) {
+                p.nativeAlphaSource = s;
+                return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler);
+            });
+            if (!alpha->ps || alpha->nativeAlphaSource != s) smooth = nullptr; // unsupported variant: preserve the game's shadow map
+        }
         const float gain = GroundGain();
-        const int k = gain != 1.0f ? (multi ? 3 : TerrainLampConst(g_curPs, s)) : -1;
+        const float dayWeight = 1.0f - g_night.load(std::memory_order_relaxed);
+        PatchedPs* daylight = nullptr;
+        if (smooth && !multi && dayWeight > 0.0f) {
+            daylight = &PatchedFor(dev, g_terrainDayPs, "Terrain daylight range", [s](std::vector<DWORD>& t, PatchedPs& p) {
+                p.nativeAlphaSource = s;
+                return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler) &&
+                       ShaderPatches::PatchTerrainDaylightRange(t, p.terrainDayConst);
+            });
+            if (!daylight->ps || daylight->nativeAlphaSource != s) daylight = nullptr;
+        }
+        bool squared = multi;
+        const int k = multi ? 3 : TerrainLampConst(g_curPs, s, squared);
         if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
-        if (smooth) dev->GetTexture(s, &old);
+        if (smooth && FAILED(dev->GetTexture(s, &old))) smooth = nullptr;
         if (LightProbe::Capturing())
-            g_objDrawInfo = std::format("mod draw: world terrain | compact {} | multi-pass {} | lamp sampler s{} | gain {:.3f} | smoothed {}",
-                                       g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr);
+            g_objDrawInfo = std::format("mod draw: world terrain | compact {} | multi-pass {} | lamp sampler s{} | gain {:.3f} | smoothed {} | daylight range candidate {}",
+                                       g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr, daylight != nullptr);
         g_inOwnCall = true;
         {
-            // Captured multi-pass PS squares c3.x before multiplying lamp RGB.
-            ConstGain lampGain(dev, k, multi ? std::sqrt(gain) : gain);
-            if (smooth) SetTex(dev, s, smooth);
-            draw();
-            if (smooth) SetTex(dev, s, old);
+            TerrainConst lampGain(dev, k, squared);
+            if (smooth) {
+                NativeTerrainSampler native(dev, s, alpha->nativeAlphaSampler, old, D3D9Hooks::CallOriginalSetTexture);
+                if (native) {
+                    float savedDay[4]{};
+                    bool daySet = false;
+                    if (daylight && SUCCEEDED(dev->GetPixelShaderConstantF(daylight->terrainDayConst, savedDay, 1))) {
+                        const float range[4] = {dayWeight, 2.0f, 0, 0};
+                        daySet = SUCCEEDED(D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, daylight->terrainDayConst, range, 1));
+                    }
+                    SetPs(dev, daySet ? daylight->ps : alpha->ps);
+                    SetTex(dev, s, smooth);
+                    draw();
+                    SetTex(dev, s, old);
+                    SetPs(dev, g_curPs);
+                    if (daySet) SetPsConst(dev, daylight->terrainDayConst, savedDay, 1);
+                } else draw();
+            } else draw();
         }
         g_inOwnCall = false;
         g_objDrawInfo.clear();
@@ -2687,7 +2752,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (FAILED(dev->GetVertexShaderConstantF(14, v, 2)) || !Near(v[0], 1.0f / 256.0f) || !Near(v[1], 1.0f / 256.0f)) return D3D9Hooks::HookAction::Continue;
     // World atlas when ready, as in DrawLotSnow (a lot can reach past its home chunk). The summer lot VS computes the
     // light map uv as (world.xz - c15.xz) * c14.xy + c14.zw; c15 also feeds another uv (c13), so only c14 changes.
-    float atlasC[4];
+    float atlasC[4]{};
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
     IDirect3DBaseTexture9* terrain = atlas;
     if (!atlas) {
@@ -2716,13 +2781,21 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         g_haveLastEdgeRect = true;
     } else if (g_softEdges.load(std::memory_order_relaxed))
         g_edgeUnmatched.fetch_add(1, std::memory_order_relaxed);
+    float savedEdge[16]; // c28..c31: do not modify the draw unless restoration is possible
+    if (FAILED(dev->GetPixelShaderConstantF(28, savedEdge, 4))) return kContinue;
     if (LightProbe::Capturing())
         g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
                                               rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
                                 : std::string("mod draw: lot light pass | soft edges: ") + (g_softEdges.load() ? "NOT applied, lot rectangle not found" : "off (option)");
-    float savedEdge[16]; // c28..c31
-    dev->GetPixelShaderConstantF(28, savedEdge, 4);
-    const float lotGain[4] = {LotMapGain(), 0, 0, 0};
+    float lotGain[4] = {LotMapGain(), TerrainLightingPolicy::DayLampScale(g_night.load(std::memory_order_relaxed),
+                                                                                         g_groundGain.load(std::memory_order_relaxed)), 0, 0};
+    float lotUvScale[4]{};
+    if (g_curVsInfo && g_curVsInfo->contractedLotUv && SUCCEEDED(dev->GetVertexShaderConstantF(12, lotUvScale, 1))
+        && std::isfinite(lotUvScale[0]) && lotUvScale[0] > 0 && lotUvScale[0] <= 1
+        && lotUvScale[0] == lotUvScale[1]) {
+        lotGain[2] = 1.0f / 63.0f;
+        lotGain[3] = -lotUvScale[0] * (16.0f / 63.0f);
+    }
 
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
@@ -3362,7 +3435,7 @@ void HookFailed() {
 void UpdateHooks() {
     static std::mutex m; // Install runs off the render thread at startup while Present may call the setters
     std::lock_guard<std::mutex> lock(m);
-    const bool on = !g_hookFailed && (g_enabled.load() || g_objectFix.load() || g_roofFix.load() || g_waterFix.load() || g_wallGain.load() != 1.0f);
+    const bool on = !g_hookFailed && (g_enabled.load() || g_objectFix.load() || g_roofFix.load() || g_waterFix.load() || g_wallEnabled.load());
     if (on && !g_hooksRegistered) {
         g_stateUnknown = true;
         D3D9Hooks::RegisterSetPixelShader(kHookName, [](D3D9Hooks::DeviceContext&, IDirect3DPixelShader9* ps) {
@@ -3454,8 +3527,21 @@ void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amo
 void OnWorldChanged() {
     ClearChunks();
     RoomMapPadding::Clear();
+    // A direct lamp pool/memo belongs to this world too. Never illuminate new
+    // geometry with old-world rows while waiting for a successful enumeration.
+    g_allLamps.clear();
+    g_lampCount = g_lastLampCandidates = 0;
+    std::memset(g_lampData, 0, sizeof g_lampData);
+    g_lampMemoGen = 1;
+    for (auto& memo : g_lampMemo) memo.gen = 0;
+    g_enumLights.clear();
+    g_lotLampCur.clear();
+    g_lotsNow.clear();
+    g_lampFrame = 0;
+    g_lampRefreshNow = true;
     g_lampSwitchPrev.clear();
     g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
+    g_lampsAnimated = 0; // current-world classification count, not a cumulative event total
     g_lotSeen.clear();
     g_quietLogAt.clear();
     g_bakeSnap = LotLightBridge::BakeSnapshot{};
@@ -3515,11 +3601,12 @@ void SetFenceGroundLight(bool on, float strength) {
     g_fenceStrength = strength;
 }
 
-void SetWallGain(float gain) {
+void SetWallGain(float gain, bool enabled) {
     gain = gain < 0.25f ? 0.25f : (gain > 8.0f ? 8.0f : gain);
-    const bool was = g_wallGain.load() != 1.0f;
+    const bool was = g_wallEnabled.load();
     g_wallGain = gain;
-    if (was != (gain != 1.0f)) UpdateHooks();
+    g_wallEnabled = enabled;
+    if (was != enabled) UpdateHooks();
 }
 
 std::string WallStatus() {
@@ -3833,6 +3920,7 @@ void Shutdown(bool keepChunkMaps) {
     g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
+    g_wallEnabled = false;
     g_roofFix = false;
     g_waterFix = false;
     g_objPixel = false;
@@ -3847,7 +3935,7 @@ void Shutdown(bool keepChunkMaps) {
         g_snowPs = nullptr;
     }
     g_snowTried = false;
-    for (auto* cache : {&g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
+    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();

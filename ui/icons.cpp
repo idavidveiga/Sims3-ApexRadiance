@@ -418,3 +418,15 @@ void IconLabel(IconId id, const char* label, ImU32 iconColor) {
 }
 
 } // namespace ApexUi
+
+namespace ApexUi {
+const char* IconName(IconId id) {
+    const int index = static_cast<int>(id);
+    return index >= 0 && index < static_cast<int>(IconId::Count) ? LucideData::kIcons[index].name : "bookmark";
+}
+IconId IconFromName(const std::string_view name) {
+    for (int i = 0; i < static_cast<int>(IconId::Count); ++i)
+        if (name == LucideData::kIcons[i].name) return static_cast<IconId>(i);
+    return IconId::Bookmark;
+}
+} // namespace ApexUi

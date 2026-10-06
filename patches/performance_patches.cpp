@@ -1,29 +1,6 @@
-// Performance features (docs/features/performance.md):
-//   ResourceLookupCache  remembers which package answers each resource lookup (features/resource_cache.h). Off by default:
-//                        its invalidation was verified in the disassembly but not yet in game (use the Developer page's
-//                        checks, then turn the default on).
-//   ResourceLookupMisses "Remember missing files": the cache also keeps "no package holds it" answers, and counts the
-//                        writes of the traced database classes so unchanged packages need no re-check. Off by default
-//                        until checked in game; idle while ResourceLookupCache is off.
-//   FileListCache        the GetKeyList cache for the key-type filter (same module). Off by default until checked in game.
-//   LotLightingMotion    while the camera moves, scales the lot lighting budget down (features/lot_lighting_motion.h).
-//   WallShadingWhileMoving  defers the wall ambient-occlusion pass while the camera moves and allows one pass per frame
-//                        (features/lot_lighting_motion.h). On by default: it only returns the engine's own "try later".
-//   FastTextureCompression  the game's CPU DXT1 / DXT5 encoders replaced by a bit-identical faster version
-//                        (features/fast_dxt.h). Off by default until checked in game.
-//   FastCacheCompression the RefPack stream write answered by a faster compressor with the same stream format
-//                        (features/fast_refpack.h), and the compositor cache's record checksum computed eight bytes per step
-//                        (features/fast_crc.h). Off by default until checked in game.
-//   FastCasSort          the CAS triangle sort rewritten (features/fast_cas.h). Off by default until checked in game.
-//   FastMemory           the game allocator's lock spin, and its big-block release done by a helper thread outside the lock
-//                        (features/fast_memory.h). Experimental, off by default.
-//   SceneNodeBudget      while the camera moves, Scene::BeginFrame's pending-node drain processes at most N nodes / T ms
-//                        per frame, the rest the next frames; the nodes left are guarded by hooks on the node destructor,
-//                        AddNode and the holder teardown (features/scene_budget.h). Experimental, off by default.
-//   ObjectLookupIndex    the object-by-ID lookup answered from a validated index of the paths the game's walk found
-//                        (features/object_index.h). Experimental, off by default.
-// All are drawn by the menu's Performance page (apex_gui.cpp, PerformanceCard); their developer lines go to Developer >
-// Profiler.
+// Performance features (docs/features/performance.md): all 12 have individual controls on the Performance page and are
+// enabled by default when no saved value exists. Overview exposes one group switch. A user's explicit saved-off choice
+// remains respected. Keep descriptions and validation notes in the feature headers and docs; none is labeled Experimental.
 //
 // Part of Apex Radiance. Credits: @loinyx
 
@@ -738,7 +715,7 @@ APEX_REGISTER_FEATURE(ResourceLookupCachePatch,
                        .description = "Remembers which of the game's packages holds each file the game asks for, so it does not search every package again. Fewer small "
                                       "stutters when objects, textures and lots load. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"ResourceMgr::FindProvider (0x4AFFC0) answers from a table keyed by (manager, resource key); each answer is re-checked with one probe of "
@@ -752,7 +729,7 @@ APEX_REGISTER_FEATURE(ResourceLookupMissesPatch,
                        .description = "Lets Faster Game File Lookups also remember files that no package has, so the game does not search every package for them again "
                                       "and again. Needs Faster Game File Lookups. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"FindProvider answers of 0 (about a third of all lookups: the resolve 0x7D8110 retries every miss with the group bit flipped) "
@@ -767,7 +744,7 @@ APEX_REGISTER_FEATURE(FileListCachePatch,
                        .description = "Remembers which files of a kind each of the game's packages holds, so Create a Sim and Sim loading do not read the list of every "
                                       "package again. Fewer small stutters when Sims change outfits or load. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"ResourceMgr::GetKeyList (0x4B1AE0 / 0x736660, vtable slots) for the key-type filter: each read-only package's matching keys "
@@ -892,7 +869,7 @@ APEX_REGISTER_FEATURE(FastTextureCompressionPatch,
                        .description = "Compresses the textures the game builds while you play (terrain, Sims, lot views, thumbnails) several times faster, with "
                                       "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The CPU DXT1 / DXT5 encoders (0x6152F0 / 0x6154B0) are replaced at their entries by the same algorithm run on four blocks at "
@@ -907,7 +884,7 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                        .description = "Compresses what the game stores in its caches and saves (Sims, objects, terrain) with a much faster compressor in the game's own "
                                       "format, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The RefPack stream write (0x4EC200) is answered through its vtable slot by a bounded hash-chain compressor with reusable "
@@ -924,7 +901,7 @@ APEX_REGISTER_FEATURE(FastCasSortPatch,
                                       "layers with a slow test of every triangle against every point of the mesh. This does the same sort many times faster, with "
                                       "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The CAS model builder's triangle sort (0x5D1960, \"CAS/ModelBuilder/TriangleSortDataList\") is answered by a rewrite with the "
@@ -939,7 +916,7 @@ APEX_REGISTER_FEATURE(FastMemoryPatch,
                                       "and wake up late, and freeing a big block of memory made everyone wait. Now it waits a few microseconds before sleeping, and "
                                       "big blocks are handed back to Windows in the background. Nothing else changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The general allocator's critical section (created with a spin count of 10, about 24 ns) gets Windows' default of 2000 "
@@ -957,7 +934,7 @@ APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                                       "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
                                       "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Scene::BeginFrame's call of the pending-node drain (0x6EBC49 -> 0x6E4130) goes through Apex: while the camera eye moved in "
@@ -974,7 +951,7 @@ APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
                        .description = "Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time. "
                                       "Fewer stutters when lot lights update and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The lookup by ID (0xC62D40, a depth-first walk of the world's object tree) answers from a table of the paths the game's walk "
@@ -989,7 +966,7 @@ APEX_REGISTER_FEATURE(RoomLightQueuePatch,
                                       "go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. Part of " APEX_PRODUCT_NAME ". "
                                       "Credits: @loinyx",
                        .category = "Performance",
-                       .experimental = true,
+                        .experimental = false,
                        .enabledByDefault = false,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The game relights rooms one at a time for the whole world, one per frame at most: the priority of each room (CALL 0x6A81DF "

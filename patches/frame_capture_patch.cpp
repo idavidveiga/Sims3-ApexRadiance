@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 // Frame Capture (diagnostic)
 // Records every render-target switch, depth-stencil switch, clear, StretchRect and draw call of a few
 // consecutive frames into Documents\...\Apex Radiance\ApexRadiance_FrameCapture.txt. Used to find where the game finishes the
@@ -472,7 +473,7 @@ class FrameCapturePatch : public ApexPatch {
 
         g.active = true;
         isEnabled = true;
-        LOG_INFO("[FrameCapture] Installed (press the button or Ctrl+Shift+F9 to capture)");
+        LOG_INFO("[FrameCapture] Installed (press the button or " + ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)) + " to capture)");
         return true;
     }
 
@@ -499,18 +500,22 @@ class FrameCapturePatch : public ApexPatch {
     void RenderCustomUI() override {
         SAFE_IMGUI_BEGIN();
         ImGui::Text("Status: %s", g.status.c_str());
-        ImGui::TextWrapped("Records everything the game draws in %d consecutive frames, to find the point between the 3D scene and the interface.",
-                           kFramesPerCapture);
-        if (ImGui::Button("Capture now")) Arm();
-        ImGui::SameLine();
-        ImGui::TextDisabled("(or %s in game)", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
-        ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");
+        if (ApexUi::BeginControlRow("Render operations", "Render targets, depth buffers, clears and draw calls", ApexUi::ButtonWidth("Capture two frames", true))) {
+            if (ApexUi::IconTextButton("Capture two frames", ApexUi::IconId::Camera)) Arm();
+            ApexUi::EndControlRow();
+        }
+        if (ApexUi::BeginAdvanced("FrameCaptureDetails", "File and shortcut")) {
+            ImGui::TextDisabled("Shortcut: %s", ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::FrameCapture)).c_str());
+            ImGui::TextDisabled("Frames per capture: %d", kFramesPerCapture);
+            ImGui::TextDisabled("File: Documents\\Electronic Arts\\The Sims 3\\Apex Radiance\\ApexRadiance_FrameCapture.txt");
+            ApexUi::EndAdvanced();
+        }
     }
 };
 
 #include "build_flavor.h"
 APEX_REGISTER_FEATURE(FrameCapturePatch, {.displayName = "Frame Capture (developer)",
-                                      .description = "Diagnostic: dumps the draw calls of 2 frames to ApexRadiance_FrameCapture.txt (Ctrl+Shift+F9)."
+                                      .description = "Diagnostic: dumps the draw calls of 2 frames to ApexRadiance_FrameCapture.txt (shortcut in Settings > Shortcuts)."
                                                      " Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                                       .category = "Experimental",
                                       .experimental = true,

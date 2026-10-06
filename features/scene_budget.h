@@ -1,6 +1,6 @@
 #pragma once
-// Scene node budget (Apex Radiance, feature "SceneNodeBudget", menu "Spread new objects over frames"; experimental, off by
-// default; docs/features/performance.md, section "How it works: Spread New Objects Over Frames (C6)").
+// Scene node budget (Apex Radiance, feature "SceneNodeBudget", menu "Spread new objects over frames"; enabled by default
+// when no saved value exists; docs/features/performance.md, section "How it works: Spread New Objects Over Frames (C6)").
 //
 // Every frame Scene::BeginFrame (0x006EBB70 on Steam 1.67.2) calls the pending-node drain 0x006E4130 on its scene
 // sub-object: every scene node that was added, moved or re-bounded since the last frame (queued on the intrusive list at

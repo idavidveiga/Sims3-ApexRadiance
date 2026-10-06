@@ -172,6 +172,28 @@ uintptr_t ImportSlotRaw(const char* name) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+// True when the import slot currently holds kernel32!name (or the KernelBase function it forwards to)
+bool SlotHolds(uintptr_t slot, const char* name) {
+    uint32_t v = 0;
+    if (!slot || !MemPatch::ReadBytes(slot, reinterpret_cast<uint8_t*>(&v), 4) || !v) return false;
+    for (const wchar_t* dll : {L"kernel32.dll", L"kernelbase.dll"}) {
+        const HMODULE m = GetModuleHandleW(dll);
+        if (m && reinterpret_cast<uintptr_t>(GetProcAddress(m, name)) == v) return true;
+    }
+    return false;
+}
+
+// The slot read by the "call [slot]" at `at`, when that slot holds kernel32!name; 0 otherwise. Used when the game's own
+// import directory does not list kernel32: the EA app build's import directory belongs to its activation stub, which
+// fills the real import slots itself at start-up.
+uintptr_t SlotFromCall(uintptr_t at, const char* name) {
+    uint8_t b[6];
+    if (!at || !MemPatch::ReadBytes(at, b, 6) || b[0] != 0xFF || b[1] != 0x15) return 0;
+    uint32_t s;
+    std::memcpy(&s, b + 2, 4);
+    return SlotHolds(s, name) ? s : 0;
+}
+
 bool IsCallThrough(uintptr_t at, uintptr_t slot) {
     uint8_t b[kCallLen];
     if (!MemPatch::ReadBytes(at, b, kCallLen) || b[0] != 0xFF || b[1] != 0x15) return false;
@@ -201,13 +223,22 @@ bool Restore(CallSite& site) {
 
 // Deferral on: the allocator's VirtualAlloc calls first (the retry must exist before anything is queued), then the release
 bool StartDeferral(std::string* why) {
+    const uintptr_t freeAt = GameAddr::Get(GameAddr::Id::AllocMmapFreeCall);
+    if (!freeAt) {
+        *why = "the allocator's big-block release was not found";
+        return false;
+    }
     g_allocSlot = ImportSlotRaw("VirtualAlloc");
     g_freeSlot = ImportSlotRaw("VirtualFree");
+    if (!g_freeSlot) g_freeSlot = SlotFromCall(freeAt, "VirtualFree");
+    if (!g_allocSlot) {
+        // The first call in the allocator that reads a slot holding VirtualAlloc
+        for (uintptr_t a = freeAt - kScanBefore; a < freeAt + kScanAfter && !g_allocSlot; a++) g_allocSlot = SlotFromCall(a, "VirtualAlloc");
+    }
     if (!g_allocSlot || !g_freeSlot) {
         *why = "the game's VirtualAlloc / VirtualFree imports were not found";
         return false;
     }
-    const uintptr_t freeAt = GameAddr::Get(GameAddr::Id::AllocMmapFreeCall);
     if (!IsCallThrough(freeAt, g_freeSlot)) {
         *why = std::format("the big-block release {:#010x} is not the expected call [VirtualFree]", freeAt);
         return false;

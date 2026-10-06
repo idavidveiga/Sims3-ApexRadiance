@@ -38,6 +38,9 @@ Id Add(Desc desc);
 // Starts the background compile of every registered variant (init thread). Safe to call more than once.
 void Start();
 
+// Nonblocking readiness probe: pending or failed worker creation never stalls a frame.
+bool PrecompileComplete();
+
 enum class Result { Ok, CompileFailed, CreateFailed };
 
 // Creates the pixel shader of `id` from the precompiled bytecode (render thread). CompileFailed: *compileError gets the

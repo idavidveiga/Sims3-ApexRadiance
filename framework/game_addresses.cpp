@@ -265,6 +265,14 @@ constexpr Info kInfo[] = {
     {"TexCreate", 0x0060CEA0},
     {"TexFillCall", 0x0060E1FF},
     {"TexFill", 0x0060D290},
+    {"UiServiceGetter", 0x0050AB70},
+    {"RoomNormCall", 0x006A13B4},
+    {"RoomNorm", 0x006A0230},
+    {"BasisLightCall", 0x006A0C56},
+    {"BasisLight", 0x0069F280},
+    {"LampLitCall", 0x006C7CB6},
+    {"LampMarkCall", 0x006C7CD6},
+    {"LampMark", 0x006C7160},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -420,13 +428,13 @@ const Entry kTable[] = {
     {Id::RoomSolveStart, K::Target, W::Text, Id::RoomSolveStartCall, 0, {NOSIG, NOSIG}},
     {Id::WallPassCall, K::Sig, W::Text, None, 0, {{"D9 1C 24 57 8B CE E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 88 9E 38 06 00 00 C7 86 EC 00 00 00 03", 6, M::At}, {"57 8B CE E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 88 9E 38 06 00 00 C7 86 EC 00 00 00 03", 3, M::At}}},
     {Id::WallPass, K::Target, W::Text, Id::WallPassCall, 0, {NOSIG, NOSIG}},
-    {Id::WallSamplesCall, K::InRange, W::Text, Id::WallPass, 0x150, {{"68 C8 8A 15 01 52 50 8B CF E8", 9, M::At}, {"52 50 8B CF E8", 4, M::At}}},
+    {Id::WallSamplesCall, K::InRange, W::Text, Id::WallPass, 0x150, {{"68 ?? ?? ?? ?? 52 50 8B CF E8", 9, M::At}, {"52 50 8B CF E8", 4, M::At}}},
     {Id::WallSamples, K::Target, W::Text, Id::WallSamplesCall, 0, {NOSIG, NOSIG}},
     {Id::WallBlurCall, K::InRange, W::Text, Id::WallPass, 0x150, {{"8B CE E8 ?? ?? ?? ?? 5F 5E 5D B0 01", 2, M::At}, {"E8 ?? ?? ?? ?? 5F 5E 5D B0 01 5B", 0, M::At}}},
     {Id::WallBlur, K::Target, W::Text, Id::WallBlurCall, 0, {NOSIG, NOSIG}},
     {Id::WallBlurPasses, K::Deref, W::Image, Id::WallBlur, 0x20, {NOSIG, NOSIG}},
     {Id::WallBlurMode, K::Deref, W::Image, Id::WallBlur, 0x88, {NOSIG, NOSIG}},
-    {Id::WallSolveCall, K::InRange, W::Text, Id::WallPass, 0x150, {{"53 68 C8 8A 15 01 8B CE E8", 8, M::At}, {"68 C8 8A 15 01 8B CE E8", 7, M::At}}},
+    {Id::WallSolveCall, K::InRange, W::Text, Id::WallPass, 0x150, {{"53 68 ?? ?? ?? ?? 8B CE E8", 8, M::At}, {"68 ?? ?? ?? ?? 8B CE E8", 7, M::At}}},
     {Id::WallSolve, K::Target, W::Text, Id::WallSolveCall, 0, {NOSIG, NOSIG}},
     {Id::RoomAmbient, K::Sig, W::Text, None, 0, {{"55 8B EC 83 E4 F0 81 EC 04 01 00 00 53 56 8B F1 8B 86 C8 00 00 00 3B 86 CC 00 00 00 57 75", 0, M::At}, {"8B 86 C8 00 00 00 3B 86 CC 00 00 00 57 75 ?? 8B 56 14", -16, M::At}}},
     {Id::UnlitColourA, K::InRange, W::Text, Id::RoomAmbient, 0x80, {{"84 C0 B9 ?? ?? ?? ?? 75 05 B9 ?? ?? ?? ?? E8", 3, M::At}, {"B9 ?? ?? ?? ?? 75 05 B9", 1, M::At}}},
@@ -558,6 +566,14 @@ const Entry kTable[] = {
     {Id::TexCreate, K::Target, W::Text, Id::TexCreateCall, 0, {NOSIG, NOSIG}},
     {Id::TexFillCall, K::Sig, W::Text, None, 0, {{"8A 4D FB 51 8B 55 10 52 8B 45 0C 50 8B 4D 08 51 E8 ?? ?? ?? ?? 83 C4 10", 16, M::At}, NOSIG}},
     {Id::TexFill, K::Target, W::Text, Id::TexFillCall, 0, {NOSIG, NOSIG}},
+    {Id::UiServiceGetter, K::Sig, W::Text, None, 0, {{"56 57 E8 ?? ?? ?? ?? 8B F8 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 10 8B C8 8B 42 04 FF D0 8B F0 85 F6", 9, M::Call}, NOSIG}},
+    {Id::RoomNormCall, K::Sig, W::Text, None, 0, {{"DD D8 8D 44 24 50 50 8B CE E8", 9, M::At}, {"8D 44 24 50 50 8B CE E8 ?? ?? ?? ?? F3 0F 10 44 24 18", 7, M::At}}},
+    {Id::RoomNorm, K::Target, W::Text, Id::RoomNormCall, 0, {NOSIG, NOSIG}},
+    {Id::BasisLightCall, K::Sig, W::Text, None, 0, {{"8D 94 24 C8 00 00 00 52 8B CF E8", 10, M::At}, NOSIG}},
+    {Id::BasisLight, K::Target, W::Text, Id::BasisLightCall, 0, {NOSIG, NOSIG}},
+    {Id::LampLitCall, K::Sig, W::Text, None, 0, {{"8B CF E8 ?? ?? ?? ?? 8B 44 24 1C 3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 0, M::At}, NOSIG}},
+    {Id::LampMarkCall, K::Sig, W::Text, None, 0, {{"3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 21, M::At}, NOSIG}},
+    {Id::LampMark, K::Target, W::Text, Id::LampMarkCall, 0, {NOSIG, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
@@ -593,6 +609,7 @@ const Group kGroups[] = {
     {"FastCasSort", {Id::CasTriSort}},
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
+    {"RoomLightQueue", {Id::PriorityLotObject, Id::PriorityLotTest}}, // each further part checks its own ids and bytes
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

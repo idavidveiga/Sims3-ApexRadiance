@@ -3,6 +3,12 @@
 #include <cstdint>
 
 namespace RoomAmbientPolicy {
+inline bool StructureRefreshDue(std::uint32_t now, std::uint32_t last) {
+    return !last || static_cast<std::uint32_t>(now - last) >= 250;
+}
+inline bool FloorEditReady(std::uint32_t now, std::uint32_t last) {
+    return last && static_cast<std::uint32_t>(now - last) >= 250;
+}
 inline bool AfterLoadRefreshReady(std::uint32_t now, std::uint32_t started, bool busy, std::uint32_t& quiet) {
     if (static_cast<std::uint32_t>(now - started) >= 8000) return true;
     if (busy) quiet = 0;

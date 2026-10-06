@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Resource lookup cache, "Remember missing files" and "Faster file lists" (see resource_cache.h and
 // docs/features/performance.md).
@@ -1814,42 +1815,46 @@ void RenderDeveloperUI() {
         prev = s;
         prevTick = now;
     }
-    ImGui::TextUnformatted(("Resource lookup cache: " + StatusText()).c_str());
-    ImGui::TextDisabled("Lookups %llu, answered from memory %llu, game lookups %llu (not found %llu), re-check failed %llu, passed through during list changes %llu",
-                        static_cast<unsigned long long>(s.lookups), static_cast<unsigned long long>(s.hits), static_cast<unsigned long long>(s.misses),
-                        static_cast<unsigned long long>(s.notFound), static_cast<unsigned long long>(s.rejected), static_cast<unsigned long long>(s.bypassed));
-    ImGui::TextDisabled("Stored %llu (not stored %llu), entries %u / %u, table restarts when full %llu", static_cast<unsigned long long>(s.inserted),
-                        static_cast<unsigned long long>(s.notCached), s.entries, s.capacity, static_cast<unsigned long long>(s.fullClears));
-    ImGui::TextDisabled("Package list: %d packages, %d not of the read-only class (asked on every answer unless counted: %d)%s", s.listSize, s.writableProviders, s.tracedProviders,
-                        s.readOnlyClassOk ? "" : "; read-only class NOT recognised");
-    ImGui::TextDisabled("Invalidations: list changes %llu, change notices %llu, changes the hooks missed %llu", static_cast<unsigned long long>(s.listChanges),
-                        static_cast<unsigned long long>(s.changeNotices), static_cast<unsigned long long>(s.unhookedChanges));
-    ImGui::TextDisabled("Missing files (%s): answered from memory %llu, remembered %llu, not remembered (a read-only package could not answer for sure) %llu",
-                        MissesRunning() ? "on" : "off", static_cast<unsigned long long>(s.negHits), static_cast<unsigned long long>(s.negInserted),
-                        static_cast<unsigned long long>(s.negUnreliable));
-    ImGui::TextDisabled("Write epochs: counted classes %s; answers with no probe of them %llu, sums refreshed after a write %llu, writes counted %llu", s.epochClasses.c_str(),
-                        static_cast<unsigned long long>(s.epochHits), static_cast<unsigned long long>(s.epochRefreshes), static_cast<unsigned long long>(s.epochWrites));
-    ImGui::TextDisabled("Per second: %.0f lookups, %.0f from memory; time in answers %.2f ms, in game lookups %.2f ms; saved about %.2f ms", rateLookups, rateHits, rateHitMs,
-                        rateMissMs, rateSavedMs);
-    ImGui::TextDisabled("Average: game lookup %.1f us, answer from memory %.2f us (%.1f packages asked)", s.misses ? 1000.0 * s.missMs / static_cast<double>(s.misses) : 0.0,
-                        s.hits ? 1000.0 * s.hitMs / static_cast<double>(s.hits) : 0.0, s.hits ? static_cast<double>(s.probesOnHits) / static_cast<double>(s.hits) : 0.0);
-    ImGui::TextUnformatted(("File list cache: " + KeyListStatusText()).c_str());
-    ImGui::TextDisabled("Calls %llu (cacheable %llu, passed to the game %llu); package lists from memory %llu, packages asked %llu; kept %u lists (%u keys), not kept %llu",
-                        static_cast<unsigned long long>(s.klCalls), static_cast<unsigned long long>(s.klCached), static_cast<unsigned long long>(s.klPassed),
-                        static_cast<unsigned long long>(s.klPackagesFromMemory), static_cast<unsigned long long>(s.klPackagesAsked), s.klEntries, s.klKeys,
-                        static_cast<unsigned long long>(s.klNotStored));
     int every = g_verifyEvery.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Check 1 answer in N against the game##RcVerify", &every, 0, 1024)) SetVerifyEvery(every);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Check every answer for 10 s##RcVerifyAll")) VerifyAllFor(10.0);
+    if (ApexUi::DiagnosticIntRow("Check 1 answer in N against the game##RcVerify", &every, 0, 1024)) SetVerifyEvery(every);
+    if (ApexUi::BeginControlRow("Validation run", "Adds comparison work while the test is active", ApexUi::ButtonWidth("Check every answer for 10 s##RcVerifyAll", true))) {
+        if (ApexUi::IconTextButton("Check every answer for 10 s##RcVerifyAll", ApexUi::IconId::Scan)) VerifyAllFor(10.0);
+        ApexUi::EndControlRow();
+    }
     const bool checkingAll = GetTickCount64() < g_verifyAllUntil.load();
-    ImGui::TextDisabled("Lookup checks: %llu equal, %llu different, %llu inconclusive (the list changed during the check)%s", static_cast<unsigned long long>(s.verified),
+    ImGui::TextWrapped("Lookup checks: %llu equal, %llu different, %llu inconclusive (the list changed during the check)%s", static_cast<unsigned long long>(s.verified),
                         static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.inconclusive), checkingAll ? "  [checking every answer]" : "");
-    ImGui::TextDisabled("File list checks: %llu equal, %llu different, %llu inconclusive", static_cast<unsigned long long>(s.klVerified), static_cast<unsigned long long>(s.klMismatches),
+    ImGui::TextWrapped("File list checks: %llu equal, %llu different, %llu inconclusive", static_cast<unsigned long long>(s.klVerified), static_cast<unsigned long long>(s.klMismatches),
                         static_cast<unsigned long long>(s.klInconclusive));
     if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
     if (!s.klLastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last file list difference: %s", s.klLastMismatch.c_str());
+    if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
+    ImGui::TextWrapped("%s", ("Resource lookup cache: " + StatusText()).c_str());
+    ImGui::TextWrapped("Lookups %llu, answered from memory %llu, game lookups %llu (not found %llu), re-check failed %llu, passed through during list changes %llu",
+                        static_cast<unsigned long long>(s.lookups), static_cast<unsigned long long>(s.hits), static_cast<unsigned long long>(s.misses),
+                        static_cast<unsigned long long>(s.notFound), static_cast<unsigned long long>(s.rejected), static_cast<unsigned long long>(s.bypassed));
+    ImGui::TextWrapped("Stored %llu (not stored %llu), entries %u / %u, table restarts when full %llu", static_cast<unsigned long long>(s.inserted),
+                        static_cast<unsigned long long>(s.notCached), s.entries, s.capacity, static_cast<unsigned long long>(s.fullClears));
+    ImGui::TextWrapped("Package list: %d packages, %d not of the read-only class (asked on every answer unless counted: %d)%s", s.listSize, s.writableProviders, s.tracedProviders,
+                        s.readOnlyClassOk ? "" : "; read-only class NOT recognised");
+    ImGui::TextWrapped("Invalidations: list changes %llu, change notices %llu, changes the hooks missed %llu", static_cast<unsigned long long>(s.listChanges),
+                        static_cast<unsigned long long>(s.changeNotices), static_cast<unsigned long long>(s.unhookedChanges));
+    ImGui::TextWrapped("Missing files (%s): answered from memory %llu, remembered %llu, not remembered (a read-only package could not answer for sure) %llu",
+                        MissesRunning() ? "on" : "off", static_cast<unsigned long long>(s.negHits), static_cast<unsigned long long>(s.negInserted),
+                        static_cast<unsigned long long>(s.negUnreliable));
+    ImGui::TextWrapped("Write epochs: counted classes %s; answers with no probe of them %llu, sums refreshed after a write %llu, writes counted %llu", s.epochClasses.c_str(),
+                        static_cast<unsigned long long>(s.epochHits), static_cast<unsigned long long>(s.epochRefreshes), static_cast<unsigned long long>(s.epochWrites));
+    ImGui::TextWrapped("Per second: %.0f lookups, %.0f from memory; time in answers %.2f ms, in game lookups %.2f ms; saved about %.2f ms", rateLookups, rateHits, rateHitMs,
+                        rateMissMs, rateSavedMs);
+    ImGui::TextWrapped("Average: game lookup %.1f us, answer from memory %.2f us (%.1f packages asked)", s.misses ? 1000.0 * s.missMs / static_cast<double>(s.misses) : 0.0,
+                        s.hits ? 1000.0 * s.hitMs / static_cast<double>(s.hits) : 0.0, s.hits ? static_cast<double>(s.probesOnHits) / static_cast<double>(s.hits) : 0.0);
+    ImGui::TextWrapped("%s", ("File list cache: " + KeyListStatusText()).c_str());
+    ImGui::TextWrapped("Calls %llu (cacheable %llu, passed to the game %llu); package lists from memory %llu, packages asked %llu; kept %u lists (%u keys), not kept %llu",
+                        static_cast<unsigned long long>(s.klCalls), static_cast<unsigned long long>(s.klCached), static_cast<unsigned long long>(s.klPassed),
+                        static_cast<unsigned long long>(s.klPackagesFromMemory), static_cast<unsigned long long>(s.klPackagesAsked), s.klEntries, s.klKeys,
+                        static_cast<unsigned long long>(s.klNotStored));
+        ApexUi::EndAdvanced();
+    }
 }
 
 

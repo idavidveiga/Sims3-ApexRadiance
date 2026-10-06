@@ -8,7 +8,7 @@
 // Design tokens (docs/ui.md "Design tokens"):
 //  - spacing scale kSpace1..4 = 4 / 8 / 12 / 16 (x Unit());
 //  - type scale: page title 1.3x bold, card title 1.05x bold, row label 1x, description / value / end labels 0.87x muted,
-//    group label 0.8x bold muted upper case;
+//    group label regular 1x muted, without artificial tracking;
 //  - rows: consecutive rows (switch, slider, segmented, control, overview) are kRowGap apart with a hairline divider in the
 //    middle; any other element (note, button, "Advanced", group label) keeps kSpace2 from a row above it.
 //  - rows with a default (the optional default argument) show a small violet dot after the label while their value differs
@@ -106,7 +106,7 @@ void PageTitle(const char* title, const char* subtitle);
 void MutedText(const char* text);
 // Small bold section label inside a card or page (kept for older callers; cards use GroupLabel)
 void SectionLabel(const char* text);
-// Group label inside a card: small, bold, muted, letter-spaced; pass it in upper case ("WALLS")
+// Group label inside a card: regular menu font, muted, without letter spacing
 void GroupLabel(const char* text);
 // A note: a small icon and wrapped text in a subtly tinted rounded box, in the given colour (0xRRGGBB). Info notes use
 // IconId::Info and the default muted colour, warnings IconId::TriangleAlert and VioletTheme::kWarning, errors
@@ -116,6 +116,23 @@ void IconNote(IconId icon, const char* text, unsigned rgb = 0x8B8C96);
 void Gap(float units = 4.0f);
 
 // ---- controls ----
+// Scope a whole form/action group so its inputs and buttons share one height.
+// Compact is the default; Primary is for main actions, independent of button colour.
+enum class ControlSize { Compact, Primary };
+class ControlSizeScope {
+public:
+    explicit ControlSizeScope(ControlSize size);
+    ~ControlSizeScope();
+    ControlSizeScope(const ControlSizeScope&) = delete;
+    ControlSizeScope& operator=(const ControlSizeScope&) = delete;
+};
+
+// Native-style diagnostic checkbox: a 20-unit box, independent of input frame heights.
+// Labels are supplied by the caller (developer English or already translated).
+bool Checkbox(const char* label, bool* value);
+// Diagnostic integers retain native integer behavior inside a measured, responsive control row.
+bool DiagnosticIntRow(const char* label, int* value, int min, int max, const char* description = nullptr, ImGuiSliderFlags flags = 0);
+
 // iOS-style switch (violet when on). True on the frame it was clicked (*v is already flipped).
 bool ToggleSwitch(const char* id, bool* v);
 // A row: label on the left with its description (a short sentence, always visible, muted and smaller) under it, the
@@ -128,7 +145,7 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip = nullptr, BoolDe
 // between them; AlignTextToFramePadding before text). Returns false (and draws nothing) when the search filter hides
 // it: then submit nothing and do NOT call EndControlRow(). When it returns true, always call EndControlRow(). Not
 // nestable.
-bool BeginControlRow(const char* label, const char* description, float controlsWidth);
+bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon = IconId::None, float controlsHeight = 0.0f);
 void EndControlRow();
 // A small muted chip ("~0.4 ms"); submitted as an item (hover it for a tooltip)
 ImVec2 ChipSize(const char* text);
@@ -138,10 +155,10 @@ ImVec2 PillSize(const char* text, bool withIcon);
 void Pill(const char* text, bool highlighted, IconId icon = IconId::None);
 // Borderless square button with an icon (header close, before/after); true when clicked. `active` keeps it violet.
 bool IconButton(const char* id, IconId icon, const char* tooltip = nullptr, bool active = false, float sizeUnits = 24.0f);
-// Buttons, one frame high. Secondary = neutral fill with a border that turns violet on hover (Reset, Save, Change);
+// Buttons use the active compact/primary group frame height. Secondary = neutral fill with a border that turns violet on hover (Reset, Save, Change);
 // Primary = violet fill with white text, for the key action of a card (Turn on ..., Download).
 enum class ButtonKind { Secondary, Primary };
-// A button with a small icon before its label; true when clicked. "Label##id" hides the ##id part.
+// A button with a 20-unit icon before its label; true when clicked. "Label##id" hides the ##id part.
 bool IconTextButton(const char* label, IconId icon, const char* tooltip = nullptr, ButtonKind kind = ButtonKind::Secondary);
 // The same without an icon; minWidth (pixels, already x Unit()) for equal-width buttons like - / +.
 bool TextButton(const char* label, const char* tooltip = nullptr, ButtonKind kind = ButtonKind::Secondary, float minWidth = 0.0f);
@@ -167,6 +184,10 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
 // by its Reset button). defaultIndex = the default choice (changed dot + Reset), kNoDefaultIndex = none.
 bool SegmentedRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
                   const char* const* tooltips = nullptr, const IconId* icons = nullptr, int defaultIndex = kNoDefaultIndex);
+// Standard single-choice row: label and description on the left, a dropdown on the right, with the same changed
+// marker, hover Reset and search behavior as other setting rows. defaultIndex = the default choice.
+bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
+               float controlWidth = 220.0f, int defaultIndex = kNoDefaultIndex);
 
 // "Advanced" section: a hairline, then a violet chevron row, collapsed by default (the state is kept per id while the
 // game runs). The contents are not indented and use the same rows. When it returns true, submit the contents and call
@@ -225,13 +246,15 @@ struct HeaderExtra {
     IconId holdIcon = IconId::None; // None = no hold button
     const char* holdTooltip = nullptr;
     bool held = false; // set by CardHeader
+    const char* badge = nullptr; // optional warning-colour chip immediately left of the header switch
+    const char* badgeTooltip = nullptr;
 };
 // Tooltip of the performance chips
 inline constexpr const char* kCostChipTooltip = "Measured cost on your GPU per frame";
 // The card's header row: violet icon, bold title, muted subtitle, the tooltip on hover (the feature description) and,
 // when toggle is not null, the switch on the right (greyed out and inert when toggleEnabled is false; the title stays
-// readable). chip (optional) = a small muted chip left of the switch (the GPU cost, "~0.4 ms"). True on the frame the
-// switch was clicked (it reports "<title> turned on/off").
+// readable). chip (optional) = a small muted chip left of the switch (the GPU cost, "~0.4 ms"). HeaderExtra::badge
+// (optional) draws a warning-colour label immediately left of the switch. True on the frame the switch was clicked.
 bool CardHeader(IconId icon, const char* title, const char* subtitle, const char* tooltip, bool* toggle, bool toggleEnabled = true,
                 HeaderExtra* extra = nullptr, const char* chip = nullptr);
 // An overview row (Overview page, a list inside one card): icon, name (clickable: *nameClicked), muted phrase under it,
@@ -243,3 +266,7 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
 bool CostChipText(float ms, char* buf, int size);
 
 } // namespace ApexUi
+
+namespace ApexUi {
+bool ProfileChoiceRow(const char* id, IconId icon, const char* name, const char* description, bool selected);
+}

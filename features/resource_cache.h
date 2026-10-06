@@ -13,7 +13,7 @@
 //     read-only, lazily closed package class, e.g. memory databases, loose-file folders, writable packages).
 // Any doubt = the game's own lookup runs.
 //
-// "Remember missing files" (ResourceLookupMisses, an extension of the cache, default off):
+// "Remember missing files" (ResourceLookupMisses, an extension of the cache; enabled by default when no saved value exists):
 //   - negative entries: a key no package holds is remembered as "absent" under the same rules (about 36% of lookups are
 //     such keys: the resolve function 0x007D8110 retries every miss with the group bit 0x08000000 flipped). An absent
 //     answer is re-checked by probing every package that can gain keys; stored only when every read-only package gave a
@@ -23,7 +23,7 @@
 //     every change of such a database. An answer whose databases did not change since it was checked needs no probe of
 //     them at all; databases of other classes (memory databases, the downloaded-content database, anything unknown) are
 //     still probed on every answer.
-// "Faster file lists" (FileListCache, default off): ResourceMgr::GetKeyList (slot +0x20; CAS asks it for every key of a
+// "Faster file lists" (FileListCache; enabled by default when no saved value exists): ResourceMgr::GetKeyList (slot +0x20; CAS asks it for every key of a
 // type, a linear walk of every package's index) remembers, per read-only package and key type, the keys it returned;
 // the other packages are still asked every time. Same generation, same order of packages, same keys per package.
 //

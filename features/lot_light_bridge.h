@@ -102,10 +102,10 @@ std::string CensusStatus();
 // Development: read-only 3-frame capture of Apex lighting claims by day/twilight/night plus known/possible bloom-mask families.
 void RequestLightingBloomCensus();
 std::string LightingBloomCensusStatus();
-// Outdoor walls: multiplies their baked lamp light (1 = the game).
+// Outdoor walls: adjust baked lamp RGB, including its missing daytime term.
 // Outdoor rig objects (doors, counters, modular pieces): the same world lamps per pixel instead of each piece's rig lamps.
 void SetObjectPixelLights(bool on, float strength);
-void SetWallGain(float gain);
+void SetWallGain(float gain, bool enabled);
 std::string WallStatus();
 // Outdoor objects lit by a rig (doors, windows, counters) also get the ground light per pixel (max with the rig lamps).
 void SetObjectPixelLamps(bool on, float strength);

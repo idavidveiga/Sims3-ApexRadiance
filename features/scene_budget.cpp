@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Scene node budget (see scene_budget.h and docs/features/performance.md, section "How it works: Spread New Objects Over
 // Frames (C6)").
@@ -766,27 +767,27 @@ void RenderDeveloperUI() {
     if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
-    ImGui::TextUnformatted(("Spread new objects over frames: " + StatusText()).c_str());
-    ImGui::TextDisabled("Drain call %#010x -> %#010x; drains %llu: game's (camera still) %llu, game's (a node waited too long) %llu, with a budget %llu",
+    int nodes = g_nodesPerFrame.load();
+    if (ApexUi::DiagnosticIntRow("Nodes per frame while moving##SbNodes", &nodes, static_cast<int>(kMinNodes), 4096)) SetNodesPerFrame(nodes);
+    float ms = g_msPerFrame.load();
+    if (ImGui::SliderFloat("ms per frame while moving##SbMs", &ms, 0.1f, 10.0f, "%.1f ms")) SetMsPerFrame(ms);
+    int wait = g_maxDeferMs.load();
+    if (ApexUi::DiagnosticIntRow("Longest wait (ms)##SbWait", &wait, 16, 5000)) SetMaxDeferMs(wait);
+    if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
+    ImGui::TextWrapped("%s", ("Spread new objects over frames: " + StatusText()).c_str());
+    ImGui::TextWrapped("Drain call %#010x -> %#010x; drains %llu: game's (camera still) %llu, game's (a node waited too long) %llu, with a budget %llu",
                         static_cast<unsigned>(CallChain::CallAddress(Site::SceneDrain)), static_cast<unsigned>(g_drainFn), static_cast<unsigned long long>(s.calls),
                         static_cast<unsigned long long>(s.fullStill), static_cast<unsigned long long>(s.fullForced), static_cast<unsigned long long>(s.budgeted));
-    ImGui::TextDisabled("With a budget: %llu nodes processed, %llu frames left nodes (%llu node-frames waiting), largest backlog %u; last: %u done, %u left, %.2f ms",
+    ImGui::TextWrapped("With a budget: %llu nodes processed, %llu frames left nodes (%llu node-frames waiting), largest backlog %u; last: %u done, %u left, %.2f ms",
                         static_cast<unsigned long long>(s.nodesBudgeted), static_cast<unsigned long long>(s.framesLeft), static_cast<unsigned long long>(s.nodesLeft), s.maxLeft,
                         s.lastDone, s.lastLeft, s.lastMs);
-    ImGui::TextDisabled("Lifetime guard: %u nodes recorded; unlinked at destruction %llu, before AddNode %llu, repaired %llu (all three expected 0); dropped at "
+    ImGui::TextWrapped("Lifetime guard: %u nodes recorded; unlinked at destruction %llu, before AddNode %llu, repaired %llu (all three expected 0); dropped at "
                         "teardown %llu; destroyed on another thread %llu; left nodes not owned by their holder %llu",
                         s.tracked, static_cast<unsigned long long>(s.dtorUnlinked), static_cast<unsigned long long>(s.addUnlinked),
                         static_cast<unsigned long long>(s.repaired), static_cast<unsigned long long>(s.teardownDropped), static_cast<unsigned long long>(s.otherThread),
                         static_cast<unsigned long long>(s.foreignOwner));
-    int nodes = g_nodesPerFrame.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Nodes per frame while moving##SbNodes", &nodes, static_cast<int>(kMinNodes), 4096)) SetNodesPerFrame(nodes);
-    float ms = g_msPerFrame.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderFloat("ms per frame while moving##SbMs", &ms, 0.1f, 10.0f, "%.1f ms")) SetMsPerFrame(ms);
-    int wait = g_maxDeferMs.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Longest wait (ms)##SbWait", &wait, 16, 5000)) SetMaxDeferMs(wait);
+        ApexUi::EndAdvanced();
+    }
 }
 
 

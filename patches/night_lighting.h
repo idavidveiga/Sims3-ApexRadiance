@@ -22,10 +22,14 @@ void RefreshAll(const char* why = "shortcut", bool terrain = true); // terrain f
 void RefreshSoon();
 // The world is on screen after a load (false during load screens; only kept while Night Lighting runs). Render thread.
 bool WorldLive();
+// The load is over (the after-load refresh ran, or 10 s after WorldLive): false during the game's interactive loading
+// screen, which already draws terrain. Gates the start note, the menu and Depth Blur. Render thread.
+bool LoadSettled();
 
 // ---- menu: Lighting page (tabs Lamps / Ground / Objects / Buildings / Stories) and Water & Snow page (tabs Water / Snow) ----
 // Overview tab: three balanced intensity choices, custom status and explicit choice undo.
 void DrawLightingBalance();
+void DrawRefreshCard();
 // Ground tab
 void DrawGroundCard();
 // Stories tab: lamp light between the floors of a house. drawUpperFloorRow draws the "Upper floors light the ground" row

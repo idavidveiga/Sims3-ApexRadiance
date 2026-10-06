@@ -98,6 +98,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="apex_config.cpp" />
+    <ClCompile Include="apex_presets.cpp" />
+    <ClCompile Include="apex_changelog.cpp" />
     <ClCompile Include="apex_gui.cpp" />
     <ClCompile Include="apex_main.cpp" />
     <ClCompile Include="features\dxt_codec.cpp" />
@@ -180,6 +182,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="apex_config.h" />
+    <ClInclude Include="apex_presets.h" />
+    <ClInclude Include="apex_changelog.h" />
     <ClInclude Include="apex_gui.h" />
     <ClInclude Include="apex_version.h" />
     <ClInclude Include="build_flavor.h" />
@@ -222,7 +226,6 @@
     <ClInclude Include="features\rig_tracker.h" />
     <ClInclude Include="features\scene_budget.h" />
     <ClInclude Include="features\shader_patches.h" />
-    <ClInclude Include="features\performance_mode.h" />
     <ClInclude Include="features\terrain_chunk_relight.h" />
     <ClInclude Include="framework\apex_log.h" />
     <ClInclude Include="framework\apex_paths.h" />
@@ -242,6 +245,7 @@
     <ClInclude Include="framework\patch_base.h" />
     <ClInclude Include="framework\render_callbacks.h" />
     <ClInclude Include="framework\s3ss_detect.h" />
+    <ClInclude Include="framework\s3ss_ambient_policy.h" />
     <ClInclude Include="framework\shader_cache.h" />
     <ClInclude Include="framework\slot_chain.h" />
     <ClInclude Include="patches\night_lighting.h" />

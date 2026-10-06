@@ -160,7 +160,7 @@ void HairlineAt(float localY) {
     ImGuiWindow* w = ImGui::GetCurrentWindow();
     const float y = std::floor(w->Pos.y - w->Scroll.y + localY);
     const float x0 = w->Pos.x - w->Scroll.x + ImGui::GetCursorPosX();
-    const float x1 = x0 + ImGui::GetContentRegionAvail().x;
+    const float x1 = w->WorkRect.Max.x;
     w->DrawList->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + 1.0f), U32(VioletTheme::kCardBorder));
 }
 
@@ -209,11 +209,39 @@ struct LabelInfo {
     float lineH = 0.0f;
 };
 
-// A row's label (kText) and its description under it, wrapped at wrapX (the label at labelWrapX when >= 0, which leaves
-// room for the decorations after it); one group. Returns the block's height.
-float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr) {
+// Single-line action text is centred by its visible glyph bounds, including translated accents.
+float CenteredTextY(std::string_view shown, float cy) {
+    float inkTop = ImGui::GetFontSize(), inkBottom = 0.0f;
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const float fontScale = ImGui::GetFontSize() / baked->Size;
+    for (const char* at = shown.data(), *end = at + shown.size(); at < end;) {
+        unsigned codepoint = 0;
+        const int bytes = ImTextCharFromUtf8(&codepoint, at, end);
+        if (bytes <= 0) break;
+        at += bytes;
+        const ImFontGlyph* glyph = baked->FindGlyph(static_cast<ImWchar>(codepoint));
+        if (glyph && glyph->Visible) {
+            inkTop = std::fmin(inkTop, glyph->Y0 * fontScale);
+            inkBottom = std::fmax(inkBottom, glyph->Y1 * fontScale);
+        }
+    }
+    return std::round(inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ImGui::GetTextLineHeight() * 0.5f);
+}
+
+float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr, float minimumHeight = 0.0f) {
     const float top = ImGui::GetCursorScreenPos().y;
     const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
+    if (minimumHeight > 0.0f) {
+        const float x = ImGui::GetCursorPosX();
+        const float labelWidth = std::fmax(1.0f, (labelWrapX >= 0.0f ? labelWrapX : wrapX) - x);
+        float height = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size(), false, labelWidth).y;
+        if (description && *description) {
+            PushSized(nullptr, kSmallScale);
+            height += 2.0f * Unit() + ImGui::CalcTextSize(T(description), nullptr, false, std::fmax(1.0f, wrapX - x)).y;
+            ImGui::PopFont();
+        }
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::fmax(0.0f, (minimumHeight - height) * 0.5f));
+    }
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * Unit());
     ImGui::PushTextWrapPos(labelWrapX >= 0.0f ? labelWrapX : wrapX);
@@ -358,26 +386,15 @@ bool RowDecorations(const RowDecor& d, const LabelInfo& li, ImVec2 rowMin, ImVec
     return IconButtonImpl("##ResetRow", IconId::RotateCcw, "Reset to default", false, kResetButton);
 }
 
-// Small, bold, muted, letter-spaced text (group labels), one item; indent = extra x before it
-void SpacedCaps(const char* text, float indent, float extraBelow) {
+// Section labels use the regular menu font without artificial glyph tracking.
+void SectionLabelText(const char* text, float indent, float extraBelow) {
     text = T(text);
-    const float u = Unit();
-    PushSized(VioletTheme::BoldFont(), kGroupScale);
-    const float track = 0.9f * u;
+    PushSized(VioletTheme::RegularFont(), 1.0f);
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = U32(VioletTheme::kTextMuted);
-    float x = p.x + indent;
-    for (const char* c = text; *c;) {
-        const char* next = c + 1;
-        while ((*next & 0xC0) == 0x80) ++next; // one UTF-8 sequence
-        dl->AddText(ImVec2(x, p.y), col, c, next);
-        x += ImGui::CalcTextSize(c, next).x + track;
-        c = next;
-    }
-    const float h = ImGui::GetFontSize();
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + indent, p.y), U32(VioletTheme::kTextMuted), text);
+    ImGui::Dummy(ImVec2(indent + size.x, size.y + extraBelow));
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(x - p.x, h + extraBelow));
 }
 
 // Control rows (BeginControlRow / EndControlRow)
@@ -495,7 +512,7 @@ void SectionLabel(const char* text) {
 void GroupLabel(const char* text) {
     if (Hidden()) return;
     PadAfterRow(kSpace3);
-    SpacedCaps(text, 0.0f, 3.0f * Unit());
+    SectionLabelText(text, 0.0f, 3.0f * Unit());
 }
 
 void IconNote(IconId icon, const char* text, unsigned rgb) {
@@ -559,6 +576,7 @@ bool ToggleSwitch(const char* id, bool* v) {
     const float knobR = r - 2.5f * u;
     const ImVec2 knob(p.x + r + (size.x - 2.0f * r) * t, p.y + r);
     dl->AddCircleFilled(knob, knobR, U32(0xFFFFFF));
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 
@@ -606,20 +624,32 @@ bool SwitchRow(const char* label, bool* v, const char* tooltip, BoolDefault def,
     return clicked;
 }
 
-bool BeginControlRow(const char* label, const char* description, float controlsWidth) {
+bool BeginControlRow(const char* label, const char* description, float controlsWidth, IconId icon, float controlsHeight) {
     if (!RowVisible(label, description)) return false;
     g_inControlRow = true;
     const float u = Unit();
     const float startX = ImGui::GetCursorPosX();
     const float width = ImGui::GetContentRegionAvail().x;
     const float top = RowTop();
-    const float frameH = ImGui::GetFrameHeight();
-    const float wrapX = std::fmax(startX + width - controlsWidth - kSpace3 * u, startX + 40.0f * u);
-    ImGui::SetCursorPos(ImVec2(startX, top));
-    const float rowH = std::fmax(RowText(label, description, wrapX), frameH);
+    const float frameH = controlsHeight > 0.0f ? controlsHeight : ImGui::GetFrameHeight();
+    const float minimumHeight = ImGui::GetFrameHeight();
+    const bool stacked = width - controlsWidth - kSpace3 * u < 120.0f * u;
+    const float wrapX = stacked ? startX + width : startX + width - controlsWidth - kSpace3 * u;
+    // Keep the divider and right cluster anchored to the full row; only the text is indented.
+    const bool hasIcon = icon != IconId::None;
+    const float iconBox = 22.0f * u;
+    const float textX = startX + (hasIcon ? iconBox + kSpace3 * u : 0.0f);
+    ImGui::SetCursorPos(ImVec2(textX, top));
+    const float rowH = std::fmax(RowText(label, description, std::fmax(wrapX, textX + 40.0f * u), -1.0f, nullptr, stacked ? 0.0f : minimumHeight), stacked ? 0.0f : minimumHeight);
+    if (hasIcon) {
+        const float size = kIconMedium * u;
+        DrawIcon(ImGui::GetWindowDrawList(), icon,
+                 ToScreen(startX + (iconBox - size) * 0.5f, top + (rowH - size) * 0.5f), size, U32(VioletTheme::kAccent));
+    }
     g_ctrlStartX = startX;
-    g_ctrlBottom = top + rowH;
-    ImGui::SetCursorPos(ImVec2(startX + width - controlsWidth, top + (rowH - frameH) * 0.5f));
+    const float controlsTop = stacked ? top + rowH + kSpace2 * u : top + (rowH - frameH) * 0.5f;
+    g_ctrlBottom = stacked ? controlsTop + frameH : top + rowH;
+    ImGui::SetCursorPos(ImVec2(startX + std::fmax(0.0f, width - controlsWidth), controlsTop));
     return true;
 }
 
@@ -720,15 +750,42 @@ bool IconButtonImpl(const char* id, IconId icon, const char* tooltip, bool activ
     const ImU32 col = active ? U32(VioletTheme::kAccent) : hovered ? U32(VioletTheme::kText) : U32(VioletTheme::kTextMuted);
     const float is = (sizeUnits >= 24.0f ? kIconMedium : kIconSmall) * u;
     DrawIcon(dl, icon, ImVec2(p.x + (s - is) * 0.5f, p.y + (s - is) * 0.5f), is, col);
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 } // namespace
 
+ControlSizeScope::ControlSizeScope(ControlSize size) {
+    const float height = (size == ControlSize::Primary ? VioletTheme::kControlPrimary : VioletTheme::kControlCompact) * Unit();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2((size == ControlSize::Primary ? VioletTheme::kPrimaryPadding : VioletTheme::kControlPadding) * Unit(), std::fmax(0.0f, (height - ImGui::GetFontSize()) * 0.5f)));
+}
+
+ControlSizeScope::~ControlSizeScope() { ImGui::PopStyleVar(); }
+
+bool Checkbox(const char* label, bool* value) {
+    const float padding = std::fmax(0.0f, (VioletTheme::kCheckboxSize * Unit() - ImGui::GetFontSize()) * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, padding));
+    const bool changed = ImGui::Checkbox(label, value);
+    ImGui::PopStyleVar();
+    return changed;
+}
+
+bool DiagnosticIntRow(const char* label, int* value, int min, int max, const char* description, ImGuiSliderFlags flags) {
+    const float width = 180.0f * Unit();
+    if (!BeginControlRow(label, description, width)) return false;
+    ImGui::PushID(label);
+    ImGui::SetNextItemWidth(width);
+    const bool changed = ImGui::SliderInt("##Value", value, min, max, "%d", flags);
+    ImGui::PopID();
+    EndControlRow();
+    return changed;
+}
+
 float ButtonWidth(const char* label, bool withIcon, float minWidth) {
     const float u = Unit();
     const std::string_view shown = I18n::TrLabel(label);
-    float w = 2.0f * kSpace3 * u + ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
-    if (withIcon) w += kIconSmall * u + 6.0f * u;
+    float w = 2.0f * ImGui::GetStyle().FramePadding.x + ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
+    if (withIcon) w += VioletTheme::kControlIcon * u + VioletTheme::kControlIconGap * u;
     return std::fmax(w, minWidth);
 }
 
@@ -763,7 +820,7 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         textCol = U32(VioletTheme::kText);
         iconCol = U32(VioletTheme::kAccent);
     }
-    const float is = kIconSmall * u, gap = 6.0f * u;
+    const float is = VioletTheme::kControlIcon * u, gap = VioletTheme::kControlIconGap * u;
     const ImVec2 ts = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size());
     const float contentW = ts.x + (withIcon ? is + gap : 0.0f);
     float x = p.x + (size.x - contentW) * 0.5f;
@@ -772,7 +829,9 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         DrawIcon(dl, icon, ImVec2(x, cy - is * 0.5f), is, iconCol);
         x += is + gap;
     }
-    dl->AddText(ImVec2(x, cy - ts.y * 0.5f), textCol, shown.data(), shown.data() + shown.size());
+    const float textY = CenteredTextY(shown, cy);
+    dl->AddText(ImVec2(x, std::round(textY)), textCol, shown.data(), shown.data() + shown.size());
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return clicked;
 }
 } // namespace
@@ -841,7 +900,7 @@ void SidebarGroup(const char* text, bool collapsed) {
         ImGui::Dummy(ImVec2(w, 6.0f * u));
         return;
     }
-    SpacedCaps(text, kSpace3 * u, 2.0f * u);
+    SectionLabelText(text, kSpace3 * u, 2.0f * u);
 }
 
 bool TabBar(const char* id, int* current, const char* const* labels, int count, const IconId* icons) {
@@ -910,9 +969,9 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
     const float u = Unit();
     ImGui::PushID(id);
     const float avail = ImGui::GetContentRegionAvail().x;
-    const float padX = (compact ? kSpace2 : 7.0f) * u;
-    const float h = ImGui::GetTextLineHeight() + (compact ? 6.0f : 10.0f) * u;
-    const float is = kIconSmall * u, iconGap = 5.0f * u;
+    const float padX = ImGui::GetStyle().FramePadding.x;
+    const float h = ImGui::GetFrameHeight();
+    const float is = VioletTheme::kControlIcon * u, iconGap = VioletTheme::kControlIconGap * u;
     auto hasIcon = [&](int i) { return icons && icons[i] != IconId::None; };
     std::vector<float> widths(static_cast<size_t>(count));
     float natural = 0.0f;
@@ -947,7 +1006,7 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
             DrawIcon(dl, icons[i], ImVec2(tx, a.y + (b.y - a.y - is) * 0.5f), is, textCol);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, a.y + (b.y - a.y - ts.y) * 0.5f), textCol, T(labels[i]));
+        dl->AddText(ImVec2(tx, CenteredTextY(T(labels[i]), (a.y + b.y) * 0.5f)), textCol, T(labels[i]));
     };
 
     if (compact) {
@@ -1017,6 +1076,66 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
     return changed;
 }
 
+bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
+               float controlWidth, int defaultIndex) {
+    RowDecor d = TakeDecor();
+    if (!RowVisible(label, description)) return false;
+    if (!current || !labels || count <= 0) return false;
+    *current = std::clamp(*current, 0, count - 1);
+    d.hasDefault = defaultIndex != kNoDefaultIndex;
+    d.changed = d.hasDefault && *current != defaultIndex;
+    const float u = Unit();
+    const float startX = ImGui::GetCursorPosX();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float top = RowTop();
+    const float comboWidth = std::fmin(controlWidth * u, std::fmax(120.0f * u, width * 0.5f));
+    const float wrapX = startX + width - comboWidth - kSpace3 * u;
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    LabelInfo li;
+    const float rowH = std::fmax(RowText(label, description, wrapX, std::fmax(wrapX - DecorWidth(d), startX + 40.0f * u), &li), ImGui::GetFrameHeight());
+    const float comboY = top + (rowH - ImGui::GetFrameHeight()) * 0.5f;
+    ImGui::SetCursorPos(ImVec2(startX + width - comboWidth, comboY));
+    ImGui::SetNextItemWidth(comboWidth);
+    const ImVec2 comboPos = ImGui::GetCursorScreenPos();
+    const float comboHeight = ImGui::GetFrameHeight();
+    ImDrawList* const rowDrawList = ImGui::GetWindowDrawList();
+    ImGui::PushID(label);
+    bool changed = false;
+    const bool comboOpen = ImGui::BeginCombo(id, I18n::Tr(labels[*current]), ImGuiComboFlags_NoArrowButton);
+    const bool comboHovered = ImGui::IsItemHovered();
+    const float arrowSize = 12.0f * u;
+    DrawIcon(rowDrawList, IconId::ChevronDown,
+             ImVec2(comboPos.x + comboWidth - 9.0f * u - arrowSize, comboPos.y + (comboHeight - arrowSize) * 0.5f),
+             arrowSize, U32(comboOpen || comboHovered ? VioletTheme::kAccent : VioletTheme::kTextMuted));
+    if (comboOpen) {
+        for (int i = 0; i < count; ++i) {
+            if (ImGui::Selectable(I18n::Tr(labels[i]), *current == i)) {
+                changed = *current != i;
+                *current = i;
+            }
+            if (*current == i) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    d.changed = d.hasDefault && *current != defaultIndex;
+    const ImVec2 rowMin = ToScreen(startX, top);
+    if (RowDecorations(d, li, rowMin, ImVec2(rowMin.x + width, rowMin.y + rowH))) {
+        *current = defaultIndex;
+        changed = true;
+        ReportLabel(label, "{} reset");
+    } else if (changed) {
+        ReportLabel(label, "{} changed");
+    }
+    ImGui::PopID();
+    RowFinish(startX, top + rowH);
+    return changed;
+}
+
+namespace {
+ImGuiID g_dividerWindow = 0;
+int g_dividerFrame = -1;
+float g_dividerBodyY = 0.0f;
+}
 bool BeginAdvanced(const char* id, const char* label) {
     if (Hidden()) return true; // search: the contents are searched too, without the header
     const float u = Unit();
@@ -1029,7 +1148,9 @@ bool BeginAdvanced(const char* id, const char* label) {
     const float startX = ImGui::GetCursorPosX();
     const float width = ImGui::GetContentRegionAvail().x;
     float top;
-    if (FollowsRow(ImGui::GetCursorPosY())) {
+    if (g_dividerFrame == ImGui::GetFrameCount() && g_dividerWindow == ImGui::GetCurrentWindow()->ID && std::fabs(ImGui::GetCursorPosY() - g_dividerBodyY) < 0.5f) {
+        top = ImGui::GetCursorPosY(); // the card header already supplied the divider
+    } else if (FollowsRow(ImGui::GetCursorPosY())) {
         top = RowTop();
     } else {
         const float lineY = ImGui::GetCursorPosY() - Spacing() + kSpace2 * u;
@@ -1051,7 +1172,8 @@ bool BeginAdvanced(const char* id, const char* label) {
     const ImU32 col = U32(hovered ? VioletTheme::kAccentLight : VioletTheme::kAccent);
     DrawIcon(dl, open ? IconId::ChevronDown : IconId::ChevronRight, ImVec2(p.x, p.y + (lineH - is) * 0.5f), is, col);
     const std::string_view shown = I18n::TrLabel(label);
-    dl->AddText(ImVec2(p.x + is + gap, p.y), col, shown.data(), shown.data() + shown.size());
+    dl->AddText(ImVec2(p.x + is + gap, CenteredTextY(shown, p.y + lineH * 0.5f)), col, shown.data(), shown.data() + shown.size());
+    ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return open;
 }
 
@@ -1252,6 +1374,9 @@ void CardDivider() {
     HairlineAt(lineY);
     ImGui::SetCursorPosY(lineY + 1.0f + kSpace3 * u - Spacing());
     ImGui::Dummy(ImVec2(0.0f, 0.0f)); // the body starts kSpace3 below the line
+    g_dividerWindow = ImGui::GetCurrentWindow()->ID;
+    g_dividerFrame = ImGui::GetFrameCount();
+    g_dividerBodyY = ImGui::GetCursorPosY();
 }
 
 bool CardHeader(IconId icon, const char* title, const char* subtitle, const char* tooltip, bool* toggle, bool toggleEnabled, HeaderExtra* extra,
@@ -1278,12 +1403,18 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
     const float iconBox = hasIcon ? 22.0f * u : 0.0f;
     const float bs = 24.0f * u; // header icon buttons
 
-    // The right cluster, laid out from the right edge: [chip] [hold] [before / after] [switch]
+    // The right cluster, laid out from the right edge: [chip] [hold] [before / after] [badge] [switch]
     float x = startX + width;
-    float toggleX = 0.0f, extraX = 0.0f, holdX = 0.0f, chipX = 0.0f;
+    float toggleX = 0.0f, badgeX = 0.0f, extraX = 0.0f, holdX = 0.0f, chipX = 0.0f;
+    const bool hasBadge = extra && extra->badge && *extra->badge;
+    const ImVec2 badgeSize = hasBadge ? ChipSize(extra->badge) : ImVec2(0.0f, 0.0f);
     if (toggle) {
         toggleX = x - toggleSize.x;
         x = toggleX - kSpace3 * u;
+    }
+    if (hasBadge) {
+        badgeX = x - badgeSize.x;
+        x = badgeX - kSpace2 * u;
     }
     const bool hasExtra = extra && extra->value;
     if (hasExtra) {
@@ -1333,6 +1464,11 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
         ImGui::SetCursorPos(ImVec2(chipX, startY + std::fmax(0.0f, (rowH - chipSize.y) * 0.5f)));
         ChipImpl(chip, VioletTheme::kTextMuted);
         Tooltip(kCostChipTooltip);
+    }
+    if (hasBadge) {
+        ImGui::SetCursorPos(ImVec2(badgeX, startY + std::fmax(0.0f, (rowH - badgeSize.y) * 0.5f)));
+        ChipImpl(extra->badge, VioletTheme::kWarning);
+        Tooltip(extra->badgeTooltip);
     }
     if (hasHold) {
         ImGui::SetCursorPos(ImVec2(holdX, startY + std::fmax(0.0f, (rowH - bs) * 0.5f)));
@@ -1433,6 +1569,35 @@ bool OverviewRow(const char* id, IconId icon, const char* name, const char* phra
     RowFinish(startX, top + rowH);
     ImGui::PopID();
     return toggled;
+}
+
+// Profile choices share Overview typography, icon geometry and row spacing.
+bool ProfileChoiceRow(const char* id, IconId icon, const char* name, const char* description, bool selected) {
+    if (Hidden()) return false;
+    ImGui::PushID(id);
+    const float u = Unit(), startX = ImGui::GetCursorPosX(), width = ImGui::GetContentRegionAvail().x;
+    const float top = RowTop(), textX = startX + 22.0f * u + kSpace3 * u;
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorPos(ImVec2(textX, top));
+    ImGui::BeginGroup();
+    ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
+    ImGui::TextUnformatted(T(name));
+    RowDescription(description, startX + width - 32.0f * u - kSpace3 * u);
+    ImGui::PopStyleVar();
+    ImGui::EndGroup();
+    const float h = std::fmax(ImGui::GetItemRectMax().y - p.y, 22.0f * u);
+    ImGui::SetCursorPos(ImVec2(startX, top));
+    const bool clicked = ImGui::InvisibleButton("##Choice", ImVec2(width, h), ImGuiButtonFlags_EnableNav);
+    auto* draw = ImGui::GetWindowDrawList();
+    const float size = kIconMedium * u;
+    DrawIcon(draw, icon, ImVec2(p.x + (22.0f * u - size) * 0.5f, p.y + (h - size) * 0.5f), size, U32(VioletTheme::kAccent));
+    const ImVec2 center(p.x + width - 11.0f * u, p.y + h * 0.5f);
+    draw->AddCircle(center, 8.0f * u, U32(selected || ImGui::IsItemHovered() ? VioletTheme::kAccent : VioletTheme::kCardBorder), 24, 1.5f * u);
+    if (selected) draw->AddCircleFilled(center, 4.0f * u, U32(VioletTheme::kAccent));
+    RowFinish(startX, top + h);
+    ImGui::PopID();
+    return clicked;
 }
 
 } // namespace ApexUi

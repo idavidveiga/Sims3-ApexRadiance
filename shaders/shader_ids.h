@@ -32,6 +32,7 @@ constexpr ShaderId kCinemaMarqueePanelDayPs = {500, 0x4E570819u};
 constexpr ShaderId kCinemaMarqueePanelNightPs = {1296, 0x36F5E915u};
 constexpr ShaderId kCinemaMarqueeDayVs = {1060, 0xBFFCCC56u};
 // vertex shaders
+constexpr ShaderId kLotLightVs = {680, 0x0C8CC5E8u}; // regular lot light pass: contracted UV, F7 2026-10-04 18:35
 constexpr ShaderId kRoofVs = {1192, 0x1F851ECBu};
 constexpr ShaderId kLakeVs = {1088, 0x23CCB61Bu};
 constexpr ShaderId kSnowLotVs = {1400, 0x9256F0DFu};

@@ -536,6 +536,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         }
         return;
     }
+    if (!ShaderCache::PrecompileComplete()) return; // keep loading frames moving while bytecode compiles
     RegisterHooks(dev);
     const unsigned long long now = GetTickCount64();
     if (dev != m_lastDevice) { // the game has two devices (a tiny one first): which one the frames end on
@@ -967,30 +968,30 @@ void Picture::RenderUI(int tab) {
     case TabColor: {
         signedAmount("Tint", &q.tint, kDef.tint, "Shift colors toward green or magenta", "Green", "Magenta");
         signedAmount("Vibrance", &q.vibrance, kDef.vibrance, "Boosts dull colors and keeps skin tones natural");
-        ApexUi::GroupLabel("FILM TONES");
-        hue("Shadow color", &q.shadowHue, kDef.shadowHue, "Teal or blue is the classic film look");
-        percent("Shadow amount", &q.shadowTint, 0.0f, 1.0f, "How strongly shadows take that color; 0% is off", kDef.shadowTint);
-        hue("Highlight color", &q.highlightHue, kDef.highlightHue, "Orange or gold is the classic film look");
-        percent("Highlight amount", &q.highlightTint, 0.0f, 1.0f, "How strongly highlights take that color; 0% is off", kDef.highlightTint);
-        ApexUi::GroupLabel("COLOR MIXER");
-        static const char* const names[6] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
-        static const char* const descs[6] = {"Red flowers, brick and clothing", "Sunlight, sand and autumn leaves", "Grass and leaves; lower it for less neon plants",
-                                             "Pools and pale skies", "Sky and water", "Pink and purple flowers and clothing"};
-        static const float hues[6] = {0.0f, 60.0f, 120.0f, 180.0f, 240.0f, 300.0f};
-        for (int i = 0; i < 6; i++) {
-            ApexUi::SliderOptions o;
-            o.format = "%.0f%%";
-            o.displayScale = 100.0f;
-            o.swatch = HueSwatch(hues[i]);
-            o.tooltip = descs[i];
-            o.defaultValue = kDef.mixer[i];
-            slide(names[i], &q.mixer[i], 0.0f, 2.0f, o);
+        if (ApexUi::BeginAdvanced("FilmTones", "Film tones")) {
+            hue("Shadow color", &q.shadowHue, kDef.shadowHue, "Teal or blue is the classic film look");
+            percent("Shadow amount", &q.shadowTint, 0.0f, 1.0f, "How strongly shadows take that color; 0% is off", kDef.shadowTint);
+            hue("Highlight color", &q.highlightHue, kDef.highlightHue, "Orange or gold is the classic film look");
+            percent("Highlight amount", &q.highlightTint, 0.0f, 1.0f, "How strongly highlights take that color; 0% is off", kDef.highlightTint);
+            ApexUi::EndAdvanced();
         }
-        if (ApexUi::IconTextButton("Reset mixer", IconId::RotateCcw, "Set every color family back to 100%")) {
-            for (float& m : q.mixer) m = 1.0f;
-            changed = save = true;
-            ApexUi::ReportChange("Color mixer reset");
+        if (ApexUi::BeginAdvanced("ColorMixer", "Color mixer")) {
+            static const char* const names[6] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
+            static const char* const descs[6] = {"Red flowers, brick and clothing", "Sunlight, sand and autumn leaves", "Grass and leaves; lower it for less neon plants",
+                                                 "Pools and pale skies", "Sky and water", "Pink and purple flowers and clothing"};
+            static const float hues[6] = {0.0f, 60.0f, 120.0f, 180.0f, 240.0f, 300.0f};
+            for (int i = 0; i < 6; i++) {
+                ApexUi::SliderOptions o;
+                o.format = "%.0f%%";
+                o.displayScale = 100.0f;
+                o.swatch = HueSwatch(hues[i]);
+                o.tooltip = descs[i];
+                o.defaultValue = kDef.mixer[i];
+                slide(names[i], &q.mixer[i], 0.0f, 2.0f, o);
+            }
+            ApexUi::EndAdvanced();
         }
+
         break;
     }
     case TabDetail: {
@@ -1020,15 +1021,7 @@ void Picture::RenderUI(int tab) {
         break;
     }
     }
-    if (ApexUi::IconTextButton("Reset Picture", IconId::RotateCcw, "Put every Picture setting back to default (on or off stays as it is)")) {
-        const bool en = q.enabled, cmp = q.compare;
-        q = PictureParams{};
-        q.enabled = en;
-        q.compare = cmp;
-        q.deband = GetParams().deband; // Smooth gradients belongs to the Banding tab now
-        changed = save = true;
-        ApexUi::ReportChange("Picture reset");
-    }
+
     if (!q.enabled) ImGui::EndDisabled();
     if (changed) SetParams(q, save);
 }

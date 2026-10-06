@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 #include "developer_settings.h"
 // Faster cache compression: the RefPack stream write answered by a fast compressor with the game's stream format (see
 // fast_refpack.h, features/refpack_codec.h and docs/features/performance.md).
@@ -650,31 +651,31 @@ void RenderDeveloperUI() {
     if (kPublicBuild) return;
     if (!ImGui::GetCurrentContext()) return;
     const Stats s = GetStats();
-    ImGui::TextUnformatted(("Faster cache compression: " + StatusText()).c_str());
-    ImGui::TextDisabled("Streams %llu (%.1f ms), counting runs %llu (%.1f ms), writes after our counting run %llu; game's compressor %llu; did not fit (-1) %llu; temporary contexts %llu",
+    int every = g_verifyEvery.load();
+    if (ApexUi::DiagnosticIntRow("Check 1 stream in N by decompressing##FrVerify", &every, 0, 64)) SetVerifyEvery(every);
+    int cmp = g_compareEvery.load();
+    if (ApexUi::DiagnosticIntRow("Also run the game's compressor on 1 stream in N (0 = never; adds its time)##FrCompare", &cmp, 0, 64)) SetCompareEvery(cmp);
+    int chain = g_chain.load();
+    if (ApexUi::DiagnosticIntRow("Search depth (candidates per position)##FrChain", &chain, 4, 256)) SetChainDepth(chain);
+    if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
+    if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
+    ImGui::TextWrapped("%s", ("Faster cache compression: " + StatusText()).c_str());
+    ImGui::TextWrapped("Streams %llu (%.1f ms), counting runs %llu (%.1f ms), writes after our counting run %llu; game's compressor %llu; did not fit (-1) %llu; temporary contexts %llu",
                         static_cast<unsigned long long>(s.streams), s.ms, static_cast<unsigned long long>(s.countingRuns), s.countingMs, static_cast<unsigned long long>(s.paired),
                         static_cast<unsigned long long>(s.passedThrough), static_cast<unsigned long long>(s.overflows), static_cast<unsigned long long>(s.tempContexts));
-    ImGui::TextDisabled("Writes that copied their counting run's stream %llu (source changed since: %llu%s); large streams %llu, on %u worker threads %llu (pool busy: "
+    ImGui::TextWrapped("Writes that copied their counting run's stream %llu (source changed since: %llu%s); large streams %llu, on %u worker threads %llu (pool busy: "
                         "%llu), pieces %llu, by the workers %llu",
                         static_cast<unsigned long long>(s.reused), static_cast<unsigned long long>(s.reuseMissed), CpuHasCrc32() ? "" : "; no SSE4.2, never copied",
                         static_cast<unsigned long long>(s.large), g_workersMade.load(), static_cast<unsigned long long>(s.largeParallel),
                         static_cast<unsigned long long>(s.largeBusy), static_cast<unsigned long long>(s.pieces), static_cast<unsigned long long>(s.piecesByWorkers));
-    ImGui::TextDisabled("Checks (%s): %llu equal, %llu different, %llu not checked (no memory); layer %s", s.gameDecoder ? "game's decoder" : "Apex's copy of the decoder",
+    ImGui::TextWrapped("Checks (%s): %llu equal, %llu different, %llu not checked (no memory); layer %s", s.gameDecoder ? "game's decoder" : "Apex's copy of the decoder",
                         static_cast<unsigned long long>(s.checked), static_cast<unsigned long long>(s.mismatches), static_cast<unsigned long long>(s.notCheckable),
                         s.installed ? "installed" : "not installed");
     if (s.compared)
-        ImGui::TextDisabled("Compared with the game's compressor on %llu streams: game %llu bytes in %.1f ms, Apex %llu bytes in %.1f ms", static_cast<unsigned long long>(s.compared),
+        ImGui::TextWrapped("Compared with the game's compressor on %llu streams: game %llu bytes in %.1f ms, Apex %llu bytes in %.1f ms", static_cast<unsigned long long>(s.compared),
                             static_cast<unsigned long long>(s.comparedGameBytes), s.comparedGameMs, static_cast<unsigned long long>(s.comparedFastBytes), s.comparedFastMs);
-    int every = g_verifyEvery.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Check 1 stream in N by decompressing##FrVerify", &every, 0, 64)) SetVerifyEvery(every);
-    int cmp = g_compareEvery.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Also run the game's compressor on 1 stream in N (0 = never; adds its time)##FrCompare", &cmp, 0, 64)) SetCompareEvery(cmp);
-    int chain = g_chain.load();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Search depth (candidates per position)##FrChain", &chain, 4, 256)) SetChainDepth(chain);
-    if (!s.lastMismatch.empty()) ImGui::TextColored(ImVec4(0.91f, 0.44f, 0.42f, 1.0f), "Last difference: %s", s.lastMismatch.c_str());
+        ApexUi::EndAdvanced();
+    }
 }
 
 

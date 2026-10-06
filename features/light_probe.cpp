@@ -1,3 +1,4 @@
+#include "ui/widgets.h"
 // GPU light probe (see light_probe.h)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -805,7 +806,7 @@ void FinishCapture(IDirect3DDevice9* dev) {
     LOG_INFO("[LightProbe] " + g_status);
     Recorder::Note(std::format("[probe] {} ({})", g_capName, g_captureWhy));
     Captures::Finish(g_capDir, std::format("a light capture of the pixel ({}, {}) under the mouse: the {} draws that paint it and their textures ({})", g_pixel.x,
-                                           g_pixel.y, covering, g_captureWhy));
+                                           g_pixel.y, covering, g_captureWhy), Captures::CaptureKind::LightCapture);
 }
 
 } // namespace
@@ -880,7 +881,7 @@ void OnPresent(IDirect3DDevice9* dev) {
         pixel.y = std::clamp<LONG>(static_cast<LONG>(static_cast<double>(p.y) * bd.Height / ch), 0, static_cast<LONG>(bd.Height) - 1);
         const bool guided = g_aiming.exchange(false) || click != 0;
         start(pixel, guided ? "guided one-shot capture under the mouse" : "requested by the shortcut; the same pixel is measured again 1 s and 3 s after any lot changes the story it shows, for 2 minutes");
-        Captures::Notify(I18n::Tr("Capturing the light under the mouse\xE2\x80\xA6"), 3);
+        Captures::Notify(I18n::Tr("Capturing the light under the mouse\xE2\x80\xA6"), 3, Captures::NoteKind::Probe);
         g_watch = guided ? Watch{} : Watch{true, pixel, ShownStories(), now + 120000, 6, {}};
         return;
     }
@@ -915,14 +916,14 @@ void RenderUI() {
     if (g_textures.empty()) return;
     ImGui::TextWrapped("Textures used at this pixel. Tick one to replace it with a solid colour and see the effect on screen:");
     bool changed = false;
-    changed |= ImGui::Checkbox("Replace with white (unticked = black)", &g_blankWhite);
+    changed |= ApexUi::Checkbox("Replace with white (unticked = black)", &g_blankWhite);
     for (size_t i = 0; i < g_textures.size(); i++) {
         const std::string label = std::format("T{}: {}##probe{}", i + 1, g_textures[i].desc, i);
-        changed |= ImGui::Checkbox(label.c_str(), &g_textures[i].blank);
+        changed |= ApexUi::Checkbox(label.c_str(), &g_textures[i].blank);
     }
     if (AnyBlank()) RegisterHooks();
     else if (g_state == State::Idle) UnregisterHooks();
-    if (ImGui::Button("Untick all")) {
+    if (ApexUi::TextButton("Untick all")) {
         for (auto& t : g_textures) t.blank = false;
         if (g_state == State::Idle) UnregisterHooks();
     }

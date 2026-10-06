@@ -9,6 +9,7 @@
 //    with AddRect and their corner radius. Everything follows the requested size, ImGui's anti-aliased lines do the rest.
 // No device dependency. Render thread only (the menu is drawn there, under the overlay's ImGui lock).
 #include "imgui.h"
+#include <string_view>
 
 namespace ApexUi {
 
@@ -78,9 +79,63 @@ enum class IconId : int {
     Eye,           // eye
     Bookmark,      // bookmark
     Trash2,        // trash-2
+    UserRound,     // user-round
+    Star, // star
+    Coffee, // coffee
+    Flower2, // flower-2
+    Leaf, // leaf
+    Flame, // flame
+    Cloud, // cloud
+    CloudMoon, // cloud-moon
+    Rainbow, // rainbow
+    Mountain, // mountain
+    Gem, // gem
+    Diamond, // diamond
+    Music, // music
+    Headphones, // headphones
+    Gamepad2, // gamepad-2
+    Cat, // cat
+    Dog, // dog
+    Skull, // skull
+    Rocket, // rocket
+    Bed, // bed
+    Bath, // bath
+    Sofa, // sofa
+    Lamp, // lamp
+    LampDesk, // lamp-desk
+    LampFloor, // lamp-floor
+    LampCeiling, // lamp-ceiling
+    Baby, // baby
+    Users, // users
+    Shirt, // shirt
+    ChefHat, // chef-hat
+    Utensils, // utensils
+    Cake, // cake
+    Wine, // wine
+    Guitar, // guitar
+    BookOpen, // book-open
+    Briefcase, // briefcase
+    GraduationCap, // graduation-cap
+    Car, // car
+    TreePalm, // tree-palm
+    Tent, // tent
+    Sprout, // sprout
+    Fish, // fish
+    PawPrint, // paw-print
+    Gift, // gift
+    PartyPopper, // party-popper
+    Crown, // crown
+    Sunset, // sunset
+    CloudRain, // cloud-rain
+    WandSparkles, // wand-sparkles
+    PanelLeftClose, // panel-left-close
+    PanelLeftOpen, // panel-left-open
     Count,
     None = Count, // "no icon" for widgets that take an optional one
 };
+
+const char* IconName(IconId id);
+IconId IconFromName(const std::string_view name);
 
 // Draws the icon in dl with its top-left corner at pos, sizePx wide and high, in color. Nothing for IconId::None.
 void DrawIcon(ImDrawList* dl, IconId id, ImVec2 pos, float sizePx, ImU32 color);
