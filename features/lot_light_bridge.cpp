@@ -254,9 +254,18 @@ const ShaderCache::Id kWaterSeaPsId = [] { // the lake pass for the sea that has
     d.priority = 1;
     return ShaderCache::Add(std::move(d));
 }();
+const ShaderCache::Id kWaterWeatherPsId = [] { // the lake pass for the lake water of rain and snow (kLakeRainPs, kLakeSnowPs)
+    ShaderCache::Desc d;
+    d.tag = "NightLighting lake water (rain and snow)";
+    d.source = kWaterLampsHlsl;
+    d.sourceName = "lot_light_bridge";
+    d.macros = {{"WEATHER", "1"}};
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}();
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, Sea, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, Sea, LakeWeather, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -607,6 +616,11 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 static bool logged = false;
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
             }
+            else if (IsShader(kLakeRainPs, code.data(), size) || IsShader(kLakeSnowPs, code.data(), size)) {
+                c = PsClass::LakeWeather;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: lake shader of rain or snow seen"); }
+            }
             else if (IsShader(kSeaNoReflPs, code.data(), size)) {
                 c = PsClass::Sea;
                 static bool logged = false;
@@ -675,6 +689,7 @@ std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everyt
 bool g_curVsIsRoof = false;
 bool g_curVsIsLake = false;
 bool g_curVsIsSea = false; // the vertex shader of the sea water without reflection (kSeaNoReflVs)
+bool g_curVsIsLakeWeather = false; // the lake vertex shader of rain and snow (kLakeWeatherVs)
 bool g_curVsIsSnowLot = false;
 bool g_curVsIsRoad = false;
 DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
@@ -746,6 +761,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSeaNoReflVs)) cls = 12;
+            else if (is(kLakeWeatherVs)) cls = 13;
             else if (is(kSnowLotVs)) cls = 3;
             else if (is(kFloorVs)) cls = 5;
             else {
@@ -1517,14 +1533,19 @@ IDirect3DPixelShader9* g_waterPs = nullptr;
 bool g_waterCompileTried = false;
 IDirect3DPixelShader9* g_waterSeaPs = nullptr; // the same pass compiled for that sea (macro SEA)
 bool g_waterSeaCompileTried = false;
+IDirect3DPixelShader9* g_waterWeatherPs = nullptr; // compiled for the lake of rain and snow (macro WEATHER)
+bool g_waterWeatherCompileTried = false;
 std::atomic<int> g_waterDrawn{0};
 
 // sea = the sea water without the game's reflection (kSeaNoReflPs + kSeaNoReflVs): world-view-projection in VS c0..c3, an
 // identity world matrix in c4..c6, the camera in c7; the pass is the lake's, compiled with SEA (other input registers)
-template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw, bool sea = false) {
+// weather = the lake water of rain and snow (kLakeRainPs / kLakeSnowPs + kLakeWeatherVs): the lake's matrices and inputs, the
+// pass compiled with WEATHER (camera c3, wave scales c9, wave maps s2 / s3, scene copy s8)
+template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw, bool sea = false, bool weather = false) {
     if (!g_waterFix.load(std::memory_order_relaxed)) return false;
     if (sea && !g_curVsIsSea) return false; // another vertex shader: its outputs are unknown
-    if (!sea && !g_curVsIsLake) {
+    if (weather && !g_curVsIsLakeWeather) return false;
+    if (!sea && !weather && !g_curVsIsLake) {
         static bool logged = false; // the lake pixel shader with another vertex shader: the pass reads the lake one's outputs
         if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: lake pixel shader drawn with another vertex shader, skipped"); }
         return false;
@@ -1539,7 +1560,12 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw, boo
         const std::string err = CompilePs(dev, kWaterSeaPsId, &g_waterSeaPs);
         LOG_INFO("[LotLightBridge] Water (sea without reflection): " + (err.empty() ? std::string("active") : err));
     }
-    IDirect3DPixelShader9* const passPs = sea ? g_waterSeaPs : g_waterPs;
+    if (weather && !g_waterWeatherPs && !g_waterWeatherCompileTried) {
+        g_waterWeatherCompileTried = true;
+        const std::string err = CompilePs(dev, kWaterWeatherPsId, &g_waterWeatherPs);
+        LOG_INFO("[LotLightBridge] Water (lake in rain and snow): " + (err.empty() ? std::string("active") : err));
+    }
+    IDirect3DPixelShader9* const passPs = sea ? g_waterSeaPs : weather ? g_waterWeatherPs : g_waterPs;
     if (!passPs) return false;
     float world[12];
     if (FAILED(dev->GetVertexShaderConstantF(sea ? 4 : 8, world, 3))) return false;
@@ -3129,6 +3155,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? NoteClaim(ClaimSource::RoofSnowLampFix) : kContinue;
     if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? NoteClaim(ClaimSource::LakeLampFix) : kContinue;
     if (g_curClass == PsClass::Sea) return DrawLake(dev, draw, true) ? NoteClaim(ClaimSource::LakeLampFix) : kContinue;
+    if (g_curClass == PsClass::LakeWeather) return DrawLake(dev, draw, false, true) ? NoteClaim(ClaimSource::LakeLampFix) : kContinue;
     if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
     if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
@@ -3316,6 +3343,7 @@ void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
     g_curVsIsRoof = cls == 1;
     g_curVsIsLake = cls == 2;
     g_curVsIsSea = cls == 12;
+    g_curVsIsLakeWeather = cls == 13;
     g_curVsIsSnowLot = cls == 3;
     g_curVsIsRoad = cls == 4;
     if (g_curVsIsRoad) g_curRoadMap = info->roadMap;
@@ -4563,6 +4591,11 @@ void Shutdown(bool keepChunkMaps) {
         g_waterSeaPs = nullptr;
     }
     g_waterSeaCompileTried = false;
+    if (g_waterWeatherPs) {
+        g_waterWeatherPs->Release();
+        g_waterWeatherPs = nullptr;
+    }
+    g_waterWeatherCompileTried = false;
     g_waterFix = false;
     g_roofCompileTried = false;
     g_roofFix = false;

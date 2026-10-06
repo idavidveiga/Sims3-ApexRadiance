@@ -32,6 +32,9 @@ constexpr ShaderId kRoofPs = {1136, 0x6EC87E3Bu};      // roofs
 constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water (sun shadow read with a hardware depth compare, texldp)
 constexpr ShaderId kLakePs2 = {1308, 0xB21E05D4u};     // the same lake water with the sun shadow compared by hand (texld + cmp): the
                                                        // game uses it in other weather (2.5.1 report: reflections gone when not sunny)
+constexpr ShaderId kLakeRainPs = {2892, 0x91A9AEF7u};   // lake water in rain (Seasons weather: ripple maps s9..s13, camera c3, wave maps s2 / s3 scaled by c9,
+                                                       // scene copy s8); F7 2026-10-06 20:21-20:22, with kLakeWeatherVs
+constexpr ShaderId kLakeSnowPs = {2756, 0x8C1D384Bu};   // the same lake water while it snows (same registers; F7 2026-10-06 20:20)
 constexpr ShaderId kSeaNoReflPs = {1136, 0xC1F59F1Bu};  // sea water that never reads the planar reflection (s6 = the scene copy, sky cube s3):
                                                        // Twinbrook's sea; the reflecting ocean (Sunset Valley) is another shader
 constexpr ShaderId kSnowLotPs = {1852, 0x08DF01E8u};   // snowy lot light pass
@@ -51,6 +54,7 @@ constexpr ShaderId kLotLightVs = {680, 0x0C8CC5E8u}; // regular lot light pass: 
 constexpr ShaderId kRoofVs = {1192, 0x1F851ECBu};
 constexpr ShaderId kLakeVs = {1088, 0x23CCB61Bu};
 constexpr ShaderId kSeaNoReflVs = {1136, 0xA784C725u}; // the sea water drawn without the planar reflection (Twinbrook, F7 2026-10-06 00:56)
+constexpr ShaderId kLakeWeatherVs = {1208, 0x3123FF89u}; // the lake vertex shader of rain and snow (world-view-projection c4..c7, world c8..c10)
 constexpr ShaderId kSnowLotVs = {1400, 0x9256F0DFu};
 constexpr ShaderId kFloorVs = {1492, 0x2BC34FA8u};     // snowy floor tiles
 

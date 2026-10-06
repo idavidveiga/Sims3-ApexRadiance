@@ -8,9 +8,14 @@ static const char* kWaterLampsHlsl = R"RAW(
 // Uses the game's own wave normal maps (s0, s1) and constants (c1 = camera, c5 = wave normal scales).
 // SEA: the same pass for the sea water that never reads the game's planar reflection (Twinbrook, kSeaNoReflPs): its
 // camera is in c0, its wave scales in c4, its world position in TEXCOORD2 and its fog amount in COLOR1.w.
+// WEATHER: the lake water of rain and snow (kLakeRainPs, kLakeSnowPs): camera c3, wave scales c9, wave maps s2 / s3, the
+// scene copy s8; inputs as the lake's.
 #ifdef SEA
 float4 c1 : register(c0);
 float4 c5 : register(c4);
+#elif defined(WEATHER)
+float4 c1 : register(c3);
+float4 c5 : register(c9);
 #else
 float4 c1 : register(c1);
 float4 c5 : register(c5);
@@ -22,9 +27,15 @@ float4 wvp[4] : register(c53);      // local -> clip of the water mesh
 float4 worldT : register(c57);      // xyz = world translation of the water mesh
 float4 reflParams : register(c58);  // x = reflection strength
 float4 depthParams : register(c59); // x = A, y = B (device z = A + B / w), z = 1 when s7 holds the scene depth
+#ifdef WEATHER
+sampler2D sWave0 : register(s2);
+sampler2D sWave1 : register(s3);
+sampler2D sScene : register(s8);
+#else
 sampler2D sWave0 : register(s0);
 sampler2D sWave1 : register(s1);
 sampler2D sScene : register(s6);
+#endif
 sampler2D sDepth : register(s7);
 struct PSIn {
     float4 uv : TEXCOORD0;   // xy = wave map 0, zw = wave map 1
