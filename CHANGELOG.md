@@ -65,7 +65,7 @@ The current comparison is pinned in the Luís handoff against public Sims3Settin
 - Added/updated EN / PT-BR / ES / FR translations for the validated Lot Streaming controls, tooltips and feature
   descriptions.
 - Reconciled the Lot Streaming changelog with the current production implementation: validated 70-300 distance range,
-  8-16 detailed-lot capacity, 300/16 defaults, Smooth Lot Streaming threshold 5 validation, and the threshold-12 control
+  8-16 detailed-lot capacity, 300/16 control defaults, Smooth Lot Streaming threshold 5 validation, and the threshold-12 control
   retained for development/reference rather than the main menu.
 
 ## Unreleased — Cinema marquee daytime bloom guard
@@ -126,8 +126,8 @@ The attributed draw census showed the previously fixed `OutdoorObject` draw path
 
 - The validated Lot LOD probe results are now implemented as a normal production feature instead of requiring a diagnostic build.
 - Added **Extended Lot Detail** with persistent controls:
-  - **Lot detail distance**: validated range 70..300, default 300.
-  - **Maximum detailed lots**: validated range 8..16, default 16.
+  - **Lot detail distance**: validated range 70..300, control default 300; the feature itself remains opt-in.
+  - **Maximum detailed lots**: validated range 8..16, control default 16.
 - Production writes use the same ownership discipline proven by the probes: capture the live WorldManager baseline, guarded writes, reassert only the captured game baseline, yield to unexpected third-party values, and restore only values Apex still owns.
 - **Smooth Lot Streaming** is validated as the recommended companion behavior (native transition throttle + camera-speed threshold 5), but the current v2.6.0-integrated registration remains opt-in (`enabledByDefault = false`).
 - The final controlled A/B reduced Detailed View transitions from 149.3/min to 99.2/min, same-lot reversals within 5 s from 87 to 18, and reversals within 2 s from 48 to 3.
