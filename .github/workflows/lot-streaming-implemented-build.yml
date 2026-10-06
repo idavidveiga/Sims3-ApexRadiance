@@ -6,10 +6,7 @@ on:
       - feature/lot-lod-streaming
       - feature/lot-lod-streaming-2.5.6
       - test/room-light-queue-ea169
-      - test/wallsolve-ea169-probe
-      - test/exact-seam-draw-signature
-      - test/seam-4state-diagnostic
-      - fix/exterior-wall-s6-seam
+      - fix/restore-wall-baseline
   workflow_dispatch:
 
 jobs:
@@ -39,19 +36,11 @@ jobs:
           msbuild ApexRadiance.sln /t:Rebuild /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
-          if ("$env:GITHUB_REF_NAME" -eq "fix/exterior-wall-s6-seam") {
-            Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_EA169_ExteriorWallS6Fix_TEST.asi"
-            Compress-Archive -Path "ApexRadiance_EA169_ExteriorWallS6Fix_TEST.asi" -DestinationPath "ApexRadiance-EA169-ExteriorWallS6Fix-TEST.zip" -Force
-          } else {
-            Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi"
-          }
+          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi"
 
       - name: Upload implemented Lot Streaming ASI
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.ref_name == 'fix/exterior-wall-s6-seam' && 'ApexRadiance-EA169-ExteriorWallS6Fix-TEST' || 'ApexRadiance-LotStreaming-IMPLEMENTED-TEST' }}
-          path: |
-            ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi
-            ApexRadiance_EA169_ExteriorWallS6Fix_TEST.asi
-            ApexRadiance-EA169-ExteriorWallS6Fix-TEST.zip
+          name: ApexRadiance-LotStreaming-IMPLEMENTED-TEST
+          path: ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi
           if-no-files-found: error
