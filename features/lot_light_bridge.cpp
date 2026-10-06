@@ -3119,169 +3119,6 @@ bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) 
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
 }
 
-
-// Exterior-wall horizontal seam fix.
-//
-// The #52 four-state diagnostic proved that sampler s2 must stay exactly as the game binds it.  The visual improvement
-// comes from keeping sampler s6 on the first (pre-light-refresh) L8 strip: forcing s2 made the seam span the whole wall,
-// while forcing only s6 left only the geometry that the old 12-primitive probe did not cover.
-//
-// The two captured materials had different material textures but the same s6 pair, so s6 belongs to the shared lighting
-// path rather than to the wall finish.  Keep one reference per world for the exact affected ExteriorWall pixel shader and
-// apply it to every draw of that shader that binds the same 1024x32 L8 strip.  Do not key this on primitive count, wall
-// position, or the other material samplers: those were diagnostic filters and could leave one segment untreated.
-IDirect3DBaseTexture9* g_wallSeamS6Reference = nullptr;
-uint64_t g_wallSeamS6ReferenceSig = 0;
-std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_exactTexSig;
-std::atomic<long> g_wallSeamS6Candidates{0}, g_wallSeamS6Normalised{0};
-
-template <typename ShaderT>
-uint32_t ExactShaderHash(ShaderT* sh, UINT& bytes) {
-    bytes = 0;
-    if (!sh || FAILED(sh->GetFunction(nullptr, &bytes)) || bytes < 8 || bytes > 65536) return 0;
-    std::vector<DWORD> code(bytes / 4);
-    if (FAILED(sh->GetFunction(code.data(), &bytes))) return 0;
-    uint32_t h = 2166136261u;
-    for (DWORD d : code) h = (h ^ d) * 16777619u;
-    return h;
-}
-
-bool ExactTexDesc(IDirect3DBaseTexture9* t, D3DSURFACE_DESC& d) {
-    return t && t->GetType() == D3DRTYPE_TEXTURE &&
-           SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d));
-}
-
-bool ExactShape(IDirect3DBaseTexture9* t, D3DFORMAT fmt, UINT w, UINT h, UINT levels) {
-    D3DSURFACE_DESC d{};
-    return ExactTexDesc(t, d) && d.Format == fmt && d.Width == w && d.Height == h && t->GetLevelCount() == levels;
-}
-
-uint64_t ExactTextureSignature(IDirect3DBaseTexture9* base) {
-    if (!base || base->GetType() != D3DRTYPE_TEXTURE) return 0;
-    if (auto it = g_exactTexSig.find(base); it != g_exactTexSig.end()) return it->second;
-
-    auto* tex = static_cast<IDirect3DTexture9*>(base);
-    D3DSURFACE_DESC d{};
-    if (FAILED(tex->GetLevelDesc(0, &d))) return 0;
-    D3DLOCKED_RECT lr{};
-    if (FAILED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits || !lr.Pitch) return 0;
-
-    size_t rows = d.Height, rowBytes = 0;
-    if (d.Format == D3DFMT_A8R8G8B8) rowBytes = static_cast<size_t>(d.Width) * 4;
-    else if (d.Format == D3DFMT_L8) rowBytes = d.Width;
-    else if (d.Format == D3DFMT_DXT1) {
-        rows = std::max<size_t>(1, (d.Height + 3) / 4);
-        rowBytes = std::max<size_t>(1, (d.Width + 3) / 4) * 8;
-    } else if (d.Format == D3DFMT_DXT5) {
-        rows = std::max<size_t>(1, (d.Height + 3) / 4);
-        rowBytes = std::max<size_t>(1, (d.Width + 3) / 4) * 16;
-    } else {
-        tex->UnlockRect(0);
-        return 0;
-    }
-
-    const size_t pitch = static_cast<size_t>(lr.Pitch < 0 ? -lr.Pitch : lr.Pitch);
-    rowBytes = std::min(rowBytes, pitch);
-    const auto* p = static_cast<const uint8_t*>(lr.pBits);
-    uint64_t h = 1469598103934665603ull;
-    for (size_t y = 0; y < rows; ++y) {
-        const uint8_t* row = p + y * pitch;
-        for (size_t x = 0; x < rowBytes; ++x) h = (h ^ row[x]) * 1099511628211ull;
-    }
-    tex->UnlockRect(0);
-    h ^= static_cast<uint64_t>(d.Width) << 48;
-    h ^= static_cast<uint64_t>(d.Height) << 32;
-    h ^= static_cast<uint32_t>(d.Format);
-    g_exactTexSig.emplace(base, h);
-    return h;
-}
-
-void ClearExactSeamProbe() {
-    if (g_wallSeamS6Reference) {
-        g_wallSeamS6Reference->Release();
-        g_wallSeamS6Reference = nullptr;
-    }
-    g_wallSeamS6ReferenceSig = 0;
-    g_exactTexSig.clear();
-}
-
-template <typename DrawFn>
-bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::HookAction& result) {
-    if (g_inOwnCall || !dev || !g_curPs || g_curClass != PsClass::WallGain) return false;
-
-    // Exact affected ExteriorWall_PS_1119.bin.  The PS defines the sampler semantics; unlike the diagnostic, do not
-    // require one vertex shader, one primitive count or one wall material.
-    UINT psBytes = 0;
-    const uint32_t psHash = ExactShaderHash(g_curPs, psBytes);
-    if (psBytes != 1372 || psHash != 0x04956FE9u) return false;
-
-    IDirect3DBaseTexture9* s6 = nullptr;
-    if (FAILED(dev->GetTexture(6, &s6)) || !s6) return false;
-    if (!ExactShape(s6, D3DFMT_L8, 1024, 32, 1)) {
-        s6->Release();
-        return false;
-    }
-
-    const uint64_t sig6 = ExactTextureSignature(s6);
-    if (!sig6) {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            LOG_WARNING("[WallSeamS6] Matching ExteriorWall draw had an unreadable s6 texture; left unchanged");
-        }
-        s6->Release();
-        return false;
-    }
-
-    g_wallSeamS6Candidates.fetch_add(1, std::memory_order_relaxed);
-    if (!g_wallSeamS6Reference) {
-        g_wallSeamS6Reference = s6;
-        g_wallSeamS6Reference->AddRef();
-        g_wallSeamS6ReferenceSig = sig6;
-
-        UINT vsBytes = 0;
-        const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
-        LOG_INFO(std::format(
-            "[WallSeamS6] Reference captured ExteriorWall | VS {:08X}/{} PS {:08X}/{} | {} prims | s6 {:08X}/{:016X}",
-            vsHash, vsBytes, psHash, psBytes, g_curPrims, reinterpret_cast<uintptr_t>(s6), sig6));
-        s6->Release();
-        return false;
-    }
-
-    if (sig6 == g_wallSeamS6ReferenceSig) {
-        s6->Release();
-        return false;
-    }
-
-    const long n = g_wallSeamS6Normalised.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (n <= 40) {
-        UINT vsBytes = 0;
-        const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
-        LOG_INFO(std::format(
-            "[WallSeamS6] Normalize {} ExteriorWall | VS {:08X}/{} PS {:08X}/{} | {} prims | s6 {:016X}->{:016X}",
-            n, vsHash, vsBytes, psHash, psBytes, g_curPrims, sig6, g_wallSeamS6ReferenceSig));
-    }
-
-    auto forcedDraw = [&]() {
-        IDirect3DBaseTexture9* before6 = nullptr;
-        dev->GetTexture(6, &before6);
-        SetTex(dev, 6, g_wallSeamS6Reference);
-        draw();
-        SetTex(dev, 6, before6);
-        if (before6) before6->Release();
-    };
-
-    result = OnDrawTracked(dev, forcedDraw);
-    if (result == D3D9Hooks::HookAction::Continue) {
-        g_inOwnCall = true;
-        forcedDraw();
-        g_inOwnCall = false;
-        result = D3D9Hooks::HookAction::Skip;
-    }
-    s6->Release();
-    return true;
-}
-
 bool PsIs3(IDirect3DPixelShader9* ps) {
     if (!ps) return false;
     auto it = g_psIs3.find(ps);
@@ -3299,9 +3136,6 @@ bool PsIs3(IDirect3DPixelShader9* ps) {
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
-    D3D9Hooks::HookAction exactSeamResult = D3D9Hooks::HookAction::Continue;
-    if (DrawExactCapturedSeamProbe(dev, draw, exactSeamResult)) return exactSeamResult;
-
     const bool fc = g_falseColor.load(std::memory_order_relaxed);
     const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
     const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
@@ -3618,7 +3452,6 @@ void SetWaterFix(bool on, float strength, float reflection, bool filter, bool pr
 void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
 
 void OnWorldChanged() {
-    ClearExactSeamProbe();
     ClearChunks();
     RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
@@ -3997,7 +3830,6 @@ std::string ObjectStatus() {
 }
 
 void Shutdown(bool keepChunkMaps) {
-    ClearExactSeamProbe();
     g_keepChunks = keepChunkMaps;
     g_objectFix = false;
     g_wallGain = 1.0f;
