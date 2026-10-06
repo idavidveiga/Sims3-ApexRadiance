@@ -1,6 +1,7 @@
 #pragma once
 // Identifiers of the game's shaders that Night Remake recognises by exact bytecode (Steam 1.67.2.024037): size in bytes
 // and FNV-1a 32 over the bytecode's DWORDs. Only the identifiers are kept here, never the game's bytecode itself.
+#include "shader_structure.h"
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -18,6 +19,11 @@ constexpr ShaderId kWorldMultiLightPs = {756, 0xEC3141ABu}; // summer multi-pass
 constexpr ShaderId kLotLightRainPs = {608, 0xA8E5F9F8u};
 constexpr ShaderId kWorldMultiLightRainPs = {796, 0xCB0A4C22u};
 constexpr size_t kWetTailBytes = 40; // what the rain variants add to the dry shader's size
+// Structural ids (shader_structure.h): the dry body of each pass, so that any weather variant of it is recognised.
+// Checked offline (tools/shader_structure_test) over the 8011 pixel shaders of Shaders_Win32.precomp: each matches
+// exactly its dry shader and its rain variant above.
+constexpr ShaderStructure::StructId kLotLightStruct = {134, 0x8B5DD2C9u, 0xA9A54253u};
+constexpr ShaderStructure::StructId kWorldMultiLightStruct = {181, 0x73A96AF2u, 0x3BA540C0u};
 constexpr ShaderId kWorldMultiLightVs = {656, 0x5882F972u}; // s2 lamp UV from c13; chunk matrix c8/c10
 constexpr ShaderId kWorldCompactPs = {1296, 0x73376C6Au}; // single diffuse layer WORLD terrain, s3 lamp, c7.x gain; F7 19:55
 constexpr ShaderId kWorldCompactVs = {744, 0x34E1F1B7u}; // lamp UV c15; chunk matrix c8/c10, same pair at 19:44

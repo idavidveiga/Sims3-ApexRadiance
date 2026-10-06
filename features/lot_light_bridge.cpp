@@ -545,6 +545,19 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                     if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Rain: wet world terrain light pass seen"); }
                 }
             }
+            else if (ShaderStructure::Match m; ShaderStructure::MatchId(reinterpret_cast<const uint32_t*>(code.data()), size / 4, kLotLightStruct, m)) {
+                // another variant of the lot light pass (other weather, season or game build): same body, so the same replacement
+                c = PsClass::LotLight;
+                const bool wet = m.tail == ShaderStructure::Tail::Wet && m.wetScale == 5 && m.wetMix == 6;
+                if (wet) g_wetLotPs.insert(ps);
+                LOG_INFO(std::format("[LotLightBridge] Lot light pass: variant recognised by its structure (pixel shader {}, {} bytes, {})", static_cast<void*>(ps), size,
+                                     wet ? "wet tail kept" : m.tail == ShaderStructure::Tail::Dry ? "same as the dry pass" : "its extra colour step is not reproduced"));
+            }
+            else if (ShaderStructure::Match m; ShaderStructure::MatchId(reinterpret_cast<const uint32_t*>(code.data()), size / 4, kWorldMultiLightStruct, m)) {
+                c = PsClass::WorldMultiLight; // Apex patches the game's own shader here, so any tail is kept as it is
+                g_worldSamplers[ps] = 1u << 2;
+                LOG_INFO(std::format("[LotLightBridge] World terrain light pass: variant recognised by its structure (pixel shader {}, {} bytes)", static_cast<void*>(ps), size));
+            }
             else if (IsShader(kWorldCompactPs, code.data(), size)) {
                 c = PsClass::WorldCompact;
                 g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
