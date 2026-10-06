@@ -265,6 +265,7 @@ constexpr Info kInfo[] = {
     {"ResShrinkBoth", 0x00733E70},
     {"WorldSaveCall", 0x00AAC320},
     {"WorldSave", 0x00C6D460},
+    {"WindowRepaintJump", 0x004108AE},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -548,6 +549,7 @@ const Entry kTable[] = {
     {Id::LampLitCall, K::Sig, W::Text, None, 0, {{"8B CF E8 ?? ?? ?? ?? 8B 44 24 1C 3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 0, M::At}, NOSIG}},
     {Id::LampMarkCall, K::Sig, W::Text, None, 0, {{"3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 21, M::At}, NOSIG}},
     {Id::LampMark, K::Target, W::Text, Id::LampMarkCall, 0, {NOSIG, NOSIG}},
+    {Id::WindowRepaintJump, K::Sig, W::Text, None, 0, {{"F6 46 08 08 57 74 ?? 39 5E 20 C6 46 1C 01 75 ?? 8B 46 70 53 53 50 FF 15", 14, M::At}, NOSIG}},
     // ---- Room to save: the update thunk (mov eax,[ecx+14h]; push eax; add ecx,18h; call; ret 8), the shrink of both caches,
     //      the world save call before "mov eax,0Ch" (Error 12); every signature unique on Steam (checked on TS3W.exe 05/10) ----
     {Id::ResUpdateCall, K::Sig, W::Text, None, 0, {{"8B 41 14 50 83 C1 18 E8 ?? ?? ?? ?? C2 08 00", 7, M::At}, {"83 C1 18 E8 ?? ?? ?? ?? C2 08 00", 3, M::At}}},
@@ -586,6 +588,7 @@ const Group kGroups[] = {
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
     {"RoomLightQueue", {Id::PriorityLotObject, Id::PriorityLotTest}}, // each further part checks its own ids and bytes
+    {"WindowRepaint", {Id::WindowRepaintJump}},
     {"MemoryGuard", {Id::ResUpdateCall, Id::ResUpdate, Id::ResShrinkBoth, Id::WorldSaveCall, Id::WorldSave}},
 };
 

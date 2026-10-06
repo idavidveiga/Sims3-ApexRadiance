@@ -247,6 +247,7 @@ enum class Id : uint16_t {
     ResShrinkBoth,            // FUN_00733E70 (ResourceSystem vtable 0x00FFE2F0 +0x50): force-trims both caches (+0x1E0, +0x1E4) to idle-free
     WorldSaveCall,            // CALL FUN_00c6d460 (0x00AAC320) in FUN_00aac110: the world save; false = Error 12
     WorldSave,
+    WindowRepaintJump, // jne short over the window pump's per-frame InvalidateRect (0x004108AE, features/window_repaint.h)
     Count
 };
 

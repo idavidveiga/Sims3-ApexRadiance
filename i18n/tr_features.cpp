@@ -129,6 +129,18 @@ const I18n::Entry kEntries[] = {
      "même avec beaucoup de mémoire libre au total. Ceci garde une réserve d'espace d'adressage libre rendue juste avant chaque "
      "sauvegarde, et quand la mémoire manque, vide le cache des fichiers que le jeu n'utilise pas. Rien de visible ne change. Fait "
      "partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"Every frame the game asked Windows to repaint its own window, although the picture comes from the graphics card: "
+     "a repaint message went through every window handler each frame for nothing. Now Windows repaints it only when it "
+     "needs to (when the window is uncovered or resized). Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "A cada quadro o jogo pedia ao Windows para repintar a própria janela, embora a imagem venha da placa de vídeo: uma "
+     "mensagem de repintura passava por todos os tratadores da janela a cada quadro, à toa. Agora o Windows só a repinta quando "
+     "precisa (quando a janela é descoberta ou redimensionada). Nada do que você vê muda. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "En cada fotograma el juego pedía a Windows que repintara su propia ventana, aunque la imagen viene de la tarjeta gráfica: un "
+     "mensaje de repintado pasaba por todos los manejadores de la ventana en cada fotograma, para nada. Ahora Windows solo la repinta "
+     "cuando lo necesita (al descubrirse o cambiar de tamaño la ventana). Nada de lo que ves cambia. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "À chaque image, le jeu demandait à Windows de repeindre sa propre fenêtre, alors que l'image vient de la carte graphique : un "
+     "message de repeinte passait par tous les gestionnaires de la fenêtre à chaque image, pour rien. Désormais Windows ne la repeint "
+     "que quand il le faut (fenêtre découverte ou redimensionnée). Rien de visible ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

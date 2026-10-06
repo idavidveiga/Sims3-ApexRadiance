@@ -916,6 +916,14 @@ void PerformanceCard() {
     }
     ApexUi::EndCard();
     ImGui::PopID();
+    ImGui::PushID("PerformanceGame");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Monitor, "Game and scripts", "Less work for the game every frame", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
 }
 
 void PerformancePage() {

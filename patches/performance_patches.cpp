@@ -16,6 +16,7 @@
 #include "fast_crc.h"
 #include "fast_memory.h"
 #include "memory_guard.h"
+#include "window_repaint.h"
 #include "scene_budget.h"
 #include "object_index.h"
 #include "room_light_queue.h"
@@ -314,6 +315,42 @@ class FastMemoryPatch : public ApexPatch {
     void RenderDeveloperUI() override { FastMemory::RenderDeveloperUI(); }
 };
 
+// A switch whose module has only Start / Stop (the Performance card draws its row)
+class SimpleSwitchPatch : public ApexPatch {
+  public:
+    using StartFn = bool (*)(std::string*);
+    using StopFn = void (*)();
+    SimpleSwitchPatch(const char* name, StartFn start, StopFn stop) : ApexPatch(name, nullptr), start_(start), stop_(stop) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!start_(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        stop_();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {}
+
+  private:
+    StartFn start_;
+    StopFn stop_;
+};
+
+class WindowRepaintPatch : public SimpleSwitchPatch {
+  public:
+    WindowRepaintPatch() : SimpleSwitchPatch(Performance::kWindowRepaintName, &WindowRepaint::Start, &WindowRepaint::Stop) {}
+};
+
 class MemoryGuardPatch : public ApexPatch {
   public:
     MemoryGuardPatch() : ApexPatch(Performance::kMemoryGuardName, nullptr) {}
@@ -444,6 +481,7 @@ std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
 std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText(); }
+std::string Performance::WindowRepaintStatus() { return WindowRepaint::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
 std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
 std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
@@ -599,6 +637,20 @@ APEX_REGISTER_FEATURE(MemoryGuardPatch,
                                             "own shrink of its two resource caches (0x00733E70) runs on the thread of their per-frame update: idle entries only.",
                                             "Every call site is checked before it is rewritten and written back when the feature is turned off."},
                        .gameCodeGroup = "MemoryGuard"});
+
+APEX_REGISTER_FEATURE(WindowRepaintPatch,
+                      {.displayName = "Lighter Window Updates",
+                       .description = "Every frame the game asked Windows to repaint its own window, although the picture comes from the graphics card: "
+                                      "a repaint message went through every window handler each frame for nothing. Now Windows repaints it only when it "
+                                      "needs to (when the window is uncovered or resized). Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                        .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"The window message pump (0x00410890) calls InvalidateRect(hwnd, 0, 0) before every pump; the short jump over that "
+                                            "call (0x004108AE) is made unconditional. The game's paint handler and its unused paint event 0x1EE100A run only "
+                                            "for the paints Windows sends by itself."},
+                       .gameCodeGroup = "WindowRepaint"});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",
