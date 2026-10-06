@@ -27,6 +27,12 @@
 #include "ui/i18n.h"
 #include "ui/widgets.h"
 #include "scene_dither.h"
+#include "apex_paths.h"
+#include "apex_util.h"
+#include <wincodec.h>
+#include <shellapi.h>
+#include <thread>
+#include <vector>
 #include <d3dcompiler.h>
 #include <toml++/toml.hpp>
 #include <algorithm>
@@ -56,6 +62,8 @@ sampler2D sBase  : register(s2); // the scene at 1/8 size, bilinear (clarity, gl
 sampler2D sDepth : register(s3); // the scene depth (INTZ, point), only while Emphasize runs
 sampler2D sHalf  : register(s4); // the scene at 1/2 size, bilinear (tilt-shift)
 sampler2D sQuart : register(s5); // the scene at 1/4 size, bilinear (tilt-shift, glow, halation)
+sampler2D sLut   : register(s6); // the LUT strip (bilinear), only while LUT is on
+sampler2D sAdapt : register(s7); // 1x1: the adapted scene luminance (auto exposure); AdaptPS reads the previous one here
 float4 cLook   : register(c0);  // x = saturation, y = scene copy valid, z = compare
 float4 cSize   : register(c1);  // xy = 1 / size, zw = size (pixels)
 float4 cGrade  : register(c2);  // x = exposure (linear gain), y = contrast, z = blacks (fraction of white, + deepens)
@@ -104,9 +112,16 @@ float4 cCrt2   : register(c42); // x = edge darkening, y = line period (px)
 float4 cFilm2  : register(c43); // x = Filmic saturation (-1..1), yzw = red / green / blue curve
 float4 cFlagF  : register(c44); // x = Tint, y = Fake HDR
 float4 cTintF  : register(c45); // rgb = Tint color (luminance 1), w = amount
-// c46, c47: unused (were Sun rays)
+float4 cFlagG  : register(c46); // x = Auto exposure, y = Adaptive sharpening, z = Color-blind mode, w = Atmospheric fog
+float4 cLut    : register(c47); // x = LUT amount, y = cells per side, z = LUT on
 float4 cHdr    : register(c48); // x = amount, y = radius (0 fine .. 1 large), z = shadows, w = highlights
 float4 cHdr2   : register(c49); // x = halo protection, y = saturation
+float4 cFog    : register(c50); // x = amount, y = start (m), z = density (1 / m)
+float4 cFogC   : register(c51); // rgb = fog color (luminance 1)
+float4 cAuto   : register(c52); // x = amount, y = target luminance (linear), z = lowest gain, w = highest gain
+float4 cCas    : register(c53); // x = sharpness (0 .. 1)
+float4 cDalt   : register(c54); // x = type (0 protan, 1 deutan, 2 tritan), y = amount
+float4 cAdapt  : register(c56); // AdaptPS: x = blend toward this frame's average
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
 
 // A neighbour or shifted tap for the scene filters: from the scene copy (no UI) when it exists, so a filter that reads
@@ -345,6 +360,32 @@ float3 ColorLooks(float3 g)
         e = saturate((e - cLevels.x) / max(cLevels.y - cLevels.x, 1.0 / 255.0));
         g = pow(e, 2.2);
     }
+    [branch] if (cLut.z > 0.5) // LUT: the color looked up in a strip of size blue slices (each size x size: red across, green down)
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        float s = cLut.y;
+        float b = e.b * (s - 1.0);
+        float b0 = floor(b);
+        float2 p0 = float2((b0 * s + e.r * (s - 1.0) + 0.5) / (s * s), (e.g * (s - 1.0) + 0.5) / s);
+        float3 c0 = tex2Dlod(sLut, float4(p0, 0, 0)).rgb;
+        float3 c1 = tex2Dlod(sLut, float4(p0 + float2(1.0 / s, 0.0), 0, 0)).rgb;
+        g = lerp(g, pow(max(lerp(c0, c1, b - b0), 0.0), 2.2), cLut.x);
+    }
+    [branch] if (cFlagG.z > 0.5) // color-blind mode (daltonize): what the eye cannot tell apart is moved into channels it can see
+    {
+        float3 e = pow(saturate(g), 1.0 / 2.2);
+        float3 lms = float3(dot(e, float3(17.8824, 43.5161, 4.11935)), dot(e, float3(3.45565, 27.1554, 3.86714)),
+                            dot(e, float3(0.0299566, 0.184309, 1.46709)));
+        float3 sim = lms;
+        if (cDalt.x < 0.5) sim.x = 2.02344 * lms.y - 2.52581 * lms.z;       // protan: no long-wave cones
+        else if (cDalt.x < 1.5) sim.y = 0.494207 * lms.x + 1.24827 * lms.z; // deutan: no medium-wave cones
+        else sim.z = -0.395913 * lms.x + 0.801109 * lms.y;                  // tritan: no short-wave cones
+        float3 seen = float3(dot(sim, float3(0.0809444479, -0.130504409, 0.116721066)), dot(sim, float3(-0.0102485335, 0.0540193266, -0.113614708)),
+                             dot(sim, float3(-0.000365296938, -0.00412161469, 0.693511405)));
+        float3 err = e - seen;
+        float3 fixd = e + float3(0.0, 0.7 * err.r + err.g, 0.7 * err.r + err.b);
+        g = pow(saturate(lerp(e, fixd, cDalt.y)), 2.2);
+    }
     return g;
 }
 
@@ -434,6 +475,17 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         float3 lo = min(min(n0, n1), min(n2, n3)), hi = max(max(n0, n1), max(n2, n3));
         fs = clamp(fs + cDetail.x * (fs - (n0 + n1 + n2 + n3) * 0.25), min(lo, fs), max(hi, fs));
     }
+    // adaptive sharpening (scene only; the contrast-adaptive idea of AMD's CAS): a negative lobe on the 4 neighbours whose
+    // weight shrinks where the local range is already high, so soft detail sharpens and hard edges get no halo
+    [branch] if (cFlagG.y > 0.5 && scene)
+    {
+        float3 a = SceneTap(uv - float2(0, cSize.y)), b = SceneTap(uv - float2(cSize.x, 0));
+        float3 d = SceneTap(uv + float2(cSize.x, 0)), e = SceneTap(uv + float2(0, cSize.y));
+        float3 mn = min(fs, min(min(a, b), min(d, e))), mx = max(fs, max(max(a, b), max(d, e)));
+        float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+        float3 w = -amp * lerp(0.125, 0.2, cCas.x);
+        fs = saturate((fs + (a + b + d + e) * w) / (1.0 + 4.0 * w));
+    }
     // Tilt-shift: outside a sharp horizontal band the picture blurs more and more (1/2 then 1/4 size copies)
     float tiltM = 0.0;
     [branch] if (cFlagD.y > 0.5 && scene)
@@ -445,6 +497,12 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         fs = lerp(fs, lerp(b1, b2, saturate(tiltM * 2.0 - 1.0)), saturate(tiltM * 2.0));
     }
     float3 g = Decode(fs);
+    // auto exposure (scene only): toward a target brightness, from the scene average adapted over time (AdaptPS)
+    [branch] if (cFlagG.x > 0.5 && scene)
+    {
+        float adapted = max(tex2Dlod(sAdapt, float4(0.5, 0.5, 0, 0)).r, 1e-4);
+        g *= lerp(1.0, clamp(cAuto.y / adapted, cAuto.z, cAuto.w), cAuto.x);
+    }
 
     // clarity: the pixel's luminance against the smooth local average, as a ratio (log2), limited so strong edges
     // (the ratio far from 1) get almost nothing and cannot form halos; midtones only
@@ -490,6 +548,16 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         float sat = cLook.x * (1.0 + cTilt.w * (cFlagD.y > 0.5 ? cTilt.x : 0.0));
         [branch] if (cMixB.z > 0.5) sat *= MixerSaturation(g);
         g = Saturate3(g, sat);
+    }
+
+    // atmospheric fog (scene only): grows with the distance from the camera; its brightness is the light around the pixel
+    // (the 1/8 scene), so it is dark at night and lit near lamps instead of a flat grey veil
+    [branch] if (cFlagG.w > 0.5 && scene)
+    {
+        float z = ViewZ(tex2Dlod(sDepth, float4(uv, 0, 0)).r);
+        float f = (1.0 - exp(-max(z - cFog.y, 0.0) * cFog.z)) * cFog.x;
+        float light = dot(Decode(tex2Dlod(sBase, float4(uv, 0, 0)).rgb), kLum);
+        g = lerp(g, cFogC.rgb * light * 1.3, f);
     }
 
     [branch] if (scene) g = ColorLooks(g);
@@ -574,6 +642,25 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     if (divider) o = float3(1, 0, 0);
     return float4(lerp(o, f, ui), 1.0);
 }
+
+// Auto exposure's 1x1 pass: the scene's average luminance (log average of an 8x8 grid of the 1/8 scene, centre weighted;
+// the scene copy has no UI) blended into the previous value, so the eye adapts over time instead of jumping
+float4 AdaptPS(float2 uv : TEXCOORD0) : COLOR0
+{
+    float sum = 0.0, wsum = 0.0;
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+        {
+            float2 p = (float2(x, y) + 0.5) / 8.0;
+            float w = 1.0 - 0.6 * saturate(length(p - 0.5) * 1.6);
+            sum += log2(max(dot(Decode(tex2Dlod(sBase, float4(p, 0, 0)).rgb), kLum), 1e-4)) * w;
+            wsum += w;
+        }
+    float now = exp2(sum / wsum);
+    float prev = tex2Dlod(sAdapt, float4(0.5, 0.5, 0, 0)).r;
+    float v = prev > 0.0 ? lerp(prev, now, cAdapt.x) : now; // 0 = just created: start at the current value
+    return float4(v, v, v, 1.0);
+}
 )HLSL";
 
 // Compiled at start-up on a background thread (framework/shader_cache.h); InitResources only creates the shader object.
@@ -589,6 +676,17 @@ ShaderCache::Id AddPictureShader() {
     return ShaderCache::Add(std::move(d));
 }
 const ShaderCache::Id kPicturePsId = AddPictureShader();
+const ShaderCache::Id kAdaptPsId = [] { // auto exposure's 1x1 pass, from the same source
+    ShaderCache::Desc d;
+    d.tag = "Picture AdaptPS";
+    d.source = kShaderSource;
+    d.sourceName = "picture.hlsl";
+    d.entry = "AdaptPS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}();
 
 struct Gpu {
     bool ready = false, compileTried = false;
@@ -602,6 +700,17 @@ struct Gpu {
     IDirect3DSurface9* chainSurf[kChain] = {};
     UINT baseW = 0, baseH = 0;
     IDirect3DPixelShader9* ps = nullptr;
+    // auto exposure: two 1x1 float targets, the adapted luminance (one read, the other written each frame)
+    IDirect3DTexture9* adaptTex[2] = {};
+    IDirect3DSurface9* adaptSurf[2] = {};
+    int adaptCur = 0;
+    IDirect3DPixelShader9* adaptPs = nullptr;
+    bool adaptTried = false;
+    LARGE_INTEGER lastPass{};
+    // LUT: the loaded strip (managed), its cells per side and the file it came from
+    IDirect3DTexture9* lutTex = nullptr;
+    int lutSize = 0;
+    std::string lutLoaded; // the file name tried last (loaded or not)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
     bool qIssued[kQ] = {};
@@ -748,6 +857,103 @@ struct QuadVertex {
     float x, y, z, rhw, u, v;
 };
 
+// ---- LUT files: Apex Radiance\LUTs\*.png, horizontal strips of size x size cells (1024x32, 4096x64, ...) ----
+std::mutex g_lutMutex;
+std::string g_lutStatus; // what the LUT card shows (written by the render thread)
+
+std::wstring LutFolder() { return ApexPaths::ApexDirectory() + L"LUTs\\"; }
+
+std::wstring Widen(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(std::max(n, 0)), L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+std::vector<std::string> ListLuts() {
+    std::vector<std::string> out;
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW((LutFolder() + L"*.png").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) out.push_back(ApexUtil::ToUtf8(fd.cFileName));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void SetLutStatus(const std::string& s) {
+    std::lock_guard<std::mutex> lock(g_lutMutex);
+    g_lutStatus = s;
+}
+
+// Decodes the PNG (WIC, any bit depth -> 32-bit BGRA) into a managed texture; render thread, on a change of file only
+bool LoadLut(IDirect3DDevice9* dev, const std::string& file) {
+    SafeRelease(gpu.lutTex);
+    gpu.lutSize = 0;
+    if (file.empty()) {
+        SetLutStatus("No LUT chosen");
+        return false;
+    }
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmapDecoder* dec = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* conv = nullptr;
+    UINT w = 0, h = 0;
+    std::vector<BYTE> px;
+    bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+              SUCCEEDED(factory->CreateDecoderFromFilename((LutFolder() + Widen(file)).c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
+              SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&w, &h)) && SUCCEEDED(factory->CreateFormatConverter(&conv)) &&
+              SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom));
+    const bool shape = ok && h >= 8 && h <= 128 && w == h * h;
+    if (shape) {
+        px.resize(static_cast<size_t>(w) * h * 4);
+        ok = SUCCEEDED(conv->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size()), px.data()));
+    }
+    if (conv) conv->Release();
+    if (frame) frame->Release();
+    if (dec) dec->Release();
+    if (factory) factory->Release();
+    if (SUCCEEDED(com)) CoUninitialize();
+    if (!ok) {
+        SetLutStatus("Could not read " + file);
+        return false;
+    }
+    if (!shape) {
+        SetLutStatus(std::format("{} is {}x{}: a LUT strip is size x size cells side by side (for example 1024x32 or 4096x64)", file, w, h));
+        return false;
+    }
+    D3DLOCKED_RECT lr{};
+    if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &gpu.lutTex, nullptr)) || !gpu.lutTex ||
+        FAILED(gpu.lutTex->LockRect(0, &lr, nullptr, 0))) {
+        SafeRelease(gpu.lutTex);
+        SetLutStatus("The LUT texture could not be created");
+        return false;
+    }
+    for (UINT y = 0; y < h; y++)
+        std::memcpy(static_cast<BYTE*>(lr.pBits) + static_cast<size_t>(lr.Pitch) * y, px.data() + static_cast<size_t>(w) * 4 * y, static_cast<size_t>(w) * 4);
+    gpu.lutTex->UnlockRect(0);
+    gpu.lutSize = static_cast<int>(h);
+    SetLutStatus(std::format("{}: {} x {} x {}", file, h, h, h));
+    LOG_INFO(std::format("[Picture] LUT loaded: {} ({} cells per side)", file, h));
+    return true;
+}
+
+// Explorer on the LUTs folder (created if needed), on a short-lived thread with COM: ShellExecuteW called from the menu frame
+// pumps the game window's messages and re-enters the overlay (captures.cpp, 30/09 crash)
+void ShowLutFolder() {
+    const std::wstring folder = LutFolder();
+    CreateDirectoryW(folder.c_str(), nullptr);
+    std::thread([folder] {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (SUCCEEDED(com)) CoUninitialize();
+    }).detach();
+}
+
 // Fully saturated colour of a hue (degrees), linear RGB
 void HueColour(float hueDeg, float rgb[3]) {
     const float h = std::fmod(std::fmod(hueDeg, 360.0f) + 360.0f, 360.0f) / 60.0f;
@@ -805,7 +1011,9 @@ const FilterBoolKey kFilterBools[] = {
     {"emphasize", &PictureParams::emphasize}, {"emphasize_auto", &PictureParams::emphAuto}, {"tilt_shift", &PictureParams::tiltShift},
     {"prism", &PictureParams::prism}, {"grain", &PictureParams::grain},
     {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt},
-    {"filmic_pass", &PictureParams::filmic}, {"tint_filter", &PictureParams::tintFilter}, {"levels", &PictureParams::levels}};
+    {"filmic_pass", &PictureParams::filmic}, {"tint_filter", &PictureParams::tintFilter}, {"levels", &PictureParams::levels},
+    {"lut", &PictureParams::lut}, {"fog", &PictureParams::fog}, {"auto_exposure", &PictureParams::autoExposure}, {"cas", &PictureParams::cas},
+    {"daltonize", &PictureParams::daltonize}};
 const FilterFloatKey kFilterFloats[] = {
     {"technicolor1_amount", &PictureParams::tech1Amount}, {"technicolor1_cyan", &PictureParams::tech1Cyan},
     {"technicolor1_saturation", &PictureParams::tech1Saturation}, {"technicolor2_amount", &PictureParams::tech2Amount},
@@ -838,7 +1046,12 @@ const FilterFloatKey kFilterFloats[] = {
     {"filmic_amount", &PictureParams::filmicAmount}, {"filmic_fade", &PictureParams::filmicFade}, {"filmic_contrast", &PictureParams::filmicContrast},
     {"filmic_bleach", &PictureParams::filmicBleach}, {"filmic_saturation", &PictureParams::filmicSaturation},
     {"tint_filter_hue", &PictureParams::tintFilterHue}, {"tint_filter_amount", &PictureParams::tintFilterAmount},
-    {"levels_black", &PictureParams::levelsBlack}, {"levels_white", &PictureParams::levelsWhite}};
+    {"levels_black", &PictureParams::levelsBlack}, {"levels_white", &PictureParams::levelsWhite},
+    {"lut_amount", &PictureParams::lutAmount}, {"fog_amount", &PictureParams::fogAmount}, {"fog_start", &PictureParams::fogStart},
+    {"fog_density", &PictureParams::fogDensity}, {"fog_hue", &PictureParams::fogHue}, {"fog_tint", &PictureParams::fogTint},
+    {"auto_exposure_amount", &PictureParams::autoAmount}, {"auto_exposure_target", &PictureParams::autoTarget},
+    {"auto_exposure_speed", &PictureParams::autoSpeed}, {"auto_exposure_range", &PictureParams::autoRange}, {"cas_amount", &PictureParams::casAmount},
+    {"daltonize_type", &PictureParams::daltonType}, {"daltonize_amount", &PictureParams::daltonAmount}};
 const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tech2Dye}, {"dpx_curve", &PictureParams::dpxCurve},
                                         {"filmic_curve", &PictureParams::filmicCurve}};
 
@@ -851,6 +1064,13 @@ const char* const kKeys[] = {"enabled", "exposure", "contrast", "midtones", "sha
 
 void Picture::ReleaseResources() {
     gpu.ready = false;
+    for (int i = 0; i < 2; i++) {
+        SafeRelease(gpu.adaptSurf[i]);
+        SafeRelease(gpu.adaptTex[i]);
+    }
+    SafeRelease(gpu.lutTex);
+    gpu.lutSize = 0;
+    gpu.lutLoaded = "\x01"; // never a file name: loaded again on the next frame that needs it
     SafeRelease(gpu.frameSurf);
     SafeRelease(gpu.sceneSurf);
     SafeRelease(gpu.frameTex);
@@ -911,6 +1131,15 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
     }
     gpu.baseW = cw;
     gpu.baseH = ch;
+    // auto exposure: optional (without them the filter does nothing); a fresh target holds 0 = "no value yet"
+    for (int i = 0; i < 2; i++) {
+        if (FAILED(dev->CreateTexture(1, 1, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &gpu.adaptTex[i], nullptr)) || !gpu.adaptTex[i] ||
+            FAILED(gpu.adaptTex[i]->GetSurfaceLevel(0, &gpu.adaptSurf[i]))) {
+            SafeRelease(gpu.adaptTex[i]);
+            break;
+        }
+        dev->ColorFill(gpu.adaptSurf[i], nullptr, 0);
+    }
     if (!gpu.compileTried) {
         gpu.compileTried = true;
         gpu.ps = CompileShader(dev);
@@ -1052,15 +1281,25 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fHdr = on(q.fakeHdr, q.hdrAmount);
     const bool fFilm = on(q.filmic, q.filmicAmount), fTintF = on(q.tintFilter, q.tintFilterAmount);
     const bool fLevels = q.levels && (q.levelsBlack > 0.001f || q.levelsWhite < 0.999f);
-    // Emphasize reads the scene depth: requested only while it is on
-    RequestDepth(wantEmph);
-    IDirect3DTexture9* depth = wantEmph ? DepthShare::Texture() : nullptr;
+    const bool wantFog = on(q.fog, q.fogAmount);
+    const bool fCas = q.cas, fDalt = on(q.daltonize, q.daltonAmount);
+    const bool fAuto = on(q.autoExposure, q.autoAmount) && gpu.adaptTex[0] && gpu.adaptTex[1];
+    // LUT: (re)loaded on the frame its file changes; on only with a usable strip
+    if (q.lut && gpu.lutLoaded != q.lutFile) {
+        gpu.lutLoaded = q.lutFile;
+        LoadLut(dev, q.lutFile);
+    }
+    const bool fLut = on(q.lut, q.lutAmount) && gpu.lutTex && gpu.lutSize > 0;
+    // Emphasize and the fog read the scene depth: requested only while one of them is on
+    RequestDepth(wantEmph || wantFog);
+    IDirect3DTexture9* depth = (wantEmph || wantFog) ? DepthShare::Texture() : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
     const bool fEmph = wantEmph && depth && camNear > 0.0f;
+    const bool fFog = wantFog && depth && camNear > 0.0f;
     // clarity, glow, halation, dreamy, tilt-shift and Fake HDR: the scene (without the UI when the copy exists)
     // reduced to 1/2, 1/4 and 1/8 through 2x2 boxes
     const bool clarity = std::fabs(q.clarity) > 0.001f;
-    if (clarity || fGlow || fHal || fDream || fTilt || fHdr) {
+    if (clarity || fGlow || fHal || fDream || fTilt || fHdr || fFog || fAuto) {
         IDirect3DSurface9* src = gpu.sceneCopied ? gpu.sceneSurf : gpu.frameSurf;
         for (int i = 0; i < Gpu::kChain; i++) {
             dev->StretchRect(src, nullptr, gpu.chainSurf[i], nullptr, D3DTEXF_LINEAR);
@@ -1069,8 +1308,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     }
 
     // save what the pass touches (the game continues from here next frame)
-    constexpr DWORD kSamplers = 6;
-    constexpr UINT kConsts = 50;
+    constexpr DWORD kSamplers = 8;
+    constexpr UINT kConsts = 57;
     constexpr D3DRENDERSTATETYPE kRS[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
                                           D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE};
     constexpr D3DSAMPLERSTATETYPE kSS[] = {D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE};
@@ -1114,7 +1353,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
     for (DWORD s = 0; s < kSamplers; s++) {
-        const DWORD filter = (s == 2 || s == 4 || s == 5) ? D3DTEXF_LINEAR : D3DTEXF_POINT; // the reduced scene copies bilinear
+        const DWORD filter = (s == 2 || s == 4 || s == 5 || s == 6) ? D3DTEXF_LINEAR : D3DTEXF_POINT; // the reduced scene copies bilinear
         dev->SetSamplerState(s, D3DSAMP_MINFILTER, filter);
         dev->SetSamplerState(s, D3DSAMP_MAGFILTER, filter);
         dev->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
@@ -1125,14 +1364,48 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetTexture(0, gpu.frameTex);
     dev->SetTexture(1, gpu.sceneTex);
     dev->SetTexture(2, gpu.chainTex[Gpu::kChain - 1]);
-    dev->SetTexture(3, fEmph ? depth : nullptr);
+    dev->SetTexture(3, (fEmph || fFog) ? depth : nullptr);
     dev->SetTexture(4, gpu.chainTex[0]);
     dev->SetTexture(5, gpu.chainTex[1]);
+    dev->SetTexture(6, fLut ? gpu.lutTex : nullptr);
+    // Auto exposure: the 1x1 pass first (into the other target, reading the previous one in s7), then the main pass reads it
+    {
+        LARGE_INTEGER now{}, freq{};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&freq);
+        const double dt = gpu.lastPass.QuadPart ? std::clamp(static_cast<double>(now.QuadPart - gpu.lastPass.QuadPart) / static_cast<double>(freq.QuadPart), 0.0, 0.5) : 0.0;
+        gpu.lastPass = now;
+        if (fAuto && !gpu.adaptPs && !gpu.adaptTried) {
+            gpu.adaptTried = true;
+            std::string msg;
+            if (ShaderCache::CreatePixelShader(dev, kAdaptPsId, &gpu.adaptPs, &msg) == ShaderCache::Result::CompileFailed) LOG_ERROR("[Picture] AdaptPS failed to compile: " + msg);
+        }
+        if (fAuto && gpu.adaptPs) {
+            IDirect3DSurface9* rt0 = nullptr;
+            dev->GetRenderTarget(0, &rt0);
+            const int next = gpu.adaptCur ^ 1;
+            const float speed = 0.3f + 4.7f * std::clamp(q.autoSpeed, 0.0f, 1.0f) * std::clamp(q.autoSpeed, 0.0f, 1.0f); // 1 / s
+            const float blend[4] = {static_cast<float>(1.0 - std::exp(-dt * speed)), 0, 0, 0};
+            D3D9Hooks::CallOriginalSetRenderTarget(dev, 0, gpu.adaptSurf[next]);
+            const D3DVIEWPORT9 one{0, 0, 1, 1, 0.0f, 1.0f};
+            dev->SetViewport(&one);
+            dev->SetPixelShader(gpu.adaptPs);
+            dev->SetPixelShaderConstantF(56, blend, 1);
+            dev->SetTexture(7, gpu.adaptTex[gpu.adaptCur]);
+            const QuadVertex a[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {0.5f, -0.5f, 0, 1, 1, 0}, {-0.5f, 0.5f, 0, 1, 0, 1}, {0.5f, 0.5f, 0, 1, 1, 1}};
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, a, sizeof(QuadVertex));
+            D3D9Hooks::CallOriginalSetRenderTarget(dev, 0, rt0);
+            SafeRelease(rt0);
+            dev->SetViewport(&vp);
+            gpu.adaptCur = next;
+        }
+    }
+    dev->SetTexture(7, fAuto && gpu.adaptPs ? gpu.adaptTex[gpu.adaptCur] : nullptr);
     const float scale = static_cast<float>(gpu.height) / 2160.0f; // pixel sizes were chosen at 4K
     const float fxLevelsRB = std::exp2(std::round(5.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f; // 5 bits .. 3 bits
     const float fxLevelsG = std::exp2(std::round(6.0f - 2.0f * std::clamp(q.fxDepth, 0.0f, 1.0f))) - 1.0f;  // 6 bits .. 4 bits
     // Black and white: luminance weights through a colored lens filter (summing to 1, so grey stays grey), and the toning
-    float bwW[3], bwT[3], halC[3], tintF[3];
+    float bwW[3], bwT[3], halC[3], tintF[3], fogC[3];
     {
         float fc[3];
         HueColour(q.bwFilterHue, fc);
@@ -1143,6 +1416,13 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         for (float& w : bwW) w = sum > 1e-5f ? w / sum : 1.0f / 3.0f;
         SplitToneColour(q.bwToneHue, bwT);
         SplitToneColour(q.tintFilterHue, tintF);
+        // fog: a pale tint of its hue, luminance 1 (the light around the pixel sets its brightness)
+        float fh[3];
+        HueColour(q.fogHue, fh);
+        const float ft = std::clamp(q.fogTint, 0.0f, 1.0f);
+        for (int i = 0; i < 3; i++) fogC[i] = 1.0f + ft * (fh[i] - 1.0f);
+        const float fl = 0.2126f * fogC[0] + 0.7152f * fogC[1] + 0.0722f * fogC[2];
+        for (float& v : fogC) v /= std::max(fl, 1e-4f);
         HueColour(q.halationHue, halC);
     }
     // white balance: a gentle red/blue tilt, normalised so white keeps its luminance
@@ -1205,10 +1485,18 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         {std::clamp(q.filmicSaturation, -1.0f, 1.0f), std::clamp(q.filmicCurve[0], 0.5f, 1.5f), std::clamp(q.filmicCurve[1], 0.5f, 1.5f), std::clamp(q.filmicCurve[2], 0.5f, 1.5f)},
         {fTintF ? 1.0f : 0.0f, fHdr ? 1.0f : 0.0f, 0, 0},
         {tintF[0], tintF[1], tintF[2], std::clamp(q.tintFilterAmount, 0.0f, 1.0f)},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0},
+        {fAuto && gpu.adaptPs ? 1.0f : 0.0f, fCas ? 1.0f : 0.0f, fDalt ? 1.0f : 0.0f, fFog ? 1.0f : 0.0f},
+        {std::clamp(q.lutAmount, 0.0f, 1.0f), static_cast<float>(std::max(gpu.lutSize, 2)), fLut ? 1.0f : 0.0f, 0},
         {std::clamp(q.hdrAmount, 0.0f, 1.0f), std::clamp(q.hdrRadius, 0.0f, 1.0f), std::clamp(q.hdrShadows, 0.0f, 1.0f), std::clamp(q.hdrHighlights, 0.0f, 1.0f)},
-        {std::clamp(q.hdrHalo, 0.0f, 1.0f), std::clamp(q.hdrSaturation, 0.0f, 1.0f), 0, 0}};
+        {std::clamp(q.hdrHalo, 0.0f, 1.0f), std::clamp(q.hdrSaturation, 0.0f, 1.0f), 0, 0},
+        {std::clamp(q.fogAmount, 0.0f, 1.0f), std::clamp(q.fogStart, 0.0f, 300.0f), 0.0005f + 0.03f * std::clamp(q.fogDensity, 0.0f, 1.0f) * std::clamp(q.fogDensity, 0.0f, 1.0f), 0},
+        {fogC[0], fogC[1], fogC[2], 0},
+        {std::clamp(q.autoAmount, 0.0f, 1.0f), 0.05f + 0.25f * std::clamp(q.autoTarget, 0.0f, 1.0f), 1.0f / (1.0f + 1.5f * std::clamp(q.autoRange, 0.0f, 1.0f)),
+         1.0f + 3.0f * std::clamp(q.autoRange, 0.0f, 1.0f)},
+        {std::clamp(q.casAmount, 0.0f, 1.0f), 0, 0, 0},
+        {std::round(std::clamp(q.daltonType, 0.0f, 2.0f)), std::clamp(q.daltonAmount, 0.0f, 1.0f), 0, 0},
+        {0, 0, 0, 0},
+        {0, 0, 0, 0}};
     // the shader first, then its constants: a hook that looks at the bound shader to handle constants sees this one
     dev->SetPixelShader(gpu.ps);
     dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
@@ -1377,6 +1665,7 @@ void Picture::ParamsToToml(const PictureParams& q, toml::table& qolTable) {
             for (float v : q.*k.field) a.push_back(static_cast<double>(v));
             ft.insert(k.key, std::move(a));
         }
+        ft.insert("lut_file", q.lutFile);
         pt.insert("filters", std::move(ft));
     }
     qolTable.insert_or_assign("picture", std::move(pt));
@@ -1420,6 +1709,7 @@ bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
     if (const toml::table* ft = t["filters"].as_table()) {
         const toml::table& x = *ft;
         for (const auto& k : kFilterBools) q.*k.field = x[k.key].value_or(q.*k.field);
+        if (auto s = x["lut_file"].value<std::string>()) q.lutFile = *s;
         for (const auto& k : kFilterFloats) q.*k.field = static_cast<float>(x[k.key].value_or(static_cast<double>(q.*k.field)));
         for (const auto& k : kFilterArrays)
             if (auto a = x[k.key].as_array())
@@ -1715,8 +2005,64 @@ void Picture::RenderFiltersUI() {
         level("White point", &q.levelsWhite, kDef.levelsWhite, "Everything at or above this level becomes white (255 = unchanged)");
         if (q.levelsWhite < q.levelsBlack + 0.02f) q.levelsWhite = std::min(1.0f, q.levelsBlack + 0.02f);
     });
+    card("Lut", IconId::Layers, "LUT", "A ready-made color look from a LUT file, like Lightroom or ReShade LUT packs", &q.lut, [&] {
+        static std::vector<std::string> files;
+        static double listedAt = -10.0;
+        if (ImGui::GetTime() - listedAt > 2.0) { // the folder is read at most every 2 s
+            files = ListLuts();
+            listedAt = ImGui::GetTime();
+        }
+        if (files.empty()) {
+            ApexUi::IconNote(IconId::Info, "Put LUT files in the LUTs folder: PNG strips such as 1024x32 or 4096x64");
+        } else {
+            std::vector<const char*> names;
+            int cur = 0;
+            for (size_t i = 0; i < files.size(); i++) {
+                names.push_back(files[i].c_str());
+                if (files[i] == q.lutFile) cur = static_cast<int>(i);
+            }
+            if (ApexUi::SelectRow("File", "The LUT that gives the look", "LutFile", &cur, names.data(), static_cast<int>(names.size()))) {
+                q.lutFile = files[static_cast<size_t>(cur)];
+                changed = save = true;
+            } else if (std::find(files.begin(), files.end(), q.lutFile) == files.end()) { // none chosen yet, or the file is gone
+                q.lutFile = files.front();
+                changed = save = true;
+            }
+            percent("Amount", &q.lutAmount, 0.0f, 1.0f, "How much of the look is mixed in", kDef.lutAmount);
+            std::string status;
+            {
+                std::lock_guard<std::mutex> lock(g_lutMutex);
+                status = g_lutStatus;
+            }
+            if (!status.empty()) ApexUi::IconNote(IconId::Info, status.c_str());
+        }
+        if (ApexUi::IconTextButton("Open the LUTs folder", IconId::ExternalLink, "Opens Apex Radiance\\LUTs in Explorer (created if needed)")) ShowLutFolder();
+    });
 
     ApexUi::SectionLabel("LIGHT AND DETAIL");
+    card("Fog", IconId::Cloud, "Atmospheric fog", "A light haze that grows with distance and takes the light around it", &q.fog, [&] {
+        depthNote();
+        percent("Amount", &q.fogAmount, 0.0f, 1.0f, "How thick the haze gets far away", kDef.fogAmount);
+        {
+            ApexUi::SliderOptions o;
+            o.format = "%.0f m";
+            o.tooltip = "No haze closer than this";
+            o.defaultValue = kDef.fogStart;
+            slide("Start distance", &q.fogStart, 0.0f, 300.0f, o);
+        }
+        percent("Density", &q.fogDensity, 0.0f, 1.0f, "How quickly the haze builds up after the start distance", kDef.fogDensity);
+        hue("Color", &q.fogHue, kDef.fogHue, "Blue for a cool morning haze, orange for dust and dusk");
+        percent("Color strength", &q.fogTint, 0.0f, 1.0f, "0% is a neutral grey haze", kDef.fogTint);
+    });
+    card("AutoExposure", IconId::SunMedium, "Auto exposure", "The picture slowly adapts to dark and bright views, like your eyes", &q.autoExposure, [&] {
+        percent("Amount", &q.autoAmount, 0.0f, 1.0f, "How much the brightness follows the view", kDef.autoAmount);
+        percent("Target brightness", &q.autoTarget, 0.0f, 1.0f, "The brightness the picture adapts toward", kDef.autoTarget);
+        percent("Speed", &q.autoSpeed, 0.0f, 1.0f, "How fast the eyes adapt", kDef.autoSpeed);
+        percent("Range", &q.autoRange, 0.0f, 1.0f, "How far it may brighten dark views or darken bright ones", kDef.autoRange);
+    });
+    card("AdaptiveSharpening", IconId::Gem, "Adaptive sharpening", "Crisper soft detail without halos on hard edges", &q.cas, [&] {
+        percent("Sharpness", &q.casAmount, 0.0f, 1.0f, "How strong the sharpening is", kDef.casAmount);
+    });
     card("Glow", IconId::Lightbulb, "Glow", "A soft halo around lamps, windows and other bright areas", &q.glow, [&] {
         percent("Amount", &q.glowAmount, 0.0f, 1.0f, "How bright the halo is", kDef.glowAmount);
         percent("Threshold", &q.glowThreshold, 0.0f, 0.95f, "How bright something must be to glow; lower makes more of the picture glow", kDef.glowThreshold);
@@ -1830,6 +2176,16 @@ void Picture::RenderFiltersUI() {
             percent("Dark edges", &q.crtEdges, 0.0f, 1.0f, "Darker corners of the glass", kDef.crtEdges);
             ApexUi::EndAdvanced();
         }
+    });
+    ApexUi::SectionLabel("ACCESSIBILITY");
+    card("ColorBlind", IconId::Eye, "Color-blind mode", "Moves the colors you cannot tell apart into ones you can", &q.daltonize, [&] {
+        static const char* const kTypes[] = {"Red (protanopia)", "Green (deuteranopia)", "Blue (tritanopia)"};
+        int type = static_cast<int>(std::lround(std::clamp(q.daltonType, 0.0f, 2.0f)));
+        if (ApexUi::SelectRow("Type", "Which colors are hard to tell apart", "DaltonType", &type, kTypes, 3, 220.0f, static_cast<int>(kDef.daltonType))) {
+            q.daltonType = static_cast<float>(type);
+            changed = save = true;
+        }
+        percent("Amount", &q.daltonAmount, 0.0f, 1.0f, "How strongly the colors are moved", kDef.daltonAmount);
     });
     if (!q.enabled) ImGui::EndDisabled();
     if (changed) SetParams(q, save);

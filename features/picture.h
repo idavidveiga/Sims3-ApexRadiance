@@ -74,6 +74,17 @@ struct PictureParams {
     float tintFilterHue = 35.0f, tintFilterAmount = 0.58f;
     bool levels = false;                      // new black and white points, like an editor's Levels
     float levelsBlack = 16.0f / 255.0f, levelsWhite = 235.0f / 255.0f;
+    bool lut = false;                         // a color look-up table: a PNG strip (Lightroom, Photoshop, ReShade LUT packs)
+    float lutAmount = 1.0f;
+    std::string lutFile;                      // file name in Apex Radiance\LUTs\ (empty = none chosen)
+    bool fog = false;                         // atmospheric haze growing with distance, as bright as the light around it
+    float fogAmount = 0.5f, fogStart = 30.0f, fogDensity = 0.35f, fogHue = 215.0f, fogTint = 0.25f; // start in metres
+    bool autoExposure = false;                // the picture slowly adapts to dark and bright views, like the eye
+    float autoAmount = 0.7f, autoTarget = 0.5f, autoSpeed = 0.4f, autoRange = 0.5f;
+    bool cas = false;                         // adaptive sharpening: strong on soft detail, none on hard edges
+    float casAmount = 0.5f;
+    bool daltonize = false;                   // color-blind assistance
+    float daltonType = 1.0f, daltonAmount = 1.0f; // type 0 protan (red), 1 deutan (green), 2 tritan (blue)
     // Light
     bool glow = false;                        // soft halo around bright areas: lamps, windows, sky
     float glowAmount = 0.4f, glowThreshold = 0.6f, glowSize = 0.5f, glowWarmth = 0.0f;
