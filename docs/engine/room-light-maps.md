@@ -96,15 +96,18 @@ is level 1 (F8 of the house lot C49C001BCF2DEA20, NOTAS "Andares, segunda rodada
 | +0xF0 | int | Solve state ("estado" in F8); 3 = synchronous solve running; 1 with +0x168 != 0 = waiting for its gather | light_diag; smooth_streaming note 3; level_light_share `QueueOutdoorRegather` |
 | +0xF4 | int | LOD class / LOD index; 2 = the wall blur class | light_diag ("classe"); lighting_quality ("LOD index"); PASSO3 F-J1 |
 | +0xF8 | float* | Pointer to a 4×4 lot→world matrix (row vectors); VS c8 ≈ (m0, m4, m8, m12), c10 ≈ (m2, m6, m10, m14) | PASSO3 F-J2 (runtime match unverified) |
-| +0x100 | int | Printed as "x100" by F8 (unverified meaning) | light_diag |
+| +0x100 | int | The class whose maps are on screen ("shown"; "class 2/0" in the recorder = solving 2, showing 0); set when a solve ends | 06/10 recordings (quick pass) |
+| +0x110 / +0x120 | float[4] | Ambient colour (the wall shader adds lightmap.a × c4; bound by pointer, so a write shows at once) / its second copy; written by the ambient step `0x006A0F50` | level_light_share `MergeStackedAmbient` |
 | +0x160 | float | Normalisation factor applied to the sum before the clamp (indoor rooms) | `fn_006a31d0.c`; hdr_native header |
 | +0x164 | byte/int | Budget flag of the solve | smooth_streaming note 5 |
 | +0x168 | int | Gather countdown | level_light_share `QueueOutdoorRegather` |
 | +0x1C4 / +0x1C8 | | Floor texture lock (data / pitch) | lighting_quality_patch.cpp |
 | +0x2B4 / +0x2B8 | | Ceiling texture lock | lighting_quality_patch.cpp |
 | +0x3A4 / +0x3A8 | | Object (basis) texture lock | lighting_quality_patch.cpp |
-| +0x639 | byte | Wall mode read by `0x0069FC40` (wall height test / soft shadows of this pass) | level_light_share `SolveCtx::soft` |
-| +0x63C | float | Per-light threshold: a light counts only if `r+g+b ≥ threshold` of its evaluated colour | `fn_0069fd60.c`; PASSO3 3.1 |
+| +0x1B0 / +0x1B1, +0x2A0 / +0x2A1, +0x390 / +0x391 | byte[2] | Test switches of the floor, ceiling and object passes: [0] the room's 2D walls, [1] 3D occluders; copied per class by state 0 (see "The solve's steps and its per-class switches") | full.asm `0x6A1AA1..0x6A1B8C` |
+| +0x639 | byte | Wall mode read by `0x0069FC40` (wall height test / soft shadows of this pass); per class, set by state 0 | level_light_share `SolveCtx::soft` |
+| +0x63C | float | Per-light threshold: a light counts only if `r+g+b ≥ threshold` of its evaluated colour; per class, set by state 0 (`0x006A8E50`) | `fn_0069fd60.c`; PASSO3 3.1 |
+| +0x640 / +0x650 | float / float[4] | Ambient sampler: ramp base (the story's lowest floor, manager+0x98) / copy of the ambient colour (`0x006AB110`) | full.asm `0x6AB110` |
 | +0x680 / +0x684 | | Wall atlas / pitch (blurred by `0x0069F650`) | PASSO3 F-J1 |
 
 Sample (`LightSurfaceData`, 0x30 bytes): +0x00 world position float[4], +0x10 world normal float[4], +0x20 lightmap X
@@ -266,6 +269,34 @@ their gather (state 1 with +0x168 != 0) are skipped.
 Other Apex paths that use room maps without changing the solve: the lot light bridge (lot grass), `DrawWallGain` (outdoor
 walls: `cK.x × forcaNasParedes`, default 2.0, 58 ExteriorWall variants), the floor patches (`max(room map, atlas)`), snow
 on floors. See [shaders.md](shaders.md) and the feature docs.
+
+### The solve's steps and its per-class switches (06/10, VERIFIED in full.asm)
+
+The budgeted solve `0x006A3C90` resumes at sub-step room+0xEC: 0 state 0 `0x006A18B0` (ambient, normalisation, ramp,
+the passes' set-up), 1 `0x0069FA40` (binds and locks the textures), 2 the wall pass `0x006A3A30`, 3..7 the floor,
+ceiling, object and basis passes (`0x006A3B80` on +0x180, +0x270, +0x360, +0x450, +0x540), 8 `0x006A0E00` (unlocks and
+commits; the room becomes state 4/5), 9 done. `0x006A3EC0` runs the same steps to the end in one call (the synchronous
+solve).
+
+- **Textures per room and per class.** Each class entry (`[room+4] + class × 64`) holds the room's own texture set at
+  +0xC. Step 1 binds it into a global slot per class (`0x011D0460 + class × 16`, owner `0x006A4670`) and locks the
+  textures from there; step 8 unlocks them and gives them back (`0x006A8FD0`). A room solved at another class than the
+  one on screen therefore writes maps that are NOT shown and that still hold what that class showed last: the quick
+  pass's refinement writes the class-2 maps, which hold the light from before the edit until the solve ends and the room
+  switches to them.
+- **Per-class switches** (index `idx = classEntry+8`): `0x006A8CB0` wall mode `0xFF36A4[idx]` = 0 0 1; `0x006A8CE0(pass)`
+  2D walls `0xFF36C4[3 × pass + idx]`; `0x006A8D00(pass)` 3D occluders `0xFF36D0[3 × pass + idx]`; passes 0 floor, 1
+  ceiling, 2 objects (copied by state 0), 3 walls (read by the wall pass at every step). 2D walls: pass 0 = 0 1 1, 1 =
+  0 0 1, 2 = 0 0 1, 3 = 0 1 1; 3D: 0 1 1, 0 0 1, 0 0 0, 0 1 1. **Class 0 tests nothing**: light goes through every wall
+  and object (06/10, Wall seams of a capture: a room 5× brighter at class 0 than at class 2 at the same points with its
+  lamps off, lit by window lights through its walls). Threshold `0x006A8E50` = `0xFF36F4[idx] × [0xFF3700]` = 2, 2, 1
+  × 3/255. `0xFF36AC[idx]` = 1, 2, 4 (texels per tile).
+- **The ambient step** `0x006A0F50` (thiscall, no arguments): every other floor tile of the room, the room's lights
+  summed at the floor and 4 m above (LightPointWithAllLights with no wall test), weighted by quadrants; the
+  normalisation from the brightest sample (`0x006A0230`); colour = mean × normalisation through `0x006A00A0` into +0x110
+  and +0x120 (clamped; × a global when +0x19). It writes only +0x110..+0x14F and +0x160, so it can be run on another
+  gathered room and put back (LevelLightShare does it for the rooms of an atrium). An empty light list takes a constant
+  and calls `0x0069FF20` / `0x006A03C0`.
 
 ### Pitfalls and history
 

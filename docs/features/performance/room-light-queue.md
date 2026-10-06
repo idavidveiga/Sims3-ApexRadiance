@@ -178,3 +178,41 @@ first solves run (the quick pass of a burst, or every room of a smaller edit; no
 for the edit's own rooms (the solved room must have lamp-edit urgency: other rooms, even of other lots, had filled the 128
 slots). A burst is now 3 different lights switching within 1.5 s, even when each switched more than 3 times in 10 s (the
 self-switching rule had turned repeated tests of "all the lights" into no edit at all).
+That hold was turned off the same day (user: worse; the light's story waited for a cascade of 2-4 s). The causes were
+found and fixed instead (below); only an atrium's maps wait now.
+
+## Every story at once: what fixed it (06/10, user: "ficou ótimo")
+
+Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 on stories 0-2, 35-98 lights each):
+
+1. **One round per atrium** (level_light_share, "One round for an atrium"). The stacked-ambient merge used the other
+   members' values from their last solve, so the first member solved after an edit took a mixed target, the next another,
+   and every normalisation change (compared bit-exact) sent every member to solve again: 2-3 rounds of the atrium's
+   biggest rooms. Each member's ambient is now taken at the merge with the game's own step (`0x006A0F50`, fields put back)
+   at the top class's light threshold (read from the game's table), cached per gather. A waiting member is no longer sent
+   back to its gather by the ambient pass or by the lamp's safety net (that also threw its quick pass away).
+2. **The quick pass looks like its refinement.** Class 0 tests no wall and no object and drops more faint lights
+   ([room-light-maps.md](../../engine/room-light-maps.md), "per-class switches"): with the lamps off, window lights lit
+   walls through them, and the refinement then took that light away ("right, then wrong"). A quick-pass room takes the
+   wall mode, pass switches and threshold of the class it will be refined to (the wall pass's through its table bytes
+   around each step).
+3. **A refinement's maps show at once.** They are the other class's maps, not on screen and still holding the light from
+   before the edit; fading from them brought the old light back for a quarter of a second, room after room.
+4. **An atrium's stories together.** The atrium's members of an edit (any member urgent) are solved right after the lamp's
+   room whatever their story; their new maps wait while another member is still waiting for or in its solve (at most
+   1.5 s; not while a lamp is dragged), then fade in the same frame. The switched lamp's own room is no longer solved twice
+   when its gather fell in the change's tick (a gather serial now orders gathers and lamp marks).
+5. **Loads** ("when entering the lot it takes long to correct"; log 12:18: 17 s after the world went live). The
+   after-load refresh keeps every room gathered again since the world went live (it re-sent 75 rooms of 16 lots after the
+   world-live round had settled them), and for 15 s after the world goes live the lot being played gets 25 ms of solving a
+   frame with the camera still (the game's own budget while it moves; it averaged 4.4 ms) and the queue drains 12 ms.
+
+Measuring tools that found these: the recorder's [solve] / [room] journal (F8), the "Wall seams.csv" of a recording (the
+same wall points at class 0 and class 2), and frames extracted from the user's video with VLC's scene filter.
+
+Left as they are: a single lamp switch still sends every room of its lot through the safety net (17 rooms, ~1.5 s of
+solving in the background); the refinement of a burst ends room by room (now only a change of resolution).
+
+The "Smooth light changes indoors" option is now only the 250 ms fade (user: "the fade is not needed any more, is it?";
+its first reason, the quick pass's blink, is gone): off, a room's new light shows at once. The maps are kept during every
+lamp edit either way, so an atrium's stories still wait for each other, and a refinement's maps always show at once.

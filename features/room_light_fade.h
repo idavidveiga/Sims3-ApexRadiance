@@ -11,7 +11,9 @@
 //   - the game's UnlockRect: the new content is kept as the target and what was on screen is put back;
 //   - every frame (Present, render thread): the blend of the two is written, until the target is reached exactly.
 // A map the game holds locked is never written by Apex. Buffers exist only while a map fades (and 3 s after), each map is
-// AddRef'd while kept. Nothing at all happens when the option is off or no lamp edit is pending.
+// AddRef'd while kept. Nothing at all happens while no lamp edit is pending. The option is only the fade (off: the new
+// content at once); the rooms of an atrium waiting for each other's solve (room_light_fade.cpp, kGroupHoldMs) stay with it
+// off, and a refinement's maps (another class's, not on screen) always show their content at once.
 #include <d3d9.h>
 #include <string>
 

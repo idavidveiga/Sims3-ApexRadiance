@@ -112,6 +112,7 @@ inline uint32_t Mix(uint32_t a, uint32_t b, uint32_t w) {
     return rb | ga;
 }
 uint32_t Weight(const Map& m, DWORD now) {
+    if (!g_enabled.load(std::memory_order_relaxed)) return 256; // the option off: the new light at once (an atrium still waits)
     const float t = std::clamp(static_cast<float>(now - m.start) / static_cast<float>(kFadeMs), 0.0f, 1.0f);
     return static_cast<uint32_t>(t * t * (3.0f - 2.0f * t) * 256.0f + 0.5f); // smoothstep
 }
@@ -197,10 +198,15 @@ HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
                 m.fading = m.held = m.resume = m.exact = false;
             } else if (changed || m.resume) {
                 // what was on screen goes back; the frames fade it to the new content, or, while the edit's other rooms
-                // are still being solved, it is held and starts with them (every story together)
-                if (m.bits) ToMemory(m, m.from, m.rect, m.bits, m.pitch);
+                // are still being solved, it is held and starts with them (every story together). The fade off and
+                // nothing to wait for: the game's content stays as it is.
                 const bool group = m.room && !LevelLightShare::LampDragging() && LevelLightShare::GroupPending(m.room);
-                if (g_holding.load(std::memory_order_relaxed) || group) {
+                const bool hold = g_holding.load(std::memory_order_relaxed) || group;
+                if (!hold && !g_enabled.load(std::memory_order_relaxed)) {
+                    m.from = m.to;
+                    m.fading = m.held = m.groupHeld = false;
+                } else if (hold) {
+                    if (m.bits) ToMemory(m, m.from, m.rect, m.bits, m.pitch);
                     if (!m.held) {
                         g_heldMaps.fetch_add(1, std::memory_order_relaxed);
                         if (group) g_groupHolds.fetch_add(1, std::memory_order_relaxed);
@@ -209,6 +215,7 @@ HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
                     m.held = true;
                     m.groupHeld = group;
                 } else {
+                    if (m.bits) ToMemory(m, m.from, m.rect, m.bits, m.pitch);
                     if (!m.fading) g_fades.fetch_add(1, std::memory_order_relaxed);
                     if (m.resume && !m.held) g_resumes.fetch_add(1, std::memory_order_relaxed);
                     m.held = false;
@@ -249,7 +256,9 @@ void OnPresent(IDirect3DDevice9* dev) {
     }
     if (!g_hooked.load()) return;
     const bool editPending = LevelLightShare::LampEditPending();
-    g_active.store(g_enabled.load(std::memory_order_relaxed) && (editPending || LampMarkFilter::MassSwitchActive()), std::memory_order_relaxed);
+    // maps are kept during every lamp edit, the option on or off: the option is only the fade (Weight); an atrium's stories
+    // waiting for each other (kGroupHoldMs) is not optional (06/10, user: "the fade is not needed any more, is it?")
+    g_active.store(editPending || LampMarkFilter::MassSwitchActive(), std::memory_order_relaxed);
     // hold while the edit's first solves run: the quick pass of many lamps, or every room of a smaller edit (not its
     // refinement, not a dragged lamp); at most kHoldMaxMs
     const DWORD now = GetTickCount();
@@ -315,10 +324,7 @@ void OnPresent(IDirect3DDevice9* dev) {
     g_count.store(g_maps.size(), std::memory_order_relaxed);
 }
 
-void SetEnabled(bool on) {
-    g_enabled.store(on, std::memory_order_relaxed);
-    if (!on) g_active.store(false, std::memory_order_relaxed);
-}
+void SetEnabled(bool on) { g_enabled.store(on, std::memory_order_relaxed); }
 bool Enabled() { return g_enabled.load(std::memory_order_relaxed); }
 
 void Clear() {
@@ -342,7 +348,7 @@ void Clear() {
 
 std::string Status() {
     if (!g_hooked.load()) return g_hookTried.load() ? "not available" : "waiting for the device";
-    return std::format("{} | maps kept {} (at most {} at once), fades {} (restarted by a new solve {}), refinements shown at once {}, held for the other stories {} (of an atrium {}, released after the longest wait {}; released together {} times), frame writes {}, game locks seen {}",
+    return std::format("fade {} | maps kept {} (at most {} at once), fades {} (restarted by a new solve {}), refinements shown at once {}, held for the other stories {} (of an atrium {}, released after the longest wait {}; released together {} times), frame writes {}, game locks seen {}",
                        g_enabled.load() ? "on" : "off", g_count.load(), g_peak.load(), g_fades.load(), g_resumes.load(), g_exact.load(), g_heldMaps.load(), g_groupHolds.load(), g_groupTimeouts.load(), g_releases.load(), g_writes.load(), g_gameLocks.load());
 }
 
