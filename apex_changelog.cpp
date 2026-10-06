@@ -27,11 +27,16 @@ constexpr const char* k270Improved[] = {
     "The menu and start note open from the world selector on",
     "Built-in profiles turn on every Performance switch and keep Water & Snow and Banding Fix",
     "Sim Occlusion is on by default, and Ambient Occlusion has less grain",
+    "Fewer hitches when lots stream in: lot lighting and new objects spread over frames",
+    "Faster object and game file lookups",
+    "No long frame when the ground light is rebuilt at load or with Refresh lighting",
+    "Apex uses less memory and does less work while drawing",
     nullptr};
 constexpr const char* k270Fixed[] = {
     "Screen effects wait until the world is drawn, never on menus or loading screens",
     "The pie menu no longer leaves an unfiltered box or a grey square",
     "Depth Blur no longer blurs the save screen",
+    "The unused AMD Vulkan driver stays out of the game on PCs with AMD integrated graphics",
     nullptr};
 
 constexpr const char* k260Added[] = {
