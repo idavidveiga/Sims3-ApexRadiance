@@ -67,13 +67,12 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts, PageBanding };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
 enum SettingsTab : int { SettingsMenu, SettingsShortcuts, SettingsProfiles, SettingsCompatibility, SettingsAbout };
 int g_page = PageOverview;
 int g_lightingTab = LightingLamps;
 int g_colorTab = Picture::TabBasic;
-constexpr int kColorBandingTab = Picture::TabCount; // Color > Banding: the Banding Fix and Smooth gradients
 int g_settingsTab = SettingsMenu;
 
 // ---- menu state (render thread, inside the overlay's ImGui frame) ----
@@ -472,7 +471,7 @@ void OverviewPage() {
             if (nameClicked) Go(PageColor);
         }
         OverviewPatchRow("AmbientOcclusion", IconId::Contrast, "Ambient Occlusion", "Soft shade where things meet", PageAmbientOcclusion);
-        OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageColor, &g_colorTab, kColorBandingTab);
+        OverviewPatchRow("SceneDither", IconId::Blend, "Banding Fix", "No color steps in light and shadows", PageBanding);
         OverviewPatchRow("DepthBlur", IconId::Aperture, "Depth Blur", "Softly blurs the distant background", PageDepthBlur);
         OverviewPatchRow("EdgeSmoothing", IconId::Spline, "Edge Smoothing", "Clean, smooth edges on the world", PageEdgeSmoothing);
     }
@@ -679,7 +678,7 @@ void PictureRows(int tab) {
     ImGui::PopID();
 }
 
-// Color > Banding (user, 30/09: everything against color steps in one place): the Banding Fix card (scene_dither.cpp:
+// Image > Banding Fix (user, 30/09: everything against color steps in one place; its own page since 06/10): the Banding Fix card (scene_dither.cpp:
 // switch, grain Strength) with Picture's Smooth gradients (the deband), which follows the Banding Fix's switch
 void BandingTabContent() {
     ApexUi::IconNote(IconId::Info, "Still being tested: if anything looks wrong or the game crashes, turn it off");
@@ -697,15 +696,18 @@ void BandingTabContent() {
     });
 }
 
+// Image > Banding Fix (user 06/10: its own page; not part of the built-in profiles)
+void BandingPage() {
+    ApexUi::PageTitle("Banding Fix", "Smooth light and gradients, with no color steps");
+    BandingTabContent();
+}
+
 void ColorPage() {
     ApexUi::PageTitle("Color", "How the game's picture looks");
-    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail", "Filters", "Banding"};
-    static_assert(IM_COUNTOF(kTabs) == Picture::TabCount + 1, "one tab name per Picture tab, then Banding");
+    static const char* const kTabs[] = {"Basic", "Tones", "Color", "Detail", "Filters"};
+    static_assert(IM_COUNTOF(kTabs) == Picture::TabCount, "one tab name per Picture tab");
+    if (g_colorTab < 0 || g_colorTab >= Picture::TabCount) g_colorTab = Picture::TabBasic; // the old Banding tab is its own page now
     ApexUi::TabBar("##ColorTabs", &g_colorTab, kTabs, IM_COUNTOF(kTabs));
-    if (g_colorTab == kColorBandingTab) {
-        BandingTabContent();
-        return;
-    }
     PictureHeaderCard();
     if (g_colorTab == Picture::TabFilters) {
         Picture::Get().RenderFiltersUI();
@@ -2212,7 +2214,7 @@ const SearchPart* SearchParts(int& count) {
         {"Lighting", "Buildings", PageLighting, &g_lightingTab, LightingBuildings, BuildingsTabContent},
         {"Lighting", "Stories", PageLighting, &g_lightingTab, LightingStories, StoriesTabContent},
         {"Water & Snow", nullptr, PageWaterSnow, nullptr, 0, WaterSnowContent},
-        {"Color", "Banding", PageColor, &g_colorTab, kColorBandingTab, BandingTabContent},
+        {"Banding Fix", nullptr, PageBanding, nullptr, 0, BandingTabContent},
         {"Color", nullptr, PageColor, nullptr, 0, PictureHeaderCard},
         {"Color", "Filters", PageColor, &g_colorTab, Picture::TabFilters, [] { Picture::Get().RenderFiltersUI(); }},
         {"Color", "Basic", PageColor, &g_colorTab, Picture::TabBasic, [] { PictureRows(Picture::TabBasic); }},
@@ -2427,6 +2429,7 @@ void Sidebar(bool collapsed) {
         {PageLighting, IconId::MoonStar, "Lighting", "WORLD"},
         {PageWaterSnow, IconId::WavesHorizontal, "Water & Snow", nullptr},
         {PageColor, IconId::Palette, "Color", "IMAGE"},
+        {PageBanding, IconId::Blend, "Banding Fix", nullptr},
         {PageAmbientOcclusion, IconId::Contrast, "Ambient Occlusion", nullptr},
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageEdgeSmoothing, IconId::Spline, "Edge Smoothing", "SYSTEM"},
@@ -2652,6 +2655,7 @@ void DrawPage() {
     case PageWaterSnow: WaterSnowPage(); break;
     case PageColor: ColorPage(); break;
     case PageAmbientOcclusion: AmbientOcclusionPage(); break;
+    case PageBanding: BandingPage(); break;
     case PageDepthBlur: DepthBlurPage(); break;
     case PageEdgeSmoothing: EdgeSmoothingPage(); break;
     case PageConflicts: ConflictsPage(); break;

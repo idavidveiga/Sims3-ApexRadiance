@@ -19,6 +19,7 @@ const I18n::Entry kEntries[] = {
     // ---- Color page: Picture card header (apex_gui.cpp) and tabs ----
     // ---- Color page: Banding Fix card (scene_dither.cpp; also the Overview row) ----
     {"Banding Fix", "Correção de Faixas", "Corrección de Bandas", "Correction des Bandes"},
+    {"Smooth light and gradients, with no color steps", "Luz e degradês suaves, sem degraus de cor", "Luz y degradados suaves, sin escalones de color", "Lumière et dégradés doux, sans paliers de couleur"},
     {"Smooth light, with no color steps", "Luz suave, sem degraus de cor", "Luz suave, sin escalones de color", "Une lumière douce, sans paliers de couleur"},
     {"No color steps in light and shadows", "Sem degraus de cor na luz e nas sombras", "Sin escalones de color en la luz y las sombras",
      "Pas de paliers de couleur dans la lumière et les ombres"},

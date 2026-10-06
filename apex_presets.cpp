@@ -71,10 +71,8 @@ atrasoSegundos = 2.0
 automaticoAoAnoitecer = true
 azulNosComodos = 0.0
 bordasDosMapasDeLuz = true
-brilhoNaAgua = 0.11185771226882935
 brilhoNasRuas = 1.0
 brilhoNoChao = 0.75
-calcadaComNevePisada = 0.0
 cercasComLuzDoChao = true
 comodosEscurosSemLuz = true
 corDasLampadasDoLote = 0.0
@@ -88,7 +86,6 @@ forcaNasParedes = 0.84
 forcaNosObjetos = 0.75
 forcaNosTelhados = 0.44999998807907104
 gramaDoLoteUsaLuzDoLote = false
-lagosRefletemLampadas = true
 lampadasEmTodosObjetos = true
 luar = 1.817391276359558
 luzDasLampadasNatural = 0.2495652139186859
@@ -106,11 +103,8 @@ postesAcesosNoCalculo = false
 postesNosObjetos = true
 qualidadeAltaEmTodosOsLotes = false
 recalcularLotesAoAnoitecer = false
-reflexoNoLago = 0.7117094993591309
 telhadosComLuz = true
 todosOsAndaresEmDetalhe = true
-waterPreserveLampColors = true
-waterSpecularFilter = true
 
 [patches.ObjectLookupIndex]
 enabled = true
@@ -120,11 +114,6 @@ enabled = true
 
 [patches.ResourceLookupMisses]
 enabled = true
-
-[patches.SceneDither]
-enabled = true
-forca = 1.0
-graoEmMovimento = true
 
 [patches.SceneNodeBudget]
 enabled = true
@@ -139,7 +128,6 @@ enabled = true
 blacks = 0.0
 clarity = 0.0
 contrast = 1.0
-deband = 0.0
 enabled = false
 exposure = 0.0
 highlight_hue = 40.0
@@ -223,10 +211,8 @@ atrasoSegundos = 2.0
 automaticoAoAnoitecer = true
 azulNosComodos = 0.0
 bordasDosMapasDeLuz = true
-brilhoNaAgua = 0.13814231753349304
 brilhoNasRuas = 1.0
 brilhoNoChao = 0.75
-calcadaComNevePisada = 0.0
 cercasComLuzDoChao = true
 comodosEscurosSemLuz = true
 corDasLampadasDoLote = 0.0
@@ -240,7 +226,6 @@ forcaNasParedes = 0.84
 forcaNosObjetos = 0.75
 forcaNosTelhados = 0.44999998807907104
 gramaDoLoteUsaLuzDoLote = false
-lagosRefletemLampadas = true
 lampadasEmTodosObjetos = true
 luar = 1.817391276359558
 luzDasLampadasNatural = 0.2495652139186859
@@ -258,11 +243,8 @@ postesAcesosNoCalculo = false
 postesNosObjetos = true
 qualidadeAltaEmTodosOsLotes = false
 recalcularLotesAoAnoitecer = false
-reflexoNoLago = 0.7350296378135681
 telhadosComLuz = true
 todosOsAndaresEmDetalhe = true
-waterPreserveLampColors = true
-waterSpecularFilter = true
 
 [patches.ObjectLookupIndex]
 enabled = true
@@ -272,11 +254,6 @@ enabled = true
 
 [patches.ResourceLookupMisses]
 enabled = true
-
-[patches.SceneDither]
-enabled = true
-forca = 1.0
-graoEmMovimento = true
 
 [patches.SceneNodeBudget]
 enabled = true
@@ -291,7 +268,6 @@ enabled = true
 blacks = 0.0
 clarity = 0.0
 contrast = 1.0
-deband = 0.0
 enabled = true
 exposure = 0.0
 highlight_hue = 40.0
@@ -375,10 +351,8 @@ atrasoSegundos = 2.0
 automaticoAoAnoitecer = true
 azulNosComodos = 0.0
 bordasDosMapasDeLuz = true
-brilhoNaAgua = 0.11185771226882935
 brilhoNasRuas = 1.0
 brilhoNoChao = 0.75
-calcadaComNevePisada = 0.0
 cercasComLuzDoChao = true
 comodosEscurosSemLuz = true
 corDasLampadasDoLote = 0.0
@@ -392,7 +366,6 @@ forcaNasParedes = 0.84
 forcaNosObjetos = 0.75
 forcaNosTelhados = 0.44999998807907104
 gramaDoLoteUsaLuzDoLote = false
-lagosRefletemLampadas = true
 lampadasEmTodosObjetos = true
 luar = 1.817391276359558
 luzDasLampadasNatural = 0.2495652139186859
@@ -410,11 +383,8 @@ postesAcesosNoCalculo = false
 postesNosObjetos = true
 qualidadeAltaEmTodosOsLotes = false
 recalcularLotesAoAnoitecer = false
-reflexoNoLago = 0.7117094993591309
 telhadosComLuz = true
 todosOsAndaresEmDetalhe = true
-waterPreserveLampColors = true
-waterSpecularFilter = true
 
 [patches.ObjectLookupIndex]
 enabled = true
@@ -424,11 +394,6 @@ enabled = true
 
 [patches.ResourceLookupMisses]
 enabled = true
-
-[patches.SceneDither]
-enabled = true
-forca = 1.0
-graoEmMovimento = true
 
 [patches.SceneNodeBudget]
 enabled = true
@@ -443,7 +408,6 @@ enabled = true
 blacks = 0.0
 clarity = 0.0
 contrast = 1.0
-deband = 0.0
 enabled = true
 exposure = 0.0
 highlight_hue = 40.0

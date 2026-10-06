@@ -40,7 +40,7 @@ struct PictureParams {
     float highlightHue = 40.0f; // ... and of the highlights
     float highlightTint = 0.0f;
     float mixer[6] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}; // saturation per hue: red, yellow, green, cyan, blue, magenta
-    float deband = 1.0f;      // gradient smoothing: 0 = off, 1 = steps up to 6/255, 2 = up to 12/255
+    float deband = 0.0f;      // gradient smoothing (default off, user 06/10): 0 = off, 1 = steps up to 6/255, 2 = up to 12/255
     float sharpen = 0.0f;     // 0..1.5
     float clarity = 0.0f;     // local contrast of the midtones, -1..1
     float vignette = 0.0f;    // darker corners, 0..0.8

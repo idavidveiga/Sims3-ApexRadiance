@@ -1169,7 +1169,7 @@ bool Picture::InitResources(IDirect3DDevice9* dev) {
 
 // ---- end of frame ----
 
-// Smooth gradients (deband) is on the Color page's Banding tab since 30/09 and follows the Banding Fix's switch, not
+// Smooth gradients (deband) is on the Banding Fix page (a Color tab from 30/09, its own page since 06/10) and follows the Banding Fix's switch, not
 // Picture's: with Picture off the pass still runs, with only the deband (every other control neutral), while the Banding
 // Fix is on. That smoothing-only pass is skipped in a frame without a copy of the scene (it would smooth the game's menus).
 static PictureParams Effective(const PictureParams& q) {
