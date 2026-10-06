@@ -2473,11 +2473,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             if (ApexUi::TextButton("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
-            if (ApexUi::TextButton("Lighting + Bloom census")) LotLightBridge::RequestLightingBloomCensus();
-            ImGui::SameLine();
-            ImGui::TextDisabled("(%s)", LotLightBridge::LightingBloomCensusStatus().c_str());
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Writes ApexRadiance_LightingBloomCensus.txt. Read-only: records which visible draw families Apex modifies in day/twilight/night and flags known/possible bloom-mask families.");
             if (ApexUi::TextButton("Capture bloom alpha mask")) BloomAlphaProbe::Request(g_level);
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", BloomAlphaProbe::Status().c_str());
