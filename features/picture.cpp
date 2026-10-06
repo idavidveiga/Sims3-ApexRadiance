@@ -454,8 +454,11 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // veil the scene copy is filtered and the veil applied again as the ratio frame / scene, as a translucent overlay
     // would be. A pixel the UI never touched is identical bit for bit (ratio 1); text, buttons and panels stay as drawn.
     float dmax = max(d.r, max(d.g, d.b));
-    float ui = cLook.y > 0.5 ? smoothstep(4.0 / 255.0, 24.0 / 255.0, dmax) : 0.0;
-    float3 veil = (cLook.y > 0.5 && dmax > 0.25 / 255.0) ? min((f + 1.0 / 255.0) / (s + 1.0 / 255.0), 4.0) : float3(1.0, 1.0, 1.0);
+    // 06/10 evening (user: every Color setting broken since 2.6.0): back to 2.6.0's model, the final frame graded and the
+    // UI pixels (any difference to the scene copy) left alone. The scene-copy grading with a frame/scene "veil" multiplied
+    // every pixel by the smallest difference between the copy and the frame and undid the grade across the picture.
+    float ui = cLook.y > 0.5 ? saturate(dmax * 64.0) : 0.0;
+    float3 veil = float3(1.0, 1.0, 1.0);
     bool scene = ui < 0.5;
 
     // CRT: the scene seen through curved glass (sampled further out toward the corners); outside it is black
@@ -466,7 +469,7 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         crtQ *= 1.0 + cCrt.y * 0.12 * dot(crtQ, crtQ) * float2(0.7, 1.0);
         suv = lerp(uv, crtQ * 0.5 + 0.5, cCrt.x);
     }
-    float3 fs = (cFlagE.y > 0.5 && scene) ? SceneTap(suv) : (cLook.y > 0.5 ? s : f); // the scene under any veil (see the UI mask)
+    float3 fs = (cFlagE.y > 0.5 && scene) ? SceneTap(suv) : f; // the scene under any veil (see the UI mask)
     fs = (cDeband.w > 0.5 && scene) ? Deband(suv, fs) : fs; // the scene only; the UI keeps its sharp edges
     [branch] if (cFlagD.z > 0.5 && scene) fs = Prism(suv, fs);
     // 3DFX soft pixels: the old cards' output filter blurred each pixel with its horizontal neighbours
