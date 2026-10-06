@@ -254,7 +254,12 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     // a lamp just switched on or off: the rooms relight at the game's own pace for a moment, even while moving
     const bool boosted = now < g_boostUntil.load(std::memory_order_relaxed);
     const bool moving = MovingAt(now);
-    if (!boosted && moving && game > 0.0f && game < kLeaveAloneMs) {
+    // The lots correcting themselves right after a load (06/10, user: "when entering the lot it takes long to correct"; log
+    // 12:18: 4.4 ms of solving a frame for 8 s): the lot being played keeps the game's budget while the camera moves, and
+    // gets kLampEditMs with it still
+    const bool settling = game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::SettlingAfterLoad();
+    if (settling && !moving) out = std::max(out, kLampEditMs);
+    if (!boosted && !settling && moving && game > 0.0f && game < kLeaveAloneMs) {
         const float scaled = game * (static_cast<float>(g_budgetMs.load(std::memory_order_relaxed)) / kPriorityMs);
         out = std::max(kMinMs, std::min(game, scaled));
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);

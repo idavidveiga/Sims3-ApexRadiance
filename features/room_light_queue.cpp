@@ -350,8 +350,10 @@ void __fastcall PickHook(BYTE* tree) {
     if (room) {
         // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
         // many lamps whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
+        // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
-                             : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f) : 4.0f;
+                             : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
+                                        : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
         reinterpret_cast<SwCtor_t>(kSwCtor)(sw, 4, 0);

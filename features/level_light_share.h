@@ -61,6 +61,9 @@ float LampUrgency(const void* room);
 // A lamp edit's room that is a member of an atrium (rooms joined through removed floors): the scheduler solves it right
 // after the lamp's own room whatever its story, so the atrium's stories change together
 bool StackedWithEdit(const void* room);
+// The first seconds after the world went live, while the loaded lots' rooms correct themselves (LotLightingMotion and
+// RoomLightQueue give the room solves a larger share of the frame meanwhile)
+bool SettlingAfterLoad();
 // Render thread: another member of the room's atrium group is waiting for its gather or its solve, or being solved
 // (RoomLightFade holds the room's new maps meanwhile, so the atrium's stories change together)
 bool GroupPending(const void* room);

@@ -1581,7 +1581,22 @@ void NoteClassThreshold(const BYTE* room) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
+// The top class's threshold from the game's own table (Steam 1.67.2: FUN_006a8e50 = 0xFF36F4[idx] x [0xFF3700], the code
+// checked at install), so it is known from the first solve: with only the solves seen, the rooms solved at classes 0-1
+// while a lot loads set a first value, and the first class-2 solve changed it, which changed every atrium's target and
+// sent its rooms to solve once more (06/10, user: "when entering the lot it takes long to correct")
+float g_thrTable = -1.0f;
+void ReadThresholdTable() {
+    const BYTE code[] = {0x8B, 0x41, 0x08, 0xD9, 0x04, 0x85, 0xF4, 0x36, 0xFF, 0x00, 0xD8, 0x0D, 0x00, 0x37, 0xFF, 0x00, 0xC3};
+    BYTE got[sizeof code] = {};
+    float factor[3] = {}, scale = 0.0f;
+    if (!GameAddr::IsFixed() || !MemPatch::ReadBytes(0x006A8E50, got, sizeof got) || std::memcmp(got, code, sizeof code) != 0) return;
+    if (!MemPatch::ReadBytes(0x00FF36F4, factor, sizeof factor) || !MemPatch::ReadBytes(0x00FF3700, &scale, sizeof scale)) return;
+    const float thr = factor[2] * scale;
+    if (std::isfinite(thr) && thr > 0.0f) g_thrTable = thr;
+}
 float TopThreshold() {
+    if (g_thrTable > 0.0f) return g_thrTable;
     for (int cls = 3; cls >= 0; cls--)
         if (g_thrByClass[cls] > 0.0f) return g_thrByClass[cls];
     return -1.0f;
@@ -4587,6 +4602,7 @@ bool InstallIndoor(std::string& why) {
     g_ambReady = amb;
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
     g_classTables = amb && CheckClassTables(); // the quick pass takes its refinement's wall tests (QuickLikeRefinement)
+    ReadThresholdTable();
     if (amb && !g_classTables) LOG_INFO("[LevelLightShare] Quick pass with the refinement's wall tests: not on this build (only its light threshold)");
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
@@ -4756,13 +4772,25 @@ int RequeueStory(uintptr_t tracker, int level, DWORD changed = 0, int* skipped =
 }
 // Every room of every loaded lot lights again (after an option that changes them). Render thread. Basements too (stories
 // -4..-1; 30/09: "Refresh the lighting" left them out).
+// The after-load refresh alone (06/10, user: "when entering the lot it takes long to correct"; log 12:18: the world went
+// live, its rooms near openings gathered again and settled in 3.8 s, and then the after-load refresh sent all 75 rooms of
+// 16 lots once more, 6 s more): a room gathered again since the world went live already has every lamp of its lot
+// (the reason for that refresh, 30/09: a room solved before the other stories' lamps were registered), so it keeps that
+// solve (running, waiting or finished), like a lamp edit's safety net keeps a fresh one
+std::atomic<DWORD> g_worldLiveAt{0};
+// The rooms solve with a larger share of the frame for this long after the world goes live (SettlingAfterLoad; the log
+// above: 4.4 ms of solving a frame at 80 fps while the lots corrected themselves)
+constexpr DWORD kSettleAfterLoadMs = 15000;
 void RequeueAllRooms(const char* why) {
     uintptr_t trackers[256];
     const int lots = AllTrackers(trackers, 256);
-    int queued = 0;
+    const DWORD live = g_worldLiveAt.load(std::memory_order_relaxed);
+    const bool afterLoad = live && std::string_view(why) == "Refresh the lighting (after loading)";
+    int queued = 0, kept = 0;
     for (int t = 0; t < lots; t++)
-        for (int level = -4; level <= 7; level++) queued += RequeueStory(trackers[t], level);
-    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of {} lots light again", why, queued, lots));
+        for (int level = -4; level <= 7; level++) queued += RequeueStory(trackers[t], level, afterLoad ? live : 0, afterLoad ? &kept : nullptr);
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of {} lots light again{}", why, queued, lots,
+                         afterLoad ? std::format(" ({} gathered again since the world went live keep their solve)", kept) : std::string()));
 }
 
 // Rooms at Night (unlit_rooms.cpp): every room (id > 0) of every loaded lot, stories -4..7. The list of (lot, story, id)
@@ -5967,6 +5995,7 @@ bool LoadedRoomsBusy() {
 }
 void OnWorldLive() {
     g_roomRefsAt = 0; // require a fresh enumeration after the load screen before an early refresh
+    g_worldLiveAt.store(GetTickCount() | 1, std::memory_order_relaxed);
     g_indoorGen.fetch_add(1);
     if (!kPublicBuild) LOG_INFO("[LevelLightShare] " APEX_VERSION_STRING ": World live, the rooms near stair openings of every lot gather once more");
 }
@@ -6148,6 +6177,11 @@ float CameraStoryFactor(const void* room) {
 float LampUrgency(const void* room) {
     const int tier = UrgentTier(room);
     return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : 1.0e5f) * CameraStoryFactor(room);
+}
+
+bool SettlingAfterLoad() {
+    const DWORD live = g_worldLiveAt.load(std::memory_order_relaxed);
+    return live && GetTickCount() - live < kSettleAfterLoadMs;
 }
 
 // The other members of a room's atrium group (false: not in one)
