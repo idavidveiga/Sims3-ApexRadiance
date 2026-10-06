@@ -159,6 +159,8 @@ constexpr int kQuickSetsMax = 3;
 // the previous switch's quick pass, so the next switch's quick pass gave it up after the safety net's invalidate gave it
 // back its class 2, and it kept the old light 3.5 s, waiting for its class-2 solve
 std::atomic<bool> g_endsSeen{false};
+// Every room's last solve end (GetTickCount; render thread): a lamp switch's furniture waits for its room's (AwaitingSwitchLight)
+std::unordered_map<uintptr_t, DWORD> g_lastEnd;
 std::unordered_map<uintptr_t, int> g_quickTarget; // per room of the burst: its class before the quick pass set it to 0
 bool g_editNow = false; // render thread, set by each pick: a lamp edit's rooms are pending
 int ClassOf(const BYTE* room) {
@@ -565,6 +567,15 @@ void NoteSolveEnd(const void* room) {
     g_endsSeen.store(true, std::memory_order_relaxed);
     const auto it = g_quickDone.find(reinterpret_cast<uintptr_t>(room));
     if (it != g_quickDone.end()) it->second.solved = true; // set to 0 while waiting: this is the solve that followed
+    if (g_lastEnd.size() > 16384) g_lastEnd.clear();
+    g_lastEnd[reinterpret_cast<uintptr_t>(room)] = GetTickCount();
+}
+bool AwaitingSwitchLight(const void* room) {
+    if (!room || !g_endsSeen.load(std::memory_order_relaxed) || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
+    if (!LampMarkFilter::SwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return false;
+    const DWORD start = LampMarkFilter::SwitchEventStart();
+    const auto it = g_lastEnd.find(reinterpret_cast<uintptr_t>(room));
+    return it == g_lastEnd.end() || static_cast<int32_t>(it->second - start) < 0; // no solve of it ended since the switch
 }
 int QuickPassTarget(const void* room) {
     if (!InQuickPass(room)) return -1;

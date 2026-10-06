@@ -152,10 +152,14 @@ bool NoteSwitch(uintptr_t light, DWORD tick) {
 // are one event, so "all the lights" is one too.
 std::atomic<DWORD> g_switchLast{0};
 std::atomic<long> g_switchEvents{0};
+std::atomic<DWORD> g_switchStart{0}; // the first switch of the current event
 void NoteUserSwitch(DWORD tick) {
     const float night = NightLevelRef().load(std::memory_order_relaxed);
     if (night < 0.0f || (night > 0.02f && night < 0.98f)) return;
-    if (tick - g_switchLast.load(std::memory_order_relaxed) > kMassHoldMs) g_switchEvents.fetch_add(1, std::memory_order_relaxed);
+    if (tick - g_switchLast.load(std::memory_order_relaxed) > kMassHoldMs) {
+        g_switchStart.store(tick, std::memory_order_relaxed);
+        g_switchEvents.fetch_add(1, std::memory_order_relaxed);
+    }
     g_switchLast.store(tick | 1, std::memory_order_relaxed);
 }
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
@@ -505,6 +509,7 @@ void OnPresent(float nightLevel) {
 }
 long MassEventId() { return g_massEvents.load(std::memory_order_relaxed); }
 long SwitchEventId() { return g_switchEvents.load(std::memory_order_relaxed); }
+unsigned long SwitchEventStart() { return g_switchStart.load(std::memory_order_relaxed); }
 bool SwitchActive() {
     const DWORD last = g_switchLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

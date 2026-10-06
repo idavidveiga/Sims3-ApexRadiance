@@ -224,9 +224,19 @@ void CrossStoryLamps(BYTE* rig, void* a, void* b, void* c, void* d) {
     g_crossLamps.fetch_add(n, std::memory_order_relaxed);
 }
 
+// The room of each room-mode rig, as its last gather saw it (a = room+0x30): a lamp switch's furniture waits for that room
+// (RigRoom, lot_light_bridge.cpp). Any thread (gathers), read on the render thread.
+std::mutex g_rigRoomMx;
+std::unordered_map<uintptr_t, const void*> g_rigRoom;
+
 void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, void* d) {
     reinterpret_cast<RoomGather_t>(kRoomGather)(rig, a, b, c, d);
     const int mode = *reinterpret_cast<const int*>(rig + 0x1D4);
+    if (mode == 0 && a) {
+        std::lock_guard<std::mutex> lk(g_rigRoomMx);
+        if (g_rigRoom.size() > 16384) g_rigRoom.clear();
+        g_rigRoom[reinterpret_cast<uintptr_t>(rig)] = static_cast<const BYTE*>(a) - 0x30;
+    }
     if (mode == 0 && a && b) CrossStoryLamps(rig, a, b, c, d);
     if (!g_forceAll.load(std::memory_order_relaxed) || mode != 1) return;
     CellGatherForRoomRig(rig);
@@ -297,6 +307,10 @@ void UpdateRoomRigs() {
         {
             std::lock_guard<std::mutex> lk(g_crossRigMx);
             g_crossRigSet.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_rigRoomMx);
+            g_rigRoom.clear();
         }
         std::lock_guard<std::mutex> lk(g_roomRigMx);
         g_roomRigSet.clear();
@@ -765,6 +779,13 @@ void OnPresent() {
 void SetAllObjects(bool on) { g_forceAll = on; }
 
 void RequestRigRefresh() { g_refreshRequested = true; }
+
+const void* RigRoom(uintptr_t rig) {
+    if (!rig) return nullptr;
+    std::lock_guard<std::mutex> lk(g_rigRoomMx);
+    const auto it = g_rigRoom.find(rig);
+    return it == g_rigRoom.end() ? nullptr : it->second;
+}
 
 std::string Status() {
     return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {} | "

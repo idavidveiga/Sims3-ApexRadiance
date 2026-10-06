@@ -44,6 +44,10 @@ int QuickPassTarget(const void* room);
 // Any thread (LevelLightShare's FinalizeHook): a room's solve ended, it shows the maps it wrote from the next frame; on
 // the render thread this is when a quick pass counts as shown
 void NoteSolveEnd(const void* room);
+// Render thread (a furniture draw): a player's lamp switch is on, the room was marked by it (lamp-edit urgency) and none of
+// its solves ended since the switch began, so it still shows its light from before the switch (06/10: the furniture of
+// such a room keeps its rig lights from before too, lot_light_bridge.cpp)
+bool AwaitingSwitchLight(const void* room);
 // Render thread: that room is being solved at a higher class than the one on screen (the quick pass's refinement): the
 // maps it writes are not the ones shown, and hold the room's light from before the edit
 bool SolveRefiningUp();

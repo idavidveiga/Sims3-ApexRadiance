@@ -21,4 +21,6 @@ int RetintLamps(const std::vector<uintptr_t>& lights);
 // Object rigs gather their lights again at the next OnPresent (e.g. the moonlight changed)
 void RequestRigRefresh();
 std::string LampColourStatus();
+// The room a room-mode rig gathered its lights for (its last gather; null when not seen). Any thread.
+const void* RigRoom(uintptr_t rig);
 }

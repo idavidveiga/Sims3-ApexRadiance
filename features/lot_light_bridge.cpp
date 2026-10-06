@@ -35,6 +35,9 @@
 #include "unlit_rooms.h"
 #include "light_probe.h"
 #include "rig_tracker.h"
+#include "room_light_queue.h"
+#include "object_light_bridge.h"
+#include "lamp_mark_filter.h"
 #include "recorder.h"
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
@@ -3327,6 +3330,64 @@ void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChai
     Recorder::Note(text);
 }
 
+// ---- A lamp switch's furniture waits for its room (06/10 evening, user: "objects together with the walls") ----
+// At a switch the game updates the rigs of the lamp's room at once (the 13:52 recording: rig lights changed 0.05 s after
+// the switch), while the room's walls and its light map show the new light only when its solve ends (0.1 .. 0.5 s): the
+// lamp's light left the furniture first, then the room followed. Every room-mode part draw remembers its rig's lights
+// (PS c0..c7 and the vertex lights) while no switch is on; during a switch, while the rig's room still awaits its new
+// light (RoomLightQueue::AwaitingSwitchLight; the rig's room from its last gather, ObjectLightBridge::RigRoom), the part is
+// drawn with the lights it had before the switch (a snapshot taken at most 2 s before it), then with the game's.
+struct RigSnap {
+    float ps[8][4];
+    float vs[8][4];
+    bool haveVs;
+    DWORD tick;
+};
+std::unordered_map<uint64_t, RigSnap> g_rigSnaps; // (rig, vertex-light register) -> its lights before a switch (render thread)
+std::atomic<long> g_rigHeldDraws{0};
+constexpr DWORD kRigSnapFreshMs = 2000;
+struct RigHeld {
+    bool ps = false, vs = false;
+    int vl = -1;
+    float psGame[8][4];
+    float vsGame[8][4];
+};
+void HoldRig(IDirect3DDevice9* dev, float (*rig)[4], RigHeld& h) {
+    const uintptr_t rp = RigTracker::CurrentRig();
+    if (!rp) return;
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    const uint64_t key = (static_cast<uint64_t>(rp) << 8) ^ static_cast<uint64_t>(vl & 0xFF);
+    if (!LampMarkFilter::SwitchActive()) { // the lights as the game set them, for the next switch
+        if (g_rigSnaps.size() > 16384) g_rigSnaps.clear();
+        RigSnap& s = g_rigSnaps[key];
+        std::memcpy(s.ps, rig, sizeof s.ps);
+        s.haveVs = vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &s.vs[0][0], 8));
+        s.tick = GetTickCount();
+        return;
+    }
+    const void* room = ObjectLightBridge::RigRoom(rp);
+    if (!room || !RoomLightQueue::AwaitingSwitchLight(room)) return;
+    const auto it = g_rigSnaps.find(key);
+    if (it == g_rigSnaps.end()) return;
+    const RigSnap& s = it->second;
+    const DWORD start = LampMarkFilter::SwitchEventStart();
+    if (static_cast<int32_t>(start - s.tick) < 0 || start - s.tick > kRigSnapFreshMs) return; // taken after the switch, or long before
+    std::memcpy(h.psGame, rig, sizeof h.psGame);
+    SetPsConst(dev, 0, &s.ps[0][0], 8);
+    std::memcpy(rig, s.ps, sizeof s.ps);
+    h.ps = true;
+    if (s.haveVs && vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &h.vsGame[0][0], 8))) {
+        SetVsConst(dev, static_cast<UINT>(vl - 4), &s.vs[0][0], 8);
+        h.vs = true;
+        h.vl = vl;
+    }
+    g_rigHeldDraws.fetch_add(1, std::memory_order_relaxed);
+}
+void ReleaseRig(IDirect3DDevice9* dev, const RigHeld& h) {
+    if (h.ps) SetPsConst(dev, 0, &h.psGame[0][0], 8);
+    if (h.vs) SetVsConst(dev, static_cast<UINT>(h.vl - 4), &h.vsGame[0][0], 8);
+}
+
 // Room-mode furniture draws (RigTracker mode 0). The room counts as dark (Rooms at Night acts fully, whatever the night
 // level) when the rig holds a [NoLight] light: the game adds those only to a dark room.
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
@@ -3338,6 +3399,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
         if (!info.rigLights) g_fdNoChain.fetch_add(1, std::memory_order_relaxed);
     float rig[8][4] = {};
     const bool haveRig = info.rigLights && SUCCEEDED(dev->GetPixelShaderConstantF(0, &rig[0][0], 8));
+    RigHeld held;
+    if (haveRig) HoldRig(dev, rig, held); // a lamp switch's furniture: the lights from before it until its room shows the new light
     bool dark = false;
     for (int k = 0; k < 4 && haveRig && !dark; k++) dark = UnlitRooms::IsDarkRoomLight(rig[4 + k], rig[k]);
     UnlitRooms::SetDrawDark(dark);
@@ -3360,6 +3423,15 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* d
     if (trace) {
         const int path = static_cast<long>(g_indoorDrawn.load()) != aBefore ? 1 : g_nightFurniture.load() != bBefore ? 2 : 0;
         TraceFurniture(dev, haveRig ? rig : nullptr, info.rigLights, path, dark, active, tint, cubeGame, cubeGame >= 0.0f ? cubeGame * ambient : cubeGame);
+    }
+    if (held.ps) {
+        if (r == D3D9Hooks::HookAction::Continue) { // the game's own draw, made here while its lights are held
+            g_inOwnCall = true;
+            draw();
+            g_inOwnCall = false;
+            r = D3D9Hooks::HookAction::Skip;
+        }
+        ReleaseRig(dev, held);
     }
     UnlitRooms::SetDrawDark(false);
     return r;
@@ -4214,17 +4286,17 @@ void FurnitureTraceReset() { g_traceLast.clear(); }
 
 // Development build (F6 recorder): room-mode furniture draws since the last call (the render thread)
 std::string FurnitureDiag() {
-    static long last[7] = {};
-    const long now[7] = {g_fdMode0.load(), g_fdInactive.load(), g_fdNoChain.load(), g_nightFurniture.load(), static_cast<long>(g_indoorDrawn.load()),
-                         g_fdUnlitSlots.load(), g_fdLampSlots.load()};
-    long d[7];
-    for (int k = 0; k < 7; k++) {
+    static long last[8] = {};
+    const long now[8] = {g_fdMode0.load(), g_fdInactive.load(), g_fdNoChain.load(), g_nightFurniture.load(), static_cast<long>(g_indoorDrawn.load()),
+                         g_fdUnlitSlots.load(), g_fdLampSlots.load(), g_rigHeldDraws.load()};
+    long d[8];
+    for (int k = 0; k < 8; k++) {
         d[k] = now[k] - last[k];
         last[k] = now[k];
     }
-    return std::format("room-mode draws {} (Rooms at Night not acting {}, no rig chain {}, turned {}; Apex indoor-object shader {}) | rig slots turned {}, "
-                       "lamps kept {} | acting {}, brightness x{:.3f}, blue kept {:.3f}", d[0], d[1], d[2], d[3], d[4], d[5], d[6], UnlitRooms::FurnitureActive() ? "yes" : "no",
-                       UnlitRooms::FurnitureAmbient(), UnlitRooms::FurnitureTint());
+    return std::format("room-mode draws {} (Rooms at Night not acting {}, no rig chain {}, turned {}; Apex indoor-object shader {}; held for a lamp switch {}) | "
+                       "rig slots turned {}, lamps kept {} | acting {}, brightness x{:.3f}, blue kept {:.3f}", d[0], d[1], d[2], d[3], d[4], d[7], d[5], d[6],
+                       UnlitRooms::FurnitureActive() ? "yes" : "no", UnlitRooms::FurnitureAmbient(), UnlitRooms::FurnitureTint());
 }
 
 std::string ObjectStatus() {

@@ -277,6 +277,23 @@ channel (`kBasisCap`). While the light-between-stories directional-map guard is 
 0..7, +8 for the uncapped variant), because the cap transferred floor-height shadows onto wall objects (the cap removes 12
 tokens, three instructions). Without the guard the capped variant stays.
 
+### A lamp switch's furniture waits for its room (06/10)
+
+User: "objects together with the walls". At a switch the game updates the rigs of the lamp's room at once (recording 13:52:
+the rig lights changed 0.05 s after the switch), while the room's walls and light map show the new light only when its
+solve ends (0.1 .. 0.5 s; with the quick pass, `RoomLightQueue`), so the lamp's light left the furniture first and the
+room followed. In `OnDrawInner` (room-mode parts, `lot_light_bridge.cpp`):
+
+- While no player switch is on (`LampMarkFilter::SwitchActive`), every part draw remembers its rig's lights as the game
+  set them: PS c0..c7 (directions and colours) and the vertex lights (VS `vl - 4 .. vl + 3`), keyed by rig and vertex-light
+  register (`g_rigSnaps`, render thread).
+- During a switch, when the rig's room (`ObjectLightBridge::RigRoom`: the room of the rig's last gather, `a - 0x30` in
+  `RoomGatherThunk`) still awaits its new light (`RoomLightQueue::AwaitingSwitchLight`: the room has lamp-edit urgency
+  and none of its solves ended since the switch began, from the solve ends `FinalizeHook` reports), and the snapshot was
+  taken at most 2 s before the switch, the part is drawn with the snapshot (the game's own draw is made there and its
+  constants put back). Once the room's solve ends, or the switch is 1.5 s old, the part takes the game's lights again.
+- The furniture status line counts the parts "held for a lamp switch".
+
 ### Address reference
 
 | Address | What | Verification |

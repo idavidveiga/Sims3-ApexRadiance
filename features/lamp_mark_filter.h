@@ -18,6 +18,8 @@ long MassEventId();
 // Any thread.
 bool SwitchActive();
 long SwitchEventId();
+// GetTickCount of the current switch event's first switch
+unsigned long SwitchEventStart();
 // Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
 void SetEnabled(bool on);
 bool Enabled();
