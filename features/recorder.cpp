@@ -337,6 +337,19 @@ std::string LightUpdates(DWORD start, DWORD end) {
             if (twice) s += std::format("   solved more than once: {} room(s): {}\n", twice, again);
         }
         if (olderOnly) s += std::format("   {} room(s) only finished a solve started before this edit (not counted)\n", olderOnly);
+        // the objects (furniture and other room-mode parts): their drawing changed (the [furniture] lines)
+        {
+            int n = 0;
+            DWORD a = 0, z = 0;
+            for (const Line& l : g_lines)
+                if (!Before(l.tick, t0) && Before(l.tick, t1) && l.text.rfind("[furniture] changed", 0) == 0) {
+                    n++;
+                    a = Earliest(a, l.tick);
+                    z = Latest(z, l.tick);
+                }
+            if (n) s += std::format("   objects: {} object part(s) changed their light, {} .. {}\n", n, Seconds(t0, a), Seconds(t0, z));
+            else s += "   objects: no object part changed its light in this window\n";
+        }
         // the ground (terrain chunks, their smoothed maps and the world atlas that lots, floors and fences read)
         {
             std::vector<const GroundShown*> g;

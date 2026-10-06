@@ -3254,7 +3254,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice
 // ---- Development tools: the F6 furniture tracer. While a recording runs, every room-mode object part (world position +
 // pixel shader) is written once at its first draw and again whenever its drawing changes: the path, the rig lights as the
 // game set them, the vertex lights, the ambient cube weight, the blue kept, and for path A the maps it read. ----
-std::unordered_map<uint64_t, std::vector<uint64_t>> g_traceLast; // object part (rig + pixel shader) -> the states already written (render thread)
+struct TraceSeen {
+    std::vector<std::pair<uint64_t, DWORD>> states; // the part's recent states and when each was last seen (GetTickCount)
+    uint64_t last = 0;                              // the state seen at its last draw
+};
+std::unordered_map<uint64_t, TraceSeen> g_traceLast; // object part (rig + pixel shader) -> its states (render thread)
 uint64_t TraceHash(uint64_t h, int64_t v) { return (h ^ static_cast<uint64_t>(v)) * 1099511628211ull; }
 int64_t TraceQ(float v) { return std::isfinite(v) ? static_cast<int64_t>(std::llround(static_cast<double>(v) * 10000.0)) : 0x7FFFFFFF; }
 char SlotKind(const float* colour, const float* dir) {
@@ -3293,13 +3297,25 @@ void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChai
         state = TraceHash(state, TraceQ(g_traceA.scaleY));
     }
     if (g_traceLast.size() > 50000) g_traceLast.clear();
-    // a state already written for this part is not written again (a part drawn twice a frame, e.g. by two passes with
-    // different maps, would otherwise alternate every frame)
+    // Written when the part's state changes. A part drawn twice a frame (two passes with different maps) alternates every
+    // frame: a state seen less than kTraceRecentMs ago is not written again. A state that comes back later is (06/10: lights
+    // off, on, off again: the furniture's second "off" was never written, since every state was written once at most, and
+    // the recording looked as if the objects kept the lamp light).
+    constexpr DWORD kTraceRecentMs = 300;
+    const DWORD now = GetTickCount();
     auto [it, fresh] = g_traceLast.try_emplace(key);
-    auto& seen = it->second;
-    if (std::find(seen.begin(), seen.end(), state) != seen.end()) return;
-    if (seen.size() >= 8) seen.erase(seen.begin());
-    seen.push_back(state);
+    TraceSeen& seen = it->second;
+    const uint64_t last = seen.last;
+    seen.last = state;
+    auto s = std::find_if(seen.states.begin(), seen.states.end(), [state](const auto& x) { return x.first == state; });
+    if (s != seen.states.end()) {
+        const DWORD at = s->second;
+        s->second = now;
+        if (state == last || now - at < kTraceRecentMs) return;
+    } else {
+        if (seen.states.size() >= 8) seen.states.erase(seen.states.begin());
+        seen.states.emplace_back(state, now);
+    }
     std::string rigText = rigChain ? std::string() : std::string(" (this shader has no rig light chain: c4..c7 are other values)");
     for (int k = 0; k < 4 && rigChain; k++)
         rigText += std::format(" {}({:.3f} {:.3f} {:.3f})", SlotKind(rig[4 + k], rig[k]), rig[4 + k][0], rig[4 + k][1], rig[4 + k][2]);
