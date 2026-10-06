@@ -873,10 +873,105 @@ void PerformanceCard() {
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
         FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
+    ImGui::PushID("PerformanceLotDetailStreaming");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Lot detail streaming", "Controls how far, how many and how smoothly lots enter full detail", nullptr, nullptr);
+        ApexUi::CardDivider();
+
+        const bool rangeOn = FeatureSwitchRow(Performance::kLotDetailRangeName, "Extended lot detail",
+                                              "Uses the validated Apex range/capacity baseline instead of the game's 70 / 8", true);
+        if (rangeOn) {
+            float distance = static_cast<float>(Performance::LotDetailDistance());
+            char distanceValue[24];
+            std::snprintf(distanceValue, sizeof distanceValue, "%d", Performance::LotDetailDistance());
+            ApexUi::SliderOptions distanceOptions;
+            distanceOptions.tooltip = "Native WorldManager Lot LOD distance. Range 70-300; the slider snaps in 10-unit steps. Apex validated the 200 and 300 distance cutoffs in-game.";
+            distanceOptions.valueText = distanceValue;
+            distanceOptions.leftLabel = "70 (game)";
+            distanceOptions.rightLabel = "300 (Apex)";
+            distanceOptions.defaultValue = 300.0f;
+            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 300.0f, distanceOptions)) {
+                const int snappedDistance = std::clamp(70 + static_cast<int>(std::lround((distance - 70.0f) / 10.0f)) * 10, 70, 300);
+                Performance::SetLotDetailDistance(snappedDistance);
+            }
+
+            float maxLots = static_cast<float>(Performance::MaximumDetailedLots());
+            char maxLotsValue[24];
+            std::snprintf(maxLotsValue, sizeof maxLotsValue, "%d", Performance::MaximumDetailedLots());
+            ApexUi::SliderOptions maxLotsOptions;
+            maxLotsOptions.tooltip = "Native Max Active Lots capacity. Validated range 8-16; the slider moves one lot at a time. 16 was verified at the same dense camera point that saturated at 8.";
+            maxLotsOptions.valueText = maxLotsValue;
+            maxLotsOptions.leftLabel = "8 (game)";
+            maxLotsOptions.rightLabel = "16 (Apex)";
+            maxLotsOptions.defaultValue = 16.0f;
+            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 8.0f, 16.0f, maxLotsOptions))
+                Performance::SetMaximumDetailedLots(static_cast<int>(std::lround(maxLots)));
+        }
+
+        const bool streamingOn = FeatureSwitchRow(Performance::kLotLodStreamingName, "Smooth lot streaming",
+                                                  "Reduces rapid lot-detail churn while moving: native transition throttle + camera threshold 5", true);
+        if (streamingOn && Performance::LotLodStreamingHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the same streaming settings untouched");
+
+        const bool visibilityOn = FeatureSwitchRow(Performance::kLotVisibilityOverrideName, "Keep lot visibility stable",
+                                                   "Stops camera viewing angle alone from making lots load or unload", true);
+        if (visibilityOn && Performance::LotVisibilityOverrideHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot visibility override untouched");
+        else if (visibilityOn && Performance::LotVisibilityOverrideAlreadyExternal())
+            CardNote("Already applied by another patch: Apex leaves the existing visibility override untouched");
+
+        const bool mapBlockerOn = FeatureSwitchRow(Performance::kMapViewStreamingBlockerName, "Pause lot streaming in map view",
+                                                   "Stops lot-detail streaming while the neighborhood map is open, then resumes it after closing", true);
+        if (mapBlockerOn && Performance::MapViewStreamingBlockerHandledByS3SS())
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the map-view streaming blocker untouched");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
+    ImGui::PushID("PerformanceObjectStreaming");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Object streaming", "Spreads object creation work after a lot begins loading", nullptr, nullptr);
+        ApexUi::CardDivider();
+
+        const bool objectThrottleOn = FeatureSwitchRow(Performance::kLotObjectThrottleName, "Spread lot objects while loading",
+                                                       "Builds a lot's regular objects in small windows instead of one large burst", true);
+        if (objectThrottleOn && Performance::LotObjectThrottleHandledByS3SS()) {
+            CardNote("Handled by Sims3SettingsSetter: Apex leaves the lot object throttle untouched");
+        } else if (objectThrottleOn) {
+            float objects = static_cast<float>(Performance::LotObjectThrottleObjectsPerWindow());
+            char objectValue[24];
+            std::snprintf(objectValue, sizeof objectValue, "%d", Performance::LotObjectThrottleObjectsPerWindow());
+            ApexUi::SliderOptions objectOptions;
+            objectOptions.tooltip = "Regular objects built for each lot continuation window; 2 matches Sims3SettingsSetter";
+            objectOptions.valueText = objectValue;
+            objectOptions.leftLabel = "Smoother";
+            objectOptions.rightLabel = "Loads sooner";
+            objectOptions.defaultValue = 2.0f;
+            if (ApexUi::Slider("Objects per lot window", &objects, 1.0f, 64.0f, objectOptions))
+                Performance::SetLotObjectThrottleObjectsPerWindow(static_cast<int>(std::lround(objects)));
+
+            float delay = static_cast<float>(Performance::LotObjectThrottleDelayMs());
+            char delayValue[24];
+            std::snprintf(delayValue, sizeof delayValue, "%d ms", Performance::LotObjectThrottleDelayMs());
+            ApexUi::SliderOptions delayOptions;
+            delayOptions.tooltip = "Minimum delay between continuation windows for the same lot; 16 ms matches Sims3SettingsSetter";
+            delayOptions.valueText = delayValue;
+            delayOptions.leftLabel = "Loads sooner";
+            delayOptions.rightLabel = "More spread";
+            delayOptions.defaultValue = 16.0f;
+            if (ApexUi::Slider("Delay between lot windows", &delay, 0.0f, 500.0f, delayOptions))
+                Performance::SetLotObjectThrottleDelayMs(static_cast<int>(std::lround(delay)));
+        }
+
         FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
     ImGui::PopID();
+
     ImGui::PushID("PerformanceFiles");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Search, "Files and objects", "Less repeated searching as content loads", nullptr, nullptr);
