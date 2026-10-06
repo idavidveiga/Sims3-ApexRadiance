@@ -1,6 +1,7 @@
 // An atrium's stories change together (see atrium_hold.h).
 #include "atrium_hold.h"
 #include "apex_log.h"
+#include "apex_util.h"
 #include "lamp_mark_filter.h"
 #include "level_light_share.h"
 #include "room_light_queue.h"
@@ -233,6 +234,20 @@ HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
     return g_origUnlock(t, level);
 }
 
+// The file name of the module holding that code ("d3d9.dll" for DXVK and Windows' own)
+std::wstring ModuleOf(const void* code) {
+    HMODULE m = nullptr;
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(code), &m) ||
+        !GetModuleFileNameW(m, path, MAX_PATH))
+        return L"";
+    std::wstring name = path;
+    const size_t slash = name.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) name.erase(0, slash + 1);
+    for (wchar_t& c : name) c = towlower(c);
+    return name;
+}
+
 bool InstallHooks(IDirect3DDevice9* dev) {
     IDirect3DTexture9* probe = nullptr;
     if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &probe, nullptr)) || !probe) return false;
@@ -240,6 +255,17 @@ bool InstallHooks(IDirect3DDevice9* dev) {
     g_origLock = reinterpret_cast<LockRect_t>(vt[19]);
     g_origUnlock = reinterpret_cast<UnlockRect_t>(vt[20]);
     probe->Release();
+    // Only the texture code of a d3d9.dll (DXVK, Windows' own) is patched: a wrapper's (dxwrapper.dll, 06/10: a player's
+    // game crashed in it after the first loading screen) may fold identical methods of other interfaces into these two,
+    // and the device hooks refuse folded slots for the same reason (D3D9Hooks::Install)
+    const std::wstring lockIn = ModuleOf(reinterpret_cast<const void*>(g_origLock)), unlockIn = ModuleOf(reinterpret_cast<const void*>(g_origUnlock));
+    if (lockIn != L"d3d9.dll" || unlockIn != L"d3d9.dll" || reinterpret_cast<void*>(g_origLock) == reinterpret_cast<void*>(g_origUnlock)) {
+        LOG_INFO(std::format("[AtriumHold] Texture locks are in {}, not a d3d9.dll: left alone (lamp switches change room by room)",
+                             ApexUtil::ToUtf8(lockIn)));
+        g_origLock = nullptr;
+        g_origUnlock = nullptr;
+        return false;
+    }
     std::vector<DetourBatch::Hook> hooks = {{reinterpret_cast<void**>(&g_origLock), reinterpret_cast<void*>(&LockHook)},
                                             {reinterpret_cast<void**>(&g_origUnlock), reinterpret_cast<void*>(&UnlockHook)}};
     return DetourBatch::InstallHooks(hooks);

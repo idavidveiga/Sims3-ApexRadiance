@@ -20,12 +20,15 @@ constexpr bool Active(unsigned char active, int mode) {
 }
 // Startup/loading window id set by 0x00EC7DB9 and removed by 0x00EC7A60.
 // UI service/root/child lookups are the same read-only path used by that callback.
+// A game build where the getter was not found or has another shape cannot show the window at all: it never holds the
+// effects back there (failing closed left Color, Ambient Occlusion and Edge Smoothing off for good on such a build,
+// switched on in the menu). The UI not up yet (start-up) still waits.
 inline bool LoaderDismissed() {
     const uintptr_t getter = GameAddr::Get(GameAddr::Id::UiServiceGetter);
-    if (!getter) return false;
+    if (!getter) return true;
     __try {
         const auto* code = reinterpret_cast<const unsigned char*>(getter);
-        if (code[0] != 0xA1 || code[5] != 0xC3) return false;
+        if (code[0] != 0xA1 || code[5] != 0xC3) return true;
         const uintptr_t global = *reinterpret_cast<const uint32_t*>(code + 1);
         const uintptr_t service = global ? *reinterpret_cast<const uintptr_t*>(global) : 0;
         if (!service) return false;
@@ -70,12 +73,15 @@ namespace WorldSession {
 inline bool InWorld() {
     static bool open = false;
     static unsigned long long drawnSince = 0;
-    if (!IsActive()) {
+    // a game build where the world manager was not found: the drawn world alone decides, every frame (no latch, so the
+    // main menu's few draws close it again); never off for good
+    const bool worldKnown = GameAddr::Get(GameAddr::Id::WorldManagerPtr) != 0;
+    if (worldKnown && !IsActive()) {
         open = false;
         drawnSince = 0;
         return false;
     }
-    if (open) return true;
+    if (open && worldKnown) return true;
     const unsigned long long now = GetTickCount64();
     // the last complete frame's count (06/10: Night Lighting asks at Present, after the count was reset for the next
     // frame, so the current count read 0 there and restarted the timer every frame); no counting at all (no post-scene

@@ -41,7 +41,7 @@ int main(){
     Check(WorldSession::LoaderDismissed(),"removed loading window releases gate");
     loaderPresent=true;Check(!WorldSession::LoaderDismissed(),"attached loading window blocks ready world");
     loaderPresent=false;servicePointer=0;Check(!WorldSession::LoaderDismissed(),"UI not initialised fails closed");
-    servicePointer=reinterpret_cast<uintptr_t>(&serviceMock);getterCode[0]=0;Check(!WorldSession::LoaderDismissed(),"unknown UI getter fails closed");getterCode[0]=0xA1;
+    servicePointer=reinterpret_cast<uintptr_t>(&serviceMock);getterCode[0]=0;Check(WorldSession::LoaderDismissed(),"unknown UI getter never holds the effects back");getterCode[0]=0xA1;
     WorldSession::Settled settled;
     settled.Update(true,0);Check(!settled.ready,"zero clock first frame is not ready");
     settled.Update(true,2999);Check(!settled.ready,"blur waits through final settling interval");
