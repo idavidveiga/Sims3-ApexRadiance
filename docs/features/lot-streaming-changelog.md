@@ -195,12 +195,12 @@ This distinction should be preserved in future public documentation and credits.
 
 The validated research values are now in the normal production path, without the metric probe:
 
-- **Extended Lot Detail**: enabled by default on EA 1.69.
-  - **Lot detail distance**: range **70-300**, default **300**, snapped in 10-unit steps.
-  - **Maximum detailed lots**: range **8-16**, default **16**, one-lot steps.
+- **Extended Lot Detail**: production-capable on EA 1.69, but in the current v2.6.0-integrated build it is **opt-in** (`enabledByDefault = false`).
+  - **Lot detail distance**: range **70-300**, control default **300**, snapped in 10-unit steps.
+  - **Maximum detailed lots**: range **8-16**, control default **16**, one-lot steps.
   - Apex captures the native values per live WorldManager, writes only guarded expected values, stops maintaining a field
     if another owner changes it, and restores only fields it still owns.
-- **Smooth Lot Streaming**: enabled by default where supported; native transition throttle ON + camera threshold **5.0**.
+- **Smooth Lot Streaming**: validated/recommended companion behavior, but current registration is **opt-in** (`enabledByDefault = false`); when enabled it uses native transition throttle ON + camera threshold **5.0**.
 - **Keep Lot Visibility Stable**: optional/experimental; camera-angle bias JZ -> JMP with ownership-safe restoration.
 - **Pause Lot Streaming in Map View**: optional/experimental; uses WorldManager+0x258 while the map is open plus a 1 s exit grace.
 - **Object streaming** remains separate from lot eligibility/capacity:
@@ -228,7 +228,7 @@ After the final controlled OFF vs Smooth comparison, the research baseline was p
 - Both settings are persisted in `[patches.LotDetailRange]` and can be changed from the Performance menu within the validated
   ranges: distance **70-300** (10-unit steps) and capacity **8-16**.
 - The production implementation does **not** install the metric/scoring/detail-request diagnostic hooks.
-- Smooth Lot Streaming is validated as the normal companion behavior: native transition throttle ON + camera threshold 5.
+- Smooth Lot Streaming is validated as the normal companion behavior: native transition throttle ON + camera threshold 5. The current v2.6.0-integrated registration remains opt-in.
 - The misleading threshold-12 switch is no longer shown in the main menu. The underlying diagnostic feature was kept for development/reference.
 - Lot-object throttling and Scene Node Budget are presented separately under Object streaming.
 
@@ -236,3 +236,26 @@ Final A/B in one game session (300 + 16 held constant):
 - everything OFF: 268 transitions over ~107.7 s = **149.3 transitions/min**; 87 same-lot reversals <=5 s; 48 <=2 s.
 - Smooth ON: 190 transitions over ~114.9 s = **99.2 transitions/min**; 18 same-lot reversals <=5 s; 3 <=2 s.
 - approximate reduction: **34%** transitions/min, **79%** <=5 s reversals, **94%** <=2 s reversals.
+
+## 11. Final upstream 2.6.0 integration state — 2026-10-06
+
+The fork was rebased conceptually onto the **published final Apex Radiance 2.6.0** while preserving the validated fork-only Lot Streaming work.
+
+- Upstream final tag: `v2.6.0`, commit `9ca0b102d4ee0f90f5f4fe406d97ab0f3f5dca9a`.
+- Post-release experimental `feature/color-filters` work was **not** imported.
+- Where the fork and upstream both carried intermediate EA 1.69 implementations of the same lighting subsystem, the final upstream implementation won; `features/level_light_share.cpp` is intentionally the official 2.6.0 version.
+- Fork-only Lot Streaming modules remain present: `lot_detail_range`, `lot_lod_streaming`, `lot_object_throttle`, `lot_visibility_override`, `lot_active_threshold` and the diagnostic probes.
+- x86 Release validation after the integration passed in workflow run `37414470615`.
+
+### S3SS comparison snapshot
+
+The detailed provenance review was refreshed against public Sims3SettingsSetter main `5eb2c65bb11e21dac423731c9726627f1fb118ac` and `patches/lot_streaming_optimizations_patch.cpp` blob `def668c514230dd83855c4b2c7e7af6e6e3b7add`.
+
+The durable classification is:
+
+- **Apex research:** distance 300, `WorldManager+0xE4 = 16`, metric argument/cutoff probes, 200²/300² validation, controlled A/B, ownership of the new distance/capacity fields.
+- **S3SS direct source/algorithm lineage:** per-lot Object Throttle.
+- **S3SS behavior lineage, Apex reimplementation:** transition throttle settings, camera threshold 5, visibility JZ->JMP and map-view blocking.
+- **Not copied from S3SS:** its general patch framework, LiveSetting framework, UI/config system, and its `WorldManager::Update` map-view detour.
+
+For future ports, use `docs/Luis_Lot_Streaming_Implementation_Guide.md` as the implementation handoff and this file as the research/validation history.
