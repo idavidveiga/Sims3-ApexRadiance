@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <detours/detours.h>
+#include <mutex>
 #include <optional>
 #include <vector>
 #include "game_version.h"
@@ -63,6 +64,9 @@ struct Hook {
 };
 bool InstallHooks(const std::vector<Hook>& hooks);
 bool RemoveHooks(const std::vector<Hook>& hooks);
+// One Detours transaction at a time in the whole process (06/10: the depth hooks, installed on the render thread, failed
+// while the init thread had a transaction open for another feature: DetourTransactionBegin refuses a second one)
+std::recursive_mutex& Lock();
 } // namespace DetourBatch
 
 // A game address: the verified address per build, else a pattern scan of TS3W.exe; either way checked against

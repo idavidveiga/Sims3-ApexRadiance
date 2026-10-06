@@ -2037,6 +2037,7 @@ bool AttachTarget(int i) {
         return false;
     }
     g_orig[i] = reinterpret_cast<void*>(st.addr);
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) {
         st.status = "Skipped: DetourTransactionBegin failed";
         return false;
@@ -2127,6 +2128,7 @@ void DetachTarget(int i) {
         st.status = "Off";
         return;
     }
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) {
         st.status = "Detach failed: still timed";
         return;

@@ -111,7 +111,11 @@ bool EnsureInstalled(IDirect3DDevice9* dev) {
         {reinterpret_cast<void**>(&oDrawIndexedPrimitiveUP), reinterpret_cast<void*>(HookedDrawIndexedPrimitiveUP)},
     };
     if (!DetourBatch::InstallHooks(hooks)) {
-        LOG_ERROR("[ExtraHooks] Failed to install detours");
+        // a failed batch leaves nothing attached: the next caller may try again (a few times)
+        static int failures = 0;
+        const bool retry = ++failures < 5;
+        LOG_ERROR(std::format("[ExtraHooks] Failed to install detours (attempt {}{})", failures, retry ? ", tried again later" : ", giving up"));
+        if (retry) g_attempted.store(false);
         return false;
     }
     g_installed.store(true);

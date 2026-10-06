@@ -264,8 +264,14 @@ uintptr_t ScanPattern(const BYTE* base, size_t size, const char* pattern) {
 
 namespace DetourBatch {
 
+std::recursive_mutex& Lock() {
+    static std::recursive_mutex m;
+    return m;
+}
+
 bool InstallHooks(const std::vector<Hook>& hooks) {
     if (hooks.empty()) return true;
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return false;
     DetourUpdateThread(GetCurrentThread());
     for (const Hook& h : hooks) {
@@ -286,6 +292,7 @@ bool InstallHooks(const std::vector<Hook>& hooks) {
 
 bool RemoveHooks(const std::vector<Hook>& hooks) {
     if (hooks.empty()) return true;
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return false;
     DetourUpdateThread(GetCurrentThread());
     for (const Hook& h : hooks) {

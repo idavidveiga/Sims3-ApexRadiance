@@ -2,6 +2,7 @@
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "hook_chain.h"
+#include "memory_patch.h"
 #include "frame_profiler.h"
 #include <detours/detours.h>
 #include <intrin.h>
@@ -546,6 +547,7 @@ bool Install(IDirect3DDevice9* device) {
             }
     // Install runs on the render thread (the game's first EndScene): its draw and state dispatches go lock-free
     g_renderTid.store(ThreadId());
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return false;
     DetourUpdateThread(GetCurrentThread());
     for (const Target& t : targets) {
@@ -572,6 +574,7 @@ bool IsInstalled() { return g_installed.load(); }
 
 void Uninstall() {
     if (!g_installed.exchange(false)) return;
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return;
     DetourUpdateThread(GetCurrentThread());
     for (const Target& t : Targets())

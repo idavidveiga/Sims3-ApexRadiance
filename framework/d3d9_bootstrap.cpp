@@ -50,6 +50,7 @@ thread_local bool t_inEndScene = false;
 bool Attach(void** target, void* detour, const char* what) {
     std::lock_guard<std::mutex> lock(g_installLock);
     LOG_INFO(std::format("[D3D] {} at {}: {}", what, HookChain::AddressText(*target), HookChain::DescribePrologue(*target)));
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return false;
     DetourUpdateThread(GetCurrentThread());
     LONG r = DetourAttach(target, detour);
@@ -261,6 +262,7 @@ void Shutdown() {
     Overlay::Shutdown();
     D3D9Hooks::Uninstall();
     std::lock_guard<std::mutex> lock(g_installLock);
+    std::lock_guard<std::recursive_mutex> detoursLock(DetourBatch::Lock());
     if (DetourTransactionBegin() != NO_ERROR) return;
     DetourUpdateThread(GetCurrentThread());
     if (o_endScene && g_deviceHooked.load()) DetourDetach(reinterpret_cast<void**>(&o_endScene), reinterpret_cast<void*>(&Hooked_EndScene));
