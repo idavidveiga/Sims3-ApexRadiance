@@ -74,8 +74,14 @@ patch.
   outside wall gain multiplies the result.
 - **Objects** ([objects-and-rigs.md](objects-and-rigs.md)): rigs already take outdoor lamps of every story (room id 0
   matches everywhere), so walls and windows now agree on the lamp list. A rig still uses the 3 strongest lamps at the
-  object centre without wall shadow; the map sums every lamp per point with wall occlusion. Object rigs only take lamps
-  of their own room, so an indoor lamp added to another room's list never reaches that room's objects.
+  object centre without wall shadow; the map sums every lamp per point with wall occlusion. The game's rig gather takes
+  only lamps of the object's own room (`light+8 == rig+0x1E0` at `0x6BB333` and `0x6BB283`), so an indoor lamp added to
+  another room's list never reached that room's objects (Light capture 06/10 13:20: an atrium's upper window frame black,
+  0.02, its rig only [NoLight] and fill lights, right over the lower frame lit red by the sconce below). Since 06/10
+  ObjectLightBridge runs the game's gather once more for a room-mode rig with the list's lamps of other rooms that reach
+  its centre (`LevelLightShare::CrossLampReach`: through an opening, past the walls; share at least 0.25, within 15 m),
+  `rig+0x1E0` set to their room id for that call, and gathers those rigs again after every lamp edit (the game marks a
+  room-mode rig only for lamps of its own room, `0x006B9230`). Status: "indoor objects given lamps of another story".
 - **Indoor objects** drawn by Apex's indoor-object shader read the room's four directional basis maps, which this module
   also guards (see *Directional maps*).
 - **Rooms at Night** ([unlit-rooms.md](unlit-rooms.md)): a room whose own lamps are off but which takes lamps through an

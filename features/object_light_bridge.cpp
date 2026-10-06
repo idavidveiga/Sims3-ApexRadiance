@@ -22,6 +22,7 @@
 #define NOMINMAX
 #endif
 #include "object_light_bridge.h"
+#include "level_light_share.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
@@ -125,19 +126,119 @@ std::unordered_set<BYTE*> g_roomRigSet;
 float g_regatherLevel = -1.0f;
 uintptr_t g_regatherCells = 0;
 
+// The lamps of another story for room-mode rigs (06/10, user: "the light between stories is not perfect"; Light capture
+// 13:20: the frame of an atrium's upper window was black, 0.02, right over the lower window's frame lit red by a sconce
+// of the story below). FUN_006bbde0 gathers a roofed room's rig from that room's light list (room+0xC8), which holds the
+// lamps of the stories next to it that the light between stories took near an opening (level_light_share part 4: the
+// room's walls and floors are lit by them), but FUN_006bb2f0 keeps only lights whose room id is the object's (light+8 ==
+// rig+0x1E0 at 0x6BB333, and again in FUN_006bb270 at 0x6BB283). So such a lamp lit the walls and the directional maps of
+// the room but never its objects' rigs: the upper frame's rig held only the three [NoLight] lights and the fill light,
+// and its directional map towards the room was dark there. Now, after the game's gather, the lamps of the list that
+// belong to another room and reach the rig's centre (LevelLightShare::CrossLampReach: through an opening, past the walls
+// on the way; at least kCrossReachMin) go through the game's own gather once more, per room id, with rig+0x1E0 set to
+// that id for the call: the same colour at the centre, the same 0.1 luminance cut, the same wall test against the
+// object's room walls (arguments a..d are passed through), into the same candidate list the game then sorts.
+constexpr float kCrossReachMin = 0.25f;
+constexpr float kCrossRangeM = 15.0f; // farther lamps are not tested (the reach test is the costly part)
+constexpr int kCrossMax = 32; // lamps of another story looked at per rig
+std::atomic<long> g_crossRigs{0}, g_crossLamps{0};
+struct LightVector {
+    uintptr_t* begin;
+    uintptr_t* end;
+    uintptr_t* cap;
+};
+// The rigs with a lamp of another story within kCrossRangeM: the game marks a room-mode rig for a new gather only when a
+// lamp of its own room changes (0x006B9230: light+8 == rig+0x1E0), and FUN_006b58f0 (all rigs) walks only the world cells,
+// which room-mode rigs leave (FUN_006baa70). They are gathered again with the other rigs after a lamp edit
+// (RequestRigRefresh), so the lamp switching on or off below reaches them too.
+std::mutex g_crossRigMx;
+std::unordered_set<BYTE*> g_crossRigSet;
+// The list's lamps of another room that reach the rig's centre: how many were written to lamps / ids; nearby: one of them
+// lies within kCrossRangeM, reached or not
+int CrossCandidates(BYTE* rig, BYTE* room, const LightVector* list, uintptr_t* lamps, int* ids, bool& nearby) {
+    int n = 0;
+    nearby = false;
+    __try {
+        const int own = *reinterpret_cast<const int*>(rig + 0x1E0);
+        const float* centre = reinterpret_cast<const float*>(rig + 0x140);
+        if (!list->begin || list->end < list->begin || list->end - list->begin > 4096) return 0;
+        for (const uintptr_t* p = list->begin; p < list->end && n < kCrossMax; p++) {
+            const uintptr_t light = *p;
+            if (!light) continue;
+            const int id = *reinterpret_cast<const int*>(light + 8);
+            if (id == own || id <= 0) continue;
+            const float* head = reinterpret_cast<const float*>(light + 0x120); // the lamp's position
+            const float dx = head[0] - centre[0], dy = head[1] - centre[1], dz = head[2] - centre[2];
+            if (!(dx * dx + dy * dy + dz * dz < kCrossRangeM * kCrossRangeM)) continue; // the game's 0.1 cut drops it anyway
+            const float reach = LevelLightShare::CrossLampReach(room, reinterpret_cast<const void*>(light), centre);
+            if (reach >= 0.0f) nearby = true; // a lamp of another story this room takes
+            if (reach < kCrossReachMin) continue;
+            lamps[n] = light;
+            ids[n] = id;
+            n++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return n;
+}
+// The game's gather for one room id's lamps, rig+0x1E0 set to that id for the call
+void GatherAsRoom(BYTE* rig, int id, void* a, LightVector* list, void* c, void* d) {
+    __try {
+        int& room = *reinterpret_cast<int*>(rig + 0x1E0);
+        const int saved = room;
+        room = id;
+        __try {
+            reinterpret_cast<RoomGather_t>(kRoomGather)(rig, a, list, c, d);
+        } __finally {
+            room = saved;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+void CrossStoryLamps(BYTE* rig, void* a, void* b, void* c, void* d) {
+    uintptr_t lamps[kCrossMax];
+    int ids[kCrossMax];
+    BYTE* room = static_cast<BYTE*>(a) - 0x30; // a = room+0x30, the room's walls (FUN_006bbde0 at 0x6BBE6A)
+    bool nearby = false;
+    const int n = CrossCandidates(rig, room, static_cast<const LightVector*>(b), lamps, ids, nearby);
+    if (nearby) {
+        std::lock_guard<std::mutex> lk(g_crossRigMx);
+        if (g_crossRigSet.size() < 8192) g_crossRigSet.insert(rig);
+    }
+    if (n <= 0) return;
+    bool done[kCrossMax] = {};
+    for (int i = 0; i < n; i++) {
+        if (done[i]) continue;
+        uintptr_t group[kCrossMax];
+        int count = 0;
+        for (int j = i; j < n; j++)
+            if (!done[j] && ids[j] == ids[i]) {
+                group[count++] = lamps[j];
+                done[j] = true;
+            }
+        LightVector one{group, group + count, group + count};
+        GatherAsRoom(rig, ids[i], a, &one, c, d);
+    }
+    g_crossRigs.fetch_add(1, std::memory_order_relaxed);
+    g_crossLamps.fetch_add(n, std::memory_order_relaxed);
+}
+
 void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, void* d) {
     reinterpret_cast<RoomGather_t>(kRoomGather)(rig, a, b, c, d);
-    if (!g_forceAll.load(std::memory_order_relaxed) || *reinterpret_cast<const int*>(rig + 0x1D4) != 1) return;
+    const int mode = *reinterpret_cast<const int*>(rig + 0x1D4);
+    if (mode == 0 && a && b) CrossStoryLamps(rig, a, b, c, d);
+    if (!g_forceAll.load(std::memory_order_relaxed) || mode != 1) return;
     CellGatherForRoomRig(rig);
     std::lock_guard<std::mutex> lk(g_roomRigMx);
     if (g_roomRigSet.size() < 8192) g_roomRigSet.insert(rig);
 }
 
 // True when the rig is still a live room-mode rig and was updated.
-bool RegatherRoomRig(BYTE* rig) {
+bool RegatherRoomRig(BYTE* rig, int mode = 1) {
     if (!kRigUpdate || !kRigVtable) return false;
     __try {
-        if (*reinterpret_cast<const uint32_t*>(rig) != kRigVtable || *reinterpret_cast<const int*>(rig + 0x1D4) != 1) return false;
+        if (*reinterpret_cast<const uint32_t*>(rig) != kRigVtable || *reinterpret_cast<const int*>(rig + 0x1D4) != mode) return false;
         reinterpret_cast<void(__fastcall*)(void*)>(kRigUpdate)(rig);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -156,6 +257,19 @@ void RegatherRoomRigs() {
         if (!RegatherRoomRig(rig)) gone.push_back(rig);
     std::lock_guard<std::mutex> lk(g_roomRigMx);
     for (BYTE* rig : gone) g_roomRigSet.erase(rig);
+}
+// The room-mode rigs near a lamp of another story gather again (after a lamp edit, see g_crossRigSet)
+void RegatherCrossRigs() {
+    std::vector<BYTE*> list;
+    {
+        std::lock_guard<std::mutex> lk(g_crossRigMx);
+        list.assign(g_crossRigSet.begin(), g_crossRigSet.end());
+    }
+    std::vector<BYTE*> gone;
+    for (BYTE* rig : list)
+        if (!RegatherRoomRig(rig, 0)) gone.push_back(rig);
+    std::lock_guard<std::mutex> lk(g_crossRigMx);
+    for (BYTE* rig : gone) g_crossRigSet.erase(rig);
 }
 
 // Render thread, every frame: current night level and light cells (0 when no world).
@@ -180,6 +294,10 @@ void UpdateRoomRigs() {
     if (cells != g_regatherCells) { // another world: the remembered rigs are gone
         g_regatherCells = cells;
         g_regatherLevel = level;
+        {
+            std::lock_guard<std::mutex> lk(g_crossRigMx);
+            g_crossRigSet.clear();
+        }
         std::lock_guard<std::mutex> lk(g_roomRigMx);
         g_roomRigSet.clear();
         return;
@@ -639,6 +757,7 @@ void OnPresent() {
     if (g_refreshRequested.exchange(false)) {
         DirtyAllRigs();
         g_regatherLevel = -1.0f; // also the room-mode rigs
+        RegatherCrossRigs();     // and those near a lamp of another story (the game never marks them for it)
     }
     UpdateRoomRigs();
 }
@@ -648,9 +767,10 @@ void SetAllObjects(bool on) { g_forceAll = on; }
 void RequestRigRefresh() { g_refreshRequested = true; }
 
 std::string Status() {
-    return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {}",
+    return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {} | "
+                       "indoor objects given lamps of another story: {} ({} lamps offered)",
                        g_installed ? "Active" : "Off", g_classesPatched.load(), std::size(kClasses), g_boosted.load(), g_forcedRigs.load(),
-                       g_rigPatches.empty() && g_installed ? " (not installed)" : "", g_roomRigs.load());
+                       g_rigPatches.empty() && g_installed ? " (not installed)" : "", g_roomRigs.load(), g_crossRigs.load(), g_crossLamps.load());
 }
 
 } // namespace ObjectLightBridge

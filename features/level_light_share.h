@@ -76,6 +76,10 @@ bool StackedWithEdit(const void* room);
 bool SettlingAfterLoad();
 // Render thread: the room belongs to an atrium (a stacked-ambient group of 2 rooms or more)
 bool InAtrium(const void* room);
+// Light tree thread: the share (0..1) of a lamp of another story that reaches a point of an indoor room, tested as the room's
+// directional maps test it (the floor crossed through a stair opening, the walls on the way); -1 when the lamp is not one
+// the light between stories took for that room (ObjectLightBridge gives such lamps to the room's object rigs)
+float CrossLampReach(const void* room, const void* light, const float* point);
 // Render thread: another member of the room's atrium group is waiting for its gather or its solve, or being solved
 // (AtriumHold keeps the room's new maps waiting meanwhile, so the atrium's stories change together)
 bool GroupPending(const void* room);

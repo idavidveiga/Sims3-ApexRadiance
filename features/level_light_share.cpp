@@ -53,8 +53,9 @@
 //       (FUN_00a89dd0 x4, FUN_00a893a0) go through FloorSetThunk / FloorRemoveThunk, which remember the object (ecx).
 //     - Gather: an indoor room of story S takes, from stories S+1 and S-1, the lamps of the rooms near an opening of the
 //       floor between them (kOpeningReach) when the room itself is near it, with the game's own checks of FUN_006c7820
-//       and its adder FUN_006a2060. Object rigs are not affected: their gather (FUN_006bb2f0) takes only lights whose
-//       room (light+8) is the object's room.
+//       and its adder FUN_006a2060. The object rigs' gather (FUN_006bb2f0) takes only lights whose room (light+8) is the
+//       object's room; since 06/10 ObjectLightBridge also gives a room-mode rig the lamps of that list that reach its
+//       centre (CrossLampReach, the same floor and wall tests).
 //     - Per point (the light evaluation wrapped for 3.): the ray from the lamp to the point must cross the floor between
 //       the stories through an opening (else no light), and then pass the walls of the lamp's own room, tested from the
 //       lamp to the crossing point with the game's FUN_0069fc40 (the receiving room's walls are tested by the game).
@@ -4077,6 +4078,34 @@ void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light,
     reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, acc);
 }
 
+// The share of a lamp of another story that reaches a point of an indoor room, tested as the basis maps test it (the floor
+// crossed through an opening, the walls of the lamp's room on the way, the receiving segment too); -1 when the lamp is not
+// one Apex's gather took for that room (FindCross), or off the light tree thread (g_rooms belongs to it)
+float CrossLampReachImpl(BYTE* room, void* light, const float* point) {
+    if (!g_installed.load(std::memory_order_relaxed) || !g_indoorReady || ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return -1.0f;
+    const RoomInfo* info = SolveInfo(room);
+    if (!info || !info->indoor) return -1.0f;
+    const Cross* cross = FindCross(*info, reinterpret_cast<uintptr_t>(light));
+    if (!cross || cross->outdoor) return -1.0f;
+    const SolveCtx prev = g_ctx;
+    g_ctx = SolveCtx{};
+    g_ctx.info = info;
+    g_ctx.soft = room[0x639];
+    const char wallFlags[2] = {1, 0};
+    g_ctx.flags = wallFlags;
+    g_ctx.basis = true;
+    alignas(16) float s[12] = {point[0], point[1], point[2], 1.0f};
+    float pass[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    __try {
+        IndoorShadow(*info, light, s, pass);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        pass[0] = 0.0f;
+    }
+    g_ctx = prev;
+    return std::isfinite(pass[0]) ? std::clamp(pass[0], 0.0f, 1.0f) : 0.0f;
+}
+
 // Walls of room 0 of `floor` that the game would test for this light in this batch (its own culling), or null = all.
 const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* pos) {
     for (const Culled& c : g_culled)
@@ -6332,6 +6361,11 @@ bool StackedWithEdit(const void* room) {
     for (const DepKey& key : others)
         if (const BYTE* member = SafeRoomById(key.tracker, key.level, key.room); member && UrgentTier(member) >= 0) return true;
     return false;
+}
+
+float CrossLampReach(const void* room, const void* light, const float* point) {
+    if (!room || !light || !point) return -1.0f;
+    return CrossLampReachImpl(static_cast<BYTE*>(const_cast<void*>(room)), const_cast<void*>(light), point);
 }
 
 bool InAtrium(const void* room) {
