@@ -1739,7 +1739,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_unlitBlue, "azulNosComodos", SettingWidget::Slider, 0.0f, 0.0f, 1.0f,
             "How blue the light left in rooms is, on walls, floors and furniture (1 = the game's blue, 0 = grey).");
         RegisterBoolSetting(&g_waterFilter, "waterSpecularFilter", true, "Stabilize lamp sparkles on water");
-        RegisterBoolSetting(&g_waterColorCompression, "waterPreserveLampColors", true, "Preserve bright lamp colors on water");
+        RegisterBoolSetting(&g_waterColorCompression, "waterPreserveLampColors", true, "Keep lamp colors on water");
         RegisterBoolSetting(&g_water, "lagosRefletemLampadas", true,
             S3SS_TR("A agua dos lagos reflete as lampadas e postes proximos a noite.", "Ponds glow and reflect nearby lamps at night."));
         RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 0.4f, 0.1f, 0.4f,
@@ -2640,7 +2640,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         if (ApexUi::TextButton("Compare GPU vs CPU (one chunk)")) LightmapSmooth::RequestCompare();
         if (ApexUi::BeginAdvanced("WaterHighlights", "Water highlights")) {
         if (ApexUi::SwitchRow("Stabilize lamp sparkles on water", &g_waterFilter, "Filters tiny highlights without temporal smoothing. Turn off to compare the original", true)) NotifySettingChanged();
-        if (ApexUi::SwitchRow("Preserve bright lamp colors on water", &g_waterColorCompression, "Softens excessive lamp brightness while keeping its color. Turn off to compare the original", true)) NotifySettingChanged();
+        if (ApexUi::SwitchRow("Keep lamp colors on water", &g_waterColorCompression, "Softens too-bright lamps but keeps their color. Turn off to compare the original", true)) NotifySettingChanged();
             ApexUi::EndAdvanced();
         }
         }

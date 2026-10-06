@@ -21,6 +21,13 @@ Research, measurements and code by **idavidveiga** (fork `idavidveiga/Sims3-Apex
 - When official Sims3SettingsSetter has LotStreamingOptimizations on, each part yields (S3SSDetect::S3SSPatchBoolSettingEnabled).
 - The metric probe (APEX_LOT_LOD_DISTANCE_PROBE build) was not ported: production does not use it.
 
+## Settings ([patches.LotDetailRange])
+
+| UI label | Key | Type | Default | Range | Applies |
+|---|---|---|---|---|---|
+| Extended lot detail (distance) | `distance` | int | 300 | 70..300 (steps of 10) | live |
+| Extended lot detail (lots in full detail) | `maxActiveLots` | int | 16 | 8..16 | live |
+
 ## The fork's research log
 
 

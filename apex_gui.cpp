@@ -813,7 +813,7 @@ void OldStandaloneItem() {
     ImGui::PushID("AttentionOldCopy");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::TriangleAlert, "Two copies of the mod",
-                           "An old version, under the previous name, is next to the current one. Only one can run, so the old one stays idle", nullptr, nullptr);
+                           "An old version under the old name is installed too; only one runs, so it stays idle", nullptr, nullptr);
         ApexUi::CardDivider();
         ApexUi::MutedText(I18n::Trf("With the game closed, delete {} from Game\\Bin and keep ApexRadiance.asi. This notice goes away on the next start.", oldModule).c_str());
     }
@@ -869,8 +869,8 @@ void PerformanceCard() {
         if (FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors")) {
             bool quick = Performance::RoomQuickPass();
             ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-            if (ApexUi::SwitchRow("Quick update when many lamps switch", &quick,
-                                  "Switching all the lights of a lot shows the new light at once in a quick pass, then refines it", true))
+            if (ApexUi::SwitchRow("Quick update for many lamps", &quick,
+                                  "Switching all the lights shows the new light at once, then refines it", true))
                 Performance::SetRoomQuickPass(quick);
         }
         if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
@@ -1108,7 +1108,7 @@ void ReportOptionalNotes() {
             ImGui::SetNextItemWidth(-1);
             ImGui::InputTextMultiline("##OptionalCaptureDescription", g_report.optionalDescription, sizeof(g_report.optionalDescription), ImVec2(-1, 100 * ApexUi::Unit()));
             ApexUi::MutedText("Enter a title to finish. The description is optional; your capture files are already saved.");
-            if (g_report.notesDeleteError) ApexUi::IconNote(IconId::TriangleAlert, "Could not delete the capture. Check folder access and try again.");
+            if (g_report.notesDeleteError) ApexUi::IconNote(IconId::TriangleAlert, "Could not delete the capture. Check folder access and try again");
             if (g_report.notesError) ApexUi::IconNote(IconId::TriangleAlert, "Could not save the description. Check free space and folder access");
             ApexUi::Gap(ApexUi::kSpace2);
             const auto filled = [](const char* value) { return std::string_view(value).find_first_not_of(" \t\r\n") != std::string_view::npos; };
@@ -2661,7 +2661,7 @@ void WelcomeProfileStep() {
     ApexUi::PageTitle("Welcome to " APEX_PRODUCT_NAME, "Choose how you want to start");
     ImGui::PushID("Welcome");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::None, "Starting profile", "Click a profile to see it in the game right away; you can switch later in Settings \xE2\x80\xBA Profiles",
+        ApexUi::CardHeader(IconId::None, "Starting profile", "Click a profile to see it right away; change it later in Settings \xE2\x80\xBA Profiles",
                            nullptr, nullptr);
         ApexUi::CardDivider();
         ImGui::BeginDisabled(Loading());

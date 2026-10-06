@@ -1678,10 +1678,10 @@ class AmbientOcclusionPatch : public ApexPatch {
         changed |= ApexUi::SwitchRow("Temporal smoothing", &g.p.temporal,
                                      "Blends the last frames, each with other sample angles: a smooth shade even at low quality", kDefaults.temporal);
         changed |= ApexUi::SwitchRow("Thin object detail", &g.p.thinDetail,
-                                     "Objects get a thickness: shade passes behind legs and rails and leaves no halo around them. Costs more GPU",
+                                     "Objects get thickness: no shade halo behind legs and rails. Costs more GPU",
                                      kDefaults.thinDetail);
         changed |= ApexUi::SwitchRow("Half resolution", &g.p.halfRes,
-                                     "Computes the shade on a quarter of the pixels: much lighter, slightly softer. Best with Temporal smoothing",
+                                     "A quarter of the pixels: much lighter, a bit softer. Best with Temporal smoothing",
                                      kDefaults.halfRes);
         changed |= ApexUi::SwitchRow("Also in map view", &g.p.inMapView, "Soft shade around houses and trees when the map view is open", kDefaults.inMapView);
         if (ApexUi::BeginAdvanced("Advanced##AmbientOcclusion")) {
