@@ -45,6 +45,9 @@ Instance AcquireInstanceMutex();
 
 // S3SS.toml (read-only): [patches.<name>].enabled and overlay configuration.
 bool S3SSPatchEnabled(const char* patchName);
+// True when [patches.<patchName>] is enabled and its boolean <settingName> is true. If the setting is absent,
+// defaultValue is used (matching S3SS settings that default to on).
+bool S3SSPatchBoolSettingEnabled(const char* patchName, const char* settingName, bool defaultValue = true);
 bool S3SSOverlayDisabled();
 // Narrow compatibility exception: on explicit user action, back up and remove the saved room-ambient RGB override.
 enum class RoomAmbientCorrectionStatus { S3SSNotLoaded, ConfigUnavailable, NoOverride, BackupFailed, ConfigChanged, WriteFailed, Saved };
