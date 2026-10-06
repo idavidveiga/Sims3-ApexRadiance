@@ -6,6 +6,7 @@ on:
       - feature/lot-lod-streaming
       - feature/lot-lod-streaming-2.5.6
       - test/room-light-queue-ea169
+      - integrate/v2.6.0-final-only
   workflow_dispatch:
 
 jobs:
@@ -35,11 +36,11 @@ jobs:
           msbuild ApexRadiance.sln /t:Rebuild /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
-          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi"
+          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_2.6.0_STABLE_PLUS_VALIDATED_CUSTOM_TEST.asi"
 
       - name: Upload implemented Lot Streaming ASI
         uses: actions/upload-artifact@v4
         with:
-          name: ApexRadiance-LotStreaming-IMPLEMENTED-TEST
-          path: ApexRadiance_LotStreaming_IMPLEMENTED_TEST.asi
+          name: ApexRadiance-2.6.0-STABLE-PLUS-VALIDATED-CUSTOM-TEST
+          path: ApexRadiance_2.6.0_STABLE_PLUS_VALIDATED_CUSTOM_TEST.asi
           if-no-files-found: error
