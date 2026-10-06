@@ -33,6 +33,17 @@ bool RestoreAll(std::vector<PatchLocation>& undo);
 // no thread can fetch half of it. Nothing is allocated and no lock is taken while the threads are suspended. False when
 // the write did not happen (nothing changed).
 bool WriteCodeSuspended(uintptr_t address, const BYTE* bytes, size_t count);
+// Several code writes done together while every other thread of the process is suspended and none is stopped inside
+// (address, address + guard) of any of them (retried for up to about 100 ms). guard >= count when no thread may resume
+// inside the bytes; smaller when the new and old code share instruction boundaries past `guard`. No check of the current
+// bytes and no undo: the caller reads them first. False when a write failed (the earlier ones of the batch stay written).
+struct CodeWrite {
+    uintptr_t address;
+    const BYTE* bytes;
+    size_t count;
+    size_t guard;
+};
+bool WriteCodeBatchSuspended(const CodeWrite* writes, size_t n);
 
 // rel32 of a JMP/CALL at `from` (instruction of `length` bytes) that lands on `to`.
 int32_t CalculateRelativeOffset(uintptr_t from, uintptr_t to, size_t length = 5);

@@ -181,6 +181,49 @@ bool WriteCodeSuspended(uintptr_t address, const BYTE* bytes, size_t count) {
     return written;
 }
 
+bool WriteCodeBatchSuspended(const CodeWrite* writes, size_t n) {
+    if (!writes || n == 0) return false;
+    for (size_t i = 0; i < n; i++)
+        if (!writes[i].address || !writes[i].bytes || !writes[i].count) return false;
+    std::lock_guard<std::mutex> lock(g_writeLock);
+    std::vector<HANDLE> threads;
+    threads.reserve(256);
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    const DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID)) threads.push_back(h);
+    }
+    CloseHandle(snap);
+    bool written = false;
+    for (int attempt = 0; attempt < 100 && !written; attempt++) {
+        // ---- other threads suspended: no allocation, no lock ----
+        for (HANDLE h : threads) SuspendThread(h);
+        bool busy = false;
+        for (HANDLE h : threads) {
+            CONTEXT ctx;
+            std::memset(&ctx, 0, sizeof ctx);
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (!GetThreadContext(h, &ctx)) continue;
+            for (size_t i = 0; i < n && !busy; i++)
+                busy = ctx.Eip > writes[i].address && ctx.Eip < writes[i].address + writes[i].guard;
+            if (busy) break;
+        }
+        bool ok = !busy;
+        for (size_t i = 0; i < n && ok; i++) ok = ProtectedWrite(writes[i].address, writes[i].bytes, writes[i].count);
+        written = ok;
+        for (HANDLE h : threads) ResumeThread(h);
+        // ---- resumed ----
+        if (!busy) break;
+        Sleep(1);
+    }
+    for (HANDLE h : threads) CloseHandle(h);
+    return written;
+}
+
 int32_t CalculateRelativeOffset(uintptr_t from, uintptr_t to, size_t length) {
     return static_cast<int32_t>(static_cast<intptr_t>(to) - static_cast<intptr_t>(from + length));
 }

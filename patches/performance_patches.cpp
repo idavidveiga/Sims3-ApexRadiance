@@ -17,6 +17,7 @@
 #include "fast_memory.h"
 #include "memory_guard.h"
 #include "window_repaint.h"
+#include "script_math.h"
 #include "scene_budget.h"
 #include "object_index.h"
 #include "room_light_queue.h"
@@ -351,6 +352,11 @@ class WindowRepaintPatch : public SimpleSwitchPatch {
     WindowRepaintPatch() : SimpleSwitchPatch(Performance::kWindowRepaintName, &WindowRepaint::Start, &WindowRepaint::Stop) {}
 };
 
+class ScriptMathPatch : public SimpleSwitchPatch {
+  public:
+    ScriptMathPatch() : SimpleSwitchPatch(Performance::kScriptMathName, &ScriptMath::Start, &ScriptMath::Stop) {}
+};
+
 class MemoryGuardPatch : public ApexPatch {
   public:
     MemoryGuardPatch() : ApexPatch(Performance::kMemoryGuardName, nullptr) {}
@@ -482,6 +488,7 @@ std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + 
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
 std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText(); }
 std::string Performance::WindowRepaintStatus() { return WindowRepaint::StatusText(); }
+std::string Performance::ScriptMathStatus() { return ScriptMath::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
 std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
 std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
@@ -651,6 +658,20 @@ APEX_REGISTER_FEATURE(WindowRepaintPatch,
                                             "call (0x004108AE) is made unconditional. The game's paint handler and its unused paint event 0x1EE100A run only "
                                             "for the paints Windows sends by itself."},
                        .gameCodeGroup = "WindowRepaint"});
+
+APEX_REGISTER_FEATURE(ScriptMathPatch,
+                      {.displayName = "Faster Script Math",
+                       .description = "The game's scripts check every decimal number for an invalid value before comparing two of them, and each check was a "
+                                      "call into a separate library. The check is now done right where the comparison is, with the same result, so scripts "
+                                      "that compare many numbers (Sim decisions, routing, timers) do a little less work. Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .category = "Performance",
+                        .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM | VERSION_EA,
+                       .technicalDetails = {"The Mono interpreter's 25 floating-point compare and branch handlers (0x00E54D1B..0x00E58304 on Steam) called "
+                                            "msvcr80!_isnan through ebx for both operands; each test becomes fucomip st0, st0 + jnp in place (eax 0 / 1 and "
+                                            "ebx as before). Found by pattern in .text (any build); written with every other thread suspended outside the "
+                                            "changed bytes, and the instructions after the old call's return address are kept."}});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",
