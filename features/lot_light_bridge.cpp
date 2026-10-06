@@ -3120,43 +3120,20 @@ bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) 
 }
 
 
-struct ExactSeamKey {
-    uint32_t vs = 0, ps = 0;
-    uint64_t s3 = 0, s4 = 0, s7 = 0, s8 = 0;
-    bool operator==(const ExactSeamKey&) const = default;
-};
-struct ExactSeamKeyHash {
-    size_t operator()(const ExactSeamKey& k) const noexcept {
-        uint64_t h = 1469598103934665603ull;
-        auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-        mix(k.vs); mix(k.ps); mix(k.s3); mix(k.s4); mix(k.s7); mix(k.s8);
-        return static_cast<size_t>(h ^ (h >> 32));
-    }
-};
-struct ExactSeamState {
-    IDirect3DBaseTexture9* s2 = nullptr;
-    IDirect3DBaseTexture9* s6 = nullptr;
-    IDirect3DBaseTexture9* altS2 = nullptr;
-    IDirect3DBaseTexture9* altS6 = nullptr;
-    uint64_t s2sig = 0, s6sig = 0;
-    uint64_t altS2sig = 0, altS6sig = 0;
-    long hits = 0, swaps = 0;
-};
-std::unordered_map<ExactSeamKey, ExactSeamState, ExactSeamKeyHash> g_exactSeam;
+// Exterior-wall horizontal seam fix.
+//
+// The #52 four-state diagnostic proved that sampler s2 must stay exactly as the game binds it.  The visual improvement
+// comes from keeping sampler s6 on the first (pre-light-refresh) L8 strip: forcing s2 made the seam span the whole wall,
+// while forcing only s6 left only the geometry that the old 12-primitive probe did not cover.
+//
+// The two captured materials had different material textures but the same s6 pair, so s6 belongs to the shared lighting
+// path rather than to the wall finish.  Keep one reference per world for the exact affected ExteriorWall pixel shader and
+// apply it to every draw of that shader that binds the same 1024x32 L8 strip.  Do not key this on primitive count, wall
+// position, or the other material samplers: those were diagnostic filters and could leave one segment untreated.
+IDirect3DBaseTexture9* g_wallSeamS6Reference = nullptr;
+uint64_t g_wallSeamS6ReferenceSig = 0;
 std::unordered_map<IDirect3DBaseTexture9*, uint64_t> g_exactTexSig;
-std::atomic<long> g_exactSeamCandidates{0}, g_exactSeamSwaps{0};
-DWORD g_seamDiagCycleStart = 0;
-int g_seamDiagLastMode = -1;
-
-const char* SeamDiagModeName(int mode) {
-    switch (mode) {
-    case 0: return "ORIGINAL";
-    case 1: return "ONLY S2 = FIRST SET";
-    case 2: return "ONLY S6 = FIRST SET";
-    case 3: return "S2+S6 = SECOND SET";
-    default: return "?";
-    }
-}
+std::atomic<long> g_wallSeamS6Candidates{0}, g_wallSeamS6Normalised{0};
 
 template <typename ShaderT>
 uint32_t ExactShaderHash(ShaderT* sh, UINT& bytes) {
@@ -3220,139 +3197,77 @@ uint64_t ExactTextureSignature(IDirect3DBaseTexture9* base) {
 }
 
 void ClearExactSeamProbe() {
-    for (auto& [k, s] : g_exactSeam) {
-        if (s.s2) s.s2->Release();
-        if (s.s6) s.s6->Release();
-        if (s.altS2) s.altS2->Release();
-        if (s.altS6) s.altS6->Release();
+    if (g_wallSeamS6Reference) {
+        g_wallSeamS6Reference->Release();
+        g_wallSeamS6Reference = nullptr;
     }
-    g_exactSeam.clear();
+    g_wallSeamS6ReferenceSig = 0;
     g_exactTexSig.clear();
-    g_seamDiagCycleStart = 0;
-    g_seamDiagLastMode = -1;
 }
 
 template <typename DrawFn>
 bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::HookAction& result) {
-    // Exact signature of the two Light Captures on the orange multi-storey trim.
-    if (g_inOwnCall || !dev || g_curPrims != 12 || !g_curVs || !g_curPs) return false;
+    if (g_inOwnCall || !dev || !g_curPs || g_curClass != PsClass::WallGain) return false;
 
-    IDirect3DBaseTexture9* t[9] = {};
-    constexpr int slots[] = {2, 3, 4, 6, 7, 8};
-    bool got = true;
-    for (int s : slots)
-        if (FAILED(dev->GetTexture(s, &t[s])) || !t[s]) { got = false; break; }
-    auto release = [&]() {
-        for (int s : slots) if (t[s]) { t[s]->Release(); t[s] = nullptr; }
-    };
-    if (!got) { release(); return false; }
+    // Exact affected ExteriorWall_PS_1119.bin.  The PS defines the sampler semantics; unlike the diagnostic, do not
+    // require one vertex shader, one primitive count or one wall material.
+    UINT psBytes = 0;
+    const uint32_t psHash = ExactShaderHash(g_curPs, psBytes);
+    if (psBytes != 1372 || psHash != 0x04956FE9u) return false;
 
-    const bool shape =
-        ExactShape(t[2], D3DFMT_A8R8G8B8, 1024, 512, 1) &&
-        ExactShape(t[3], D3DFMT_DXT5,       256, 512, 7) &&
-        ExactShape(t[4], D3DFMT_DXT1,      1024, 512, 11) &&
-        ExactShape(t[6], D3DFMT_L8,        1024, 32, 1) &&
-        ExactShape(t[7], D3DFMT_DXT5,       256, 512, 10) &&
-        ExactShape(t[8], D3DFMT_DXT1,       128, 256, 6);
-    if (!shape) { release(); return false; }
+    IDirect3DBaseTexture9* s6 = nullptr;
+    if (FAILED(dev->GetTexture(6, &s6)) || !s6) return false;
+    if (!ExactShape(s6, D3DFMT_L8, 1024, 32, 1)) {
+        s6->Release();
+        return false;
+    }
 
-    const uint64_t sig3 = ExactTextureSignature(t[3]);
-    const uint64_t sig4 = ExactTextureSignature(t[4]);
-    const uint64_t sig7 = ExactTextureSignature(t[7]);
-    const uint64_t sig8 = ExactTextureSignature(t[8]);
-    const uint64_t sig2 = ExactTextureSignature(t[2]);
-    const uint64_t sig6 = ExactTextureSignature(t[6]);
-    if (!sig3 || !sig4 || !sig7 || !sig8 || !sig2 || !sig6) {
+    const uint64_t sig6 = ExactTextureSignature(s6);
+    if (!sig6) {
         static bool logged = false;
         if (!logged) {
             logged = true;
-            LOG_WARNING("[ExactSeamProbe] Captured draw signature matched, but one or more textures could not be locked for a content signature");
+            LOG_WARNING("[WallSeamS6] Matching ExteriorWall draw had an unreadable s6 texture; left unchanged");
         }
-        release();
+        s6->Release();
         return false;
     }
 
-    UINT vsBytes = 0, psBytes = 0;
-    const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
-    const uint32_t psHash = ExactShaderHash(g_curPs, psBytes);
-    if (!vsHash || !psHash) { release(); return false; }
+    g_wallSeamS6Candidates.fetch_add(1, std::memory_order_relaxed);
+    if (!g_wallSeamS6Reference) {
+        g_wallSeamS6Reference = s6;
+        g_wallSeamS6Reference->AddRef();
+        g_wallSeamS6ReferenceSig = sig6;
 
-    ExactSeamKey key{vsHash, psHash, sig3, sig4, sig7, sig8};
-    auto [it, inserted] = g_exactSeam.try_emplace(key);
-    ExactSeamState& state = it->second;
-    ++state.hits;
-    const long n = g_exactSeamCandidates.fetch_add(1, std::memory_order_relaxed) + 1;
-
-    if (inserted || !state.s2 || !state.s6) {
-        state.s2 = t[2]; state.s2->AddRef();
-        state.s6 = t[6]; state.s6->AddRef();
-        state.s2sig = sig2;
-        state.s6sig = sig6;
+        UINT vsBytes = 0;
+        const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
         LOG_INFO(std::format(
-            "[ExactSeamProbe] candidate {} FIRST {} | VS {:08X}/{} PS {:08X}/{} | material {:016X} {:016X} {:016X} {:016X} | s2 {:08X}/{:016X} s6 {:08X}/{:016X}",
-            n, LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes,
-            sig3, sig4, sig7, sig8, reinterpret_cast<uintptr_t>(t[2]), sig2, reinterpret_cast<uintptr_t>(t[6]), sig6));
-        release();
+            "[WallSeamS6] Reference captured ExteriorWall | VS {:08X}/{} PS {:08X}/{} | {} prims | s6 {:08X}/{:016X}",
+            vsHash, vsBytes, psHash, psBytes, g_curPrims, reinterpret_cast<uintptr_t>(s6), sig6));
+        s6->Release();
         return false;
     }
 
-    const bool differs = sig2 != state.s2sig || sig6 != state.s6sig;
-    if (differs && (!state.altS2 || !state.altS6)) {
-        state.altS2 = t[2]; state.altS2->AddRef();
-        state.altS6 = t[6]; state.altS6->AddRef();
-        state.altS2sig = sig2;
-        state.altS6sig = sig6;
-        if (!g_seamDiagCycleStart) g_seamDiagCycleStart = GetTickCount();
+    if (sig6 == g_wallSeamS6ReferenceSig) {
+        s6->Release();
+        return false;
+    }
+
+    const long n = g_wallSeamS6Normalised.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 40) {
+        UINT vsBytes = 0;
+        const uint32_t vsHash = ExactShaderHash(g_curVs, vsBytes);
         LOG_INFO(std::format(
-            "[Seam4State] SECOND SET captured {} | VS {:08X}/{} PS {:08X}/{} | s2 {:016X} s6 {:016X}. "
-            "Cycle starts now: ORIGINAL -> ONLY S2 FIRST -> ONLY S6 FIRST -> S2+S6 SECOND, 8 seconds each.",
-            LightingBloomPath(RigTracker::CurrentMode()), vsHash, vsBytes, psHash, psBytes, sig2, sig6));
+            "[WallSeamS6] Normalize {} ExteriorWall | VS {:08X}/{} PS {:08X}/{} | {} prims | s6 {:016X}->{:016X}",
+            n, vsHash, vsBytes, psHash, psBytes, g_curPrims, sig6, g_wallSeamS6ReferenceSig));
     }
-
-    if (!state.altS2 || !state.altS6 || !g_seamDiagCycleStart) {
-        release();
-        return false;
-    }
-
-    const int mode = static_cast<int>(((GetTickCount() - g_seamDiagCycleStart) / 8000u) % 4u);
-    if (mode != g_seamDiagLastMode) {
-        g_seamDiagLastMode = mode;
-        LOG_INFO(std::format("[Seam4State] >>> MODE {}: {} <<<", mode, SeamDiagModeName(mode)));
-    }
-
-    // Mode 0 is a true untouched baseline: let the normal Apex draw path continue without replacing any sampler.
-    if (mode == 0) {
-        release();
-        return false;
-    }
-
-    IDirect3DBaseTexture9* force2 = nullptr;
-    IDirect3DBaseTexture9* force6 = nullptr;
-    if (mode == 1) force2 = state.s2;                  // isolate s2
-    else if (mode == 2) force6 = state.s6;             // isolate s6
-    else if (mode == 3) { force2 = state.altS2; force6 = state.altS6; } // inverse normalization
-
-    ++state.swaps;
-    const long swapNo = g_exactSeamSwaps.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (swapNo <= 60)
-        LOG_INFO(std::format(
-            "[Seam4State] draw {} mode {} ({}) {} | VS {:08X} PS {:08X} | current s2 {:016X} s6 {:016X} | force s2 {} s6 {}",
-            swapNo, mode, SeamDiagModeName(mode), LightingBloomPath(RigTracker::CurrentMode()), vsHash, psHash,
-            sig2, sig6,
-            force2 ? std::format("{:016X}", force2 == state.s2 ? state.s2sig : state.altS2sig) : std::string("ORIGINAL"),
-            force6 ? std::format("{:016X}", force6 == state.s6 ? state.s6sig : state.altS6sig) : std::string("ORIGINAL")));
 
     auto forcedDraw = [&]() {
-        IDirect3DBaseTexture9* before2 = nullptr;
         IDirect3DBaseTexture9* before6 = nullptr;
-        dev->GetTexture(2, &before2);
         dev->GetTexture(6, &before6);
-        if (force2) SetTex(dev, 2, force2);
-        if (force6) SetTex(dev, 6, force6);
+        SetTex(dev, 6, g_wallSeamS6Reference);
         draw();
-        if (force2) SetTex(dev, 2, before2);
-        if (force6) SetTex(dev, 6, before6);
-        if (before2) before2->Release();
+        SetTex(dev, 6, before6);
         if (before6) before6->Release();
     };
 
@@ -3363,7 +3278,7 @@ bool DrawExactCapturedSeamProbe(IDirect3DDevice9* dev, DrawFn draw, D3D9Hooks::H
         g_inOwnCall = false;
         result = D3D9Hooks::HookAction::Skip;
     }
-    release();
+    s6->Release();
     return true;
 }
 
