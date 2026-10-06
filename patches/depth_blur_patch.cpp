@@ -1000,8 +1000,14 @@ bool NightSettled() {
     const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
     return !night || !night->IsEnabled() || NightLighting::LoadSettled();
 }
-// The shared screen-effects gate also waits for it (features/world_session.h)
-const bool kSettledRegistered = (WorldSession::g_loadSettled = &NightSettled, true);
+// The shared screen-effects gate (features/world_session.h) waits only for the world's terrain to be drawn (user 06/10:
+// the map should come up with the effects on; the after-load refresh came 3 .. 10 s later). The load screen draws no
+// terrain, and what the interactive loading's overlay covers is the world itself (the effects never touch the UI).
+bool NightLive() {
+    const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
+    return !night || !night->IsEnabled() || NightLighting::WorldLive();
+}
+const bool kSettledRegistered = (WorldSession::g_loadSettled = &NightLive, true);
 bool WorldPlayable() {
     return WorldSession::InWorld() && NightSettled();
 }

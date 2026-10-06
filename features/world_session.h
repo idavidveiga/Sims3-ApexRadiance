@@ -60,8 +60,9 @@ inline bool IsActive() {
 // 150 was tried on 06/10 and never opened in close views (fewer draws than that): 48 again, with the settled signal now
 // reset by every new world (the Twinbrook load screen passed only because that signal was stale after a travel).
 constexpr int kMinDepthWrites = 48;
-constexpr unsigned long long kDrawnMs = 1000;
-// Night Lighting's "load settled" (true when it is off), registered by it; null = not required
+constexpr unsigned long long kDrawnMs = 500; // 1000 until 06/10 (user: effects too late)
+// Night Lighting's "world live" (terrain drawn; true when it is off), registered by Depth Blur; null = not required. It was
+// the after-load refresh ("load settled") until 06/10: effects came 3 .. 10 s after the map showed
 inline bool (*g_loadSettled)() = nullptr;
 }
 namespace PostScene { int DepthWritesThisFrame(); int DepthWritesLastFrame(); bool Counting(); }
