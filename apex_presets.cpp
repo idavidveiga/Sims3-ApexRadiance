@@ -124,6 +124,24 @@ enabled = true
 [patches.WallShadingWhileMoving]
 enabled = true
 
+[patches.FastCasSort]
+enabled = true
+
+[patches.FastMemory]
+enabled = true
+
+[patches.MemoryGuard]
+enabled = true
+
+[patches.RoomLightQueue]
+enabled = true
+
+[patches.ScriptMath]
+enabled = true
+
+[patches.WindowRepaint]
+enabled = true
+
 [qol.picture]
 blacks = 0.0
 clarity = 0.0
@@ -160,8 +178,8 @@ protegerLuz = 0.4647177457809448
 qualidade = 1
 revisao = 9
 simControls = true
-simMaxShade = 0.24199999868869781
-simStrength = 0.08695652335882187
+simMaxShade = 0.11
+simStrength = 0.4
 transparentHair = true
 
 [patches.DepthBlur]
@@ -264,6 +282,24 @@ enabled = true
 [patches.WallShadingWhileMoving]
 enabled = true
 
+[patches.FastCasSort]
+enabled = true
+
+[patches.FastMemory]
+enabled = true
+
+[patches.MemoryGuard]
+enabled = true
+
+[patches.RoomLightQueue]
+enabled = true
+
+[patches.ScriptMath]
+enabled = true
+
+[patches.WindowRepaint]
+enabled = true
+
 [qol.picture]
 blacks = 0.0
 clarity = 0.0
@@ -300,8 +336,8 @@ protegerLuz = 0.4087177813053131
 qualidade = 3
 revisao = 9
 simControls = true
-simMaxShade = 0.23517785966396332
-simStrength = 0.30582213401794434
+simMaxShade = 0.11
+simStrength = 0.4
 transparentHair = true
 
 [patches.DepthBlur]
@@ -402,6 +438,24 @@ enabled = true
 enabled = true
 
 [patches.WallShadingWhileMoving]
+enabled = true
+
+[patches.FastCasSort]
+enabled = true
+
+[patches.FastMemory]
+enabled = true
+
+[patches.MemoryGuard]
+enabled = true
+
+[patches.RoomLightQueue]
+enabled = true
+
+[patches.ScriptMath]
+enabled = true
+
+[patches.WindowRepaint]
 enabled = true
 
 [qol.picture]
