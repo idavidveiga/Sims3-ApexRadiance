@@ -132,3 +132,20 @@ None recorded.
 - [Validation](../../validation/performance-room-light-queue.md)
 - [History](../../history/performance-room-light-queue.md)
 - [Room light maps](../../engine/room-light-maps.md)
+
+## Many lamps at once (06/10)
+
+User report: switching all the lights of a big lot (5 stories, rooms with 35-98 lights) took 3-7 s before every room
+showed the new light (the same house took up to 10 s on 05/10). Measured: the game's class-2 solve cost 24.8 s of the session
+against 1.0 s for class 0.
+
+- **Quick update when many lamps switch** (`[patches.RoomLightQueue] quickPass`, default on, Experimental): while
+  LampMarkFilter sees 3 or more player switches within 1.5 s (`MassSwitchActive`, held 1.5 s after the last; not at dusk or
+  dawn), the priority hook puts a lamp edit's room that is still waiting (state 2) at a class above 0 back to class 0 before
+  the game reads its priority. Class 0 is the game's own fast first solve and has 100x the priority of class 2, so every
+  room of the switch takes its new light within a few frames, the camera's story first; "No middle step" then takes each
+  room straight to its class. Status line: "quick pass for many lamps" and its room count; each lamp edit's log line ends
+  with the rooms that took the quick pass.
+- **No second send for waiting rooms**: the lamp switch's safety net (LevelLightShare::RelightLot, about 120 ms after the
+  switch) skips a room that is queued (state 2) and has not started its solve, as it would skip a fresh solve: its gather
+  reads the lamps as they are when it starts.

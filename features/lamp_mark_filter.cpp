@@ -105,8 +105,30 @@ struct LotDue {
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
 std::atomic<bool> g_editRefresh{false};
+// Mass switches (06/10, user: switching all the lights of a big lot took 3-7 s to settle): the player's switches are counted
+// in a window; MassSwitchActive lets the room queue give the rooms a quick pass first (room_light_queue.cpp)
+constexpr int kMassSwitches = 3;
+constexpr DWORD kMassWindowMs = 1500, kMassHoldMs = 1500;
+std::atomic<DWORD> g_massWindowFrom{0}, g_massLast{0};
+std::atomic<int> g_massCount{0};
+std::atomic<long> g_massEvents{0};
+std::atomic<float>& NightLevelRef();
+void NoteUserSwitch(DWORD tick) {
+    // dusk / dawn switches every lamp itself: not the player
+    const float night = NightLevelRef().load(std::memory_order_relaxed);
+    if (night < 0.0f || (night > 0.02f && night < 0.98f)) return;
+    if (tick - g_massWindowFrom.load(std::memory_order_relaxed) > kMassWindowMs) {
+        g_massWindowFrom.store(tick, std::memory_order_relaxed);
+        g_massCount.store(0, std::memory_order_relaxed);
+    }
+    if (g_massCount.fetch_add(1, std::memory_order_relaxed) + 1 >= kMassSwitches) {
+        if (tick - g_massLast.load(std::memory_order_relaxed) > kMassHoldMs) g_massEvents.fetch_add(1, std::memory_order_relaxed);
+        g_massLast.store(tick | 1, std::memory_order_relaxed);
+    }
+}
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
 std::atomic<float> g_nightLevel{-1.0f};
+std::atomic<float>& NightLevelRef() { return g_nightLevel; }
 
 inline void Mix(uint64_t& h, uint32_t v) { h = (h ^ v) * 1099511628211ull; }
 inline void MixDwords(uint64_t& h, uintptr_t at, int n) {
@@ -224,6 +246,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
             if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
             edit = edit || !selfSwitching;
             user = user || (was.on != on && !selfSwitching);
+            if (was.on != on && !selfSwitching) NoteUserSwitch(tick);
             // the per-pixel lamps (objects, fences, roofs, water) and the ground bake read the lamp list again soon, not at
             // the next 20-frame enumeration: a dragged lamp's light follows it
             if (moved && ((type >= 3 && type <= 6) || type == 11)) g_editRefresh.store(true, std::memory_order_relaxed);
@@ -428,6 +451,10 @@ void OnPresent(float nightLevel) {
         ObjectLightBridge::RequestRigRefresh();
         // RelightLot watches completion and retains its own bounded fallback.
     }
+}
+bool MassSwitchActive() {
+    const DWORD last = g_massLast.load(std::memory_order_relaxed);
+    return g_installed && last && GetTickCount() - last <= kMassHoldMs;
 }
 void SetEnabled(bool on) { g_on.store(on, std::memory_order_relaxed); }
 bool Enabled() { return g_on.load(std::memory_order_relaxed); }

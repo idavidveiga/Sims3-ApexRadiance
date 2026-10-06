@@ -4346,10 +4346,12 @@ struct RigWait { std::vector<RigRoomWatch> rooms; DWORD armed; bool fallbackSent
 std::unordered_map<uintptr_t, RigWait> g_rigWait; // render thread, only after a lamp-driven lot refresh
 DWORD g_rigPollAt = 0, g_ambientPollAt = 0;
 unsigned g_rigCursor = 0;
-bool FreshLampSolveImpl(BYTE* room, DWORD changed) {
+// waiting: the room is queued (state 2) and its solve has not started, so its gather will read the lamps as they are now
+// (06/10, "all the lights" of a big lot: the safety net sent such rooms again, a second invalidation for nothing)
+bool FreshLampSolveImpl(BYTE* room, DWORD changed, bool waiting) {
     const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
     const int id = *reinterpret_cast<const int*>(room + 0xC);
-    {
+    if (!waiting) {
         std::lock_guard<std::mutex> lock(g_gatherStampMx);
         const auto stamp = g_gatherStamps.find(reinterpret_cast<uintptr_t>(room));
         if (stamp == g_gatherStamps.end() || stamp->second.mgr != mgr || stamp->second.id != id
@@ -4378,8 +4380,9 @@ bool FreshLampSolveImpl(BYTE* room, DWORD changed) {
 }
 bool FreshLampSolve(BYTE* room, DWORD changed) {
     __try {
-        if (!RoomAmbientPolicy::RetainFreshSolve(*reinterpret_cast<const int*>(room + 0xF0))) return false;
-        return FreshLampSolveImpl(room, changed);
+        const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        if (!RoomAmbientPolicy::RetainFreshSolve(state)) return false;
+        return FreshLampSolveImpl(room, changed, state == 2);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 int CachedStoryRooms(uintptr_t tracker, int level, int* ids, int max);

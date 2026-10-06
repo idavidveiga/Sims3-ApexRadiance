@@ -866,7 +866,13 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Camera and lighting", "Smoother movement while rooms and lots update", nullptr, nullptr);
         ApexUi::CardDivider();
-        FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors");
+        if (FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors")) {
+            bool quick = Performance::RoomQuickPass();
+            ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+            if (ApexUi::SwitchRow("Quick update when many lamps switch", &quick,
+                                  "Switching all the lights of a lot shows the new light at once in a quick pass, then refines it", true))
+                Performance::SetRoomQuickPass(quick);
+        }
         if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());
             char value[16];

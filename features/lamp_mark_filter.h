@@ -8,6 +8,9 @@ bool IsInstalled();
 // Render thread, every frame (Night Lighting): the lots whose lamps were switched or moved light again (nightLevel: the game's, -1
 // = no world)
 void OnPresent(float nightLevel);
+// Many lamps switched by the player within a moment (06/10: "all the lights" of a lot): kMassSwitches or more user switches
+// within kMassWindowMs, held for kMassHoldMs after the last one. Any thread.
+bool MassSwitchActive();
 // Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
 void SetEnabled(bool on);
 bool Enabled();

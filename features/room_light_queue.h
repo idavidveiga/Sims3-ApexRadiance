@@ -24,6 +24,11 @@ bool Start(std::string* error);
 void Stop();
 bool Running();
 std::string StatusText();
+// Quick pass when many lamps switch (06/10): while LampMarkFilter::MassSwitchActive, a lamp edit's room still waiting for
+// its solve at a class above 0 goes back to class 0 (the game's own fast first solve, ~1/20 of class 2), so every room of
+// the switch takes its new light within a few frames, the camera's story first; the game then refines it to its class.
+void SetQuickPass(bool on);
+bool QuickPass();
 // Development build: status lines
 void RenderDeveloperUI();
 }

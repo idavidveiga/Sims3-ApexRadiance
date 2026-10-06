@@ -156,6 +156,12 @@ const I18n::Entry kEntries[] = {
      "Controla la distancia, la cantidad y la fluidez con que los solares entran en detalle completo",
      "Contrôle la distance, le nombre et la fluidité avec lesquels les terrains passent en détail complet"},
     {"Extended lot detail", "Detalhes estendidos dos lotes", "Detalle extendido de solares", "Détail étendu des terrains"},
+    {"Quick update when many lamps switch", "Atualização rápida ao trocar muitas lâmpadas", "Actualización rápida al cambiar muchas lámparas",
+     "Mise à jour rapide quand beaucoup de lampes changent"},
+    {"Switching all the lights of a lot shows the new light at once in a quick pass, then refines it",
+     "Acender ou apagar todas as luzes de um lote mostra a nova luz na hora, numa passada rápida, e depois refina",
+     "Encender o apagar todas las luces de un solar muestra la nueva luz al instante, en una pasada rápida, y luego la refina",
+     "Allumer ou éteindre toutes les lumières d'un terrain montre la nouvelle lumière tout de suite, en une passe rapide, puis l'affine"},
     // the menu's lot streaming texts (06/10, simpler than the fork's originals below)
     {"How far, how many and how smoothly lots enter full detail", "Até onde, quantos e com que suavidade os lotes entram em detalhe total",
      "Hasta dónde, cuántos y con qué suavidad los solares entran en detalle completo", "Jusqu'où, combien et avec quelle douceur les terrains passent en détail complet"},

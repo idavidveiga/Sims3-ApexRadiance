@@ -44,6 +44,7 @@
 #include "game_addresses.h"
 #include "lot_lighting_motion.h"
 #include "level_light_share.h"
+#include "lamp_mark_filter.h"
 #include "room_ambient_policy.h"
 #include "memory_patch.h"
 #include "imgui.h"
@@ -133,7 +134,23 @@ bool Stranded(const BYTE* room) {
     }
 }
 
+// Quick pass (see SetQuickPass): a lamp edit's room waiting (state 2) at a class above 0 while many lamps switch goes to
+// class 0, the state the game's own invalidate gives a room (part 3 keeps the class instead); "no middle step" then takes
+// it straight to its class after that solve. Render thread (the scheduler).
+std::atomic<bool> g_quickPass{true};
+std::atomic<long> g_quickRooms{0};
+void QuickPassRoom(BYTE* room) {
+    if (!g_quickPass.load(std::memory_order_relaxed) || !LampMarkFilter::MassSwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
+    __try {
+        if (*reinterpret_cast<const int*>(room + 0xF0) != 2 || *reinterpret_cast<const int*>(room + 0xF4) <= 0) return;
+        *reinterpret_cast<int*>(room + 0xF4) = 0;
+        g_quickRooms.fetch_add(1, std::memory_order_relaxed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 float __fastcall PriorityHook(BYTE* room) {
+    if (room && g_prioOn) QuickPassRoom(room);
     const float p = reinterpret_cast<Priority_t>(kPriority)(room);
     if (!room || !g_prioOn) return p;
     if (!(p > 0.0f)) return Stranded(room) ? 1.0f : p;
@@ -184,6 +201,7 @@ struct EditBurst {
     long frames = 0;
     long long drainMicros = 0;
     float solved = 0.0f;
+    long quick = 0; // g_quickRooms at the start
 };
 EditBurst g_burst;
 float GameSolveMs() {
@@ -192,7 +210,7 @@ float GameSolveMs() {
 }
 void NoteEditBurst(bool lampEdit) {
     if (lampEdit) {
-        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs()};
+        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed)};
         g_burst.frames++;
         return;
     }
@@ -202,8 +220,9 @@ void NoteEditBurst(bool lampEdit) {
     const float solved = GameSolveMs() - g_burst.solved;
     const float drained = static_cast<float>(g_drainMicros.load(std::memory_order_relaxed) - g_burst.drainMicros) / 1000.0f;
     LOG_INFO(std::format("[RoomLightQueue] Lamp edit: its rooms settled after {} ms over {} frames; the game solved rooms for {:.0f} ms ({:.1f} ms a frame), "
-                         "{:.0f} ms of it right after the pick",
-                         ms, g_burst.frames, solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained));
+                         "{:.0f} ms of it right after the pick; {} rooms took the quick pass first",
+                         ms, g_burst.frames, solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained,
+                         g_quickRooms.load(std::memory_order_relaxed) - g_burst.quick));
 }
 
 void __fastcall PickHook(BYTE* tree) {
@@ -373,6 +392,9 @@ bool Running() {
     return g_running;
 }
 
+void SetQuickPass(bool on) { g_quickPass.store(on, std::memory_order_relaxed); }
+bool QuickPass() { return g_quickPass.load(std::memory_order_relaxed); }
+
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)
 std::string SolveTimes() {
     float t[3] = {};
@@ -384,10 +406,11 @@ std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
     return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
-                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}){}",
+                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}), "
+                       "quick pass for many lamps {} ({} rooms){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
                        g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
-                       g_emptyCalls.load(), SolveTimes());
+                       g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes());
 }
 
 void RenderDeveloperUI() {

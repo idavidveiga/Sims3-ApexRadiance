@@ -692,13 +692,35 @@ class ObjectLookupIndexPatch : public ApexPatch {
     void RenderDeveloperUI() override { ObjectIndex::RenderDeveloperUI(); }
 };
 
+class RoomLightQueuePatch;
+std::atomic<RoomLightQueuePatch*> g_roomQueuePatch{nullptr};
+
 class RoomLightQueuePatch : public ApexPatch {
   public:
-    RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {}
+    RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {
+        // TOML key: never rename
+        RegisterBoolSetting(&quickPass_, "quickPass", true, "Quick update when many lamps switch");
+        g_roomQueuePatch.store(this);
+    }
+    ~RoomLightQueuePatch() override { g_roomQueuePatch.store(nullptr); }
+
+    // read by the scheduler hook on every call: applied at once, nothing to reinstall
+    void Update() override {
+        pendingReinstall = false;
+        RoomLightQueue::SetQuickPass(quickPass_);
+    }
+    bool QuickPass() const { return quickPass_; }
+    void SetQuickPass(bool on) {
+        if (on == quickPass_) return;
+        quickPass_ = on;
+        RoomLightQueue::SetQuickPass(on);
+        NotifySettingChanged();
+    }
 
     bool Install() override {
         if (isEnabled) return true;
         lastError.clear();
+        RoomLightQueue::SetQuickPass(quickPass_);
         std::string error;
         if (!RoomLightQueue::Start(&error)) return Fail(error);
         isEnabled = true;
@@ -716,6 +738,9 @@ class RoomLightQueuePatch : public ApexPatch {
 
     void RenderCustomUI() override {} // the Performance card draws the row
     void RenderDeveloperUI() override { RoomLightQueue::RenderDeveloperUI(); }
+
+  private:
+    bool quickPass_ = true;
 };
 
 } // namespace
@@ -727,6 +752,15 @@ int Performance::LotLightingBudgetMs() {
 
 void Performance::SetLotLightingBudgetMs(int ms) {
     if (LotLightingMotionPatch* p = g_lotPatch.load()) p->SetBudgetMs(ms);
+}
+
+bool Performance::RoomQuickPass() {
+    RoomLightQueuePatch* p = g_roomQueuePatch.load();
+    return p ? p->QuickPass() : true;
+}
+
+void Performance::SetRoomQuickPass(bool on) {
+    if (RoomLightQueuePatch* p = g_roomQueuePatch.load()) p->SetQuickPass(on);
 }
 
 bool Performance::FastTextureSeveralCores() {
