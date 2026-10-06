@@ -57,8 +57,10 @@ inline bool IsActive() {
 // 06/10 (Twinbrook load screen): the interactive load screen draws about 100 depth-writing draws for tens of seconds and
 // Night Lighting's load-settled signal can stay on across a travel, so both are required: settled (when Night Lighting
 // runs) and at least kMinDepthWrites draws for kDrawnMs (the world drew 185 .. 700 in the captures).
-constexpr int kMinDepthWrites = 150;
-constexpr unsigned long long kDrawnMs = 1500;
+// 150 was tried on 06/10 and never opened in close views (fewer draws than that): 48 again, with the settled signal now
+// reset by every new world (the Twinbrook load screen passed only because that signal was stale after a travel).
+constexpr int kMinDepthWrites = 48;
+constexpr unsigned long long kDrawnMs = 1000;
 // Night Lighting's "load settled" (true when it is off), registered by it; null = not required
 inline bool (*g_loadSettled)() = nullptr;
 }
