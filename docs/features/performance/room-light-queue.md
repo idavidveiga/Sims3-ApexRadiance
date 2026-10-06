@@ -149,3 +149,7 @@ against 1.0 s for class 0.
 - **No second send for waiting rooms**: the lamp switch's safety net (LevelLightShare::RelightLot, about 120 ms after the
   switch) skips a room that is queued (state 2) and has not started its solve, as it would skip a fresh solve: its gather
   reads the lamps as they are when it starts.
+- **Refinement in the background**: once every room of the burst shows its quick solve (logged: "Many lamps: the N rooms
+  of the burst showed their new light (quick pass) after X ms"), the extra solving a frame for the burst drops from 12 ms
+  to 4 ms. Measured before (06/10): 35-39 ms of solving a frame for 2-3 s while the rooms already showed the right light;
+  Apex's own light tests were 21-33% of those solves (the rest is the game's).

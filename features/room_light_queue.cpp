@@ -144,6 +144,27 @@ std::atomic<long> g_quickRooms{0};
 // the burst lasted, 500-700 quick passes for some 30 rooms, and its refinement waited)
 std::unordered_set<uintptr_t> g_quickDone;
 long g_quickEvent = -1;
+// When every room of the burst shows its quick solve (06/10): the time is logged ("showed its new light"), and the rest of
+// the burst is refinement, given 4 ms of extra solving a frame instead of 12 so the frame rate holds (the capture: 35-39 ms
+// of solving a frame for 2-3 s while the rooms already showed the right light)
+DWORD g_quickStart = 0;
+bool g_quickShown = false, g_refining = false;
+bool QuickSolved(const BYTE* room) { // its class-0 solve is shown, or it already went on to its class and finished
+    __try {
+        const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        return state == 4 || state == 5 || (state != 3 && *reinterpret_cast<const int*>(room + 0x100) == 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true; // gone
+    }
+}
+void CheckQuickShown() {
+    if (g_quickShown || g_quickDone.empty()) return;
+    for (const uintptr_t room : g_quickDone)
+        if (!QuickSolved(reinterpret_cast<const BYTE*>(room))) return;
+    g_quickShown = g_refining = true;
+    LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
+                         g_quickDone.size(), GetTickCount() - g_quickStart));
+}
 bool WaitingAboveClass0(const BYTE* room) {
     __try {
         return *reinterpret_cast<const int*>(room + 0xF0) == 2 && *reinterpret_cast<const int*>(room + 0xF4) > 0;
@@ -165,6 +186,8 @@ void QuickPassRoom(BYTE* room) {
     if (burst != g_quickEvent) {
         g_quickEvent = burst;
         g_quickDone.clear();
+        g_quickStart = GetTickCount();
+        g_quickShown = g_refining = false;
     }
     const uintptr_t key = reinterpret_cast<uintptr_t>(room);
     if (g_quickDone.contains(key) || !WaitingAboveClass0(room)) return;
@@ -266,12 +289,16 @@ void __fastcall PickHook(BYTE* tree) {
     // dragged lamp's light follows it within a frame or two
     const bool lampEdit = LevelLightShare::LampEditPending();
     NoteEditBurst(lampEdit);
+    CheckQuickShown();
+    if (!lampEdit) g_refining = false;
     BYTE* room = DrainableRoom(tree);
     if (before && !(lampEdit && room == before && LevelLightShare::LampUrgency(room) > 1.0f)) room = nullptr;
     if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;
     if (room) {
         // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
-        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f : lampEdit ? (LevelLightShare::LampDragging() ? 6.0f : 12.0f) : 4.0f;
+        // many lamps whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
+        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
+                             : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f) : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
         reinterpret_cast<SwCtor_t>(kSwCtor)(sw, 4, 0);
