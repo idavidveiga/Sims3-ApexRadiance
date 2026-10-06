@@ -212,8 +212,20 @@ Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 o
 Measuring tools that found these: the recorder's [solve] / [room] journal (F8), the "Wall seams.csv" of a recording (the
 same wall points at class 0 and class 2), and frames extracted from the user's video with VLC's scene filter.
 
-Left as they are: a single lamp switch still sends every room of its lot through the safety net (17 rooms, ~1.5 s of
-solving in the background); the refinement of a burst ends room by room (now only a change of resolution).
+Then (same day, user: "do the 3 improvements"):
+- **The switch's safety net sends only the rooms a lamp can reach** (`LevelLightShare::RelightLampSwitch`): those holding
+  the lamp, its own room, the rooms near the stair openings of its story and the stories next to it, and every story's
+  outdoor rooms for an outdoor lamp (fresh solves kept). It sent the whole lot before (17 rooms for one sconce). A lamp
+  moved into another room, moved and switched, or more than 8 lamps at once ("all the lights") still send the lot.
+- **Windows the game takes back are left alone**: every load, the window activation recheck changed the same 50 windows of
+  the atrium house 2-3 times within half a second (the game set them back in between), and each change solved their rooms
+  again. An entry found back in the state it had before Apex's last update of it (within 10 s) is now left as the game
+  keeps it. The log line also shows the real lot id (it printed the tracker's +0x90, a float 1.0).
+- **Slow terrain chunk renders are spread** (terrain_chunk_relight `ReleaseLimit`): after a chunk took more than 20 ms
+  (44 ms in one session whose game frames took 72-164 ms; 4.7-6 ms in the others, same lamps and chunks), at most 3 chunks a
+  second instead of 8.
+
+Left as it is: the refinement of a burst ends room by room (now only a change of resolution).
 
 The "Smooth light changes indoors" option was then removed (user: "the fade is not needed any more, is it?" and, with it
 off, "much better without"): its first reason, the quick pass's blink, was gone. An old `lightFade` key is ignored.

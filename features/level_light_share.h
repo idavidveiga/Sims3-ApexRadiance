@@ -48,6 +48,16 @@ void RelightAllRooms(const char* why);
 // only the rooms whose light list holds one of them (lamps that only moved).
 // Watches this lot's completion for a furniture refresh, with a 1500 ms fallback and bounded 6 s lifetime.
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0);
+// A lamp switched where it was (same room, not moved): its tree level (story) and room
+struct LampSwitch {
+    uintptr_t light, tl;
+    int room;
+};
+// Render thread: the lamp switch's safety net for those rooms only: the rooms holding a switched (or moved) lamp, the
+// switched lamps' own rooms, the rooms near the stair openings of their story and the stories next to it, and the outdoor
+// rooms of every story for an outdoor lamp; fresh solves retained as RelightLot does. -1 = the lot is gone.
+int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedAt, const LampSwitch* switched, int count,
+                      const uintptr_t* moved, int movedCount);
 // Lamp edits first (light tree thread, from LampMarkFilter's lamp entry update): the room this tree level's update marks for
 // a lamp edit (user = colour, intensity or on / off by a player or a Sim, not a flicker) is solved before any other room, and
 // so are the rooms of other stories that take its light; pure = the lamp stayed in that room (moved, switched or

@@ -2883,27 +2883,48 @@ bool AmbientRoomExists(const DepKey& key) {
 
 // Called on the light thread before the changed-room set is walked. Take a snapshot first:
 // the game's evaluator may move a paired window entry to another room's registry.
-bool RecheckWindowEntry(uintptr_t entry, uintptr_t tl, bool& changed) {
-    changed = false;
+// A window the game takes back (06/10, every load of the atrium house since the morning: "144 evaluated, 50 changed" two or
+// three times within half a second, each time the same 50 windows, and each time their rooms solved again): the state an
+// entry had before Apex's last update of it (room, lit), seen again within kWindowFlipMs, means the game set it back; Apex
+// then leaves that entry as the game keeps it.
+struct WindowState {
+    int room = 0;
+    BYTE lit = 0;
+    bool operator==(const WindowState&) const = default;
+};
+struct WindowFlip {
+    WindowState before, after;
+    DWORD at = 0;
+};
+constexpr DWORD kWindowFlipMs = 10000;
+std::unordered_map<uintptr_t, WindowFlip> g_windowFlips; // light tree thread: entry -> Apex's last update of it that changed it
+std::atomic<long> g_windowsTakenBack{0};
+// 0 = not a window entry of tl (left alone), 1 = evaluated (now: its state before; after: after the update), -1 = fault
+int RecheckWindowEntry(uintptr_t entry, uintptr_t tl, const WindowFlip* last, WindowState& now, WindowState& after, bool& skipped) {
+    skipped = false;
     __try {
-        if (*reinterpret_cast<const uintptr_t*>(entry + 0x14) != tl) return false;
+        if (*reinterpret_cast<const uintptr_t*>(entry + 0x14) != tl) return 0;
         const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
-        if (!light) return false;
+        if (!light) return 0;
         const int type = *reinterpret_cast<const int*>(light + 0xB0);
-        if (type != 7 && type != 8) return false;
+        if (type != 7 && type != 8) return 0;
         const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(entry);
-        if (!vt || *reinterpret_cast<const uintptr_t*>(vt + 8) != kLightEntryUpdate) return false;
-        const int room = *reinterpret_cast<const int*>(entry + 0x1C);
-        const BYTE lit = *reinterpret_cast<const BYTE*>(light + 0x100) & 0x20;
+        if (!vt || *reinterpret_cast<const uintptr_t*>(vt + 8) != kLightEntryUpdate) return 0;
+        now = WindowState{*reinterpret_cast<const int*>(entry + 0x1C), static_cast<BYTE>(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)};
+        if (last && now == last->before && !(last->after == last->before)) { // the game set it back: leave it
+            skipped = true;
+            after = now;
+            return 1;
+        }
         reinterpret_cast<void(__thiscall*)(void*)>(kLightEntryUpdate)(reinterpret_cast<void*>(entry));
-        changed = room != *reinterpret_cast<const int*>(entry + 0x1C)
-            || lit != (*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
-        return true;
+        after = WindowState{*reinterpret_cast<const int*>(entry + 0x1C), static_cast<BYTE>(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)};
+        return 1;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
-        return false;
+        return -1;
     }
 }
+uint32_t LotIdPart(uintptr_t tracker, int offset);
 void RecheckLotWindows(uintptr_t tracker, unsigned pass) {
     if (!kLightEntryUpdate) return;
     std::vector<std::pair<uintptr_t, uintptr_t>> entries;
@@ -2915,13 +2936,29 @@ void RecheckLotWindows(uintptr_t tracker, unsigned pass) {
             if (seen.insert(entry).second) entries.emplace_back(entry, tl);
         });
     }
-    int checked = 0, changed = 0;
+    const DWORD tick = GetTickCount();
+    if (g_windowFlips.size() > 16384) g_windowFlips.clear();
+    int checked = 0, changed = 0, takenBack = 0;
     for (const auto& [entry, tl] : entries) {
-        bool edited = false;
-        if (RecheckWindowEntry(entry, tl, edited)) { checked++; changed += edited; }
+        const auto flip = g_windowFlips.find(entry);
+        const WindowFlip* last = flip != g_windowFlips.end() && tick - flip->second.at < kWindowFlipMs ? &flip->second : nullptr;
+        WindowState now{}, after{};
+        bool skipped = false;
+        if (RecheckWindowEntry(entry, tl, last, now, after, skipped) != 1) continue;
+        checked++;
+        if (skipped) {
+            takenBack++;
+            continue;
+        }
+        if (!(after == now)) {
+            changed++;
+            g_windowFlips[entry] = WindowFlip{now, after, tick};
+        } else if (flip != g_windowFlips.end()) g_windowFlips.erase(flip);
     }
+    g_windowsTakenBack.fetch_add(takenBack, std::memory_order_relaxed);
     if (!kPublicBuild)
-        LOG_INFO(std::format("[LevelLightShare] Window activation recheck: lot {:08X}, pass {}, {} evaluated, {} changed", *reinterpret_cast<const uint32_t*>(tracker + 0x90), pass + 1, checked, changed));
+        LOG_INFO(std::format("[LevelLightShare] Window activation recheck: lot {:08X}, pass {}, {} evaluated, {} changed{}", LotIdPart(tracker, 0x90), pass + 1,
+                             checked, changed, takenBack ? std::format(", {} left as the game took them back", takenBack) : std::string()));
 }
 
 // A member whose own state 0 is still to come (waiting for its gather or its solve, or picked and not started: sub-step
@@ -5040,6 +5077,14 @@ bool StageAmbient(BYTE* room, const float* oldOwn, const float* newOwn, const fl
     return true;
 }
 
+// The story of a tree level (tl+0x1A0, as BeforeRoomUpdate reads it); -99 when unreadable
+int StoryOfTreeLevel(uintptr_t tl) {
+    __try {
+        return *reinterpret_cast<const int*>(tl + 0x1A0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -99;
+    }
+}
 bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
     __try {
         return QueueRoom(tracker, level, id, true);
@@ -6124,6 +6169,82 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
     }
     LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished){}", why, queued, LotIdPart(tracker, 0x90), skipped,
                          lamps && lampCount > 0 ? std::format(" (only the rooms holding the {} lamp{} moved)", lampCount, lampCount == 1 ? "" : "s") : std::string()));
+    return queued;
+}
+
+// A lamp switched (06/10, user approved "improve it"; recording 12:01: one sconce sent 17 rooms of its lot through this safety
+// net, ~1.5 s of solving in the background, story 3 and every outdoor room among them). A switch changes the light of the
+// rooms that hold the lamp, of its own room, and of the rooms that take it through a stair opening once it is on: those of
+// its story and the stories next to it near the openings between them (the gather of part 4 takes lamps of S - 1 and S + 1
+// only, near an opening); an outdoor lamp (room 0 or a roofless room) also lights the outdoor rooms of every story. Only
+// those rooms are sent (a fresh solve kept, as above); a lamp that moved too, or into another room, still sends the lot.
+int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedAt, const LampSwitch* switched, int count,
+                      const uintptr_t* moved, int movedCount) {
+    LoadAddresses();
+    if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert || !tracker || count <= 0) return -1;
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    if (std::find(trackers, trackers + lots, tracker) == trackers + lots) return -1;
+    std::vector<uintptr_t> lamps(moved, moved + std::max(movedCount, 0));
+    for (int k = 0; k < count; k++) lamps.push_back(switched[k].light);
+    int queued = 0, skipped = 0;
+    RigWait wait{{}, GetTickCount(), false};
+    for (int level = -4; level <= 7; level++)
+        queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps.data(), static_cast<int>(lamps.size()));
+    // the rooms the switched lamps can reach without holding them yet
+    std::vector<std::pair<int, int>> reach;
+    bool outdoorLamp = false;
+    OpeningMask mask;
+    for (int k = 0; k < count; k++) {
+        const int L = StoryOfTreeLevel(switched[k].tl);
+        if (L < -4 || L > 7 || TreeLevel(tracker, L) != switched[k].tl) continue;
+        reach.emplace_back(L, switched[k].room);
+        const uintptr_t mgrL = StoryManager(tracker, L);
+        if (switched[k].room == 0 || (g_indoorReady && mgrL && RooflessRoom(mgrL, switched[k].room))) outdoorLamp = true;
+        if (!g_indoorOn.load(std::memory_order_relaxed)) continue;
+        for (const int B : {L, L + 1}) { // the floors under and over the lamp's story
+            if (B < 1 || B > 7) continue;
+            const uintptr_t mgrB = StoryManager(tracker, B), levelB = mgrB ? LevelFor(mgrB) : 0;
+            if (!levelB || !BuildOpeningMask(StoryManager(tracker, B - 1), mgrB, levelB, mask) || !mask.openings) continue;
+            for (const int S : {B - 1, B})
+                if (const uintptr_t mgrS = StoryManager(tracker, S)) {
+                    int ids[256];
+                    const int n = RoomsNearOpenings(mgrS, mask, ids, 256);
+                    for (int i = 0; i < n; i++) reach.emplace_back(S, ids[i]);
+                }
+        }
+    }
+    if (outdoorLamp)
+        for (int S = 0; S <= 7; S++)
+            if (const uintptr_t mgrS = StoryManager(tracker, S)) {
+                reach.emplace_back(S, 0);
+                int roofless[256];
+                const int nr = g_indoorReady ? RooflessRoomIds(mgrS, roofless, static_cast<int>(std::size(roofless))) : 0;
+                for (int i = 0; i < nr; i++) reach.emplace_back(S, roofless[i]);
+            }
+    std::sort(reach.begin(), reach.end());
+    reach.erase(std::unique(reach.begin(), reach.end()), reach.end());
+    for (const auto& [S, id] : reach) {
+        BYTE* room = SafeRoomById(tracker, S, id);
+        if (!room) continue;
+        if (changedAt && FreshLampSolve(room, changedAt)) {
+            skipped++;
+            continue;
+        }
+        if (QueueRoomSafe(tracker, S, id)) {
+            queued++;
+            if (const uintptr_t mgr = SafeStoryManager(tracker, S)) wait.rooms.push_back({{tracker, S, id}, mgr});
+        }
+    }
+    if (!wait.rooms.empty() && wait.rooms.size() <= 128 && (g_rigWait.size() < 256 || g_rigWait.contains(tracker)))
+        g_rigWait[tracker] = std::move(wait);
+    else {
+        g_rigWait.erase(tracker);
+        UnlitRooms::RigsAgainIn(1500);
+    }
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished) "
+                         "(the rooms holding the {} lamp{} or within its reach{})", why, queued, LotIdPart(tracker, 0x90), skipped, count,
+                         count == 1 ? "" : "s", outdoorLamp ? ", outdoor rooms of every story" : ""));
     return queued;
 }
 
