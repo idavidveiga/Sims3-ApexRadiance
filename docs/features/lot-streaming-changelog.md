@@ -258,4 +258,4 @@ The durable classification is:
 - **S3SS behavior lineage, Apex reimplementation:** transition throttle settings, camera threshold 5, visibility JZ->JMP and map-view blocking.
 - **Not copied from S3SS:** its general patch framework, LiveSetting framework, UI/config system, and its `WorldManager::Update` map-view detour.
 
-For future ports, use `docs/Luis_Lot_Streaming_Implementation_Guide.md` as the implementation handoff and this file as the research/validation history.
+For future ports, use `docs/Lot_Streaming_Implementation_Guide.md` as the implementation handoff and this file as the research/validation history.
