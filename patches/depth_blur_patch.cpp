@@ -996,10 +996,14 @@ void BlurEffect(IDirect3DDevice9* dev) {
 
 // The world is playable: the loaded-world gate, and with Night Lighting running its "load settled" signal (the game's
 // interactive loading screen draws the world while lots still load, behind its own overlay)
-bool WorldPlayable() {
-    if (!WorldSession::IsActive()) return false;
+bool NightSettled() {
     const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
     return !night || !night->IsEnabled() || NightLighting::LoadSettled();
+}
+// The shared screen-effects gate also waits for it (features/world_session.h)
+const bool kSettledRegistered = (WorldSession::g_loadSettled = &NightSettled, true);
+bool WorldPlayable() {
+    return WorldSession::InWorld() && NightSettled();
 }
 
 void OnFrameBoundary(IDirect3DDevice9* dev) {

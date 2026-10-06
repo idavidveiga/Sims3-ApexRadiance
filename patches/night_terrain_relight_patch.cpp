@@ -192,7 +192,7 @@ float g_roofStrengthSetting = 0.45f;
 bool g_water = true;
 bool g_waterFilter = true, g_waterColorCompression = true;
 float g_waterStrengthSetting = 0.4f;
-float g_waterReflSetting = 1.0f;
+float g_waterReflSetting = 1.56f; // the default the user chose 06/10
 // Brightness controls (Lamps and Ground tabs). Ground / roads / lot lamps on lot grass apply live in the ground shaders
 // (LotLightBridge::SetGroundBrightness); street / lot lamps in the terrain light bake (BakeColourStub) need a terrain
 // rebuild, done once when the slider is let go; the moonlight scales the game's sun / moon colour at night.
@@ -1710,7 +1710,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             S3SS_TR("A agua dos lagos reflete as lampadas e postes proximos a noite.", "Ponds glow and reflect nearby lamps at night."));
         RegisterFloatSetting(&g_waterStrengthSetting, "brilhoNaAgua", SettingWidget::Slider, 0.4f, 0.1f, 0.4f,
             S3SS_TR("Brilho do reflexo das lampadas na agua.", "Brightness of lamp reflections on water."));
-        RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.0f, 0.0f, 3.0f,
+        RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.56f, 0.0f, 3.0f,
             S3SS_TR("Forca do reflexo da margem (arvores, casas, postes) na agua dos lagos.",
                     "Strength of the shore reflection (trees, houses, lamps) on ponds (needs Depth Blur)."));
         RegisterFloatSetting(&g_groundBrightness, "brilhoNoChao", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
@@ -2176,7 +2176,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_water = true;
         g_waterFilter = g_waterColorCompression = true;
         g_waterStrengthSetting = 0.4f;
-        g_waterReflSetting = 1.0f;
+        g_waterReflSetting = 1.56f;
         g_sidewalkClear = 0.5f;
         g_delaySec = 2.0f;
         g_streetLampsLit = false;

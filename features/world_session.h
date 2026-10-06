@@ -54,8 +54,13 @@ inline bool IsActive() {
 // kMinDepthWrites depth-writing draws per frame for kDrawnMs in a row (a load screen draws 0 .. 50, the world hundreds).
 // Then it stays open while the world is active, so the save screen and the in-game menus keep the same look; it closes
 // with the world (main menu) and waits for the next world to be drawn. Render thread only.
-constexpr int kMinDepthWrites = 48;
-constexpr unsigned long long kDrawnMs = 750;
+// 06/10 (Twinbrook load screen): the interactive load screen draws about 100 depth-writing draws for tens of seconds and
+// Night Lighting's load-settled signal can stay on across a travel, so both are required: settled (when Night Lighting
+// runs) and at least kMinDepthWrites draws for kDrawnMs (the world drew 185 .. 700 in the captures).
+constexpr int kMinDepthWrites = 150;
+constexpr unsigned long long kDrawnMs = 1500;
+// Night Lighting's "load settled" (true when it is off), registered by it; null = not required
+inline bool (*g_loadSettled)() = nullptr;
 }
 namespace PostScene { int DepthWritesThisFrame(); }
 namespace WorldSession {
@@ -69,7 +74,7 @@ inline bool InWorld() {
     }
     if (open) return true;
     const unsigned long long now = GetTickCount64();
-    if (PostScene::DepthWritesThisFrame() >= kMinDepthWrites) {
+    if (PostScene::DepthWritesThisFrame() >= kMinDepthWrites && (!g_loadSettled || g_loadSettled())) {
         if (!drawnSince) drawnSince = now;
         open = now - drawnSince >= kDrawnMs;
     } else drawnSince = 0;

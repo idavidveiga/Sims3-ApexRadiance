@@ -228,7 +228,7 @@ bool NightLightsReady(const char* what) {
 // ---- Water Reflections (the shore reflection of Night Lights' lake pass, reflexoNoLago) ----
 
 float g_lastShore = 1.0f; // strength restored when the switch goes back on
-constexpr float kShoreDefault = 1.0f; // reflexoNoLago's registered default
+constexpr float kShoreDefault = 1.56f; // reflexoNoLago's registered default
 
 bool ShoreOn() { return NightLighting::ShoreReflection() > 0.0f; }
 
@@ -593,7 +593,7 @@ void WaterReflectionsCard() {
         if (on) GameEdgeSmoothingNote("Water Reflections");
         if (on) {
             float v = NightLighting::ShoreReflection();
-            if (ApexUi::SliderPercent("Reflection brightness", &v, 0.05f, 3.0f, "How strong the reflection is; 100% is the default", kShoreDefault)) {
+            if (ApexUi::SliderPercent("Reflection brightness", &v, 0.05f, 3.0f, "How strong the reflection is; 156% is the default", kShoreDefault)) {
                 NightLighting::SetShoreReflection(v);
                 g_lastShore = v;
             }
@@ -3008,7 +3008,7 @@ std::atomic<unsigned> g_worldEpoch{0}; // bumped when the world session starts o
 bool g_lastWorldSession = false;
 unsigned long long g_menuLiveAt = 0, g_menuGateCheckedAt = 0;
 bool WorldSessionActive() {
-    return WorldSession::IsActive();
+    return WorldSession::InWorld(); // the world drawn, not a load screen (06/10: the start note showed on Twinbrook's load screen)
 }
 void UpdateMenuAvailability() {
     const auto now = GetTickCount64();
