@@ -38,6 +38,7 @@
 #include "lightmap_smooth.h"
 #include "terrain_chunk_relight.h"
 #include "terrain_lighting_policy.h"
+#include "world_session.h"
 #include "render_callbacks.h"
 #include "object_light_bridge.h"
 #include "level_light_share.h"
@@ -247,6 +248,11 @@ Clock::time_point g_lastStuckKick{};
 int g_armsAtLastStuckKick = 0;
 int g_lastLampEdits = 0;
 int g_lastUserEdits = 0;
+bool g_editsWhileLoading = false; // lot lamp changes seen before the world was drawn (see the lamp edit block in OnPresent)
+// A world session that ended (main menu) re-arms the new-world handling: the next world may reuse the cells pointer (06/10:
+// Sunset Valley -> main menu -> Bridgeport was never seen as a new world, its lamps were compared with the old snapshot)
+bool g_sessionSeenActive = false, g_sessionRearm = false;
+unsigned long long g_sessionInactiveSince = 0;
 // Lamp changes (and the live "lot lamps on the ground" switch) are coalesced: a decision once nothing changed for 250 ms.
 // 29/09 (terrain-relight.md "Lamp change decisions"; research\perf2\round3.md 5: each full rebuild is a ~240 ms frame):
 //  - user-driven changes (a lamp of the bake placed, moved, removed; the switches) rebuild fast, at most one every 3 s;
@@ -1151,6 +1157,22 @@ void OnPresent() {
     g_counter38 = c38;
     g_counter3C = c3C;
 
+    {
+        const bool active = WorldSession::IsActive();
+        const unsigned long long tick = GetTickCount64();
+        if (active) {
+            g_sessionInactiveSince = 0;
+            if (g_sessionRearm) {
+                g_sessionRearm = false;
+                g_lastCells = 0; // handled as a new world below
+                LOG_INFO("[NightTerrainRelight] A world session started again after the main menu: handled as a new world");
+            }
+            g_sessionSeenActive = true;
+        } else if (g_sessionSeenActive) { // never at start-up: only after a world was active
+            if (!g_sessionInactiveSince) g_sessionInactiveSince = tick;
+            else if (tick - g_sessionInactiveSince >= 2000) g_sessionRearm = true;
+        }
+    }
     if (s.cells != g_lastCells) { // new world
         g_lastCells = s.cells;
         g_lastNight = night;
@@ -1162,6 +1184,7 @@ void OnPresent() {
         g_editKickPending = false;
         g_worldRigRefreshPending = false;
         g_editWait = EditWait::None;
+        g_editsWhileLoading = false;
         g_haveBaked = false; // the new world's first rebuild (the load rebuild) takes the first snapshot
         g_bakedDue = false;
         g_baked = LotLightBridge::BakeSnapshot{};
@@ -1340,12 +1363,22 @@ void OnPresent() {
         const bool userDriven = user != g_lastUserEdits;
         g_lastLampEdits = edits;
         g_lastUserEdits = user;
-        NoteEdit(now, userDriven, false, userDriven ? "observed lot lamps switched or edited" : "lot lamps switched, dimmed or recoloured");
-        if (userDriven)
-            for (uint64_t lot : LotLightBridge::LastUserChangeLots()) {
-                g_editUserLots.push_back(lot);
-                if (lot == 0) g_worldRigRefreshPending = true;
-            }
+        if (!WorldSession::InWorld()) {
+            // lots and their lamps still streaming in during the load (06/10: a full rebuild every 3 s as "user edits"):
+            // no decision until the world is drawn, then one automatic rebuild (below)
+            g_editsWhileLoading = true;
+        } else {
+            NoteEdit(now, userDriven, false, userDriven ? "observed lot lamps switched or edited" : "lot lamps switched, dimmed or recoloured");
+            if (userDriven)
+                for (uint64_t lot : LotLightBridge::LastUserChangeLots()) {
+                    g_editUserLots.push_back(lot);
+                    if (lot == 0) g_worldRigRefreshPending = true;
+                }
+        }
+    }
+    if (g_editsWhileLoading && WorldSession::InWorld()) { // the world is drawn: the lamps it loaded with, in one automatic rebuild
+        g_editsWhileLoading = false;
+        NoteEdit(now, false, false, "lot lamps that loaded with the world");
     }
     if (g_lotLamps != g_lotLampsSeen) {
         g_lotLampsSeen = g_lotLamps;
