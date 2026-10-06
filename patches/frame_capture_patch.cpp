@@ -1,3 +1,4 @@
+#ifndef APEX_NO_DEV_TOOLS // (a build without the developer tools: ApexFlavorDefines=APEX_NO_DEV_TOOLS)
 #include "ui/widgets.h"
 // Frame Capture (diagnostic)
 // Records every render-target switch, depth-stencil switch, clear, StretchRect and draw call of a few
@@ -523,3 +524,6 @@ APEX_REGISTER_FEATURE(FrameCapturePatch, {.displayName = "Frame Capture (develop
                                       .technicalDetails = {"Logs SetRenderTarget, SetDepthStencilSurface, Clear, StretchRect and every draw with its bound shaders, textures and depth state.",
                                           "Detours Clear, StretchRect, SetDepthStencilSurface, DrawPrimitiveUP and DrawIndexedPrimitiveUP; the rest comes from the D3D9 hook registry.",
                                           "No work is done while no capture is running."}})
+#else
+// Developer tools left out of this build: no Frame Capture feature
+#endif

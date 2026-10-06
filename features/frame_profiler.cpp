@@ -1,3 +1,4 @@
+#ifndef APEX_NO_DEV_TOOLS // (a build without the developer tools: ApexFlavorDefines=APEX_NO_DEV_TOOLS)
 #include "build_flavor.h"
 // Included in the unified binary; runtime developer mode gates activation.
 // Frame-hitch profiler (see frame_profiler.h).
@@ -5005,3 +5006,24 @@ void AddRegistryHookTime(const std::string& hookName, uint64_t ticks) {
 }
 
 } // namespace FrameProfiler
+#else
+// Developer tools left out of this build: the profiler does nothing
+#include "frame_profiler.h"
+#include <imgui.h>
+#include <intrin.h>
+namespace FrameProfiler {
+void SetEnabled(bool) {}
+bool IsEnabled() { return false; }
+void RenderUI(bool) { ImGui::TextDisabled("Not in this build"); }
+void SaveToToml(toml::table&) {}
+void LoadFromToml(const toml::table&) {}
+void Shutdown() {}
+bool RegistryHookTimingActive() { return false; }
+uint64_t Ticks() { return __rdtsc(); }
+void AddRegistryHookTime(const std::string&, uint64_t) {}
+bool PresentHookTimingActive() { return false; }
+bool ModTimeActive() { return false; }
+int BeginModTime(ModTime, const void*) { return -1; }
+void EndModTime(int, const void*) {}
+} // namespace FrameProfiler
+#endif

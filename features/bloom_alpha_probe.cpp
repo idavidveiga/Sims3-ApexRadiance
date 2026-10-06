@@ -1,3 +1,4 @@
+#ifndef APEX_NO_DEV_TOOLS // (a build without the developer tools: ApexFlavorDefines=APEX_NO_DEV_TOOLS)
 // Bloom alpha probe (development diagnostic)
 //
 // Captures the A8R8G8B8 back buffer at PostScene's raw-scene boundary, before the game's first depth-disabled draw.
@@ -285,3 +286,11 @@ std::string Status() {
 }
 
 } // namespace BloomAlphaProbe
+#else
+// Developer tools left out of this build
+#include "bloom_alpha_probe.h"
+namespace BloomAlphaProbe {
+void Request(float) {}
+std::string Status() { return "not in this build"; }
+} // namespace BloomAlphaProbe
+#endif
