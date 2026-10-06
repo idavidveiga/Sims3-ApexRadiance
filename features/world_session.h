@@ -81,10 +81,12 @@ inline bool InWorld() {
     // effect on): the settled signal alone
     const int now0 = PostScene::DepthWritesThisFrame(), last = PostScene::DepthWritesLastFrame();
     const int writes = now0 > last ? now0 : last;
-    if ((!PostScene::Counting() || writes >= kMinDepthWrites) && (!g_loadSettled || g_loadSettled())) {
+    // the drawn time runs alongside the settled wait (user 06/10: effects came about 3 s after the world appeared,
+    // because the 1 s count only started once Night Lighting had settled)
+    if (!PostScene::Counting() || writes >= kMinDepthWrites) {
         if (!drawnSince) drawnSince = now;
-        open = now - drawnSince >= kDrawnMs;
     } else drawnSince = 0;
+    open = drawnSince && now - drawnSince >= kDrawnMs && (!g_loadSettled || g_loadSettled());
     return open;
 }
 }
