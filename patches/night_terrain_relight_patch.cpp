@@ -34,6 +34,7 @@
 #include "recorder.h"
 #include "hotkeys.h"
 #include "light_probe.h"
+#include "screen_watch.h"
 #include "lot_light_bridge.h"
 #include "bloom_alpha_probe.h"
 #include "lightmap_smooth.h"
@@ -1954,6 +1955,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             }
             OnPresent();
             LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
+            ScreenWatch::OnPresent(ctx.device); // the recording's screen pixels (light update trace)
             ObjectLightBridge::SetStrength(g_objStrength);
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();

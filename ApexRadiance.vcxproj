@@ -117,6 +117,7 @@
     <ClCompile Include="features\level_light_share.cpp" />
     <ClCompile Include="features\light_diag.cpp" />
     <ClCompile Include="features\recorder.cpp" />
+    <ClCompile Include="features\screen_watch.cpp" />
     <ClCompile Include="hotkeys.cpp" />
     <ClCompile Include="features\light_probe.cpp" />
     <ClCompile Include="features\lightmap_smooth.cpp" />
@@ -213,6 +214,7 @@
     <ClInclude Include="features\lot_light_bridge.h" />
     <ClInclude Include="features\bloom_alpha_probe.h" />
     <ClInclude Include="features\atrium_hold.h" />
+    <ClInclude Include="features\screen_watch.h" />
     <ClInclude Include="features\lot_lod_streaming.h" />
     <ClInclude Include="features\lot_detail_range.h" />
     <ClInclude Include="features\lot_object_throttle.h" />

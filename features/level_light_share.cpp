@@ -2401,7 +2401,7 @@ void NoteSolve(BYTE* room, char event, uintptr_t caller) {
         const auto wb = g_wallBase.find(n.room);
         n.merged = wb != g_wallBase.end() && wb->second.id == n.id && wb->second.mgr == n.mgr;
     }
-    if (!n.boosted && !n.merged && n.cross <= 0) return;
+    if (!n.boosted && !n.merged && n.cross <= 0 && !Recorder::Active()) return; // a recording keeps every room (light update trace)
     n.moved = g_alignRows.load(std::memory_order_relaxed);
     n.ghostWalls = g_ghostWalls.load(std::memory_order_relaxed);
     n.odd = g_alignOdd.load(std::memory_order_relaxed);
@@ -2421,6 +2421,16 @@ void __fastcall InvalidateFlagNoteHook(BYTE* room, void*, char flag) {
     if (room && g_installed.load(std::memory_order_relaxed) && *reinterpret_cast<const char*>(room + 0x19) != flag)
         NoteSolve(room, 'F', reinterpret_cast<uintptr_t>(_ReturnAddress()));
     reinterpret_cast<InvalidateFlag_t>(EntryChain::Next(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare))(room, flag);
+}
+
+// The end of a room's solve (06/10, light update trace): FUN_006a0e00, step 8 of the budgeted solve (its call at
+// 0x6A3E65 in FUN_006a3c90), unlocks the maps the solve wrote and gives them back to the room, which shows them from the
+// next frame. Noted 'E' in the solve journal while a recording runs. Steam 1.67.2 (the call checked at install).
+constexpr uintptr_t kFinalizeCall = 0x006A3E65, kFinalize = 0x006A0E00;
+using Finalize_t = void(__thiscall*)(void* room);
+void __fastcall FinalizeHook(BYTE* room) {
+    reinterpret_cast<Finalize_t>(kFinalize)(room);
+    if (room && Recorder::Active()) NoteSolve(room, 'E');
 }
 
 void ClearJournal() {
@@ -4669,6 +4679,9 @@ bool InstallIndoor(std::string& why) {
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
     g_classTables = amb && CheckClassTables(); // the quick pass takes its refinement's wall tests (QuickLikeRefinement)
     ReadThresholdTable();
+    // the end of every room solve, for the recorder's light update trace (FinalizeHook)
+    if (GameAddr::IsFixed() && CallsTarget(kFinalizeCall, kFinalize))
+        Redirect(kFinalizeCall, kFinalize, reinterpret_cast<const void*>(&FinalizeHook), &g_lodPatches);
     if (amb && !g_classTables) LOG_INFO("[LevelLightShare] Quick pass with the refinement's wall tests: not on this build (only its light threshold)");
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
@@ -6171,6 +6184,30 @@ std::vector<std::pair<unsigned long, std::string>> JournalSince(unsigned long fr
     std::vector<std::pair<unsigned long, std::string>> out;
     for (auto& [t, s] : JournalLinesSince(fromTick)) out.emplace_back(t, std::move(s));
     return out;
+}
+
+std::vector<SolveEvent> JournalEventsSince(unsigned long fromTick) {
+    std::vector<SolveEvent> out;
+    std::lock_guard<std::mutex> lk(g_journalMx);
+    const size_t kept = std::min(g_journalCount, kJournal);
+    for (size_t k = g_journalCount - kept; k < g_journalCount; k++) {
+        const SolveNote& n = g_journal[k % kJournal];
+        if (static_cast<int32_t>(n.tick - fromTick) < 0) continue;
+        out.push_back(SolveEvent{n.tick, n.event, n.lot, n.level, n.id, n.cls, n.shown, n.state, n.merged});
+    }
+    return out;
+}
+
+bool TreeLevelLot(uintptr_t treeLevel, uint32_t& lot, int& story) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(treeLevel);
+        if (!mgr) return false;
+        lot = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+        story = *reinterpret_cast<const int*>(treeLevel + 0x1A0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* queued, void (*ack)(unsigned char*, bool, void*)) {

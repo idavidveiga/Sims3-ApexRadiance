@@ -103,6 +103,19 @@ bool StageUnlitAmbientChange(unsigned char* room, const float* target, bool& cha
 void ApplyAmbientBaseChanges();
 // Development build: the solve journal's notes since fromTick (GetTickCount), with their ticks (the recorder)
 std::vector<std::pair<unsigned long, std::string>> JournalSince(unsigned long fromTick);
+// The same notes as data (the recorder's light update summary). event: S ambient step done, W wall pass done, E solve ended
+// (its new maps show from the next frame), Q sent by Apex, H held, I / F invalidated. While a recording runs every room is
+// noted; otherwise only the rooms taking or giving light through an opening. lot = the story manager's lot id (low half).
+struct SolveEvent {
+    unsigned long tick;
+    char event;
+    uint32_t lot;
+    int level, id, cls, shown, state;
+    bool merged; // a member of an atrium (stacked-ambient group)
+};
+std::vector<SolveEvent> JournalEventsSince(unsigned long fromTick);
+// A tree level's lot id (low half, as SolveEvent::lot) and story; false when unreadable
+bool TreeLevelLot(uintptr_t treeLevel, uint32_t& lot, int& story);
 std::string Status();
 std::string DiagText(); // F8: samples near the active lot's lights, the game's wall test and ours (empties the record; arms the recording)
 // Development build: the samples above are recorded only while armed (Developer checkbox, or the first F8 dump arms it)

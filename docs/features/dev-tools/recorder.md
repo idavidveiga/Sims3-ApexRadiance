@@ -92,6 +92,33 @@ then `==== ApexRadiance.toml at the start of the recording ====` and the setting
 | `[room]` | `LevelLightShare::TraceRooms` | Every indoor room of the loaded lots once at the start and again when its ambient (+0x110, the colour its walls take; +0x120), normalisation, solve state, LOD class (solving / shown), light count or shown story changes |
 | `[probe]` | `LightProbe` | Each capture with its reason, and `[probe] floor change (...): automatic captures in 1 s and 3 s` |
 
+### Light update trace (06/10)
+
+User: "can we build something to measure better what happens when the lights update?". Three additions, all inside the
+recording, nothing to arm:
+
+- **Screen pixels** (`features/screen_watch.{h,cpp}`, called from Night Lighting's Present next to the Light Probe): when the
+  recording starts, the pixel under the mouse (the screen's centre when the mouse is outside the game) and 8 more in a
+  column above and below it (±0.7, 1.85, 3.75, 7.5% of the height: ±15, 40, 81, 162 px at 2160) are copied from the back
+  buffer at every frame with `StretchRect` into a 9×1 render target (a ring of 4, each with an event query) and read back
+  with `GetRenderTargetData` only once its query is done, so the frame never waits. Up to 4000 samples. Released at the
+  end and before a device Reset (`RenderCallbacks::preReset`). Point the mouse at the line between two floors: both
+  stories are measured at once. Written to `Screen pixels.csv` (elapsed ms, then luma, r, g, b per point; the column names
+  carry the row offset).
+- **Room solve ends**: `FUN_006a0e00` (step 8 of the budgeted solve, its call at `0x6A3E65` in `FUN_006a3c90`, Steam,
+  checked at install) unlocks the maps the solve wrote and gives them to the room, which shows them from the next frame.
+  It is noted `E` in the solve journal, and during a recording the journal keeps every room (not only those sharing light
+  through an opening).
+- **Lamp edits**: `LampMarkFilter` notes every player edit (a switch, a move or a value change; not a light switching
+  itself) as `[edit]` lines.
+
+`Recording.txt` then opens with **Light updates**, one block per edit burst (edits less than 400 ms apart): the lamps (on,
+off, moved), the rooms of that lot that showed new light with the first and the last time, each story's span, how far
+apart the stories got (first light and last solve), the atrium rooms and their spread, the rooms solved more than once
+(with each solve's time and class: 0 = quick pass), and for every screen point its value before and after, when it began
+to change, when it settled, its reversals and `RIGHT THEN WRONG` when it reached its final value and then left it again
+by more than 6 luma levels, ending with how far apart the points above and below the mouse settled.
+
 ### `Wall seams.csv`
 
 Written by `LevelLightShare::EndSeamRecording`. Columns:
