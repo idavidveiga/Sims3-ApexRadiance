@@ -21,6 +21,9 @@ bool EnsureInstalled(IDirect3DDevice9* device);
 bool IsInstalled();
 
 void SetClearObserver(ClearObserver fn);
+// Called before every Clear, separate from the observer slot (PostScene: a partial depth clear ends the scene)
+using BeforeClear = void (*)(IDirect3DDevice9* device, DWORD count, const D3DRECT* rects, DWORD flags);
+void SetBeforeClear(BeforeClear fn);
 void SetSetDepthStencilObserver(SetDepthStencilObserver fn);
 void SetStretchRectObserver(StretchRectObserver fn);
 void SetDrawUPObserver(DrawUPObserver fn);

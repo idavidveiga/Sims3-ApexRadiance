@@ -8,6 +8,8 @@
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "render_callbacks.h"
+#include "apex_log.h"
+#include <format>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -196,6 +198,38 @@ void AtEndSceneBeforeOverlay(IDirect3DDevice9* dev) {
     for (const auto& e : run) e.second(dev);
 }
 
+// 06/10 (user: a box around the pie menu, with every effect, also with the UI hidden by F10): the pie menu's Sim portrait
+// is a small 3D render straight into the back buffer after the scene, which first clears the depth of its own square.
+// Effects that ran after it read "sky" there (no shade, blur and fog differ: a box). A depth clear of only part of the
+// back buffer after the scene is therefore the end of the scene: the effects run right before it. A full-screen depth
+// clear does not count (a pass of the scene itself could do one).
+void BeforeClear(IDirect3DDevice9* dev, DWORD count, const D3DRECT* rects, DWORD flags) {
+    if (!(flags & D3DCLEAR_ZBUFFER) || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws) return;
+    if (DepthShare::InternalPass() || !ShaderCache::PrecompileComplete()) return;
+    if (!g_backBuffer || g_curRT0 != g_backBuffer || !SceneDepthReady(dev)) return;
+    D3DSURFACE_DESC bd{};
+    D3DVIEWPORT9 vp{};
+    if (FAILED(g_backBuffer->GetDesc(&bd)) || FAILED(dev->GetViewport(&vp))) return;
+    bool partial = vp.X > 0 || vp.Y > 0 || vp.Width < bd.Width || vp.Height < bd.Height;
+    for (DWORD i = 0; !partial && rects && i < count; i++)
+        partial = rects[i].x1 > 0 || rects[i].y1 > 0 || rects[i].x2 < static_cast<LONG>(bd.Width) || rects[i].y2 < static_cast<LONG>(bd.Height);
+    if (!partial) return;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LOG_INFO(std::format("[PostScene] The scene ended at a depth clear of {}x{} at ({}, {}) after {} scene draws (a small 3D render over the "
+                             "scene, such as the pie menu's Sim): the effects run before it", vp.Width, vp.Height, vp.X, vp.Y, g_sceneDraws));
+    }
+    g_done = true;
+    std::vector<std::pair<int, PostScene::Effect>> run;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        run = g_effects;
+    }
+    for (const auto& e : run) e.second(dev);
+    dev->SetViewport(&vp); // the effects set their own targets (the viewport follows); the game's clear expects its square
+}
+
 // A Reset replaces the back buffer and sets render target 0 to it without a SetRenderTarget call: both are read again at
 // the next frame boundary
 void OnPreReset(IDirect3DDevice9*) {
@@ -209,6 +243,7 @@ void RegisterHooks() {
     using namespace D3D9Hooks;
     RenderCallbacks::Add(RenderCallbacks::endSceneBeforeOverlay, AtEndSceneBeforeOverlay);
     RenderCallbacks::Add(RenderCallbacks::preReset, OnPreReset);
+    ExtraHooks::SetBeforeClear(BeforeClear);
     RegisterPresent(kHookName, [](DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
         OnFrameBoundary(ctx.device);
         return HookAction::Continue;
@@ -255,6 +290,7 @@ void Remove(Effect fn) {
         D3D9Hooks::UnregisterAll(kHookName);
         RenderCallbacks::Remove(RenderCallbacks::endSceneBeforeOverlay, AtEndSceneBeforeOverlay);
         RenderCallbacks::Remove(RenderCallbacks::preReset, OnPreReset);
+        ExtraHooks::SetBeforeClear(nullptr);
     }
 }
 

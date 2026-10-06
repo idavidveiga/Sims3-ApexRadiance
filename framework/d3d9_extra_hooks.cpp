@@ -23,6 +23,7 @@ DrawPrimitiveUP_t oDrawPrimitiveUP = nullptr;
 DrawIndexedPrimitiveUP_t oDrawIndexedPrimitiveUP = nullptr;
 
 std::atomic<ClearObserver> g_clearObs{nullptr};
+std::atomic<BeforeClear> g_beforeClear{nullptr};
 std::atomic<SetDepthStencilObserver> g_setDsObs{nullptr};
 std::atomic<StretchRectObserver> g_stretchObs{nullptr};
 std::atomic<DrawUPObserver> g_drawUpObs{nullptr};
@@ -33,6 +34,7 @@ std::atomic<bool> g_installed{false};
 std::atomic<bool> g_attempted{false};
 
 HRESULT __stdcall HookedClear(IDirect3DDevice9* dev, DWORD count, const D3DRECT* rects, DWORD flags, D3DCOLOR color, float z, DWORD stencil) {
+    if (auto before = g_beforeClear.load()) before(dev, count, rects, flags);
     if (auto obs = g_clearObs.load()) obs(dev, count, flags, color, z);
     return oClear(dev, count, rects, flags, color, z, stencil);
 }
@@ -120,6 +122,7 @@ bool EnsureInstalled(IDirect3DDevice9* dev) {
 bool IsInstalled() { return g_installed.load(); }
 
 void SetClearObserver(ClearObserver fn) { g_clearObs.store(fn); }
+void SetBeforeClear(BeforeClear fn) { g_beforeClear.store(fn); }
 void SetSetDepthStencilObserver(SetDepthStencilObserver fn) { g_setDsObs.store(fn); }
 void SetStretchRectObserver(StretchRectObserver fn) { g_stretchObs.store(fn); }
 void SetDrawUPObserver(DrawUPObserver fn) { g_drawUpObs.store(fn); }
