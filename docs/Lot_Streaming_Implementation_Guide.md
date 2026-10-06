@@ -1,4 +1,4 @@
-# Apex Radiance — guia técnico de Lot Streaming para o Luís
+# Apex Radiance — guia técnico de Lot Streaming
 
 **Objetivo:** registrar como o trabalho de Lot LOD/streaming foi pesquisado, validado e integrado ao Apex Radiance, de forma que possa ser reaplicado ou portado futuramente sem depender do histórico da conversa.
 
@@ -674,7 +674,7 @@ Se uma versão futura der problema:
 ## 21. Arquivos que o Luís deve consultar primeiro
 
 1. `docs/features/lot-streaming-changelog.md` — pesquisa e A/B.
-2. `docs/Luis_Lot_Streaming_Implementation_Guide.md` — este handoff.
+2. `docs/Lot_Streaming_Implementation_Guide.md` — este handoff.
 3. `features/lot_detail_range.cpp/.h` — 300/16.
 4. `features/lot_lod_streaming.cpp/.h` — throttle, threshold 5 e map blocker.
 5. `features/lot_object_throttle.cpp/.h` — port do S3SS.
