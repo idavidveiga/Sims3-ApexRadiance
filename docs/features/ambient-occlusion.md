@@ -85,12 +85,12 @@ All settings apply immediately. Keys from the old combined build (`intensidade`,
 | Copy | `StretchRect` | Colour copy |
 | Linearise | `LinearizePS` | Level 0 of an R32F pyramid of 1/z in 1/m, padded to a multiple of 256 |
 | Downsample x8 | `DownPS` | 2x2 average of 1/z (sky excluded) per level |
-| GTAO | `GtaoPS` (SLICES 2/4/6/8/12) | A16B16G16R16F: R = contact shade, G = 1/z, B = large-radius shade |
-| Blur x6 | `BlurPS` | Depth-aware box (H, V), tent (H, V), then a wide tent (taps 3 px apart, H, V) on the large-radius shade only |
+| GTAO | `GtaoPS` (SLICES 2/4/6/8/12) | G16R16F: R = visibility, G = 1/z |
+| Blur x4 | `BlurPS` | Depth-aware box (H, V) then tent |
 | Composite | `CompositePS` | Over the copy, RGB write |
 
 **GTAO details.** Normal from the neighbour with the smaller depth step per axis. Slices at angle `(s + b1) pi / SLICES`,
-4 to 8 geometric steps per side (at most 1.6 octaves apart) from 2 px (at 4K, scaled with height) up to the large radius (at most 30% of the height). Each
+4 geometric steps per side from 2 px (at 4K, scaled with height) up to the large radius (at most 30% of the height). Each
 step reads the pyramid bilinearly at the nearest level to its spacing minus 2 (point mip filter). `b1`, `b2` come from a
 4x4 Bayer matrix plus a golden-ratio phase. Contact horizon 0.6 m at strength 1.2; large horizon 2.0 m (near) to 2.5 m
 (far) at strength 0.5 to 0.8, blending between 20 and 40 m. XeGTAO falloff (full to 38.5% of the radius). Exact `acos`.

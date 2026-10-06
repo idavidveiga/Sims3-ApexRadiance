@@ -19,7 +19,7 @@
 //    in front of a wall leave no halo on it). Isolated pixels (leaf edges, thin rails) fade out; faded 150-400 m.
 //  - Composite (lab "d"): a small dead zone (faint shade dropped), multi-bounce per colour channel (bright surfaces
 //    keep more light and their colour, no grey film), and lamp-lit / bright pixels keep part of their light.
-// Passes per frame: depth -> 1/z, 8 downsamples, the AO pass, 6 blur passes (box H/V, tent H/V, wide tent H/V on the large-radius shade), one composite over a
+// Passes per frame: depth -> 1/z, 8 downsamples, the AO pass, 4 blur passes (box H/V, tent H/V), one composite over a
 // copy of the scene (colour write RGB only).
 
 #include "patch_base.h"
@@ -89,13 +89,11 @@ const char* kShaderSource = R"HLSL(
 #ifndef SLICES
 #define SLICES 8
 #endif
-#define STEPS 4      // at least; up to MAX_STEPS when the large radius spans many octaves (06/10)
-#define MAX_STEPS 8
-#define OCTAVES_PER_STEP 1.6
+#define STEPS 4
 sampler2D sDepth : register(s0); // INTZ scene depth, point
 sampler2D sZ     : register(s1); // 1/z pyramid (1/m, 0 = sky), point (exact texel reads)
 sampler2D sZt    : register(s2); // the same pyramid, bilinear within the nearest level (the march)
-sampler2D sAo    : register(s3); // R = contact shade, G = 1/z, B = large-radius shade (A16B16G16R16F), point
+sampler2D sAo    : register(s3); // AO + 1/z (G16R16F), point
 sampler2D sColor : register(s4); // copy of the finished scene, point
 sampler2D sSim : register(s5); // Sim receiver device-depth mask, point
 sampler2D sHair : register(s6); // blended Sim body/hair: signed device depth and source coverage
@@ -130,6 +128,13 @@ float4 DownPS(float2 uv : TEXCOORD0) : COLOR0
                       tex2Dlod(sZ, float4(uv + cDir.xy * float2(-0.5,  0.5), 0, 0)).r,
                       tex2Dlod(sZ, float4(uv + cDir.xy * float2( 0.5,  0.5), 0, 0)).r);
     float n = dot(float4(w > 0.0), 1.0);
+    // across an edge (depths more than 10% apart) the farthest instead of the average (06/10, user: ghost shade under
+    // table legs): the average of a thin leg and the floor behind it is a surface that is not there, and at the coarse
+    // levels it cast a blurred shade around the leg. Sky texels (0) are left out of the nearest test.
+    float wMax = max(max(w.x, w.y), max(w.z, w.w));
+    float4 wf = w > 0.0 ? w : wMax;
+    float wMin = min(min(wf.x, wf.y), min(wf.z, wf.w));
+    [branch] if (n > 0.0 && wMax > wMin * 1.1) return wMin;
     return n > 0.0 ? dot(w, 1.0) / n : 0.0;
 }
 
@@ -146,9 +151,9 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
 {
     float2 pix = uv * cSize.xy;
     float w0 = WAt(pix);
-    [branch] if (w0 <= 0.0) return float4(0, 0, 0, 0);
+    [branch] if (w0 <= 0.0) return float4(1, 0, 0, 0);
     float z = 1.0 / w0;
-    [branch] if (z >= cRad.w) return float4(0, w0, 0, 0);
+    [branch] if (z >= cRad.w) return float4(1, w0, 0, 0);
     float3 c = PosF(pix, z);
     // normal from the neighbour with the smaller depth difference on each axis
     float zr = 1.0 / max(WAt(pix + float2(1, 0)), 1e-9), zl = 1.0 / max(WAt(pix - float2(1, 0)), 1e-9);
@@ -157,34 +162,18 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
     float3 dy = abs(zd - z) < abs(zu - z) ? PosF(pix + float2(0, 1), zd) - c : c - PosF(pix - float2(0, 1), zu);
     float3 n = cross(dx, dy);
     float nl = length(n);
-    [branch] if (nl < 1e-12) return float4(0, w0, 0, 0);
+    [branch] if (nl < 1e-12) return float4(1, w0, 0, 0);
     n /= nl;
     n = dot(n, c) > 0 ? -n : n;
     float iso = max(min(abs(zr - z), abs(zl - z)), min(abs(zd - z), abs(zu - z))) * w0;
-    // Thin foreground (06/10, user: grain on rope rails and thin posts): both sides, 2 to 5 px away on one axis, are farther
-    // than this pixel. The blur keeps only same-depth neighbours, so across a few-pixel-wide object the interleave is never
-    // cancelled; the shade on the object itself fades like an isolated pixel. Slopes (one side nearer) and silhouettes of
-    // large objects (one side on the object) are not thin; the shade the object casts on what is behind it is unchanged.
-    [unroll] for (int k = 2; k <= 5; k++)
-    {
-        float tx = min(1.0 / max(WAt(pix + float2(k, 0)), 1e-9), 1.0 / max(WAt(pix - float2(k, 0)), 1e-9)) - z;
-        float ty = min(1.0 / max(WAt(pix + float2(0, k)), 1e-9), 1.0 / max(WAt(pix - float2(0, k)), 1e-9)) - z;
-        iso = max(iso, max(tx, ty) * w0);
-    }
     float3 view = -normalize(c);
     float fz = saturate((z - cBlend.x) * cBlend.y);
     float Rl = lerp(cRad.y, cRad.z, fz), kl = lerp(cK.y, cK.z, fz);
     float rMax = min(Rl * cView.z * w0, cView.w);
-    [branch] if (rMax < 1.5 * cMarch.x) return float4(0, w0, 0, 0);
-    // 06/10 (user: grainy with a long reach): 4 fixed steps put up to 2 octaves between samples of a large radius; now
-    // a step covers at most OCTAVES_PER_STEP, from 4 up to MAX_STEPS steps (only pixels with a long radius pay for it)
-    float span = log2(rMax / cMarch.x);
-    int steps = (int)clamp(ceil(span / OCTAVES_PER_STEP), STEPS, MAX_STEPS);
-    float lg = span / steps;
+    [branch] if (rMax < 1.5 * cMarch.x) return float4(1, w0, 0, 0);
+    float lg = log2(rMax / cMarch.x) / STEPS;
     float lodAdd = log2(1.0 - exp2(-lg)) - cMarch.y + log2(cMarch.x);
     float2 q = floor(pix);
-    // slice angle and step offset: 4x4 Bayer interleaves the box blur cancels exactly. The R2 sequence tried on 06/10 for
-    // the step offset is not a 4x4 tile, so the blur left it as diagonal wavy streaks (user screenshot 06/10, rails)
     float b1 = (Bayer4(q) + 0.5) / 16.0, b2 = (Bayer4(q.yx + float2(1, 2)) + 0.5) / 16.0;
     float2 fMul = float2(-1.0 / (0.615 * cRad.x), -1.0 / (0.615 * Rl));
     const float fAdd = 0.385 / 0.615 + 1.0;
@@ -204,7 +193,7 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
         float4 low = float4(-sn, -sn, sn, sn);                  // (contact, large) side 0, (contact, large) side 1
         float4 hz = low;
         float ph0 = frac(b2 + (2 * s) * 0.618034), ph1 = frac(b2 + (2 * s + 1) * 0.618034);
-        [loop] for (int j = 0; j < steps; j++)
+        [unroll] for (int j = 0; j < STEPS; j++)
         {
             float2 lr = (j + float2(ph0, ph1)) * lg;
             float2 r = cMarch.x * exp2(lr);
@@ -230,10 +219,10 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
         om = float2(om.x * cRot.x - om.y * cRot.y, om.x * cRot.y + om.y * cRot.x);
     }
     float oC = saturate(1 - acc.x / max(acc.z, 1e-6)), oL = saturate(1 - acc.y / max(acc.z, 1e-6));
-    float fadeK = saturate((cRad.w - z) * cMarch.w) * (1 - cBlend.z * saturate((iso - cBlend.w) / cBlend.w));
-    // contact and large shade kept apart (06/10): the large one is smooth by nature and gets two wider blur passes;
-    // the composite adds them back (visibility = 1 - (R + B), the same as before when nothing is blurred apart)
-    return float4(cK.x * oC * fadeK, w0, kl * max(0, oL - oC) * fadeK, 0);
+    float occ = cK.x * oC + kl * max(0, oL - oC);
+    occ *= saturate((cRad.w - z) * cMarch.w);
+    occ *= 1 - cBlend.z * saturate((iso - cBlend.w) / cBlend.w);
+    return float4(saturate(1 - occ), w0, 0, 0);
 }
 
 // separable depth-aware filter: box (0.5 1 1 1 0.5: one of each interleave offset) or tent (1 2 3 2 1)
@@ -241,29 +230,17 @@ static const float BX[5] = { 0.5, 1.0, 1.0, 1.0, 0.5 };
 static const float TT[5] = { 1.0, 2.0, 3.0, 2.0, 1.0 };
 float4 BlurPS(float2 uv : TEXCOORD0) : COLOR0
 {
-    float3 c0 = tex2Dlod(sAo, float4(uv, 0, 0)).rgb;
-    [branch] if (c0.y <= 0.0) return float4(0, 0, 0, 0);
-    float2 sum = 0;
-    float ws = 0;
+    float2 c0 = tex2Dlod(sAo, float4(uv, 0, 0)).rg;
+    [branch] if (c0.y <= 0.0) return float4(1, 0, 0, 0);
+    float sum = 0, ws = 0;
     [unroll] for (int t = -2; t <= 2; t++)
     {
-        float3 v = tex2Dlod(sAo, float4(uv + cDir.xy * t, 0, 0)).rgb;
-        float dw = saturate(1.0 - abs(c0.y / max(v.y, 1e-9) - 1.0) / cK.w);
-        // box pass: a tap on another surface (a rail in front of the wall) breaks the interleave cancel and leaves the 4x4
-        // dots (user 06/10, wall behind rails); the pixel 4 px further on has the same interleave offset and stands in
-        [branch] if (cDir.z < 0.5 && t != 0 && dw < 0.5)
-        {
-            float3 a = tex2Dlod(sAo, float4(uv + cDir.xy * (abs(t) == 1 ? -3 * t : 3 * t), 0, 0)).rgb;
-            float da = saturate(1.0 - abs(c0.y / max(a.y, 1e-9) - 1.0) / cK.w);
-            if (da > dw) { v = a; dw = da; }
-        }
-        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * dw;
-        sum += v.xz * w;
+        float2 v = tex2Dlod(sAo, float4(uv + cDir.xy * t, 0, 0)).rg;
+        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * saturate(1.0 - abs(c0.y / max(v.y, 1e-9) - 1.0) / cK.w);
+        sum += v.x * w;
         ws += w;
     }
-    float2 r = ws > 0 ? sum / ws : c0.xz;
-    // wide pass (cDir.w = 1, taps 3 px apart): only the large-radius shade, the contact shade keeps its detail
-    return float4(cDir.w > 0.5 ? c0.x : r.x, c0.y, r.y, 0);
+    return float4(ws > 0 ? sum / ws : c0.x, c0.y, 0, 0);
 }
 
 // Triangular noise in (-1, 1) of the pixel position (the Banding Fix's grain): the composite rounds to 8 bits again
@@ -285,8 +262,7 @@ float4 DepthPS(float2 uv : TEXCOORD0) : COLOR0 { return tex2Dlod(sDepth, float4(
 float4 CompositePS(float2 uv : TEXCOORD0, float2 vpos : VPOS) : COLOR0
 {
     float3 col = tex2Dlod(sColor, float4(uv, 0, 0)).rgb;
-    float2 occ2 = tex2Dlod(sAo, float4(uv, 0, 0)).rb;
-    float ao = saturate(1 - occ2.x - occ2.y);                  // contact + large shade (see GtaoPS)
+    float ao = tex2Dlod(sAo, float4(uv, 0, 0)).r;
     float v = 1 - saturate((1 - ao - cLook.x) * cLook.y);       // dead zone for faint shade
     float sceneDepth = 0;
     [branch] if (cSim.y > 0.5 || cSimView.y > 0.5)
@@ -692,9 +668,9 @@ bool InitResources(IDirect3DDevice9* dev) {
         g.status = "Paused while the game's own Edge Smoothing is on";
         return false;
     }
-    if (!FormatSupported(dev, D3DFMT_R32F, true) || !FormatSupported(dev, D3DFMT_A16B16G16R16F, false)) {
+    if (!FormatSupported(dev, D3DFMT_R32F, true) || !FormatSupported(dev, D3DFMT_G16R16F, false)) {
         g.status = "ERROR: the graphics card cannot use the float textures it needs";
-        LOG_ERROR("[AO] R32F (filtered) or A16B16G16R16F render targets not supported");
+        LOG_ERROR("[AO] R32F (filtered) or G16R16F render targets not supported");
         return false;
     }
     if (!EnsureShaders(dev)) return false;
@@ -711,7 +687,7 @@ bool InitResources(IDirect3DDevice9* dev) {
         return SUCCEEDED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, tex, nullptr)) && *tex &&
                SUCCEEDED((*tex)->GetSurfaceLevel(0, surf)) && *surf;
     };
-    ok = ok && make(&g.aoA, &g.aoASurf, D3DFMT_A16B16G16R16F) && make(&g.aoB, &g.aoBSurf, D3DFMT_A16B16G16R16F) && make(&g.colorTex, &g.colorSurf, bd.Format);
+    ok = ok && make(&g.aoA, &g.aoASurf, D3DFMT_G16R16F) && make(&g.aoB, &g.aoBSurf, D3DFMT_G16R16F) && make(&g.colorTex, &g.colorSurf, bd.Format);
     if (!ok) {
         ReleaseResources();
         g.status = "ERROR: not enough video memory for the shade textures";
@@ -1033,7 +1009,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         dev->StretchRect(g.tmpSurf[i], nullptr, g.zLevel[i], nullptr, D3DTEXF_NONE);
     }
 
-    // 3. GTAO at full resolution -> aoA (R = contact shade, G = 1/z, B = large-radius shade)
+    // 3. GTAO at full resolution -> aoA (R = visibility, G = 1/z)
     dev->SetRenderTarget(0, g.aoASurf);
     dev->SetTexture(1, g.zTex);
     dev->SetTexture(2, g.zTex);
@@ -1041,12 +1017,10 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
     DrawQuad(dev, g.width, g.height);
     dev->SetTexture(2, nullptr);
 
-    // 4. filter: box H, box V (cancels the 4x4 interleave), tent H, tent V, then a wide tent H, V (taps 3 px apart) on the
-    // large-radius shade only (06/10); a -> b -> a -> b -> a -> b -> a
+    // 4. filter: box H, box V (cancels the 4x4 interleave), tent H, tent V; a -> b -> a -> b -> a
     dev->SetPixelShader(g.psBlur);
-    for (int pass = 0; pass < 6; pass++) {
-        const float step = pass >= 4 ? 3.0f : 1.0f;
-        const float dir[4] = {pass & 1 ? 0.0f : step / W, pass & 1 ? step / H : 0.0f, pass < 2 ? 0.0f : 1.0f, pass >= 4 ? 1.0f : 0.0f};
+    for (int pass = 0; pass < 4; pass++) {
+        const float dir[4] = {pass & 1 ? 0.0f : 1.0f / W, pass & 1 ? 1.0f / H : 0.0f, pass < 2 ? 0.0f : 1.0f, 0};
         dev->SetPixelShaderConstantF(6, dir, 1);
         dev->SetRenderTarget(0, pass & 1 ? g.aoASurf : g.aoBSurf);
         dev->SetTexture(3, pass & 1 ? g.aoB : g.aoA);
