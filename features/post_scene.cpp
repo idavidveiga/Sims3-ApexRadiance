@@ -146,17 +146,15 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     g_vpValid = false;
 }
 
-void OnGameDraw(IDirect3DDevice9* dev) {
+void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
+    IDirect3DDevice9* dev = ctx.device;
     if (g_done || DepthShare::InternalPass() || !ShaderCache::PrecompileComplete()) return;
     if (!g_curRT0 || g_curRT0 != g_backBuffer) return;
-    DWORD z = D3DZB_TRUE;
-    dev->GetRenderState(D3DRS_ZENABLE, &z);
+    const DWORD z = ctx.ZEnable();
     if (z != D3DZB_FALSE) {
         if (g_rejectedBoundary && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
         g_sceneDraws++;
-        DWORD zw = TRUE;
-        dev->GetRenderState(D3DRS_ZWRITEENABLE, &zw);
-        if (zw) g_depthWrites++;
+        if (ctx.ZWriteEnable()) g_depthWrites++;
         if (g_nearDraws < kNearDraws && g_cameraWanted.load(std::memory_order_relaxed) > 0) VoteCamera(dev);
         return;
     }
@@ -218,11 +216,11 @@ void RegisterHooks() {
         return HookAction::Continue;
     }, Priority::First);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT) {
-        OnGameDraw(ctx.device);
+        OnGameDraw(ctx);
         return HookAction::Continue;
     }, Priority::First);
     RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, UINT, UINT) {
-        OnGameDraw(ctx.device);
+        OnGameDraw(ctx);
         return HookAction::Continue;
     }, Priority::First);
 }

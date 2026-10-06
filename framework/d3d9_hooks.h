@@ -28,6 +28,27 @@ enum class HookAction { Continue, Skip, Block };
 
 struct DeviceContext {
     IDirect3DDevice9* device = nullptr;
+    // Render states several draw callbacks read for the same draw (PostScene, Picture, the Banding Fix), read once per
+    // dispatch (05/10: each read its own every draw, ~2,000 draws a frame). Valid for this dispatch only; a callback that
+    // changes them through CallOriginal* restores them before it returns, as every callback does.
+    uint8_t cached = 0;
+    DWORD zEnable = 0, zWrite = 0;
+    DWORD ZEnable() {
+        if (!(cached & 1)) {
+            zEnable = D3DZB_TRUE;
+            device->GetRenderState(D3DRS_ZENABLE, &zEnable);
+            cached |= 1;
+        }
+        return zEnable;
+    }
+    DWORD ZWriteEnable() {
+        if (!(cached & 2)) {
+            zWrite = TRUE;
+            device->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
+            cached |= 2;
+        }
+        return zWrite;
+    }
 };
 
 using DrawIndexedPrimitiveHook = std::function<HookAction(DeviceContext&, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT)>;

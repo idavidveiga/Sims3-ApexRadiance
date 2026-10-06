@@ -72,6 +72,9 @@ unsigned g_frameIndex = 0;                // counts frames for the moving grain
 bool g_showCovered = false;               // Developer: a coarse grain where the fix applies (not saved)
 constexpr float kShowCoveredSteps = 24.0f;
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only (render thread)
+// render target 0, followed through SetRenderTarget as PostScene and Picture do (05/10: GetRenderTarget + Release on every
+// draw before); read again at the frame boundary after a Reset (which sets it without a SetRenderTarget call)
+IDirect3DSurface9* g_rt0 = nullptr;
 
 // statistics (Developer page, dev log)
 std::atomic<unsigned> g_made{0}, g_madeVs{0}, g_refused[7] = {};
@@ -247,17 +250,12 @@ IDirect3DVertexShader9* VsCopyOf(IDirect3DDevice9* dev, IDirect3DVertexShader9* 
     return copy;
 }
 
-template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
+template <typename DrawFn> D3D9Hooks::HookAction OnDraw(D3D9Hooks::DeviceContext& ctx, DrawFn draw) {
+    IDirect3DDevice9* dev = ctx.device;
     const bool dither = g_on.load(std::memory_order_relaxed), jitter = g_jitterOn;
     if ((!dither && !jitter) || !g_backBuffer) return D3D9Hooks::HookAction::Continue;
-    IDirect3DSurface9* rt = nullptr;
-    dev->GetRenderTarget(0, &rt);
-    const bool toScreen = rt && rt == g_backBuffer;
-    if (rt) rt->Release();
-    if (!toScreen) return D3D9Hooks::HookAction::Continue;
-    DWORD z = D3DZB_FALSE;
-    dev->GetRenderState(D3DRS_ZENABLE, &z);
-    if (z == D3DZB_FALSE) return D3D9Hooks::HookAction::Continue; // UI and 2D passes
+    if (!g_rt0 || g_rt0 != g_backBuffer) return D3D9Hooks::HookAction::Continue;
+    if (ctx.ZEnable() == D3DZB_FALSE) return D3D9Hooks::HookAction::Continue; // UI and 2D passes
     // the Banding Fix's pixel copy
     IDirect3DPixelShader9* ps = nullptr;
     Copy copy;
@@ -332,6 +330,10 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g_backBuffer = bb;
         bb->Release();
     }
+    if (!g_rt0 && SUCCEEDED(dev->GetRenderTarget(0, &bb)) && bb) {
+        g_rt0 = bb;
+        bb->Release();
+    }
     g_frameIndex++;
     g_last = g_frame;
     g_frame = {};
@@ -351,12 +353,19 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     }
 }
 
-void OnPreReset(IDirect3DDevice9*) { g_backBuffer = nullptr; } // read again at the next frame boundary
+void OnPreReset(IDirect3DDevice9*) { // read again at the next frame boundary
+    g_backBuffer = nullptr;
+    g_rt0 = nullptr;
+}
 
 void RegisterHooks() {
     using namespace D3D9Hooks;
     RegisterPresent(kHookName, [](DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
         OnFrameBoundary(ctx.device);
+        return HookAction::Continue;
+    }, Priority::First);
+    RegisterSetRenderTarget(kHookName, [](DeviceContext& ctx, DWORD index, IDirect3DSurface9* rt) {
+        if (index == 0) g_rt0 = rt;
         return HookAction::Continue;
     }, Priority::First);
     RegisterCreatePixelShader(kHookName, [](DeviceContext& ctx, const DWORD* fn, IDirect3DPixelShader9** out) {
@@ -374,10 +383,10 @@ void RegisterHooks() {
         return HookAction::Skip;
     }, kAfterEveryone);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
-        return OnDraw(ctx.device, [&] { CallOriginalDrawIndexedPrimitive(ctx.device, type, bvi, minV, numV, start, prims); });
+        return OnDraw(ctx, [&] { CallOriginalDrawIndexedPrimitive(ctx.device, type, bvi, minV, numV, start, prims); });
     }, kAfterEveryone);
     RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT start, UINT prims) {
-        return OnDraw(ctx.device, [&] { CallOriginalDrawPrimitive(ctx.device, type, start, prims); });
+        return OnDraw(ctx, [&] { CallOriginalDrawPrimitive(ctx.device, type, start, prims); });
     }, kAfterEveryone);
     RenderCallbacks::Add(RenderCallbacks::preReset, OnPreReset);
 }
@@ -386,6 +395,7 @@ void RegisterHooks() {
 void AcquireHooks() {
     if (g_hookUsers.fetch_add(1) == 0) {
         g_backBuffer = nullptr;
+        g_rt0 = nullptr;
         RegisterHooks();
     }
 }

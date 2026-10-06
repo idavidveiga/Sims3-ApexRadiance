@@ -625,11 +625,11 @@ void CopyScene(IDirect3DDevice9* dev) {
 }
 
 // Back buffer draws of the game: find the point between the scene (with its bloom) and the UI
-void OnGameDraw(IDirect3DDevice9* dev, bool isStripOfTwo) {
+void OnGameDraw(D3D9Hooks::DeviceContext& ctx, bool isStripOfTwo) {
+    IDirect3DDevice9* dev = ctx.device;
     if (DepthShare::InternalPass()) return;
     if (!gpu.curRT0 || gpu.curRT0 != gpu.backBuffer) return;
-    DWORD z = D3DZB_TRUE;
-    dev->GetRenderState(D3DRS_ZENABLE, &z);
+    const DWORD z = ctx.ZEnable();
     if (z != D3DZB_FALSE) {
         gpu.sceneDraws++;
         gpu.runDraws++;
@@ -697,11 +697,11 @@ void RegisterHooks(IDirect3DDevice9* dev) {
         return HookAction::Continue;
     }, Priority::First);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT) {
-        OnGameDraw(ctx.device, false);
+        OnGameDraw(ctx, false);
         return HookAction::Continue;
     }, kDrawPriority);
     RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT, UINT prims) {
-        OnGameDraw(ctx.device, type == D3DPT_TRIANGLESTRIP && prims == 2);
+        OnGameDraw(ctx, type == D3DPT_TRIANGLESTRIP && prims == 2);
         return HookAction::Continue;
     }, kDrawPriority);
 }
