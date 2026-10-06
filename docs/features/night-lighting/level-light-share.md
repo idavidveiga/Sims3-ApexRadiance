@@ -10,7 +10,7 @@ their own story. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together: Released in 2.7.0 |
+| Availability | Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together, and the lit story's wall test from where an outdoor lamp's ray enters it (upper half walls): Released in 2.7.0 |
 | Default | On (all six switches) |
 | Menu | Lighting > Stories (*Seamless walls between floors* and *Every floor in full detail* under Advanced > *Floor detail*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -257,14 +257,20 @@ walls and lit the lower side wall around the corner.
    the batch (up to 256 entries; the output vector is pre-sized to `walls + 1` so the game never reallocates it). Without
    per-light lists (`list2D` null, or not a batch) all walls are tested, as the game does.
 5. The room's own lights are never touched.
-6. **From where the ray enters the story** (06/10): for an outdoor lamp of a lower story that WallPass let through,
+6. **From where the ray enters the story:** for an outdoor lamp of a lower story that WallPass let through,
    the game's own wall test of the lit story, which follows (`GameWallTest`, CALL at `0x0069FE93`), runs from where the
    ray reaches that story's lowest floor (`OutdoorEntry`), as for indoor rooms (part 4). That test has no wall base and
    its soft mode shades rays passing near a wall's end, so a ground-floor sconce left the upper story's half wall of a
-   balcony dark beside the lit wall next to it (F8 of 16:29:57: all 21 recorded half-wall points blocked by the game,
+   balcony dark beside the lit wall next to it (in a recording, all 21 half-wall points were blocked by the game and
    passed by WallPass). Where the ray comes up through a floor a player placed on that story (a deck, a balcony;
-   `PlacedFloorAt`, not the bare `0x40000000` air key or never-built space) the game keeps the whole ray. Status: *from
-   where they enter its story N (outdoors M)*.
+   `PlacedFloorAt`, not the bare `0x40000000` air key or never-built space) the game keeps the whole ray.
+   The soft mode (`+0x639` = 1, class 2) tests each wall's widened segment (`0x0069AA90` with the soft index, wall `+0x40`
+   + `0x30`) and shades by where the ray crosses it (`0x0069A8C0`): a ray rising past a wall's end loses light without
+   crossing the wall, which still darkened the upper wall on the other side of the balcony's corner. When that test
+   shades such a ray, it is asked again in hard mode (`WallTestHard`, `+0x639` = 0 for the call): the plain 2D crossing,
+   with no height test (`0x0069AC04` skips it). If the ray crosses no wall there, the shade was only the penumbra and the
+   ray passes; otherwise the soft result stays (it alone knows a ray passed over a low wall). Status: *from where they
+   enter its story N (outdoors M, past a wall end's penumbra P)*.
 
 ### Part 4: indoor light through openings
 

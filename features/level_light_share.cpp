@@ -3625,10 +3625,11 @@ struct SolveCtx {
     // for it (0x69FE93, called with the same lamp position) starts where its ray enters this room's story (GameWallTest)
     uintptr_t enterLight = 0;
     float enterLamp[3] = {}, enterAt[3] = {};
+    bool enterHard = false; // that test with the walls' real ends (no soft penumbra): an outdoor lamp of a lower story (OutdoorEntry)
 };
 SolveCtx g_ctx;
 bool g_enterReady = false; // GameWallTest is in (Install)
-std::atomic<long> g_enterTests{0}, g_outdoorEnters{0};
+std::atomic<long> g_enterTests{0}, g_outdoorEnters{0}, g_penumbraLifted{0};
 struct BatchCentre {
     uintptr_t begin = 0, end = 0;
     alignas(16) float c[4] = {};
@@ -4350,6 +4351,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
             g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
             std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
             std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
+            g_ctx.enterHard = true; // and without a wall end's penumbra (WallTestHard)
             g_outdoorEnters.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -4571,6 +4573,7 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
             g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
             std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
             std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
+            g_ctx.enterHard = false;
         }
     }
     if (!kPublicBuild) {
@@ -4612,12 +4615,32 @@ const LightEvalHook_t kEvalHooks[] = {&LightEvalHook<0>, &LightEvalHook<1>, &Lig
                                   &LightEvalHook<4>, &LightEvalHook<5>, &LightEvalHook<6>, &LightEvalHook<7>, &LightEvalHook<8>};
 static_assert(std::size(kEvalHooks) == std::size(kClasses));
 
+// The game's wall test with the room's walls at their real ends (+0x639 = 0 for the call): in soft mode FUN_0069d4c0 tests
+// each wall's widened segment (0x0069AA90 with the soft flag, wall+0x40 + 0x30) and shades by where the ray crosses it
+// (0x0069A8C0), so a ray passing near a wall's end loses light without crossing the wall. Hard mode is the plain 2D
+// crossing with no height test (0x0069AC04 skips it): GameWallTest asks it only after the soft test shaded a ray. For an
+// outdoor lamp of a lower story that penumbra darkened the upper wall beside a balcony's corner (06/10). A fault in the
+// game's test puts the byte back and passes the fault on.
+bool WallTestHard(BYTE* room, void* idx, const float* from, const void* sample, float* t) {
+    BYTE* const mode = room + 0x639;
+    const BYTE saved = *mode;
+    *mode = 0;
+    bool ok = false;
+    __try {
+        ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
+    } __finally {
+        *mode = saved;
+    }
+    return ok;
+}
+
 // The game's own wall test in LightPointWithAllLights (0x69FE93): for a lamp of another story IndoorShadow let through, the
 // solving room's walls are tested from where its ray enters this room's story (IndoorPassImpl), with the game's own list
 // of walls for that lamp; any other light as the game has it. Development build: the result is recorded for F8.
 bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos, const void* sample, float* t) {
     const float* from = lightPos;
     alignas(16) float entered[4];
+    bool hard = false;
     if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed) && g_ctx.enterLight) {
         // the same lamp: the position the game passes is the one IndoorPassImpl read (vfunc+0x24, bit for bit)
         if (lightPos && lightPos[0] == g_ctx.enterLamp[0] && lightPos[1] == g_ctx.enterLamp[1] && lightPos[2] == g_ctx.enterLamp[2]) {
@@ -4626,11 +4649,24 @@ bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos
             entered[2] = g_ctx.enterAt[2];
             entered[3] = lightPos[3];
             from = entered;
+            hard = g_ctx.enterHard;
             g_enterTests.fetch_add(1, std::memory_order_relaxed);
         }
         g_ctx.enterLight = 0;
+        g_ctx.enterHard = false;
     }
-    const bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
+    bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
+    if (hard && t && (!ok || *t < 1.0f)) {
+        // shaded: when the ray crosses no wall at its real ends (the hard test, no height test, so walls of any height
+        // count), that shade was only the soft penumbra of a wall's end; else the soft test's result stays (it knows the
+        // ray passed over a low wall)
+        float hardT = 1.0f;
+        if (WallTestHard(room, idx, from, sample, &hardT) && std::isfinite(hardT) && hardT > 0.0f) {
+            ok = true;
+            *t = hardT;
+            g_penumbraLifted.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     if (!kPublicBuild && g_lastRec >= 0 && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lk(g_diagMx);
         if (g_lastRec < static_cast<int>(g_diag.size())) {
@@ -6766,8 +6802,8 @@ std::string Status() {
                                                       g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
                                                       g_maskListFallbacks.load()) +
                                           std::format(", rooms taking lamps of another story checked against them {} (sent to gather again {}, left alone a while {}), "
-                                                      "lamps of another story tested against the lit room's walls from where they enter its story {}{} (outdoors {}), rooms a moved lamp never lit left until it is quiet {}",
-                                                      g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_editWaited.load()),
+                                                      "lamps of another story tested against the lit room's walls from where they enter its story {}{} (outdoors {}, past a wall end's penumbra {}), rooms a moved lamp never lit left until it is quiet {}",
+                                                      g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_penumbraLifted.load(), g_editWaited.load()),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
                                                    "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",
