@@ -25,6 +25,9 @@
 #include "crash_report.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
+#ifdef APEX_LOT_LOD_DISTANCE_PROBE
+#include "lot_lod_distance_probe.h"
+#endif
 #include "game_addresses.h"
 #include "game_version.h"
 #include "overlay.h"
@@ -184,6 +187,13 @@ DWORD WINAPI InitThread(LPVOID) {
     } else {
         // Game-code addresses: fixed on Steam 1.67.2, found by signature on other builds (game code decrypted by now)
         GameAddr::Resolve();
+#ifdef APEX_LOT_LOD_DISTANCE_PROBE
+        {
+            std::string probeError;
+            if (!LotLodDistanceProbe::Start(&probeError))
+                LOG_ERROR("[LotLodMetricProbe] Could not start metric probe: " + probeError);
+        }
+#endif
         try {
             ApexConfig::LoadFeatures();
         } catch (const std::exception& e) {
@@ -210,6 +220,9 @@ DWORD WINAPI InitThread(LPVOID) {
             CrashReport::SetFeatureLine(on);
         }
     }
+#ifdef APEX_LOT_LOD_DISTANCE_PROBE
+    LotLodDistanceProbe::Stop();
+#endif
     return 0;
 }
 
@@ -250,6 +263,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
             SetEvent(g_stop);        // never waited for inside DllMain
             ShaderCache::Shutdown(); // the precompile worker stops between two compiles
             FrameProfiler::Shutdown();
+#ifdef APEX_LOT_LOD_DISTANCE_PROBE
+            LotLodDistanceProbe::Stop();
+#endif
             AddressSpace::Stop();
             PatchManager::Get().UninstallAll();
             ApexD3D::Shutdown();

@@ -1,0 +1,39 @@
+APEX RADIANCE — LOT STREAMING
+RELATÓRIO TÉCNICO PARA O LUÍS — 04/10/2026
+
+Resumo executivo:
+- Baseline nativo observado: Lot LOD Distance 70, Max Active Lots 8, Active Lot Bias 8, Camera Speed Threshold 32.
+- Probes do Apex provaram que a métrica de distância se comporta como distância²: 200 -> ~40.000; 300 -> ~90.000.
+- 300 foi validado como alcance atual.
+- Max Active Lots é um limite separado em WorldManager+0xE4. 8 -> 16 produziu 16 lotes Detailed View simultâneos no mesmo ponto que antes saturava em 8.
+- 16 foi adotado como teto prático atual; 24/32 ficaram para o futuro.
+- O "threshold 12" do throttle NÃO é Max Active Lots. No teste ele já estava em 12 antes de qualquer escrita do Apex.
+- Keep Lot Visibility Stable (JZ 0x74 -> JMP 0xEB) instalou/restaurou corretamente, mas permanece opcional.
+- Smooth Lot Streaming liga o throttle nativo e muda Camera Speed Threshold 32 -> 5.
+- A/B final, mesma sessão, 300+16 fixos:
+  * OFF: 268 transições em ~107,7 s = 149,3/min; 87 reversões <=5 s; 48 <=2 s.
+  * Smooth ON: 190 transições em ~114,9 s = 99,2/min; 18 reversões <=5 s; 3 <=2 s.
+  * redução aproximada: 34% transições/min, 79% reversões <=5 s e 94% reversões <=2 s.
+- Não houve crash/fatal/exception nos testes decisivos; 300+16 permaneceu estável na sessão observada.
+
+Implementação final escolhida:
+- Lot Detail Distance = 300
+- Maximum Detailed Lots = 16
+- Active Lot Bias = 8 (não alterado)
+- Smooth Lot Streaming = ON
+- Native transition throttle = ON
+- Camera Speed Threshold = 5
+- Threshold 12 retirado do menu principal
+- Visibility Override e Map View Blocker continuam opcionais
+- Object streaming continua separado do Lot Detail Streaming
+
+Origem / S3SS:
+- campos, métrica e funções-base são código nativo da EA;
+- Distance 300, Max Active Lots 16, Metric Probe, identificação do argumento do lote, cutoff 200²/300² e os A/B são pesquisa do Apex;
+- Object Throttle é port/adaptação direta do S3SS;
+- Visibility Override reproduz o comportamento usado pelo S3SS, com ownership/validação/restauração próprios no Apex;
+- throttle/camera threshold têm linhagem de comportamento do S3SS;
+- o valor 12 também é usado pelo S3SS, mas no nosso teste já estava em 12 sem S3SS carregado;
+- portanto o Lot Streaming do Apex não é "código do S3SS", mas também não é correto dizer que não há linhagem do S3SS em algumas subfeatures.
+
+A implementação de produção não precisa do Metric Probe. O probe fica apenas para diagnóstico.

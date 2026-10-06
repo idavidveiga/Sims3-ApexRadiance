@@ -1,0 +1,43 @@
+name: Build Lot Streaming 300x16 Refinement Test
+
+on:
+  push:
+    branches:
+      - feature/lot-lod-streaming
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout streaming branch
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Prepare vcpkg dependencies
+        shell: pwsh
+        run: |
+          $vcpkg = "C:\vcpkg\vcpkg.exe"
+          if (!(Test-Path $vcpkg)) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
+            & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+          & $vcpkg install --triplet x86-windows-static --x-manifest-root="$env:GITHUB_WORKSPACE" --x-install-root="$env:GITHUB_WORKSPACE\vcpkg_installed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Lot Streaming refinement baseline
+        shell: pwsh
+        run: |
+          msbuild ApexRadiance.sln /t:Rebuild /m /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false /p:ApexLotLodProbe=true /p:ApexLotLodTestValue=300 /p:ApexLotLodTestMaxActive=16
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "Release\ApexRadiance.asi")) { throw "Release\ApexRadiance.asi was not produced" }
+          Copy-Item "Release\ApexRadiance.asi" "ApexRadiance_LotStreaming_300x16_REFINE_TEST.asi"
+
+      - name: Upload refinement ASI
+        uses: actions/upload-artifact@v4
+        with:
+          name: ApexRadiance-LotStreaming-300x16-REFINE-TEST
+          path: ApexRadiance_LotStreaming_300x16_REFINE_TEST.asi
+          if-no-files-found: error
