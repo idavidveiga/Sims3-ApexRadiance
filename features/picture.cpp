@@ -21,6 +21,7 @@
 #include "apex_log.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
+#include "d3d9_extra_hooks.h"
 #include "post_scene.h"
 #include "world_session.h"
 #include "shader_cache.h"
@@ -684,6 +685,17 @@ ShaderCache::Id AddPictureShader() {
     return ShaderCache::Add(std::move(d));
 }
 const ShaderCache::Id kPicturePsId = AddPictureShader();
+const ShaderCache::Id kDepthCopyPsId = [] { // the scene depth into R32F (see Gpu::depthTex)
+    ShaderCache::Desc d;
+    d.tag = "Picture DepthCopyPS";
+    d.source = "sampler2D sDepth : register(s0);\nfloat4 DepthCopyPS(float2 uv : TEXCOORD0) : COLOR0 { return tex2Dlod(sDepth, float4(uv, 0, 0)).r; }\n";
+    d.sourceName = "picture_depth_copy.hlsl";
+    d.entry = "DepthCopyPS";
+    d.target = "ps_3_0";
+    d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}();
 const ShaderCache::Id kAdaptPsId = [] { // auto exposure's 1x1 pass, from the same source
     ShaderCache::Desc d;
     d.tag = "Picture AdaptPS";
@@ -731,6 +743,13 @@ struct Gpu {
     bool lastWasScene = false;   // the last back buffer draw was depth-tested
     bool copyAfterStrip = false; // a bloom strip right after the scene: copy once it has drawn
     bool sceneCopied = false;
+    // the scene depth copied with the scene (R32F, the device depth as it is), for the fog and Emphasize: at the end of
+    // the frame the live depth has holes (06/10, user: a grey box around the pie menu with the fog on: the Sim portrait
+    // clears the depth of its 256x256 square before drawing the head, and the fog took that as infinitely far)
+    IDirect3DTexture9* depthTex = nullptr;
+    IDirect3DSurface9* depthSurf = nullptr;
+    IDirect3DPixelShader9* depthPs = nullptr;
+    bool depthTried = false, depthCopied = false;
     IDirect3DSurface9* curRT0 = nullptr; // identity only
     IDirect3DSurface9* backBuffer = nullptr;
 };
@@ -760,7 +779,90 @@ std::string ParamsText(const PictureParams& q) {
                        q.sharpen, q.clarity, q.vignette, q.compare);
 }
 
-// Copies the back buffer as "the scene" (see the frame flow above).
+struct QuadVertex {
+    float x, y, z, rhw, u, v;
+};
+
+// The scene depth (INTZ) into gpu.depthTex, in the middle of the game's drawing: every state it touches is put back
+void CopyDepth(IDirect3DDevice9* dev) {
+    IDirect3DTexture9* depth = DepthShare::Texture();
+    if (!depth || !gpu.width) return;
+    if (!gpu.depthTex) {
+        if (gpu.depthTried) return;
+        gpu.depthTried = true;
+        if (FAILED(dev->CreateTexture(gpu.width, gpu.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &gpu.depthTex, nullptr)) || !gpu.depthTex ||
+            FAILED(gpu.depthTex->GetSurfaceLevel(0, &gpu.depthSurf)) || !gpu.depthSurf) {
+            SafeRelease(gpu.depthSurf);
+            SafeRelease(gpu.depthTex);
+            LOG_WARNING("[Picture] No depth copy (R32F target): the fog and Emphasize read the live depth");
+            return;
+        }
+    }
+    if (!gpu.depthPs) {
+        std::string msg;
+        if (ShaderCache::CreatePixelShader(dev, kDepthCopyPsId, &gpu.depthPs, &msg) != ShaderCache::Result::Ok) return; // not compiled yet: next frame
+    }
+    IDirect3DSurface9 *rt = nullptr, *ds = nullptr;
+    IDirect3DPixelShader9* ps = nullptr;
+    IDirect3DVertexShader9* vs = nullptr;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    IDirect3DBaseTexture9* tex0 = nullptr;
+    IDirect3DVertexBuffer9* stream = nullptr;
+    UINT streamOffset = 0, streamStride = 0;
+    DWORD fvf = 0;
+    D3DVIEWPORT9 vp{};
+    constexpr D3DRENDERSTATETYPE kStates[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
+                                              D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_COLORWRITEENABLE,
+                                              D3DRS_CLIPPLANEENABLE, D3DRS_SEPARATEALPHABLENDENABLE};
+    constexpr D3DSAMPLERSTATETYPE kSamp[] = {D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE};
+    DWORD rs[std::size(kStates)]{}, ss[std::size(kSamp)]{};
+    dev->GetRenderTarget(0, &rt);
+    ExtraHooks::RawGetDepthStencilSurface(dev, &ds);
+    dev->GetPixelShader(&ps);
+    dev->GetVertexShader(&vs);
+    dev->GetVertexDeclaration(&decl);
+    dev->GetFVF(&fvf);
+    dev->GetTexture(0, &tex0);
+    dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
+    dev->GetViewport(&vp);
+    for (size_t i = 0; i < std::size(kStates); i++) dev->GetRenderState(kStates[i], &rs[i]);
+    for (size_t i = 0; i < std::size(kSamp); i++) dev->GetSamplerState(0, kSamp[i], &ss[i]);
+
+    ExtraHooks::RawSetDepthStencilSurface(dev, nullptr); // the depth is read, so it must not be bound
+    dev->SetRenderTarget(0, gpu.depthSurf);
+    dev->SetPixelShader(gpu.depthPs);
+    dev->SetVertexShader(nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    dev->SetTexture(0, depth);
+    const DWORD passStates[std::size(kStates)] = {D3DZB_FALSE, FALSE, FALSE, FALSE, FALSE, D3DCULL_NONE, FALSE, FALSE, FALSE, 0xF, 0, FALSE};
+    for (size_t i = 0; i < std::size(kStates); i++) dev->SetRenderState(kStates[i], passStates[i]);
+    const DWORD passSamp[std::size(kSamp)] = {D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, 0};
+    for (size_t i = 0; i < std::size(kSamp); i++) dev->SetSamplerState(0, kSamp[i], passSamp[i]);
+    const float x1 = static_cast<float>(gpu.width) - 0.5f, y1 = static_cast<float>(gpu.height) - 0.5f;
+    const QuadVertex v[4] = {{-0.5f, -0.5f, 0, 1, 0, 0}, {x1, -0.5f, 0, 1, 1, 0}, {-0.5f, y1, 0, 1, 0, 1}, {x1, y1, 0, 1, 1, 1}};
+    gpu.depthCopied = SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(QuadVertex)));
+
+    dev->SetRenderTarget(0, rt); // resets the viewport: restored below
+    ExtraHooks::RawSetDepthStencilSurface(dev, ds);
+    dev->SetPixelShader(ps);
+    dev->SetVertexShader(vs);
+    if (decl) dev->SetVertexDeclaration(decl);
+    else dev->SetFVF(fvf);
+    dev->SetTexture(0, tex0);
+    dev->SetStreamSource(0, stream, streamOffset, streamStride); // DrawPrimitiveUP clears stream 0
+    for (size_t i = 0; i < std::size(kStates); i++) dev->SetRenderState(kStates[i], rs[i]);
+    for (size_t i = 0; i < std::size(kSamp); i++) dev->SetSamplerState(0, kSamp[i], ss[i]);
+    dev->SetViewport(&vp);
+    SafeRelease(rt);
+    SafeRelease(ds);
+    SafeRelease(ps);
+    SafeRelease(vs);
+    SafeRelease(decl);
+    SafeRelease(tex0);
+    SafeRelease(stream);
+}
+
+// Copies the back buffer as "the scene" (see the frame flow above); with the fog or Emphasize on, the depth too.
 void CopyScene(IDirect3DDevice9* dev) {
     if (!gpu.ready) return;
     IDirect3DSurface9* bb = nullptr;
@@ -768,6 +870,7 @@ void CopyScene(IDirect3DDevice9* dev) {
         gpu.sceneCopied = SUCCEEDED(dev->StretchRect(bb, nullptr, gpu.sceneSurf, nullptr, D3DTEXF_NONE));
         bb->Release();
     }
+    if (g_depthRequested) CopyDepth(dev);
 }
 
 // Back buffer draws of the game: find the point between the scene (with its bloom) and the UI
@@ -823,6 +926,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     gpu.lastWasScene = false;
     gpu.copyAfterStrip = false;
     gpu.sceneCopied = false;
+    gpu.depthCopied = false;
 }
 
 void RegisterHooks(IDirect3DDevice9* dev) {
@@ -861,9 +965,6 @@ IDirect3DPixelShader9* CompileShader(IDirect3DDevice9* dev) {
     return ps;
 }
 
-struct QuadVertex {
-    float x, y, z, rhw, u, v;
-};
 
 // ---- LUT files: Apex Radiance\LUTs\*.png, horizontal strips of size x size cells (1024x32, 4096x64, ...) ----
 std::mutex g_lutMutex;
@@ -1083,6 +1184,10 @@ void Picture::ReleaseResources() {
     SafeRelease(gpu.sceneSurf);
     SafeRelease(gpu.frameTex);
     SafeRelease(gpu.sceneTex);
+    SafeRelease(gpu.depthSurf);
+    SafeRelease(gpu.depthTex);
+    gpu.depthTried = false;
+    gpu.depthCopied = false;
     for (int i = 0; i < Gpu::kChain; i++) {
         SafeRelease(gpu.chainSurf[i]);
         SafeRelease(gpu.chainTex[i]);
@@ -1306,7 +1411,8 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fLut = on(q.lut, q.lutAmount) && gpu.lutTex && gpu.lutSize > 0;
     // Emphasize and the fog read the scene depth: requested only while one of them is on
     RequestDepth(wantEmph || wantFog);
-    IDirect3DTexture9* depth = (wantEmph || wantFog) ? DepthShare::Texture() : nullptr;
+    // the depth copied with the scene (the live one has the Sim portrait's cleared square by now); else the live one
+    IDirect3DTexture9* depth = (wantEmph || wantFog) ? (gpu.depthCopied && gpu.depthTex ? gpu.depthTex : DepthShare::Texture()) : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
     const bool fEmph = wantEmph && depth && camNear > 0.0f;
     const bool fFog = wantFog && depth && camNear > 0.0f;
