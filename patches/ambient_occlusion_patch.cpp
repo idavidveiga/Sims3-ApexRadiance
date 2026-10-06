@@ -183,9 +183,9 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
     float lg = span / steps;
     float lodAdd = log2(1.0 - exp2(-lg)) - cMarch.y + log2(cMarch.x);
     float2 q = floor(pix);
-    // slice angle: the 4x4 Bayer interleave the box blur cancels; step offset: the R2 low-discrepancy sequence (06/10),
-    // well spread in any 4x4 window and not a repeating 4x4 tile, so what the blur leaves is not a regular pattern
-    float b1 = (Bayer4(q) + 0.5) / 16.0, b2 = frac(0.5 + dot(q, float2(0.7548776662, 0.5698402910)));
+    // slice angle and step offset: 4x4 Bayer interleaves the box blur cancels exactly. The R2 sequence tried on 06/10 for
+    // the step offset is not a 4x4 tile, so the blur left it as diagonal wavy streaks (user screenshot 06/10, rails)
+    float b1 = (Bayer4(q) + 0.5) / 16.0, b2 = (Bayer4(q.yx + float2(1, 2)) + 0.5) / 16.0;
     float2 fMul = float2(-1.0 / (0.615 * cRad.x), -1.0 / (0.615 * Rl));
     const float fAdd = 0.385 / 0.615 + 1.0;
     float2 om;
