@@ -10,9 +10,9 @@
 //    more than half of the scene draws, the walls among them, were ps_2_x): no vPos, so the position comes from a free
 //    texture coordinate k that a copy of the paired vertex shader fills with the clip position (AddScreenPosVs), and
 //    the pixel copy is ps_2_x (the grain does not fit in the slots of some ps_2_0).
-//  - At creation (Create*Shader, last in the chain) the game's shader is created first, then its copy (vertex shaders:
-//    the copy for TEXCOORD7, the usual k); pairs are kept by the game shader's pointer. Older shaders get their copies at
-//    their first draw.
+//  - Copies are made at a shader's first draw in the 3D scene (05/10: before, every shader the game created got one at
+//    once, shadow, reflection, UI and bloom ones too, and DXVK keeps every shader for the whole session; the game's memory
+//    grew ~0.3 GB more in 30 min with Apex). At creation (last in the chain) only the old copies of a reused address go.
 //  - At each draw (last in the chain, after every observer): when render target 0 is the back buffer and the depth
 //    test is on (the 3D scene; the UI draws with it off and reads the back buffer back many times per frame, where a
 //    dither would feed on itself), the copies are bound for the draw with the amount constant, then the game's shaders
@@ -181,6 +181,16 @@ void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
         if (it->second) it->second->Release();
         it->second = copy;
     }
+}
+
+// A new game pixel shader at an address: its old copy goes
+void Forget(IDirect3DPixelShader9* ps) {
+    std::lock_guard<std::mutex> lock(g_lock);
+    g_pixelLookup.Clear();
+    const auto it = g_copies.find(ps);
+    if (it == g_copies.end()) return;
+    if (it->second.ps) it->second.ps->Release();
+    g_copies.erase(it);
 }
 
 // A new game vertex shader at an address: its old copies (every k) go
@@ -353,22 +363,14 @@ void RegisterHooks() {
         if (t_own || !fn || !out || !g_on.load()) return HookAction::Continue;
         // create the game's shader here (every earlier callback already ran) to learn its pointer, then its copy
         if (FAILED(CallOriginalCreatePixelShader(ctx.device, fn, out)) || !*out) return HookAction::Block;
-        Remember(*out, MakeCopy(ctx.device, ReadCode(fn)));
+        Forget(*out); // a reused address: its old copy goes; the new one is made at its first 3D scene draw (CopyOf)
         return HookAction::Skip;
     }, kAfterEveryone);
     RegisterCreateVertexShader(kHookName, [](DeviceContext& ctx, const DWORD* fn, IDirect3DVertexShader9** out) {
         const bool dither = g_on.load(), jitter = g_jitterWanted.load();
         if (t_own || !fn || !out || (!dither && !jitter)) return HookAction::Continue;
         if (FAILED(CallOriginalCreateVertexShader(ctx.device, fn, out)) || !*out) return HookAction::Block;
-        ForgetVs(*out); // a reused address: the old shader's copies must go
-        // the copies the draws will ask for, made now (while the game loads) rather than at the first draw
-        const std::vector<DWORD> t = ReadCode(fn);
-        const bool vs3 = !t.empty() && t[0] == 0xFFFE0300u;
-        if (!t.empty() && dither && !vs3) RememberVs(VsKey(*out, kUsualTexcoord, false), MakeVsCopy(ctx.device, t, kUsualTexcoord, false));
-        if (!t.empty() && jitter) {
-            RememberVs(VsKey(*out, -1, true), MakeVsCopy(ctx.device, t, -1, true));
-            if (dither && !vs3) RememberVs(VsKey(*out, kUsualTexcoord, true), MakeVsCopy(ctx.device, t, kUsualTexcoord, true));
-        }
+        ForgetVs(*out); // a reused address: the old shader's copies go; new ones are made at its first 3D scene draw (VsCopyOf)
         return HookAction::Skip;
     }, kAfterEveryone);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
@@ -470,7 +472,7 @@ APEX_REGISTER_FEATURE(SceneDitherPatch, {.displayName = "Banding Fix",
                                          .enabledByDefault = true,
                                          .supportedVersions = VERSION_ALL,
                                          .technicalDetails = {"A dithered copy of every pixel shader (triangular noise from interleaved gradient noise of the pixel "
-                                                              "position, +-1/255 at Strength 100% on RGB; alpha untouched), made when the game creates the shader.",
+                                                              "position, +-1/255 at Strength 100% on RGB; alpha untouched), made at the shader's first draw in the 3D scene.",
                                                               "ps_2_x copies take the pixel position from a texture coordinate that a copy of the vertex shader fills "
                                                               "with the clip position.",
                                                               "Bound only for draws into the back buffer with the depth test on (the 3D scene), last in the draw chain; "

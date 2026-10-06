@@ -597,8 +597,7 @@ bool g_curVsIsSnowCover = false;
 bool g_curVsIsSnowRelief = false;
 bool g_curVsIsFoliage = false;
 bool g_curVsIsInstanced = false; // fence rails/posts, railings, stairs (SceneModelArray)
-struct FoliageVs {
-    std::vector<DWORD> code; // patched (ShaderPatches::PatchFoliageVs)
+struct FoliageVs { // the patched copy (ShaderPatches::PatchFoliageVs / PatchObjectLampVs), made at its first draw
     IDirect3DVertexShader9* vs = nullptr;
     bool tried = false;
     int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
@@ -671,14 +670,12 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
                 else if (ShaderPatches::IsFloorVs(t)) // floor variants, e.g. the curved pool edge (LightProbe-m66)
                     cls = 5;
                 else if (ShaderPatches::PatchFoliageVs(t)) {
-                    info.patched.code = std::move(t);
-                    cls = 6;
+                    cls = 6; // its patched code is made again at its first foliage draw (PatchedVsCode)
                 } else {
                     std::vector<DWORD> o = t;
                     int tc = 7, wk = -1, vl = -1;
                     if (ShaderPatches::PatchObjectLampVs(o, true, nullptr, &wk, &vl)) {
-                        info.patched.code = std::move(o);
-                        info.patched.worldK = wk;
+                        info.patched.worldK = wk; // (the patched code: again at its first object draw, PatchedVsCode)
                         info.patched.vertexLight = vl;
                         cls = 10;
                     } else if (ShaderPatches::IsSnowFloorVs(t, tc)) {
@@ -696,6 +693,18 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
     vs->AddRef();
     g_pinned.push_back(vs);
     return &stored;
+}
+
+// The patched code of a foliage (cls 6) or object (cls 10) vertex shader, made again from the game shader when its copy is
+// created (05/10: ClassifyVs kept it for every classified shader, drawn or not, until Shutdown). Empty when it cannot be.
+std::vector<DWORD> PatchedVsCode(IDirect3DVertexShader9* vs, uint8_t cls) {
+    UINT size = 0;
+    if (!vs || FAILED(vs->GetFunction(nullptr, &size)) || size < 8 || size > 65536 || size % 4) return {};
+    std::vector<DWORD> t(size / 4);
+    if (FAILED(vs->GetFunction(t.data(), &size))) return {};
+    int wk = -1, vl = -1;
+    if (cls == 6 ? ShaderPatches::PatchFoliageVs(t) : cls == 10 && ShaderPatches::PatchObjectLampVs(t, true, nullptr, &wk, &vl)) return t;
+    return {};
 }
 
 // Light enumeration (FUN_006acf70, stdcall(visitor), visitor vtable[0] = thiscall(visitor, Light*))
@@ -1976,7 +1985,8 @@ IDirect3DVertexShader9* ObjectVsFor(IDirect3DDevice9* dev, IDirect3DVertexShader
     FoliageVs& f = g_curVsInfo->patched;
     if (!f.tried) {
         f.tried = true;
-        if (FAILED(dev->CreateVertexShader(f.code.data(), &f.vs))) f.vs = nullptr;
+        const std::vector<DWORD> code = PatchedVsCode(vs, g_curVsInfo->cls);
+        if (code.empty() || FAILED(dev->CreateVertexShader(code.data(), &f.vs))) f.vs = nullptr;
         LOG_INFO(std::format("[LotLightBridge] Outdoor object: vertex shader {:08X} {}", reinterpret_cast<uintptr_t>(vs), f.vs ? "patched" : "failed"));
     }
     return f.vs;
@@ -2451,7 +2461,8 @@ IDirect3DVertexShader9* FoliageVsFor(IDirect3DDevice9* dev, IDirect3DVertexShade
     FoliageVs& f = g_curVsInfo->patched;
     if (!f.tried) {
         f.tried = true;
-        if (FAILED(dev->CreateVertexShader(f.code.data(), &f.vs))) f.vs = nullptr;
+        const std::vector<DWORD> code = PatchedVsCode(vs, g_curVsInfo->cls);
+        if (code.empty() || FAILED(dev->CreateVertexShader(code.data(), &f.vs))) f.vs = nullptr;
         LOG_INFO(std::format("[LotLightBridge] Foliage: vertex shader {:08X} {}", reinterpret_cast<uintptr_t>(vs), f.vs ? "patched" : "failed"));
     }
     return f.vs;

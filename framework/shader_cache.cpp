@@ -6,13 +6,16 @@
 // (research\perf2\plan.md, items 7 and C5). D3DCompile needs no device and is called here from one worker thread only.
 #include "shader_cache.h"
 #include "apex_log.h"
+#include "apex_paths.h"
 #include <windows.h>
 #include <d3dcompiler.h>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <format>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -26,6 +29,8 @@ struct Job {
     enum State : int { Queued, Compiling, Done } state = Queued;
     bool urgent = false; // a thread waits for it: compiled next
     double ms = 0.0;
+    uint64_t key = 0;      // the variant's identity (source, entry, target, flags, macros): its entry in the disk cache
+    bool fromDisk = false; // its bytecode came from the disk cache (not compiled this session)
 };
 
 struct Registry {
@@ -41,6 +46,8 @@ struct Registry {
     double waitMs = 0.0, workerMs = 0.0;
     std::string slowest;
     double slowestMs = 0.0;
+    std::unordered_map<uint64_t, std::vector<DWORD>> disk; // the disk cache as read at Start, entries taken by their jobs
+    int fromDisk = 0, compiled = 0;
 };
 
 // Never destroyed (no static destructor at process exit while a worker may still run). Built by the first Add, i.e. by the
@@ -63,6 +70,103 @@ std::string Message(ID3DBlob* errors) {
     std::string s(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize());
     while (!s.empty() && (s.back() == '\0' || s.back() == '\n' || s.back() == '\r')) s.pop_back();
     return s.empty() ? "unknown error" : s;
+}
+
+
+// ---- the disk cache (05/10, user: "use less RAM without losing any quality") ----
+// Every variant's bytecode is kept in ApexRadiance_ShaderCache.bin once compiled, so a later start creates the same
+// shaders without D3DCompile: d3dcompiler_47.dll is delay-loaded (ApexRadiance.vcxproj) and never mapped into the game's
+// 32-bit address space, and the compiler's heap peak never happens. A variant whose identity changed (its source, macros,
+// flags or target) misses the cache and is compiled as before; the file is then written again with the current set only.
+constexpr uint32_t kDiskMagic = 0x53585041; // "APXS"
+constexpr uint32_t kDiskVersion = 1;
+
+uint64_t Fnv(uint64_t h, const void* p, size_t n) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+uint64_t FnvStr(uint64_t h, const char* s) { return Fnv(Fnv(h, s, std::strlen(s)), "\0", 1); }
+
+uint64_t KeyOf(const Desc& d) {
+    uint64_t h = 1469598103934665603ull;
+    h = Fnv(h, d.source.data(), d.source.size());
+    h = FnvStr(FnvStr(FnvStr(h, d.entry), d.target), d.sourceName);
+    h = Fnv(h, &d.flags, sizeof d.flags);
+    for (const auto& [name, value] : d.macros) h = FnvStr(FnvStr(h, name.c_str()), value.c_str());
+    return h;
+}
+
+// A whole shader token stream: version token first, end token last
+bool PlausibleCode(const std::vector<DWORD>& c) {
+    return c.size() >= 2 && c.size() < (1u << 20) && (c[0] >> 17) == 0x7FFFu && c.back() == 0x0000FFFFu;
+}
+
+std::wstring DiskFile() {
+    const std::wstring& dir = ApexPaths::ApexDirectory();
+    return dir.empty() ? std::wstring() : dir + L"ApexRadiance_ShaderCache.bin";
+}
+
+// Reads the file into r.disk (any damage: the rest is ignored, those variants compile)
+void LoadDisk(Registry& r) {
+    const std::wstring path = DiskFile();
+    if (path.empty()) return;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return;
+    uint32_t head[3] = {};
+    if (std::fread(head, sizeof head, 1, f) == 1 && head[0] == kDiskMagic && head[1] == kDiskVersion && head[2] < 4096) {
+        for (uint32_t i = 0; i < head[2]; i++) {
+            uint64_t key = 0;
+            uint32_t words = 0;
+            if (std::fread(&key, sizeof key, 1, f) != 1 || std::fread(&words, sizeof words, 1, f) != 1 || words == 0 || words > (1u << 18)) break;
+            std::vector<DWORD> code(words);
+            if (std::fread(code.data(), sizeof(DWORD), words, f) != words) break;
+            if (PlausibleCode(code)) r.disk[key] = std::move(code);
+        }
+    }
+    std::fclose(f);
+}
+
+// Lock held: a queued job found in the disk cache is done
+void TakeFromDiskLocked(Registry& r, Job& j) {
+    if (j.state != Job::Queued) return;
+    const auto it = r.disk.find(j.key);
+    if (it == r.disk.end()) return;
+    j.code = std::move(it->second);
+    r.disk.erase(it);
+    std::string().swap(j.d.source);
+    j.state = Job::Done;
+    j.fromDisk = true;
+    r.fromDisk++;
+}
+
+// Writes every compiled variant (a temporary file renamed over the old one); worker thread, after its loop
+void SaveDisk(Registry& r) {
+    const std::wstring path = DiskFile();
+    if (path.empty() || !ApexPaths::EnsureApexDirectory()) return;
+    std::vector<std::pair<uint64_t, std::vector<DWORD>>> all;
+    {
+        std::lock_guard<std::mutex> lk(r.m);
+        for (const auto& j : r.jobs)
+            if (j->state == Job::Done && PlausibleCode(j->code)) all.emplace_back(j->key, j->code);
+    }
+    const std::wstring tmp = path + L".tmp";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f) return;
+    const uint32_t head[3] = {kDiskMagic, kDiskVersion, static_cast<uint32_t>(all.size())};
+    bool ok = std::fwrite(head, sizeof head, 1, f) == 1;
+    for (const auto& [key, code] : all) {
+        const uint32_t words = static_cast<uint32_t>(code.size());
+        ok = ok && std::fwrite(&key, sizeof key, 1, f) == 1 && std::fwrite(&words, sizeof words, 1, f) == 1 &&
+             std::fwrite(code.data(), sizeof(DWORD), words, f) == words;
+    }
+    ok = std::fclose(f) == 0 && ok;
+    if (!ok || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(tmp.c_str());
+        LOG_WARNING("[ShaderCache] Could not write ApexRadiance_ShaderCache.bin: the shaders compile again at the next start");
+        return;
+    }
+    LOG_INFO(std::format("[ShaderCache] Saved {} compiled Apex shaders to ApexRadiance_ShaderCache.bin (the next start loads them without the compiler)", all.size()));
 }
 
 // Outside the lock: a Compiling job is touched by the thread compiling it only.
@@ -119,6 +223,7 @@ DWORD WINAPI WorkerProc(LPVOID) {
         {
             std::lock_guard<std::mutex> lk(r.m);
             j->state = Job::Done;
+            r.compiled++;
             if (j->ms > r.slowestMs) {
                 r.slowestMs = j->ms;
                 r.slowest = j->d.tag;
@@ -149,6 +254,7 @@ DWORD WINAPI WorkerProc(LPVOID) {
     if (n)
         LOG_INFO(std::format("[ShaderCache] Precompiled {} Apex shader{} in {:.0f} ms on a background thread ({} failed; slowest: {}, {:.0f} ms){}", n, n == 1 ? "" : "s", ms, failed,
                              slowest, slowestMs, stopped ? " - stopped early" : ""));
+    if (n && !stopped) SaveDisk(r); // what compiled now starts the next session without the compiler
     SetEvent(r.workerLeft);
     return 0;
 }
@@ -214,8 +320,10 @@ Id Add(Desc desc) {
     std::lock_guard<std::mutex> lk(r.m);
     auto job = std::make_unique<Job>();
     job->d = std::move(desc);
+    job->key = KeyOf(job->d);
+    if (r.started) TakeFromDiskLocked(r, *job);
     r.jobs.push_back(std::move(job));
-    if (r.started && !r.running && !r.stop) StartLocked(r); // added after the precompile finished: compile it too
+    if (r.started && !r.running && !r.stop && r.jobs.back()->state == Job::Queued) StartLocked(r); // added after the precompile finished: compile it too
     return static_cast<Id>(r.jobs.size() - 1);
 }
 
@@ -224,8 +332,15 @@ void Start() {
     std::lock_guard<std::mutex> lk(r.m);
     if (r.started) return;
     r.started = true;
-    LOG_INFO(std::format("[ShaderCache] Precompiling {} Apex shaders on a background thread", r.jobs.size()));
-    StartLocked(r);
+    LoadDisk(r);
+    size_t left = 0;
+    for (auto& j : r.jobs) {
+        TakeFromDiskLocked(r, *j);
+        left += j->state == Job::Queued;
+    }
+    LOG_INFO(std::format("[ShaderCache] {} Apex shaders: {} from ApexRadiance_ShaderCache.bin, {} to compile{}", r.jobs.size(), r.fromDisk, left,
+                         left ? " on a background thread" : " (the compiler is not loaded)"));
+    if (left) StartLocked(r);
 }
 
 bool PrecompileComplete() {
@@ -304,7 +419,8 @@ std::string StatusText() {
     std::string s;
     if (!r.started) s = std::format("{} Apex shaders registered, precompile not started", total);
     else if (done < total) s = std::format("precompiling Apex shaders: {} of {} done", done, total);
-    else s = std::format("{} Apex shaders precompiled in {:.0f} ms on a background thread (slowest {} ms: {})", total, r.workerMs, static_cast<int>(r.slowestMs), r.slowest);
+    else s = std::format("{} Apex shaders ready: {} from the disk cache, {} compiled in {:.0f} ms on a background thread (slowest {} ms: {})", total, r.fromDisk,
+                         r.compiled, r.workerMs, static_cast<int>(r.slowestMs), r.slowest);
     if (failed) s += std::format(", {} failed (see ApexRadiance_LOG.txt)", failed);
     s += std::format("; render-thread waits: {}", r.waits);
     if (r.waits) s += std::format(" ({:.1f} ms)", r.waitMs);
