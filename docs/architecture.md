@@ -428,10 +428,9 @@ Apex's own HLSL pixel shaders are never compiled on the render thread
   folder (magic `APXS`; written to a temporary file and renamed), keyed by the variant's identity (source, entry,
   target, flags, macros). At the next start the variants found there are created without `D3DCompile`; a variant whose
   identity changed misses and compiles as before, and the file is written again with the current set only. A damaged
-  file is read up to the damage. `d3dcompiler_47.dll` is delay-loaded, so a start with a complete cache never maps the
-  compiler into the 32-bit address space. Before the first compile the DLL is loaded explicitly (`CompilerAvailable`):
-  a missing delay-loaded DLL would otherwise raise a structured exception at the first `D3DCompile` and end the game.
-  Without it, shaders missing from the cache stay off (`[ShaderCache] d3dcompiler_47.dll not found: ...`). Log:
+  file is read up to the damage. `d3dcompiler_47.dll` is linked normally (2.7.0 delay-loaded it so a
+  complete cache never mapped it; antivirus heuristics flagged that build, so 2.7.1 links it as 2.6.0 did). Before the
+  first compile the DLL is checked (`CompilerAvailable`); without it, shaders missing from the cache stay off (`[ShaderCache] d3dcompiler_47.dll not found: ...`). Log:
   `[ShaderCache] N Apex shaders: X from ApexRadiance_ShaderCache.bin, Y to compile` and `[ShaderCache] Saved N compiled
   Apex shaders ...`.
 - **Use:** `ShaderCache::CreatePixelShader(dev, id, &ps, &msg)` only creates the D3D9 object from the bytecode. If the

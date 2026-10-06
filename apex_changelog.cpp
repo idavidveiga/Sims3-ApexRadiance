@@ -6,6 +6,16 @@ namespace ApexChangelog {
 
 namespace {
 
+// 2.7.1: 2.7.0 with the build an antivirus engine flagged changed (many players never got 2.7.0: Nexus held it), so it lists
+// 2.7.0's lines too
+constexpr const char* k271Fixed[] = {
+    "No false alarm from antivirus programs that use BitDefender's engine",
+    "Screen effects wait until the world is drawn, never on menus or loading screens",
+    "The pie menu no longer leaves an unfiltered box or a grey square",
+    "Depth Blur no longer blurs the save screen",
+    "The unused AMD Vulkan driver stays out of the game on PCs with AMD integrated graphics",
+    nullptr};
+
 constexpr const char* k270Added[] = {
     "Filters in Color: 26 looks to stack, each with its own strength",
     "LUT filter: your own look-up tables from the LUTs folder",
@@ -77,6 +87,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},
     {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
     {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
     {"2.5.6", "2026-10-03", k256Added, k256Improved, k256Fixed},

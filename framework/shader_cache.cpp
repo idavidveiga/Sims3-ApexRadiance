@@ -75,8 +75,8 @@ std::string Message(ID3DBlob* errors) {
 
 // ---- the disk cache (05/10, user: "use less RAM without losing any quality") ----
 // Every variant's bytecode is kept in ApexRadiance_ShaderCache.bin once compiled, so a later start creates the same
-// shaders without D3DCompile: d3dcompiler_47.dll is delay-loaded (ApexRadiance.vcxproj) and never mapped into the game's
-// 32-bit address space, and the compiler's heap peak never happens. A variant whose identity changed (its source, macros,
+// shaders without D3DCompile, and the compiler's heap peak never happens. (2.7.0 also delay-loaded d3dcompiler_47.dll so
+// a complete cache never mapped it; BitDefender's generic detection flagged that build, 06/10, so 2.7.1 links it as before.) A variant whose identity changed (its source, macros,
 // flags or target) misses the cache and is compiled as before; the file is then written again with the current set only.
 constexpr uint32_t kDiskMagic = 0x53585041; // "APXS"
 constexpr uint32_t kDiskVersion = 1;
@@ -169,9 +169,8 @@ void SaveDisk(Registry& r) {
     LOG_INFO(std::format("[ShaderCache] Saved {} compiled Apex shaders to ApexRadiance_ShaderCache.bin (the next start loads them without the compiler)", all.size()));
 }
 
-// d3dcompiler_47.dll can be loaded. Being delay-loaded, a missing DLL would raise a structured exception at the first
-// D3DCompile that catch (...) does not take under /EHsc, and end the game (06/10 review; 2.6.0 then failed to load
-// instead). Loaded here first, the delay-load helper finds the same module.
+// d3dcompiler_47.dll can be loaded (linked normally since 2.7.1, so it is: without it Apex does not load at all, as in
+// 2.6.0; the check stays for a build that delay-loads it again).
 bool CompilerAvailable() {
     static const bool ok = [] {
         if (LoadLibraryW(L"d3dcompiler_47.dll")) return true;
