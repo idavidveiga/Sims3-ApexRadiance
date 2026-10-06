@@ -250,6 +250,9 @@ enum class Id : uint16_t {
     WindowRepaintJump, // jne short over the window pump's per-frame InvalidateRect (0x004108AE, features/window_repaint.h)
     MonoTypeGetObject, // FUN_00ea8a00 cdecl(MonoDomain*, MonoType*): mono_type_get_object (domain lock at +0, type_hash at +0x40)
     MonoDomainFree, // FUN_00e75340 cdecl(MonoDomain*, int force): mono_domain_free
+    ObjMapFind, // FUN_00939100 thiscall(map; out[2], key*), ret 8: the object service's hash map find (1033 buckets)
+    ObjMapInsert, // FUN_00939170 thiscall(map; out[3], node, flag), ret 0xC: its insert (leaf)
+    ObjMapErase, // FUN_00938d00 thiscall(map; out[2], node, bucket*), ret 0xC: its erase (leaf)
     Count
 };
 

@@ -20,6 +20,7 @@
 #include "script_math.h"
 #include "scene_budget.h"
 #include "object_index.h"
+#include "object_id_map.h"
 #include "room_light_queue.h"
 #include <algorithm>
 #include <atomic>
@@ -416,12 +417,15 @@ class ObjectLookupIndexPatch : public ApexPatch {
         lastError.clear();
         std::string error;
         if (!ObjectIndex::Start(&error)) return Fail(error);
+        std::string mapError;
+        if (!ObjectIdMap::Start(&mapError)) LOG_WARNING("[ObjectIdMap] Not used: " + mapError);
         isEnabled = true;
         return true;
     }
 
     bool Uninstall() override {
         if (!isEnabled) return true;
+        ObjectIdMap::Stop();
         ObjectIndex::Stop(); // the layer passes every call to the game from then on, even if the entry could not be put back
         isEnabled = false;
         lastError.clear();
@@ -490,7 +494,7 @@ std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText();
 std::string Performance::WindowRepaintStatus() { return WindowRepaint::StatusText(); }
 std::string Performance::ScriptMathStatus() { return ScriptMath::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
-std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
+std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText() + "; " + ObjectIdMap::StatusText(); }
 std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
 
 APEX_REGISTER_FEATURE(ResourceLookupCachePatch,
@@ -697,8 +701,9 @@ APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
 
 APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
                       {.displayName = "Faster Object Lookups",
-                       .description = "Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time. "
-                                      "Fewer stutters when lot lights update and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .description = "Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time, "
+                                      "and keeps a quick index of every object by its ID next to the game's own list. Fewer stutters when lot lights update "
+                                      "and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                         .experimental = false,
                        .enabledByDefault = true,
@@ -706,7 +711,10 @@ APEX_REGISTER_FEATURE(ObjectLookupIndexPatch,
                        .technicalDetails = {"The lookup by ID (0xC62D40, a depth-first walk of the world's object tree) answers from a table of the paths the game's walk "
                                             "found; every answer re-reads its path in the live tree (indices, classes, the ID) and walks again on any difference.",
                                             "The first 64 answers of each session and then 1 in 64 are checked against the game's walk; a difference turns the feature "
-                                            "off."},
+                                            "off.",
+                                            "The object service's map by ID (find 0x939100, 1033 chained buckets) answers from an open-addressing index kept by its only "
+                                            "insert (0x939170) and erase (0x938D00) under an SRW lock; answers are used only while the index's count equals the map's, "
+                                            "and the first 256 are checked against the game's walk."},
                        .gameCodeGroup = "ObjectIndex"});
 
 APEX_REGISTER_FEATURE(RoomLightQueuePatch,

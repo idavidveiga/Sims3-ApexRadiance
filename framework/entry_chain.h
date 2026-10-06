@@ -39,11 +39,14 @@ enum class Site : int {
     RecordCrc,           // 0x004FA4C0 cdecl(bytes, length, crc, bool invert), ret: the cache records' CRC-32; prologue 8B 4C 24 04 8B 44 24 08 (two movs)
     MonoTypeGetObject,   // 0x00EA8A00 cdecl(domain, type), ret: mono_type_get_object; prologue 53 8B 5C 24 0C 55 56 57 (push ebx; mov ebx,[esp+0Ch]; push ebp; push esi; push edi)
     MonoDomainFree,      // 0x00E75340 cdecl(domain, force), ret: mono_domain_free; prologue 55 56 8B 74 24 0C (push ebp; push esi; mov esi,[esp+0Ch])
+    ObjMapFind,          // 0x00939100 thiscall(out, key), ret 8: the object service's map find; prologue 83 EC 08 56 8B 74 24 14 (sub esp,8; push esi; mov esi,[esp+14h])
+    ObjMapInsert,        // 0x00939170 thiscall(out, node, flag), ret 0xC: its insert; prologue 53 55 56 8B 74 24 14 (push ebx; push ebp; push esi; mov esi,[esp+14h])
+    ObjMapErase,         // 0x00938D00 thiscall(out, node, bucket), ret 0xC: its erase; prologue 8B 44 24 04 53 (mov eax,[esp+4]; push ebx)
     Count
 };
 // lower = outer. FastDxt: the DXT sites only; ResourceCache: the DpfWriteDirect site only; ObjectIndex: the ObjectById
 // site only; SceneBudget: the three scene node sites only (features/scene_budget.h).
-enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, FastCas, FastCrc, ScriptMath, Count };
+enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, FastCas, FastCrc, ScriptMath, ObjectIdMap, Count };
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

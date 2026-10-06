@@ -172,15 +172,18 @@ const I18n::Entry kEntries[] = {
      "Pendant que la caméra bouge, les objets qui viennent de se charger ou de bouger entrent dans la scène quelques centaines par image au "
      "lieu de tous d'un coup : survoler un terrain en cours de chargement saccade moins. Un objet peut apparaître une ou deux images plus "
      "tard ; tout entre d'un coup dès que la caméra s'arrête. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
-    {"Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time. "
-     "Fewer stutters when lot lights update and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
-     "Memoriza onde o jogo encontrou cada lote ao procurá-lo pelo ID, em vez de vasculhar o mundo inteiro toda vez. Menos travadas quando "
-     "as luzes dos lotes atualizam e menos trabalho para os scripts do jogo. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Recuerda dónde encontró el juego cada solar al buscarlo por su ID, en lugar de recorrer todo el mundo cada vez. Menos tirones cuando "
-     "se actualizan las luces de los solares y menos trabajo para los scripts del juego. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Retient où le jeu a trouvé chaque terrain quand il le cherche par son ID, au lieu de parcourir tout le monde à chaque fois. Moins de "
-     "saccades quand l'éclairage des terrains se met à jour et moins de travail pour les scripts du jeu. Fait partie d'" APEX_PRODUCT_NAME
-     ". Crédits : @loinyx"},
+    {"Remembers where the game found each lot when it looks one up by its ID, instead of searching the whole world every time, "
+     "and keeps a quick index of every object by its ID next to the game's own list. Fewer stutters when lot lights update "
+     "and less work for the game's scripts. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Memoriza onde o jogo encontrou cada lote ao procurá-lo pelo ID, em vez de vasculhar o mundo inteiro toda vez, e mantém um índice "
+     "rápido de todos os objetos pelo ID ao lado da lista do próprio jogo. Menos travadas quando as luzes dos lotes atualizam e menos "
+     "trabalho para os scripts do jogo. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Recuerda dónde encontró el juego cada solar al buscarlo por su ID, en lugar de recorrer todo el mundo cada vez, y mantiene un índice "
+     "rápido de todos los objetos por su ID junto a la lista del propio juego. Menos tirones cuando se actualizan las luces de los solares "
+     "y menos trabajo para los scripts del juego. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Retient où le jeu a trouvé chaque terrain quand il le cherche par son ID, au lieu de parcourir tout le monde à chaque fois, et tient "
+     "un index rapide de tous les objets par leur ID à côté de la liste du jeu. Moins de saccades quand l'éclairage des terrains se met à "
+     "jour et moins de travail pour les scripts du jeu. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Rooms light up much sooner when you enter a lot, change floors or switch lamps: the lot you are on and the floor you look at "
      "go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. Part of " APEX_PRODUCT_NAME ". "
      "Credits: @loinyx",
