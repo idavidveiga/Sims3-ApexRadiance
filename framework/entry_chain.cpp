@@ -62,6 +62,7 @@ const SiteInfo kSiteInfo[kSites] = {
     {"object map insert", GameAddr::Id::ObjMapInsert, {0x53, 0x55, 0x56, 0x8B, 0x74, 0x24, 0x14}, 7},
     {"object map erase", GameAddr::Id::ObjMapErase, {0x8B, 0x44, 0x24, 0x04, 0x53}, 5},
     {"light object removal", GameAddr::Id::LightObjectRemove, {0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x57}, 7},
+    {"lot AddLotObjectsToScene", GameAddr::Id::LotAddObjectsToScene, {0x83, 0xEC, 0x08, 0x57, 0x8B, 0xF9}, 6},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

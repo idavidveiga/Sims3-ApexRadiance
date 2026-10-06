@@ -56,6 +56,7 @@ Every switch works at the exact game function behind one measured cost, and foll
 | Switch (menu label) | Card | Introduced | Page |
 |---|---|---|---|
 | Faster room lighting | Camera and lighting | 2.1.0 or earlier | [room-light-queue.md](room-light-queue.md) |
+| Lot detail streaming, Object streaming (5 switches) | Lot detail streaming, Object streaming | unreleased (06/10, from idavidveiga's fork) | [lot-streaming.md](lot-streaming.md) |
 | Spread lot lighting while moving | Camera and lighting | 2.1.0 or earlier | [lot-lighting-motion.md](lot-lighting-motion.md) |
 | Wall shading waits while moving | Camera and lighting | 2.1.0 or earlier | [wall-shading-while-moving.md](wall-shading-while-moving.md) |
 | Spread new objects over frames | Camera and lighting | 2.1.0 or earlier | [scene-node-budget.md](scene-node-budget.md) |
