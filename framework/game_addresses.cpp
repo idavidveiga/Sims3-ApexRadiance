@@ -271,6 +271,7 @@ constexpr Info kInfo[] = {
     {"ObjMapFind", 0x00939100},
     {"ObjMapInsert", 0x00939170},
     {"ObjMapErase", 0x00938D00},
+    {"LightObjectRemove", 0x006C7610},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -554,6 +555,7 @@ const Entry kTable[] = {
     {Id::LampLitCall, K::Sig, W::Text, None, 0, {{"8B CF E8 ?? ?? ?? ?? 8B 44 24 1C 3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 0, M::At}, NOSIG}},
     {Id::LampMarkCall, K::Sig, W::Text, None, 0, {{"3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 21, M::At}, NOSIG}},
     {Id::LampMark, K::Target, W::Text, Id::LampMarkCall, 0, {NOSIG, NOSIG}},
+    {Id::LightObjectRemove, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 08 56 57 8B 7C 24 14 6A 00 6A 01 57 8B F1 53 8D 86 D4 00 00 00 50 E8 ?? ?? ?? ?? 6A 00 6A 01 57 53 8D 8E 90 00 00 00 51 8B CE E8", 0, M::At}, NOSIG}},
     {Id::ObjMapFind, K::Sig, W::Text, None, 0, {{"83 EC 08 56 8B 74 24 14 8B 06 33 D2 57 BF 09 04 00 00 F7 F7 8B 04 91 85 C0 8D 14 91 74 16 8B 3E 8B 76 04 3B 78 08 75 05 3B 70 0C 74 31 8B 40 10 85 C0 75 EF 8D 81 24 10 00 00", 0, M::At}, NOSIG}},
     {Id::ObjMapInsert, K::Sig, W::Text, None, 0, {{"53 55 56 8B 74 24 14 8B 46 08 57 33 D2 BF 09 04 00 00 F7 F7 8B 04 91 8D 3C 91 8B D0 85 D2 74 17 8B 5E 08 8B 6E 0C 3B 5A 08 75 05 3B 6A 0C 74 2A 8B 52 10 85 D2 75 EF 89 46 10", 0, M::At}, NOSIG}},
     {Id::ObjMapErase, K::Sig, W::Text, None, 0, {{"8B 44 24 04 53 8B 5C 24 10 56 57 8B 7C 24 14 8B 57 10 85 D2 89 58 04 89 10 75 13 BE 04 00 00 00 01 70 04 8B 50 04 8B 12 85 D2 89 10 74 F2 8B 33 3B F7 8B 56 10 75 0F 5F 89 13 83 81 28 10 00 00 FF 5E 5B C2 0C 00", 0, M::At}, NOSIG}},

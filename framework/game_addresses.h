@@ -253,6 +253,7 @@ enum class Id : uint16_t {
     ObjMapFind, // FUN_00939100 thiscall(map; out[2], key*), ret 8: the object service's hash map find (1033 buckets)
     ObjMapInsert, // FUN_00939170 thiscall(map; out[3], node, flag), ret 0xC: its insert (leaf)
     ObjMapErase, // FUN_00938d00 thiscall(map; out[2], node, bucket*), ret 0xC: its erase (leaf)
+    LightObjectRemove, // FUN_006c7610 thiscall(levelLights; idLo, idHi), ret 8: an object's entries out of the five per-level light maps
     Count
 };
 

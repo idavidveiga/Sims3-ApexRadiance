@@ -43,6 +43,7 @@ struct SiteInfo {
 // 0x00EA8A01..0x00EA8A07 or 0x00E75341..0x00E75345 (scan of every E8 / E9 / Jcc / JMP short on Steam 1.67.2).
 // The object service's map find / insert / erase (05/10): register-only prologues; no branch lands on 0x00939101..07,
 // 0x00939171..76 or 0x00938D01..04 (same scan).
+// The light object removal 0x006C7610 (05/10): register-only prologue; no branch lands on 0x006C7611..16 (same scan).
 const SiteInfo kSiteInfo[kSites] = {
     {"DXT1 encoder", GameAddr::Id::DxtEncode1, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"DXT5 encoder", GameAddr::Id::DxtEncode5, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
@@ -60,6 +61,7 @@ const SiteInfo kSiteInfo[kSites] = {
     {"object map find", GameAddr::Id::ObjMapFind, {0x83, 0xEC, 0x08, 0x56, 0x8B, 0x74, 0x24, 0x14}, 8},
     {"object map insert", GameAddr::Id::ObjMapInsert, {0x53, 0x55, 0x56, 0x8B, 0x74, 0x24, 0x14}, 7},
     {"object map erase", GameAddr::Id::ObjMapErase, {0x8B, 0x44, 0x24, 0x04, 0x53}, 5},
+    {"light object removal", GameAddr::Id::LightObjectRemove, {0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x57}, 7},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

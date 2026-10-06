@@ -730,5 +730,7 @@ APEX_REGISTER_FEATURE(RoomLightQueuePatch,
                                             "-> 0x69E770) is raised for the priority lot on and below the camera's story; a finished class-0 solve steps straight to "
                                             "the target class (0x69EAA2); an invalidated room keeps its class (0x69EF58, 0x69F1C5).",
                                             "After the scheduler (jmp 0x6C5E39 -> 0x6C5C20), rooms of the priority lot are solved at once and the next one picked, within "
-                                            "4 ms per frame (1 ms while the camera moves), on the render thread only."},
+                                            "4 ms per frame (1 ms while the camera moves), on the render thread only.",
+                                            "An object removal from a level's five light maps (0x6C7610, run for twelve levels per removal) returns at once when "
+                                            "the five maps are empty (nothing to find)."},
                        .gameCodeGroup = "RoomLightQueue"});

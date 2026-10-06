@@ -30,11 +30,17 @@
 //   Drain: the jmp at 0x006C5E39 -> PickHook: the scheduler, then, on the render thread and while the current room is a
 //   freshly picked room of the priority lot in state 3, solve it with a stopwatch of its own and pick again, until the
 //   drain budget (4 ms, 1 ms while the camera moves) is spent or the room did not finish.
+//   Empty removal (05/10): 0x006C7610, thiscall(levelLights; idLo, idHi), ret 8, takes an object out of the level's five
+//   light maps (+0x4C, +0x90, +0xD4, +0x118, +0x15C: hash maps {?, buckets, bucket count, element count at +0x10}) with
+//   five calls of 0x006C7550, each a find (0x00D726F0) that does nothing when the ID is not there; 0x006C7690 runs it for
+//   the twelve levels -4..7 of a lot on every object removal (60 finds), and its callers ignore eax. When the five element
+//   counts are 0 nothing can be found: the entry hook (framework/entry_chain.h, layer RoomLightQueue) returns at once.
 // Every write goes through MemPatch::WriteCodeSuspended (no thread inside the bytes) and is put back by Stop.
 #include "room_light_queue.h"
 #include "apex_log.h"
 #include "build_flavor.h"
 #include "d3d9_hooks.h"
+#include "entry_chain.h"
 #include "game_addresses.h"
 #include "lot_lighting_motion.h"
 #include "level_light_share.h"
@@ -71,7 +77,22 @@ struct Write {
 Write g_writes[5]; // priority call, step, keep A, keep B, pick jump
 std::mutex g_ctrl;
 bool g_running = false;
-bool g_prioOn = false, g_stepOn = false, g_keepOn = false, g_drainOn = false;
+bool g_prioOn = false, g_stepOn = false, g_keepOn = false, g_drainOn = false, g_emptyOn = false;
+std::atomic<long> g_emptyCalls{0}, g_emptySkipped{0};
+
+// 0x006C7610 (see the header comment, "Empty removal"): nothing to take out of five empty maps
+void __fastcall EmptyRemovalHook(uint8_t* level, void* edx, uint32_t idLo, uint32_t idHi) {
+    using Fn = void(__fastcall*)(uint8_t*, void*, uint32_t, uint32_t);
+    const auto next = reinterpret_cast<Fn>(EntryChain::Next(EntryChain::Site::LightObjectRemove, EntryChain::Layer::RoomLightQueue));
+    g_emptyCalls.fetch_add(1, std::memory_order_relaxed);
+    if (level && !(*reinterpret_cast<const uint32_t*>(level + 0x5C) | *reinterpret_cast<const uint32_t*>(level + 0xA0) |
+                   *reinterpret_cast<const uint32_t*>(level + 0xE4) | *reinterpret_cast<const uint32_t*>(level + 0x128) |
+                   *reinterpret_cast<const uint32_t*>(level + 0x16C))) {
+        g_emptySkipped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    next(level, edx, idLo, idHi);
+}
 std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
 
@@ -267,6 +288,10 @@ void RestoreAll() {
         if (MemPatch::WriteCodeSuspended(w.at, w.orig, w.n)) w.done = false;
         else LOG_WARNING(std::format("[RoomLightQueue] Could not put back the game code at {:#x}", w.at));
     }
+    if (g_emptyOn) {
+        EntryChain::Remove(EntryChain::Site::LightObjectRemove, EntryChain::Layer::RoomLightQueue);
+        g_emptyOn = false;
+    }
     g_prioOn = g_stepOn = g_keepOn = g_drainOn = false;
 }
 
@@ -318,13 +343,19 @@ bool Start(std::string* error) {
         g_drainOn = g_drainOn && Put(g_writes[4], kPickJump, b, 5);
         if (!g_drainOn) D3D9Hooks::UnregisterAll(kPresentName);
     }
-    if (!g_prioOn && !g_stepOn && !g_keepOn && !g_drainOn) {
+    // 5. removals from empty light maps return at once
+    if (GameAddr::Have({Id::LightObjectRemove})) {
+        std::string err;
+        g_emptyOn = EntryChain::Install(EntryChain::Site::LightObjectRemove, EntryChain::Layer::RoomLightQueue, reinterpret_cast<void*>(&EmptyRemovalHook), &err);
+        if (!g_emptyOn) LOG_WARNING("[RoomLightQueue] Empty removal not used: " + err);
+    }
+    if (!g_prioOn && !g_stepOn && !g_keepOn && !g_drainOn && !g_emptyOn) {
         if (error) *error = "Faster room lighting: the game code differs (different game version?)";
         return false;
     }
     g_running = true;
-    LOG_INFO(std::format("[RoomLightQueue] Started: viewed lot first {}, no middle step {}, requeues keep the class {}, several rooms per frame {}",
-                         g_prioOn ? "yes" : "no", g_stepOn ? "yes" : "no", g_keepOn ? "yes" : "no", g_drainOn ? "yes" : "no"));
+    LOG_INFO(std::format("[RoomLightQueue] Started: viewed lot first {}, no middle step {}, requeues keep the class {}, several rooms per frame {}, empty removals skipped {}",
+                         g_prioOn ? "yes" : "no", g_stepOn ? "yes" : "no", g_keepOn ? "yes" : "no", g_drainOn ? "yes" : "no", g_emptyOn ? "yes" : "no"));
     return true;
 }
 
@@ -353,9 +384,10 @@ std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
     return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
-                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting){}",
+                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
-                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), SolveTimes());
+                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
+                       g_emptyCalls.load(), SolveTimes());
 }
 
 void RenderDeveloperUI() {
