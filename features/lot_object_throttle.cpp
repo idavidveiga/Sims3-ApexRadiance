@@ -275,7 +275,10 @@ void Stop() {
 }
 
 void Tick() {
-    if (!g_running.load(std::memory_order_acquire) || g_externalOwner.load(std::memory_order_acquire) || !g_addLotObjectsEntry || !g_postRemoteMethodCall) return;
+    // copies: Stop on another thread may clear the pointers while the posts below run (06/10 review)
+    const auto post = g_postRemoteMethodCall;
+    const auto entry = g_addLotObjectsEntry;
+    if (!g_running.load(std::memory_order_acquire) || g_externalOwner.load(std::memory_order_acquire) || !entry || !post) return;
 
     struct Post {
         void* lot;
@@ -303,7 +306,8 @@ void Tick() {
             g_cancelled.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        g_postRemoteMethodCall(1, p.lot, reinterpret_cast<void*>(g_addLotObjectsEntry), 0, p.initialLoad, p.alwaysVisibleOnly);
+        if (!g_running.load(std::memory_order_acquire)) return;
+        post(1, p.lot, reinterpret_cast<void*>(entry), 0, p.initialLoad, p.alwaysVisibleOnly);
         g_posts.fetch_add(1, std::memory_order_relaxed);
     }
 }
