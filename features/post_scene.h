@@ -15,7 +15,7 @@
 
 namespace PostScene {
 using Effect = void (*)(IDirect3DDevice9*);
-enum Order : int { kAmbientOcclusion = 10, kEdgeSmoothing = 20, kDepthBlur = 30 };
+enum Order : int { kAmbientOcclusion = 10, kEdgeSmoothing = 20, kDepthBlur = 30, kPicture = 40 };
 void Add(int order, Effect fn); // registers the draw hooks with the first effect
 void Remove(Effect fn);         // and unregisters them with the last one
 // The camera, read from the scene draws' vertex constants while an effect asks for it (reference counted)

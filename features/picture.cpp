@@ -921,7 +921,19 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx, bool isStripOfTwo) {
     }
 }
 
+// Color at the end of the scene (06/10 evening): the pass runs as the last post-scene effect, on the finished scene before the
+// game draws its UI, with no UI mask; the end-of-frame pass is only the fallback for a frame without that boundary. Comparing
+// a scene copy with the final frame failed: the game redraws the whole picture from a reduced copy after its UI (137 times
+// a frame in a capture), so every pixel read as UI and no setting showed.
+bool g_atBoundary = false, g_boundaryDone = false;
+void BoundaryEffect(IDirect3DDevice9* dev) {
+    g_atBoundary = true;
+    Picture::Get().OnEndScene(dev);
+    g_atBoundary = false;
+}
+
 void OnFrameBoundary(IDirect3DDevice9* dev) {
+    g_boundaryDone = false;
     IDirect3DSurface9* s = nullptr;
     if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &s)) && s) {
         gpu.backBuffer = s;
@@ -945,6 +957,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
 void RegisterHooks(IDirect3DDevice9* dev) {
     if (gpu.hooks) return;
     gpu.hooks = true;
+    PostScene::Add(PostScene::kPicture, BoundaryEffect); // Color on the finished scene, before the UI (see BoundaryEffect)
     using namespace D3D9Hooks;
     IDirect3DSurface9* s = nullptr;
     if (SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
@@ -1314,6 +1327,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         // the next frame it is on, which reads the current render target)
         if (gpu.hooks) {
             D3D9Hooks::UnregisterAll(kHookName);
+            PostScene::Remove(BoundaryEffect);
             gpu.hooks = false;
             gpu.curRT0 = nullptr;
             gpu.frameReady = false;
@@ -1322,6 +1336,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     }
     if (!ShaderCache::PrecompileComplete()) return; // keep loading frames moving while bytecode compiles
     RegisterHooks(dev);
+    if (!g_atBoundary && g_boundaryDone) return; // already applied on the finished scene this frame
     const unsigned long long now = GetTickCount64();
     if (dev != m_lastDevice) { // the game has two devices (a tiny one first): which one the frames end on
         if (m_lastDevice && m_deviceChanges++ < 10)
@@ -1365,6 +1380,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         bb->Release();
         return;
     }
+    if (g_atBoundary) g_boundaryDone = true;
     m_skip.store(kSkipNone);
     m_lastApplied.store(now);
     if (gpu.sceneCopied) m_lastSceneCopy.store(now);
@@ -1571,7 +1587,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     auto mix = [&](int i) { return std::clamp(q.mixer[i], 0.0f, 2.0f); };
     const float W = static_cast<float>(gpu.width), H = static_cast<float>(gpu.height);
     const float c[kConsts][4] = {
-        {std::clamp(q.saturation, 0.0f, 2.0f), gpu.sceneCopied ? 1.0f : 0.0f, q.compare ? 1.0f : 0.0f, 0},
+        {std::clamp(q.saturation, 0.0f, 2.0f), (gpu.sceneCopied && !g_atBoundary) ? 1.0f : 0.0f, q.compare ? 1.0f : 0.0f, 0},
         {1.0f / W, 1.0f / H, W, H},
         {std::exp2(std::clamp(q.exposure, -3.0f, 3.0f)), std::clamp(q.contrast, 0.5f, 1.8f), std::clamp(q.blacks, -1.0f, 1.0f) * 0.02f, 0},
         {wbR / wbL, wbG / wbL, wbB / wbL, 0},
