@@ -124,11 +124,6 @@ float4 cAuto   : register(c52); // x = amount, y = target luminance (linear), z 
 float4 cCas    : register(c53); // x = sharpness (0 .. 1)
 float4 cDalt   : register(c54); // x = type (0 protan, 1 deutan, 2 tritan), y = amount
 float4 cAdapt  : register(c56); // AdaptPS: x = blend toward this frame's average
-float4 cRelight  : register(c57); // x = Relight on, y = light taken by surfaces that look black, z = shadows, w = shadow reach (m)
-float4 cRlInv[4] : register(c58); // (ndc x, ndc y, device depth, 1) -> position from the camera, homogeneous (rows)
-float4 cRlVp[4]  : register(c62); // position from the camera -> clip (rows), for the shadow steps
-float4 cRlPos[4] : register(c66); // xyz = light position from the camera (m), w = range (m), 0 = off
-float4 cRlCol[4] : register(c70); // rgb = light color x brightness
 static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
 
 // A neighbour or shifted tap for the scene filters: from the scene copy (no UI) when it exists, so a filter that reads
@@ -445,79 +440,6 @@ float3 FakeHdr(float2 uv, float3 g)
 }
 )HLSL"
                             R"HLSL(
-// Relight (ReShade's ReLight idea): the player's own lights, fixed in the world. A scene pixel's position comes from its
-// depth (the camera at 0, cRlInv), its normal from the neighbours (on each axis the side nearer in depth, so an edge does
-// not smear), and each light adds its colour x the surface's colour x the angle x a falloff that ends at its range.
-// Surfaces that look black still take some light (cRelight.y, with the hue of their surroundings: at night most surfaces
-// are dark for want of light, and a single dark pixel's hue is noise). Shadows: 12 steps from the surface toward the
-// light, each projected on the screen (cRlVp); a step behind the depth there by 2 cm .. 1 m is blocked.
-float RlDepth(float2 uv)
-{
-    return tex2Dlod(sDepth, float4(uv, 0, 0)).r;
-}
-float3 RlPos(float2 uv, float d)
-{
-    float4 q = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
-    float4 h = float4(dot(cRlInv[0], q), dot(cRlInv[1], q), dot(cRlInv[2], q), dot(cRlInv[3], q));
-    return h.xyz / h.w;
-}
-float3 Relight(float2 uv, float3 g)
-{
-    float d = RlDepth(uv);
-    if (d >= 0.99999) return g; // the sky
-    float3 P = RlPos(uv, d);
-    float2 ox = float2(cSize.x, 0.0), oy = float2(0.0, cSize.y);
-    float dl = RlDepth(uv - ox), dr = RlDepth(uv + ox), du = RlDepth(uv - oy), dd = RlDepth(uv + oy);
-    float3 ex = abs(dr - d) < abs(dl - d) ? RlPos(uv + ox, dr) - P : P - RlPos(uv - ox, dl);
-    float3 ey = abs(dd - d) < abs(du - d) ? RlPos(uv + oy, dd) - P : P - RlPos(uv - oy, du);
-    float3 N = cross(ey, ex);
-    float nl = length(N);
-    if (nl < 1e-10) return g;
-    N /= nl;
-    if (dot(N, P) > 0.0) N = -N; // toward the camera
-    float noise = frac(52.9829189 * frac(dot(uv * cSize.zw, float2(0.06711056, 0.00583715))));
-    float3 light = float3(0.0, 0.0, 0.0);
-    [loop] for (int i = 0; i < 4; i++)
-    {
-        float R = cRlPos[i].w;
-        [branch] if (R > 0.0)
-        {
-            float3 L = cRlPos[i].xyz - P;
-            float dist = length(L);
-            float3 l = L / max(dist, 1e-4);
-            float x = saturate(dist / R);
-            float win = 1.0 - x * x * x * x;
-            float k = dist * 4.0 / R;
-            float a = saturate((dot(N, l) + 0.1) / 1.1) * win * win / (1.0 + k * k);
-            [branch] if (cRelight.z > 0.5 && a > 0.001)
-            {
-                float reach = min(dist, cRelight.w);
-                float3 o = P + N * (0.02 + 0.002 * length(P)); // off the surface (further away: coarser depth)
-                float vis = 1.0;
-                [loop] for (int s = 0; s < 12; s++)
-                {
-                    float4 S = float4(o + l * (reach * (s + noise) / 12.0), 1.0);
-                    float4 c = float4(dot(cRlVp[0], S), dot(cRlVp[1], S), dot(cRlVp[2], S), dot(cRlVp[3], S));
-                    if (c.w <= 1e-3) break;
-                    float2 su = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
-                    if (su.x < 0.0 || su.x > 1.0 || su.y < 0.0 || su.y > 1.0) break;
-                    float behind = ViewZ(c.z / c.w) - ViewZ(RlDepth(su));
-                    vis = min(vis, 1.0 - smoothstep(0.02, 0.06, behind) * (1.0 - smoothstep(0.6, 1.0, behind)));
-                    if (vis < 0.01) break;
-                }
-                a *= vis;
-            }
-            light += cRlCol[i].rgb * a;
-        }
-    }
-    float3 around = Decode(tex2Dlod(sQuart, float4(uv, 0, 0)).rgb);
-    float am = max(around.r, max(around.g, around.b));
-    float3 hue = am > 1e-5 ? around / am : float3(1.0, 1.0, 1.0);
-    float3 add = max(g, hue * cRelight.y) * light;
-    return g + add / (1.0 + add); // a soft shoulder: strong light does not clip at once
-}
-)HLSL"
-                            R"HLSL(
 float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
 {
     float3 f = tex2Dlod(sFrame, float4(uv, 0, 0)).rgb;
@@ -583,7 +505,6 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         fs = lerp(fs, lerp(b1, b2, saturate(tiltM * 2.0 - 1.0)), saturate(tiltM * 2.0));
     }
     float3 g = Decode(fs);
-    [branch] if (cRelight.x > 0.5 && scene) g = Relight(suv, g); // the player's lights first: the grade and looks apply to them
     // auto exposure (scene only): toward a target brightness, from the scene average adapted over time (AdaptPS)
     [branch] if (cFlagG.x > 0.5 && scene)
     {
@@ -831,9 +752,6 @@ struct Gpu {
     bool depthTried = false, depthCopied = false;
     IDirect3DSurface9* curRT0 = nullptr; // identity only
     IDirect3DSurface9* backBuffer = nullptr;
-    // Relight's "Place at the screen center": the depth copy's centre pixel into a 1x1 target, read back once per place
-    IDirect3DSurface9* pickRt = nullptr;  // R32F render target
-    IDirect3DSurface9* pickSys = nullptr; // R32F, system memory
 };
 Gpu gpu;
 
@@ -864,86 +782,6 @@ std::string ParamsText(const PictureParams& q) {
 struct QuadVertex {
     float x, y, z, rhw, u, v;
 };
-
-// ---- Relight: the camera ----
-// The scene draws' view-projection (PostScene::CameraViewProj: clip = VP x (world, 1), rows) in double: its inverse
-// rebuilds a pixel's world point from (ndc, device depth); its eye is where clip x, y and w are all 0. The world is about
-// 1 km from the origin, so the shader works relative to the eye (both matrices are shifted here, in double).
-bool Invert4(const double m[4][4], double out[4][4]) {
-    double a[4][8];
-    for (int r = 0; r < 4; r++)
-        for (int k = 0; k < 8; k++) a[r][k] = k < 4 ? m[r][k] : (k - 4 == r ? 1.0 : 0.0);
-    for (int col = 0; col < 4; col++) {
-        int piv = col;
-        for (int r = col + 1; r < 4; r++)
-            if (std::fabs(a[r][col]) > std::fabs(a[piv][col])) piv = r;
-        if (std::fabs(a[piv][col]) < 1e-12) return false;
-        if (piv != col)
-            for (int k = 0; k < 8; k++) std::swap(a[piv][k], a[col][k]);
-        const double inv = 1.0 / a[col][col];
-        for (int k = 0; k < 8; k++) a[col][k] *= inv;
-        for (int r = 0; r < 4; r++) {
-            if (r == col) continue;
-            const double f = a[r][col];
-            for (int k = 0; k < 8; k++) a[r][k] -= f * a[col][k];
-        }
-    }
-    for (int r = 0; r < 4; r++)
-        for (int k = 0; k < 4; k++) out[r][k] = a[r][k + 4];
-    return true;
-}
-bool EyeOf(const double vp[4][4], double eye[3]) {
-    const int rows[3] = {0, 1, 3};
-    double m[3][3], b[3];
-    for (int i = 0; i < 3; i++) {
-        for (int k = 0; k < 3; k++) m[i][k] = vp[rows[i]][k];
-        b[i] = -vp[rows[i]][3];
-    }
-    const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
-                       m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    if (std::fabs(det) < 1e-12) return false;
-    for (int c = 0; c < 3; c++) { // Cramer: column c replaced by b
-        double t[3][3];
-        for (int i = 0; i < 3; i++)
-            for (int k = 0; k < 3; k++) t[i][k] = k == c ? b[i] : m[i][k];
-        eye[c] = (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1]) - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0]) +
-                  t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / det;
-    }
-    return true;
-}
-// The world point under the screen's centre, from this frame's depth copy (a 1x1 copy read back: it waits for the GPU
-// once, when the player presses Place); false with why
-bool PickCentre(IDirect3DDevice9* dev, const double inv[4][4], double world[3], std::string& why) {
-    if (!gpu.pickRt && FAILED(dev->CreateRenderTarget(1, 1, D3DFMT_R32F, D3DMULTISAMPLE_NONE, 0, FALSE, &gpu.pickRt, nullptr))) gpu.pickRt = nullptr;
-    if (!gpu.pickSys && FAILED(dev->CreateOffscreenPlainSurface(1, 1, D3DFMT_R32F, D3DPOOL_SYSTEMMEM, &gpu.pickSys, nullptr))) gpu.pickSys = nullptr;
-    if (!gpu.pickRt || !gpu.pickSys) {
-        why = "The scene depth could not be read on this graphics card";
-        return false;
-    }
-    const LONG cx = static_cast<LONG>(gpu.width / 2), cy = static_cast<LONG>(gpu.height / 2);
-    const RECT src{cx, cy, cx + 1, cy + 1};
-    D3DLOCKED_RECT lr{};
-    if (FAILED(dev->StretchRect(gpu.depthSurf, &src, gpu.pickRt, nullptr, D3DTEXF_POINT)) || FAILED(dev->GetRenderTargetData(gpu.pickRt, gpu.pickSys)) ||
-        FAILED(gpu.pickSys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
-        why = "The scene depth could not be read on this graphics card";
-        return false;
-    }
-    const float d = *static_cast<const float*>(lr.pBits);
-    gpu.pickSys->UnlockRect();
-    if (!(d >= 0.0f && d < 0.99999f)) {
-        why = "Nothing under the center of the screen: point the camera at the floor or a wall";
-        return false;
-    }
-    const double q[4] = {0.0, 0.0, d, 1.0};
-    double h[4];
-    for (int r = 0; r < 4; r++) h[r] = inv[r][0] * q[0] + inv[r][1] * q[1] + inv[r][2] * q[2] + inv[r][3] * q[3];
-    if (std::fabs(h[3]) < 1e-12) {
-        why = "Nothing under the center of the screen: point the camera at the floor or a wall";
-        return false;
-    }
-    for (int i = 0; i < 3; i++) world[i] = h[i] / h[3];
-    return true;
-}
 
 // The scene depth (INTZ) into gpu.depthTex, in the middle of the game's drawing: every state it touches is put back
 void CopyDepth(IDirect3DDevice9* dev) {
@@ -1291,7 +1129,7 @@ const FilterBoolKey kFilterBools[] = {
     {"retro_3dfx", &PictureParams::retro3dfx}, {"crt", &PictureParams::crt},
     {"filmic_pass", &PictureParams::filmic}, {"tint_filter", &PictureParams::tintFilter}, {"levels", &PictureParams::levels},
     {"lut", &PictureParams::lut}, {"fog", &PictureParams::fog}, {"auto_exposure", &PictureParams::autoExposure}, {"cas", &PictureParams::cas},
-    {"daltonize", &PictureParams::daltonize}, {"relight", &PictureParams::relight}, {"relight_shadows", &PictureParams::relightShadows}};
+    {"daltonize", &PictureParams::daltonize}};
 const FilterFloatKey kFilterFloats[] = {
     {"technicolor1_amount", &PictureParams::tech1Amount}, {"technicolor1_cyan", &PictureParams::tech1Cyan},
     {"technicolor1_saturation", &PictureParams::tech1Saturation}, {"technicolor2_amount", &PictureParams::tech2Amount},
@@ -1329,7 +1167,7 @@ const FilterFloatKey kFilterFloats[] = {
     {"fog_density", &PictureParams::fogDensity}, {"fog_hue", &PictureParams::fogHue}, {"fog_tint", &PictureParams::fogTint},
     {"auto_exposure_amount", &PictureParams::autoAmount}, {"auto_exposure_target", &PictureParams::autoTarget},
     {"auto_exposure_speed", &PictureParams::autoSpeed}, {"auto_exposure_range", &PictureParams::autoRange}, {"cas_amount", &PictureParams::casAmount},
-    {"daltonize_type", &PictureParams::daltonType}, {"daltonize_amount", &PictureParams::daltonAmount}, {"relight_dark", &PictureParams::relightDark}};
+    {"daltonize_type", &PictureParams::daltonType}, {"daltonize_amount", &PictureParams::daltonAmount}};
 const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tech2Dye}, {"dpx_curve", &PictureParams::dpxCurve},
                                         {"filmic_curve", &PictureParams::filmicCurve}};
 
@@ -1357,8 +1195,6 @@ void Picture::ReleaseResources() {
     SafeRelease(gpu.depthTex);
     gpu.depthTried = false;
     gpu.depthCopied = false;
-    SafeRelease(gpu.pickRt);
-    SafeRelease(gpu.pickSys);
     for (int i = 0; i < Gpu::kChain; i++) {
         SafeRelease(gpu.chainSurf[i]);
         SafeRelease(gpu.chainTex[i]);
@@ -1580,95 +1416,17 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         LoadLut(dev, q.lutFile);
     }
     const bool fLut = on(q.lut, q.lutAmount) && gpu.lutTex && gpu.lutSize > 0;
-    // Emphasize, the fog and Relight read the scene depth: requested only while one of them is on
-    const bool wantRelight = q.relight;
-    RequestDepth(wantEmph || wantFog || wantRelight);
+    // Emphasize and the fog read the scene depth: requested only while one of them is on
+    RequestDepth(wantEmph || wantFog);
     // the depth copied with the scene (the live one has the Sim portrait's cleared square by now); else the live one
-    IDirect3DTexture9* depth = (wantEmph || wantFog || wantRelight) ? (gpu.depthCopied && gpu.depthTex ? gpu.depthTex : DepthShare::Texture()) : nullptr;
+    IDirect3DTexture9* depth = (wantEmph || wantFog) ? (gpu.depthCopied && gpu.depthTex ? gpu.depthTex : DepthShare::Texture()) : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
     const bool fEmph = wantEmph && depth && camNear > 0.0f;
     const bool fFog = wantFog && depth && camNear > 0.0f;
-    // Relight: this frame's camera relative to its eye, a pending "Place at the screen center", the placed lights
-    float rl[17][4] = {};
-    bool fRelight = false;
-    if (wantRelight && depth && camNear > 0.0f) {
-        float vpf[4][4];
-        double vp[4][4], inv[4][4], eye[3];
-        bool cam = PostScene::CameraViewProj(vpf);
-        if (cam) {
-            for (int r = 0; r < 4; r++)
-                for (int k = 0; k < 4; k++) vp[r][k] = vpf[r][k];
-            cam = EyeOf(vp, eye) && Invert4(vp, inv);
-        }
-        PictureParams lights = q;
-        if (const int pick = m_pickLight.load(std::memory_order_relaxed); pick >= 0 && pick < PictureParams::kRelightLights) {
-            std::string why;
-            double world[3];
-            if (cam && gpu.depthCopied && gpu.depthSurf) {
-                if (PickCentre(dev, inv, world, why)) {
-                    {
-                        std::lock_guard<std::mutex> lock(m_mutex);
-                        for (int i = 0; i < 3; i++) m_p.rlPoint[pick][i] = static_cast<float>(world[i]);
-                        m_p.rlPlaced[pick] = true;
-                        m_p.rlOn[pick] = true;
-                        lights.rlOn[pick] = lights.rlPlaced[pick] = true;
-                        for (int i = 0; i < 3; i++) lights.rlPoint[pick][i] = m_p.rlPoint[pick][i];
-                        m_pickError.clear();
-                    }
-                    LOG_INFO(std::format("[Picture] Relight: light {} placed at ({:.2f}, {:.2f}, {:.2f})", pick + 1, world[0], world[1], world[2]));
-                    ApexConfig::RequestSave();
-                } else {
-                    std::lock_guard<std::mutex> lock(m_mutex);
-                    m_pickError = why;
-                }
-                m_pickLight.store(-1, std::memory_order_relaxed);
-                m_pickTries = 0;
-            } else if (++m_pickTries > 60) { // about a second without the depth copy or the camera
-                std::lock_guard<std::mutex> lock(m_mutex);
-                m_pickError = "Needs the scene depth: turn off the game's Edge Smoothing (Options \xE2\x80\xBA Graphics)";
-                m_pickLight.store(-1, std::memory_order_relaxed);
-                m_pickTries = 0;
-            }
-        }
-        if (cam) {
-            // rows 0..2 of the inverse minus eye x row 3 (positions from the eye); the view-projection of eye-relative points
-            for (int r = 0; r < 4; r++)
-                for (int k = 0; k < 4; k++) {
-                    rl[1 + r][k] = static_cast<float>(r < 3 ? inv[r][k] - eye[r] * inv[3][k] : inv[r][k]);
-                    rl[5 + r][k] = static_cast<float>(k < 3 ? vp[r][k] : vp[r][3] + vp[r][0] * eye[0] + vp[r][1] * eye[1] + vp[r][2] * eye[2]);
-                }
-            for (int i = 0; i < PictureParams::kRelightLights; i++) {
-                if (!lights.rlOn[i] || !lights.rlPlaced[i] || !(lights.rlBrightness[i] > 0.001f)) continue;
-                rl[9 + i][0] = static_cast<float>(lights.rlPoint[i][0] - eye[0]);
-                rl[9 + i][1] = static_cast<float>(lights.rlPoint[i][1] + std::clamp(lights.rlHeight[i], 0.0f, 5.0f) - eye[1]);
-                rl[9 + i][2] = static_cast<float>(lights.rlPoint[i][2] - eye[2]);
-                rl[9 + i][3] = std::clamp(lights.rlRange[i], 1.0f, 30.0f);
-                // its colour: white toward the hue by the colour strength, luminance 1, times the brightness
-                float h[3];
-                HueColour(lights.rlHue[i], h);
-                const float t = std::clamp(lights.rlColor[i], 0.0f, 1.0f);
-                float col[3];
-                for (int k = 0; k < 3; k++) col[k] = 1.0f + t * (h[k] - 1.0f);
-                const float lum = std::max(0.2126f * col[0] + 0.7152f * col[1] + 0.0722f * col[2], 1e-4f);
-                const float b = std::clamp(lights.rlBrightness[i], 0.0f, 4.0f);
-                for (int k = 0; k < 3; k++) rl[13 + i][k] = col[k] / lum * b;
-                fRelight = true;
-            }
-            rl[0][0] = fRelight ? 1.0f : 0.0f;
-            rl[0][1] = std::clamp(lights.relightDark, 0.0f, 1.0f);
-            rl[0][2] = lights.relightShadows ? 1.0f : 0.0f;
-            rl[0][3] = 4.0f;
-        }
-    } else if (m_pickLight.load(std::memory_order_relaxed) >= 0 && ++m_pickTries > 60) { // Relight on, but no depth or camera
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_pickError = "Needs the scene depth: turn off the game's Edge Smoothing (Options \xE2\x80\xBA Graphics)";
-        m_pickLight.store(-1, std::memory_order_relaxed);
-        m_pickTries = 0;
-    }
     // clarity, glow, halation, dreamy, tilt-shift and Fake HDR: the scene (without the UI when the copy exists)
     // reduced to 1/2, 1/4 and 1/8 through 2x2 boxes
     const bool clarity = std::fabs(q.clarity) > 0.001f;
-    if (clarity || fGlow || fHal || fDream || fTilt || fHdr || fFog || fAuto || fRelight) {
+    if (clarity || fGlow || fHal || fDream || fTilt || fHdr || fFog || fAuto) {
         IDirect3DSurface9* src = gpu.sceneCopied ? gpu.sceneSurf : gpu.frameSurf;
         for (int i = 0; i < Gpu::kChain; i++) {
             dev->StretchRect(src, nullptr, gpu.chainSurf[i], nullptr, D3DTEXF_LINEAR);
@@ -1679,7 +1437,6 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     // save what the pass touches (the game continues from here next frame)
     constexpr DWORD kSamplers = 8;
     constexpr UINT kConsts = 57;
-    constexpr UINT kRlConsts = 17, kSavedConsts = kConsts + kRlConsts; // Relight: c57..c73, set apart (see rl)
     constexpr D3DRENDERSTATETYPE kRS[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_STENCILENABLE,
                                           D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE};
     constexpr D3DSAMPLERSTATETYPE kSS[] = {D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE};
@@ -1691,7 +1448,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     IDirect3DVertexBuffer9* oldStream = nullptr;
     UINT oldOffset = 0, oldStride = 0;
     DWORD oldFvf = 0;
-    float oldConst[kSavedConsts * 4];
+    float oldConst[kConsts * 4];
     D3DVIEWPORT9 oldVp{};
     for (size_t i = 0; i < std::size(kRS); i++) dev->GetRenderState(kRS[i], &rs[i]);
     for (DWORD s = 0; s < kSamplers; s++) {
@@ -1703,7 +1460,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->GetVertexDeclaration(&oldDecl);
     dev->GetFVF(&oldFvf);
     dev->GetStreamSource(0, &oldStream, &oldOffset, &oldStride);
-    dev->GetPixelShaderConstantF(0, oldConst, kSavedConsts);
+    dev->GetPixelShaderConstantF(0, oldConst, kConsts);
     dev->GetViewport(&oldVp);
 
     const D3DVIEWPORT9 vp{0, 0, gpu.width, gpu.height, 0.0f, 1.0f};
@@ -1734,7 +1491,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     dev->SetTexture(0, gpu.frameTex);
     dev->SetTexture(1, gpu.sceneTex);
     dev->SetTexture(2, gpu.chainTex[Gpu::kChain - 1]);
-    dev->SetTexture(3, (fEmph || fFog || fRelight) ? depth : nullptr);
+    dev->SetTexture(3, (fEmph || fFog) ? depth : nullptr);
     dev->SetTexture(4, gpu.chainTex[0]);
     dev->SetTexture(5, gpu.chainTex[1]);
     dev->SetTexture(6, fLut ? gpu.lutTex : nullptr);
@@ -1870,7 +1627,6 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     // the shader first, then its constants: a hook that looks at the bound shader to handle constants sees this one
     dev->SetPixelShader(gpu.ps);
     dev->SetPixelShaderConstantF(0, &c[0][0], kConsts);
-    dev->SetPixelShaderConstantF(kConsts, &rl[0][0], kRlConsts);
     // After a settings change, read back what reached the device: another mod's hook could change the constants or the
     // shader on the way (a slider that moves but changes nothing)
     if (m_checkPasses.load(std::memory_order_relaxed) > 0) {
@@ -1904,7 +1660,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         for (size_t i = 0; i < std::size(kSS); i++) dev->SetSamplerState(s, kSS[i], ss[s][i]);
         SafeRelease(oldTex[s]);
     }
-    dev->SetPixelShaderConstantF(0, oldConst, kSavedConsts);
+    dev->SetPixelShaderConstantF(0, oldConst, kConsts);
     dev->SetPixelShader(oldPs);
     dev->SetVertexShader(oldVs);
     if (oldDecl) dev->SetVertexDeclaration(oldDecl);
@@ -2037,19 +1793,6 @@ void Picture::ParamsToToml(const PictureParams& q, toml::table& qolTable) {
             ft.insert(k.key, std::move(a));
         }
         ft.insert("lut_file", q.lutFile);
-        for (int i = 0; i < PictureParams::kRelightLights; i++) { // Relight's lights: relight_light1_on, ..._point [x, y, z] ...
-            const std::string p = std::format("relight_light{}_", i + 1);
-            ft.insert(p + "on", q.rlOn[i]);
-            ft.insert(p + "placed", q.rlPlaced[i]);
-            toml::array point;
-            for (float v : q.rlPoint[i]) point.push_back(static_cast<double>(v));
-            ft.insert(p + "point", std::move(point));
-            ft.insert(p + "height", static_cast<double>(q.rlHeight[i]));
-            ft.insert(p + "brightness", static_cast<double>(q.rlBrightness[i]));
-            ft.insert(p + "range", static_cast<double>(q.rlRange[i]));
-            ft.insert(p + "hue", static_cast<double>(q.rlHue[i]));
-            ft.insert(p + "color", static_cast<double>(q.rlColor[i]));
-        }
         pt.insert("filters", std::move(ft));
     }
     qolTable.insert_or_assign("picture", std::move(pt));
@@ -2098,19 +1841,6 @@ bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
         for (const auto& k : kFilterArrays)
             if (auto a = x[k.key].as_array())
                 for (size_t i = 0; i < 3 && i < a->size(); i++) (q.*k.field)[i] = static_cast<float>((*a)[i].value_or(static_cast<double>((q.*k.field)[i])));
-        for (int i = 0; i < PictureParams::kRelightLights; i++) {
-            const std::string p = std::format("relight_light{}_", i + 1);
-            auto rf = [&](const char* key, float& v) { v = static_cast<float>(x[p + key].value_or(static_cast<double>(v))); };
-            q.rlOn[i] = x[p + "on"].value_or(q.rlOn[i]);
-            q.rlPlaced[i] = x[p + "placed"].value_or(q.rlPlaced[i]);
-            if (auto a = x[p + "point"].as_array())
-                for (size_t k = 0; k < 3 && k < a->size(); k++) q.rlPoint[i][k] = static_cast<float>((*a)[k].value_or(static_cast<double>(q.rlPoint[i][k])));
-            rf("height", q.rlHeight[i]);
-            rf("brightness", q.rlBrightness[i]);
-            rf("range", q.rlRange[i]);
-            rf("hue", q.rlHue[i]);
-            rf("color", q.rlColor[i]);
-        }
         // Emphasize's zone depth was in metres in the first test builds (now a fraction of the focus distance, 0 .. 2):
         // an old value past the slider's range goes back to the default
         if (!(q.emphWidth >= 0.0f && q.emphWidth <= 2.0f)) q.emphWidth = PictureParams{}.emphWidth;
@@ -2491,82 +2221,6 @@ void Picture::RenderFiltersUI() {
             percent("Halo protection", &q.hdrHalo, 0.0f, 1.0f, "Keeps dark or bright outlines from forming around roofs and Sims", kDef.hdrHalo);
             percent("Saturation", &q.hdrSaturation, 0.0f, 1.0f, "A little extra color, since HDR tends to look washed out", kDef.hdrSaturation);
             ApexUi::EndAdvanced();
-        }
-    });
-    card("Relight", IconId::Lightbulb, "Relight", "Lights of your own, placed anywhere in the scene", &q.relight, [&] {
-        depthNote();
-        ApexUi::IconNote(IconId::Info, "Point the camera at a spot and press Place: the light goes to the screen's center");
-        std::string pickError;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            pickError = m_pickError;
-        }
-        if (!pickError.empty()) ApexUi::IconNote(IconId::Info, pickError.c_str());
-        static const char* const kNames[PictureParams::kRelightLights] = {"Light 1", "Light 2", "Light 3", "Light 4"};
-        for (int i = 0; i < PictureParams::kRelightLights; i++) {
-            ImGui::PushID(i);
-            toggle(kNames[i], &q.rlOn[i], "Switch this light on or off", kDef.rlOn[i]);
-            if (q.rlOn[i]) {
-                const bool placing = m_pickLight.load(std::memory_order_relaxed) == i;
-                const char* place = placing ? "Placing..." : (q.rlPlaced[i] ? "Move to the screen center" : "Place at the screen center");
-                if (ApexUi::IconTextButton(place, IconId::Crosshair, "The light goes above what is at the center of the screen") && !placing) {
-                    {
-                        std::lock_guard<std::mutex> lock(m_mutex);
-                        m_pickError.clear();
-                    }
-                    m_pickTries = 0;
-                    m_pickLight.store(i, std::memory_order_relaxed);
-                }
-                if (!q.rlPlaced[i]) ApexUi::IconNote(IconId::Info, "Not placed yet");
-                percent("Brightness", &q.rlBrightness[i], 0.0f, 4.0f, "How strong the light is", kDef.rlBrightness[i]);
-                {
-                    ApexUi::SliderOptions o;
-                    o.format = "%.0f m";
-                    o.tooltip = "How far the light reaches";
-                    o.defaultValue = kDef.rlRange[i];
-                    slide("Reach", &q.rlRange[i], 1.0f, 30.0f, o);
-                }
-                {
-                    ApexUi::SliderOptions o;
-                    o.format = "%.1f m";
-                    o.tooltip = "How high above the chosen spot the light hangs";
-                    o.defaultValue = kDef.rlHeight[i];
-                    slide("Height", &q.rlHeight[i], 0.0f, 5.0f, o);
-                }
-                hue("Color", &q.rlHue[i], kDef.rlHue[i], "The color of the light");
-                percent("Color strength", &q.rlColor[i], 0.0f, 1.0f, "0% is white light", kDef.rlColor[i]);
-            }
-            ImGui::PopID();
-        }
-        if (ApexUi::BeginAdvanced("RelightAdvanced")) {
-            toggle("Shadows", &q.relightShadows, "Things between a light and a surface block its light", kDef.relightShadows);
-            percent("Dark surfaces", &q.relightDark, 0.0f, 1.0f, "Light taken by surfaces that look black: at night most are dark only for lack of light",
-                    kDef.relightDark);
-            ApexUi::EndAdvanced();
-        }
-        // where the lights are, while this card is open: a dot of each light's color with its number
-        float vp[4][4];
-        if (PostScene::CameraViewProj(vp)) {
-            ImDrawList* dl = ImGui::GetForegroundDrawList();
-            const ImVec2 ds = ImGui::GetIO().DisplaySize;
-            const float r = ImGui::GetFontSize() * 0.6f;
-            for (int i = 0; i < PictureParams::kRelightLights; i++) {
-                if (!q.rlOn[i] || !q.rlPlaced[i]) continue;
-                const float w[4] = {q.rlPoint[i][0], q.rlPoint[i][1] + q.rlHeight[i], q.rlPoint[i][2], 1.0f};
-                float c[4];
-                for (int k = 0; k < 4; k++) c[k] = vp[k][0] * w[0] + vp[k][1] * w[1] + vp[k][2] * w[2] + vp[k][3] * w[3];
-                if (c[3] <= 0.05f) continue; // behind the camera
-                const ImVec2 at((c[0] / c[3] * 0.5f + 0.5f) * ds.x, (0.5f - c[1] / c[3] * 0.5f) * ds.y);
-                float h[3];
-                HueColour(q.rlHue[i], h);
-                const float t = std::clamp(q.rlColor[i], 0.0f, 1.0f);
-                const ImU32 fill = ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f + t * (h[0] - 1.0f), 1.0f + t * (h[1] - 1.0f), 1.0f + t * (h[2] - 1.0f), 1.0f));
-                dl->AddCircleFilled(at, r, fill, 24);
-                dl->AddCircle(at, r + 1.0f, IM_COL32(0, 0, 0, 220), 24, 2.0f);
-                const char n[2] = {static_cast<char>('1' + i), 0};
-                const ImVec2 ts = ImGui::CalcTextSize(n);
-                dl->AddText(ImVec2(at.x - ts.x * 0.5f, at.y - ts.y * 0.5f), IM_COL32(0, 0, 0, 255), n);
-            }
         }
     });
 
