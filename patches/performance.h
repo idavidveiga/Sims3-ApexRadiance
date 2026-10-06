@@ -37,9 +37,14 @@ inline constexpr int kLotLightingBudgetDefault = 3; // ms, the registered defaul
 int LotLightingBudgetMs();
 void SetLotLightingBudgetMs(int ms);
 
-// "Quick update when many lamps switch" under Faster room lighting ([patches.RoomLightQueue] quickPass, default on)
+// "Quick update for lamp switches" under Faster room lighting ([patches.RoomLightQueue] quickPass, default on; not used while
+// switches show all at once)
 bool RoomQuickPass();
 void SetRoomQuickPass(bool on);
+// "Lamp switches all at once" under Faster room lighting ([patches.RoomLightQueue] switchAllAtOnce, default on): rooms,
+// furniture, ground and per-pixel lamps wait for the switch's final light and change together (AtriumHold)
+bool RoomAllAtOnce();
+void SetRoomAllAtOnce(bool on);
 
 // "Use several cores" under Faster texture compression ([patches.FastTextureCompression] useSeveralCores, default on):
 // the saved setting; Set saves it and applies it to the next texture

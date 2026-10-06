@@ -510,6 +510,7 @@ void OnPresent(float nightLevel) {
 long MassEventId() { return g_massEvents.load(std::memory_order_relaxed); }
 long SwitchEventId() { return g_switchEvents.load(std::memory_order_relaxed); }
 unsigned long SwitchEventStart() { return g_switchStart.load(std::memory_order_relaxed); }
+unsigned long SwitchLastTick() { return g_switchLast.load(std::memory_order_relaxed); }
 bool SwitchActive() {
     const DWORD last = g_switchLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

@@ -20,6 +20,8 @@ bool SwitchActive();
 long SwitchEventId();
 // GetTickCount of the current switch event's first switch
 unsigned long SwitchEventStart();
+// GetTickCount of the latest player switch (bit 0 set; 0 = none yet)
+unsigned long SwitchLastTick();
 // Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
 void SetEnabled(bool on);
 bool Enabled();

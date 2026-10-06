@@ -28,6 +28,7 @@
 #include "object_index.h"
 #include "object_id_map.h"
 #include "room_light_queue.h"
+#include "atrium_hold.h"
 #include <algorithm>
 #include <atomic>
 #include <format>
@@ -700,6 +701,7 @@ class RoomLightQueuePatch : public ApexPatch {
     RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {
         // TOML key: never rename
         RegisterBoolSetting(&quickPass_, "quickPass", true, "Quick update for lamp switches");
+        RegisterBoolSetting(&allAtOnce_, "switchAllAtOnce", true, "Lamp switches all at once");
         // "lightFade" (Smooth light changes indoors, 06/10) was removed: the light changes at once (an old key is ignored)
         g_roomQueuePatch.store(this);
     }
@@ -709,6 +711,14 @@ class RoomLightQueuePatch : public ApexPatch {
     void Update() override {
         pendingReinstall = false;
         RoomLightQueue::SetQuickPass(quickPass_);
+        AtriumHold::SetAllAtOnce(allAtOnce_);
+    }
+    bool AllAtOnce() const { return allAtOnce_; }
+    void SetAllAtOnce(bool on) {
+        if (on == allAtOnce_) return;
+        allAtOnce_ = on;
+        AtriumHold::SetAllAtOnce(on);
+        NotifySettingChanged();
     }
     bool QuickPass() const { return quickPass_; }
     void SetQuickPass(bool on) {
@@ -722,6 +732,7 @@ class RoomLightQueuePatch : public ApexPatch {
         if (isEnabled) return true;
         lastError.clear();
         RoomLightQueue::SetQuickPass(quickPass_);
+        AtriumHold::SetAllAtOnce(allAtOnce_);
         std::string error;
         if (!RoomLightQueue::Start(&error)) return Fail(error);
         isEnabled = true;
@@ -742,6 +753,7 @@ class RoomLightQueuePatch : public ApexPatch {
 
   private:
     bool quickPass_ = true;
+    bool allAtOnce_ = true;
 };
 
 } // namespace
@@ -762,6 +774,15 @@ bool Performance::RoomQuickPass() {
 
 void Performance::SetRoomQuickPass(bool on) {
     if (RoomLightQueuePatch* p = g_roomQueuePatch.load()) p->SetQuickPass(on);
+}
+
+bool Performance::RoomAllAtOnce() {
+    RoomLightQueuePatch* p = g_roomQueuePatch.load();
+    return p ? p->AllAtOnce() : true;
+}
+
+void Performance::SetRoomAllAtOnce(bool on) {
+    if (RoomLightQueuePatch* p = g_roomQueuePatch.load()) p->SetAllAtOnce(on);
 }
 
 bool Performance::FastTextureSeveralCores() {

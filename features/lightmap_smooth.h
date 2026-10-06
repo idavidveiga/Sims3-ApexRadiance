@@ -53,4 +53,6 @@ void NoteChunkRendered(int ix, int iz);
 void HoldChunks(int batch, const std::vector<std::pair<int, int>>& cells);
 // That batch is done (0: every batch, e.g. the queue failed)
 void ReleaseHold(int batch);
+// A lamp switch's chunks are still being re-rendered (a switch shown all at once waits for them, AtriumHold). Render thread.
+bool HoldPending();
 }

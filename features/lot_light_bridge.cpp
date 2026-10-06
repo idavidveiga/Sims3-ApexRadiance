@@ -38,6 +38,7 @@
 #include "room_light_queue.h"
 #include "object_light_bridge.h"
 #include "lamp_mark_filter.h"
+#include "atrium_hold.h"
 #include "recorder.h"
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
@@ -925,6 +926,7 @@ LotLightBridge::BakeSnapshot g_bakeSnap;
 int g_lampEnumerations = 0;
 bool g_lampRefreshNow = false;
 bool g_lampEditRefresh = false;
+bool g_lampsHeldForSwitch = false; // the per-pixel lamp list was kept for a lamp switch shown all at once (AtriumHold)
 DWORD g_lampReadTick = 0;
 std::vector<uint64_t> g_lastUserLots; // lots of the last counted user-driven changes
 
@@ -3357,21 +3359,27 @@ void HoldRig(IDirect3DDevice9* dev, float (*rig)[4], RigHeld& h) {
     if (!rp) return;
     const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
     const uint64_t key = (static_cast<uint64_t>(rp) << 8) ^ static_cast<uint64_t>(vl & 0xFF);
-    if (!LampMarkFilter::SwitchActive()) { // the lights as the game set them, for the next switch
+    const DWORD now = GetTickCount();
+    const unsigned long lastSwitch = LampMarkFilter::SwitchLastTick();
+    const void* room = LampMarkFilter::SwitchActive() || AtriumHold::SwitchHolding() ? ObjectLightBridge::RigRoom(rp) : nullptr;
+    // switches all at once: until the whole switch is released with the rooms' maps (AtriumHold); else until its own room ends
+    const bool wait = !room ? false
+                      : AtriumHold::AllAtOnce() ? AtriumHold::SwitchHolding() && LevelLightShare::LampUrgency(room) > 1.0f
+                                                : RoomLightQueue::AwaitingSwitchLight(room);
+    if (!wait) { // the lights as the game set them, for the next switch (not just after one: the rig may hold its new lights)
+        if (lastSwitch && now - lastSwitch < 100) return;
         if (g_rigSnaps.size() > 16384) g_rigSnaps.clear();
         RigSnap& s = g_rigSnaps[key];
         std::memcpy(s.ps, rig, sizeof s.ps);
         s.haveVs = vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &s.vs[0][0], 8));
-        s.tick = GetTickCount();
+        s.tick = now;
         return;
     }
-    const void* room = ObjectLightBridge::RigRoom(rp);
-    if (!room || !RoomLightQueue::AwaitingSwitchLight(room)) return;
     const auto it = g_rigSnaps.find(key);
     if (it == g_rigSnaps.end()) return;
     const RigSnap& s = it->second;
-    const DWORD start = LampMarkFilter::SwitchEventStart();
-    if (static_cast<int32_t>(start - s.tick) < 0 || start - s.tick > kRigSnapFreshMs) return; // taken after the switch, or long before
+    // taken before the latest switch (the hold covers every switch since its first), and not long before it
+    if (static_cast<int32_t>(s.tick - lastSwitch) >= 0 || lastSwitch - s.tick > kRigSnapFreshMs + 4000) return;
     std::memcpy(h.psGame, rig, sizeof h.psGame);
     SetPsConst(dev, 0, &s.ps[0][0], 8);
     std::memcpy(rig, s.ps, sizeof s.ps);
@@ -4050,6 +4058,11 @@ void OnPresent() {
         }
     }
     const bool editReady = g_lampEditRefresh && g_lotDrawTick - g_lampReadTick >= 33; // a lamp edited or dragged: about every other frame
+    // the switch the per-pixel lamps waited for is shown: their new list now (the rooms' maps were written this frame too)
+    if (g_lampsHeldForSwitch && !AtriumHold::SwitchHolding()) {
+        g_lampsHeldForSwitch = false;
+        g_lampRefreshNow = true;
+    }
     if (++g_lampFrame < 20 && !g_lampRefreshNow && !editReady) return;
     g_lampFrame = 0;
     g_lampRefreshNow = false;
@@ -4062,7 +4075,11 @@ void OnPresent() {
     const bool wantLamps = g_roofFix.load() || g_waterFix.load() || g_objPixelLamps.load();
     const bool enumerated = EnumerateLights();
     if (!wantLamps && !enumerated) return;
-    ReadEnumeratedLamps(wantLamps && enumerated);
+    // a lamp switch shown all at once (AtriumHold): the per-pixel lamps (roofs, water, outdoor objects, trees) keep their
+    // list until the switch is shown; the lamp changes are still tracked (the ground's relight starts from them)
+    const bool held = AtriumHold::SwitchHolding();
+    if (held && wantLamps && enumerated) g_lampsHeldForSwitch = true;
+    ReadEnumeratedLamps(wantLamps && enumerated && !held);
     TrackLotLampEdits();
 }
 

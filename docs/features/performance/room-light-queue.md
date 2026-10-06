@@ -39,6 +39,28 @@ Five changes, each checked against the Steam bytes and left off when they differ
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Faster room lighting | `[patches.RoomLightQueue] enabled` | bool | on | | Turns all five changes on. A missing key reads as on |
+| Lamp switches all at once (Experimental) | `[patches.RoomLightQueue] switchAllAtOnce` | bool | on | | A player's switch is shown in one frame once the rooms on screen have their final light (see "Lamp switches all at once" below); the quick pass is not used meanwhile |
+| Quick update for lamp switches (Experimental; shown only while the row above is off) | `[patches.RoomLightQueue] quickPass` | bool | on | | An approximate light first, refined room by room |
+
+### Lamp switches all at once (06/10 evening)
+
+The light update trace (recording 14:59, lights on) showed the quick pass appearing at about 0.3 s and then each room
+correcting itself at +0.8, +1.7 and +2.3 s, by up to 17 levels: class 0 samples 1 point per tile, class 2 four
+(`0xFF36AC`), so an approximate map can never match the final one. The user chose "one change only" over a faster
+approximate light with corrections. With `switchAllAtOnce` on (`AtriumHold`, `features/atrium_hold.{h,cpp}`):
+
+- A player's switch (`LampMarkFilter::SwitchLastTick`) starts a hold (`AtriumHold::SwitchHolding`, also true in the very
+  frame of the switch, before the next Present). The quick pass is off (`QuickPassRoom`); the drain gives the switch's rooms
+  16 ms a frame.
+- Every map the switch's rooms (lamp-edit urgency) write waits at the game's UnlockRect, as an atrium's maps do; the
+  furniture of those rooms keeps its rig lights (`lot_light_bridge.cpp`, `HoldRig`); the ground keeps its smoothed chunk
+  maps (`LightmapSmooth`); the per-pixel lamps (roofs, water, outdoor objects, trees) keep their list (`LotLightBridge`).
+- It ends when every room the switch marked on the camera's story (and the atrium's rooms below it) has ended a solve
+  begun after the latest switch (`LevelLightShare::SwitchRoomsPending`, `RoomLightQueue::SolvedSince`, from the solve
+  start and end hooks), and the ground's chunks are re-rendered, at least 150 ms after the latest switch; at most 2.5 s
+  after it (4 s after the first). Then the maps take their content and the others follow in the same frame.
+- The lamp object itself (its lit model) is the game's and changes at once. Recordings note `[switch] lamp switch shown
+  all at once, N ms ...`; the status line counts the switches and the last one's time.
 
 ## Compatibility and interactions
 

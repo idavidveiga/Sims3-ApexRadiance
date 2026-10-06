@@ -161,6 +161,9 @@ constexpr int kQuickSetsMax = 3;
 std::atomic<bool> g_endsSeen{false};
 // Every room's last solve end (GetTickCount; render thread): a lamp switch's furniture waits for its room's (AwaitingSwitchLight)
 std::unordered_map<uintptr_t, DWORD> g_lastEnd;
+// Every room's last solve start, and the start of its last finished solve (render thread): lamp switches all at once wait
+// for a solve that began after the switch (SolvedSince; a solve running at the switch read the lamps as they were)
+std::unordered_map<uintptr_t, DWORD> g_solveStart, g_lastSolved;
 std::unordered_map<uintptr_t, int> g_quickTarget; // per room of the burst: its class before the quick pass set it to 0
 bool g_editNow = false; // render thread, set by each pick: a lamp edit's rooms are pending
 int ClassOf(const BYTE* room) {
@@ -231,7 +234,8 @@ bool SetClass0(BYTE* room) {
 // Any player's switch takes it (06/10 evening, user: one lamp too; it was only for bursts of 3+ lights, so one lamp of the
 // atrium had its 4 rooms solved at class 2 one after another): drags and value edits do not (LampMarkFilter::SwitchActive)
 void QuickPassRoom(BYTE* room) {
-    if (!g_quickPass.load(std::memory_order_relaxed) || !LampMarkFilter::SwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
+    // a switch shown all at once (AtriumHold::AllAtOnce) waits for the final light: a quick pass would never be seen
+    if (!g_quickPass.load(std::memory_order_relaxed) || AtriumHold::AllAtOnce() || !LampMarkFilter::SwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
     const long burst = LampMarkFilter::SwitchEventId();
     if (burst != g_quickEvent) {
         g_quickEvent = burst;
@@ -380,7 +384,9 @@ void __fastcall PickHook(BYTE* tree) {
         // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
         // a lamp switch whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
+        // a switch shown all at once waits for its rooms' final light: they take 16 ms a frame meanwhile (AtriumHold)
         const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
+                             : AtriumHold::SwitchHolding() ? 16.0f
                              : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
                                         : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
@@ -568,7 +574,21 @@ void NoteSolveEnd(const void* room) {
     const auto it = g_quickDone.find(reinterpret_cast<uintptr_t>(room));
     if (it != g_quickDone.end()) it->second.solved = true; // set to 0 while waiting: this is the solve that followed
     if (g_lastEnd.size() > 16384) g_lastEnd.clear();
-    g_lastEnd[reinterpret_cast<uintptr_t>(room)] = GetTickCount();
+    const DWORD now = GetTickCount();
+    g_lastEnd[reinterpret_cast<uintptr_t>(room)] = now;
+    if (g_lastSolved.size() > 16384) g_lastSolved.clear();
+    const auto s = g_solveStart.find(reinterpret_cast<uintptr_t>(room));
+    g_lastSolved[reinterpret_cast<uintptr_t>(room)] = s != g_solveStart.end() ? s->second : now;
+}
+void NoteSolveStart(const void* room) {
+    if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
+    if (g_solveStart.size() > 16384) g_solveStart.clear();
+    g_solveStart[reinterpret_cast<uintptr_t>(room)] = GetTickCount();
+}
+bool SolvedSince(const void* room, unsigned long since) {
+    if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return true; // unknown: never waited for
+    const auto it = g_lastSolved.find(reinterpret_cast<uintptr_t>(room));
+    return it != g_lastSolved.end() && static_cast<int32_t>(it->second - since) >= 0;
 }
 bool AwaitingSwitchLight(const void* room) {
     if (!room || !g_endsSeen.load(std::memory_order_relaxed) || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;

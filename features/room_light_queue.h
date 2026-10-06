@@ -48,6 +48,10 @@ void NoteSolveEnd(const void* room);
 // its solves ended since the switch began, so it still shows its light from before the switch (06/10: the furniture of
 // such a room keeps its rig lights from before too, lot_light_bridge.cpp)
 bool AwaitingSwitchLight(const void* room);
+// Render thread (LevelLightShare's solve start hook): a room's solve begins
+void NoteSolveStart(const void* room);
+// Render thread: the room's last finished solve began at or after `since` (GetTickCount); true when not known on this thread
+bool SolvedSince(const void* room, unsigned long since);
 // Render thread: that room is being solved at a higher class than the one on screen (the quick pass's refinement): the
 // maps it writes are not the ones shown, and hold the room's light from before the edit
 bool SolveRefiningUp();

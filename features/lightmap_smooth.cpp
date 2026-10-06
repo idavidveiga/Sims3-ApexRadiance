@@ -35,6 +35,7 @@
 #include "d3d9_extra_hooks.h"
 #include "lightmap_smooth_hlsl.h"
 #include "recorder.h"
+#include "atrium_hold.h"
 #include "shader_cache.h"
 #include <windows.h>
 #include <d3dcompiler.h>
@@ -1631,7 +1632,8 @@ void GpuService(IDirect3DDevice9* dev) {
     order.assign(byUse.begin(), byUse.end());
     items.clear();
     // a lamp switch's held ground: at the first service of a frame, so every draw of this frame shows it
-    const bool release = newFrame && g_holdRelease;
+    // a lamp switch shown all at once waits for its rooms too (AtriumHold): the ground changes in their frame
+    const bool release = newFrame && g_holdRelease && !AtriumHold::SwitchHolding();
     if (release) g_holdRelease = false;
     size_t released = 0;
     int urgent = 0, cells = 0;
@@ -1685,7 +1687,7 @@ void GpuService(IDirect3DDevice9* dev) {
 // Present, GPU path: timings, the fallback hash checks, sweep end, atlas growth. No drawing here.
 void OnPresentGpu(IDirect3DDevice9* dev) {
     ReadTimings();
-    if (!g_holdBatches.empty() && GetTickCount() - g_holdSince > kHoldMaxMs) { // a batch that never ended (dropped, refused)
+    if (!g_holdBatches.empty() && GetTickCount() - g_holdSince > (AtriumHold::SwitchHolding() ? 4500u : kHoldMaxMs)) { // a batch that never ended
         g_holdBatches.clear();
         g_holdRelease = true;
         g_holdTimeouts++;
@@ -1933,6 +1935,8 @@ void ReleaseHold(int batch) {
     else g_holdBatches.clear();
     if (g_holdBatches.empty()) g_holdRelease = true;
 }
+
+bool HoldPending() { return !g_holdBatches.empty(); }
 
 void NoteChunkRendered(int ix, int iz) {
     try {

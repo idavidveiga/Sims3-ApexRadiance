@@ -439,6 +439,18 @@ int UrgentTier(const void* room, bool* soon = nullptr) {
         }
     return -1;
 }
+// A room's story, the story its lot shows and its solve state; false when unreadable or no longer that room
+bool RoomViewState(uintptr_t room, uintptr_t mgr, int id, int& level, int& cam, int& state) {
+    __try {
+        if (*reinterpret_cast<const uintptr_t*>(room) != mgr || *reinterpret_cast<const int*>(room + 0xC) != id) return false;
+        level = *reinterpret_cast<const int*>(mgr + 0x88);
+        cam = *reinterpret_cast<const int*>(mgr + 0x284);
+        state = *reinterpret_cast<const int*>(room + 0xF0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 // Rooms the lamp entry update marked for a lamp edit (LampMarkFilter, light tree thread): AfterChangedWalk makes them
 // urgent once the game's walk has sent them. user = a value a player edits (colour, intensity, on / off), not a flicker;
 // pure = the lamp stayed in that room (it moved, switched or changed a value): it is registered there, its rooms may gather at once.
@@ -1979,6 +1991,7 @@ bool ReadSolveNote(const BYTE* room, SolveNote& n) {
 using RoomSolveStart_t = void(__thiscall*)(void* room);
 void __fastcall RoomSolveStartHook(BYTE* room) {
     reinterpret_cast<RoomSolveStart_t>(kRoomSolveStart)(room);
+    if (room) RoomLightQueue::NoteSolveStart(room); // lamp switches all at once wait for solves begun after the switch
     if (room && AmbientActive()) {
         if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
         else {
@@ -6506,6 +6519,32 @@ double ApexSolveMs() {
     const double ms = static_cast<double>(q.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
     if (ms < 100.0 || c <= c0) return -1.0;
     return static_cast<double>(g_apexSolveCycles.load(std::memory_order_relaxed)) / (static_cast<double>(c - c0) / ms);
+}
+
+int SwitchRoomsPending(unsigned long since, int* visible) {
+    struct Entry {
+        uintptr_t room, mgr;
+        int id;
+    };
+    Entry rooms[64];
+    int n = 0;
+    {
+        const DWORD now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_urgentMx);
+        for (const UrgentRoom& u : g_urgent)
+            if (static_cast<int32_t>(now - u.until) < 0 && n < static_cast<int>(std::size(rooms))) rooms[n++] = Entry{u.room, u.mgr, u.id};
+    }
+    int pending = 0, shown = 0;
+    for (int k = 0; k < n; k++) {
+        int level = 0, cam = 0, state = 0;
+        if (!RoomViewState(rooms[k].room, rooms[k].mgr, rooms[k].id, level, cam, state) || level > cam) continue; // gone, or cut away above the camera's story
+        const void* room = reinterpret_cast<const void*>(rooms[k].room);
+        if (level < cam && !InAtrium(room)) continue; // under the camera's floor: seen only through an atrium's opening
+        shown++;
+        if ((state >= 1 && state <= 3) || !RoomLightQueue::SolvedSince(room, since)) pending++;
+    }
+    if (visible) *visible = shown;
+    return pending;
 }
 
 bool LampEditPending() {

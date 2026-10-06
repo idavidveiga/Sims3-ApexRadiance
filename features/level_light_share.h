@@ -85,6 +85,11 @@ float CrossLampReach(const void* room, const void* light, const float* point);
 bool GroupPending(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
+// Lamp switches all at once (AtriumHold, render thread): of the rooms a lamp edit marked (the urgent list) on stories their
+// lot shows (its story, and an atrium's rooms below it), how many are still gathered or solved or ended no solve begun at or
+// after `since`;
+// `visible` gets how many there are
+int SwitchRoomsPending(unsigned long since, int* visible = nullptr);
 // Apex's own share of the room solves so far, ms (-1 until calibrated); render thread
 double ApexSolveMs();
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
