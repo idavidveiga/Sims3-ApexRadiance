@@ -187,7 +187,7 @@ float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 0.75f;
-bool g_windowOutdoor = false;          // experimental: windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
+bool g_windowOutdoor = true;           // (on by default since 06/10, user approved) windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
 float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
 float g_wallStrength = 0.84f; // multiplier of baked wall lamp RGB, independent of the enabled state
@@ -1737,7 +1737,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                     "Outdoor objects (counters, modular pieces, doors) get lamp light computed at every point, the same for every piece: no colour seams between neighbouring pieces."));
         RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             S3SS_TR("Forca das lampadas calculadas por ponto nos objetos de fora.", "Strength of the per-point lamp light on outdoor objects."));
-        RegisterBoolSetting(&g_windowOutdoor, "janelasLuzDeFora", false,
+        RegisterBoolSetting(&g_windowOutdoor, "janelasLuzDeFora", true,
             "Experimental: the outer side of a window lit by the room takes the outdoor ground light and lamps (a window turned inward no longer goes black outside).");
         RegisterBoolSetting(&g_roofs, "telhadosComLuz", true,
             S3SS_TR("Telhados recebem a luz das lampadas e postes proximos (sombra mais suave tambem).",
@@ -2215,7 +2215,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_objPixel = true;
         g_objPixelLights = true;
         g_objPixelLightStrength = 0.75f;
-        g_windowOutdoor = false;
+        g_windowOutdoor = true;
         g_fenceGround = true;
         g_fenceGroundStrength = 0.75f;
         g_walls = true;
@@ -2453,8 +2453,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ImGui::BeginDisabled(!groundLight);
                 changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
                 ImGui::BeginDisabled(!g_objPixel);
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-                changed |= ApexUi::SwitchRow("Windows take outdoor light", &g_windowOutdoor, "The outer side of windows lit by the room takes the outdoor light", false);
+                changed |= ApexUi::SwitchRow("Windows take outdoor light", &g_windowOutdoor, "The outer side of windows lit by the room takes the outdoor light", true);
                 ImGui::EndDisabled();
                 changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
                 if (g_objPixelLights)

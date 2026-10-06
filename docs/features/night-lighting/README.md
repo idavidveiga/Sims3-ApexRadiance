@@ -97,7 +97,7 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Objects > Brightness | `forcaNosObjetos` | float | 75% | 25 to 300% | Strength of lamps on objects |
 | Objects > Light stairs, railings, columns | `lampadasEmTodosObjetos` | bool | on | | Objects the game leaves without lamp light; applies when a world loads ("Reload save" badge) |
 | Doors, counters and fences > Doors and windows stay lit | `objetosDeForaComLuzDoChao` | bool | on | | Outdoor rig objects get at least the ground light (`RigTracker`); needs the ground light |
-| Doors, counters and fences > Windows take outdoor light | `janelasLuzDeFora` | bool | off | | Experimental: the outer side of room-lit windows takes the outdoor light; see [objects-and-rigs.md](objects-and-rigs.md) |
+| Doors, counters and fences > Windows take outdoor light | `janelasLuzDeFora` | bool | on | | The outer side of room-lit windows takes the outdoor light; see [objects-and-rigs.md](objects-and-rigs.md) |
 | Doors, counters and fences > Seamless light on pieces | `luzPorPixelNosObjetos` | bool | on | | Per-pixel world lamps on outdoor rig objects; needs the ground light |
 | Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 75% | 25 to 300% | Strength of those per-pixel lamps |
 | Doors, counters and fences > Fences and stairs catch light | `cercasComLuzDoChao` | bool | on | | Fences, railings, stairs and their snow read the atlas ([fences](fences.md), [snow](snow.md)); needs the ground light |

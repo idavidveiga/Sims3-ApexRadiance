@@ -1850,7 +1850,7 @@ std::atomic<float> g_objPixelStrength{1.0f};
 std::atomic<bool> g_objPixelLamps{true};          // outdoor rig objects: world lamps per pixel instead of the rig lamps
 std::atomic<float> g_objPixelLampStrength{1.0f};
 // Windows take outdoor light (experimental, off by default): see DrawWindowOutdoor
-std::atomic<bool> g_windowOutdoor{false};
+std::atomic<bool> g_windowOutdoor{true};
 constexpr float kWindowWallSkip = 0.75f;  // a wall this close to an object's origin is its own wall (a turned window's origin is 0.5 m in)
 constexpr float kWindowPlanReach = 0.75f; // metres along the normal at which the house plan is read
 std::atomic<bool> g_fenceFix{true};
