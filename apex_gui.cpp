@@ -1768,6 +1768,7 @@ bool g_developerConfirmRequested = false;
 toml::table g_developerPendingProfile;
 std::string g_developerPendingProfileName;
 void DeveloperModeRow() {
+    if (!kDevToolsBuild) return; // the players' build has no developer tools
     auto ui = ApexConfig::GetUi();
     bool enabled = ui.developerMode;
     if (ApexUi::SwitchRow("Enable developer mode", &enabled, "Advanced tools for testing and diagnostics. Requires restarting the game", false)) {
@@ -1986,6 +1987,7 @@ void SaveProfileNow(const std::string& name) {
 // name: the file's name or a built-in profile's English name (log); shown: as the menu shows it
 void ApplyProfileState(const std::string& name, const std::string& shown, toml::table state, unsigned parts) {
     ApexConfig::KeepProfileParts(state, parts);
+    if (!kDevToolsBuild) state.erase("developer"); // the players' build: a profile's developer part is not asked about
     if (const auto* d = state["developer"].as_table(); d && (*d)["enabled"].value_or(true) && !ApexConfig::GetUi().developerMode) {
         g_developerPendingProfile = std::move(state);
         g_developerPendingProfileName = name;

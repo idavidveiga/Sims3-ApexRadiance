@@ -30,6 +30,8 @@ int DepthWritesThisFrame();
 // at all (the draw hooks are registered while any post-scene effect is on)
 int DepthWritesLastFrame();
 bool Counting();
+// This frame's effects have not run yet but will at a later scene boundary (Picture waits for them before its scene copy)
+bool EffectsPending();
 // The camera's view-projection of the current frame (world -> clip, rows = c40..c43), false when not seen this frame
 bool CameraViewProj(float vp[4][4]);
 // A of the projection (d = A - near * A / z, so view z / near = A / (A - d)); 1.00008 when unknown

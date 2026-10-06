@@ -268,6 +268,17 @@ float CameraNear() { return g_near; }
 int DepthWritesThisFrame() { return g_depthWrites; }
 int DepthWritesLastFrame() { return g_lastDepthWrites; }
 bool Counting() { return g_hooks; }
+// This frame's effects (ambient occlusion, edge smoothing, Depth Blur) will still run at a later scene boundary: Picture
+// does not copy the scene before them (06/10: since Picture took a depth test with ALWAYS and no depth write for the end of
+// the scene, it copied before these effects, which still count such draws as scene; every pixel they changed then differed
+// from the copy, its UI mask kept them as the game drew them, and the Color page did nothing visible). Render thread.
+bool EffectsPending() {
+    if (!g_hooks || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws || !g_curRT0 || g_curRT0 != g_backBuffer ||
+        !ShaderCache::PrecompileComplete())
+        return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return !g_effects.empty();
+}
 
 // (row2 . row3) / |row3|^2 of the camera block: 1.00008 in LightProbe-m80, a far plane near 3 km
 float CameraDepthA() {

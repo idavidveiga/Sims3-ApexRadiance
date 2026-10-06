@@ -330,7 +330,7 @@ void LoadDeveloperMode() {
     toml::table root;
     ReadRoot(root);
     const auto* ui = root["ui"].as_table();
-    kPublicBuild.store(!(ui && (*ui)["developer_mode"].value_or(false)), std::memory_order_relaxed);
+    kPublicBuild.store(!(kDevToolsBuild && ui && (*ui)["developer_mode"].value_or(false)), std::memory_order_relaxed);
 }
 
 void LoadSettings() {
@@ -349,7 +349,7 @@ void LoadSettings() {
         u.startNote = (*ui)["start_note"].value_or(true);
         u.captureScreenshot = (*ui)["capture_screenshot"].value_or(true);
         u.developerMode = (*ui)["developer_mode"].value_or(false);
-        kPublicBuild.store(!u.developerMode, std::memory_order_relaxed);
+        kPublicBuild.store(!(kDevToolsBuild && u.developerMode), std::memory_order_relaxed);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // retained for compatibility; no longer controls startup UI
         u.keyChosen = (*ui)["key_chosen"].value_or(false);
         u.startProfileDone = (*ui)["start_profile_done"].value_or(true); // only new installations (no [ui] yet) see the welcome page

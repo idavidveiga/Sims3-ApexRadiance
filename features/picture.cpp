@@ -902,14 +902,17 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx, bool isStripOfTwo) {
         // menu is drawn in 3D over the UI, and copying after it put the menu into "the scene" (Emphasize turned it grey).
         // Interiors draw depth-off pieces in the middle of the scene and then many more depth-tested draws: those still copy.
         if (gpu.sceneCopied && run < kMinSceneDraws) return;
-        if (isStripOfTwo) { // the bloom composite strip: part of the scene, copy after it
+        // the bloom composite strip: part of the scene, copy after it; and while ambient occlusion, edge smoothing or Depth
+        // Blur have still to run this frame (PostScene counts a depth test with ALWAYS as scene and runs them later), the
+        // copy waits for them, or every pixel they change reads as UI and keeps the game's colours (06/10: Color did nothing)
+        if (isStripOfTwo || PostScene::EffectsPending()) {
             gpu.copyAfterStrip = true;
             return;
         }
         CopyScene(dev);
         return;
     }
-    if (gpu.copyAfterStrip) {
+    if (gpu.copyAfterStrip && !PostScene::EffectsPending()) {
         gpu.copyAfterStrip = false;
         CopyScene(dev);
     }
