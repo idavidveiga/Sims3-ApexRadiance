@@ -2075,7 +2075,10 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             // No atlas at all with the lamps (user 05/10: the top of a deck's stone half wall took the ground light pool of
             // the wall lamp under the deck; the atlas is the light lying on the ground, at no height). Street and lot
             // lamps are in the lamp list, so fences are lit like walls: by their lamps, with angle and distance.
-            weight[0] = 0.0f;
+            // the atlas weight is sat(N.y x w0 + w1) (PatchInstancedLamps): (1, 0) keeps the ground light on faces turned up and
+            // none on the sides, which take the lamps (06/10, user: with (0, 0) a curb's top went nearly black at night wherever
+            // no lamp reached it, about 6 times darker than the game's own fence lighting, in blotches)
+            weight[0] = 1.0f;
             weight[1] = 0.0f;
         }
         dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
