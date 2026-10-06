@@ -5,6 +5,9 @@
 #include "apex_log.h"
 #include <windows.h>
 #include <dxgi.h>
+#pragma comment(lib, "advapi32.lib")
+#include <algorithm>
+#include <cwctype>
 #include <format>
 #include <mutex>
 #include <string>
@@ -52,6 +55,48 @@ std::string Narrow(const std::wstring& w) {
     return s;
 }
 
+// AMD registers the same manifest as an implicit LAYER too (VK_LAYER_AMD_switchable_graphics, library amdvlk32.dll; the
+// display adapter's VulkanImplicitLayersWow, 05/10 on the user's PC), and VK_LOADER_DRIVERS_DISABLE does not stop layers:
+// amdvlk32.dll (~85 MB) was still loaded. The layer's own "disable_environment" variable keeps it out. Reads it from every
+// AMD manifest registered for a display adapter; the known name when none can be read.
+std::vector<std::pair<std::wstring, std::wstring>> AmdLayerDisables() {
+    std::vector<std::pair<std::wstring, std::wstring>> out;
+    HKEY cls = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, &cls) == ERROR_SUCCESS) {
+        wchar_t sub[64];
+        for (DWORD i = 0;; i++) {
+            DWORD n = static_cast<DWORD>(std::size(sub));
+            if (RegEnumKeyExW(cls, i, sub, &n, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+            wchar_t paths[2048] = {};
+            DWORD bytes = sizeof paths - sizeof(wchar_t) * 2;
+            if (RegGetValueW(cls, sub, L"VulkanImplicitLayersWow", RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ, nullptr, paths, &bytes) != ERROR_SUCCESS) continue;
+            for (const wchar_t* p = paths; *p; p += wcslen(p) + 1) {
+                std::wstring path = p, lower = path;
+                for (wchar_t& c : lower) c = towlower(c);
+                if (lower.find(L"amd") == std::wstring::npos) continue;
+                HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+                if (f == INVALID_HANDLE_VALUE) continue;
+                char text[16384] = {};
+                DWORD got = 0;
+                ReadFile(f, text, sizeof text - 1, &got, nullptr);
+                CloseHandle(f);
+                const std::string s(text, got);
+                // "disable_environment": { "NAME": "VALUE" }
+                const size_t at = s.find("\"disable_environment\"");
+                if (at == std::string::npos) continue;
+                const size_t q1 = s.find('"', s.find('{', at) + 1), q2 = q1 == std::string::npos ? q1 : s.find('"', q1 + 1);
+                const size_t v1 = q2 == std::string::npos ? q2 : s.find('"', s.find(':', q2) + 1), v2 = v1 == std::string::npos ? v1 : s.find('"', v1 + 1);
+                if (v2 == std::string::npos) continue;
+                std::wstring name(s.begin() + q1 + 1, s.begin() + q2), value(s.begin() + v1 + 1, s.begin() + v2);
+                if (!name.empty() && std::find(out.begin(), out.end(), std::make_pair(name, value)) == out.end()) out.emplace_back(name, value);
+            }
+        }
+        RegCloseKey(cls);
+    }
+    if (out.empty()) out.emplace_back(L"DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", L"1");
+    return out;
+}
+
 std::string Decide() {
     if (GetModuleHandleW(L"vulkan-1.dll")) return "left as it is: the Vulkan loader was already loaded";
     for (const wchar_t* v : {L"VK_LOADER_DRIVERS_DISABLE", L"VK_LOADER_DRIVERS_SELECT", L"VK_DRIVER_FILES", L"VK_ICD_FILENAMES", L"VK_ADD_DRIVER_FILES"})
@@ -71,7 +116,11 @@ std::string Decide() {
     for (const Adapter& a : adapters)
         if (a.vendor == kVendorAmd && a.dedicated * 2 >= main->dedicated) return "left as it is: the AMD adapter is not a small integrated GPU (" + list + ")";
     if (!SetEnvironmentVariableW(L"VK_LOADER_DRIVERS_DISABLE", kDisable)) return "the variable could not be set";
-    return "AMD's 32-bit Vulkan driver left out of the game (VK_LOADER_DRIVERS_DISABLE, this process only); the game renders on " + Narrow(main->name) + " (" + list + ")";
+    std::string layers;
+    for (const auto& [name, value] : AmdLayerDisables())
+        if (!EnvSet(name.c_str()) && SetEnvironmentVariableW(name.c_str(), value.c_str())) layers += (layers.empty() ? "" : ", ") + Narrow(name);
+    return "AMD's 32-bit Vulkan driver left out of the game (VK_LOADER_DRIVERS_DISABLE" + (layers.empty() ? std::string() : ", and its implicit layer: " + layers) +
+           "; this process only); the game renders on " + Narrow(main->name) + " (" + list + ")";
 }
 
 } // namespace
