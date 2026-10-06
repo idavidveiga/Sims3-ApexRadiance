@@ -7,7 +7,7 @@ namespace ApexChangelog {
 namespace {
 
 constexpr const char* k270Added[] = {
-    "Filters in Color: 25 looks to stack, each with its own strength",
+    "Filters in Color: 26 looks to stack, each with its own strength",
     "LUT filter: your own look-up tables from the LUTs folder",
     "Lamp switches all at once: rooms, furniture and ground change together",
     "Lot Streaming page, off by default: more lots in full detail (by idavidveiga)",
