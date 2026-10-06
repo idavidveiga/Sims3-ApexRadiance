@@ -51,6 +51,7 @@ std::atomic<long> g_fades{0}, g_writes{0}, g_gameLocks{0}, g_resumes{0}, g_peak{
 std::atomic<bool> g_holding{false};
 DWORD g_holdFrom = 0;
 constexpr DWORD kHoldMaxMs = 2500;
+constexpr bool kHoldStories = false;
 
 // A MANAGED single-level A8R8G8B8 texture of a room map's size (docs/engine/room-light-maps.md, room_map_padding.cpp)
 bool RoomMap(IDirect3DTexture9* t, UINT& w, UINT& h) {
@@ -223,7 +224,9 @@ void OnPresent(IDirect3DDevice9* dev) {
     // hold while the edit's first solves run: the quick pass of many lamps, or every room of a smaller edit (not its
     // refinement, not a dragged lamp); at most kHoldMaxMs
     const DWORD now = GetTickCount();
-    bool hold = g_active.load(std::memory_order_relaxed) && !LevelLightShare::LampDragging() &&
+    // 06/10, user: holding made it worse (the light's own story waited for the other stories' cascade): off until the
+    // cascade itself is fast (docs/features/performance/room-light-queue.md)
+    bool hold = kHoldStories && g_active.load(std::memory_order_relaxed) && !LevelLightShare::LampDragging() &&
                 (RoomLightQueue::QuickPassPending() || (editPending && !RoomLightQueue::Refining()));
     if (hold && !g_holding.load(std::memory_order_relaxed)) g_holdFrom = now;
     if (hold && now - g_holdFrom > kHoldMaxMs) hold = false;
