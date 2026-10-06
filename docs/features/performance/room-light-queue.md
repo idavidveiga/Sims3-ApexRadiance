@@ -139,7 +139,7 @@ User report: switching all the lights of a big lot (5 stories, rooms with 35-98 
 showed the new light (the same house took up to 10 s on 05/10). Measured: the game's class-2 solve cost 24.8 s of the session
 against 1.0 s for class 0.
 
-- **Quick update when many lamps switch** (`[patches.RoomLightQueue] quickPass`, default on, Experimental): while
+- **Quick update when many lamps switch** (`[patches.RoomLightQueue] quickPass`, default on, Experimental; once per room and burst): while
   LampMarkFilter sees 3 or more player switches within 1.5 s (`MassSwitchActive`, held 1.5 s after the last; not at dusk or
   dawn), the priority hook puts a lamp edit's room that is still waiting (state 2) at a class above 0 back to class 0 before
   the game reads its priority. Class 0 is the game's own fast first solve and has 100x the priority of class 2, so every

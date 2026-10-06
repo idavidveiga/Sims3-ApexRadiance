@@ -452,6 +452,7 @@ void OnPresent(float nightLevel) {
         // RelightLot watches completion and retains its own bounded fallback.
     }
 }
+long MassEventId() { return g_massEvents.load(std::memory_order_relaxed); }
 bool MassSwitchActive() {
     const DWORD last = g_massLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

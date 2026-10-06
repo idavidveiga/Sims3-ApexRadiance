@@ -11,6 +11,8 @@ void OnPresent(float nightLevel);
 // Many lamps switched by the player within a moment (06/10: "all the lights" of a lot): kMassSwitches or more user switches
 // within kMassWindowMs, held for kMassHoldMs after the last one. Any thread.
 bool MassSwitchActive();
+// Grows by one at each new burst of switches (a room takes the quick pass once per burst)
+long MassEventId();
 // Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
 void SetEnabled(bool on);
 bool Enabled();

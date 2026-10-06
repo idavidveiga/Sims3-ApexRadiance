@@ -5,7 +5,7 @@ Research, measurements and code by **idavidveiga** (fork `idavidveiga/Sims3-Apex
 
 ## Port notes (06/10)
 
-- Menu: Performance > "Lot detail streaming" (Extended lot detail, Smooth lot streaming, Keep lot visibility stable, Pause
+- Menu: System > Lot Streaming (its own page since 06/10) > "Lot detail streaming" (Extended lot detail, Smooth lot streaming, Keep lot visibility stable, Pause
   lot streaming in map view) and "Object streaming" (Spread lot objects while loading, with Spread new objects over frames).
 - On by default with the Experimental badge, also in the three built-in profiles (distance 300, 16 lots), except Spread lot
   objects while loading: off since 06/10 (lamps are objects, so they arrived one by one and every arrival relit the rooms:

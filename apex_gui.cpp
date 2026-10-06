@@ -67,7 +67,7 @@ std::atomic<bool> g_oldStandalone{false}; // an older S3SSApex.asi is loaded too
 std::string g_oldStandaloneModule;        // under g_detailLock
 
 // Sidebar pages and the tabs of each page. The selected page and tabs are kept while the game runs (not saved).
-enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts, PageBanding };
+enum Page : int { PageOverview, PageLighting, PageWaterSnow, PageColor, PageAmbientOcclusion, PageDepthBlur, PageEdgeSmoothing, PagePerformance, PageDeveloper, PageSettings, PageReport, PageConflicts, PageBanding, PageLotStreaming };
 enum LightingTab : int { LightingLamps, LightingGround, LightingObjects, LightingBuildings, LightingStories };
 enum SettingsTab : int { SettingsMenu, SettingsShortcuts, SettingsProfiles, SettingsCompatibility, SettingsAbout };
 int g_page = PageOverview;
@@ -886,10 +886,58 @@ void PerformanceCard() {
             if (ApexUi::Slider("Lot lighting time while moving", &ms, 1.0f, 15.0f, o)) Performance::SetLotLightingBudgetMs(static_cast<int>(std::lround(ms)));
         }
         FeatureSwitchRow(Performance::kWallShadingName, "Wall shading waits while moving", "Walls of new lots get their shading when you stop");
+        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
     }
     ApexUi::EndCard();
     ImGui::PopID();
 
+    ImGui::PushID("PerformanceFiles");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Search, "Files and objects", "Less repeated searching as content loads", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load"))
+            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has");
+        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes");
+        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceTextures");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Layers, "Textures and Sims", "Fewer pauses when textures and Sims are built", nullptr, nullptr);
+        ApexUi::CardDivider();
+        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures")) {
+            bool cores = Performance::FastTextureSeveralCores();
+            if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result"))
+                Performance::SetFastTextureSeveralCores(cores);
+        }
+        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
+        FeatureSwitchRow(Performance::kFastCasName, "Faster Sim building", "Fewer hitches when Sims are edited or change outfits");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceMemory");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory");
+        FeatureSwitchRow(Performance::kMemoryGuardName, "Room to save", "Keeps free memory for saving (Error 12) and drops unused game files when memory runs low", true);
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+    ImGui::PushID("PerformanceGame");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Monitor, "Game and scripts", "Less work for the game every frame", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame", true);
+        FeatureSwitchRow(Performance::kScriptMathName, "Faster scripts", "The game's scripts compare numbers and look up types with less work", true);
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
+// ---- System > Lot Streaming (06/10, its own page) ----
+void LotStreamingCards() {
     // Lot detail and object streaming: research and code by idavidveiga's fork (02-04/10, docs/features/lot-streaming.md)
     ImGui::PushID("PerformanceLotDetailStreaming");
     if (ApexUi::BeginCard("##Card")) {
@@ -980,51 +1028,6 @@ void PerformanceCard() {
             if (ApexUi::Slider("Delay between lot windows", &delay, 0.0f, 500.0f, delayOptions))
                 Performance::SetLotObjectThrottleDelayMs(static_cast<int>(std::lround(delay)));
         }
-
-        FeatureSwitchRow(Performance::kSceneBudgetName, "Spread new objects over frames", "Fewer hitches when a lot streams in while the camera moves");
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-    ImGui::PushID("PerformanceFiles");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Search, "Files and objects", "Less repeated searching as content loads", nullptr, nullptr);
-        ApexUi::CardDivider();
-        if (FeatureSwitchRow(Performance::kResourceCacheName, "Faster game file lookups", "Fewer small stutters when objects and textures load"))
-            FeatureSwitchRow(Performance::kLookupMissesName, "Remember missing files", "Skips repeated searches for files no package has");
-        FeatureSwitchRow(Performance::kFileListName, "Faster file lists", "Fewer stutters when Sims load outfits and shapes");
-        FeatureSwitchRow(Performance::kObjectIndexName, "Faster object lookups", "Fewer hitches when lot lights update; less script work");
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-    ImGui::PushID("PerformanceTextures");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Layers, "Textures and Sims", "Fewer pauses when textures and Sims are built", nullptr, nullptr);
-        ApexUi::CardDivider();
-        if (FeatureSwitchRow(Performance::kFastTextureName, "Faster texture compression", "Fewer hitches when the game builds terrain, Sim and lot textures")) {
-            bool cores = Performance::FastTextureSeveralCores();
-            if (ApexUi::SwitchRow("Use several cores", &cores, "Large textures are shared out over several processor cores, with the same result"))
-                Performance::SetFastTextureSeveralCores(cores);
-        }
-        FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
-        FeatureSwitchRow(Performance::kFastCasName, "Faster Sim building", "Fewer hitches when Sims are edited or change outfits");
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-    ImGui::PushID("PerformanceMemory");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
-        ApexUi::CardDivider();
-        FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory");
-        FeatureSwitchRow(Performance::kMemoryGuardName, "Room to save", "Keeps free memory for saving (Error 12) and drops unused game files when memory runs low", true);
-    }
-    ApexUi::EndCard();
-    ImGui::PopID();
-    ImGui::PushID("PerformanceGame");
-    if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Monitor, "Game and scripts", "Less work for the game every frame", nullptr, nullptr);
-        ApexUi::CardDivider();
-        FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame", true);
-        FeatureSwitchRow(Performance::kScriptMathName, "Faster scripts", "The game's scripts compare numbers and look up types with less work", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -1033,6 +1036,11 @@ void PerformanceCard() {
 void PerformancePage() {
     ApexUi::PageTitle("Performance", "Fewer stutters while you play");
     PerformanceCard();
+}
+
+void LotStreamingPage() {
+    ApexUi::PageTitle("Lot Streaming", "How far and how many lots show in full detail, and how they load");
+    LotStreamingCards();
 }
 
 // ---- System > Report a problem (30/09): the captures players send with a bug report (features/captures.h) ----
@@ -2326,6 +2334,7 @@ const SearchPart* SearchParts(int& count) {
         {"Depth Blur", nullptr, PageDepthBlur, nullptr, 0, DepthBlurContent},
         {"Edge Smoothing", nullptr, PageEdgeSmoothing, nullptr, 0, AntiAliasingContent},
         {"Performance", nullptr, PagePerformance, nullptr, 0, PerformanceCard},
+        {"Lot Streaming", nullptr, PageLotStreaming, nullptr, 0, LotStreamingCards},
         {"Settings", "Menu", PageSettings, &g_settingsTab, SettingsMenu, MenuTab},
         {"Settings", "Shortcuts", PageSettings, &g_settingsTab, SettingsShortcuts, ShortcutsTab},
     };
@@ -2535,6 +2544,7 @@ void Sidebar(bool collapsed) {
         {PageDepthBlur, IconId::Aperture, "Depth Blur", nullptr},
         {PageEdgeSmoothing, IconId::Spline, "Edge Smoothing", "SYSTEM"},
         {PagePerformance, IconId::Gauge, "Performance", nullptr},
+        {PageLotStreaming, IconId::Layers, "Lot Streaming", nullptr},
         {PageConflicts, IconId::TriangleAlert, "Attention", nullptr},
         {PageReport, IconId::Bug, "Report a problem", nullptr},
         {PageDeveloper, IconId::Wrench, "Developer", nullptr},
@@ -2761,6 +2771,7 @@ void DrawPage() {
     case PageEdgeSmoothing: EdgeSmoothingPage(); break;
     case PageConflicts: ConflictsPage(); break;
     case PagePerformance: PerformancePage(); break;
+    case PageLotStreaming: LotStreamingPage(); break;
     case PageDeveloper:
         if (!kPublicBuild) {
             ApexUi::SetChangeReporting(false); // developer switches are not part of the undoable state

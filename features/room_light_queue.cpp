@@ -54,6 +54,7 @@
 #include <cstring>
 #include <format>
 #include <mutex>
+#include <unordered_set>
 
 namespace {
 
@@ -139,14 +140,36 @@ bool Stranded(const BYTE* room) {
 // it straight to its class after that solve. Render thread (the scheduler).
 std::atomic<bool> g_quickPass{true};
 std::atomic<long> g_quickRooms{0};
+// Once per room and burst (06/10 capture: a room back at its class after the quick solve was set to 0 again and again while
+// the burst lasted, 500-700 quick passes for some 30 rooms, and its refinement waited)
+std::unordered_set<uintptr_t> g_quickDone;
+long g_quickEvent = -1;
+bool WaitingAboveClass0(const BYTE* room) {
+    __try {
+        return *reinterpret_cast<const int*>(room + 0xF0) == 2 && *reinterpret_cast<const int*>(room + 0xF4) > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool SetClass0(BYTE* room) {
+    __try {
+        *reinterpret_cast<int*>(room + 0xF4) = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 void QuickPassRoom(BYTE* room) {
     if (!g_quickPass.load(std::memory_order_relaxed) || !LampMarkFilter::MassSwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
-    __try {
-        if (*reinterpret_cast<const int*>(room + 0xF0) != 2 || *reinterpret_cast<const int*>(room + 0xF4) <= 0) return;
-        *reinterpret_cast<int*>(room + 0xF4) = 0;
-        g_quickRooms.fetch_add(1, std::memory_order_relaxed);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    const long burst = LampMarkFilter::MassEventId();
+    if (burst != g_quickEvent) {
+        g_quickEvent = burst;
+        g_quickDone.clear();
     }
+    const uintptr_t key = reinterpret_cast<uintptr_t>(room);
+    if (g_quickDone.contains(key) || !WaitingAboveClass0(room)) return;
+    if (g_quickDone.size() < 4096) g_quickDone.insert(key);
+    if (SetClass0(room)) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
 }
 
 float __fastcall PriorityHook(BYTE* room) {
