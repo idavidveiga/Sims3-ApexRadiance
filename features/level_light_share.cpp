@@ -2799,7 +2799,7 @@ bool CrossOnly(const BYTE* room, const RoomInfo& info) {
     return true;
 }
 void __fastcall RoomNormHook(BYTE* room, void*, const float* brightest) {
-    reinterpret_cast<RoomNorm_t>(g_roomNorm)(room, brightest);
+    reinterpret_cast<RoomNorm_t>(kRoomNorm)(room, brightest);
     __try {
         float& norm = *reinterpret_cast<float*>(room + 0x160);
         if (!std::isfinite(norm)) {
@@ -2860,7 +2860,7 @@ void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light,
                 return; // attenuate this lamp alone; leave earlier lamps in the accumulator unchanged
             }
         }
-    reinterpret_cast<BasisLight_t>(g_basisLight)(pos, light, acc);
+    reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, acc);
 }
 
 // Walls of room 0 of `floor` that the game would test for this light in this batch (its own culling), or null = all.
@@ -3295,81 +3295,6 @@ bool Redirect(uintptr_t site, uintptr_t target, const void* thunk, std::vector<M
     const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thunk) - (site + 5));
     return MemPatch::WriteDWORD(site + 1, rel, patches, &orig);
 }
-bool ResolveSteamOnlyLevelHooks() {
-    if (GameAddr::IsFixed()) {
-        g_roomNorm = kRoomNormSteam;
-        g_roomNormCall = kRoomNormCallSteam;
-        g_basisLight = kBasisLightSteam;
-        g_basisLightCall = kBasisLightCallSteam;
-        return true;
-    }
-
-    using GameAddr::Get;
-    using GameAddr::Id;
-
-    // RoomNorm: on Steam its sole call is exactly 0x3C bytes before DimAmbientCall0 in RoomAmbient. This relation
-    // survives code motion better than an absolute address; require the resolved target to stay between DimAmbient and
-    // RoomAmbient, as on Steam, before allowing the hook.
-    g_roomNorm = g_roomNormCall = 0;
-    const uintptr_t roomAmbient = Get(Id::RoomAmbient);
-    const uintptr_t dimAmbient = Get(Id::DimAmbient);
-    const uintptr_t dimCall0 = Get(Id::DimAmbientCall0);
-    if (roomAmbient && dimAmbient && dimCall0 > 0x3C) {
-        const uintptr_t site = dimCall0 - 0x3C;
-        if (*reinterpret_cast<const BYTE*>(site) == 0xE8) {
-            const uintptr_t target = site + 5 + *reinterpret_cast<const int32_t*>(site + 1);
-            if (target > dimAmbient && target < roomAmbient) {
-                g_roomNormCall = site;
-                g_roomNorm = target;
-                LOG_INFO(std::format("[LevelLightShare] EA RoomNorm resolved structurally: call {:#010x} -> {:#010x} (DimAmbientCall0 - 0x3C)",
-                                     site, target));
-            }
-        }
-    }
-
-    // BasisLight: the basis-map loop has a distinctive
-    //   lea edx,[esp+0xC8]; push edx; mov ecx,edi; call ...
-    // sequence. The callee is also independently constrained by two already-resolved functions:
-    // Steam BasisLight is WallBlur-0x3D0 and SolvePoint-0xAE0. Require both relations to agree, then exactly one call
-    // with the full prefix in the bounded code between that helper and RoomAmbient.
-    g_basisLight = g_basisLightCall = 0;
-    const uintptr_t wallBlur = Get(Id::WallBlur);
-    const uintptr_t solvePoint = Get(Id::SolvePoint);
-    if (wallBlur > 0x3D0 && solvePoint > 0xAE0 && roomAmbient) {
-        const uintptr_t expectedA = wallBlur - 0x3D0;
-        const uintptr_t expectedB = solvePoint - 0xAE0;
-        if (expectedA == expectedB) {
-            const BYTE prefix[] = {0x8D, 0x94, 0x24, 0xC8, 0x00, 0x00, 0x00, 0x52, 0x8B, 0xCF, 0xE8};
-            uintptr_t found = 0;
-            int count = 0;
-            const uintptr_t lo = expectedA;
-            const uintptr_t hi = roomAmbient + 0x100;
-            for (uintptr_t p = lo; p + sizeof(prefix) + 4 <= hi; ++p) {
-                if (std::memcmp(reinterpret_cast<const void*>(p), prefix, sizeof(prefix)) != 0) continue;
-                const uintptr_t call = p + sizeof(prefix) - 1;
-                const uintptr_t target = call + 5 + *reinterpret_cast<const int32_t*>(call + 1);
-                if (target != expectedA) continue;
-                found = call;
-                ++count;
-            }
-            if (count == 1) {
-                g_basisLight = expectedA;
-                g_basisLightCall = found;
-                LOG_INFO(std::format("[LevelLightShare] EA BasisLight resolved structurally: call {:#010x} -> {:#010x} "
-                                     "(WallBlur-0x3D0 = SolvePoint-0xAE0)", found, expectedA));
-            } else {
-                LOG_WARNING(std::format("[LevelLightShare] EA BasisLight resolver rejected: {} matching call(s), expected exactly one", count));
-            }
-        }
-    }
-
-    if (!g_roomNorm || !g_roomNormCall)
-        LOG_WARNING("[LevelLightShare] EA RoomNorm resolver did not validate a unique structural target");
-    if (!g_basisLight || !g_basisLightCall)
-        LOG_WARNING("[LevelLightShare] EA BasisLight resolver did not validate a unique structural target");
-    return g_roomNorm && g_roomNormCall && g_basisLight && g_basisLightCall;
-}
-
 
 // 4.: the room update's function pointer and the 5 floor calls. False (nothing left patched) when the game differs.
 std::vector<MemPatch::PatchLocation> g_indoorPatches;
@@ -3436,33 +3361,30 @@ bool InstallIndoor(std::string& why) {
     else g_lodPatches.insert(g_lodPatches.end(), ambPatches.begin(), ambPatches.end());
     g_ambReady = amb;
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
-    // The last two parts were originally Steam-only. On EA 1.69 they are resolved from structural relations between
-    // addresses that GameAddr has already validated. Nothing is patched unless every relation and call target below agrees.
-    ResolveSteamOnlyLevelHooks();
-
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
     kRoomNormCall = GameAddr::Get(Id::RoomNormCall);
     kRoomNorm = GameAddr::Get(Id::RoomNorm);
     const bool norm = GameAddr::Have({Id::RoomNormCall, Id::RoomNorm}) && CallsTarget(kRoomNormCall, kRoomNorm) &&
+                      Redirect(kRoomNormCall, kRoomNorm, reinterpret_cast<const void*>(&RoomNormHook), &normPatches);
+    if (norm) g_lodPatches.insert(g_lodPatches.end(), normPatches.begin(), normPatches.end());
+    else {
         MemPatch::RestoreAll(normPatches);
-        LOG_WARNING("[LevelLightShare] Rooms lit only by lamps of another story: structural validation failed, left as the game has it");
+        LOG_WARNING("[LevelLightShare] Rooms lit only by lamps of another story: the game code differs (or not Steam 1.67.2), left as the game has it");
     }
-
-    // The floor test in the 4 basis maps (optional; BasisLightHook).
+    // The floor test in the 4 basis maps (optional; BasisLightHook). 0x006A0C4C: lea edx,[esp+0xC8]; push edx; mov ecx,edi; call
     std::vector<MemPatch::PatchLocation> basisPatches;
     const BYTE basisBytes[] = {0x8D, 0x94, 0x24, 0xC8, 0x00, 0x00, 0x00, 0x52, 0x8B, 0xCF};
     kBasisLightCall = GameAddr::Get(Id::BasisLightCall);
     kBasisLight = GameAddr::Get(Id::BasisLight);
     const bool basis = GameAddr::Have({Id::BasisLightCall, Id::BasisLight}) && std::memcmp(reinterpret_cast<const void*>(kBasisLightCall - sizeof basisBytes), basisBytes, sizeof basisBytes) == 0 &&
+                       CallsTarget(kBasisLightCall, kBasisLight) &&
+                       Redirect(kBasisLightCall, kBasisLight, reinterpret_cast<const void*>(&BasisLightHook), &basisPatches);
     g_basisGuardReady.store(basis, std::memory_order_relaxed);
-    if (basis) {
-        g_lodPatches.insert(g_lodPatches.end(), basisPatches.begin(), basisPatches.end());
-        LOG_INFO(std::format("[LevelLightShare] The floor test in the directional maps: yes (call {:#010x} -> {:#010x})",
-                             g_basisLightCall, g_basisLight));
-    } else {
+    if (basis) g_lodPatches.insert(g_lodPatches.end(), basisPatches.begin(), basisPatches.end());
+    else {
         MemPatch::RestoreAll(basisPatches);
-        LOG_WARNING("[LevelLightShare] The floor test in the directional maps: structural validation failed, left as the game has it");
+        LOG_WARNING("[LevelLightShare] The floor test in the directional maps: the game code differs (or not Steam 1.67.2), left as the game has it");
     }
     return true;
 }
