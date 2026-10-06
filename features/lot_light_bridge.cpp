@@ -240,9 +240,18 @@ const ShaderCache::Id kReplacementWetPsId = [] { // the same pass for the game's
 const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
 const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
 const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterSeaPsId = [] { // the lake pass for the sea that has no reflection (kSeaNoReflPs)
+    ShaderCache::Desc d;
+    d.tag = "NightLighting sea water (no game reflection)";
+    d.source = kWaterLampsHlsl;
+    d.sourceName = "lot_light_bridge";
+    d.macros = {{"SEA", "1"}};
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}();
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, Sea, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -570,6 +579,11 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 static bool logged = false;
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
             }
+            else if (IsShader(kSeaNoReflPs, code.data(), size)) {
+                c = PsClass::Sea;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: sea without the game's reflection seen (gets the shore reflection pass)"); }
+            }
             else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
             else if (IsShader(kMeltLotPs, code.data(), size)) c = PsClass::LotLightMelt;
             else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
@@ -632,6 +646,7 @@ bool g_stateUnknown = true;               // the bound shaders were not seen by 
 std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everything off (HookFailed)
 bool g_curVsIsRoof = false;
 bool g_curVsIsLake = false;
+bool g_curVsIsSea = false; // the vertex shader of the sea water without reflection (kSeaNoReflVs)
 bool g_curVsIsSnowLot = false;
 bool g_curVsIsRoad = false;
 DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
@@ -665,7 +680,7 @@ struct VsInfo {
     bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
     bool contractedLotUv = false; // exact regular lot VS; CPU floor samples use uncontracted local xz
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
-                          // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
+                          // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles, 12 sea without reflection
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
     int snowFloorTc = 7;  // cls 11: where it puts world xz / 2
     FoliageVs patched;    // cls 6: foliage copy (wrap light); cls 10: object copy (+ world xzy in TEXCOORD8, PatchObjectLampVs)
@@ -697,6 +712,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             info.contractedLotUv = is(kLotLightVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
+            else if (is(kSeaNoReflVs)) cls = 12;
             else if (is(kSnowLotVs)) cls = 3;
             else if (is(kFloorVs)) cls = 5;
             else {
@@ -1465,11 +1481,16 @@ std::atomic<float> g_waterRefl{1.0f};
 std::atomic<bool> g_waterFilter{true}, g_waterColorCompression{true};
 IDirect3DPixelShader9* g_waterPs = nullptr;
 bool g_waterCompileTried = false;
+IDirect3DPixelShader9* g_waterSeaPs = nullptr; // the same pass compiled for that sea (macro SEA)
+bool g_waterSeaCompileTried = false;
 std::atomic<int> g_waterDrawn{0};
 
-template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
+// sea = the sea water without the game's reflection (kSeaNoReflPs + kSeaNoReflVs): world-view-projection in VS c0..c3, an
+// identity world matrix in c4..c6, the camera in c7; the pass is the lake's, compiled with SEA (other input registers)
+template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw, bool sea = false) {
     if (!g_waterFix.load(std::memory_order_relaxed)) return false;
-    if (!g_curVsIsLake) {
+    if (sea && !g_curVsIsSea) return false; // another vertex shader: its outputs are unknown
+    if (!sea && !g_curVsIsLake) {
         static bool logged = false; // the lake pixel shader with another vertex shader: the pass reads the lake one's outputs
         if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: lake pixel shader drawn with another vertex shader, skipped"); }
         return false;
@@ -1479,12 +1500,20 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
         const std::string err = CompilePs(dev, kWaterPsId, &g_waterPs);
         LOG_INFO("[LotLightBridge] Water: " + (err.empty() ? std::string("active") : err));
     }
-    if (!g_waterPs) return false;
+    if (sea && !g_waterSeaPs && !g_waterSeaCompileTried) {
+        g_waterSeaCompileTried = true;
+        const std::string err = CompilePs(dev, kWaterSeaPsId, &g_waterSeaPs);
+        LOG_INFO("[LotLightBridge] Water (sea without reflection): " + (err.empty() ? std::string("active") : err));
+    }
+    IDirect3DPixelShader9* const passPs = sea ? g_waterSeaPs : g_waterPs;
+    if (!passPs) return false;
     float world[12];
-    if (FAILED(dev->GetVertexShaderConstantF(8, world, 3))) return false;
+    if (FAILED(dev->GetVertexShaderConstantF(sea ? 4 : 8, world, 3))) return false;
+    float cam[4]{}; // sea: lamps near the camera (the sea mesh is huge and has no translation)
+    if (sea && FAILED(dev->GetVertexShaderConstantF(7, cam, 1))) return false;
     g_inOwnCall = true;
     draw(); // the game's water, unchanged
-    const int picked = SelectLamps(world[3], world[11], 150.0f);
+    const int picked = sea ? SelectLamps(cam[0], cam[2], 150.0f) : SelectLamps(world[3], world[11], 150.0f);
     {
         g_lampData[32][0] = g_waterStrength.load(std::memory_order_relaxed);
         g_lampData[32][1] = static_cast<float>(picked);
@@ -1492,7 +1521,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
         g_lampData[32][3] = g_waterColorCompression.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         float consts[40][4] = {};
         std::memcpy(consts, g_lampData, sizeof(float) * 4 * 33);
-        dev->GetVertexShaderConstantF(4, &consts[33][0], 4); // world-view-projection of the water mesh
+        dev->GetVertexShaderConstantF(sea ? 0 : 4, &consts[33][0], 4); // world-view-projection of the water mesh
         // The shader projects world positions, so turn local->clip into world->clip: M * inverse(World). The water mesh
         // of a rotated lot has a rotated world matrix (rows c8..c10), so subtracting the translation is not enough.
         {
@@ -1572,7 +1601,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw) {
         dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-        SetPs(dev, g_waterPs);
+        SetPs(dev, passPs);
         SetPsConst(dev, 20, &consts[0][0], 40);
         DepthShare::SetInternalPass(true); // ZENABLE is off here: not the first UI draw for Depth Blur
         draw();
@@ -2757,6 +2786,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     // shader tells them apart (the stair one takes the snow base in TEXCOORD2) and stairs go to DrawSnowRelief below.
     if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? kSkip : kContinue;
     if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? kSkip : kContinue;
+    if (g_curClass == PsClass::Sea) return DrawLake(dev, draw, true) ? kSkip : kContinue;
     if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? kSkip : kContinue;
     if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? kSkip : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
@@ -2941,6 +2971,7 @@ void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
     const uint8_t cls = info ? info->cls : 0;
     g_curVsIsRoof = cls == 1;
     g_curVsIsLake = cls == 2;
+    g_curVsIsSea = cls == 12;
     g_curVsIsSnowLot = cls == 3;
     g_curVsIsRoad = cls == 4;
     if (g_curVsIsRoad) g_curRoadMap = info->roadMap;
@@ -3867,6 +3898,11 @@ void Shutdown(bool keepChunkMaps) {
         g_waterPs = nullptr;
     }
     g_waterCompileTried = false;
+    if (g_waterSeaPs) {
+        g_waterSeaPs->Release();
+        g_waterSeaPs = nullptr;
+    }
+    g_waterSeaCompileTried = false;
     g_waterFix = false;
     g_roofCompileTried = false;
     g_roofFix = false;

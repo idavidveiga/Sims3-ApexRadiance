@@ -3,8 +3,15 @@
 //    from the scene copy the game already binds for refraction (s6). No depth: no screen reflection.
 //  - reflections and glow of nearby lamps.
 // Uses the game's own wave normal maps (s0, s1) and constants (c1 = camera, c5 = wave normal scales).
+// SEA: the same pass for the sea water that never reads the game's planar reflection (Twinbrook, kSeaNoReflPs): its
+// camera is in c0, its wave scales in c4, its world position in TEXCOORD2 and its fog amount in COLOR1.w.
+#ifdef SEA
+float4 c1 : register(c0);
+float4 c5 : register(c4);
+#else
 float4 c1 : register(c1);
 float4 c5 : register(c5);
+#endif
 float4 lampPos[16] : register(c20); // xyz = lamp head, w = visual radius
 float4 lampCol[16] : register(c36); // rgb = colour x intensity x night fade
 float4 params : register(c52);      // x = lamp strength, y = count, z = filter specular, w = preserve bright lamp colors
@@ -18,8 +25,13 @@ sampler2D sScene : register(s6);
 sampler2D sDepth : register(s7);
 struct PSIn {
     float4 uv : TEXCOORD0;   // xy = wave map 0, zw = wave map 1
+#ifdef SEA
+    float4 pos : TEXCOORD2;  // xyz = world position
+    float4 fog : COLOR1;     // w = fog amount
+#else
     float4 pos : TEXCOORD1;  // xyz = world position
     float4 fog : TEXCOORD3;  // w = fog amount
+#endif
 };
 
 float4 Project(float3 world) {
