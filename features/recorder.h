@@ -18,6 +18,9 @@ void Note(const std::string& text);
 // Any thread: a lamp the player edited (switched, moved or changed) while a recording runs, for its light update summary;
 // treeLevel = the story tree level whose room marks showed the change first (not always the lamp's own story)
 void NoteLampEdit(uintptr_t treeLevel, bool on, bool moved);
+// Render thread (LightmapSmooth): a terrain chunk's smoothed light map shows new light from this frame; together = a lamp
+// switch's held ground, released with the rest of its batch
+void NoteGround(int ix, int iz, bool together);
 // The detailed lighting log lines are written: always in the development build, and while a recording runs in the public one
 inline bool Verbose() { return !kPublicBuild || Active(); }
 }

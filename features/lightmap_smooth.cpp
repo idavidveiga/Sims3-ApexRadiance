@@ -34,6 +34,7 @@
 #include "build_flavor.h"
 #include "d3d9_extra_hooks.h"
 #include "lightmap_smooth_hlsl.h"
+#include "recorder.h"
 #include "shader_cache.h"
 #include <windows.h>
 #include <d3dcompiler.h>
@@ -102,6 +103,7 @@ struct Entry {
     uint64_t ghash = 0;                // hash of the map at the last build / check (0 = unknown): fallback detection
     bool gNoHash = false;              // the map cannot be locked (not a managed DXT5): changes only by notice / pointer
     uint32_t gTryFrame = UINT32_MAX;   // frame of the last build attempt
+    bool held = false;                 // a lamp switch's chunk: gtex (from before the switch) shown until the batch is done
 };
 
 struct SharedSrc { // what the worker reads when it starts a job (guarded by g_mx)
@@ -1039,6 +1041,20 @@ uint64_t g_changeEpoch = 1, g_serviceEpoch = 0; // a change seen since the last 
 
 int g_gpuBuilds = 0, g_gpuInView = 0, g_gpuOutOfView = 0, g_gpuBorders = 0, g_gpuCells = 0, g_gpuFailures = 0;
 int g_gpuHashChecks = 0, g_sameMapNotices = 0;
+
+// ---- The ground of a lamp switch in one frame (06/10, user: "can the ground's update be as perfect as the walls'?") ----
+// A switch's local terrain relight re-renders its chunks one at a time (the house of the 06/10 recordings sits at the corner
+// of 4 chunks): each chunk showed its new light in its own frame, and the smoothed strip along the borders between them
+// (6 texels read from the neighbour) only kSettleFrames after the last change. While a switch's batch runs (HoldChunks),
+// its chunks keep their smoothed map from before the switch (Current) and none of them is built; when every batch held is
+// done (ReleaseHold) or after kHoldMaxMs, the first service of the next frame builds every held chunk whose map or
+// neighbours changed, their atlas cells with them, so every draw of that frame shows the new ground.
+std::vector<int> g_holdBatches; // local relight batches still running
+DWORD g_holdSince = 0;
+bool g_holdRelease = false; // build and show the held chunks at the next frame's first service
+constexpr DWORD kHoldMaxMs = 1500;
+int g_holds = 0, g_holdBuilds = 0, g_holdTimeouts = 0;
+size_t g_holdLastChunks = 0;
 float g_msPerChunk = -1.0f, g_msBatchMax = 0.0f, g_msLastBatch = -1.0f;
 int g_timedBatches = 0;
 
@@ -1543,7 +1559,7 @@ bool BuildOne(IDirect3DDevice9* dev, const LightmapSmooth::Key& key, Entry& e) {
 struct BuildItem {
     const LightmapSmooth::Key* key;
     Entry* e;
-    int kind; // 0 own change in view, 1 own change out of view, 2 neighbour border, 3 atlas cell only
+    int kind; // 0 own change in view, 1 own change out of view, 2 neighbour border, 3 atlas cell only, 4 held (lamp switch)
 };
 
 // Runs the items with one state save / restore and one timing.
@@ -1571,7 +1587,9 @@ void RunBatch(IDirect3DDevice9* dev, const std::vector<BuildItem>& items) {
         }
         built++;
         g_gpuBuilds++;
-        (it.kind == 0 ? g_gpuInView : (it.kind == 1 ? g_gpuOutOfView : g_gpuBorders))++;
+        (it.kind == 0 ? g_gpuInView : (it.kind == 1 ? g_gpuOutOfView : (it.kind == 4 ? g_holdBuilds : g_gpuBorders)))++;
+        // the recording's light updates: when this chunk shows new ground light (borders are not new light)
+        if (it.kind != 2 && Recorder::Active()) Recorder::NoteGround(ChunkIndex(it.key->first), ChunkIndex(it.key->second), it.kind == 4);
     }
     EndTiming(ts, built);
     st.Restore();
@@ -1612,10 +1630,23 @@ void GpuService(IDirect3DDevice9* dev) {
     const std::vector<EntryNode*>& byUse = ByUse(); // most recently drawn first (a copy: the batch below may draw)
     order.assign(byUse.begin(), byUse.end());
     items.clear();
+    // a lamp switch's held ground: at the first service of a frame, so every draw of this frame shows it
+    const bool release = newFrame && g_holdRelease;
+    if (release) g_holdRelease = false;
+    size_t released = 0;
     int urgent = 0, cells = 0;
     for (auto* kv : order) {
         Entry& e = kv->second;
         if (!e.src) continue;
+        if (e.held) {
+            if (!release) continue; // its light from before the switch stays until the batch is done
+            e.held = false;
+            if (e.gBuiltVer != e.gver || (e.gtex && e.gBuiltSig != GpuSig(kv->first))) { // its map, or a neighbour's (the borders)
+                items.push_back({&kv->first, &e, 4});
+                released++;
+            }
+            continue;
+        }
         const bool own = e.gBuiltVer != e.gver;
         if (own && e.gTryFrame == g_frame) continue; // failed this frame: the game's map is shown, next frame again
         POINT pt{};
@@ -1637,7 +1668,7 @@ void GpuService(IDirect3DDevice9* dev) {
         for (int pass = 0; pass < 2; pass++) // own changes first (their cells hold an older map), then borders
             for (auto* kv : order) {
                 Entry& e = kv->second;
-                if (!e.src || e.gTryFrame == g_frame) continue;
+                if (!e.src || e.held || e.gTryFrame == g_frame) continue;
                 if (spent > 0.0 && spent + est > kBackgroundMs) break;
                 if (std::any_of(items.begin(), items.end(), [&](const BuildItem& b) { return b.e == &e && b.kind != 3; })) continue;
                 const bool own = e.gBuiltVer != e.gver;
@@ -1647,12 +1678,18 @@ void GpuService(IDirect3DDevice9* dev) {
             }
     }
     RunBatch(dev, items);
+    if (release) g_holdLastChunks = released;
     if (compare && g_compareRequested.exchange(false)) g_compareResult = RunCompare(dev);
 }
 
 // Present, GPU path: timings, the fallback hash checks, sweep end, atlas growth. No drawing here.
 void OnPresentGpu(IDirect3DDevice9* dev) {
     ReadTimings();
+    if (!g_holdBatches.empty() && GetTickCount() - g_holdSince > kHoldMaxMs) { // a batch that never ended (dropped, refused)
+        g_holdBatches.clear();
+        g_holdRelease = true;
+        g_holdTimeouts++;
+    }
     {
         std::lock_guard<std::mutex> lk(g_mx); // a job the worker finished after a switch from the CPU path
         g_results.clear();
@@ -1682,6 +1719,7 @@ void ReleaseGpuChunks() {
         e.gBuiltVer = 0;
         e.gBuiltSig = 0;
         e.gAtlasSig = 0;
+        e.held = false;
     }
 }
 
@@ -1777,9 +1815,10 @@ void SetEnabled(bool on) {
 
 bool Enabled() { return g_enabled.load(std::memory_order_relaxed) && !g_failed.load(std::memory_order_relaxed); }
 
-// The smoothed map only while it was built from the game's current map (correct first).
+// The smoothed map only while it was built from the game's current map (correct first), or while a lamp switch holds it
+// (its light from before the switch, until the whole batch shows the new one).
 static IDirect3DTexture9* Current(const Entry& e) {
-    if (g_gpuActive) return e.gtex && e.gBuiltVer == e.gver ? e.gtex : nullptr;
+    if (g_gpuActive) return e.gtex && (e.gBuiltVer == e.gver || (e.held && e.gBuiltVer != 0)) ? e.gtex : nullptr;
     return e.smooth && e.hash == e.doneHash ? e.smooth : nullptr;
 }
 
@@ -1807,7 +1846,7 @@ IDirect3DTexture9* Get(const Key& key, IDirect3DTexture9* original) {
         // per frame (a failed build shows the game's map)
         GpuSafe([&] {
             GpuService(g_dev);
-            if (e.gBuiltVer != e.gver && e.src && e.gTryFrame != g_frame && !g_gpuBusy) {
+            if (e.gBuiltVer != e.gver && e.src && e.gTryFrame != g_frame && !g_gpuBusy && !e.held) {
                 const std::vector<BuildItem> one{{&it->first, &e, 0}};
                 RunBatch(g_dev, one);
             }
@@ -1870,6 +1909,30 @@ void OnTerrainRebuilt() {
 }
 
 void ExpectRebuild(int frames) { g_expectUntil = std::max(g_expectUntil, g_frame + static_cast<uint32_t>(std::max(frames, 0))); }
+
+void HoldChunks(int batch, const std::vector<std::pair<int, int>>& cells) {
+    if (!Enabled() || !g_gpuActive || !batch || cells.empty()) return;
+    size_t held = 0;
+    for (const auto& [ix, iz] : cells) {
+        const auto it = g_entries.find({ix * kChunkSize + kChunkSize / 2, iz * kChunkSize + kChunkSize / 2});
+        if (it == g_entries.end()) continue;
+        Entry& e = it->second;
+        if (!e.gtex || e.gBuiltVer == 0 || e.gBuiltVer != e.gver) continue; // nothing current to keep shown
+        e.held = true;
+        held++;
+    }
+    if (!held) return;
+    if (g_holdBatches.empty()) g_holdSince = GetTickCount();
+    g_holdBatches.push_back(batch);
+    g_holds++;
+}
+
+void ReleaseHold(int batch) {
+    if (g_holdBatches.empty()) return;
+    if (batch) std::erase(g_holdBatches, batch);
+    else g_holdBatches.clear();
+    if (g_holdBatches.empty()) g_holdRelease = true;
+}
 
 void NoteChunkRendered(int ix, int iz) {
     try {
@@ -2046,6 +2109,8 @@ void OnPreReset(IDirect3DDevice9*) {
     ReleaseTimings();
     g_servicedFrame = UINT32_MAX;
     g_changeEpoch++;
+    g_holdBatches.clear(); // the held maps are gone: the game's maps are shown until the rebuilds
+    g_holdRelease = false;
 }
 
 void Clear() {
@@ -2074,6 +2139,8 @@ void Clear() {
     ForgetByUse();
     g_checkCursor = g_boostCursor = 0;
     g_inFlight = 0;
+    g_holdBatches.clear();
+    g_holdRelease = false;
     g_sweepOn = false;
     ReleaseAtlas();
     ReleasePool();
@@ -2106,6 +2173,8 @@ std::string Status() {
                                     g_msLastBatch >= 0 ? std::format("{:.3f} ms", g_msLastBatch) : std::string("-"), g_msBatchMax, g_timedBatches, g_changes, g_notices,
                                     g_sameMapNotices, g_gpuHashChecks, g_atlasW, g_atlasH, g_atlasChunks, g_atlasGrowths);
         AppendTimingStatus(s, awaiting);
+        s += std::format(" | lamp switches shown in one frame: {} ({} chunks built, the last {}, {} after {} ms){}", g_holds, g_holdBuilds, g_holdLastChunks,
+                         g_holdTimeouts, kHoldMaxMs, g_holdBatches.empty() ? "" : " | holding the ground of a lamp switch");
         if (!kPublicBuild) s += " | GPU vs CPU: " + g_compareResult;
         return s;
     }

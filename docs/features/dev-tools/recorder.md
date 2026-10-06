@@ -138,7 +138,10 @@ recording 13:52 counted a trip to the map view as 6 more seconds of the third sw
   `RIGHT THEN WRONG` when it reached its final value and then left it again by more than 6 luma levels, and how far apart
   the points above and below the mouse settled;
 - the grid: how many points changed, when they settled, how many reversed, the `RIGHT THEN WRONG` ones with their place,
-  and every changed point.
+  and every changed point;
+- the ground: the terrain chunks whose smoothed light map showed new light (`Recorder::NoteGround` from LightmapSmooth's
+  builds, not border-only rebuilds), when, and whether in one frame (a lamp switch's held ground) or one by one. Each is
+  also a `[ground]` line in the timeline.
 
 ### `Wall seams.csv`
 

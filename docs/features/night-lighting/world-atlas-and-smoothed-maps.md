@@ -182,7 +182,24 @@ the driver (DXVK blits with linear filtering), not the integer `(sum + 2) / 4`.
   while a rebuild is imminent (`ExpectRebuild`, except chunks in view); borders wait for the end of a rebuild sweep and
   30 quiet frames.
 - A failed or interrupted build sets `gBuiltVer = 0`: the game's map is shown, retried next frame.
-- Present (`OnPresentGpu`): timestamp read-back, fallback hash checks, sweep end, `EnsureAtlas`. No drawing at Present.
+- Present (`OnPresentGpu`): timestamp read-back, fallback hash checks, sweep end, `EnsureAtlas`, the hold's time limit.
+  No drawing at Present.
+
+**A lamp switch's ground in one frame** (06/10, user: "can the ground's update be as perfect as the walls'?"). A switch's
+local relight re-renders its chunks one at a time (the atrium house of the 06/10 recordings sits at the corner of chunks
+(3,3), (3,4), (4,3), (4,4)): each chunk showed its new light in its own frame, two frames apart, and the smoothed strip
+along the borders between them (the 6 texels read from the neighbour) only `kSettleFrames` after the last change, so the
+ground changed in quarters with a cross-shaped seam for about a second. Now, for a player's pure switch (lamps on or off,
+nothing added, removed, moved or recoloured: `TryLocal` in the terrain relight), `HoldChunks(batch, cells)` marks the
+batch's chunks that have a smoothed map `held`: `Current` keeps returning their map from before the switch and the
+service builds none of them (nor `Get`'s own build). `ReleaseHold(batch)` when the batch's last chunk was re-rendered
+(`ReleaseHold(0)` when the queue failed; after `kHoldMaxMs` = 1500 ms at Present in any case) sets the release, done by the
+first service of the next frame (so every draw of that frame shows the new ground): every held chunk whose map or a
+neighbour's map changed is built (kind 4) with its atlas cell, in one batch, and unheld. Chunks around the batch whose
+border inputs changed keep the background path (the lamp's light does not reach their side of the border). Not for
+drags or value edits (their light follows the lamp chunk by chunk). The CPU path does not hold. Status: "lamp switches
+shown in one frame: N (chunks built, the last, after 1500 ms)". During a recording each chunk that shows new light is a
+`[ground]` line and the light update summary gives the ground's time ([recorder.md](../dev-tools/recorder.md)).
 
 The CPU path's `AtlasRawCopy` is not used: every consumer runs the service before reading. Exceptions show the game's map
 or a slightly late cell, never black: a change seen only by the Present hash check (one frame late), a chunk out of view

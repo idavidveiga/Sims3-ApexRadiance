@@ -9,6 +9,7 @@
 // Render thread only (OnPresent and the game's terrain update, which run on the same thread).
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ChunkRelight {
@@ -45,8 +46,9 @@ bool Editing(); // resolved WorldManager mode 2 (editInGameMode); unknown modes 
 // Queues the chunks whose bake rect overlaps a lamp rect (+1 m), each lamp's own chunk first, then its neighbours.
 // Returns a batch id > 0, or 0 with `why` when the caller must use the full rebuild: terrain or grid layout not as
 // studied, the world's first rebuild not seen yet, a chunk without a rebuilt light map, more than 16 chunks (or a
-// quarter of the world), the terrain not ready. `chunks` lists "(ix,iz) ..." for the log.
-int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent = false);
+// quarter of the world), the terrain not ready. `chunks` lists "(ix,iz) ..." for the log, `cells` (optional) the same.
+int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent = false,
+               std::vector<std::pair<int, int>>* cells = nullptr);
 // Phase 2: queues every chunk, nearest to (x, z) first (eye = nullptr: grid order); drops a pending local queue (the
 // sweep covers it). An older in-flight bake is repeated for the new state.
 // Interactive Build preview prioritizes at most four nearest chunks with a known
@@ -78,8 +80,8 @@ struct FrameResult {
     std::string why;     // and the local path is off for this world; the caller falls back to the full rebuild
 };
 // Per frame (render thread, after the lamp-change decisions): completion of the chunk in flight, timeout, release of the
-// next chunk (at most one per frame, never two frames in a row, 8 per second with up to 4 reserved priority releases
-// when measured chunk cost is <= 12 ms, never while any chunk has +0x55 /
+// next chunk (at most one per frame, never two frames in a row unless urgent, 8 per second; urgent work after a measured
+// chunk cost <= 12 ms has 4 more a second and goes back to back; never while any chunk has +0x55 /
 // +0x56 set or the render would return early).
 void OnPresent(FrameResult& out);
 

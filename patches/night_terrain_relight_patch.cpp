@@ -870,8 +870,14 @@ int TryLocal(Clock::time_point now, const std::vector<uint64_t>& newLots, const 
                 }
     }
     std::string chunks;
-    const int id = ChunkRelight::QueueLocal(lamps, why, chunks, user);
+    std::vector<std::pair<int, int>> cells;
+    const int id = ChunkRelight::QueueLocal(lamps, why, chunks, user, &cells);
     if (!id) return 0;
+    // A player's switch (lamps on or off, nothing moved or recoloured): the ground keeps its light until every chunk of the
+    // batch is re-rendered, then changes in one frame (06/10, "the ground as perfect as the walls"). Not for drags or
+    // value edits, whose light should follow the lamp chunk by chunk.
+    const LotLightBridge::BakeDiff& d = g_editDiff;
+    if (user && d.switchedOn + d.switchedOff > 0 && d.added + d.removed + d.light == 0) LightmapSmooth::HoldChunks(id, cells);
     LocalBatch b;
     b.id = id;
     b.changes = g_editDiff.changes;
@@ -1481,6 +1487,7 @@ void OnPresent() {
                 LOG_INFO("[NightTerrainRelight] " + g_lastEvent);
                 continue;
             }
+            LightmapSmooth::ReleaseHold(d.id); // a lamp switch's ground: every chunk of it shows its new light in the next frame
             const auto it = std::find_if(g_localBatches.begin(), g_localBatches.end(), [&d](const LocalBatch& b) { return b.id == d.id; });
             if (it == g_localBatches.end()) continue;
             if (g_haveBaked) LotLightBridge::CoverLots(g_baked, it->changes, it->lamps);
@@ -1492,6 +1499,7 @@ void OnPresent() {
         }
         if (fr.failed) {
             g_localFailures++;
+            LightmapSmooth::ReleaseHold(0);
             g_localBatches.clear();
             g_sweepId = 0;
             const bool rebuild = g_rebuildId != 0;

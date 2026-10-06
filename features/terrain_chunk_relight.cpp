@@ -565,7 +565,7 @@ size_t ReleaseLimit(bool urgent, double recentMs) {
     return urgent && recentMs >= 0.0 && recentMs <= 12.0 ? kMaxPerSecond + 4 : kMaxPerSecond;
 }
 
-int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent) {
+int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& chunks, bool urgent, std::vector<std::pair<int, int>>* cells) {
     View v;
     if (!Check(v, why)) return Refuse(why);
     std::vector<Entry> hits; // relight order: each lamp's own chunk, then its other chunks nearest first
@@ -636,8 +636,10 @@ int QueueLocal(const std::vector<Lamp>& lamps, std::string& why, std::string& ch
     b.startFrame = g_frame;
     g_batches.push_back(b);
     chunks.clear();
+    if (cells) cells->clear();
     for (const Entry& h : hits) {
         chunks += std::format("{}({},{})", chunks.empty() ? "" : " ", h.ix, h.iz);
+        if (cells) cells->emplace_back(h.ix, h.iz);
     }
     // push_front reverses insertion order: queue the farthest first to keep the lamp's own chunk first.
     if (urgent) for (auto it = hits.rbegin(); it != hits.rend(); ++it) Attach(std::move(*it), b.id, true);
@@ -834,7 +836,10 @@ void OnPresent(FrameResult& out) {
     // 2. Release the next chunk: never in the frame right after a render (a free frame in between), baseline 8 per second,
     //    with four extra slots only for urgent work after a measured render of at most 12 ms;
     //    never while a full rebuild's +0x55 / +0x56 work is pending, never when the render would return early.
-    if (g_frame <= g_lastDoneFrame) return;
+    //    Urgent work (a player's lamp edit) after such a cheap render goes back to back, one chunk a frame (06/10: a lamp
+    //    switch's ground now changes in one frame once its last chunk is done, LightmapSmooth::HoldChunks).
+    const bool backToBack = g_queue.front().urgent && g_lastMs >= 0.0 && g_lastMs <= 12.0;
+    if (g_frame <= g_lastDoneFrame && !backToBack) return;
     const auto now = Clock::now();
     while (!g_releases.empty() && now - g_releases.front() >= std::chrono::seconds(1)) g_releases.pop_front();
     if (g_releases.size() >= ReleaseLimit(g_queue.front().urgent, g_lastMs)) {

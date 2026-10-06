@@ -91,6 +91,13 @@ struct ViewSnap {
 };
 std::vector<ViewSnap> g_views;
 constexpr int kNotShown = -1000;
+// The terrain chunks whose smoothed light map changed (LightmapSmooth, render thread): the ground's new light
+struct GroundShown {
+    DWORD tick;
+    int ix, iz;
+    bool together;
+};
+std::vector<GroundShown> g_ground;
 std::string Clock(DWORD tick);
 
 std::string Seconds(DWORD from, DWORD at) { return std::format("{:+.2f} s", static_cast<int32_t>(at - from) / 1000.0); }
@@ -330,6 +337,22 @@ std::string LightUpdates(DWORD start, DWORD end) {
             if (twice) s += std::format("   solved more than once: {} room(s): {}\n", twice, again);
         }
         if (olderOnly) s += std::format("   {} room(s) only finished a solve started before this edit (not counted)\n", olderOnly);
+        // the ground (terrain chunks, their smoothed maps and the world atlas that lots, floors and fences read)
+        {
+            std::vector<const GroundShown*> g;
+            for (const GroundShown& x : g_ground)
+                if (!Before(x.tick, t0) && Before(x.tick, t1)) g.push_back(&x);
+            if (g.empty()) s += "   ground: no terrain chunk showed new light in this window\n";
+            else {
+                const bool oneFrame = std::all_of(g.begin(), g.end(), [&](const GroundShown* x) { return x->tick == g.front()->tick; });
+                const bool together = std::all_of(g.begin(), g.end(), [](const GroundShown* x) { return x->together; });
+                std::string list;
+                for (const GroundShown* x : g)
+                    if (list.size() < 300) list += std::format("{}({},{}) {}", list.empty() ? "" : ", ", x->ix, x->iz, Seconds(t0, x->tick));
+                s += std::format("   ground: {} terrain chunk(s) showed new light, {} .. {}{}: {}\n", g.size(), Seconds(t0, g.front()->tick), Seconds(t0, g.back()->tick),
+                                 oneFrame ? (together ? ", in one frame (held for the switch)" : ", in one frame") : (together ? ", held for the switch" : ", one by one"), list);
+            }
+        }
         // the screen: the column around the mouse (or the centre)...
         if (samples.empty()) continue;
         DWORD aboveSettled = 0, belowSettled = 0;
@@ -466,6 +489,7 @@ void Start() {
         g_edits.clear();
     }
     g_views.clear();
+    g_ground.clear();
     g_settingsAtStart.clear();
     {
         std::ifstream in(Dir() / L"ApexRadiance.toml", std::ios::binary);
@@ -509,6 +533,8 @@ void Stop() {
             all.emplace_back(Clock(e.tick), std::format("[edit] a lamp light seen on story {} (lot {:08X}) {}", e.story, e.lot,
                                                         e.moved ? "moved or changed" : e.on ? "switched on" : "switched off"));
     }
+    for (const GroundShown& x : g_ground)
+        all.emplace_back(Clock(x.tick), std::format("[ground] terrain chunk ({},{}) shows new light{}", x.ix, x.iz, x.together ? " (held for a lamp switch, with its batch)" : ""));
     for (auto& [tick, text] : LevelLightShare::JournalSince(g_startTick)) all.emplace_back(Clock(static_cast<DWORD>(tick)), "[solve] " + text);
     for (auto& l : logLines) all.emplace_back(l.first, "[log] " + l.second);
     std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -528,7 +554,8 @@ void Stop() {
                "+0x120), normalisation, solve state, LOD class (solving / shown), light count or shown story changes (checked every 100 ms)\n";
         out << "[probe] = a Light Probe (F7) capture, also the automatic ones taken 1 s and 3 s after any lot changes the story it shows\n";
         out << "[edit] = a lamp the player switched, moved or changed; [solve] ... E = a room's solve ended: it shows its new light from the next "
-               "frame (during a recording every room is noted)\n\n";
+               "frame (during a recording every room is noted)\n";
+        out << "[ground] = a terrain chunk's smoothed light map (also what lots, floors and fences read) shows new light from this frame\n\n";
         out << LightUpdates(g_startTick, end);
         if (g_notes >= kMaxNotes) out << std::format("(the furniture and probe lines stopped after {} lines)\n\n", kMaxNotes);
         if (g_roomNotes >= kMaxRoomNotes) out << std::format("(the [room] lines stopped after {} lines)\n\n", kMaxRoomNotes);
@@ -560,6 +587,9 @@ void NoteLampEdit(uintptr_t treeLevel, bool on, bool moved) {
     if (!LevelLightShare::TreeLevelLot(treeLevel, lot, story)) return;
     std::lock_guard<std::mutex> lk(g_editMx);
     if (g_edits.size() < 4096) g_edits.push_back(Edit{GetTickCount(), lot, story, on, moved});
+}
+void NoteGround(int ix, int iz, bool together) {
+    if (g_on && g_ground.size() < 4096) g_ground.push_back({GetTickCount(), ix, iz, together});
 }
 int SecondsRecorded() { return g_on ? static_cast<int>((GetTickCount() - g_startTick) / 1000) : -1; }
 void RequestToggle() { g_toggleRequest = true; }

@@ -3,6 +3,7 @@
 #include <d3d9.h>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace LightmapSmooth {
 using Key = std::pair<int, int>; // chunk centre (x, z), same key as the lot light bridge
@@ -46,4 +47,10 @@ void OnTerrainRebuilt();
 void ExpectRebuild(int frames);
 // Called from the game's per-chunk texture re-render (FUN_00C7E7A0 call site, render thread): chunk grid index.
 void NoteChunkRendered(int ix, int iz);
+// A lamp switch's local relight (batch id, the chunks' grid indices): those chunks keep showing their smoothed light from
+// before the switch until every batch held is released (or after 1.5 s), then all of them, with their borders and atlas
+// cells, change in the same frame. GPU path only; a chunk with no smoothed map yet is not held.
+void HoldChunks(int batch, const std::vector<std::pair<int, int>>& cells);
+// That batch is done (0: every batch, e.g. the queue failed)
+void ReleaseHold(int batch);
 }

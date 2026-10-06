@@ -258,7 +258,10 @@ rect updaters 0x006BDE66 / 0x006BE816 / 0x006BE8AB are not verified to run in th
 
 **Release** (every frame): one chunk in flight, its +0x54 set only after the previous one finished and never in the
 frame right after a render; at most 8 releases in any 1 s, 12 for urgent work once the latest measured chunk render in
-this world took at most 12 ms; never while any chunk has +0x55 or +0x56; never while a gate is closed. Gates mirrored
+this world took at most 12 ms, and that urgent work goes back to back, one chunk a frame (06/10: a player's lamp switch
+holds its ground until its last chunk is done and then shows it in one frame, `LightmapSmooth::HoldChunks`, see
+[world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md); the 06/10 recording's 4 chunks took 8 frames, now
+4); never while any chunk has +0x55 or +0x56; never while a gate is closed. Gates mirrored
 from `0x00C7E7A0`: live and TerrainData (terrain+0x64) +0x1D == 0; `[WM+0x54] ? [[WM+0x54]+8] : 0` (`0x00C61040`) != 0
 and TerrainData +0x20 == 0; byte `[[TerrainData+0x0C]+0x6C] != 0` (the sweep branch is skipped at `0x00C85011`, read at
 `0x00C8471A..0x00C8473A`, probably a tool state). Refusal text names the gate. A chunk flagged while closed would stall
