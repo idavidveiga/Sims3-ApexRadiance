@@ -2,6 +2,67 @@
 #include "world_lamp_policy.h"
 #include "terrain_lighting_policy.h"
 #include "native_terrain_sampler.h"
+#include "world_lamp_policy.h"
+// Lot light bridge (part of Night Lighting)
+//
+// Why lot grass has a hard edge next to street lamps (measured with light_probe.cpp):
+//  - World grass: the terrain chunk shader adds tex2D(terrainLightMap, uv) * c7.x (s8), where the terrain light map is the
+//    world's baked lamp "stamp" (wide diffuse circles). uv = (worldXZ - chunkCenter) / 256 + 0.5.
+//  - Lot grass: drawn by the lot terrain passes. Its light pass (modulate2x) adds tex2D(lotLightMap, uv) * c3.x (s1). The
+//    lot light map is solved on the CPU (FUN_006be020): street lamps fall off with the squared distance from the lamp head,
+//    so they arrive very faint. The two formulas meet at the lot border.
+//  - The lot light-pass vertex shader already outputs the terrain light map uv in TEXCOORD1 and gets the chunk center in
+//    c15 (xz).
+// Fix: when the game draws that exact lot light pass, draw it with a copy of the shader that also samples the terrain light
+// map of the same chunk (recorded from the world chunk draws: s8 texture, key = world translation c8.w / c10.w) and uses
+// max(lot light, terrain light). Both sides of the border then show the same street-lamp light.
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include "lot_light_bridge.h"
+#include "game_addresses.h"
+#include "shader_ids.h"
+#include "roof_ps_hlsl.h"
+#include "water_lamps_hlsl.h"
+#include "roof_snow_lamps_hlsl.h"
+#include "wall_lamp_table.h"
+#include "floor_atlas_table.h"
+#include "shader_patches.h"
+#include "lightmap_smooth.h"
+#include "terrain_chunk_relight.h"
+#include "room_map_padding.h"
+#include "level_light_share.h"
+#include "unlit_rooms.h"
+#include "light_probe.h"
+#include "rig_tracker.h"
+#include "recorder.h"
+#include "depth_share.h"
+#include "d3d9_extra_hooks.h"
+#include "d3d9_hooks.h"
+#include "shader_cache.h"
+#include "frame_profiler.h"
+#include "build_flavor.h"
+#include "apex_paths.h"
+#include "apex_log.h"
+#include "apex_version.h"
+#include <windows.h>
+#include <d3dcommon.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <tuple>
+#include "world_lamp_policy.h"
 // Lot light bridge (part of Night Lighting)
 //
 // Why lot grass has a hard edge next to street lamps (measured with light_probe.cpp):
@@ -297,6 +358,118 @@ struct TerrainConst {
     ~TerrainConst() { if (k >= 0) SetPsConst(dev, k, old, 1); }
 };
 
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
 std::atomic<int> g_objectDrawn{0};
 bool g_compileTried = false;
 std::string g_status = "Off";
@@ -478,6 +651,960 @@ bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], c
 std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
 std::atomic<float> g_wallGain{1.0f};
 std::atomic<bool> g_wallEnabled{false};
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+// Exact full-day cinema/theatre facade shaders. Keep them as orthogonal tags rather than a PsClass so their normal
+// object classification and existing dispatch behaviour stay intact. The map stores the one constant that only controls
+// the luminance-derived bloom alpha; the second set marks the tiny centre-panel variant for an extra primitive-count guard.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_cinemaMarqueeDayPs;
+std::unordered_set<IDirect3DPixelShader9*> g_cinemaMarqueePanelDayPs;
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+
+PsClass Classify(IDirect3DPixelShader9* ps) {
+    if (!ps) return PsClass::Other;
+    auto it = g_classCache.find(ps);
+    if (it != g_classCache.end()) return it->second;
+    PsClass c = PsClass::Other;
+    UINT size = 0;
+    if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            const bool cinemaMainDay = IsShader(kCinemaMarqueeDayPs, code.data(), size);
+            const bool cinemaMainNight = IsShader(kCinemaMarqueeNightPs, code.data(), size);
+            const bool cinemaMain = cinemaMainDay || cinemaMainNight;
+            const bool cinemaPanelDay = IsShader(kCinemaMarqueePanelDayPs, code.data(), size);
+            const bool cinemaPanelNight = IsShader(kCinemaMarqueePanelNightPs, code.data(), size);
+            const bool cinemaPanel = cinemaPanelDay || cinemaPanelNight;
+            if (cinemaMain || cinemaPanel) {
+                std::vector<DWORD> tokens(size / 4);
+                std::memcpy(tokens.data(), code.data(), size);
+                const int threshold = ShaderPatches::BloomThresholdConst(tokens);
+                if (threshold >= 0) {
+                    g_cinemaMarqueeDayPs[ps] = static_cast<DWORD>(threshold);
+                    if (cinemaPanel) g_cinemaMarqueePanelDayPs.insert(ps);
+                } else {
+                    LOG_WARNING(std::format("[LotLightBridge] Cinema bloom guard: exact PS {:08X}/{} found but its isolated bloom threshold was not proven",
+                                            ShaderHash(code.data(), size), size));
+                }
+            }
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
 
 int WallLampConst(const DWORD* t, size_t bytes) {
     uint32_t h = 2166136261u;
@@ -619,6 +1746,871 @@ struct VsInfo {
     bool worldMultiLight = false; // exact captured summer multi-pass light VS
     bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
     bool contractedLotUv = false; // exact regular lot VS; CPU floor samples use uncontracted local xz
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+
+PsClass Classify(IDirect3DPixelShader9* ps) {
+    if (!ps) return PsClass::Other;
+    auto it = g_classCache.find(ps);
+    if (it != g_classCache.end()) return it->second;
+    PsClass c = PsClass::Other;
+    UINT size = 0;
+    if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
+            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight;
+                g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+            }
+            else if (IsShader(kWorldCompactPs, code.data(), size)) {
+                c = PsClass::WorldCompact;
+                g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
+            }
+            else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
+            else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
+            else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
+            else if (IsShader(kLakePs2, code.data(), size)) {
+                c = PsClass::Lake;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
+            }
+            else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
+            else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
+                g_wallConst[ps] = static_cast<DWORD>(k);
+                c = PsClass::WallGain;
+            }
+            else if (IsFloorAtlasPs(reinterpret_cast<const DWORD*>(code.data()), size)) c = PsClass::FloorAtlas;
+            else {
+                // Declares a sampler s6 or higher (terrain shaders; dcl token 0x0200001F followed by 0x90000000 | type, then register token s8)
+                const auto* t = reinterpret_cast<const DWORD*>(code.data());
+                const size_t n = size / 4;
+                for (size_t k = 0; k + 2 < n; k++)
+                    // register token: number in bits 0-10, type = bits 28-30 | bits 11-12 << 3 (sampler = 10)
+                    if ((t[k] & 0xFFFF) == 0x001F && (t[k + 2] & 0x7FF) >= 6 && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) {
+                        c = PsClass::WorldCandidate;
+                        break;
+                    }
+                if (c == PsClass::WorldCandidate) { // the samplers it declares: where RecordWorldChunk looks for the light map
+                    uint16_t mask = 0;
+                    for (size_t k = 0; k + 2 < n; k++)
+                        if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10 && (t[k + 2] & 0x7FF) < 16)
+                            mask |= static_cast<uint16_t>(1u << (t[k + 2] & 0x7FF));
+                    g_worldSamplers[ps] = mask;
+                }
+            }
+        }
+    }
+    g_classCache[ps] = c;
+    ps->AddRef();
+    g_pinned.push_back(ps);
+    return c;
+}
+
+// Creates the pixel shader from its precompiled bytecode (shader_cache.h; compiled at start-up off the render thread).
+// Returns an error text, empty on success.
+std::string CompilePs(IDirect3DDevice9* dev, ShaderCache::Id id, IDirect3DPixelShader9** out) {
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, out, &msg)) {
+    case ShaderCache::Result::Ok:
+        return {};
+    case ShaderCache::Result::CompileFailed:
+        return std::format("compile failed: {}", msg.empty() ? std::string("?") : msg);
+    case ShaderCache::Result::CreateFailed:
+        break;
+    }
+    *out = nullptr;
+    return "could not create the shader";
+}
+
+// ---- Roofs: the game's roof shader has no lamp light at all (sun/moon + sky only). ----
+std::atomic<bool> g_roofFix{false};
+std::atomic<float> g_roofStrength{1.0f};
+IDirect3DPixelShader9* g_roofPs = nullptr;
+bool g_roofCompileTried = false;
+IDirect3DVertexShader9* g_curVs = nullptr;
+bool g_stateUnknown = true;               // the bound shaders were not seen by our Set*Shader hooks (see OnDraw)
+std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everything off (HookFailed)
+bool g_curVsIsRoof = false;
+bool g_curVsIsLake = false;
+bool g_curVsIsSnowLot = false;
+bool g_curVsIsRoad = false;
+DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
+bool g_curVsIsFloor = false;
+bool g_curVsIsSnowFloor = false; // snow lying on lot floor tiles (LightProbe-m69, m71)
+int g_curSnowFloorTc = 7;
+bool g_curVsIsSnowCover = false;
+bool g_curVsIsSnowRelief = false;
+bool g_curVsIsFoliage = false;
+bool g_curVsIsInstanced = false; // fence rails/posts, railings, stairs (SceneModelArray)
+struct FoliageVs {
+    std::vector<DWORD> code; // patched (ShaderPatches::PatchFoliageVs)
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
+    int vertexLight = -1; // objects: first colour constant of the rig's 4 vertex lights (COLOR0), -1 if not found
+};
+// Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the patched copy of the vertex shader
+// (see DrawFloorAtlas)
+struct FloorVs {
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int tc = 7;
+};
+bool g_curVsIsObject = false;
+// Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
+// the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
+// so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
+struct VsInfo {
+    bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
+    bool cinemaMarqueeDay = false; // exact EA 1.69 cinema/theatre marquee VS paired with kCinemaMarqueeDayPs
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+
+PsClass Classify(IDirect3DPixelShader9* ps) {
+    if (!ps) return PsClass::Other;
+    auto it = g_classCache.find(ps);
+    if (it != g_classCache.end()) return it->second;
+    PsClass c = PsClass::Other;
+    UINT size = 0;
+    if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
+            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight;
+                g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+            }
+            else if (IsShader(kWorldCompactPs, code.data(), size)) {
+                c = PsClass::WorldCompact;
+                g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
+            }
+            else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
+            else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
+            else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
+            else if (IsShader(kLakePs2, code.data(), size)) {
+                c = PsClass::Lake;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
+            }
+            else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
+            else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
+                g_wallConst[ps] = static_cast<DWORD>(k);
+                c = PsClass::WallGain;
+            }
+            else if (IsFloorAtlasPs(reinterpret_cast<const DWORD*>(code.data()), size)) c = PsClass::FloorAtlas;
+            else {
+                // Declares a sampler s6 or higher (terrain shaders; dcl token 0x0200001F followed by 0x90000000 | type, then register token s8)
+                const auto* t = reinterpret_cast<const DWORD*>(code.data());
+                const size_t n = size / 4;
+                for (size_t k = 0; k + 2 < n; k++)
+                    // register token: number in bits 0-10, type = bits 28-30 | bits 11-12 << 3 (sampler = 10)
+                    if ((t[k] & 0xFFFF) == 0x001F && (t[k + 2] & 0x7FF) >= 6 && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) {
+                        c = PsClass::WorldCandidate;
+                        break;
+                    }
+                if (c == PsClass::WorldCandidate) { // the samplers it declares: where RecordWorldChunk looks for the light map
+                    uint16_t mask = 0;
+                    for (size_t k = 0; k + 2 < n; k++)
+                        if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10 && (t[k + 2] & 0x7FF) < 16)
+                            mask |= static_cast<uint16_t>(1u << (t[k + 2] & 0x7FF));
+                    g_worldSamplers[ps] = mask;
+                }
+            }
+        }
+    }
+    g_classCache[ps] = c;
+    ps->AddRef();
+    g_pinned.push_back(ps);
+    return c;
+}
+
+// Creates the pixel shader from its precompiled bytecode (shader_cache.h; compiled at start-up off the render thread).
+// Returns an error text, empty on success.
+std::string CompilePs(IDirect3DDevice9* dev, ShaderCache::Id id, IDirect3DPixelShader9** out) {
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, out, &msg)) {
+    case ShaderCache::Result::Ok:
+        return {};
+    case ShaderCache::Result::CompileFailed:
+        return std::format("compile failed: {}", msg.empty() ? std::string("?") : msg);
+    case ShaderCache::Result::CreateFailed:
+        break;
+    }
+    *out = nullptr;
+    return "could not create the shader";
+}
+
+// ---- Roofs: the game's roof shader has no lamp light at all (sun/moon + sky only). ----
+std::atomic<bool> g_roofFix{false};
+std::atomic<float> g_roofStrength{1.0f};
+IDirect3DPixelShader9* g_roofPs = nullptr;
+bool g_roofCompileTried = false;
+IDirect3DVertexShader9* g_curVs = nullptr;
+bool g_stateUnknown = true;               // the bound shaders were not seen by our Set*Shader hooks (see OnDraw)
+std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everything off (HookFailed)
+bool g_curVsIsRoof = false;
+bool g_curVsIsLake = false;
+bool g_curVsIsSnowLot = false;
+bool g_curVsIsRoad = false;
+DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
+bool g_curVsIsFloor = false;
+bool g_curVsIsSnowFloor = false; // snow lying on lot floor tiles (LightProbe-m69, m71)
+int g_curSnowFloorTc = 7;
+bool g_curVsIsSnowCover = false;
+bool g_curVsIsSnowRelief = false;
+bool g_curVsIsFoliage = false;
+bool g_curVsIsInstanced = false; // fence rails/posts, railings, stairs (SceneModelArray)
+struct FoliageVs {
+    std::vector<DWORD> code; // patched (ShaderPatches::PatchFoliageVs)
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
+    int vertexLight = -1; // objects: first colour constant of the rig's 4 vertex lights (COLOR0), -1 if not found
+};
+// Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the patched copy of the vertex shader
+// (see DrawFloorAtlas)
+struct FloorVs {
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int tc = 7;
+};
+bool g_curVsIsObject = false;
+// Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
+// the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
+// so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
+struct VsInfo {
+    bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
     uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
                           // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
     DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
@@ -650,6 +2642,931 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             info.worldMultiLight = is(kWorldMultiLightVs);
             info.worldCompact = is(kWorldCompactVs);
             info.contractedLotUv = is(kLotLightVs);
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+
+PsClass Classify(IDirect3DPixelShader9* ps) {
+    if (!ps) return PsClass::Other;
+    auto it = g_classCache.find(ps);
+    if (it != g_classCache.end()) return it->second;
+    PsClass c = PsClass::Other;
+    UINT size = 0;
+    if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
+            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight;
+                g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+            }
+            else if (IsShader(kWorldCompactPs, code.data(), size)) {
+                c = PsClass::WorldCompact;
+                g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
+            }
+            else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
+            else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
+            else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
+            else if (IsShader(kLakePs2, code.data(), size)) {
+                c = PsClass::Lake;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
+            }
+            else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
+            else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
+                g_wallConst[ps] = static_cast<DWORD>(k);
+                c = PsClass::WallGain;
+            }
+            else if (IsFloorAtlasPs(reinterpret_cast<const DWORD*>(code.data()), size)) c = PsClass::FloorAtlas;
+            else {
+                // Declares a sampler s6 or higher (terrain shaders; dcl token 0x0200001F followed by 0x90000000 | type, then register token s8)
+                const auto* t = reinterpret_cast<const DWORD*>(code.data());
+                const size_t n = size / 4;
+                for (size_t k = 0; k + 2 < n; k++)
+                    // register token: number in bits 0-10, type = bits 28-30 | bits 11-12 << 3 (sampler = 10)
+                    if ((t[k] & 0xFFFF) == 0x001F && (t[k + 2] & 0x7FF) >= 6 && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) {
+                        c = PsClass::WorldCandidate;
+                        break;
+                    }
+                if (c == PsClass::WorldCandidate) { // the samplers it declares: where RecordWorldChunk looks for the light map
+                    uint16_t mask = 0;
+                    for (size_t k = 0; k + 2 < n; k++)
+                        if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10 && (t[k + 2] & 0x7FF) < 16)
+                            mask |= static_cast<uint16_t>(1u << (t[k + 2] & 0x7FF));
+                    g_worldSamplers[ps] = mask;
+                }
+            }
+        }
+    }
+    g_classCache[ps] = c;
+    ps->AddRef();
+    g_pinned.push_back(ps);
+    return c;
+}
+
+// Creates the pixel shader from its precompiled bytecode (shader_cache.h; compiled at start-up off the render thread).
+// Returns an error text, empty on success.
+std::string CompilePs(IDirect3DDevice9* dev, ShaderCache::Id id, IDirect3DPixelShader9** out) {
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, out, &msg)) {
+    case ShaderCache::Result::Ok:
+        return {};
+    case ShaderCache::Result::CompileFailed:
+        return std::format("compile failed: {}", msg.empty() ? std::string("?") : msg);
+    case ShaderCache::Result::CreateFailed:
+        break;
+    }
+    *out = nullptr;
+    return "could not create the shader";
+}
+
+// ---- Roofs: the game's roof shader has no lamp light at all (sun/moon + sky only). ----
+std::atomic<bool> g_roofFix{false};
+std::atomic<float> g_roofStrength{1.0f};
+IDirect3DPixelShader9* g_roofPs = nullptr;
+bool g_roofCompileTried = false;
+IDirect3DVertexShader9* g_curVs = nullptr;
+bool g_stateUnknown = true;               // the bound shaders were not seen by our Set*Shader hooks (see OnDraw)
+std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everything off (HookFailed)
+bool g_curVsIsRoof = false;
+bool g_curVsIsLake = false;
+bool g_curVsIsSnowLot = false;
+bool g_curVsIsRoad = false;
+DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
+bool g_curVsIsFloor = false;
+bool g_curVsIsSnowFloor = false; // snow lying on lot floor tiles (LightProbe-m69, m71)
+int g_curSnowFloorTc = 7;
+bool g_curVsIsSnowCover = false;
+bool g_curVsIsSnowRelief = false;
+bool g_curVsIsFoliage = false;
+bool g_curVsIsInstanced = false; // fence rails/posts, railings, stairs (SceneModelArray)
+struct FoliageVs {
+    std::vector<DWORD> code; // patched (ShaderPatches::PatchFoliageVs)
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
+    int vertexLight = -1; // objects: first colour constant of the rig's 4 vertex lights (COLOR0), -1 if not found
+};
+// Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the patched copy of the vertex shader
+// (see DrawFloorAtlas)
+struct FloorVs {
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int tc = 7;
+};
+bool g_curVsIsObject = false;
+// Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
+// the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
+// so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
+struct VsInfo {
+    bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
+    uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
+                          // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
+    DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
+    int snowFloorTc = 7;  // cls 11: where it puts world xz / 2
+    FoliageVs patched;    // cls 6: foliage copy (wrap light); cls 10: object copy (+ world xzy in TEXCOORD8, PatchObjectLampVs)
+    FloorVs floor;        // copy for the outdoor floors of summer (any class; made at the first such draw)
+    int lmSem = -1;       // DrawIndoorObject: the semantic (usage << 4 | index) lmRow was found for, -1 = not looked yet
+    int lmRow[2] = {-1, -1}; // the VS constants whose dp4 with the position make the room light map uv .x / .y (-1: not found)
+};
+std::unordered_map<IDirect3DVertexShader9*, VsInfo> g_vsInfo;
+VsInfo* g_curVsInfo = nullptr; // entry of g_curVs (null for no shader)
+std::atomic<int> g_roofDrawn{0};
+float g_cam[3] = {};
+float g_lampData[33][4] = {}; // 16 x pos+radius, 16 x colour, params
+int g_lampCount = 0;
+int g_lampFrame = 0;
+
+VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
+    if (!vs) return nullptr;
+    auto it = g_vsInfo.find(vs);
+    if (it != g_vsInfo.end()) return &it->second;
+    VsInfo info;
+    uint8_t cls = 0;
+    UINT size = 0;
+    if (SUCCEEDED(vs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(vs->GetFunction(code.data(), &size))) {
+            auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
+            info.worldMultiLight = is(kWorldMultiLightVs);
+            info.worldCompact = is(kWorldCompactVs);
+            info.cinemaMarqueeDay = is(kCinemaMarqueeDayVs);
+    float3 col = sun * c0.rgb + lamps;
+    col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+    return float4(col * 0.5, 0);
+}
+)";
+
+// Instanced outdoor objects (fences, shrubs): the vertex shader sums sun + the 3 rig lamps into TEXCOORD2 and this pixel
+// shader multiplies that sum by the sun/moon shadow, so at night lamp light vanishes wherever the moon shadow falls
+// (e.g. the side of a hedge or planter wall). Replacement: identical, but the shadow fades to 1 by c3.x (night level).
+const char* kObjectRigHlsl = R"(
+float4 c0 : register(c0);
+float4 c1 : register(c1);
+float4 c3 : register(c3);
+samplerCUBE sSky : register(s0);
+sampler2D sTex : register(s1);
+sampler2D sShadow : register(s5);
+struct PSIn {
+    float4 fog : COLOR0;
+    float3 t0 : TEXCOORD0;
+    float4 t1 : TEXCOORD1;
+    float3 t2 : TEXCOORD2;
+    float4 t4 : TEXCOORD4;
+    float t5 : TEXCOORD5;
+};
+float4 main(PSIn i) : COLOR0 {
+    float4 p = float4(i.t4.xy - 0.5 * c0.y, i.t4.zw);
+    float4 a = float4(p.x + c0.y, p.y + c0.z, p.z + c0.w, p.w + c0.w);
+    float4 b = float4(p.x + c0.z, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 d = float4(p.x + c0.y, p.y + c0.y, p.z + c0.w, p.w + c0.w);
+    float4 s = float4(tex2Dproj(sShadow, p).x, tex2Dproj(sShadow, a).x, tex2Dproj(sShadow, b).x, tex2Dproj(sShadow, d).x);
+    float sh = lerp(dot(s, 0.25), 1, i.t5);
+    sh = lerp(sh, 1, c3.x);
+    float3 light = (i.t2 * sh + texCUBE(sSky, i.t0).rgb * c1.w) * i.t1.z;
+    float4 tex = tex2D(sTex, i.t1.xy);
+    float3 col = lerp(tex.rgb * light, i.fog.rgb, i.fog.w);
+    return float4(col, i.t1.w - tex.a);
+}
+)";
+
+// The five replacement shaders are compiled at start-up on a background thread (framework/shader_cache.h), with the
+// options they always had (entry "main", flags 0); the draw hooks only create the shader objects at their first use.
+// Before 2026-09-28 each was compiled with D3DCompile inside the first draw that needed it: a one-time hitch on the render
+// thread (research\perf2\plan.md, item 7).
+ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* target, int priority) {
+    ShaderCache::Desc d;
+    d.tag = tag;
+    d.source = hlsl;
+    d.sourceName = "lot_light_bridge";
+    d.entry = "main";
+    d.target = target;
+    d.flags = 0;
+    d.priority = priority;
+    return ShaderCache::Add(std::move(d));
+}
+const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
+const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
+const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
+const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
+
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+
+std::atomic<bool> g_enabled{false};
+bool g_hooksRegistered = false;
+bool g_inOwnCall = false;
+IDirect3DPixelShader9* g_curPs = nullptr;
+PsClass g_curClass = PsClass::Other;
+std::unordered_map<IDirect3DPixelShader9*, PsClass> g_classCache;
+std::unordered_set<IDirect3DPixelShader9*> g_basisPs; // pixel shaders that read the room basis maps (RoomMapPadding)
+bool g_curPsBasis = false;
+// The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
+// RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
+// (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
+// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// textures skipped because they already are the map of another chunk.
+std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
+std::atomic<int> g_chunkStraySkipped{0};
+IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_objectPs = nullptr;
+bool g_objectCompileTried = false;
+std::atomic<bool> g_objectFix{false};
+std::atomic<float> g_night{0.0f};
+
+// ---- Lamp brightness on the ground ("Ground brightness", "Roads and sidewalks"): the game's lamp scale cK.x of a light
+// map term (lamp light only: the terrain map rgb, the lot map, max(map, atlas) of floors and roads) times the gain for
+// one draw, restored afterwards. Weighted by the night level: by day the lot maps also hold the window light. ----
+std::atomic<float> g_groundGain{1.0f}, g_roadGain{1.0f}; // road = a factor on top of the ground gain
+std::atomic<float> g_lotMapGain{1.0f};                   // "Lot lamps": the lot light map in the lot pass (kReplacementHlsl c31.x)
+std::atomic<int> g_groundGainDraws{0};
+float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std::memory_order_relaxed); }
+float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
+float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
+float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+struct ConstGain {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstGain(IDirect3DDevice9* d, int reg, float gain) : dev(d) {
+        if (reg < 0 || gain == 1.0f || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1))) return;
+        const float c[4] = {old[0] * gain, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstGain() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstGain(const ConstGain&) = delete;
+    ConstGain& operator=(const ConstGain&) = delete;
+};
+
+std::atomic<int> g_objectDrawn{0};
+bool g_compileTried = false;
+std::string g_status = "Off";
+
+struct ChunkTex {
+    IDirect3DBaseTexture9* tex = nullptr; // AddRef'd
+};
+std::map<std::pair<int, int>, ChunkTex> g_chunks; // key: chunk center (x, z) rounded
+std::unordered_map<IDirect3DBaseTexture9*, std::pair<int, int>> g_chunkOfTexture; // each registered map -> its chunk
+std::atomic<int> g_worldSeen{0}, g_lotDrawn{0}, g_lotMissing{0};
+
+std::pair<int, int> Key(float x, float z) { return {static_cast<int>(std::lround(x)), static_cast<int>(std::lround(z))}; }
+
+// The smoothed version of a chunk light map when it is ready (lightmap_smooth.cpp), else the game's own.
+IDirect3DBaseTexture9* ChunkTexture(const std::pair<int, int>& key, IDirect3DBaseTexture9* original) {
+    if (IDirect3DTexture9* s = LightmapSmooth::Find(key)) return s;
+    return original;
+}
+
+bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+
+// ---- Soft lot edges: the rectangle of every loaded lot, for the lot pass feather (kReplacementHlsl c28..c30). ----
+// Walk (render thread, Present): *(0x011D1860)+0x1C0 = lightMgr; +0xD4 light update tree (buckets +0x58, count +0x5C,
+// node +8 tracker, next +0x10); tracker+0x6A0 + level*0x1A4 = tree level, whose +0 is the story's manager; manager
+// +0x90/+0x94 lot id, room hash +0x234 / +0x238 (node: +0 room id, +0x10 room, +0x80 next). Room 0:
+//  - +0xF8 -> 4x4 lot->world matrix, row vectors: translation m[12], m[14]; the lot pass VS has the same matrix in
+//    c8 = (m0, m4, m8, m12), c10 = (m2, m6, m10, m14) (LightDiag "matriz[+0xF8]" of lot 09080020A1D28860 = VS c8/c10
+//    of the lot pass in research\borda3, rotation and translation);
+//  - +0xC0 / +0xC4 = tile extent (x, z) of the room. For room 0 the rebuild FUN_006a2740 copies them from the manager's
+//    tile grid size +0x264 / +0x268 (the room-id grid +0x260 bounds-checked with them everywhere, and "LotSizeParameters"
+//    = size / 64 in FUN_006a4c10), FUN_0069efc0 walks tiles [0, C0) x [0, C4), and FUN_006c6ab0 gathers world lights
+//    at the lot centre (C0 / 2, 0, C4 / 2) through +0xF8. So the lot covers lot-local [0, C0] x [0, C4] metres.
+struct LotRect {
+    float tx, tz;         // lot origin (world x, z)
+    float m0, m8;         // first row of the rotation (VS c8.x, c8.z) for the match
+    float w, d;           // size in metres along lot-local x and z
+    uint32_t lotLo, lotHi;
+};
+std::vector<LotRect> g_lotRects;
+std::atomic<bool> g_softEdges{true};
+constexpr float kEdgeBand = 3.0f; // metres of feather inside the lot edge
+std::atomic<int> g_edgeMatched{0}, g_edgeUnmatched{0};
+bool g_lotRectMiss = false; // a lot pass found no rectangle: refresh the table at the next Present
+int g_lotRectFrame = 0;
+LotRect g_lastEdgeRect{};        // the last lot the feather was applied to (status line)
+bool g_haveLastEdgeRect = false;
+// Render-thread visibility, from the verified lot-pass matrix. Registration
+// elsewhere in the world is not evidence that a lot is visible to the player.
+DWORD g_lotDrawTick = 0;
+std::unordered_map<uint64_t, DWORD> g_lotDrawSeen;
+std::unordered_set<uint64_t> g_lotArrivals;
+bool VisibleLot(uint64_t lot) {
+    const auto it = g_lotDrawSeen.find(lot);
+    return it != g_lotDrawSeen.end() && g_lotDrawTick - it->second < 500;
+}
+void NoteLotDraw(uint64_t lot) {
+    const auto [it, first] = g_lotDrawSeen.try_emplace(lot, g_lotDrawTick);
+    if (first || g_lotDrawTick - it->second >= 2000) {
+        g_lotArrivals.insert(lot);
+        LotLightBridge::RequestLampEditRefresh();
+    }
+    it->second = g_lotDrawTick;
+}
+
+// Story order: level 0 first (the terrain story, which draws the lot ground); every story has the same matrix and size.
+constexpr int kLotLevels[] = {0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4};
+
+// SEH only (no C++ objects): fills out[0..max), returns the count or -1 on a fault / no world.
+int ReadLotRects(LotRect* out, int max) {
+    int n = 0;
+    const uintptr_t rootPtr = GameAddr::Get(GameAddr::Id::RootPtr); // 0x011D1860 on Steam, found by signature elsewhere
+    if (!rootPtr) return -1;
+    __try {
+        const uintptr_t root = *reinterpret_cast<const uintptr_t*>(rootPtr);
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return -1;
+        const uintptr_t tree = *reinterpret_cast<const uintptr_t*>(lightMgr + 0xD4);
+        if (!tree) return -1;
+        const uintptr_t buckets = *reinterpret_cast<const uintptr_t*>(tree + 0x58);
+        const uint32_t bucketCount = *reinterpret_cast<const uint32_t*>(tree + 0x5C);
+        if (!buckets || !bucketCount || bucketCount >= (1u << 20)) return -1;
+        const uintptr_t endNode = *reinterpret_cast<const uintptr_t*>(buckets + bucketCount * 4);
+        uintptr_t slot = buckets;
+        uintptr_t node = *reinterpret_cast<const uintptr_t*>(slot);
+        int guard = 0;
+        while (node == 0 && guard++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        guard = 0;
+        while (node && node != endNode && guard++ < 100000 && n < max) {
+            const uintptr_t tracker = *reinterpret_cast<const uintptr_t*>(node + 8);
+            for (int li = 0; tracker && li < 12; li++) {
+                const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(tracker + 0x6A0 + static_cast<intptr_t>(kLotLevels[li]) * 0x1A4);
+                if (!mgr || *reinterpret_cast<const uintptr_t*>(mgr) != lightMgr) continue;
+                const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(mgr + 0x234);
+                const uint32_t rc = *reinterpret_cast<const uint32_t*>(mgr + 0x238);
+                uintptr_t room0 = 0;
+                for (uint32_t b = 0; rb && rc < 100000 && b < rc && !room0; b++) {
+                    int g2 = 0;
+                    for (uintptr_t rn = *reinterpret_cast<const uintptr_t*>(rb + b * 4); rn && g2++ < 10000; rn = *reinterpret_cast<const uintptr_t*>(rn + 0x80))
+                        if (*reinterpret_cast<const int*>(rn) == 0) {
+                            room0 = *reinterpret_cast<const uintptr_t*>(rn + 0x10);
+                            break;
+                        }
+                }
+                if (!room0) continue;
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(room0 + 0xC0), d = *reinterpret_cast<const uint32_t*>(room0 + 0xC4);
+                const float* m = *reinterpret_cast<const float* const*>(room0 + 0xF8);
+                if (!m || w == 0 || d == 0 || w > 256 || d > 256) continue; // room not rebuilt yet, or not a lot grid
+                LotRect& r = out[n];
+                r.tx = m[12];
+                r.tz = m[14];
+                r.m0 = m[0];
+                r.m8 = m[8];
+                r.w = static_cast<float>(w);
+                r.d = static_cast<float>(d);
+                r.lotLo = *reinterpret_cast<const uint32_t*>(mgr + 0x90);
+                r.lotHi = *reinterpret_cast<const uint32_t*>(mgr + 0x94);
+                if (std::isfinite(r.tx) && std::isfinite(r.tz) && std::isfinite(r.m0) && std::isfinite(r.m8)) n++;
+                break; // one story per lot is enough
+            }
+            node = *reinterpret_cast<const uintptr_t*>(node + 0x10);
+            int g3 = 0;
+            while (node == 0 && g3++ < (1 << 20)) node = *reinterpret_cast<const uintptr_t*>(slot += 4);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+    return n;
+}
+
+void RefreshLotRects() {
+    static LotRect buf[1024];
+    const int n = ReadLotRects(buf, 1024);
+    if (n < 0) {
+        g_lotRects.clear();
+        return;
+    }
+    g_lotRects.assign(buf, buf + n);
+}
+
+// The rectangle of the lot the current lot pass draws, matched by its matrix (VS c8, c10). nullptr = unknown lot.
+const LotRect* FindLotRect(const float c8[4], const float c10[4]) {
+    for (const LotRect& r : g_lotRects)
+        if (std::fabs(r.tx - c8[3]) < 0.05f && std::fabs(r.tz - c10[3]) < 0.05f && std::fabs(r.m0 - c8[0]) < 2e-3f && std::fabs(r.m8 - c8[2]) < 2e-3f) return &r;
+    return nullptr;
+}
+
+// PS c28..c30 of kReplacementHlsl. k = the VS c14 the draw runs with (terrain uv = (world.xz - c15.xz) * k.xy + k.zw),
+// c15 = chunk centre, c8 / c10 = lot matrix rows (world.x = c8.x lx + c8.z lz + c8.w, world.z = c10.x lx + c10.z lz +
+// c10.w). Inverts both into lot-local = A * uv + b (double precision on the CPU; the shader only does two dot products).
+bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float out[12]) {
+    const float off[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0}; // w = 1 everywhere: the plain max()
+    std::memcpy(out, off, sizeof(off));
+    if (!r || !g_softEdges.load(std::memory_order_relaxed)) return false;
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f) return false;
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3]; // world.x - tx = uv.x * sx + ox
+    const double oz = c15[2] - k[3] * sz - c10[3];
+    out[0] = static_cast<float>(d * sx / det);
+    out[1] = static_cast<float>(-b * sz / det);
+    out[2] = static_cast<float>((d * ox - b * oz) / det);
+    out[3] = r->w;
+    out[4] = static_cast<float>(-c * sx / det);
+    out[5] = static_cast<float>(a * sz / det);
+    out[6] = static_cast<float>((-c * ox + a * oz) / det);
+    out[7] = r->d;
+    out[8] = 1.0f / kEdgeBand;
+    out[9] = 0.0f;
+    return true;
+}
+
+// ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
+// "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
+// every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
+// one of them gets cK.x multiplied by "Forca nas paredes". No shader is changed; interior walls are never in the table.
+std::unordered_map<IDirect3DPixelShader9*, DWORD> g_wallConst;
+std::atomic<float> g_wallGain{1.0f};
+
+int WallLampConst(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const WallLampEntry& e : kWallLampTable)
+        if (e.size == bytes && e.hash == h) return static_cast<int>(e.constant);
+    return -1;
+}
+
+// Outdoor floors lit only by their baked floor map (floor_atlas_table.h; nearly black in summer, LightProbe-m61).
+bool IsFloorAtlasPs(const DWORD* t, size_t bytes) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < bytes / 4; i++) h = (h ^ t[i]) * 16777619u;
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == bytes && e.hash == h) return true;
+    return false;
+}
+
+// Every shader we classify is pinned (AddRef) until Shutdown: all caches here are keyed by the shader pointer, and a
+// released shader's address could otherwise be reused by a new one that would then get the old one's class or patched
+// copy (review 25/09).
+std::vector<IUnknown*> g_pinned;
+
+PsClass Classify(IDirect3DPixelShader9* ps) {
+    if (!ps) return PsClass::Other;
+    auto it = g_classCache.find(ps);
+    if (it != g_classCache.end()) return it->second;
+    PsClass c = PsClass::Other;
+    UINT size = 0;
+    if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
+            if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
+            if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
+            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight;
+                g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+            }
+            else if (IsShader(kWorldCompactPs, code.data(), size)) {
+                c = PsClass::WorldCompact;
+                g_worldSamplers[ps] = 1u << 3; // exact captured compact variant: only s3 is the lamp map
+            }
+            else if (IsShader(kObjectRigPs, code.data(), size)) c = PsClass::ObjectRig;
+            else if (IsShader(kRoofPs, code.data(), size)) c = PsClass::Roof;
+            else if (IsShader(kLakePs, code.data(), size)) c = PsClass::Lake;
+            else if (IsShader(kLakePs2, code.data(), size)) {
+                c = PsClass::Lake;
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
+            }
+            else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
+            else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
+                g_wallConst[ps] = static_cast<DWORD>(k);
+                c = PsClass::WallGain;
+            }
+            else if (IsFloorAtlasPs(reinterpret_cast<const DWORD*>(code.data()), size)) c = PsClass::FloorAtlas;
+            else {
+                // Declares a sampler s6 or higher (terrain shaders; dcl token 0x0200001F followed by 0x90000000 | type, then register token s8)
+                const auto* t = reinterpret_cast<const DWORD*>(code.data());
+                const size_t n = size / 4;
+                for (size_t k = 0; k + 2 < n; k++)
+                    // register token: number in bits 0-10, type = bits 28-30 | bits 11-12 << 3 (sampler = 10)
+                    if ((t[k] & 0xFFFF) == 0x001F && (t[k + 2] & 0x7FF) >= 6 && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10) {
+                        c = PsClass::WorldCandidate;
+                        break;
+                    }
+                if (c == PsClass::WorldCandidate) { // the samplers it declares: where RecordWorldChunk looks for the light map
+                    uint16_t mask = 0;
+                    for (size_t k = 0; k + 2 < n; k++)
+                        if ((t[k] & 0xFFFF) == 0x001F && (((t[k + 2] >> 28) & 7) | (((t[k + 2] >> 11) & 3) << 3)) == 10 && (t[k + 2] & 0x7FF) < 16)
+                            mask |= static_cast<uint16_t>(1u << (t[k + 2] & 0x7FF));
+                    g_worldSamplers[ps] = mask;
+                }
+            }
+        }
+    }
+    g_classCache[ps] = c;
+    ps->AddRef();
+    g_pinned.push_back(ps);
+    return c;
+}
+
+// Creates the pixel shader from its precompiled bytecode (shader_cache.h; compiled at start-up off the render thread).
+// Returns an error text, empty on success.
+std::string CompilePs(IDirect3DDevice9* dev, ShaderCache::Id id, IDirect3DPixelShader9** out) {
+    std::string msg;
+    switch (ShaderCache::CreatePixelShader(dev, id, out, &msg)) {
+    case ShaderCache::Result::Ok:
+        return {};
+    case ShaderCache::Result::CompileFailed:
+        return std::format("compile failed: {}", msg.empty() ? std::string("?") : msg);
+    case ShaderCache::Result::CreateFailed:
+        break;
+    }
+    *out = nullptr;
+    return "could not create the shader";
+}
+
+// ---- Roofs: the game's roof shader has no lamp light at all (sun/moon + sky only). ----
+std::atomic<bool> g_roofFix{false};
+std::atomic<float> g_roofStrength{1.0f};
+IDirect3DPixelShader9* g_roofPs = nullptr;
+bool g_roofCompileTried = false;
+IDirect3DVertexShader9* g_curVs = nullptr;
+bool g_stateUnknown = true;               // the bound shaders were not seen by our Set*Shader hooks (see OnDraw)
+std::atomic<bool> g_hookFailed{false};    // an exception escaped a hook: everything off (HookFailed)
+bool g_curVsIsRoof = false;
+bool g_curVsIsLake = false;
+bool g_curVsIsSnowLot = false;
+bool g_curVsIsRoad = false;
+DWORD g_curRoadMap = 16;         // VS constant with the road's terrain uv mapping
+bool g_curVsIsFloor = false;
+bool g_curVsIsSnowFloor = false; // snow lying on lot floor tiles (LightProbe-m69, m71)
+int g_curSnowFloorTc = 7;
+bool g_curVsIsSnowCover = false;
+bool g_curVsIsSnowRelief = false;
+bool g_curVsIsFoliage = false;
+bool g_curVsIsInstanced = false; // fence rails/posts, railings, stairs (SceneModelArray)
+struct FoliageVs {
+    std::vector<DWORD> code; // patched (ShaderPatches::PatchFoliageVs)
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int worldK = -1; // objects: first VS constant of the world triple (c[K..K+2].w = the object position)
+    int vertexLight = -1; // objects: first colour constant of the rig's 4 vertex lights (COLOR0), -1 if not found
+};
+// Outdoor floors lit only by their baked floor map (summer; floor_atlas_table.h): the patched copy of the vertex shader
+// (see DrawFloorAtlas)
+struct FloorVs {
+    IDirect3DVertexShader9* vs = nullptr;
+    bool tried = false;
+    int tc = 7;
+};
+bool g_curVsIsObject = false;
+// Everything known about a game vertex shader, in one entry (2026-09-29; before: a class cache and five more maps keyed by
+// the same pointer, each looked up per draw). Entries are only added (ClassifyVs) and all dropped together (Shutdown),
+// so a pointer to the current one stays valid while that shader is tracked (unordered_map keeps element addresses).
+struct VsInfo {
+    bool worldMultiLight = false; // exact captured summer multi-pass light VS
+    bool worldCompact = false; // exact captured single-layer WORLD VS (not an object rig)
+    uint8_t cls = 0;      // 0 other, 1 roof, 2 lake, 3 snow lot, 4 road, 5 floor, 6 foliage, 7 fence/stairs, 8 snow on objects,
+                          // 9 snow with relief (stair tops), 10 object lit by a rig, 11 snow on floor tiles
+    DWORD roadMap = 0;    // cls 4: VS constant with the terrain uv mapping (c16 in winter, c14 in summer)
+    int snowFloorTc = 7;  // cls 11: where it puts world xz / 2
+    FoliageVs patched;    // cls 6: foliage copy (wrap light); cls 10: object copy (+ world xzy in TEXCOORD8, PatchObjectLampVs)
+    FloorVs floor;        // copy for the outdoor floors of summer (any class; made at the first such draw)
+    int lmSem = -1;       // DrawIndoorObject: the semantic (usage << 4 | index) lmRow was found for, -1 = not looked yet
+    int lmRow[2] = {-1, -1}; // the VS constants whose dp4 with the position make the room light map uv .x / .y (-1: not found)
+};
+std::unordered_map<IDirect3DVertexShader9*, VsInfo> g_vsInfo;
+VsInfo* g_curVsInfo = nullptr; // entry of g_curVs (null for no shader)
+std::atomic<int> g_roofDrawn{0};
+float g_cam[3] = {};
+float g_lampData[33][4] = {}; // 16 x pos+radius, 16 x colour, params
+int g_lampCount = 0;
+int g_lampFrame = 0;
+
+VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
+    if (!vs) return nullptr;
+    auto it = g_vsInfo.find(vs);
+    if (it != g_vsInfo.end()) return &it->second;
+    VsInfo info;
+    uint8_t cls = 0;
+    UINT size = 0;
+    if (SUCCEEDED(vs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+        std::vector<BYTE> code(size);
+        if (SUCCEEDED(vs->GetFunction(code.data(), &size))) {
+            auto is = [&](const ShaderId& id) { return IsShader(id, code.data(), size); };
+            info.worldMultiLight = is(kWorldMultiLightVs);
+            info.worldCompact = is(kWorldCompactVs);
             if (is(kRoofVs)) cls = 1;
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSnowLotVs)) cls = 3;
@@ -1654,10 +4571,277 @@ struct PatchedPs {
     DWORD nativeAlphaSampler = 0;
     DWORD nativeAlphaSource = 0;
     DWORD terrainDayConst = 0;
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
+    IDirect3DBaseTexture9* terrain = atlas;
+    if (!atlas) {
+        auto it = g_chunks.find(Key(v[4], v[6])); // c16.xz = chunk centre
+        if (it == g_chunks.end() || !it->second.tex) {
+            g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        terrain = ChunkTexture(it->first, it->second.tex);
+    }
+    const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
+        SamplerBind terrainMap(dev, 12, terrain);
+        SetPs(dev, g_snowPs);
+        if (atlas) SetVsConst(dev, 15, atlasMap, 1);
+        ConstGain lampGain(dev, 4, GroundGain()); // c4.x (read once) scales max(lot map, terrain) only
+        draw();
+        if (atlas) SetVsConst(dev, 15, v, 1);
+        SetPs(dev, original);
+    }
+    g_inOwnCall = false;
+    g_snowDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Roads. Every road piece (straight road + sidewalk, lane markings, corners, the edge blended into the terrain: 4
+// shader variants seen so far) is drawn with the same vertex shader (shader_ids.h kRoadVs). It samples its own
+// copy of the chunk light map with the terrain uv (local xz / 256 + 0.5, VS c16) and the chunk centre in the world
+// matrix (VS c8.w, c10.w). That copy does not get the lamps the world terrain map has, so roads stayed dark next to lit
+// ground. Any pixel shader drawn with that vertex shader is patched by pattern (ShaderPatches::PatchRoad): max with the
+// terrain map on a free sampler; with the smoothed map ready it also replaces the road's own copy. Where the shader has
+// the sidewalk snow blend, "Calcada com neve pisada" mixes the plain road texture back on the bright parts.
+struct PatchedPs {
+    IDirect3DPixelShader9* ps = nullptr;
+    bool tried = false;
+    ShaderPatches::RoadPatch road;
+    ShaderPatches::FloorPatch floor;
+    ShaderPatches::InstancedPatch inst;
+    ShaderPatches::SnowCoverPatch snow;
+    ShaderPatches::ObjectLampPatch obj;
+    ShaderPatches::IndoorBasisPatch indoor;
+    ShaderPatches::BasisSmoothPatch smooth;
+    DWORD nightConst = 0;
+    int cubeTint = -1; // PatchCubeTint
 };
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainAlphaPs;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainDayPs;
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
+    IDirect3DBaseTexture9* terrain = atlas;
+    if (!atlas) {
+        auto it = g_chunks.find(Key(v[4], v[6])); // c16.xz = chunk centre
+        if (it == g_chunks.end() || !it->second.tex) {
+            g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        terrain = ChunkTexture(it->first, it->second.tex);
+    }
+    const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
+        SamplerBind terrainMap(dev, 12, terrain);
+        SetPs(dev, g_snowPs);
+        if (atlas) SetVsConst(dev, 15, atlasMap, 1);
+        ConstGain lampGain(dev, 4, GroundGain()); // c4.x (read once) scales max(lot map, terrain) only
+        draw();
+        if (atlas) SetVsConst(dev, 15, v, 1);
+        SetPs(dev, original);
+    }
+    g_inOwnCall = false;
+    g_snowDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Roads. Every road piece (straight road + sidewalk, lane markings, corners, the edge blended into the terrain: 4
+// shader variants seen so far) is drawn with the same vertex shader (shader_ids.h kRoadVs). It samples its own
+// copy of the chunk light map with the terrain uv (local xz / 256 + 0.5, VS c16) and the chunk centre in the world
+// matrix (VS c8.w, c10.w). That copy does not get the lamps the world terrain map has, so roads stayed dark next to lit
+// ground. Any pixel shader drawn with that vertex shader is patched by pattern (ShaderPatches::PatchRoad): max with the
+// terrain map on a free sampler; with the smoothed map ready it also replaces the road's own copy. Where the shader has
+// the sidewalk snow blend, "Calcada com neve pisada" mixes the plain road texture back on the bright parts.
+struct PatchedPs {
+    IDirect3DPixelShader9* ps = nullptr;
+    bool tried = false;
+    ShaderPatches::RoadPatch road;
+    ShaderPatches::FloorPatch floor;
+    ShaderPatches::InstancedPatch inst;
+    ShaderPatches::SnowCoverPatch snow;
+    ShaderPatches::ObjectLampPatch obj;
+    ShaderPatches::IndoorBasisPatch indoor;
+    ShaderPatches::BasisSmoothPatch smooth;
+    DWORD nightConst = 0;
+    int cubeTint = -1; // PatchCubeTint
+};
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
+std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
+std::atomic<bool> g_objPixel{true};
+std::atomic<float> g_objPixelStrength{1.0f};
+std::atomic<bool> g_objPixelLamps{true};          // outdoor rig objects: world lamps per pixel instead of the rig lamps
+std::atomic<float> g_objPixelLampStrength{1.0f};
+std::atomic<bool> g_fenceFix{true};
+std::atomic<float> g_fenceStrength{1.0f};
+std::atomic<float> g_sidewalkClear{0.5f};
+
+std::vector<DWORD> ShaderCode(IDirect3DPixelShader9* ps) {
+    UINT size = 0;
+    if (!ps || FAILED(ps->GetFunction(nullptr, &size)) || size < 8 || size > 65536) return {};
+    std::vector<DWORD> t(size / 4);
+    if (FAILED(ps->GetFunction(t.data(), &size))) return {};
+    return t;
+}
+
+// Development build: keeps the bytecode of every shader pair a fix refused, in Apex Radiance\ShadersRecusados, so it can be
+// studied offline (the log only has the shader's address, which changes between sessions).
+void SaveRefused(const char* what, const std::vector<DWORD>& ps) {
+    if (kPublicBuild) return;
+    try {
+        std::string tag;
+        for (const char* c = what; *c; ++c) tag += std::isalnum(static_cast<unsigned char>(*c)) ? *c : '_';
+        // Named by content (the address changes every session), written once, at most 300 files per session.
+        static int written = 0;
+        if (written >= 300) return;
+        auto hash = [](const std::vector<DWORD>& t) {
+            uint32_t h = 2166136261u;
+            for (DWORD d : t) h = (h ^ d) * 16777619u;
+            return h;
+        };
+        const std::filesystem::path dir = std::filesystem::path(ApexPaths::ApexDirectory()) / L"ShadersRecusados";
+        const auto save = [&](const std::string& name, const std::vector<DWORD>& data) {
+            if (std::filesystem::exists(dir / name)) return;
+            std::filesystem::create_directories(dir);
+            std::ofstream(dir / name, std::ios::binary).write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size() * 4));
+            written++;
+        };
+        const uint32_t psHash = hash(ps);
+        save(std::format("{}_PS_{:08X}.bin", tag, psHash), ps);
+        UINT size = 0;
+        if (g_curVs && SUCCEEDED(g_curVs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+            std::vector<DWORD> vs(size / 4);
+            if (SUCCEEDED(g_curVs->GetFunction(vs.data(), &size))) save(std::format("{}_PS_{:08X}_VS_{:08X}.bin", tag, psHash, hash(vs)), vs);
+        }
+    } catch (...) {
+    }
+}
+
+// Patched copy of the current pixel shader, made once per shader with `patch`.
+template <typename PatchFn> PatchedPs& PatchedFor(IDirect3DDevice9* dev, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch) {
+    PatchedPs& p = cache[g_curPs];
+    if (!p.tried) {
+        p.tried = true;
+        std::vector<DWORD> t = ShaderCode(g_curPs);
+        const std::vector<DWORD> original = t;
+        const bool matched = !t.empty() && patch(t, p);
+        const HRESULT hr = matched ? dev->CreatePixelShader(t.data(), &p.ps) : E_FAIL;
+        if (matched && SUCCEEDED(hr)) LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} patched", what, reinterpret_cast<uintptr_t>(g_curPs)));
+        else {
+            p.ps = nullptr;
+            if (matched) LOG_WARNING(std::format("[LotLightBridge] {}: shader {:08X} refused by D3D ({:08X})", what, reinterpret_cast<uintptr_t>(g_curPs), static_cast<uint32_t>(hr)));
+            else LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} does not have the expected pattern, left as the game draws it", what, reinterpret_cast<uintptr_t>(g_curPs)));
+            if (!original.empty()) SaveRefused(what, original);
+        }
+    }
+    return p;
+}
+
+template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
+    PatchedPs& p = PatchedFor(dev, g_roadPs, "Road", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchRoad(t, pp.road); });
+    if (!p.ps) return false;
+    float m[4], w[12];
+    if (FAILED(dev->GetVertexShaderConstantF(g_curRoadMap, m, 1)) || !Near(m[0], 1.0f / 256.0f) || !Near(m[1], 1.0f / 256.0f) || !Near(m[2], 0.5f) || !Near(m[3], 0.5f)) return false;
+    if (FAILED(dev->GetVertexShaderConstantF(8, w, 3))) return false;
+    auto it = g_chunks.find(Key(w[3], w[11])); // world matrix translation = chunk centre
+    if (it == g_chunks.end() || !it->second.tex) {
+        g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // With the smoothed map ready, the road's own copy (the blocky DXT5 one) is replaced by it too, so roads and
+    // sidewalks get exactly the same clean light as the ground next to them.
+    IDirect3DTexture9* smooth = LightmapSmooth::Find(it->first);
+    IDirect3DBaseTexture9* oldLight = nullptr;
+    if (smooth) dev->GetTexture(p.road.lightSampler, &oldLight);
+    float oldC[4] = {};
+    const bool sidewalk = p.road.sidewalkConst >= 0;
+    if (sidewalk) dev->GetPixelShaderConstantF(p.road.sidewalkConst, oldC, 1);
+    const float c[4] = {g_sidewalkClear.load(std::memory_order_relaxed), 0, 0, 0};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        SamplerBind terrain(dev, p.road.extraSampler, ChunkTexture(it->first, it->second.tex));
+        if (smooth) SetTex(dev, p.road.lightSampler, smooth);
+        if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, c, 1);
+        SetPs(dev, p.ps);
+        ConstGain lampGain(dev, p.road.scaleConst, RoadGain()); // the road's lamp scale, after the max with the terrain
+        draw();
+        SetPs(dev, original);
+        if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, oldC, 1);
+        if (smooth) SetTex(dev, p.road.lightSampler, oldLight);
+    }
+    if (oldLight) oldLight->Release();
+    g_inOwnCall = false;
+    g_roadDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Snowy floor tiles (shader_ids.h kFloorVs). The pixel shader lights them only with the lot's own light
+// map (x the light basis x 0.25), so street lamps never reach them. Its vertex shader already outputs world xz in
+// TEXCOORD0.zw, so the patched shader (ShaderPatches::PatchFloor) reads the world light atlas there
+// (lightmap_smooth.cpp): brightest of the lot map and the ground light, like the snowy lot ground. ----
+// ---- Fences, railings, posts, stairs (instanced lot structures, ShaderPatches::IsInstancedStructureVs). Their vertex
+// shader takes lamp light only from the rig's "vertex light" arrays, which the game fills only with overflow lights
+// (usually none: VS c4..c11 = 0 in every fence capture), and one rig serves a whole group from its centre. The patched
+// pixel shader (ShaderPatches::PatchInstancedLamps) uses max(vertex lights, ground light atlas at the pixel) instead,
+// so every rail gets the same lamp light as the ground next to it. ----
+template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // by day, keep the game's normal lighting on fences / railings / stairs
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
+    IDirect3DBaseTexture9* terrain = atlas;
+    if (!atlas) {
+        auto it = g_chunks.find(Key(v[4], v[6])); // c16.xz = chunk centre
+        if (it == g_chunks.end() || !it->second.tex) {
+            g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        terrain = ChunkTexture(it->first, it->second.tex);
+    }
+    const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
+        SamplerBind terrainMap(dev, 12, terrain);
+        SetPs(dev, g_snowPs);
+        if (atlas) SetVsConst(dev, 15, atlasMap, 1);
+        ConstGain lampGain(dev, 4, GroundGain()); // c4.x (read once) scales max(lot map, terrain) only
+        draw();
+        if (atlas) SetVsConst(dev, 15, v, 1);
+        SetPs(dev, original);
+    }
+    g_inOwnCall = false;
+    g_snowDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Roads. Every road piece (straight road + sidewalk, lane markings, corners, the edge blended into the terrain: 4
+// shader variants seen so far) is drawn with the same vertex shader (shader_ids.h kRoadVs). It samples its own
+// copy of the chunk light map with the terrain uv (local xz / 256 + 0.5, VS c16) and the chunk centre in the world
+// matrix (VS c8.w, c10.w). That copy does not get the lamps the world terrain map has, so roads stayed dark next to lit
+// ground. Any pixel shader drawn with that vertex shader is patched by pattern (ShaderPatches::PatchRoad): max with the
+// terrain map on a free sampler; with the smoothed map ready it also replaces the road's own copy. Where the shader has
+// the sidewalk snow blend, "Calcada com neve pisada" mixes the plain road texture back on the bright parts.
+struct PatchedPs {
+    IDirect3DPixelShader9* ps = nullptr;
+    bool tried = false;
+    ShaderPatches::RoadPatch road;
+    ShaderPatches::FloorPatch floor;
+    ShaderPatches::InstancedPatch inst;
+    ShaderPatches::SnowCoverPatch snow;
+    ShaderPatches::ObjectLampPatch obj;
+    ShaderPatches::IndoorBasisPatch indoor;
+    ShaderPatches::BasisSmoothPatch smooth;
+    DWORD nightConst = 0;
+    int cubeTint = -1; // PatchCubeTint
+};
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
 std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
 std::atomic<bool> g_objPixel{true};
 std::atomic<float> g_objPixelStrength{1.0f};
@@ -1814,6 +4998,34 @@ template <typename DrawFn, typename PatchFn>
 bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch, float posScale,
                       std::atomic<int>& drawn) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // by day, keep the game's normal snow/object lighting; only the night ground light is added
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        SamplerBind bind(dev, p.inst.atlasSampler, atlas, D3DTEXF_NONE);
+        SetPsConst(dev, p.inst.atlasConst, c, 1);
+        SetPsConst(dev, p.inst.strengthConst, s, 1);
+        SetPs(dev, p.ps);
+        draw();
+        SetPs(dev, original);
+        SetPsConst(dev, p.inst.strengthConst, oldB, 1);
+        SetPsConst(dev, p.inst.atlasConst, oldA, 1);
+    }
+    g_inOwnCall = false;
+    g_fenceDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Snow lying on objects (fence tops, rails, props; ShaderPatches::IsSnowCoverVs). Its pixel shader lights the snow
+// with the moon and the sky only, no lamp at all (LightProbe-neve-cerca, PS_2F27C510). The patched shader
+// (ShaderPatches::PatchSnowCover) adds the ground light atlas at the pixel x the fence strength, like the ground does. ----
+// ---- Snow with relief on stair tops (ShaderPatches::IsSnowReliefVs, LightProbe-neve-escada, PS_2E036820): same idea,
+// patched by ShaderPatches::PatchSnowRelief; its world position arrives halved, so the atlas scale is doubled. ----
+template <typename DrawFn, typename PatchFn>
+bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch, float posScale,
+                      std::atomic<int>& drawn) {
+    if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -1826,6 +5038,84 @@ bool DrawSnowOnObject(IDirect3DDevice9* dev, DrawFn draw, std::unordered_map<IDi
     dev->GetPixelShaderConstantF(p.snow.strengthConst, oldB, 1);
     const float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
                        g_fenceStrength.load(std::memory_order_relaxed)), 0, 0, 0};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        SamplerBind bind(dev, p.snow.atlasSampler, atlas, D3DTEXF_NONE);
+        SetPsConst(dev, p.snow.atlasConst, c, 1);
+        SetPsConst(dev, p.snow.strengthConst, s, 1);
+        SetPs(dev, p.ps);
+        draw();
+        SetPs(dev, original);
+        SetPsConst(dev, p.snow.strengthConst, oldB, 1);
+        SetPsConst(dev, p.snow.atlasConst, oldA, 1);
+    }
+    g_inOwnCall = false;
+    drawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+template <typename DrawFn> bool DrawSnowCover(IDirect3DDevice9* dev, DrawFn draw) {
+    return DrawSnowOnObject(dev, draw, g_snowCoverPs, "Snow on objects", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchSnowCover(t, pp.snow); },
+                            1.0f, g_snowCoverDrawn);
+}
+// ---- Outdoor objects lit by a rig (doors, windows, sofas, counters; LightProbe-porta/janela/sofa/balcao). The rig lights
+// a whole object (or part) with the 3 strongest lamps at its centre, often from above at a grazing angle, while the walls
+// around sum every lamp point by point: a front door looked dark next to its lit wall, and pieces of modular counters
+// outside get different light. The patched shaders (ShaderPatches::PatchObjectLampVs / PatchObjectLampPs) use, per pixel,
+// max(rig lamps + vertex lights, ground light atlas * (0.5 + 0.5 N.y) * strength). Only when the bound rig is outdoor
+// (RigTracker: rig+0x1D4 == 2): indoor objects would pick up ground light from under the house. ----
+// The patched copy of the current vertex shader (g_curVs / g_curVsInfo) when it is an object lit by a rig
+IDirect3DVertexShader9* ObjectVsFor(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
+    if (!g_curVsInfo || g_curVsInfo->cls != 10) return nullptr;
+    FoliageVs& f = g_curVsInfo->patched;
+    if (!f.tried) {
+        f.tried = true;
+        if (FAILED(dev->CreateVertexShader(f.code.data(), &f.vs))) f.vs = nullptr;
+        LOG_INFO(std::format("[LotLightBridge] Outdoor object: vertex shader {:08X} {}", reinterpret_cast<uintptr_t>(vs), f.vs ? "patched" : "failed"));
+    }
+    return f.vs;
+}
+
+// Light probe detail (Ctrl+Shift+F7) for an object the mod lights: its position, the lamps it got and the game's own
+// rig values before they are zeroed, so two neighbouring pieces can be compared. Only while a capture is recording.
+std::string g_objDrawInfo;
+std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::ObjectLampPatch& obj, int rigMode, bool pixelLamps, int wk, int vl, const float (*lamps)[4],
+                               int nLamps) {
+    auto v4 = [](const float* v) { return std::format("({:.4g} {:.4g} {:.4g} {:.4g})", v[0], v[1], v[2], v[3]); };
+    std::string s = std::format("OBJECT fixed by the mod | {} | rig mode {} ({}) | per-pixel light {} (strength {:.2f}) | ground light strength {:.2f}",
+                                obj.rigLamps ? "rig lamps in the PS (form A/B)" : "no lamps in the PS (form C)", rigMode,
+                                rigMode == 2 ? "outdoors" : rigMode == 1 ? "roofless area" : "?", pixelLamps ? "on" : "OFF", g_objPixelLampStrength.load(),
+                                g_objPixelStrength.load());
+    float w[3][4] = {};
+    if (wk >= 0) dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &w[0][0], 3);
+    s += std::format("\n      object position (VS c{}..c{} .w) = ({:.2f} {:.2f} {:.2f})", wk, wk + 2, w[0][3], w[1][3], w[2][3]);
+    s += std::format("\n      per-pixel lamps: {} used of {} in range", nLamps, g_lastLampCandidates);
+    for (int k = 0; k < nLamps; k++) {
+        const float *p = lamps[1 + 2 * k], *c = lamps[2 + 2 * k];
+        const float r = p[3] > 0 ? 1.0f / std::sqrt(p[3]) : 0.0f, dx = p[0] - w[0][3], dy = p[1] - w[1][3], dz = p[2] - w[2][3];
+        s += std::format("\n        [{}] pos ({:.2f} {:.2f} {:.2f}) radius {:.2f} colour ({:.3f} {:.3f} {:.3f}) distance to the object centre {:.2f}", k, p[0], p[1], p[2], r, c[0], c[1],
+                         c[2], std::sqrt(dx * dx + dy * dy + dz * dz));
+    }
+    float pc[14][4] = {};
+    dev->GetPixelShaderConstantF(0, &pc[0][0], 14);
+    s += "\n      the game's rig in the PS, before zeroing (c1..c3 direction and c5..c7 colour of the 3 lamps; sun in c8/c9, c0/c4 or c12/c13 depending on the variant):";
+    for (int i = 0; i < 14; i++) s += std::format(" [{}]{}", i, v4(pc[i]));
+    if (vl >= 4) {
+        float v[8][4] = {};
+        dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &v[0][0], 8);
+        s += std::format("\n      luzes de vertice do jogo, antes de zerar (direcoes c{}..c{}, cores c{}..c{}):", vl - 4, vl - 1, vl, vl + 3);
+        for (int i = 0; i < 8; i++) s += std::format(" [{}]{}", vl - 4 + i, v4(v[i]));
+    } else
+        s += "\n      vertex lights: base not found in the shader (not zeroed)";
+    return s;
+}
+
+template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn draw) {
+    // rig modes 2 (outdoors) and 1 (roofless fenced areas) both draw with the exterior technique (rig report 25/09)
+    const int rigMode = RigTracker::CurrentMode();
+    if (!g_objPixel.load(std::memory_order_relaxed) || (rigMode != 2 && rigMode != 1)) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // full daylight: do not replace the game's object rig just because the smooth ground atlas exists
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -2168,22 +5458,103 @@ template <typename DrawFn> bool DrawSnowRelief(IDirect3DDevice9* dev, DrawFn dra
 }
 
 // Recognized ExteriorWall variants only: lamp RGB gains a daytime contribution.
+// ExteriorWall shaders derive output alpha from final luminance; that alpha is the game's bloom mask. Raising cK.x for
+// RGB therefore also raised bloom on the whole wall/foundation. Keep the game's alpha, and apply Apex's gain only to RGB.
+std::atomic<int> g_wallDrawn{0};
+std::atomic<int> g_wallBloomPreserved{0};
+std::atomic<int> g_wallBloomFallback{0};
 std::atomic<int> g_wallDrawn{0};
 template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw) {
     const float gain = g_wallGain.load(std::memory_order_relaxed);
     if (!g_wallEnabled.load(std::memory_order_relaxed)) return false;
     auto it = g_wallConst.find(g_curPs);
     if (it == g_wallConst.end()) return false;
+
+    auto it = g_wallConst.find(g_curPs);
+    if (it == g_wallConst.end()) return false;
     float c[4], old[4];
     if (FAILED(dev->GetPixelShaderConstantF(it->second, old, 1))) return false;
     if (!std::isfinite(old[0]) || old[0] < 0) return false;
+    auto it = g_wallConst.find(g_curPs);
+    if (it == g_wallConst.end()) return false;
+    float c[4], old[4];
+    if (FAILED(dev->GetPixelShaderConstantF(it->second, old, 1))) return false;
     std::memcpy(c, old, sizeof(c));
     c[0] = TerrainLightingPolicy::WallLampScale(old[0], g_night.load(std::memory_order_relaxed), gain);
     if (c[0] == old[0]) return false; // unchanged lamp scale: retain the native draw
+
+    DWORD colorMask = 0, blend = FALSE, zWrite = FALSE, stencilWriteMask = 0;
+    const bool haveStates =
+        SUCCEEDED(dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colorMask)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite)) &&
+        SUCCEEDED(dev->GetRenderState(D3DRS_STENCILWRITEMASK, &stencilWriteMask));
+
+    const DWORD alphaMask = colorMask & D3DCOLORWRITEENABLE_ALPHA;
+    const DWORD rgbMask = colorMask & (D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+
     g_inOwnCall = true;
-    SetPsConst(dev, it->second, c, 1);
+    if (haveStates && alphaMask && !blend) {
+        // Pass 1 writes only the vanilla bloom alpha. It must not consume depth/stencil writes because pass 2 is the
+        // actual wall draw for geometry state. Opaque ExteriorWall draws have blending off; blended variants deliberately
+        // stay on the old one-pass path below rather than risk changing their compositing semantics.
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, alphaMask);
+        if (zWrite) dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        if (stencilWriteMask) dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+        draw(); // game's original cK.x -> original bloom mask
+        if (stencilWriteMask) dev->SetRenderState(D3DRS_STENCILWRITEMASK, stencilWriteMask);
+        if (zWrite) dev->SetRenderState(D3DRS_ZWRITEENABLE, zWrite);
+
+        // Pass 2 is the normal geometry write, but RGB only, with Apex's stronger baked lamp term.
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, rgbMask);
+        SetPsConst(dev, it->second, c, 1);
+        draw();
+        SetPsConst(dev, it->second, old, 1);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, colorMask);
+        g_wallBloomPreserved.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // If the wall is blended, alpha is not writable, or a state query failed, preserve the exact previous behaviour.
+        SetPsConst(dev, it->second, c, 1);
+        draw();
+        SetPsConst(dev, it->second, old, 1);
+        g_wallBloomFallback.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_inOwnCall = false;
+    g_wallDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// Full-day bloom guard for the base-game cinema/theatre facade. The exact VS is BFFCCC56/1060. The main marquee
+// uses D5ED0EF3/864; the narrow centre panel uses 4E570819/500 by day and the F7-captured 36F5E915/1296 at night.
+// Every PS must still independently prove the isolated TS3 luminance-bloom threshold through BloomThresholdConst();
+// changing that cK.x only suppresses bloom alpha and leaves RGB intact. The centre panel stays limited to <=4 primitives.
+std::atomic<int> g_cinemaDayBloomSuppressed{0};
+std::atomic<int> g_cinemaPanelDayBloomSuppressed{0};
+template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9* dev, UINT primitiveCount, DrawFn draw) {
+    if (!g_curVsInfo || !g_curVsInfo->cinemaMarqueeDay) return false;
+    const auto it = g_cinemaMarqueeDayPs.find(g_curPs);
+    if (it == g_cinemaMarqueeDayPs.end() || RigTracker::CurrentMode() != 2) return false;
+
+    const bool panel = g_cinemaMarqueePanelDayPs.count(g_curPs) != 0;
+    if (panel && primitiveCount > 4) return false;
+
+    const DWORD thresholdConst = it->second;
+    float old[4] = {};
+    if (FAILED(dev->GetPixelShaderConstantF(thresholdConst, old, 1))) return false;
+    // The captures use 1.3. Keep a generous TS3 material range, but fail closed if the constant has an unexpected state.
+    if (!(old[0] >= 0.5f && old[0] <= 5.0f)) return false;
+
+    float noBloom[4] = {1000.0f, old[1], old[2], old[3]};
+    g_inOwnCall = true;
+    SetPsConst(dev, thresholdConst, noBloom, 1);
     draw();
-    SetPsConst(dev, it->second, old, 1);
+    SetPsConst(dev, thresholdConst, old, 1);
+    g_inOwnCall = false;
+    g_cinemaDayBloomSuppressed.fetch_add(1, std::memory_order_relaxed);
+    if (panel) g_cinemaPanelDayBloomSuppressed.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
     g_inOwnCall = false;
     g_wallDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -2434,6 +5805,12 @@ DWORD RecordWorldChunk(IDirect3DDevice9* dev, std::pair<int, int>& key, ChunkTex
         // a leftover, not this chunk's map
         if (ok) {
             const auto owner = g_chunkOfTexture.find(cand);
+            D3DSURFACE_DESC d{};
+            ok = SUCCEEDED(static_cast<IDirect3DTexture9*>(cand)->GetLevelDesc(0, &d)) && d.Width == 256 && d.Height == 256 && d.Format != D3DFMT_Q8W8V8U8;
+        }
+        // Already the map of another chunk (g_chunks holds a reference, so its address cannot belong to a new texture):
+        // a leftover, not this chunk's map
+        if (ok) {
             if (owner != g_chunkOfTexture.end() && owner->second != here) {
                 ok = false;
                 g_chunkStraySkipped.fetch_add(1, std::memory_order_relaxed);
@@ -2481,31 +5858,102 @@ int TerrainLampConst(IDirect3DPixelShader9* ps, DWORD sampler, bool& squared) {
     return k;
 }
 
+// Development Lighting + Bloom census attribution. A single draw can pass through more than one Apex layer
+// (for example Rooms at Night + a smoothed indoor-object draw, or the foliage VS + its pixel fix), so keep a
+// bit mask for this draw rather than only the final family name. The mask is reset only by the top-level
+// diagnostic draw hook and has no effect on rendering.
+enum class ClaimSource : uint8_t {
+    IndoorBasisSmooth,
+    ObjectRigNightFix,
+    RoofLampFix,
+    RoofSnowLampFix,
+    LakeLampFix,
+    FoliageMoonShadowPS,
+    ExteriorWallGain,
+    CinemaMarqueeDayBloomGuard,
+    RoadLight,
+    FloorLight,
+    OutdoorFloorLight,
+    FenceStairGroundLight,
+    SnowOnObjectGroundLight,
+    SnowOnStairGroundLight,
+    IndoorObjectSmooth,
+    OutdoorObjectGroundLight,
+    LotSnowLight,
+    SnowFloorLight,
+    WorldTerrainLight,
+    LotLightAtlas,
+    RoomsAtNightFurniture,
+    FoliageVertex,
+    Count,
+};
+constexpr size_t kClaimSourceCount = static_cast<size_t>(ClaimSource::Count);
+static_assert(kClaimSourceCount <= 32);
+constexpr std::array<const char*, kClaimSourceCount> kClaimSourceNames = {
+    "IndoorBasisSmooth",
+    "ObjectRigNightFix",
+    "RoofLampFix",
+    "RoofSnowLampFix",
+    "LakeLampFix",
+    "FoliageMoonShadowPS",
+    "ExteriorWallGain",
+    "CinemaMarqueeDayBloomGuard",
+    "RoadLight",
+    "FloorLight",
+    "OutdoorFloorLight",
+    "FenceStairGroundLight",
+    "SnowOnObjectGroundLight",
+    "SnowOnStairGroundLight",
+    "IndoorObjectSmooth",
+    "OutdoorObjectGroundLight",
+    "LotSnowLight",
+    "SnowFloorLight",
+    "WorldTerrainLight",
+    "LotLightAtlas",
+    "RoomsAtNightFurniture",
+    "FoliageVertex",
+};
+UINT g_curPrims = 0; // primitive count of the current hooked draw; set by both DrawPrimitive and DrawIndexedPrimitive
+uint32_t g_claimSourceMask = 0; // render thread; meaningful only while a development census draw is being attributed
+inline void MarkClaimSource(ClaimSource source) {
+    g_claimSourceMask |= 1u << static_cast<unsigned>(source);
+}
+inline D3D9Hooks::HookAction NoteClaim(ClaimSource source) {
+    MarkClaimSource(source);
+    return D3D9Hooks::HookAction::Skip;
+}
+
+    LOG_INFO(std::format("[LotLightBridge] Ground brightness: terrain shader {:08X}, light map s{} -> {}", reinterpret_cast<uintptr_t>(ps), sampler,
+                         k >= 0 ? std::format("c{}.x", k) : std::string("no lamp-only scale found, left as the game")));
+    return k;
+}
+
 template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice9* dev, DrawFn draw) {
     constexpr auto kSkip = D3D9Hooks::HookAction::Skip;
     constexpr auto kContinue = D3D9Hooks::HookAction::Continue;
     if (g_curPsBasis) RoomMapPadding::NoteDraw(dev, g_curPs); // note the room light maps it binds (edge padding)
     // (not for fences / snow relief / rig objects: those draws keep their own fixes)
-    if (g_curPsBasis && !g_curVsIsInstanced && !g_curVsIsSnowRelief && !g_curVsIsObject && DrawBasisSmooth(dev, draw)) return kSkip;
-    if (g_curClass == PsClass::ObjectRig) return DrawObjectRig(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::Roof) return DrawRoof(dev, draw) ? kSkip : kContinue;
+    if (g_curPsBasis && !g_curVsIsInstanced && !g_curVsIsSnowRelief && !g_curVsIsObject && DrawBasisSmooth(dev, draw)) return NoteClaim(ClaimSource::IndoorBasisSmooth);
+    if (g_curClass == PsClass::ObjectRig) return DrawObjectRig(dev, draw) ? NoteClaim(ClaimSource::ObjectRigNightFix) : kContinue;
+    if (g_curClass == PsClass::Roof) return DrawRoof(dev, draw) ? NoteClaim(ClaimSource::RoofLampFix) : kContinue;
     // The snowy roof pixel shader is also the one of snow on stair tops (same bytes, LightProbe-neve-escada); the vertex
     // shader tells them apart (the stair one takes the snow base in TEXCOORD2) and stairs go to DrawSnowRelief below.
-    if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? kSkip : kContinue;
+    if (g_curClass == PsClass::RoofSnow && !g_curVsIsSnowRelief) return DrawRoofSnow(dev, draw) ? NoteClaim(ClaimSource::RoofSnowLampFix) : kContinue;
+    if (g_curClass == PsClass::Lake) return DrawLake(dev, draw) ? NoteClaim(ClaimSource::LakeLampFix) : kContinue;
+    if (g_curVsIsFoliage) return DrawLeafShadow(dev, draw) ? NoteClaim(ClaimSource::FoliageMoonShadowPS) : kContinue;
+    if (g_curClass == PsClass::WallGain) return DrawWallGain(dev, draw) ? NoteClaim(ClaimSource::ExteriorWallGain) : kContinue;
     if (!g_enabled.load(std::memory_order_relaxed)) return kContinue;
-    if (g_curVsIsRoad) return DrawRoad(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsFloor) return DrawFloor(dev, draw) ? kSkip : kContinue;
-    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsInstanced) return DrawInstanced(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? kSkip : kContinue;
-    if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? kSkip : kContinue;
+    if (DrawCinemaMarqueeDayBloomGuard(dev, g_curPrims, draw)) return NoteClaim(ClaimSource::CinemaMarqueeDayBloomGuard);
+    if (g_curVsIsRoad) return DrawRoad(dev, draw) ? NoteClaim(ClaimSource::RoadLight) : kContinue;
+    if (g_curVsIsFloor) return DrawFloor(dev, draw) ? NoteClaim(ClaimSource::FloorLight) : kContinue;
+    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return DrawFloorAtlas(dev, draw) ? NoteClaim(ClaimSource::OutdoorFloorLight) : kContinue;
+    if (g_curVsIsInstanced) return DrawInstanced(dev, draw) ? NoteClaim(ClaimSource::FenceStairGroundLight) : kContinue;
+    if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? NoteClaim(ClaimSource::SnowOnObjectGroundLight) : kContinue;
+    if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? NoteClaim(ClaimSource::SnowOnStairGroundLight) : kContinue;
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
-    if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
-    if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
-    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
+    if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return NoteClaim(ClaimSource::IndoorObjectSmooth);
+    if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return NoteClaim(ClaimSource::OutdoorObjectGroundLight);
+    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue;
     if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight || g_curClass == PsClass::WorldCompact) {
         const bool multi = g_curClass == PsClass::WorldMultiLight;
         if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
@@ -2515,7 +5963,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         const DWORD s = RecordWorldChunk(dev, key, chunk, multi ? 13 : 15);
         if (!s) {
             // not a world terrain chunk: the snow-on-floor pixel shaders (m69, m71) also declare s6+ and land here
-            if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
+            if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return NoteClaim(ClaimSource::SnowFloorLight);
             return D3D9Hooks::HookAction::Continue;
         }
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
@@ -2571,11 +6019,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         g_inOwnCall = false;
         g_objDrawInfo.clear();
         if (old) old->Release();
-        return D3D9Hooks::HookAction::Skip;
+        return NoteClaim(ClaimSource::WorldTerrainLight);
     }
     if (g_curClass != PsClass::LotLight) {
         // snow lying on floor tiles (m69, m71): only draws no pixel-shader class claimed, see ClassifyVs
-        if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return kSkip;
+        if (g_curVsIsSnowFloor && DrawSnowFloor(dev, draw)) return NoteClaim(ClaimSource::SnowFloorLight);
         return kContinue;
     }
 
@@ -2616,6 +6064,34 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         g_edgeUnmatched.fetch_add(1, std::memory_order_relaxed);
     float savedEdge[16]; // c28..c31: do not modify the draw unless restoration is possible
     if (FAILED(dev->GetPixelShaderConstantF(28, savedEdge, 4))) return kContinue;
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
+    IDirect3DBaseTexture9* terrain = atlas;
+    if (!atlas) {
+        auto it = g_chunks.find(Key(v[4], v[6])); // c15.xz = chunk center
+        if (it == g_chunks.end() || !it->second.tex) {
+            g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+            return D3D9Hooks::HookAction::Continue;
+        }
+        terrain = ChunkTexture(it->first, it->second.tex);
+    }
+    const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
+
+    // Soft lot edges: PS c28..c30 (see kReplacementHlsl). Without a known lot rectangle the pass is the plain max().
+    float edge[12];
+    float lotM[12] = {};
+    const LotRect* rect = nullptr;
+    if (SUCCEEDED(dev->GetVertexShaderConstantF(8, lotM, 3))) {
+        rect = FindLotRect(&lotM[0], &lotM[8]);
+        if (!rect) g_lotRectMiss = true;
+        else NoteLotDraw((static_cast<uint64_t>(rect->lotHi) << 32) | rect->lotLo);
+    }
+    const bool feather = LotEdgeConstants(atlas ? atlasMap : v, &v[4], &lotM[0], &lotM[8], rect, edge);
+    if (feather) {
+        g_edgeMatched.fetch_add(1, std::memory_order_relaxed);
+        g_lastEdgeRect = *rect;
+        g_haveLastEdgeRect = true;
+    } else if (g_softEdges.load(std::memory_order_relaxed))
+        g_edgeUnmatched.fetch_add(1, std::memory_order_relaxed);
     if (LightProbe::Capturing())
         g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
                                               rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
@@ -2648,7 +6124,367 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     SetPs(dev, original);
     g_inOwnCall = false;
     g_lotDrawn.fetch_add(1, std::memory_order_relaxed);
-    return D3D9Hooks::HookAction::Skip;
+    return NoteClaim(ClaimSource::LotLightAtlas);
+}
+
+// Foliage vertex shaders are swapped around everything else (the pixel side may be patched too): set the patched VS,
+// let the pixel-shader handling draw (or draw here), restore the game's VS.
+// The game sets the same shader again and again (every draw of a batch): an unchanged pointer keeps what was derived from
+// it (2026-09-29). Exact: the class caches only grow while the hooks are registered, and Shutdown, which empties them,
+// also resets g_curPs / g_curVs and sets g_stateUnknown, whose path (OnDrawTracked) calls these with force = true before
+// the next draw uses anything.
+void TrackPs(IDirect3DPixelShader9* ps, bool force = false) {
+    if (ps == g_curPs && !force) return;
+    g_curPs = ps;
+    g_curClass = Classify(ps);
+    g_curPsBasis = ps && g_basisPs.count(ps);
+}
+
+void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
+    if (vs == g_curVs && !force) return;
+    g_curVs = vs;
+    VsInfo* info = ClassifyVs(vs);
+    g_curVsInfo = info;
+    const uint8_t cls = info ? info->cls : 0;
+    g_curVsIsRoof = cls == 1;
+    g_curVsIsLake = cls == 2;
+    g_curVsIsSnowLot = cls == 3;
+    g_curVsIsRoad = cls == 4;
+    if (g_curVsIsRoad) g_curRoadMap = info->roadMap;
+    g_curVsIsFloor = cls == 5;
+    g_curVsIsFoliage = cls == 6;
+    g_curVsIsInstanced = cls == 7;
+    g_curVsIsSnowCover = cls == 8;
+    g_curVsIsSnowRelief = cls == 9;
+    g_curVsIsObject = cls == 10;
+    g_curVsIsSnowFloor = cls == 11;
+    if (g_curVsIsSnowFloor) g_curSnowFloorTc = info->snowFloorTc;
+}
+
+// Rooms at Night on furniture (unlit_rooms.h, user 30/09: "objects that respond to nothing, mostly on the upper floor"): an
+// indoor object (room-mode rig, RigTracker mode 0) is lit by its rig's four lights plus the ambient cube. Room-mode rigs have no
+// sun (FUN_006bbde0: start slot = (mode == 1)): in an unlit room the lights are the game's three [NoLight] lights and the fill
+// light, the only blue on furniture (the cube, CASDiffuseProbe, is flat grey; second multi-agent study, 30/09). While it
+// draws, through the game's shader or Apex's, those lights (PS c4..c7 of shaders with that chain, recognised by direction /
+// fill w, UnlitRooms::IsUnlitLight; dim bluish vertex lights) and the cube's weight get the room's Brightness and Blue tint;
+// lamps keep their colour and strength. The draw is then made here and every
+// constant put back. The game's own shader draws with a copy whose ambient cube colour is pulled towards its grey by the
+// Blue tint too (PatchCubeTint; user 30/09: "the only thing missing on the furniture that works is the blue tint"), as
+// Apex's indoor-object shader does.
+ShaderLookupCache<const ShaderPatches::RigPsInfo*> g_rigLookup;
+std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_cubeTintPs;
+std::atomic<long> g_nightFurniture{0}, g_nightFurnitureTinted{0};
+const ShaderPatches::RigPsInfo& RigPsInfoFor(IDirect3DPixelShader9* ps) {
+    const auto key = reinterpret_cast<std::uintptr_t>(ps);
+    const ShaderPatches::RigPsInfo* cached = nullptr;
+    if (g_rigLookup.Find(key, cached)) return *cached;
+    auto [it, fresh] = g_rigPsInfo.try_emplace(ps);
+    if (fresh) ShaderPatches::AnalyzeRigPs(ShaderCode(ps), it->second);
+    g_rigLookup.Store(key, &it->second);
+    return it->second;
+}
+// Development build: what happened to room-mode furniture draws (for the F6 recorder, FurnitureDiag)
+std::atomic<long> g_fdMode0{0}, g_fdInactive{0}, g_fdNoChain{0}, g_fdUnlitSlots{0}, g_fdLampSlots{0};
+// The furniture draw with the rig's unlit-room lights, the vertex lights and the cube weight turned (rig = PS c0..c7 or
+// null when the shader has no rig chain)
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice9* dev, DrawFn draw, const ShaderPatches::RigPsInfo& info, const float (*rig)[4]) {
+    float psOld[4][4] = {}, vsOld[4][4] = {}, cubeOld[4] = {}, t[4][4], cube[4];
+    bool psSet = false, vsSet = false, cubeSet = false;
+    // PS c0..c3 = the slots' directions, c4..c7 their colours (each slot tested with its direction: fill and [NoLight]
+    // lights are turned, lamps are not; room-mode rigs have no sun, slot 0 is the strongest room light)
+    if (rig) {
+        std::memcpy(psOld, rig[4], sizeof psOld);
+        std::memcpy(t, psOld, sizeof t);
+        for (int k = 0; k < 4; k++) {
+            const bool turned = UnlitRooms::FurnitureColour(t[k], rig[k]);
+            psSet |= turned;
+            if (!kPublicBuild)
+                if (psOld[k][0] + psOld[k][1] + psOld[k][2] > 1e-6f) (turned ? g_fdUnlitSlots : g_fdLampSlots).fetch_add(1, std::memory_order_relaxed);
+        }
+        if (psSet) SetPsConst(dev, 4, &t[0][0], 4);
+    }
+    // the vertex lights with their directions (PatchObjectLampVs: direction c(vl-4+k) with colour c(vl+k)); the fill moves
+    // a [NoLight] light there when it takes slot 1 (FUN_006b7e70)
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    float vsDir[4][4] = {};
+    if (vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &vsDir[0][0], 4)) &&
+        SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &vsOld[0][0], 4))) {
+        std::memcpy(t, vsOld, sizeof t);
+        for (int k = 0; k < 4; k++) vsSet |= UnlitRooms::FurnitureColour(t[k], vsDir[k]);
+        if (vsSet) SetVsConst(dev, static_cast<UINT>(vl), &t[0][0], 4);
+    }
+    if (info.cubeWeightConst >= 0 && SUCCEEDED(dev->GetPixelShaderConstantF(static_cast<UINT>(info.cubeWeightConst), cubeOld, 1))) {
+        std::memcpy(cube, cubeOld, sizeof cube);
+        cube[3] *= UnlitRooms::FurnitureAmbient();
+        cubeSet = true;
+        SetPsConst(dev, static_cast<UINT>(info.cubeWeightConst), cube, 1);
+    }
+    D3D9Hooks::HookAction r = OnDrawInnerCore(dev, draw);
+    if (psSet || vsSet || cubeSet) {
+        MarkClaimSource(ClaimSource::RoomsAtNightFurniture);
+}
+
+// Foliage vertex shaders are swapped around everything else (the pixel side may be patched too): set the patched VS,
+// let the pixel-shader handling draw (or draw here), restore the game's VS.
+// The game sets the same shader again and again (every draw of a batch): an unchanged pointer keeps what was derived from
+// it (2026-09-29). Exact: the class caches only grow while the hooks are registered, and Shutdown, which empties them,
+// also resets g_curPs / g_curVs and sets g_stateUnknown, whose path (OnDrawTracked) calls these with force = true before
+// the next draw uses anything.
+void TrackPs(IDirect3DPixelShader9* ps, bool force = false) {
+    if (ps == g_curPs && !force) return;
+    g_curPs = ps;
+    g_curClass = Classify(ps);
+    g_curPsBasis = ps && g_basisPs.count(ps);
+}
+
+void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
+    if (vs == g_curVs && !force) return;
+    g_curVs = vs;
+    VsInfo* info = ClassifyVs(vs);
+    g_curVsInfo = info;
+    const uint8_t cls = info ? info->cls : 0;
+    g_curVsIsRoof = cls == 1;
+    g_curVsIsLake = cls == 2;
+    g_curVsIsSnowLot = cls == 3;
+    g_curVsIsRoad = cls == 4;
+    if (g_curVsIsRoad) g_curRoadMap = info->roadMap;
+    g_curVsIsFloor = cls == 5;
+    g_curVsIsFoliage = cls == 6;
+    g_curVsIsInstanced = cls == 7;
+    g_curVsIsSnowCover = cls == 8;
+    g_curVsIsSnowRelief = cls == 9;
+    g_curVsIsObject = cls == 10;
+    g_curVsIsSnowFloor = cls == 11;
+    if (g_curVsIsSnowFloor) g_curSnowFloorTc = info->snowFloorTc;
+}
+
+// Rooms at Night on furniture (unlit_rooms.h, user 30/09: "objects that respond to nothing, mostly on the upper floor"): an
+// indoor object (room-mode rig, RigTracker mode 0) is lit by its rig's four lights plus the ambient cube. Room-mode rigs have no
+// sun (FUN_006bbde0: start slot = (mode == 1)): in an unlit room the lights are the game's three [NoLight] lights and the fill
+// light, the only blue on furniture (the cube, CASDiffuseProbe, is flat grey; second multi-agent study, 30/09). While it
+// draws, through the game's shader or Apex's, those lights (PS c4..c7 of shaders with that chain, recognised by direction /
+// fill w, UnlitRooms::IsUnlitLight; dim bluish vertex lights) and the cube's weight get the room's Brightness and Blue tint;
+// lamps keep their colour and strength. The draw is then made here and every
+// constant put back. The game's own shader draws with a copy whose ambient cube colour is pulled towards its grey by the
+// Blue tint too (PatchCubeTint; user 30/09: "the only thing missing on the furniture that works is the blue tint"), as
+// Apex's indoor-object shader does.
+ShaderLookupCache<const ShaderPatches::RigPsInfo*> g_rigLookup;
+std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_cubeTintPs;
+std::atomic<long> g_nightFurniture{0}, g_nightFurnitureTinted{0};
+const ShaderPatches::RigPsInfo& RigPsInfoFor(IDirect3DPixelShader9* ps) {
+    const auto key = reinterpret_cast<std::uintptr_t>(ps);
+    const ShaderPatches::RigPsInfo* cached = nullptr;
+    if (g_rigLookup.Find(key, cached)) return *cached;
+    auto [it, fresh] = g_rigPsInfo.try_emplace(ps);
+    if (fresh) ShaderPatches::AnalyzeRigPs(ShaderCode(ps), it->second);
+    g_rigLookup.Store(key, &it->second);
+    return it->second;
+}
+// Development build: what happened to room-mode furniture draws (for the F6 recorder, FurnitureDiag)
+std::atomic<long> g_fdMode0{0}, g_fdInactive{0}, g_fdNoChain{0}, g_fdUnlitSlots{0}, g_fdLampSlots{0};
+// The furniture draw with the rig's unlit-room lights, the vertex lights and the cube weight turned (rig = PS c0..c7 or
+// null when the shader has no rig chain)
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawFurniture(IDirect3DDevice9* dev, DrawFn draw, const ShaderPatches::RigPsInfo& info, const float (*rig)[4]) {
+    float psOld[4][4] = {}, vsOld[4][4] = {}, cubeOld[4] = {}, t[4][4], cube[4];
+    bool psSet = false, vsSet = false, cubeSet = false;
+    // PS c0..c3 = the slots' directions, c4..c7 their colours (each slot tested with its direction: fill and [NoLight]
+    // lights are turned, lamps are not; room-mode rigs have no sun, slot 0 is the strongest room light)
+    if (rig) {
+        std::memcpy(psOld, rig[4], sizeof psOld);
+        std::memcpy(t, psOld, sizeof t);
+        for (int k = 0; k < 4; k++) {
+            const bool turned = UnlitRooms::FurnitureColour(t[k], rig[k]);
+            psSet |= turned;
+            if (!kPublicBuild)
+                if (psOld[k][0] + psOld[k][1] + psOld[k][2] > 1e-6f) (turned ? g_fdUnlitSlots : g_fdLampSlots).fetch_add(1, std::memory_order_relaxed);
+        }
+        if (psSet) SetPsConst(dev, 4, &t[0][0], 4);
+    }
+    // the vertex lights with their directions (PatchObjectLampVs: direction c(vl-4+k) with colour c(vl+k)); the fill moves
+    // a [NoLight] light there when it takes slot 1 (FUN_006b7e70)
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    float vsDir[4][4] = {};
+    if (vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &vsDir[0][0], 4)) &&
+        SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &vsOld[0][0], 4))) {
+        std::memcpy(t, vsOld, sizeof t);
+        for (int k = 0; k < 4; k++) vsSet |= UnlitRooms::FurnitureColour(t[k], vsDir[k]);
+        if (vsSet) SetVsConst(dev, static_cast<UINT>(vl), &t[0][0], 4);
+    }
+    if (info.cubeWeightConst >= 0 && SUCCEEDED(dev->GetPixelShaderConstantF(static_cast<UINT>(info.cubeWeightConst), cubeOld, 1))) {
+        std::memcpy(cube, cubeOld, sizeof cube);
+        cube[3] *= UnlitRooms::FurnitureAmbient();
+        cubeSet = true;
+        SetPsConst(dev, static_cast<UINT>(info.cubeWeightConst), cube, 1);
+    }
+    D3D9Hooks::HookAction r = OnDrawInnerCore(dev, draw);
+    if (psSet || vsSet || cubeSet) {
+        if (r == D3D9Hooks::HookAction::Continue) { // the game's own draw, made here while the constants are turned
+            const float tint = UnlitRooms::FurnitureTint();
+            float cubeColour[3];
+            UnlitRooms::FurnitureCubeColour(cubeColour);
+            const bool coloured = std::fabs(cubeColour[0] - 1.0f) > 1e-3f || std::fabs(cubeColour[1] - 1.0f) > 1e-3f || std::fabs(cubeColour[2] - 1.0f) > 1e-3f;
+            PatchedPs* tinted = nullptr;
+            if (cubeSet && (std::fabs(tint - 1.0f) > 1e-3f || coloured)) {
+                PatchedPs& p = PatchedFor(dev, g_cubeTintPs, "Indoor object (blue tint)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchCubeTint(t, pp.cubeTint); });
+                if (p.ps && p.cubeTint >= 0) tinted = &p;
+            }
+            IDirect3DPixelShader9* original = g_curPs;
+            float tintOld[4] = {};
+            g_inOwnCall = true;
+            if (tinted) {
+                const float c[4] = {tint, cubeColour[0], cubeColour[1], cubeColour[2]};
+                dev->GetPixelShaderConstantF(static_cast<UINT>(tinted->cubeTint), tintOld, 1);
+                SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), c, 1);
+                SetPs(dev, tinted->ps);
+            }
+            draw();
+            if (tinted) {
+                SetPs(dev, original);
+                SetPsConst(dev, static_cast<UINT>(tinted->cubeTint), tintOld, 1);
+                g_nightFurnitureTinted.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_inOwnCall = false;
+            r = D3D9Hooks::HookAction::Skip;
+        }
+        if (psSet) SetPsConst(dev, 4, &psOld[0][0], 4);
+        if (vsSet) SetVsConst(dev, static_cast<UINT>(vl), &vsOld[0][0], 4);
+        if (cubeSet) SetPsConst(dev, static_cast<UINT>(info.cubeWeightConst), cubeOld, 1);
+        g_nightFurniture.fetch_add(1, std::memory_order_relaxed);
+    }
+    return r;
+}
+
+// ---- Development tools: the F6 furniture tracer. While a recording runs, every room-mode object part (world position +
+// pixel shader) is written once at its first draw and again whenever its drawing changes: the path, the rig lights as the
+// game set them, the vertex lights, the ambient cube weight, the blue kept, and for path A the maps it read. ----
+std::unordered_map<uint64_t, std::vector<uint64_t>> g_traceLast; // object part (rig + pixel shader) -> the states already written (render thread)
+uint64_t TraceHash(uint64_t h, int64_t v) { return (h ^ static_cast<uint64_t>(v)) * 1099511628211ull; }
+int64_t TraceQ(float v) { return std::isfinite(v) ? static_cast<int64_t>(std::llround(static_cast<double>(v) * 10000.0)) : 0x7FFFFFFF; }
+char SlotKind(const float* colour, const float* dir) {
+    if (colour[0] + colour[1] + colour[2] <= 1e-6f && colour[3] <= 1e-6f) return '-';
+    if (colour[3] > 1e-6f) return 'F';
+    return UnlitRooms::IsUnlitLight(colour, dir) ? 'N' : 'L';
+}
+void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChain, int path, bool dark, bool active, float tint, float cubeGame, float cubeDrawn) {
+    const uintptr_t rigPtr = RigTracker::CurrentRig();
+    float w[3][4] = {}, rig[8][4] = {}, vlc[4][4] = {};
+    const int wk = g_curVsInfo ? g_curVsInfo->patched.worldK : -1;
+    if (wk >= 0) dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &w[0][0], 3);
+    const float pos[3] = {w[0][3], w[1][3], w[2][3]};
+    if (rigIn) std::memcpy(rig, rigIn, sizeof rig);
+    else dev->GetPixelShaderConstantF(0, &rig[0][0], 8);
+    const int vl = g_curVsInfo ? g_curVsInfo->patched.vertexLight : -1;
+    float vlSum = 0.0f;
+    if (vl >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &vlc[0][0], 4)))
+        for (const auto& c : vlc) vlSum += c[0] + c[1] + c[2];
+    // the object: its rig (one per object; two objects may stand at the same position) and the part's pixel shader
+    uint64_t key = 1469598103934665603ull;
+    if (rigPtr) key = TraceHash(key, static_cast<int64_t>(rigPtr));
+    else
+        for (float p : pos) key = TraceHash(key, static_cast<int64_t>(std::llround(p * 100.0f)));
+    key = TraceHash(key, static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_curPs)));
+    uint64_t state = 1469598103934665603ull;
+    for (int64_t v : {static_cast<int64_t>(path), static_cast<int64_t>(dark), static_cast<int64_t>(active), TraceQ(tint), TraceQ(cubeGame), TraceQ(cubeDrawn), TraceQ(vlSum),
+                      static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_curVs))})
+        state = TraceHash(state, v);
+    for (int k = 0; k < 4; k++)
+        for (int c = 0; c < 4; c++) state = TraceHash(state, TraceQ(rig[4 + k][c]));
+    if (path == 1) {
+        state = TraceHash(state, static_cast<int64_t>(g_traceA.lightMap));
+        state = TraceHash(state, static_cast<int64_t>(g_traceA.basis0));
+        state = TraceHash(state, TraceQ(g_traceA.scaleX));
+        state = TraceHash(state, TraceQ(g_traceA.scaleY));
+    }
+    if (g_traceLast.size() > 50000) g_traceLast.clear();
+    // a state already written for this part is not written again (a part drawn twice a frame, e.g. by two passes with
+    // different maps, would otherwise alternate every frame)
+    auto [it, fresh] = g_traceLast.try_emplace(key);
+    auto& seen = it->second;
+    if (std::find(seen.begin(), seen.end(), state) != seen.end()) return;
+    if (seen.size() >= 8) seen.erase(seen.begin());
+    seen.push_back(state);
+    std::string rigText = rigChain ? std::string() : std::string(" (this shader has no rig light chain: c4..c7 are other values)");
+    for (int k = 0; k < 4 && rigChain; k++)
+        rigText += std::format(" {}({:.3f} {:.3f} {:.3f})", SlotKind(rig[4 + k], rig[k]), rig[4 + k][0], rig[4 + k][1], rig[4 + k][2]);
+    std::string text = std::format("[furniture] {} rig {:08X} ({:.2f} {:.2f} {:.2f}) PS {:08X} VS {:08X} | path {} | dark {} acting {} | rig{} | vertex lights {:.3f} | cube {:.3f} -> {:.3f} | blue kept {:.3f}",
+                                   fresh ? "new" : "changed", rigPtr, pos[0], pos[1], pos[2], reinterpret_cast<uintptr_t>(g_curPs), reinterpret_cast<uintptr_t>(g_curVs),
+                                   path == 1 ? "A" : path == 2 ? "B" : "game", dark ? 1 : 0, active ? 1 : 0, rigText, vlSum, cubeGame, cubeDrawn, tint);
+    if (path == 1)
+        text += std::format(" | A: light map {:08X}, directional map {:08X}, read scale ({:.2f}, {:.2f})", g_traceA.lightMap, g_traceA.basis0, g_traceA.scaleX, g_traceA.scaleY);
+    Recorder::Note(text);
+}
+
+// Room-mode furniture draws (RigTracker mode 0). The room counts as dark (Rooms at Night acts fully, whatever the night
+// level) when the rig holds a [NoLight] light: the game adds those only to a dark room.
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawInner(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_curVsIsObject || !g_curPs || g_inOwnCall) return OnDrawInnerCore(dev, draw);
+    if (RigTracker::CurrentMode() != 0) return OnDrawInnerCore(dev, draw);
+    if (!kPublicBuild) g_fdMode0.fetch_add(1, std::memory_order_relaxed);
+    const ShaderPatches::RigPsInfo& info = RigPsInfoFor(g_curPs);
+    if (!kPublicBuild)
+        if (!info.rigLights) g_fdNoChain.fetch_add(1, std::memory_order_relaxed);
+    float rig[8][4] = {};
+    const bool haveRig = info.rigLights && SUCCEEDED(dev->GetPixelShaderConstantF(0, &rig[0][0], 8));
+    bool dark = false;
+    for (int k = 0; k < 4 && haveRig && !dark; k++) dark = UnlitRooms::IsDarkRoomLight(rig[4 + k], rig[k]);
+    UnlitRooms::SetDrawDark(dark);
+    // the F6 furniture tracer (development build, only while a recording runs)
+    const bool trace = Recorder::Active();
+    const long aBefore = trace ? static_cast<long>(g_indoorDrawn.load()) : 0, bBefore = trace ? g_nightFurniture.load() : 0;
+    float cubeGame = -1.0f;
+    if (trace && info.cubeWeightConst >= 0) {
+        float c[4] = {};
+        if (SUCCEEDED(dev->GetPixelShaderConstantF(static_cast<UINT>(info.cubeWeightConst), c, 1))) cubeGame = c[3];
+    }
+    const bool active = UnlitRooms::FurnitureActive();
+    const float tint = active ? UnlitRooms::FurnitureTint() : 1.0f, ambient = active ? UnlitRooms::FurnitureAmbient() : 1.0f;
+    D3D9Hooks::HookAction r;
+    if (active) r = OnDrawFurniture(dev, draw, info, haveRig ? rig : nullptr);
+    else {
+        if (!kPublicBuild) g_fdInactive.fetch_add(1, std::memory_order_relaxed);
+        r = OnDrawInnerCore(dev, draw);
+    }
+    if (trace) {
+        const int path = static_cast<long>(g_indoorDrawn.load()) != aBefore ? 1 : g_nightFurniture.load() != bBefore ? 2 : 0;
+        TraceFurniture(dev, haveRig ? rig : nullptr, info.rigLights, path, dark, active, tint, cubeGame, cubeGame >= 0.0f ? cubeGame * ambient : cubeGame);
+    }
+    UnlitRooms::SetDrawDark(false);
+    return r;
+}
+
+template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9* dev, DrawFn draw) {
+    if (g_inOwnCall) return D3D9Hooks::HookAction::Continue;
+    if (g_stateUnknown) {
+        // hooks registered mid-session (or after Shutdown): the shaders bound now never went through our Set*Shader
+        // hooks, so read them from the device once (review 25/09)
+        IDirect3DPixelShader9* ps = nullptr;
+        IDirect3DVertexShader9* vs = nullptr;
+        dev->GetPixelShader(&ps);
+        dev->GetVertexShader(&vs);
+        TrackPs(ps, true);
+        TrackVs(vs, true);
+        if (ps) ps->Release(); // Classify / ClassifyVs pinned them
+        if (vs) vs->Release();
+        g_stateUnknown = false;
+    }
+    IDirect3DVertexShader9* foliage = g_curVsIsFoliage && g_objectFix.load(std::memory_order_relaxed) ? FoliageVsFor(dev, g_curVs) : nullptr;
+    if (!foliage) return OnDrawInner(dev, draw);
+    IDirect3DVertexShader9* original = g_curVs;
+    g_inOwnCall = true;
+    SetVs(dev, foliage);
+    g_inOwnCall = false;
+    if (OnDrawInner(dev, draw) == D3D9Hooks::HookAction::Continue) {
+        g_inOwnCall = true;
+        draw();
+        g_inOwnCall = false;
+    }
+    g_inOwnCall = true;
+    SetVs(dev, original);
+    g_inOwnCall = false;
+    g_foliageDrawn.fetch_add(1, std::memory_order_relaxed);
+    MarkClaimSource(ClaimSource::FoliageVertex);
 }
 
 // Foliage vertex shaders are swapped around everything else (the pixel side may be patched too): set the patched VS,
@@ -2917,7 +6753,122 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
 // (A8R8G8B8 managed, one level, up to 1024: room / wall / floor / lot maps; or a 256x256 DXT5 terrain map) or is drawn
 // with an outdoor rig (RigTracker mode 2). Candidates no fix claimed (OnDrawTracked returned Continue) are painted
 // magenta in false-colour mode, and the census records them per (VS, PS) pair for ApexRadiance_Censo.txt. ----
-UINT g_curPrims = 0;
+std::atomic<bool> g_falseColor{false};
+std::atomic<int> g_censusFrames{0}; // frames left to record
+bool g_censusPending = false;       // write the report when the frames are done
+struct CensusRow {
+    int draws = 0, claimed = 0;
+    UINT prims = 0;
+    int rig = -1;
+    std::string tex;
+};
+std::map<std::pair<IDirect3DVertexShader9*, IDirect3DPixelShader9*>, CensusRow> g_census;
+
+// Lighting + Bloom census: development-only, read-only diagnostic. Unlike the legacy census (shader-pair coverage),
+// this also keeps a coarse world position and the day/twilight/night split so we can see which Apex paths still claim
+// draws in daylight, and which known scene families can feed the game's bloom mask.
+struct LightingBloomRow {
+    int draws = 0, claimed = 0;
+    int dayDraws = 0, dayClaimed = 0;
+    int twilightDraws = 0, twilightClaimed = 0;
+    int nightDraws = 0, nightClaimed = 0;
+    UINT prims = 0;
+    int rig = -1;
+    int bloom = 0; // 0=no known bloom-mask family, 1=known (walls/objects/roofs), 2=possible (instanced structures)
+    float minNight = 1.0f, maxNight = 0.0f;
+    bool havePos = false;
+    float x = 0, y = 0, z = 0;
+    std::string path;
+    std::string tex;
+    std::array<int, kClaimSourceCount> sourceTotal{};
+    std::array<int, kClaimSourceCount> sourceDay{};
+    std::array<int, kClaimSourceCount> sourceTwilight{};
+    std::array<int, kClaimSourceCount> sourceNight{};
+    int unknownSourceTotal = 0;
+    int unknownSourceDay = 0;
+    int unknownSourceTwilight = 0;
+    int unknownSourceNight = 0;
+};
+std::atomic<int> g_lightingBloomFrames{0};
+bool g_lightingBloomPending = false;
+using LightingBloomKey = std::tuple<IDirect3DVertexShader9*, IDirect3DPixelShader9*, int, int>;
+std::map<LightingBloomKey, LightingBloomRow> g_lightingBloom;
+
+std::atomic<bool> g_falseColor{false};
+std::atomic<int> g_censusFrames{0}; // frames left to record
+bool g_censusPending = false;       // write the report when the frames are done
+struct CensusRow {
+    int draws = 0, claimed = 0;
+    UINT prims = 0;
+    int rig = -1;
+    std::string tex;
+};
+std::map<std::pair<IDirect3DVertexShader9*, IDirect3DPixelShader9*>, CensusRow> g_census;
+std::unordered_map<IDirect3DPixelShader9*, bool> g_psIs3;
+IDirect3DPixelShader9* g_magenta[2] = {}; // ps_2_0, ps_3_0
+bool g_magentaTried = false;
+
+bool LitCandidate(IDirect3DDevice9* dev, std::string& desc) {
+    bool lit = false;
+    for (DWORD s = 0; s < 16; s++) {
+        IDirect3DBaseTexture9* b = nullptr;
+        if (FAILED(dev->GetTexture(s, &b)) || !b) continue;
+        D3DSURFACE_DESC d{};
+        if (b->GetType() == D3DRTYPE_TEXTURE && SUCCEEDED(static_cast<IDirect3DTexture9*>(b)->GetLevelDesc(0, &d))) {
+            const DWORD levels = b->GetLevelCount();
+            if (d.Format == D3DFMT_A8R8G8B8 && d.Pool != D3DPOOL_DEFAULT && levels == 1 && d.Width <= 1024 && d.Height <= 1024) {
+                lit = true;
+                desc += std::format(" s{}:map{}x{}", s, d.Width, d.Height);
+            } else if (d.Format == D3DFMT_DXT5 && d.Width == 256 && d.Height == 256 && levels <= 5) {
+                lit = true;
+                desc += std::format(" s{}:terrain", s);
+            }
+        }
+        b->Release();
+    }
+    return lit;
+}
+
+const char* LightingBloomPath(int rig) {
+    if (g_curClass == PsClass::ObjectRig) return "ObjectRig";
+    if (g_curClass == PsClass::Roof) return "Roof";
+    if (g_curClass == PsClass::RoofSnow) return "RoofSnow";
+    if (g_curClass == PsClass::Lake) return "Lake";
+    if (g_curClass == PsClass::WallGain) return "ExteriorWall";
+    if (g_curVsIsFoliage) return "Foliage";
+    if (g_curVsIsRoad) return "Road";
+    if (g_curVsIsFloor) return "Floor";
+    if (g_curClass == PsClass::FloorAtlas && !g_curVsIsSnowFloor) return "OutdoorFloor";
+    if (g_curVsIsInstanced) return "Fence/Stair/Instanced";
+    if (g_curVsIsSnowCover) return "SnowOnObject";
+    if (g_curVsIsSnowRelief) return "SnowOnStair";
+    if (g_curVsIsObject) return rig == 0 ? "IndoorObject" : "OutdoorObject";
+    if (g_curClass == PsClass::LotLightSnow) return "SnowLot";
+    if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) return "WorldCandidate";
+    if (g_curClass == PsClass::LotLight) return "LotLight";
+    return "Other";
+}
+
+int LightingBloomFamily() {
+    // docs/engine/shaders.md: walls, objects and roofs write the game's bloom mask in output alpha.
+    if (g_curClass == PsClass::WallGain || g_curClass == PsClass::Roof || g_curClass == PsClass::RoofSnow || g_curClass == PsClass::ObjectRig || g_curVsIsObject) return 1;
+    // Instanced structures use object-like shader families; keep them visible as "possible" until their alpha path is
+    // captured directly instead of claiming that every variant definitely writes the same mask.
+    if (g_curVsIsInstanced) return 2;
+    return 0;
+}
+
+bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) {
+    float m[3][4] = {};
+    int k = 8;
+    if (g_curVsIsObject && g_curVsInfo && g_curVsInfo->patched.worldK >= 0) k = g_curVsInfo->patched.worldK;
+    if (FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(k), &m[0][0], 3))) return false;
+    x = m[0][3];
+    y = m[1][3];
+    z = m[2][3];
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
+}
+
 std::atomic<bool> g_falseColor{false};
 std::atomic<int> g_censusFrames{0}; // frames left to record
 bool g_censusPending = false;       // write the report when the frames are done
@@ -2970,15 +6921,22 @@ bool PsIs3(IDirect3DPixelShader9* ps) {
 }
 
 template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, DrawFn draw) {
-    const bool fc = g_falseColor.load(std::memory_order_relaxed), census = g_censusFrames.load(std::memory_order_relaxed) > 0;
-    if (kPublicBuild || (!fc && !census) || g_inOwnCall) return OnDrawTracked(dev, draw);
+    const bool fc = g_falseColor.load(std::memory_order_relaxed);
+    const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
+    const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
+    if (kPublicBuild || (!fc && !census && !lightingBloom) || g_inOwnCall) return OnDrawTracked(dev, draw);
+
     std::string desc;
     const int rig = RigTracker::CurrentMode();
-    const bool candidate = LitCandidate(dev, desc) || rig == 2;
+    const bool litCandidate = LitCandidate(dev, desc) || rig == 2;
+    const int bloomFamily = lightingBloom ? LightingBloomFamily() : 0;
+    const bool candidate = litCandidate || bloomFamily != 0;
+    g_claimSourceMask = 0;
     const D3D9Hooks::HookAction r = OnDrawTracked(dev, draw);
     if (!candidate) return r;
     const bool claimed = r == D3D9Hooks::HookAction::Skip;
-    if (census) {
+
+    if (census && litCandidate) {
         CensusRow& row = g_census[{g_curVs, g_curPs}];
         row.draws++;
         row.claimed += claimed ? 1 : 0;
@@ -2986,7 +6944,185 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
         row.rig = rig;
         if (row.tex.empty()) row.tex = desc.empty() ? " (so rig)" : desc;
     }
-    if (claimed || !fc || !g_curPs) return r;
+
+    if (lightingBloom) {
+        float x = 0, y = 0, z = 0;
+        const bool havePos = LightingBloomPosition(dev, x, y, z);
+        const int qx = havePos ? static_cast<int>(std::lround(x * 2.0f)) : 0;
+        const int qz = havePos ? static_cast<int>(std::lround(z * 2.0f)) : 0;
+        LightingBloomRow& row = g_lightingBloom[{g_curVs, g_curPs, qx, qz}];
+        row.draws++;
+        row.claimed += claimed ? 1 : 0;
+        row.prims += g_curPrims;
+        row.rig = rig;
+        row.bloom = std::max(row.bloom, bloomFamily);
+        const float night = g_night.load(std::memory_order_relaxed);
+        row.minNight = std::min(row.minNight, night);
+        row.maxNight = std::max(row.maxNight, night);
+        if (night <= 0.01f) {
+            row.dayDraws++;
+            row.dayClaimed += claimed ? 1 : 0;
+        } else if (night >= 0.99f) {
+            row.nightDraws++;
+            row.nightClaimed += claimed ? 1 : 0;
+        } else {
+            row.twilightDraws++;
+            row.twilightClaimed += claimed ? 1 : 0;
+        }
+        if (claimed) {
+            bool attributed = false;
+            for (size_t i = 0; i < kClaimSourceCount; i++) {
+                if (!(g_claimSourceMask & (1u << static_cast<unsigned>(i)))) continue;
+                attributed = true;
+                row.sourceTotal[i]++;
+                if (night <= 0.01f) row.sourceDay[i]++;
+                else if (night >= 0.99f) row.sourceNight[i]++;
+                else row.sourceTwilight[i]++;
+            }
+            if (!attributed) {
+                row.unknownSourceTotal++;
+                if (night <= 0.01f) row.unknownSourceDay++;
+                else if (night >= 0.99f) row.unknownSourceNight++;
+                else row.unknownSourceTwilight++;
+            }
+        }
+        if (!row.havePos && havePos) {
+            row.havePos = true;
+            row.x = x;
+            row.y = y;
+            row.z = z;
+        }
+        if (row.path.empty()) row.path = LightingBloomPath(rig);
+        if (row.tex.empty()) row.tex = desc.empty() ? (rig == 2 ? " outdoor rig" : "") : desc;
+    }
+
+    if (claimed || !fc || !litCandidate || !g_curPs) return r;
+    if (!g_magentaTried) {
+        g_magentaTried = true;
+        for (int v = 0; v < 2; v++) {
+            const DWORD code[] = {v ? 0xFFFF0300u : 0xFFFF0200u, 0x05000051u, 0xA00F0000u, 0x3F800000u, 0u, 0x3F800000u, 0x3F800000u, // def c0, 1, 0, 1, 1
+                                  0x02000001u, 0x800F0800u, 0xA0E40000u,                                                           // mov oC0, c0
+                                  0x0000FFFFu};
+            if (FAILED(dev->CreatePixelShader(code, &g_magenta[v]))) g_magenta[v] = nullptr;
+        }
+    }
+    IDirect3DPixelShader9* m = g_magenta[PsIs3(g_curPs) ? 1 : 0];
+    if (!m) return r;
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    SetPs(dev, m);
+    draw();
+    SetPs(dev, original);
+    g_inOwnCall = false;
+    return D3D9Hooks::HookAction::Skip;
+}
+
+void WriteCensus() {
+    try {
+        const std::filesystem::path base = std::filesystem::path(ApexPaths::ApexDirectory());
+        const std::filesystem::path dir = base / L"Censo";
+        std::filesystem::create_directories(dir);
+        std::ofstream out(base / L"ApexRadiance_Censo.txt", std::ios::trunc);
+        out << APEX_PRODUCT_NAME " census: draws that get baked light (light map) or an outdoor rig, per shader pair\n"
+               "columns: draws | fixed | triangles | rig | VS hash/size | PS hash/size | textures\n\n";
+        auto code = [](auto* sh, uint32_t& hash, UINT& size) {
+            std::vector<DWORD> t;
+            size = 0;
+            hash = 0;
+            if (sh && SUCCEEDED(sh->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+                t.resize(size / 4);
+                if (FAILED(sh->GetFunction(t.data(), &size))) t.clear();
+            }
+            uint32_t h = 2166136261u;
+            for (DWORD d : t) h = (h ^ d) * 16777619u;
+            hash = t.empty() ? 0 : h;
+            return t;
+        };
+        int unclaimed = 0;
+        for (auto& [key, row] : g_census) {
+            uint32_t vh, ph;
+            UINT vsz, psz;
+            const auto vs = code(key.first, vh, vsz);
+            const auto ps = code(key.second, ph, psz);
+            const bool none = row.claimed == 0;
+            unclaimed += none ? 1 : 0;
+            out << std::format("{} {:5} | {:5} | {:7} | {:2} | VS {:08X}/{} | PS {:08X}/{} |{}\n", none ? "SEM" : "ok ", row.draws, row.claimed, row.prims, row.rig, vh, vsz, ph,
+                               psz, row.tex);
+            if (none) {
+                if (!vs.empty()) std::ofstream(dir / std::format("VS_{:08X}.bin", vh), std::ios::binary).write(reinterpret_cast<const char*>(vs.data()), vsz);
+                if (!ps.empty()) std::ofstream(dir / std::format("PS_{:08X}.bin", ph), std::ios::binary).write(reinterpret_cast<const char*>(ps.data()), psz);
+            }
+        }
+        out << std::format("\n{} pairs, {} without a fix (code in Apex Radiance\\Censo)\n", g_census.size(), unclaimed);
+        LOG_INFO(std::format("[LotLightBridge] Census written: {} pairs, {} without a fix", g_census.size(), unclaimed));
+    } catch (...) {
+    }
+    g_census.clear();
+}
+
+void WriteLightingBloomCensus() {
+    try {
+        const std::filesystem::path base = std::filesystem::path(ApexPaths::ApexDirectory());
+        std::ofstream out(base / L"ApexRadiance_LightingBloomCensus.txt", std::ios::trunc);
+        out << APEX_PRODUCT_NAME " Lighting + Bloom Census (read-only diagnostic)\n"
+               "Purpose: show visible draw families that Apex claims during day/twilight/night and known/possible game bloom-mask producers.\n"
+               "Bloom labels are family-level diagnostics, not measured output alpha: YES = documented walls/objects/roofs; POSSIBLE = instanced structures pending direct alpha capture.\n"
+               "Day <= 0.01, Twilight 0.01..0.99, Night >= 0.99 (g_night).\n"
+               "claim sources are the exact Apex draw path(s) that acted; counts are total/day/twilight/night and one draw may have more than one source.\n\n"
+               "columns: path | rig | bloom | draws/fixed | day/fixed | twilight/fixed | night/fixed | night range | triangles | position | VS hash/size | PS hash/size | claim sources total/day/twilight/night | textures\n\n";
+
+        auto code = [](auto* sh, uint32_t& hash, UINT& size) {
+            std::vector<DWORD> t;
+            size = 0;
+            hash = 0;
+            if (sh && SUCCEEDED(sh->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+                t.resize(size / 4);
+                if (FAILED(sh->GetFunction(t.data(), &size))) t.clear();
+            }
+            uint32_t h = 2166136261u;
+            for (DWORD d : t) h = (h ^ d) * 16777619u;
+            hash = t.empty() ? 0 : h;
+        };
+
+        int dayModifiedRows = 0, bloomRows = 0, totalDraws = 0, totalClaimed = 0, unknownSourceRows = 0;
+        for (const auto& [key, row] : g_lightingBloom) {
+            IDirect3DVertexShader9* vs = std::get<0>(key);
+            IDirect3DPixelShader9* ps = std::get<1>(key);
+            uint32_t vh = 0, ph = 0;
+            UINT vsz = 0, psz = 0;
+            code(vs, vh, vsz);
+            code(ps, ph, psz);
+            totalDraws += row.draws;
+            totalClaimed += row.claimed;
+            dayModifiedRows += row.dayClaimed > 0 ? 1 : 0;
+            bloomRows += row.bloom != 0 ? 1 : 0;
+            const char* bloom = row.bloom == 1 ? "YES" : row.bloom == 2 ? "POSSIBLE" : "no";
+            const std::string pos = row.havePos ? std::format("({:.1f},{:.1f},{:.1f})", row.x, row.y, row.z) : "(unknown)";
+            std::string sources;
+            for (size_t i = 0; i < kClaimSourceCount; i++) {
+                if (!row.sourceTotal[i]) continue;
+                if (!sources.empty()) sources += ",";
+                sources += std::format("{}={}/{}/{}/{}", kClaimSourceNames[i], row.sourceTotal[i], row.sourceDay[i], row.sourceTwilight[i], row.sourceNight[i]);
+            }
+            if (row.unknownSourceTotal) {
+                if (!sources.empty()) sources += ",";
+                sources += std::format("UNKNOWN={}/{}/{}/{}", row.unknownSourceTotal, row.unknownSourceDay, row.unknownSourceTwilight, row.unknownSourceNight);
+                unknownSourceRows++;
+            }
+            if (sources.empty()) sources = "-";
+            out << std::format("{:<22} | {:2} | {:8} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:4}/{:<4} | {:.3f}..{:.3f} | {:7} | {:>22} | VS {:08X}/{} | PS {:08X}/{} | {} |{}\n",
+                               row.path, row.rig, bloom, row.draws, row.claimed, row.dayDraws, row.dayClaimed, row.twilightDraws, row.twilightClaimed,
+                               row.nightDraws, row.nightClaimed, row.minNight, row.maxNight, row.prims, pos, vh, vsz, ph, psz, sources, row.tex);
+        }
+        out << std::format("\nSUMMARY: {} rows, {} draws, {} Apex-claimed draws, {} rows modified in full daylight, {} bloom-family rows, {} rows with an unattributed Apex claim.\n",
+                           g_lightingBloom.size(), totalDraws, totalClaimed, dayModifiedRows, bloomRows, unknownSourceRows);
+        out << "Interpretation: rows with day/fixed > 0 are the first candidates for daylight-lighting review. claim sources identify the Apex path that actually acted; Bloom=YES/POSSIBLE identifies families worth a direct alpha/composite probe next.\n";
+        LOG_INFO(std::format("[LotLightBridge] Lighting + Bloom census written: {} rows, {} daylight-modified, {} unattributed", g_lightingBloom.size(), dayModifiedRows, unknownSourceRows));
+    } catch (...) {
+    }
+    g_lightingBloom.clear();
+}
+
     if (!g_magentaTried) {
         g_magentaTried = true;
         for (int v = 0; v < 2; v++) {
@@ -3178,9 +7314,193 @@ void OnWorldChanged() {
     g_lotsNow.clear();
     g_lampFrame = 0;
     g_lampRefreshNow = true;
+    if (on && !g_hooksRegistered) {
+        g_stateUnknown = true;
+        D3D9Hooks::RegisterSetPixelShader(kHookName, [](D3D9Hooks::DeviceContext&, IDirect3DPixelShader9* ps) {
+            if (!g_inOwnCall && !g_hookFailed) try {
+                    TrackPs(ps);
+                } catch (...) {
+                    HookFailed();
+                }
+            return D3D9Hooks::HookAction::Continue;
+        });
+        D3D9Hooks::RegisterSetVertexShader(kHookName, [](D3D9Hooks::DeviceContext&, IDirect3DVertexShader9* vs) {
+            if (!g_inOwnCall && !g_hookFailed) try {
+                    TrackVs(vs);
+                } catch (...) {
+                    HookFailed();
+                }
+            return D3D9Hooks::HookAction::Continue;
+        });
+        D3D9Hooks::RegisterDrawIndexedPrimitive(kHookName,
+            [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
+                if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+                try {
+                    g_curPrims = prims;
+                    return OnDraw(ctx.device, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); });
+                } catch (...) {
+                    g_inOwnCall = false;
+                    HookFailed();
+                    return D3D9Hooks::HookAction::Continue;
+                }
+            });
+        D3D9Hooks::RegisterDrawPrimitive(kHookName, [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT start, UINT prims) {
+            if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+            try {
+                g_curPrims = prims;
+                return OnDraw(ctx.device, [&]() { ctx.device->DrawPrimitive(type, start, prims); });
+            } catch (...) {
+                g_inOwnCall = false;
+                HookFailed();
+                return D3D9Hooks::HookAction::Continue;
+            }
+        });
+        g_hooksRegistered = true;
+        if (g_status == "Off") g_status = "Waiting for the first draw";
+    } else if (!on && g_hooksRegistered) {
+        D3D9Hooks::UnregisterAll(kHookName);
+        g_hooksRegistered = false;
+        if (!g_keepChunks) ClearChunks();
+        g_status = "Off";
+    }
+}
+
+void SetEnabled(bool on) {
+    g_enabled = on;
+    if (!on) {
+        if (!g_keepChunks) ClearChunks();
+        g_status = "Off";
+    }
+    UpdateHooks();
+}
+
+void SetObjectShadowFix(bool on) {
+    g_objectFix = on;
+    UpdateHooks();
+}
+
+void SetNightLevel(float level) { g_night = level < 0 ? 0.0f : (level > 1 ? 1.0f : level); }
+
+void SetRoofFix(bool on, float strength) {
+    g_roofStrength = strength;
+    if (g_roofFix.load() != on) {
+        g_roofFix = on;
+        UpdateHooks();
+    }
+}
+
+void SetWaterFix(bool on, float strength, float reflection, bool filter, bool preserveColors) {
+    g_waterFilter = filter;
+    g_waterColorCompression = preserveColors;
+    g_waterStrength = strength;
+    g_waterRefl = reflection;
+    if (g_waterFix.load() != on) {
+        g_waterFix = on;
+        UpdateHooks();
+    }
+}
+
+void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
+
+void OnWorldChanged() {
+    ClearChunks();
+    RoomMapPadding::Clear();
     g_lampSwitchPrev.clear();
     g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
     g_lampsAnimated = 0; // current-world classification count, not a cumulative event total
+    if (on && !g_hooksRegistered) {
+        g_stateUnknown = true;
+        D3D9Hooks::RegisterSetPixelShader(kHookName, [](D3D9Hooks::DeviceContext&, IDirect3DPixelShader9* ps) {
+            if (!g_inOwnCall && !g_hookFailed) try {
+                    TrackPs(ps);
+                } catch (...) {
+                    HookFailed();
+                }
+            return D3D9Hooks::HookAction::Continue;
+        });
+        D3D9Hooks::RegisterSetVertexShader(kHookName, [](D3D9Hooks::DeviceContext&, IDirect3DVertexShader9* vs) {
+            if (!g_inOwnCall && !g_hookFailed) try {
+                    TrackVs(vs);
+                } catch (...) {
+                    HookFailed();
+                }
+            return D3D9Hooks::HookAction::Continue;
+        });
+        D3D9Hooks::RegisterDrawIndexedPrimitive(kHookName,
+            [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
+                if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+                try {
+                    g_curPrims = prims;
+                    return OnDraw(ctx.device, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); });
+                } catch (...) {
+                    g_inOwnCall = false;
+                    HookFailed();
+                    return D3D9Hooks::HookAction::Continue;
+                }
+            });
+        D3D9Hooks::RegisterDrawPrimitive(kHookName, [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT start, UINT prims) {
+            if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+            try {
+                g_curPrims = prims;
+                return OnDraw(ctx.device, [&]() { ctx.device->DrawPrimitive(type, start, prims); });
+            } catch (...) {
+                g_inOwnCall = false;
+                HookFailed();
+                return D3D9Hooks::HookAction::Continue;
+            }
+        });
+        g_hooksRegistered = true;
+        if (g_status == "Off") g_status = "Waiting for the first draw";
+    } else if (!on && g_hooksRegistered) {
+        D3D9Hooks::UnregisterAll(kHookName);
+        g_hooksRegistered = false;
+        if (!g_keepChunks) ClearChunks();
+        g_status = "Off";
+    }
+}
+
+void SetEnabled(bool on) {
+    g_enabled = on;
+    if (!on) {
+        if (!g_keepChunks) ClearChunks();
+        g_status = "Off";
+    }
+    UpdateHooks();
+}
+
+void SetObjectShadowFix(bool on) {
+    g_objectFix = on;
+    UpdateHooks();
+}
+
+void SetNightLevel(float level) { g_night = level < 0 ? 0.0f : (level > 1 ? 1.0f : level); }
+
+void SetRoofFix(bool on, float strength) {
+    g_roofStrength = strength;
+    if (g_roofFix.load() != on) {
+        g_roofFix = on;
+        UpdateHooks();
+    }
+}
+
+void SetWaterFix(bool on, float strength, float reflection, bool filter, bool preserveColors) {
+    g_waterFilter = filter;
+    g_waterColorCompression = preserveColors;
+    g_waterStrength = strength;
+    g_waterRefl = reflection;
+    if (g_waterFix.load() != on) {
+        g_waterFix = on;
+        UpdateHooks();
+    }
+}
+
+void SetSidewalkClear(float amount) { g_sidewalkClear = amount < 0 ? 0.0f : (amount > 1 ? 1.0f : amount); }
+
+void OnWorldChanged() {
+    ClearChunks();
+    RoomMapPadding::Clear();
+    g_lampSwitchPrev.clear();
+    g_lotLampSig.clear(); // the next enumeration starts the new world's lots from scratch (all new: nothing counted)
     g_lotSeen.clear();
     g_quietLogAt.clear();
     g_bakeSnap = LotLightBridge::BakeSnapshot{};
@@ -3248,7 +7568,64 @@ void SetWallGain(float gain, bool enabled) {
     if (was != enabled) UpdateHooks();
 }
 
-std::string WallStatus() { return std::format("outside walls: strength {:.2f} | draws: {} | variants seen: {}", g_wallGain.load(), g_wallDrawn.load(), g_wallConst.size()); }
+std::string WallStatus() {
+    return std::format("outside walls: strength {:.2f} | draws: {} | vanilla bloom alpha preserved: {} | fallback: {} | variants seen: {}",
+                       g_wallGain.load(), g_wallDrawn.load(), g_wallBloomPreserved.load(), g_wallBloomFallback.load(), g_wallConst.size());
+}
+
+std::string WaterStatus() {
+    return std::format("water: {} | draws with reflection: {}", g_waterFix.load() ? (g_waterPs ? "active" : "waiting") : "off", g_waterDrawn.load());
+}
+
+void SetFalseColor(bool on) { g_falseColor = on; }
+bool FalseColor() { return g_falseColor.load(); }
+
+void RequestCensus() {
+    if (g_censusPending) return;
+    g_census.clear();
+    g_censusPending = true;
+    g_censusFrames = 3;
+}
+
+std::string CensusStatus() { return g_censusPending ? "writing..." : "ready"; }
+
+void RequestLightingBloomCensus() {
+    if (g_lightingBloomPending) return;
+    g_lightingBloom.clear();
+    g_lightingBloomPending = true;
+    g_lightingBloomFrames = 3;
+}
+
+std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
+
+
+std::string WaterStatus() {
+    return std::format("water: {} | draws with reflection: {}", g_waterFix.load() ? (g_waterPs ? "active" : "waiting") : "off", g_waterDrawn.load());
+}
+
+void SetFalseColor(bool on) { g_falseColor = on; }
+bool FalseColor() { return g_falseColor.load(); }
+
+void RequestCensus() {
+    if (g_censusPending) return;
+    g_census.clear();
+    g_censusPending = true;
+    g_censusFrames = 3;
+}
+
+std::string CensusStatus() { return g_censusPending ? "writing..." : "ready"; }
+
+void OnPresent() {
+    g_lotDrawTick = GetTickCount();
+    if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
+    if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
+        WriteCensus();
+        g_censusPending = false;
+    }
+    if (g_lightingBloomPending && g_lightingBloomFrames.load() > 0 && --g_lightingBloomFrames == 0) {
+        WriteLightingBloomCensus();
+        g_lightingBloomPending = false;
+    }
 
 std::string WaterStatus() {
     return std::format("water: {} | draws with reflection: {}", g_waterFix.load() ? (g_waterPs ? "active" : "waiting") : "off", g_waterDrawn.load());
@@ -3534,9 +7911,9 @@ std::string FurnitureDiag() {
 }
 
 std::string ObjectStatus() {
-    return std::format("moon shadow on objects: {} | draws fixed: {} | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
-                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(),
-                       g_nightFurnitureTinted.load());
+    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema day bloom suppressed: {} (centre panel: {}) | foliage (wrap light): {} | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
+                       g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(),
+                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -3544,6 +7921,12 @@ void Shutdown(bool keepChunkMaps) {
     g_objectFix = false;
     g_wallGain = 1.0f;
     g_wallEnabled = false;
+}
+
+void Shutdown(bool keepChunkMaps) {
+    g_keepChunks = keepChunkMaps;
+    g_objectFix = false;
+    g_wallGain = 1.0f;
     g_roofFix = false;
     g_waterFix = false;
     g_objPixel = false;
@@ -3559,6 +7942,47 @@ void Shutdown(bool keepChunkMaps) {
     }
     g_snowTried = false;
     for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
+        for (auto& [k, p] : *cache)
+            if (p.ps) p.ps->Release();
+        cache->clear();
+    }
+    for (auto& [s, cache] : g_indoorPs)
+        for (auto& [k, p] : cache)
+            if (p.ps) p.ps->Release();
+    g_indoorPs.clear();
+    for (auto& [k, info] : g_vsInfo) { // patched copies: foliage / objects, and the outdoor floors of summer
+        if (info.patched.vs) info.patched.vs->Release();
+        if (info.floor.vs) info.floor.vs->Release();
+    }
+    g_curVsInfo = nullptr;
+    g_vsInfo.clear();
+    if (g_roofSnowPs) {
+        g_roofSnowPs->Release();
+        g_roofSnowPs = nullptr;
+    }
+    g_roofSnowTried = false;
+    if (g_objectPs) {
+        g_objectPs->Release();
+        g_objectPs = nullptr;
+    }
+    g_objectCompileTried = false;
+    g_objectFix = false;
+    if (g_roofPs) {
+        g_roofPs->Release();
+        g_roofPs = nullptr;
+    }
+    if (g_waterPs) {
+        g_waterPs->Release();
+        g_waterPs = nullptr;
+    }
+    g_waterCompileTried = false;
+    g_waterFix = false;
+    g_roofCompileTried = false;
+    g_roofFix = false;
+    g_compileTried = false;
+    g_classCache.clear();
+    g_cinemaMarqueeDayPs.clear();
+    g_cinemaMarqueePanelDayPs.clear();
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();
