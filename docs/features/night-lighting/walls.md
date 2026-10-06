@@ -37,6 +37,8 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
    x 0.08` into its `.x`, draws, and restores the constant. At full night this is exactly `native x Brightness`; by day a
    subdued lamp term is added so the baked lamp light is not discarded.
 
+   In this fork, opaque ExteriorWall draws also preserve the game's **vanilla bloom alpha**: the original wall-light scale writes alpha first, then the official 2.6.0 RGB wall scale is drawn with alpha writes disabled. Blended or unsupported draws keep the normal single-pass path.
+
 ## Settings
 
 | Menu label | TOML key | Type | Default | Range | Effect |
@@ -104,7 +106,7 @@ LightProbe captures `andar2-b` (m44), `andar1-b` (m45), `passo3-parede` (m59) an
   unknown shaders and an unchanged result keep the native draw. `TerrainLightingPolicy::WallLampScale(native, night,
   gain) = native x gain + DayLampScale(night, min(gain, 1) x kDaySurfaceResponse)`, with `DayLampScale(n, g) = (1 -
   clamp(n, 0, 1)) x g` and `kDaySurfaceResponse = 0.08` (shared with objects, fences and snow on objects). Only `.x`
-  changes; the full constant is restored after the single draw. Counter `g_wallDrawn`.
+  changes; the full constant is restored after the single draw. Counters `g_wallDrawn`, `g_wallBloomPreserved` and `g_wallBloomFallback`.
 
 ### Lamps of every story (summary)
 
