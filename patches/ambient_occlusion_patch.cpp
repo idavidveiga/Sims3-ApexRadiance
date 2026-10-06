@@ -248,7 +248,16 @@ float4 BlurPS(float2 uv : TEXCOORD0) : COLOR0
     [unroll] for (int t = -2; t <= 2; t++)
     {
         float3 v = tex2Dlod(sAo, float4(uv + cDir.xy * t, 0, 0)).rgb;
-        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * saturate(1.0 - abs(c0.y / max(v.y, 1e-9) - 1.0) / cK.w);
+        float dw = saturate(1.0 - abs(c0.y / max(v.y, 1e-9) - 1.0) / cK.w);
+        // box pass: a tap on another surface (a rail in front of the wall) breaks the interleave cancel and leaves the 4x4
+        // dots (user 06/10, wall behind rails); the pixel 4 px further on has the same interleave offset and stands in
+        [branch] if (cDir.z < 0.5 && t != 0 && dw < 0.5)
+        {
+            float3 a = tex2Dlod(sAo, float4(uv + cDir.xy * (abs(t) == 1 ? -3 * t : 3 * t), 0, 0)).rgb;
+            float da = saturate(1.0 - abs(c0.y / max(a.y, 1e-9) - 1.0) / cK.w);
+            if (da > dw) { v = a; dw = da; }
+        }
+        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * dw;
         sum += v.xz * w;
         ws += w;
     }
