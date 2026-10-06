@@ -597,7 +597,8 @@ APEX_REGISTER_FEATURE(MemoryGuardPatch,
                                             "free block of 640 MB is back.",
                                             "Right before the world save, and when the largest free block falls under 320 MB (at most once a minute), the game's "
                                             "own shrink of its two resource caches (0x00733E70) runs on the thread of their per-frame update: idle entries only.",
-                                            "Every call site is checked before it is rewritten and written back when the feature is turned off."}});
+                                            "Every call site is checked before it is rewritten and written back when the feature is turned off."},
+                       .gameCodeGroup = "MemoryGuard"});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",

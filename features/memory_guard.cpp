@@ -21,15 +21,15 @@ namespace {
 // Steam 1.67.2 (research\engine_map\full.asm, 05/10)
 // 0x007377F0: mov eax,[ecx+14h]; push eax; add ecx,18h; call 0x00737560; ret 8 (the ResourceSystem's per-frame update,
 // which trims both caches with Trim(0, 0, 0) at 0x007375A3 / 0x007375B4; thiscall, 1 argument, ret 4)
-constexpr uintptr_t kUpdateThunk = 0x007377F0, kUpdateCall = 0x007377F7, kUpdate = 0x00737560;
+uintptr_t kUpdateCall = 0x007377F7, kUpdate = 0x00737560;
 const BYTE kUpdateThunkBytes[] = {0x8B, 0x41, 0x14, 0x50, 0x83, 0xC1, 0x18, 0xE8};
 // 0x00733E70: ResourceSystem vtable 0x00FFE2F0 slot +0x50: Trim(budget, 0, force) on both caches (+0x1E0, +0x1E4), which
 // frees every idle entry (the "Shrink cache" of the game's live settings, 0x00733120, for each)
-constexpr uintptr_t kShrinkBoth = 0x00733E70;
+uintptr_t kShrinkBoth = 0x00733E70;
 const BYTE kShrinkBytes[] = {0x56, 0x8B, 0xF1, 0x8B, 0x8E, 0xE0, 0x01, 0x00, 0x00, 0x85, 0xC9};
 // 0x00AAC31C: mov ecx,[esp+30h]; call 0x00C6D460 (the world save, thiscall, 2 arguments, ret 8, al = saved); its false
 // makes 0x00AAC110 return 12 (Error 12)
-constexpr uintptr_t kSaveCallAt = 0x00AAC31C, kSaveCall = 0x00AAC320, kWorldSave = 0x00C6D460;
+uintptr_t kSaveCall = 0x00AAC320, kWorldSave = 0x00C6D460;
 const BYTE kSaveCallBytes[] = {0x8B, 0x4C, 0x24, 0x30, 0xE8};
 const BYTE kWorldSaveBytes[] = {0x83, 0xEC, 0x24, 0x53, 0x55, 0x56, 0x57, 0x8B, 0xF9};
 
@@ -190,12 +190,24 @@ bool Start(std::string* error) {
         if (error) *error = std::string("Room to save: ") + why;
         return false;
     };
-    if (!GameAddr::IsFixed()) return fail("only for the Steam 1.67.2 game (the other builds' addresses are not known)");
-    if (!MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kUpdateThunk), kUpdateThunkBytes, sizeof kUpdateThunkBytes) || !CallsTo(kUpdateCall, kUpdate) ||
-        !MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kShrinkBoth), kShrinkBytes, sizeof kShrinkBytes) ||
-        !MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kSaveCallAt), kSaveCallBytes, sizeof kSaveCallBytes) || !CallsTo(kSaveCall, kWorldSave) ||
-        !MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kWorldSave), kWorldSaveBytes, sizeof kWorldSaveBytes))
-        return fail("the game code differs");
+    using GameAddr::Id;
+    std::string missing;
+    if (!GameAddr::Have({Id::ResUpdateCall, Id::ResUpdate, Id::ResShrinkBoth, Id::WorldSaveCall, Id::WorldSave}, &missing))
+        return fail(GameAddr::NotAvailable(missing).c_str());
+    kUpdateCall = GameAddr::Get(Id::ResUpdateCall);
+    kUpdate = GameAddr::Get(Id::ResUpdate);
+    kShrinkBoth = GameAddr::Get(Id::ResShrinkBoth);
+    kSaveCall = GameAddr::Get(Id::WorldSaveCall);
+    kWorldSave = GameAddr::Get(Id::WorldSave);
+    // the calls land where they should on every build; Steam: every byte around them as well (other builds: the signatures
+    // already matched the bytes around the calls; the called functions' own prologues are not assumed)
+    bool same = CallsTo(kUpdateCall, kUpdate) && CallsTo(kSaveCall, kWorldSave);
+    if (GameAddr::IsFixed())
+        same = same && MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kUpdateCall - 7), kUpdateThunkBytes, sizeof kUpdateThunkBytes) &&
+               MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kShrinkBoth), kShrinkBytes, sizeof kShrinkBytes) &&
+               MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kSaveCall - 4), kSaveCallBytes, sizeof kSaveCallBytes) &&
+               MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(kWorldSave), kWorldSaveBytes, sizeof kWorldSaveBytes);
+    if (!same) return fail("the game code differs");
     if (!Redirect(kUpdateCall, kUpdate, reinterpret_cast<const void*>(&UpdateHook)) || !Redirect(kSaveCall, kWorldSave, reinterpret_cast<const void*>(&WorldSaveHook))) {
         MemPatch::RestoreAll(g_patches);
         return fail("could not patch the game");

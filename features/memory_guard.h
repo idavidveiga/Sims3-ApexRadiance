@@ -10,7 +10,7 @@
 //  - the game's own resource cache (idle files kept up to about 200 MB, "Resources/CacheBudget") emptied through the
 //    game's own shrink (ResourceSystem vtable +0x50, 0x00733E70: both caches, idle entries only) right before each save
 //    and when the largest free block gets small. Only idle resources go; the game reads them again when it needs them.
-// Steam 1.67.2 only (fixed addresses, every site checked byte for byte; other builds: the feature does not start).
+// Steam 1.67.2: fixed addresses, every site checked byte for byte; other builds (EA 1.69): found by signature (GameAddr).
 #include <string>
 
 namespace MemoryGuard {

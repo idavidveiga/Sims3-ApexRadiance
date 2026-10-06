@@ -241,6 +241,12 @@ enum class Id : uint16_t {
     LampLitCall,              // "mov ecx, edi; call FUN_006bdca0" in FUN_006c7ba0 (0x006C7CB6)
     LampMarkCall,             // CALL FUN_006c7160 thiscall(treeLevel, room) in FUN_006c7ba0 (0x006C7CD6)
     LampMark,
+    // ---- Room to save (features/memory_guard.h) ----
+    ResUpdateCall,            // CALL FUN_00737560 (0x007377F7): the ResourceSystem's per-frame update (thiscall, 1 arg), trims both caches
+    ResUpdate,
+    ResShrinkBoth,            // FUN_00733E70 (ResourceSystem vtable 0x00FFE2F0 +0x50): force-trims both caches (+0x1E0, +0x1E4) to idle-free
+    WorldSaveCall,            // CALL FUN_00c6d460 (0x00AAC320) in FUN_00aac110: the world save; false = Error 12
+    WorldSave,
     Count
 };
 
@@ -267,7 +273,7 @@ std::string NotAvailable(const std::string& missing);
 
 // Feature groups (FeatureInfo::gameCodeGroup): "NightLights" (core of Night Lights), "SplitLevel", "ResourceCache",
 // "LotLightingMotion", "FastTextureCompression", "FastCacheCompression", "WallShadingWhileMoving", "FileListCache",
-// "SceneNodeBudget", "ObjectIndex"
+// "SceneNodeBudget", "ObjectIndex", "MemoryGuard"
 bool GroupAvailable(const char* group, std::string* missing = nullptr);
 
 // Light type (3..11) of a light vtable, or -1

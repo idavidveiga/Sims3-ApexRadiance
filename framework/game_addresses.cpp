@@ -260,6 +260,11 @@ constexpr Info kInfo[] = {
     {"LampLitCall", 0x006C7CB6},
     {"LampMarkCall", 0x006C7CD6},
     {"LampMark", 0x006C7160},
+    {"ResUpdateCall", 0x007377F7},
+    {"ResUpdate", 0x00737560},
+    {"ResShrinkBoth", 0x00733E70},
+    {"WorldSaveCall", 0x00AAC320},
+    {"WorldSave", 0x00C6D460},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -543,6 +548,15 @@ const Entry kTable[] = {
     {Id::LampLitCall, K::Sig, W::Text, None, 0, {{"8B CF E8 ?? ?? ?? ?? 8B 44 24 1C 3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 0, M::At}, NOSIG}},
     {Id::LampMarkCall, K::Sig, W::Text, None, 0, {{"3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 21, M::At}, NOSIG}},
     {Id::LampMark, K::Target, W::Text, Id::LampMarkCall, 0, {NOSIG, NOSIG}},
+    // ---- Room to save: the update thunk (mov eax,[ecx+14h]; push eax; add ecx,18h; call; ret 8), the shrink of both caches,
+    //      the world save call before "mov eax,0Ch" (Error 12); every signature unique on Steam (checked on TS3W.exe 05/10) ----
+    {Id::ResUpdateCall, K::Sig, W::Text, None, 0, {{"8B 41 14 50 83 C1 18 E8 ?? ?? ?? ?? C2 08 00", 7, M::At}, {"83 C1 18 E8 ?? ?? ?? ?? C2 08 00", 3, M::At}}},
+    {Id::ResUpdate, K::Target, W::Text, Id::ResUpdateCall, 0, {NOSIG, NOSIG}},
+    {Id::ResShrinkBoth, K::Sig, W::Text, None, 0, {{"56 8B F1 8B 8E E0 01 00 00 85 C9 74 ?? 8B 81 8C 00 00 00 6A 01 6A 00 50 E8", 0, M::At},
+                                                   {"8B 8E E4 01 00 00 85 C9 5E 74 ?? 8B 91 8C 00 00 00 6A 01 6A 00 52 E8", -0x1D, M::At}}},
+    {Id::WorldSaveCall, K::Sig, W::Text, None, 0, {{"51 8B 4C 24 30 E8 ?? ?? ?? ?? 84 C0 75 ?? 8D 4C 24 10 E8 ?? ?? ?? ?? 5F 5E B8 0C 00 00 00", 5, M::At},
+                                                   {"E8 ?? ?? ?? ?? 84 C0 75 ?? 8D 4C 24 ?? E8 ?? ?? ?? ?? 5F 5E B8 0C 00 00 00", 0, M::At}}},
+    {Id::WorldSave, K::Target, W::Text, Id::WorldSaveCall, 0, {NOSIG, NOSIG}},
 };
 // clang-format on
 #undef NOSIG
@@ -572,6 +586,7 @@ const Group kGroups[] = {
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
     {"RoomLightQueue", {Id::PriorityLotObject, Id::PriorityLotTest}}, // each further part checks its own ids and bytes
+    {"MemoryGuard", {Id::ResUpdateCall, Id::ResUpdate, Id::ResShrinkBoth, Id::WorldSaveCall, Id::WorldSave}},
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
