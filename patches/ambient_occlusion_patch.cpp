@@ -161,6 +161,16 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
     n /= nl;
     n = dot(n, c) > 0 ? -n : n;
     float iso = max(min(abs(zr - z), abs(zl - z)), min(abs(zd - z), abs(zu - z))) * w0;
+    // Thin foreground (06/10, user: grain on rope rails and thin posts): both sides, 2 to 5 px away on one axis, are farther
+    // than this pixel. The blur keeps only same-depth neighbours, so across a few-pixel-wide object the interleave is never
+    // cancelled; the shade on the object itself fades like an isolated pixel. Slopes (one side nearer) and silhouettes of
+    // large objects (one side on the object) are not thin; the shade the object casts on what is behind it is unchanged.
+    [unroll] for (int k = 2; k <= 5; k++)
+    {
+        float tx = min(1.0 / max(WAt(pix + float2(k, 0)), 1e-9), 1.0 / max(WAt(pix - float2(k, 0)), 1e-9)) - z;
+        float ty = min(1.0 / max(WAt(pix + float2(0, k)), 1e-9), 1.0 / max(WAt(pix - float2(0, k)), 1e-9)) - z;
+        iso = max(iso, max(tx, ty) * w0);
+    }
     float3 view = -normalize(c);
     float fz = saturate((z - cBlend.x) * cBlend.y);
     float Rl = lerp(cRad.y, cRad.z, fz), kl = lerp(cK.y, cK.z, fz);
