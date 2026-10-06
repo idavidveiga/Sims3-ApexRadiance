@@ -28,6 +28,7 @@ tests, publication) is in [workflow.md](../workflow.md#6-release).
 
 | Version | Published | Headline |
 |---|---|---|
+| [2.7.1](2.7.1.md) | 2026-10-06 | 2.7.0 without the false antivirus alert |
 | [2.7.0](2.7.0.md) | 2026-10-06 | Filters, lamp switches in one frame and lot streaming |
 | [2.6.0](2.6.0.md) | 2026-10-05 | Sim Occlusion, a welcome screen and a cleaner menu |
 | [2.5.6](2.5.6.md) | 2026-10-03 | Responsive World Lights and Rendering Optimizations |

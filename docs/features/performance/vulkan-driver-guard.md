@@ -8,7 +8,7 @@ back roughly 85 to 100 MB of the 32-bit game's address space. Nothing drawn chan
 
 | | |
 |---|---|
-| Availability | Released in 2.4.0. AMD's implicit layer kept out too: Released in 2.7.0 |
+| Availability | Released in 2.4.0; AMD's layer variable set by its known name since 2.7.1 (no registry scan). AMD's implicit layer kept out too: Released in 2.7.0 |
 | Default | Always on; no menu row |
 | Menu | None |
 | Configuration | None |
