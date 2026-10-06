@@ -266,6 +266,8 @@ constexpr Info kInfo[] = {
     {"WorldSaveCall", 0x00AAC320},
     {"WorldSave", 0x00C6D460},
     {"WindowRepaintJump", 0x004108AE},
+    {"MonoTypeGetObject", 0x00EA8A00},
+    {"MonoDomainFree", 0x00E75340},
 };
 static_assert(std::size(kInfo) == static_cast<size_t>(Id::Count), "kInfo must list every Id in order");
 
@@ -549,6 +551,8 @@ const Entry kTable[] = {
     {Id::LampLitCall, K::Sig, W::Text, None, 0, {{"8B CF E8 ?? ?? ?? ?? 8B 44 24 1C 3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 0, M::At}, NOSIG}},
     {Id::LampMarkCall, K::Sig, W::Text, None, 0, {{"3B 46 1C 74 09 8B 4E 14 50 E8 ?? ?? ?? ?? 8B 4E 1C 51 8B 4E 14 E8", 21, M::At}, NOSIG}},
     {Id::LampMark, K::Target, W::Text, Id::LampMarkCall, 0, {NOSIG, NOSIG}},
+    {Id::MonoDomainFree, K::Sig, W::Text, None, 0, {{"55 56 8B 74 24 0C 33 ED 3B 35 ?? ?? ?? ?? 75 16 39 6C 24 10 75 10 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 04 5E 5D C3 68", 0, M::At}, NOSIG}},
+    {Id::MonoTypeGetObject, K::Sig, W::Text, None, 0, {{"53 8B 5C 24 0C 55 56 57 53 E8 ?? ?? ?? ?? 8B 74 24 18 83 C4 04 56 8B E8 FF 15 ?? ?? ?? ?? 83 7E 40 00 75 17 6A 02 68", 0, M::At}, NOSIG}},
     {Id::WindowRepaintJump, K::Sig, W::Text, None, 0, {{"F6 46 08 08 57 74 ?? 39 5E 20 C6 46 1C 01 75 ?? 8B 46 70 53 53 50 FF 15", 14, M::At}, NOSIG}},
     // ---- Room to save: the update thunk (mov eax,[ecx+14h]; push eax; add ecx,18h; call; ret 8), the shrink of both caches,
     //      the world save call before "mov eax,0Ch" (Error 12); every signature unique on Steam (checked on TS3W.exe 05/10) ----
@@ -588,6 +592,7 @@ const Group kGroups[] = {
     {"FastMemory", {Id::AllocGlobal, Id::AllocMmapFreeCall}},
     {"FastRecordCrc", {Id::RecordCrc, Id::RecordCrcTable}},
     {"RoomLightQueue", {Id::PriorityLotObject, Id::PriorityLotTest}}, // each further part checks its own ids and bytes
+    {"ScriptTypeCache", {Id::MonoTypeGetObject, Id::MonoDomainFree}},
     {"WindowRepaint", {Id::WindowRepaintJump}},
     {"MemoryGuard", {Id::ResUpdateCall, Id::ResUpdate, Id::ResShrinkBoth, Id::WorldSaveCall, Id::WorldSave}},
 };

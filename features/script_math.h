@@ -1,6 +1,10 @@
 #pragma once
-// Faster script math (Apex Radiance, feature "ScriptMath"; Performance page).
+// Faster scripts (Apex Radiance, feature "ScriptMath"; Performance page): two parts, each started on its own.
 //
+// Type objects: mono_type_get_object (0x00EA8A00) answered from a lock-free cache keyed by (domain, type), cleared by
+// mono_domain_free (0x00E75340); see the comment above Hook_TypeGetObject for why the answer cannot change.
+//
+// NaN tests:
 // The Mono interpreter linked into TS3W.exe (the game's scripts run on it) tests both operands of every floating-point
 // compare and branch opcode for NaN through msvcr80!_isnan before comparing them: 25 handlers (0x00E54D1B..0x00E58304 on
 // Steam 1.67.2, 05/10), each

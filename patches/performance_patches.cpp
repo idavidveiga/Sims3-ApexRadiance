@@ -660,10 +660,11 @@ APEX_REGISTER_FEATURE(WindowRepaintPatch,
                        .gameCodeGroup = "WindowRepaint"});
 
 APEX_REGISTER_FEATURE(ScriptMathPatch,
-                      {.displayName = "Faster Script Math",
-                       .description = "The game's scripts check every decimal number for an invalid value before comparing two of them, and each check was a "
-                                      "call into a separate library. The check is now done right where the comparison is, with the same result, so scripts "
-                                      "that compare many numbers (Sim decisions, routing, timers) do a little less work. Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                      {.displayName = "Faster Scripts",
+                       .description = "The game's scripts do two common things with extra work: every comparison of two decimal numbers first called a "
+                                      "separate library to check each number, and every look-up of a type's information went through a lock and a search. "
+                                      "The check is now done right where the comparison is, and type information already found is remembered, with the same "
+                                      "results, so scripts (Sim decisions, routing, timers) do less work. Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                         .experimental = false,
                        .enabledByDefault = true,
@@ -671,7 +672,10 @@ APEX_REGISTER_FEATURE(ScriptMathPatch,
                        .technicalDetails = {"The Mono interpreter's 25 floating-point compare and branch handlers (0x00E54D1B..0x00E58304 on Steam) called "
                                             "msvcr80!_isnan through ebx for both operands; each test becomes fucomip st0, st0 + jnp in place (eax 0 / 1 and "
                                             "ebx as before). Found by pattern in .text (any build); written with every other thread suspended outside the "
-                                            "changed bytes, and the instructions after the old call's return address are kept."}});
+                                            "changed bytes, and the instructions after the old call's return address are kept.",
+                                            "mono_type_get_object (0x00EA8A00) is answered from a lock-free (domain, type) cache filled only with answers "
+                                            "of its type_hash (insert-only, freed with the domain), cleared by mono_domain_free (0x00E75340); answers equal "
+                                            "to the class's reflection_info (TypeBuilder) are not stored; the first 256 answers are checked against the game."}});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",

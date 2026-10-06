@@ -921,7 +921,7 @@ void PerformanceCard() {
         ApexUi::CardHeader(IconId::Monitor, "Game and scripts", "Less work for the game every frame", nullptr, nullptr);
         ApexUi::CardDivider();
         FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame");
-        FeatureSwitchRow(Performance::kScriptMathName, "Faster script math", "Number comparisons in the game's scripts skip a call into another library");
+        FeatureSwitchRow(Performance::kScriptMathName, "Faster scripts", "The game's scripts compare numbers and look up types with less work");
     }
     ApexUi::EndCard();
     ImGui::PopID();

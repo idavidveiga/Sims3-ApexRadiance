@@ -248,6 +248,8 @@ enum class Id : uint16_t {
     WorldSaveCall,            // CALL FUN_00c6d460 (0x00AAC320) in FUN_00aac110: the world save; false = Error 12
     WorldSave,
     WindowRepaintJump, // jne short over the window pump's per-frame InvalidateRect (0x004108AE, features/window_repaint.h)
+    MonoTypeGetObject, // FUN_00ea8a00 cdecl(MonoDomain*, MonoType*): mono_type_get_object (domain lock at +0, type_hash at +0x40)
+    MonoDomainFree, // FUN_00e75340 cdecl(MonoDomain*, int force): mono_domain_free
     Count
 };
 

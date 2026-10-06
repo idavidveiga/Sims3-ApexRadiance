@@ -141,21 +141,25 @@ const I18n::Entry kEntries[] = {
      "À chaque image, le jeu demandait à Windows de repeindre sa propre fenêtre, alors que l'image vient de la carte graphique : un "
      "message de repeinte passait par tous les gestionnaires de la fenêtre à chaque image, pour rien. Désormais Windows ne la repeint "
      "que quand il le faut (fenêtre découverte ou redimensionnée). Rien de visible ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
-    {"The game's scripts check every decimal number for an invalid value before comparing two of them, and each check was a "
-     "call into a separate library. The check is now done right where the comparison is, with the same result, so scripts "
-     "that compare many numbers (Sim decisions, routing, timers) do a little less work. Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
-     "Os scripts do jogo verificam cada número decimal contra um valor inválido antes de comparar dois deles, e cada verificação "
-     "era uma chamada a uma biblioteca separada. Agora a verificação é feita ali mesmo, onde a comparação acontece, com o mesmo "
-     "resultado, e scripts que comparam muitos números (decisões dos Sims, rotas, temporizadores) trabalham um pouco menos. Nada do "
-     "que você vê muda. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Los scripts del juego comprueban cada número decimal contra un valor no válido antes de comparar dos de ellos, y cada "
-     "comprobación era una llamada a una biblioteca aparte. Ahora la comprobación se hace allí mismo, donde está la comparación, con "
-     "el mismo resultado, así que los scripts que comparan muchos números (decisiones de los Sims, rutas, temporizadores) trabajan un "
-     "poco menos. Nada de lo que ves cambia. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Les scripts du jeu vérifient chaque nombre décimal contre une valeur invalide avant d'en comparer deux, et chaque "
-     "vérification était un appel à une bibliothèque séparée. La vérification se fait maintenant là où a lieu la comparaison, avec "
-     "le même résultat : les scripts qui comparent beaucoup de nombres (décisions des Sims, itinéraires, minuteries) travaillent un "
-     "peu moins. Rien de visible ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"The game's scripts do two common things with extra work: every comparison of two decimal numbers first called a "
+     "separate library to check each number, and every look-up of a type's information went through a lock and a search. "
+     "The check is now done right where the comparison is, and type information already found is remembered, with the same "
+     "results, so scripts (Sim decisions, routing, timers) do less work. Nothing you see changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Os scripts do jogo fazem duas coisas comuns com trabalho a mais: cada comparação de dois números decimais chamava antes "
+     "uma biblioteca separada para verificar cada número, e cada consulta às informações de um tipo passava por uma trava e uma "
+     "busca. Agora a verificação é feita ali mesmo, onde a comparação acontece, e as informações de tipo já encontradas ficam "
+     "guardadas, com os mesmos resultados, então os scripts (decisões dos Sims, rotas, temporizadores) trabalham menos. Nada do que "
+     "você vê muda. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Los scripts del juego hacen dos cosas habituales con trabajo de más: cada comparación de dos números decimales llamaba antes "
+     "a una biblioteca aparte para comprobar cada número, y cada consulta de la información de un tipo pasaba por un bloqueo y una "
+     "búsqueda. Ahora la comprobación se hace allí mismo, donde está la comparación, y la información de tipo ya encontrada se "
+     "recuerda, con los mismos resultados, así que los scripts (decisiones de los Sims, rutas, temporizadores) trabajan menos. Nada "
+     "de lo que ves cambia. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Les scripts du jeu font deux choses courantes avec du travail en trop : chaque comparaison de deux nombres décimaux appelait "
+     "d'abord une bibliothèque séparée pour vérifier chaque nombre, et chaque consultation des informations d'un type passait par "
+     "un verrou et une recherche. La vérification se fait maintenant là où a lieu la comparaison, et les informations de type déjà "
+     "trouvées sont mémorisées, avec les mêmes résultats : les scripts (décisions des Sims, itinéraires, minuteries) travaillent "
+     "moins. Rien de visible ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

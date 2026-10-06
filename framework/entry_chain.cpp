@@ -39,6 +39,8 @@ struct SiteInfo {
 // four pushes and mov edi,ecx (6 bytes: byte 5 is never executed again, byte 4 is a boundary WriteCodeSuspended protects).
 // The record CRC (2026-09-30) starts like the object lookup: mov ecx,[esp+4]; mov eax,[esp+8] (4 + 4 bytes, no relative
 // operand); no branch in .text lands on 0x004FA4C1..0x004FA4C7 (jmps.tsv / calls.tsv).
+// mono_type_get_object and mono_domain_free (05/10): register-only prologues; no branch in TS3W.exe lands on
+// 0x00EA8A01..0x00EA8A07 or 0x00E75341..0x00E75345 (scan of every E8 / E9 / Jcc / JMP short on Steam 1.67.2).
 const SiteInfo kSiteInfo[kSites] = {
     {"DXT1 encoder", GameAddr::Id::DxtEncode1, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"DXT5 encoder", GameAddr::Id::DxtEncode5, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
@@ -51,6 +53,8 @@ const SiteInfo kSiteInfo[kSites] = {
     {"room invalidate on flag change", GameAddr::Id::InvalidateFlag, {0x8A, 0x44, 0x24, 0x04, 0x56}, 5},
     {"CAS triangle sort", GameAddr::Id::CasTriSort, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0}, 6},
     {"record CRC", GameAddr::Id::RecordCrc, {0x8B, 0x4C, 0x24, 0x04, 0x8B, 0x44, 0x24, 0x08}, 8},
+    {"mono_type_get_object", GameAddr::Id::MonoTypeGetObject, {0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x55, 0x56, 0x57}, 8},
+    {"mono_domain_free", GameAddr::Id::MonoDomainFree, {0x55, 0x56, 0x8B, 0x74, 0x24, 0x0C}, 6},
 };
 static_assert(sizeof(kSiteInfo) / sizeof(kSiteInfo[0]) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 
