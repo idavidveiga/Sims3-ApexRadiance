@@ -9,7 +9,7 @@ the shade on Sims and their hair separately.
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 |
+| Availability | Released in 2.1.0. Distance: Released in 2.6.0. Temporal smoothing, Half resolution, Thin object detail and the wait for the drawn world (never on the main menu or load screens): Released in 2.7.0 |
 | Default | On for new configurations |
 | Menu | Image > Ambient Occlusion |
 | Configuration | `[patches.AmbientOcclusion]` in `ApexRadiance.toml` |
@@ -95,7 +95,7 @@ All settings apply immediately. Keys from the old combined build (`intensidade`,
 | Temporal | `TemporalPS` | Temporal smoothing only: blended with the reprojected history (G16R16F x2, ping-pong) |
 | Composite | `CompositePS` | Over the copy, RGB write |
 
-**Same-surface blur (06/10).** The AO pass writes its normal as a second render target; blur taps weigh
+**Same-surface blur.** The AO pass writes its normal as a second render target; blur taps weigh
 `depth match x max(0, n0 . n)^8`. In the box passes a tap that fails (a rail in front of the wall, the other side of a
 corner) is replaced by the pixel 4 further on, which has the same interleave offset, so the 4x4 cancel still holds. The
 pyramid's downsample keeps the farthest 1/z when the four texels differ by more than 10%, so a thin leg does not leave
@@ -160,9 +160,9 @@ About 0.55 ms is fixed (copy and pyramid 0.26, blur 0.2, composite 0.09).
 
 ## Rejected approaches
 
-- Half-resolution AO reading one of the four depth pixels: caused the "micro dots" reports. The 06/10 Half resolution
+- Half-resolution AO reading one of the four depth pixels: caused the "micro dots" reports. The current Half resolution
   option reads the 2x2 average instead.
-- Per-frame noise with temporal accumulation as the only filter: twinkling on foliage. The 06/10 Temporal smoothing
+- Per-frame noise with temporal accumulation as the only filter: twinkling on foliage. The current Temporal smoothing
   option keeps the full spatial filter and falls back to it wherever the history is dropped.
 - Radii in near-plane units: shade breathing with zoom.
 - HBAO with a plain multiply: dirty and grey, too weak when toned down.

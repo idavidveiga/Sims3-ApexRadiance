@@ -94,6 +94,15 @@ included in the All effects switch.
 **Outcome:** in development. Configurations with `[ui] performance_mode` still load; the key is ignored and dropped at
 the next save. In-game validation of the removal is an open check.
 
+### 2026-10-06: a group of fifteen; Lot Streaming on its own page
+
+**Context:** commits `7232c3b`, `c425026`, `645fc34` and `d8ca1ec`. The Overview group switch and the removal of
+*Optimize rendering* above were released in 2.6.0.
+
+**Outcome:** Room to save, Lighter window updates and Faster scripts join the Performance page (Experimental, on by
+default) and the Overview group switch, which now skips a switch the game version lacks. The five Lot Streaming switches
+have their own page, are off by default, and are neither in the group nor in the built-in profiles. Released in 2.7.0.
+
 ## Switch histories
 
 [Room lighting](performance-room-light-queue.md), [lot lighting](performance-lot-lighting-motion.md),
@@ -102,4 +111,6 @@ the next save. In-game validation of the removal is an open check.
 [file lists](performance-file-list-cache.md), [object lookups](performance-object-lookup-index.md),
 [texture compression](performance-fast-texture-compression.md), [cache compression](performance-fast-cache-compression.md),
 [Sim building](performance-fast-cas-sort.md), [memory](performance-fast-memory.md),
+[room to save](performance-room-to-save.md), [window updates](performance-lighter-window-updates.md),
+[scripts](performance-faster-scripts.md), [Lot Streaming](performance-lot-streaming.md),
 [Vulkan driver guard](performance-vulkan-driver-guard.md).

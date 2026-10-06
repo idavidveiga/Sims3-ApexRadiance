@@ -1423,3 +1423,17 @@ restarting its 8 s lifetime; the saved start-note preference and the notice desi
 same read-only world fields with its own 3 s settling guard, checked at Present and before blurring. No game writes or
 hooks were added. Mock checks and compilation do not validate loading screens visually (commit `f575f0a`, pull request
 #2; [architecture.md, section 12](../architecture.md#12-loaded-world-gate-and-start-note)).
+
+### 2026-10-06: one world gate for every screen effect
+
+**Context:** commits `ee83ade`, `23799c2`, `10f6a1a`, `0eae4d5`, `9fd5b65`, `25ac248` and `7232c3b`. Color, Ambient
+Occlusion and Edge Smoothing ran on the main menu and load screens; a load started from the main menu counted as playable
+(its script-driven load screen is not the startup window), and the interactive load screen draws about 100 depth-writing
+draws for tens of seconds.
+
+**Finding:** a drawn world writes depth in hundreds of draws a frame; 150 never opened in close views, 48 for 500 ms
+does, together with Night Lighting's world-live signal (reset by every new world). Waiting for the after-load refresh
+made the effects come 3 to 10 s after the map showed.
+
+**Outcome:** `WorldSession::InWorld` gates Color, Ambient Occlusion, Edge Smoothing and Depth Blur; the menu and the start
+note are available from the world selector on (the startup loading window gone). Released in 2.7.0.

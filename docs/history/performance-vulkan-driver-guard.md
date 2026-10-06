@@ -19,3 +19,15 @@ under the conditions on the feature page; the development address-space monitor 
 RefPack per-thread kept buffers at 12 MB for all threads together
 ([Faster Cache Compression history](performance-fast-cache-compression.md)). The address space returned (about 85 to
 100 MB) is an expectation from the image size and driver heaps, not a measurement.
+
+### 2026-10-05: AMD's implicit layer
+
+**Context:** with the guard on, the log still said "AMD Vulkan driver in the game: loaded".
+
+**Finding:** AMD registers `amd-vulkan32.json` both as a driver and as the implicit layer
+`VK_LAYER_AMD_switchable_graphics` (library `amdvlk32.dll`), listed in the display adapter's `VulkanImplicitLayersWow`
+registry value. `VK_LOADER_DRIVERS_DISABLE` does not stop layers.
+
+**Outcome:** commit `cb7e7a2`: the guard also sets the layer's own `disable_environment` variable, read from the AMD
+manifests the display adapters register (`DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1` when none can be read). Released
+in 2.7.0.

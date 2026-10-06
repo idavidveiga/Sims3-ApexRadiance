@@ -8,7 +8,7 @@ re-checks that answer cheaply instead of searching all packages again. What the 
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5 |
+| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5. Read-only reliability checked once per list generation (at most every 100 ms): Released in 2.7.0 |
 | Default | On |
 | Menu | System > Performance > Files and objects > *Faster game file lookups* |
 | Configuration | `[patches.ResourceLookupCache]` in `ApexRadiance.toml` |
@@ -178,7 +178,10 @@ loader worker threads and the simulation thread.
   through DatabaseChanged = full invalidation); the others were just probed.
 - **Reliability:** a store also requires every read-only package above the answer to have answered for sure (its key
   set present, or its file open after the lookup: `ReadOnlyAboveReliable`), so a transient open failure is not kept.
-  This applies whether or not Remember missing files is on.
+  This applies whether or not Remember missing files is on. A thread that found the whole list reliable keeps that
+  answer (`RoLatch`, thread-local) for 100 ms while the list's begin, size and generation stay the same and no list
+  method is running, so the walk over the roughly 300 packages runs at most once per 100 ms per thread instead of
+  before every probe (reliability only goes from unreliable to reliable while the list and its generation stay).
 - **Changes the hooks could miss:** a store that finds the list moved (begin / size differ) under the same generation,
   or the full fingerprint (checked every 1,024 answers) differing, bumps the generation, logs once ("changed without
   RegisterDatabase / SetDatabasePriority") and counts it ("changes the hooks missed").

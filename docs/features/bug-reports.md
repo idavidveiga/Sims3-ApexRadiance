@@ -10,7 +10,7 @@ separate screenshot shortcut saves one filtered PNG, with all Apex effects, to t
 
 | | |
 |---|---|
-| Availability | Report a problem: Released in 2.5.0. Post-save title and description: Released in 2.5.5 (title optional); required title and Cancel that deletes the new capture: In development (PR #2). Filtered player screenshots: In development (PR #2) |
+| Availability | Report a problem: Released in 2.5.0. Post-save title and description: Released in 2.5.5 (title optional); required title and Cancel that deletes the new capture: Released in 2.6.0. Filtered player screenshots: Released in 2.6.0. Light update trace in recordings: Released in 2.7.0 |
 | Default | Capture screenshots on (`[ui] capture_screenshot`); screenshot shortcut on, key `F8` (the game's own C is untouched), saved to the game's Screenshots folder, game UI hidden |
 | Menu | System > Report a problem. Settings > Menu > Screenshot capture. Settings > Shortcuts > Report a problem |
 | Configuration | `[ui] capture_screenshot`, `screenshot_folder`, `screenshot_key`, `screenshot_hide_game_ui`, `recorder_key`, `probe_key`, `diagnostics_key` (see [ui.md](../ui.md#shortcuts)) |

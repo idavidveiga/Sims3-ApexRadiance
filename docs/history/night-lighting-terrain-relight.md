@@ -283,3 +283,25 @@ separate path ([walls](../features/night-lighting/walls.md)).
 **Outcome:** priority edits keep their reconciliation when a countdown is armed and may queue footprints ahead of
 arrival batches and sweeps; automatic edits still merge; load and phase work still coalesce; no synchronous full
 rebuild added.
+
+### 2026-10-05: world-load and button rebuilds one chunk per frame
+
+**Context:** commit `e984c52`. The world-load rebuild and the *Refresh terrain* button armed the game's full rebuild,
+which bakes and encodes every chunk in one frame of about 240 ms.
+
+**Finding:** the game's consume only sets chunk+0x55 on every chunk and its +0x55 branch clears the flag when the chunk
+is done, so the same rebuild can be fed one chunk at a time.
+
+**Outcome:** `ChunkRelight::QueueRebuild`, nearest chunk first, one per frame; the full rebuild stays as the fallback.
+Released in 2.7.0.
+
+### 2026-10-06: a lamp switch's ground in one frame
+
+**Context:** commit `5e8a329`. The local relight re-rendered a switch's chunks one at a time, two frames apart, and the
+smoothed borders followed 30 frames later: the ground around a house at the corner of 4 chunks changed in quarters with
+a cross-shaped seam.
+
+**Outcome:** urgent chunk renders go back to back after a cheap measured render, and `LightmapSmooth` holds the batch's
+smoothed maps until its last chunk is re-rendered (1.5 s at most), then builds them all in the next frame. Pure switches
+only, not drags or value edits. In the recording that showed it, 4 chunks took 8 frames before and 4 after. Released in
+2.7.0.

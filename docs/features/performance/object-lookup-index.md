@@ -2,23 +2,28 @@
 
 Fewer hitches when lot lights update, and less work for the game's scripts. When the game looks up a lot by its ID it
 searches the whole world object tree. Faster Object Lookups remembers where the game found each lot and re-reads that
-path in the live tree instead of searching again. The answer is the game's own.
+path in the live tree instead of searching again. It also keeps a quick index of every object by its ID next to the
+object service's own map, so the game's lookups of an object by ID no longer walk a long hash chain. The answers are
+the game's own.
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5 |
+| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5. Object service ID index: Released in 2.7.0 |
 | Default | On |
 | Menu | System > Performance > Files and objects > *Faster object lookups* |
 | Configuration | `[patches.ObjectLookupIndex]` in `ApexRadiance.toml` |
-| Source | [`features/object_index.{h,cpp}`](../../../features/object_index.cpp), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
+| Source | [`features/object_index.{h,cpp}`](../../../features/object_index.cpp), [`features/object_id_map.{h,cpp}`](../../../features/object_id_map.cpp), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
 
 ## The problem
 
 The lookup by ID (0x00C62D40) walks every lot and layer of the world depth first, with two to three virtual calls per
 node. It has 233 direct callers, including the lot lighting code on the render thread and the script natives on the
 simulation thread, and its search function is the hottest leaf in hitches dominated by lot lighting.
+
+Separately, the object service keeps every object by its 64-bit ID in a hash map of 1033 buckets. With tens of
+thousands of objects every chain holds dozens of them, and each lookup by ID walks one (a cache miss per node).
 
 ## How Apex Radiance solves it
 
@@ -32,6 +37,12 @@ simulation thread, and its search function is the hottest leaf in hitches domina
 4. **Check** the first 64 answers of each session and then 1 in 64 against the game's walk.
 
 There are no hooks on the tree's mutators; the validation reads exactly what the game's walk reads to reach the node.
+
+**Object service ID index.** A second, independent part mirrors the object service's map in an open-addressing table
+(ID -> object). The map's only insert and only erase are hooked and update the index with the game's own result; its
+find answers from the index, with exactly the game's output, only while the index's count equals the map's own count.
+The first 256 answers are also compared with the game's walk. If this part cannot start, the lot lookup index still
+runs (logged as `[ObjectIdMap] Not used: ...`).
 
 ## Settings
 
@@ -119,12 +130,31 @@ There are no hooks on the tree's mutators; the validation reads exactly what the
 - **Cost per answer (inferred):** an SRW shared acquire, a hash probe, an 84-byte copy, about 4 + 5 x depth loads (depth
   2 to 3 for a lot), against a walk with 2 to 3 virtual calls per node over every lot and layer of the world.
 
+### The object service ID index
+
+- **The game side:** the object service ("Objects/Service", `[0x011DC350]`, created by 0x0093A510) embeds a hash map
+  at service +0x10: 1033 (0x409) buckets of singly linked nodes (the objects themselves: ID at +8 / +0xC, next at
+  +0x10), keyed by `idLo % 1033`, the end sentinel at map +0x1024 and the count at +0x1028. 0x00939100 find
+  (thiscall(out[2], key*), ret 8; six callers, all object service methods), 0x00939170 insert (ret 0xC, the only writer
+  of new links) and 0x00938D00 erase (ret 0xC, the only unlinker). Nothing else writes the count, and insert and erase
+  are leaves.
+- **The index** (`ObjectIdMap`): an open-addressing table ID -> node, 8,192 to 1,048,576 slots (at least three per
+  object, grown as needed), built from the game's own links at the first find; a map of more than 524,288 objects is
+  left to the game. Insert and erase run under an exclusive SRW lock and apply the game's own result; find
+  takes the shared lock (busy: the game's own walk) and answers only while the index's count equals the map's count at
+  +0x1028. A mutation the hooks did not see turns the index off for the session. The first 256 answers (then 1 in 64 in
+  the development build) also run the game's walk.
+- **Hooks:** `EntryChain` sites `ObjMapFind`, `ObjMapInsert`, `ObjMapErase`, layer `ObjectIdMap`. Logs:
+  `[ObjectIdMap] Indexed the object map ...`, `[ObjectIdMap] On: ...` and an Off line with lookups found, not found,
+  left to the game while busy, checked, inserts, erases and grows.
+
 ### Address reference
 
 | Id (`GameAddr`) | Steam 1.67.2 | Kind |
 |---|---|---|
 | ObjectById | 0x00C62D40 | Sig (shared with the Frame Profiler) |
 | ObjectTreeWalk / ObjectTreeSearch | 0x00C60D30 / 0x00C5FA60 | Sig (alternates: the CALLs inside the lookup / the walk) |
+| ObjMapFind / ObjMapInsert / ObjMapErase | 0x00939100 / 0x00939170 / 0x00938D00 | Sig |
 
 Group `ObjectIndex`.
 
@@ -133,6 +163,8 @@ Group `ObjectIndex`.
 `features/object_index.{h,cpp}`: `Start`, `Stop`, `Hook_ObjectById`, `Find` / `Store` (table), `Build` / `BuildRaw`
 (path of a found object), `Validate` / `ValidateRaw` (a hit), `ShapeOf` (class shapes), `CheckThisOne` /
 `RecordMismatch` (verification), `TakeLookupNote`, `GetStats`, `StatusText`, `RenderDeveloperUI`.
+`features/object_id_map.{h,cpp}`: `Start`, `Stop`, `Build`, `Hook_Find`, `Hook_Insert`, `Hook_Erase`, `Rehash`,
+`TurnOff`, `StatusText`.
 
 Developer card *Find objects faster*: lookups, from the index, game walks (not found), too old, path changed, passed
 through, stored / not stored, entries, table restarts, container / object classes recognised, per-second rates and

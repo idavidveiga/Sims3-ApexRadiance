@@ -3,14 +3,14 @@
 Depth Blur softens the distant background, like a camera lens focused on the scene in front of it. The blur grows
 smoothly with distance, lamps in the blurred background stay bright, and pie menus, tooltips, plumbobs and panels stay
 sharp because the blur is applied before the game draws its interface. It fades out while the map view is open and
-pauses during loading screens. The feature also owns the shared depth buffer that Ambient Occlusion, Edge Smoothing and
+pauses during loading screens and over a frozen picture such as the save screen. The feature also owns the shared depth buffer that Ambient Occlusion, Edge Smoothing and
 Water Reflections read.
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (present in the first version in this repository). Loaded-world and loading-window guard: in development (PR #2) |
+| Availability | Released in 2.1.0 or earlier (present in the first version in this repository). Loaded-world and loading-window guard: Released in 2.6.0. The shared world gate (the world drawn) and the frozen-screen pause: Released in 2.7.0 |
 | Default | On for new configurations; Fixed focus |
 | Menu | Image > Depth Blur; Overview > Image > Depth Blur |
 | Configuration | `[patches.DepthBlur]` in `ApexRadiance.toml` |
@@ -197,7 +197,7 @@ Capture; `RawSet/RawGetDepthStencilSurface` bypass the substitution.
 
 ### Loaded-world guard
 
-Loading screens and menus can leave a stale depth buffer. `BlurEffect` runs only in an active loaded world:
+Loading screens and menus can leave a stale depth buffer. `BlurEffect` runs only in a loaded world that has been drawn:
 
 - **World active** (`WorldSession::IsActive`, read-only, inside `__try`): the WorldManager global
   (`GameAddr::WorldManagerPtr`, `0x011ECBC4` on Steam 1.67.2, also found by signature) points to a manager whose byte
@@ -208,13 +208,23 @@ Loading screens and menus can leave a stale depth buffer. `BlurEffect` runs only
   calls the root's vtable `+0xF4` to look up child window id `0x95947678` (non-recursive). That window is created at
   `0x00EC7DB9` and removed by the callback at `0x00EC7A60`. Any missing state, unrecognised getter or fault counts as
   "loading" (fails closed). Apex never removes windows or changes loading.
-- **Settled** (`WorldSession::Settled`): Present updates it every frame; it becomes ready after 3000 ms of continuous
-  activity. A load, a missing or unreadable manager, a video reset (`OnPreReset`) or stopping the depth swap
+- **World drawn** (`WorldSession::InWorld`, the gate shared with Color, Ambient Occlusion and Edge Smoothing): the world
+  is active and the last complete frame had at least 48 depth-writing scene draws (counted by PostScene) for 500 ms in
+  a row, and Night Lighting's world-live signal (its terrain drawn; registered by Depth Blur, always true with Night
+  Lighting off) is set. A load screen draws 0 to about 100 such draws, the world hundreds. Once open it stays open while
+  the world is active, so the save screen and the in-game menus keep the same look; it closes with the world.
+- **Playable** (`WorldPlayable`): the world drawn and, with Night Lighting on, its load-settled signal.
+- **Settled** (`WorldSession::Settled`): Present updates it every frame with *Playable*; it becomes ready after 3000 ms
+  of continuous activity. Then the blur waits another 2000 ms (`kWorldHoldMs`) and fades in over 1 s
+  (`kWorldFadeInSeconds`, smoothstep). A load, a missing or unreadable manager, a video reset (`OnPreReset`) or stopping the depth swap
   (`StopDepth`) resets it.
 - **While not ready:** `BlurEffect` returns before any blur or debug pass and sets `focusSnap`, clears the frame timer,
   closes the map fade (`mapOpen = false`, `mapFade = 0`). The same reset happens at Present. Auto focus therefore snaps
   on return, and a long stall cannot feed a huge time step into the easing. `BlurEffect` re-checks `IsActive()` itself,
   so the blur stops at once when a load starts. The depth swap and saved settings are not affected.
+- **Frozen screen:** a frame with fewer than 48 depth-writing scene draws (`PostScene::DepthWritesThisFrame`), such as
+  the still picture of the save screen, gets no blur; the log notes `[DepthBlur] Frozen screen: blur paused` and `World
+  drawn again: blur back`. The threshold is not verified against a capture of the save frame.
 
 The same gate defers the menu's startup ready notice. Field documentation:
 [engine/lot-loading-and-streaming.md](../engine/lot-loading-and-streaming.md).

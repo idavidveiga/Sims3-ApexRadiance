@@ -1,18 +1,19 @@
 # Faster Room Lighting
 
 Rooms light up much sooner when you enter a lot, change floors or switch lamps. The lot you are on and the floor you look
-at go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. The final lighting
-is the game's own.
+at go first, rooms reach their final look in fewer steps, and several small rooms are lit per frame. When you switch one
+lamp or all the lights of a house, the rooms, the furniture, the ground and the trees change together, in a single
+frame, once the new light is ready. The final lighting is the game's own.
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (on by default since its introduction) |
+| Availability | Released in 2.1.0 or earlier (on by default since its introduction). Lamp switches all at once and Quick update for lamp switches (both Experimental), an atrium's stories changing together and the quick return of empty light object removals: Released in 2.7.0 |
 | Default | On |
 | Menu | System > Performance > Camera and lighting > *Faster room lighting* |
 | Configuration | `[patches.RoomLightQueue]` in `ApexRadiance.toml` |
-| Source | [`features/room_light_queue.{h,cpp}`](../../../features/room_light_queue.cpp), [`features/room_ambient_policy.h`](../../../features/room_ambient_policy.h), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
+| Source | [`features/room_light_queue.{h,cpp}`](../../../features/room_light_queue.cpp), [`features/atrium_hold.{h,cpp}`](../../../features/atrium_hold.cpp), [`features/room_ambient_policy.h`](../../../features/room_ambient_policy.h), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
 
 ## The problem
 
@@ -23,7 +24,7 @@ take many seconds, of which only a small part is solve work: the cause is the qu
 
 ## How Apex Radiance solves it
 
-Five changes, each checked against the Steam bytes and left off when they differ:
+Six changes to the queue, each checked against the Steam bytes and left off when they differ:
 
 1. **Viewed lot first.** Rooms of the priority lot on the camera's story get the game's priority x4000, rooms below it
    x2000. While Night Lighting's full-detail-all-floors policy is on, every floor of the priority lot gets x4000.
@@ -33,21 +34,26 @@ Five changes, each checked against the Steam bytes and left off when they differ
    once and picks the next, until 4 ms are used (1 ms while the camera moves) or a room does not finish.
 5. **Stranded rooms.** A room waiting at a class above its current target (its story left the camera's view) gets the
    lowest priority instead of zero, so it is solved last rather than never.
+6. **Empty light maps.** An object removal from a level's five light maps returns at once when the five maps are
+   empty (the game walks them for twelve levels per removal).
+
+Two further parts handle lamp switches, *Lamp switches all at once* and *Quick update for lamp switches* (below), and
+the stories of an atrium (a double-height room is one room per story) always change together.
 
 ## Settings
 
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Faster room lighting | `[patches.RoomLightQueue] enabled` | bool | on | | Turns all five changes on. A missing key reads as on |
+| Faster room lighting | `[patches.RoomLightQueue] enabled` | bool | on | | Turns all six changes and the lamp switch parts on. A missing key reads as on |
 | Lamp switches all at once (Experimental) | `[patches.RoomLightQueue] switchAllAtOnce` | bool | on | | A player's switch is shown in one frame once the rooms on screen have their final light (see "Lamp switches all at once" below); the quick pass is not used meanwhile |
 | Quick update for lamp switches (Experimental; shown only while the row above is off) | `[patches.RoomLightQueue] quickPass` | bool | on | | An approximate light first, refined room by room |
 
-### Lamp switches all at once (06/10 evening)
+### Lamp switches all at once
 
-The light update trace (recording 14:59, lights on) showed the quick pass appearing at about 0.3 s and then each room
-correcting itself at +0.8, +1.7 and +2.3 s, by up to 17 levels: class 0 samples 1 point per tile, class 2 four
-(`0xFF36AC`), so an approximate map can never match the final one. The user chose "one change only" over a faster
-approximate light with corrections. With `switchAllAtOnce` on (`AtriumHold`, `features/atrium_hold.{h,cpp}`):
+An approximate light first can never match the final one: class 0 samples 1 point per tile and class 2 four
+(`0xFF36AC`), so rooms shown with a quick light correct themselves afterwards, by up to 17 levels, over about 2 s. This
+part shows one change instead, once the final light is ready. With `switchAllAtOnce` on (`AtriumHold`,
+`features/atrium_hold.{h,cpp}`):
 
 - A player's switch (`LampMarkFilter::SwitchLastTick`) starts a hold (`AtriumHold::SwitchHolding`, also true in the very
   frame of the switch, before the next Present). The quick pass is off (`QuickPassRoom`); the drain gives the switch's rooms
@@ -60,15 +66,53 @@ approximate light with corrections. With `switchAllAtOnce` on (`AtriumHold`, `fe
   maps (`LightmapSmooth`); the per-pixel lamps (roofs, water, outdoor objects, trees) keep their list (`LotLightBridge`).
 - It ends when every room the switch marked on the camera's story (and the atrium's rooms below it) has ended a solve
   begun after the latest switch (`LevelLightShare::SwitchRoomsPending`, `RoomLightQueue::SolvedSince`, from the solve
-  start and end hooks; a solve start is stamped with `LampMarkFilter::SwitchSerial`, not a tick: a solve begun in the
-  switch's own 10-16 ms tick step counted as before it and the switch waited the whole 2.5 s, review 06/10), and the
-  ground's chunks are re-rendered, at least 150 ms after the latest switch; at most 2.5 s after it (4 s after the
-  first). Then the maps take their content and the others follow in the same frame.
+  start and end hooks; a solve start is stamped with `LampMarkFilter::SwitchSerial`, so a solve begun in the switch's
+  own tick step counts as after it), and the ground's chunks are re-rendered, at least 150 ms after the latest switch;
+  at most 2.5 s after it (4 s after the first). Then the maps take their content and the others follow in the same frame.
 - The lamp object itself (its lit model) is the game's and changes at once. Recordings note `[switch] lamp switch shown
   all at once, N ms ...`; the status line counts the switches and the last one's time.
 - It needs both solve hooks (the end `0x006A3E65`, Steam 1.67.2 only, and the lock step): without them the switches
   change room by room as with the option off (`AtriumHold::AllAtOnce`). Turning Faster Room Lighting off ends any hold and
   stops new ones (`AtriumHold::Clear`).
+
+### Quick update for lamp switches
+
+Used only while *Lamp switches all at once* is off (`quickPass`, once per room and switch). After a player's switch
+(`LampMarkFilter::SwitchActive`: a lamp switched on or off where it is, not a light switching itself, not at dusk or
+dawn; switches less than 1.5 s apart are one event, `SwitchEventId`), the priority hook puts a lamp edit's room that is
+still waiting (state 2) at a class above 0 back to class 0 before the game reads its priority. Class 0 is the game's own
+fast first solve and has 100 times the priority of class 2, so every room of the switch takes its new light within a
+few frames, the camera's story first; *No middle step* then takes each room straight to its class. Drags and value
+edits never take it.
+
+- A quick-pass room takes the wall mode, pass switches and light threshold of the class it will be refined to, so the
+  quick light looks like its refinement ([room-light-maps.md](../../engine/room-light-maps.md), per-class switches).
+- A room counts as shown at the first solve end after the quick pass set it to 0 (`RoomLightQueue::NoteSolveEnd`, from
+  `FinalizeHook`, the solve's step 8, `0x006A0E00` called at `0x006A3E65`; without that hook, when `+0x100` reads 0). A
+  room is set to 0 at most 3 times per burst; after 3 s the burst counts as refining.
+- Once every room of the burst shows its quick light, the extra solving for the burst drops from 12 ms to 4 ms a frame
+  and the lot lighting budget is held at 6 ms ([lot-lighting-motion.md](lot-lighting-motion.md)), so the frame rate
+  holds while the rooms are refined.
+- Status line: "quick pass for lamp switches" and its room count; each lamp edit's log line ends with the rooms that
+  took the quick pass.
+
+### The lamp switch's safety net
+
+About 120 ms after a switch (`LevelLightShare::RelightLampSwitch`, with either option), the rooms the lamp can reach are
+sent again: those holding it, its own room (`LampHome`: room id `light+8` on the story whose lowest floor is the highest
+at or under the lamp's height), the rooms near the stair openings of its story and the stories next to it, and every
+story's outdoor rooms for an outdoor lamp. A lamp moved into another room, moved and switched, or more than 8 lamps at
+once still send the whole lot. A room that is queued and has not started its solve is skipped (its gather reads the
+lamps as they are when it starts), and when only lamps switched off, a room with an empty light list is left alone.
+
+### An atrium's stories together
+
+A double-height room is one room per story (level light share's stacked-ambient groups), each solved on its own. The
+atrium's members of an edit are solved right after the lamp's room whatever their story, and the room maps a member's
+solve writes wait at the game's `UnlockRect` while another member is still waiting for or in its solve (at most 1.5 s;
+not while a lamp is dragged), then show in the same frame. At the game's `LockRect` of a waiting map the exact content
+is put back first, so the game never builds on what is shown. Each member's ambient is taken at the merge with the
+game's own step, so an atrium is solved in one round ([level-light-share.md](../night-lighting/level-light-share.md)).
 
 ## Compatibility and interactions
 
@@ -126,6 +170,11 @@ Every write goes through `MemPatch::WriteCodeSuspended`, and Stop puts the bytes
    previous pick is done and the new one is of that same lot (so that lot's pass ran: not paused by +0x18 / +0x4E).
 5. **Stranded rooms:** a room in state 2 (`room+0xF0`) with a pending class above its LodChoice (`room+0xF4 > 0`) gets
    priority 1 instead of 0.
+6. **Empty light maps:** 0x006C7610 (thiscall(levelLights; idLo, idHi), `ret 8`) takes an object out of a level's five
+   light maps (`+0x4C`, `+0x90`, `+0xD4`, `+0x118`, `+0x15C`) with five finds; 0x006C7690 runs it for the twelve levels
+   -4..7 of a lot on every object removal, and its callers ignore the result. `EntryChain` site `LightObjectRemove`, layer
+   `RoomLightQueue`: when the five element counts (`+0x5C`, `+0xA0`, `+0xE4`, `+0x128`, `+0x16C`) are 0 the hook
+   returns at once.
 
 ### Apex's own requeues
 
@@ -150,11 +199,19 @@ In [`features/level_light_share.cpp`](../../../features/level_light_share.cpp):
 ### Source
 
 `features/room_light_queue.{h,cpp}`: `Start`, `Stop`, `Running`, `PriorityHook`, `Factor`, `Stranded`, `PickHook`,
-`DrainableRoom`, `StatusText`, `RenderDeveloperUI`. Group `RoomLightQueue`.
+`DrainableRoom`, `EmptyRemovalHook`, `SetQuickPass`, `NoteSolveEnd`, `StatusText`, `RenderDeveloperUI`. Group
+`RoomLightQueue`. `features/atrium_hold.{h,cpp}`: `SetAllAtOnce`, `AllAtOnce`, `SwitchHolding`, `OnPresent`, `Clear`,
+`Status`.
 
 ## Rejected approaches
 
-None recorded.
+- Smooth light changes indoors (the room maps fading over 250 ms during lamp edits): removed before release; the light
+  changes at once. An old `lightFade` key is ignored.
+- Holding every story's maps until an edit's first solves end: the lamp's story waited for a cascade of 2 to 4 s;
+  replaced by fixing the causes (one round per atrium, the quick pass looking like its refinement) and keeping the hold
+  for atriums only.
+
+Details in [history](../../history/performance-room-light-queue.md).
 
 ## See also
 
@@ -162,119 +219,3 @@ None recorded.
 - [Validation](../../validation/performance-room-light-queue.md)
 - [History](../../history/performance-room-light-queue.md)
 - [Room light maps](../../engine/room-light-maps.md)
-
-## Many lamps at once (06/10)
-
-User report: switching all the lights of a big lot (5 stories, rooms with 35-98 lights) took 3-7 s before every room
-showed the new light (the same house took up to 10 s on 05/10). Measured: the game's class-2 solve cost 24.8 s of the session
-against 1.0 s for class 0.
-
-- **Quick update for lamp switches** (`[patches.RoomLightQueue] quickPass`, menu "Quick update for lamp switches", default
-  on, Experimental; once per room and switch): after any player switch (`LampMarkFilter::SwitchActive`: a lamp switched on
-  or off where it is, not a light switching itself, not at dusk or dawn; held 1.5 s after the last, switches closer than
-  that are one event, `SwitchEventId`), the priority hook puts a lamp edit's room that is still waiting (state 2) at a
-  class above 0 back to class 0 before the game reads its priority. Class 0 is the game's own fast first solve and has 100x
-  the priority of class 2, so every room of the switch takes its new light within a few frames, the camera's story first;
-  "No middle step" then takes each room straight to its class. Until 06/10 evening only bursts of 3 or more lights
-  (`MassSwitchActive`) took it: one lamp of the atrium had its 4 rooms solved at class 2 one after another (user: "the
-  quick pass for one lamp too"). Drags and value edits never take it. Status line: "quick pass for lamp switches" and its
-  room count; each lamp edit's log line ends with the rooms that took the quick pass.
-- **No second send for waiting rooms**: the lamp switch's safety net (LevelLightShare::RelightLot, about 120 ms after the
-  switch) skips a room that is queued (state 2) and has not started its solve, as it would skip a fresh solve: its gather
-  reads the lamps as they are when it starts.
-- **Refinement in the background**: once every room of the burst shows its quick solve (logged: "Many lamps: the N rooms
-  of the burst showed their new light (quick pass) after X ms"), the extra solving a frame for the burst drops from 12 ms
-  to 4 ms. Measured before (06/10): 35-39 ms of solving a frame for 2-3 s while the rooms already showed the right light;
-  Apex's own light tests were 21-33% of those solves (the rest is the game's).
-  Fixed the same day: the quick pass is seen as done when the room's class rose again (the end of its class-0 solve), not by
-  "shown" (the step writes the new class there too, so the first version only saw it at the very end); and while refining,
-  the lot lighting budget (LotLightingMotion's hook, which raised it to 25 ms for a lamp edit) is held at 6 ms.
-
-## Smooth light changes indoors (06/10, removed the same day)
-
-Removed after the fixes below (user: "much better without"): the light changes at once; the module became AtriumHold
-(`features/atrium_hold.{h,cpp}`), which only makes an atrium's stories wait for each other. History:
-`[patches.RoomLightQueue] lightFade` (default on, Experimental), `features/room_light_fade.{h,cpp}`. The user saw the quick
-pass as a blink (video 11:01: the lower walls went darker for ~1 s, the class-0 solve has no wall blur, then the refinement
-brightened them). The room solves write the story maps (MANAGED single-level A8R8G8B8: wall atlas, floor, ceiling, room light
-map, basis maps) through LockRect / UnlockRect; both are detoured (vtable 19 / 20 of a probe texture). While a lamp edit is
-pending, a map first locked during a room solve (the queue's current room in state 3, render thread: never the UI) is kept
-(AddRef, two buffers): at the game's lock the exact content is put back (the game never reads a blend: the wall blur reads the
-atlas); at its unlock the new content is the target and what was on screen goes back; every frame the smoothstep blend over
-250 ms is written, ending on the exact content. Maps are released 3 s after their last change. Status: Developer page and the
-Faster room lighting status line ("smooth light changes").
-
-Also fixed the quick pass: a room sent back to its class by the switch's safety net before its class-0 solve ran is set
-to 0 again until its quick solve is shown, and never after.
-
-Its quick solve is shown when the room's solve ends (06/10 evening, from the first light update trace, recording 13:52):
-LevelLightShare's `FinalizeHook` (the solve's step 8, `0x006A0E00` called at `0x6A3E65`) calls
-`RoomLightQueue::NoteSolveEnd`, and on the render thread a room of the burst counts as shown at the first solve end after the
-quick pass set it to 0. The earlier test, "shown" (+0x100) is 0, was already true for a room still showing the previous
-switch's quick pass while it refined: lights off, then on 2.6 s later, ground floor room 25 was set to 0, given its class 2
-back by the safety net's invalidate 31 ms later, then taken as done, and it kept the lights-off light 3.5 s, waiting for its
-class-2 solve (the lights-on log line said every room showed its new light after 313 ms). Without the hook (another game
-build) the old test stays. Bounds: a room is set to 0 at most 3 times per burst; after 3 s the burst counts as refining even
-if some rooms never ran (logged: "N of the M rooms ... showed their new light").
-
-Every story together (06/10, user: the light's story changed first and the others up to 0.5 s later): while the edit's
-first solves run (the quick pass of a burst, or every room of a smaller edit; not its refinement, not a dragged lamp; at most
-2.5 s) a changed map holds what was on screen, then every held map starts its fade in the same frame. Maps are kept only
-for the edit's own rooms (the solved room must have lamp-edit urgency: other rooms, even of other lots, had filled the 128
-slots). A burst is now 3 different lights switching within 1.5 s, even when each switched more than 3 times in 10 s (the
-self-switching rule had turned repeated tests of "all the lights" into no edit at all).
-That hold was turned off the same day (user: worse; the light's story waited for a cascade of 2-4 s). The causes were
-found and fixed instead (below); only an atrium's maps wait now.
-
-## Every story at once: what fixed it (06/10, user: "ficou ótimo")
-
-Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 on stories 0-2, 35-98 lights each):
-
-1. **One round per atrium** (level_light_share, "One round for an atrium"). The stacked-ambient merge used the other
-   members' values from their last solve, so the first member solved after an edit took a mixed target, the next another,
-   and every normalisation change (compared bit-exact) sent every member to solve again: 2-3 rounds of the atrium's
-   biggest rooms. Each member's ambient is now taken at the merge with the game's own step (`0x006A0F50`, fields put back)
-   at the top class's light threshold (read from the game's table), cached per gather. A waiting member is no longer sent
-   back to its gather by the ambient pass or by the lamp's safety net (that also threw its quick pass away).
-2. **The quick pass looks like its refinement.** Class 0 tests no wall and no object and drops more faint lights
-   ([room-light-maps.md](../../engine/room-light-maps.md), "per-class switches"): with the lamps off, window lights lit
-   walls through them, and the refinement then took that light away ("right, then wrong"). A quick-pass room takes the
-   wall mode, pass switches and threshold of the class it will be refined to (the wall pass's through its table bytes
-   around each step).
-3. **A refinement's maps show at once.** They are the other class's maps, not on screen and still holding the light from
-   before the edit; fading from them brought the old light back for a quarter of a second, room after room.
-4. **An atrium's stories together** (AtriumHold). The atrium's members of an edit (any member urgent) are solved right
-   after the lamp's room whatever their story; their new maps wait while another member is still waiting for or in its
-   solve (at most 1.5 s; not while a lamp is dragged), then show in the same frame. Only atrium rooms' maps are kept. The switched lamp's own room is no longer solved twice
-   when its gather fell in the change's tick (a gather serial now orders gathers and lamp marks).
-5. **Loads** ("when entering the lot it takes long to correct"; log 12:18: 17 s after the world went live). The
-   after-load refresh keeps every room gathered again since the world went live (it re-sent 75 rooms of 16 lots after the
-   world-live round had settled them), and for 15 s after the world goes live the lot being played gets 25 ms of solving a
-   frame with the camera still (the game's own budget while it moves; it averaged 4.4 ms) and the queue drains 12 ms.
-
-Measuring tools that found these: the recorder's [solve] / [room] journal (F8), the "Wall seams.csv" of a recording (the
-same wall points at class 0 and class 2), and frames extracted from the user's video with VLC's scene filter.
-
-Then (same day, user: "do the 3 improvements"):
-- **The switch's safety net sends only the rooms a lamp can reach** (`LevelLightShare::RelightLampSwitch`): those holding
-  the lamp, its own room, the rooms near the stair openings of its story and the stories next to it, and every story's
-  outdoor rooms for an outdoor lamp (fresh solves kept). It sent the whole lot before (17 rooms for one sconce). A lamp
-  moved into another room, moved and switched, or more than 8 lamps at once ("all the lights") still send the lot.
-  06/10 evening: the lamp's story and room are its home (`LampHome`: room id light+8, the one the object rigs' gather
-  compares, on the story whose lowest floor is the highest at or under the lamp's height +0x124); the lamp mark's room was
-  only the first room the game marked (room 0 of every story in the 13:52 recording), so every switch counted as an
-  outdoor lamp and sent the outdoor rooms of every story. When only lamps switched off, a room whose light list is empty is
-  left alone (none of them reached it: rooms 22 and 24 of the atrium house's ground floor were solved again for nothing).
-  The log line counts both ("N with no light left alone", "M of them found in their own room").
-- **Windows the game takes back are left alone**: every load, the window activation recheck changed the same 50 windows of
-  the atrium house 2-3 times within half a second (the game set them back in between), and each change solved their rooms
-  again. An entry found back in the state it had before Apex's last update of it (within 10 s) is now left as the game
-  keeps it. The log line also shows the real lot id (it printed the tracker's +0x90, a float 1.0).
-- **Slow terrain chunk renders are spread** (terrain_chunk_relight `ReleaseLimit`): after a chunk took more than 20 ms
-  (44 ms in one session whose game frames took 72-164 ms; 4.7-6 ms in the others, same lamps and chunks), at most 3 chunks a
-  second instead of 8.
-
-Left as it is: the refinement of a burst ends room by room (now only a change of resolution).
-
-The "Smooth light changes indoors" option was then removed (user: "the fade is not needed any more, is it?" and, with it
-off, "much better without"): its first reason, the quick pass's blink, was gone. An old `lightFade` key is ignored.

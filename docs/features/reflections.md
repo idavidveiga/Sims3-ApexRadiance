@@ -2,7 +2,8 @@
 
 Ponds and lakes in The Sims 3 reflect only a fixed sky picture, so at night they stay dark and never show the scenery
 around them. With Water Reflections on, ponds mirror the trees, houses and lamps along their shore on top of the game's
-sky reflection. The companion *Lamp Glow* card makes ponds glow and sparkle near lamps at night. Both are drawn by Night
+sky reflection. The water of Twinbrook, Bridgeport and Moonlight Falls that never shows the game's own reflection gets
+the same shore reflection. The companion *Lamp Glow* card makes ponds glow and sparkle near lamps at night. Both are drawn by Night
 Lighting's water pass; this page covers what the player controls. The pass itself is documented in
 [night-lighting/water.md](night-lighting/water.md).
 
@@ -10,8 +11,8 @@ Lighting's water pass; this page covers what the player controls. The pass itsel
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (present in the first version in this repository) |
-| Default | On (shore reflection 100%, lamp glow on) for new configurations |
+| Availability | Released in 2.1.0 or earlier (present in the first version in this repository). Water without the game's reflection (Twinbrook, Bridgeport, Moonlight Falls) and the 156% default: Released in 2.7.0 |
+| Default | On (shore reflection 156%, lamp glow on) for new configurations |
 | Menu | World > Water & Snow (cards *Lamp Glow* and *Water Reflections*); Overview > Lighting > Water Reflections |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` (keys owned by Night Lighting) |
 | Source | [`apex_gui.cpp`](../../apex_gui.cpp) (`WaterReflectionsCard`, `SetShore`), [`patches/night_terrain_relight_patch.cpp`](../../patches/night_terrain_relight_patch.cpp) (`DrawWaterCard`, settings), [`features/lot_light_bridge.cpp`](../../features/lot_light_bridge.cpp) (`DrawLake`, `SetWaterFix`) |
@@ -21,7 +22,8 @@ Lighting's water pass; this page covers what the player controls. The pass itsel
 The game's pond and lake water shader samples two fixed sky cube maps for its reflection and receives no lamp light.
 At night ponds are flat and dark. The ocean has a real planar reflection (a 1024x1024 render target rendered each frame),
 but lakes do not, and the ocean's reflection is only rendered when the ocean is visible and mirrors at sea level, so it
-cannot be reused for ponds.
+cannot be reused for ponds. Some large water uses a third shader that never reads the planar reflection either:
+Twinbrook's sea, Bridgeport's lake and Moonlight Falls' water show only the sky cube map.
 
 ## How Apex Radiance solves it
 
@@ -30,7 +32,9 @@ additive pass on the same geometry. That pass adds lamp glints and glow and, whe
 screen-space reflection of the shore.
 
 1. **Recognise the water.** The lake pixel and vertex shaders are matched by exact ID (`kLakePs`, `kLakePs2`,
-   `kLakeVs` in `shader_ids.h`).
+   `kLakeVs` in `shader_ids.h`), and so is the pair of the water without the game's reflection (`kSeaNoReflPs`,
+   `kSeaNoReflVs`: Twinbrook's sea, Bridgeport's lake and Moonlight Falls' water), which gets the same pass
+   compiled with `SEA` for its own input registers.
 2. **Draw the game's water unchanged**, then the extra pass with `water_lamps_ps.hlsl`, premultiplied
    (`ONE / INVSRCALPHA`).
 3. **Lamp glow:** up to 16 lamps within 150 m add glints and glow, scaled by *Glow brightness*.
@@ -42,7 +46,7 @@ screen-space reflection of the shore.
 
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Water Reflections (card switch) | `reflexoNoLago` | float | on (156%) | | Off stores 0; on restores the last brightness (100% when there is none). Not a separate key |
+| Water Reflections (card switch) | `reflexoNoLago` | float | on (156%) | | Off stores 0; on restores the last brightness (156% when there is none). Not a separate key |
 | Reflection brightness | `reflexoNoLago` | float | 156% | 5 to 300% (stored 0 to 3) | Strength of the shore reflection (PS `c58.x`) |
 | Lamp Glow > Lamps glow on ponds | `lagosRefletemLampadas` | bool | on | | Lamp glints and glow on ponds |
 | Lamp Glow > Glow brightness | `brilhoNaAgua` | float | 40% | 10 to 40% | Lamp glow strength (PS `c52.x`); 0 is sent while the glow is off |
@@ -73,7 +77,8 @@ the Overview turns the shore reflection off first and back on last, after Night 
 
 ## Limitations
 
-- Only ponds and lakes drawn with the recognised lake shaders. The ocean and swimming pools are not affected.
+- Only ponds and lakes drawn with the recognised lake shaders, and the water without the game's reflection (Twinbrook,
+  Bridgeport, Moonlight Falls). The reflecting ocean and swimming pools are not affected.
 - Screen space: scenery that is off screen or hidden behind other objects is not reflected.
 - No shore reflection while the game's Edge Smoothing is on or no effect holds the depth share.
 

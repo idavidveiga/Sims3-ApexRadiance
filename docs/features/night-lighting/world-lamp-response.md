@@ -7,7 +7,7 @@ when they are recoloured, dimmed or switched, in the same way lot lamps do. Part
 
 | | |
 |---|---|
-| Availability | Released in 2.5.6. Rig request on early terrain completion and world-change clearing of the direct lamp pool: in development (PR #2) |
+| Availability | Released in 2.5.6. Rig request on early terrain completion and world-change clearing of the direct lamp pool: Released in 2.6.0 |
 | Default | On (part of *Lot lamps light the street* tracking; no own setting) |
 | Menu | None |
 | Configuration | None |

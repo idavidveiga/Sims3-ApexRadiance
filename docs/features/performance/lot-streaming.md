@@ -1,269 +1,113 @@
-# Lot streaming
+# Lot Streaming
 
-Research, measurements and code by **idavidveiga** (fork `idavidveiga/Sims3-ApexRadiance`, branch
-`integrate/upstream-v2.6.0-stable`, 02-04/10/2026), ported into Apex Radiance on 06/10/2026.
+Lot Streaming lets nearby lots keep their full detail farther from the camera and lets more of them be detailed at once,
+and makes them stream in smoothly while the camera moves: fewer lots switch detail back and forth, the viewing angle
+alone no longer loads or unloads lots, and lot streaming pauses while the map view is open. A separate switch builds a
+lot's objects a few at a time. Research, measurements and code by **idavidveiga**.
 
-## Port notes (06/10)
+## Status
 
-- Menu: System > Lot Streaming (its own page since 06/10) > "Lot detail streaming" (Extended lot detail, Smooth lot streaming, Keep lot visibility stable, Pause
-  lot streaming in map view) and "Object streaming" (Spread lot objects while loading, with Spread new objects over frames).
-- Off by default with the Experimental badge (user 06/10, for 2.7.0: little play on Steam yet), and not part of the
-  built-in profiles: applying one leaves the page as the player set it. Spread lot objects while loading was already off
-  (lamps are objects, so they arrived one by one and every arrival relit the rooms: a lamp edit took 5.8-7.2 s to
-  settle; 2 objects per window, 16 ms). "Use LoD Active-Lot Threshold 12" stays registered, off and out of the menu, as in the fork.
-- Steam 1.67.2: the fork claimed fixed addresses only for the scoring, request, throttle and visibility branch. The six
-  object-throttle addresses were found offline in TS3W.exe with the fork's EA signatures, each unique:
-  LotAddObjectsToScene 0x00AC1130, LotUpdateObjectSceneNode 0x00ABFAC0, ScriptMessageScopeCtor 0x007D2DB0,
-  ScriptMessageScopeDtor 0x007D2DF0, PostRemoteMethodCall 0x00ABE9C0 (the copy called from LotDetailRequest at 0x00AC2117;
-  its twin 0x00B35DB0 has 4 unrelated callers and differs in the last argument load), IsObjectLargeOrFlora 0x00B088C0.
-  Extended lot detail, Spread lot objects and Keep lot visibility stable were EA-only in the fork; they now run on Steam
-  (fixed addresses) and on other builds through their address groups. Not yet tested in game on Steam.
-- When official Sims3SettingsSetter has LotStreamingOptimizations on, each part yields (S3SSDetect::S3SSPatchBoolSettingEnabled).
-- The metric probe (APEX_LOT_LOD_DISTANCE_PROBE build) was not ported: production does not use it.
+| | |
+|---|---|
+| Availability | Experimental: Released in 2.7.0 |
+| Default | Off (every switch) |
+| Menu | System > Lot Streaming (cards *Lot detail streaming* and *Object streaming*) |
+| Configuration | `[patches.LotDetailRange]`, `[patches.LotLodStreaming]`, `[patches.LotVisibilityOverride]`, `[patches.MapViewStreamingBlocker]`, `[patches.LotObjectThrottle]` in `ApexRadiance.toml` |
+| Source | [`features/lot_detail_range.{h,cpp}`](../../../features/lot_detail_range.cpp), [`features/lot_lod_streaming.{h,cpp}`](../../../features/lot_lod_streaming.cpp), [`features/lot_visibility_override.{h,cpp}`](../../../features/lot_visibility_override.cpp), [`features/lot_object_throttle.{h,cpp}`](../../../features/lot_object_throttle.cpp), [`features/lot_active_threshold.{h,cpp}`](../../../features/lot_active_threshold.cpp), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
 
-## Settings ([patches.LotDetailRange])
+## The problem
 
-| UI label | Key | Type | Default | Range | Applies |
+The game decides lot detail in several separate steps, each with its own native value: whether a lot is close enough
+for Detailed View (Lot LOD distance, 70 by default), how many lots may stay detailed at once (Max Active Lots, 8), how
+many detail transitions may start together (a native throttle, off, with a camera-speed threshold of 32), whether the
+camera's viewing angle biases the distance test, and how a promoted lot's objects are built (all in one burst). At the
+game's values few lots are detailed, and while the camera moves lots switch detail back and forth. See
+[engine/lot-loading-and-streaming.md](../../engine/lot-loading-and-streaming.md).
+
+## How Apex Radiance solves it
+
+Each step is a separate switch that sets the game's own value or flag; no lot loader is replaced.
+
+1. **Extended lot detail** sets the Lot LOD distance (`WorldManager+0xDC`) and Max Active Lots (`+0xE4`) of each live
+   WorldManager to the chosen values (300 and 16 by default; the game's metric is a squared distance).
+2. **Smooth lot streaming** turns on the game's native "Throttle Lot LoD Transitions" flag and sets its camera-speed
+   threshold (`+0xEC`) to 5.0.
+3. **Keep lot visibility stable** turns off the camera-view bias of the lot visibility metric: its short `JZ` becomes a
+   `JMP`.
+4. **Pause lot streaming in map view** holds the live "skip lot streaming" gate (`+0x258`) while the map view is open
+   and for 1 s after it closes, without detouring WorldManager::Update.
+5. **Spread lot objects while loading** replaces `Lot::AddLotObjectsToScene` so regular objects are built a few per
+   window, the next window posted through the game's own remote-method call. Building and apartment shells, large
+   exterior geometry and flora are built in the first window, because the lot's activation fix-ups need them at once.
+
+Every write is guarded: Apex reads the expected native value first, keeps a value only while it still owns it, yields to
+a value another mod set, and restores only what it changed.
+
+## Settings
+
+| Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Extended lot detail (distance) | `distance` | int | 300 | 70..300 (steps of 10) | live |
-| Extended lot detail (lots in full detail) | `maxActiveLots` | int | 16 | 8..16 | live |
+| Extended lot detail (Experimental) | `[patches.LotDetailRange] enabled` | bool | off | | More lots in full detail, farther away, than the game's 70 / 8 |
+| Lot detail distance (shown while on) | `[patches.LotDetailRange] distance` | int | 300 | 70 to 300, steps of 10 | How far lots stay in full detail; 70 is the game's. Applied live |
+| Maximum detailed lots (shown while on) | `[patches.LotDetailRange] maxActiveLots` | int | 16 | 8 to 16 | How many lots can be detailed at once; 8 is the game's. More lots use more memory. Applied live |
+| Smooth lot streaming (Experimental) | `[patches.LotLodStreaming] enabled` | bool | off | | The native transition throttle and a camera threshold of 5.0 |
+| Keep lot visibility stable (Experimental) | `[patches.LotVisibilityOverride] enabled` | bool | off | | The viewing angle alone no longer makes lots load or unload |
+| Pause lot streaming in map view (Experimental) | `[patches.MapViewStreamingBlocker] enabled` | bool | off | | No lot detail streaming while the map view is open |
+| Spread lot objects while loading (Experimental) | `[patches.LotObjectThrottle] enabled` | bool | off | | Builds a lot's objects a few at a time |
+| Objects per lot window (shown while on) | `[patches.LotObjectThrottle] objectsPerLot` | int | 2 | 1 to 64 | Regular objects built per window; 2 matches Sims3SettingsSetter |
+| Delay between lot windows (shown while on) | `[patches.LotObjectThrottle] delayMs` | int | 16 ms | 0 to 500 ms | Minimum wait between two windows of the same lot |
+| (no menu row) | `[patches.LotActiveThreshold] enabled` | bool | off | | EA app build only: sets the internal transition threshold "Throttle Lot LoD Transitions Max Active Lot Threshold" to 12, as Sims3SettingsSetter does. Not Max Active Lots |
 
-## The fork's research log
+A missing key reads as off. None of these switches is part of a profile part, and the built-in profiles leave them as
+the player set them.
 
+## Compatibility and interactions
 
-**Branch:** `feature/lot-lod-streaming`  
-**Research window:** 2026-10-02 through 2026-10-04  
-**Current validated baseline:** Lot LOD distance **300** + Max Active Lots **16**  
-**Game build used for the controlled probes:** EA 1.69.47.024017
+- **Official Sims3SettingsSetter:** when its LotStreamingOptimizations has the matching setting on
+  (`streamingSettings`, `mapViewBlocker`, `visibilityOverride`, `objectThrottle`), that part makes no write and its row
+  shows "Handled by Sims3SettingsSetter". A visibility branch already patched by another mod is left alone ("Already
+  applied by another patch").
+- **Spread new objects over frames** ([scene-node-budget.md](scene-node-budget.md)) works later in the pipeline (the
+  scene's pending-node drain); the two are independent and can be on together.
+- **Faster room lighting and lamp edits:** lamps are lot objects. With *Spread lot objects while loading* on they arrive
+  one by one and every arrival relights the rooms, so the lighting of a lot settles later.
+- **Memory:** more detailed lots use more of the 32-bit game's address space; see *Room to save*
+  ([room-to-save.md](room-to-save.md)).
 
-This document records the Lot Streaming work separately from the general Apex Radiance changelog. It describes what was
-measured in the game, which native fields were changed, how the current implementation works, which parts are independent
-Apex research, and which parts share lineage with Sims3SettingsSetter (S3SS).
+## Limitations
 
-## 1. Goal
+- Distance 300 and 16 lots are the tested maximums; the menu does not go higher.
+- The Steam addresses of Extended lot detail, the visibility branch and the object throttle were found offline with the
+  fork's EA signatures; the research and the controlled tests were made on the EA app build 1.69.
+- *Spread lot objects while loading* makes objects, lamps included, appear over a few frames when a lot is promoted.
 
-The original problem was not simply "increase draw distance". The Sims 3 has several distinct decisions in the lot-detail
-pipeline:
+## Technical reference
 
-- whether a lot is eligible for Detailed View by distance/score;
-- how many lots may remain detailed at once;
-- how aggressively multiple LoD transitions are allowed to start;
-- whether camera motion / viewing angle affects those transitions;
-- how a lot's objects are built after the lot is promoted.
-
-The work therefore separated **eligibility**, **capacity**, **transition throttling**, **visibility stability** and
-**per-object loading** instead of treating them as one setting.
-
-## 2. Native fields and functions verified
-
-The controlled EA 1.69 probes resolved and exercised the following native path:
-
-| Item | EA 1.69 address / field | Meaning in the current research |
-|---|---:|---|
-| LotLodScoring | `0x00C6B610` | Native lot scoring path used before Detailed View decisions. |
-| Lot metric function | `0x00C62110` | Produces the lot visibility/distance metric observed by the probe. |
-| LotLodScoring metric CALL | `0x00C6B957` | Verified single CALL used to bind the metric safely. |
-| Camera-bias branch | `0x00C623A5` | Short JZ used by the lot-visibility camera bias. |
-| LotDetailRequest | `0x00AC1830` | Promotion/demotion request path logged by the probe. |
-| WorldManager global | `0x01246C54` | Live WorldManager pointer. |
-| WorldManager + `0xDC` | live field | Lot LOD distance. Native observed baseline: 70. |
-| WorldManager + `0xE0` | live field | Active Lot Bias. Observed value: 8.0. |
-| WorldManager + `0xE4` | live field | Max Active Lots. Observed/default test baseline: 8. |
-| WorldManager + `0xE8` | live field | Terrain-height threshold. Observed value: 600. |
-| WorldManager + `0xEC` | live field | Camera speed threshold. Native observed value: 32. |
-
-The probe identifies the lot pointer from the metric's arguments at runtime and refuses to guess when the expected relation
-cannot be proven.
-
-## 3. Lot LOD distance: 70 -> 100 -> 200 -> 300
-
-### What was changed
-
-The test probe temporarily overrides only `WorldManager+0xDC`, after first proving the expected baseline. The write is
-guarded, maintained only while Apex still owns the value, and restored on a clean unload.
-
-### What the tests proved
-
-The native metric behaves as a squared-distance eligibility test for the controlled cases:
-
-- distance 200 produced a cutoff around **40,000 = 200^2**;
-- distance 300 produced a cutoff around **90,000 = 300^2**;
-- at 300, a lot with metric **87,798.671875** remained Detailed View ON (~296.31 distance);
-- values clearly above 90,000 remained outside the distance eligibility range in the controlled sparse-area test.
-
-OFF states below the cutoff are not evidence of a different distance formula: the independent active-lot capacity and
-priority rules can keep an otherwise eligible lot out of Detailed View.
-
-### Current decision
-
-**300 is the current validated Lot LOD distance baseline.** No larger value is being adopted at this stage.
-
-## 4. Max Active Lots: 8 -> 16
-
-### What was changed
-
-A second guarded test override was added for `WorldManager+0xE4`.
-
-This is the native **Max Active Lots** capacity field. It is separate from the S3SS setting named
-`Throttle Lot LoD Transitions Max Active Lot Threshold`.
-
-### What the tests proved
-
-With distance 300 and the native capacity still at 8, dense areas repeatedly saturated at eight Detailed View lots.
-
-With only the capacity changed from 8 to 16:
-
-- WorldManager read back **Max Active Lots=16**;
-- the same dense reference camera position that had previously saturated at exactly eight lots produced **16 consecutive
-  Detailed View ON** lots;
-- the 17th and later candidates could remain OFF even while inside distance 300, proving the capacity/priority stage is
-  independent of distance eligibility.
-
-### Current decision
-
-**16 is the current validated Max Active Lots baseline.** We are deliberately not testing 24/32 now. The goal is
-refinement and stability, not maximising the number indefinitely.
-
-## 5. Memory and stability observation
-
-The 300 + 16 run showed no crash, fatal error or runaway allocation pattern in the recorded test.
-
-During a heavier part of the run:
-
-- private committed memory reached about **1566 MB**;
-- roughly **1994-2007 MB** of address space remained free;
-- the largest free block remained about **1790 MB**;
-- later the private value returned to roughly **1285-1286 MB**.
-
-This is not a universal memory guarantee for every world/save, but it is enough to keep 300 + 16 as the current practical
-baseline for further refinement.
-
-## 6. How the current Lot Streaming pieces work
-
-### 6.1 Smooth Lot Streaming
-
-Apex can enable the game's native **Throttle Lot LoD Transitions** mechanism and maintain a camera-speed threshold. It does
-not replace the game's lot loader.
-
-The production feature uses camera threshold **5.0**, while the native value observed by the probe is 32.0. The controlled
-300 + 16 A/B validated 5.0 together with the native transition throttle: transition rate fell from 149.3 to 99.2 per minute,
-same-lot reversals within 5 seconds fell from 87 to 18, and reversals within 2 seconds fell from 48 to 3. The 5.0 value is
-therefore the current validated production baseline.
-
-### 6.2 Transition Max Active Lot Threshold = 12
-
-The feature `LotActiveThreshold` resolves the live setting
-`Throttle Lot LoD Transitions Max Active Lot Threshold` and currently applies 12.
-
-This value controls the native **transition throttle policy**. It is **not** the same field as
-`WorldManager+0xE4 Max Active Lots`.
-
-The value 12 comes from the S3SS LotStreamingOptimizations implementation. It remains implemented for development/reference,
-but it is **not exposed in the main Performance menu** and it is not part of the validated 300 + 16 production baseline.
-The user-facing capacity control is WorldManager+0xE4 (**Maximum detailed lots**, 8-16).
-
-### 6.3 Keep Lot Visibility Stable
-
-The game's metric contains a camera-view bias controlled by a short conditional branch. The S3SS behavior changes the
-branch from JZ (`0x74`) to JMP (`0xEB`), so lots are not promoted/demoted purely because the viewing angle changes.
-
-Apex implements the same behavior with its own address resolution, ownership detection and safe restoration rules.
-
-### 6.4 Pause Lot Streaming in Map View
-
-S3SS implements a map-view blocker around the same native `WorldManager+0x258` "skip lot streaming" gate.
-
-Apex shares the feature goal but the standalone implementation is different: it does not detour
-`WorldManager::Update`; it maintains the live gate from Apex's existing pump while map view is open and for a short
-exit grace period, then restores the previous value safely.
-
-### 6.5 Spread Lot Objects While Loading
-
-This is **not** a Lot LOD distance/capacity setting. It runs later, when a promoted lot builds scene objects.
-
-The feature has direct S3SS lineage and is explicitly a port/adaptation of
-`LotStreamingOptimizations.objectThrottle` into Apex's framework:
-
-- intercept `Lot::AddLotObjectsToScene`;
-- build regular objects in small continuation windows;
-- use the game's remote-method marshal for continuations;
-- keep large objects / outdoor flora synchronous in the first window because one-shot lot activation fixups require
-  them to exist immediately.
-
-## 7. S3SS provenance: what is shared and what is Apex work
-
-The public S3SS source was compared against the current standalone Apex implementation so the provenance is recorded
-explicitly.
-
-| Area | Relationship to S3SS | Current authorship/provenance statement |
+| Part | Game side (Steam 1.67.2) | What Apex writes |
 |---|---|---|
-| Native TS3 Lot LOD metric / fields | Same game code is available to both mods | **EA game code**, not owned by either project. |
-| Distance 300 research and cutoff proof | Not part of the current public S3SS LotStreamingOptimizations settings | **Apex research/probe work.** |
-| Max Active Lots 8 -> 16 at WorldManager+0xE4 | Distinct from S3SS's threshold 12 | **Apex research/probe work.** |
-| Metric argument identification, 200^2/300^2 validation, diagnostic logging | No equivalent used for these controlled tests in the compared S3SS patch | **Apex diagnostic/research work.** |
-| Transition throttle + threshold 12 | S3SS implements the same native live settings and uses 12 | **Behavior/value lineage from S3SS; Apex standalone wrapper/resolver/ownership code is its own implementation. The threshold-12 control is retained only for development/reference and is not in the main menu.** |
-| Camera speed threshold 5.0 | S3SS exposes the same setting with default 5.0 | **Behavior/default lineage from S3SS; validated by Apex's final 300 + 16 A/B and used by the production Smooth Lot Streaming feature.** |
-| Visibility JZ -> JMP | Same patch behavior is present in S3SS | **Behavior/patch lineage from S3SS; Apex adds its own validation/ownership/restoration layer.** |
-| Map-view blocker | Same feature goal and native skip gate | **S3SS lineage for the feature; Apex standalone implementation differs and avoids the S3SS WorldManager::Update detour.** |
-| Object throttle | S3SS public implementation is the source lineage | **Port/adaptation from S3SS into Apex EntryChain and safety framework.** |
+| Extended lot detail | WorldManager `[0x011ECBC4]`: `+0xDC` Lot LOD distance (70), `+0xE4` Max Active Lots (8); `+0xE0` Active Lot Bias (8.0) and `+0xE8` terrain-height threshold (600) are left alone | The two values per live WorldManager, captured first and maintained by `Tick` while still owned |
+| Smooth lot streaming | Throttle test 0x00C6C695 (inside LotLodScoring 0x00C6C290) on the flag byte 0x011ECBC0; `+0xEC` camera-speed threshold (32) | Flag on; `+0xEC` = 5.0 after checking a finite value in 0 to 100 |
+| Keep lot visibility stable | `JZ` (0x74) at 0x00C63015 in the lot visibility metric's camera bias | 0x74 -> 0xEB, only when it reads 0x74 |
+| Pause in map view | `+0x258` "skip lot streaming"; map view from `Camera_IsMapViewModeEnabled` | The gate while the map is open and 1000 ms after |
+| Spread lot objects | LotAddObjectsToScene 0x00AC1130, LotUpdateObjectSceneNode 0x00ABFAC0, ScriptMessageScope 0x007D2DB0 / 0x007D2DF0, PostRemoteMethodCall 0x00ABE9C0, IsObjectLargeOrFlora 0x00B088C0 | `EntryChain` layer `LotObjectThrottle` on AddLotObjectsToScene |
 
-### Does standalone Apex contain S3SS code?
+Address groups `LotLodStreaming` (scoring, throttle test and flag, WorldManager), `LotVisibilityOverride` and
+`LotObjectThrottle`; on other builds the same parts resolve by signature and stay off when a signature is missing. The
+EA app build 1.69.47 addresses of the throttle test and flag (0x00C6BA15 / 0x01246C50) were verified in game by the
+fork. The fork's diagnostic metric probe is not part of Apex Radiance.
 
-The accurate answer is **not "none at all" and not "the Lot Streaming code is just S3SS"**.
+## Rejected approaches
 
-- The standalone Apex framework was rewritten and does not carry wholesale S3SS framework files or S3SS file headers.
-- Several Lot Streaming features deliberately reproduce S3SS behavior because S3SS already identified useful native
-  controls.
-- **Object throttle is explicitly a port/adaptation from the S3SS feature and therefore has direct source lineage.**
-- The visibility override and the 12 / 5.0 streaming-setting choices also have direct S3SS behavior lineage, while Apex
-  supplies its own integration, validation, ownership and restoration machinery.
-- The new **Distance 300**, **Max Active Lots 16**, metric probe, squared-distance validation and the controlled EA 1.69
-  tests are Apex-side research and are not presented as S3SS work.
+- Distances above 300 or more than 16 detailed lots: not exposed until tested for stability and memory.
+- The threshold-12 control in the main menu: it is not Max Active Lots and misled players; kept registered for reference
+  only.
+- Spread lot objects while loading on by default: lamps arriving one by one relit the rooms (5.8 to 7.2 s to settle).
 
-This distinction should be preserved in future public documentation and credits.
+Details in [history](../../history/performance-lot-streaming.md).
 
-## 8. Current production baseline
+## See also
 
-The validated research values are now in the normal production path, without the metric probe:
-
-- **Extended Lot Detail**: off by default (2.7.0).
-  - **Lot detail distance**: range **70-300**, default **300**, snapped in 10-unit steps.
-  - **Maximum detailed lots**: range **8-16**, default **16**, one-lot steps.
-  - Apex captures the native values per live WorldManager, writes only guarded expected values, stops maintaining a field
-    if another owner changes it, and restores only fields it still owns.
-- **Smooth Lot Streaming**: off by default (2.7.0); native transition throttle ON + camera threshold **5.0**.
-- **Keep Lot Visibility Stable**: optional/experimental; camera-angle bias JZ -> JMP with ownership-safe restoration.
-- **Pause Lot Streaming in Map View**: optional/experimental; uses WorldManager+0x258 while the map is open plus a 1 s exit grace.
-- **Object streaming** remains separate from lot eligibility/capacity:
-  - **Spread Lot Objects While Loading**: optional, default **2 regular objects per window** with **16 ms** between windows;
-  - **Spread New Objects Over Frames**: optional Scene Node Budget applied later in the scene pipeline.
-
-Active Lot Bias remains **8.0** and the terrain-height threshold remains **600**; neither is changed by Extended Lot Detail.
-
-## 9. Deferred / separate research
-
-The validated Lot Streaming pass is complete. Items intentionally outside this pass are:
-
-1. **Objects/flora visual distance:** scene/object LOD research, separate from lot Detailed View eligibility.
-2. **Threshold 12 experiments:** the S3SS-derived internal transition threshold remains available only for development/reference;
-   it is not a normal user-facing control.
-3. **Higher-than-validated ranges:** values above distance 300 or more than 16 detailed lots are deliberately not exposed until
-   separately tested for stability and memory behavior.
-
-## 10. Production integration after validation
-
-After the final controlled OFF vs Smooth comparison, the research baseline was promoted into normal Apex code:
-
-- `WorldManager+0xDC` is now managed by the production **Extended Lot Detail** feature, default **300**.
-- `WorldManager+0xE4` is managed by the same feature, default **16**.
-- Both settings are persisted in `[patches.LotDetailRange]` and can be changed from the Performance menu within the validated
-  ranges: distance **70-300** (10-unit steps) and capacity **8-16**.
-- The production implementation does **not** install the metric/scoring/detail-request diagnostic hooks.
-- Smooth Lot Streaming is validated as the normal companion behavior: native transition throttle ON + camera threshold 5.
-- The misleading threshold-12 switch is no longer shown in the main menu. The underlying diagnostic feature was kept for development/reference.
-- Lot-object throttling and Scene Node Budget are presented separately under Object streaming.
-
-Final A/B in one game session (300 + 16 held constant):
-- everything OFF: 268 transitions over ~107.7 s = **149.3 transitions/min**; 87 same-lot reversals <=5 s; 48 <=2 s.
-- Smooth ON: 190 transitions over ~114.9 s = **99.2 transitions/min**; 18 same-lot reversals <=5 s; 3 <=2 s.
-- approximate reduction: **34%** transitions/min, **79%** <=5 s reversals, **94%** <=2 s reversals.
+- [Performance overview](README.md)
+- [Validation](../../validation/performance-lot-streaming.md)
+- [History](../../history/performance-lot-streaming.md) (with the fork's research log)
+- [Lot loading and streaming](../../engine/lot-loading-and-streaming.md)

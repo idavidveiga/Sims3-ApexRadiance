@@ -8,7 +8,7 @@ placed at once as soon as the camera stops.
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5 |
+| Availability | Released in 2.1.0 or earlier; on by default since 2.5.5. Growing budget past the longest wait and the flat node registry: Released in 2.7.0 |
 | Default | On |
 | Menu | System > Performance > Camera and lighting > *Spread new objects over frames* |
 | Configuration | `[patches.SceneNodeBudget]` in `ApexRadiance.toml` |
@@ -25,10 +25,12 @@ one frame, which makes BeginFrame a dominant cause of 25 ms and longer hitches w
 
 Apex Radiance wraps BeginFrame's CALL of the drain:
 
-1. **Camera still,** or a node has waited 500 ms: run the game's drain (everything).
+1. **Camera still,** or a node has waited three times the longest wait (1.5 s at the default 500 ms): run the game's drain
+   (everything).
 2. **Camera moving:** run an exact copy of the game's loop that stops after at least 8 nodes once 512 nodes or 2 ms are
    reached. The nodes not reached stay in the game's own list, at the end the drain takes from, so they go first next
-   frame.
+   frame. Once a node has waited the longest wait (500 ms), both limits double every 50 ms (x2 up to x64) instead of
+   the whole backlog being drained in one frame.
 3. **Guard every node left queued.** Hooks on the node destructor, AddNode and the scene holder teardown make sure a node
    held for later can never be freed or queued twice while it is still linked.
 
@@ -42,7 +44,7 @@ queued after BeginFrame.
 | Spread new objects over frames | `[patches.SceneNodeBudget] enabled` | bool | on | | Turns the budget on. A missing key reads as on |
 | Developer > *Nodes per frame while moving* | `[developer.controls.scene_budget] nodes` | int | 512 | 8 to 4096 | |
 | Developer > *ms per frame while moving* | `[developer.controls.scene_budget] time_ms` | float | 2.0 | 0.1 to 10 ms | |
-| Developer > *Longest wait (ms)* | `[developer.controls.scene_budget] max_wait_ms` | int | 500 | 16 to 5000 | A node waiting this long makes the game's drain run |
+| Developer > *Longest wait (ms)* | `[developer.controls.scene_budget] max_wait_ms` | int | 500 | 16 to 5000 | From this wait on the per-frame limits grow (x2 every 50 ms, up to x64); at three times it the game's drain runs |
 
 ## Compatibility and interactions
 
@@ -132,8 +134,8 @@ Verified in the disassembly unless marked inferred.
 
 ### The node lifetime guard
 
-Every node `BudgetedDrain` leaves queued is recorded (`link -> holder`, an `unordered_map` under an SRW lock that is
-never held across a game call; an atomic count gives the hooks a lock-free "nothing recorded" path). Three `EntryChain`
+Every node `BudgetedDrain` leaves queued is recorded (`link -> holder`, a vector sorted by link, rebuilt once per budgeted
+drain and searched by binary search, under an SRW lock that is never held across a game call; an atomic count gives the hooks a lock-free "nothing recorded" path). Three `EntryChain`
 layers (`SceneBudget`) are installed before the drain hook and removed after it:
 
 | Site | Entry | Prologue moved | What the hook does |
@@ -180,7 +182,7 @@ Group `SceneNodeBudget`.
 and hook head checks), `TakeDrainNote`, `Set*` (tuning), `GetStats`, `StatusText`, `RenderDeveloperUI`.
 
 Developer card *Objects spread across frames*: drain call, drains (game's while still / game's after a too-long wait /
-with a budget), nodes processed with a budget, frames that left nodes, node-frames waiting, largest backlog, the last
+with a budget), frames with a grown budget, nodes processed with a budget, frames that left nodes, node-frames waiting, largest backlog, the last
 budgeted drain (done, left, ms); lifetime guard: nodes recorded, unlinked at destruction, unlinked before AddNode,
 repaired (each expected 0), records dropped at teardown (expected after world or lot changes), recorded nodes destroyed
 on another thread, left nodes whose owner is not the holder that drained them (expected 0). The Off line in the log sums
@@ -203,6 +205,8 @@ the same counters.
 
 - A budgeted drain without a node lifetime guard: a node held past its frame could be freed while still linked.
   Details in [history](../../history/performance-scene-node-budget.md).
+- A full drain as soon as a node waited the longest wait: one long frame in the middle of a camera move; replaced by
+  the growing budget.
 
 ## See also
 

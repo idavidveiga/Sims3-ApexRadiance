@@ -7,6 +7,8 @@ The feature is described in [features/picture-filters.md](../features/picture-fi
 - Restore every device state it touches, and survive a device reset.
 - Run the deband-only pass (Picture off, Banding Fix on) only in frames with a scene copy.
 - Never save Picture as off because of the compare shortcut.
+- Run each filter only while its switch is on and its amount is not 0, never over the interface, and only in a drawn
+  world.
 
 ## Automated tests
 
@@ -34,13 +36,20 @@ in game and writes to the log.
 3. Interior at night, and outdoors with bloom. **Expected:** both graded; bloom graded with the scene.
 4. Before / after. **Expected:** left half original, red line in the middle.
 5. Hold the eye button, or B over the menu. **Expected:** the original picture while held.
-6. Smooth gradients at 100% on a sky gradient or a dim wall. **Expected:** steps smooth, edges stay sharp.
+6. Smooth gradients (Banding Fix page) at 100% on a sky gradient or a dim wall. **Expected:** steps smooth, edges stay sharp.
 7. Alt-tab or change resolution. **Expected:** grading continues; `Resources ready` logged again.
-8. Take a filtered screenshot (default C). **Expected:** the PNG in Documents `Screenshots` includes the grade and no
-   game UI.
+8. Take a filtered screenshot (default F8). **Expected:** the PNG in the chosen Screenshots folder includes the grade
+   and no game UI.
 9. Compare shortcut, then save a setting from the menu, then compare again. **Expected:** Picture is back on and the
    saved file has `enabled = true`.
 10. Game's Edge Smoothing on. **Expected:** after 2 s the menus-tinted note; menus are graded too.
+11. Filters tab: turn on each filter in turn at its default. **Expected:** the look described on its card; the pie menu,
+    tooltips and the Apex menu keep their colours; no box around the pie menu and no grey square at its Sim portrait.
+12. Atmospheric fog and Emphasize with the game's Edge Smoothing on. **Expected:** the card note "Needs the scene
+    depth" and no effect.
+13. LUT: open the LUTs folder from the card, copy a 1024x32 PNG strip, pick it. **Expected:** the card shows its size
+    and the look applies; a strip of another shape shows why it was refused.
+14. Main menu and a load screen with filters on. **Expected:** the game's own picture until the world is drawn.
 
 ## Confirmed in game
 
@@ -49,6 +58,8 @@ in game and writes to the log.
 
 ## Open checks
 
+- Filters tab (2.7.0): each filter in game, the GPU cost of several stacked filters, and Auto exposure, Atmospheric fog
+  and Emphasize on Steam and under DXVK.
 - An SDR diagnostic (dump the frame, the scene copy and the share of pixels treated as UI).
 - The game's native screenshot (with the Apex shortcut disabled): whether it contains the grade.
 - GPU cost at 1080p, 1440p and 4K.

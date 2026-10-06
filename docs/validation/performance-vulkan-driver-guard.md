@@ -12,6 +12,7 @@ None.
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-05 | before `cb7e7a2` | In-game log, hybrid PC | With the guard on, `AMD Vulkan driver in the game: loaded`: the implicit layer `VK_LAYER_AMD_switchable_graphics` still loaded `amdvlk32.dll` | DXVK |
 | 2026-09-30 | 2.4.0 sources | Address-space study, hybrid PC (RTX + AMD integrated GPU), Vulkan loader 1.4.341 | `amdvlk32.dll` (85 MB image at 0x0FB30000) loaded in the game without the guard. Expected effect of the guard: about 85 to 100 MB of address space back (image and the driver's heaps), D3D9 adapter count 2 -> 1, device still on the RTX | DXVK |
 
 ## In-game test plan
@@ -26,5 +27,7 @@ None.
 
 ## Open checks
 
+- With the implicit layer's variable set (`cb7e7a2`): the log line `AMD Vulkan driver in the game: not loaded` on the
+  hybrid PC.
 - Measured address space with the guard on (the Frame Profiler's address space monitor).
 - Behaviour with Vulkan loaders older than 1.3.234.

@@ -1,7 +1,7 @@
 # Snow
 
 In winter, lamp light on snow matches the light on the ground around it. Snowy lots no longer show a hard cut where
-street-lamp light stops at the lot border, and snow on floor tiles, around pools, on door sills, on stair tops and on
+street-lamp light stops at the lot border, at night, at dusk or while the snow melts, and snow on floor tiles, around pools, on door sills, on stair tops and on
 fence tops is lit like the ground next to it. Snowy roads, roofs, foliage, ponds and the lamp colour on snow have their
 own pages (see [See also](#see-also)). Part of [Night Lighting](README.md).
 
@@ -9,11 +9,11 @@ own pages (see [See also](#see-also)). Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released in 1.0.0. Subdued daytime response on snow on objects and *Ground brightness* on the squared terrain variant: in development (PR #2) |
+| Availability | Released in 1.0.0. Subdued daytime response on snow on objects and *Ground brightness* on the squared terrain variant: Released in 2.6.0. The melting-snow lot pass, the daytime lamp term on snowy lots, the wet world pass left to the game in snow and the game's own snow on objects in full daylight: Released in 2.7.0 |
 | Default | On (with Night Lighting and *Street lamps light lots*) |
 | Menu | No snow-specific switch. Uses Lighting > Ground (*Street lamps light lots*, *Smooth ground light*, *Ground brightness*) and Lighting > Objects > *Doors, counters and fences* |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
-| Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawLotSnow`, `DrawSnowFloor`, `DrawSnowOnObject`), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchSnowFloor`, `PatchSnowCover`, `PatchSnowRelief`) |
+| Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawLotSnow`, `DrawLotMelt`, `DrawSnowFloor`, `DrawSnowOnObject`), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchSnowFloor`, `PatchSnowCover`, `PatchSnowRelief`) |
 
 ## The problem
 
@@ -99,6 +99,17 @@ Snow has no setting of its own besides sidewalk snow. It uses these Night Lighti
 | Door sills with snow | m71, m72 (also m29) | VS_27CE3AD0 (= VS_215055E8 of m29) / PS_2A044CD0 | `texld r0, v1, s1` (32x64 in m71, 512x128 in m72), `mul r0.xyz, r1.w, r0`; VS TEXCOORD0.zw = world xz x 0.5 (`mul o1.zw, r2.xyxz, c20.x`) | Class 11 (tc 0), `PatchSnowFloor` |
 | Snow on stair tops | m50, m51 | VS_2E036438 / PS_2E036820 (`ps_3_0`, 4992 bytes, 304 slots; 4 `rep i0` loops of 3D noise, `s1` permutation 256x256, `s2` gradient 256x1) | None: `dp3_sat r1.w, c1, N` x 4-tap shadow (`s5`) x `c0` + cube `s0` x `c5.x` (`mad_pp r0.xyz, r0, c5.x, r1`), x `r6.w`, x `r6` albedo, fog `v4` | Class 9, `PatchSnowRelief` |
 | Snow on fence tops, rails, props | m48 | VS_2F27C9C0 / PS_2F27C510 (#126/#139, 2138 tris) | None: `r1 = N.L_moon x shadow x c0 + cube(0,1,0) x c4.x`, then `mul oC0.xyz, r1, snowTex(s1, uv = world x 0.125)` | Class 8, `PatchSnowCover` |
+
+### Melting snow (`DrawLotMelt`)
+
+While snow melts the game draws lots with another light pass (`kMeltLotPs`, 2144 bytes, `0x69580706`): the snowy pass's
+lamp term with the dry pass's terrain coordinates (VS `c14` / `c15`). It gets the same patch as the snowy pass
+(`PatchLotTerrainMax`, last sampler `s13`, terrain light in `s14`), made once from the first such shader drawn, and the
+atlas mapping goes through VS `c14` as for the dry lot pass. Without it the lot kept the game's light next to the relit
+world terrain: a cut at the lot edge. Log: `[LotLightBridge] Melting snow (lot light pass): active`.
+
+The snowy lot pass also takes the same daytime lamp term as the terrain, so there is no cut at the lot edge at dusk in
+snow, and in snow the wet world terrain pass is left to the game.
 
 ### Snowy lot ground (`PatchSnowBytecode` + `DrawLotSnow`)
 

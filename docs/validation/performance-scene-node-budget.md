@@ -58,3 +58,5 @@ Developer mode, Developer > Performance > *Objects spread across frames*:
   object that appears only with the feature on would contradict it.
 - The destructor hook may run on any thread; the "destroyed on another thread" counter should not grow together with a
   crash.
+- Growing budget (2.7.0): the Developer card's "grown" count during long pans over streaming lots, and no forced full
+  drain hitch in the Frame Profiler while the camera keeps moving.

@@ -159,3 +159,20 @@ path does not exist in the standalone ([removed features](../removed-features.md
 
 World-owned type-11 lamp edits reconcile terrain and native object rigs; see
 [world lamp response](../features/night-lighting/world-lamp-response.md).
+
+### 2026-10-05: walls block lamp light on outdoor objects
+
+**Context:** commit `5fe54b4`. Objects in a yard without a roof behind a wall still took the wall lamp outside (an F7
+capture on a telescope showed Apex's per-pixel object lamps; the game's own rig held that lamp too).
+
+**Outcome:** a blocked lamp leaves the object's per-pixel list and the ground light is scaled by the unblocked share
+(`LevelLightShare::WallBlocks`, switch *Walls block light on objects*, on). Released in 2.7.0.
+
+### 2026-10-06: furniture during a lamp switch; full daylight
+
+**Context:** commits `f967cb5` and `6427d96`. At a switch the furniture of the lamp's room changed before the room's
+walls; and by day the per-pixel and rig replacements still drew though they add nothing.
+
+**Outcome:** a room-mode part is drawn with its rig's lights from before the switch until its room's solve ends; in full
+daylight (night level 0.01 or less) the per-pixel pass is not drawn either, like the moon-shadow and leaf-shadow passes
+(from idavidveiga's day/night isolation fixes; the fork's day fade of the object boost was not kept). Released in 2.7.0.

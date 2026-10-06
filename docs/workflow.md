@@ -242,8 +242,8 @@ Every release follows [apex-review-pr-release](../.agents/skills/apex-review-pr-
    Nexus workflow derives its changelog from that body. Keep internal provenance notes out of Git and source archives.
    A documentation-only follow-up does not require rebuilding or replacing the published ASI.
 
-Published versions are listed in [releases/README.md](releases/README.md). The current published version is 2.5.6;
-pull request #2 is in development and has not been published.
+Published versions are listed in [releases/README.md](releases/README.md). The latest published version is 2.6.0
+(pull request #2); version 2.7.0 (pull request #4) is the release being prepared.
 
 ---
 

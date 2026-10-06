@@ -8,7 +8,7 @@ back roughly 85 to 100 MB of the 32-bit game's address space. Nothing drawn chan
 
 | | |
 |---|---|
-| Availability | Released in 2.4.0 |
+| Availability | Released in 2.4.0. AMD's implicit layer kept out too: Released in 2.7.0 |
 | Default | Always on; no menu row |
 | Menu | None |
 | Configuration | None |
@@ -19,7 +19,9 @@ back roughly 85 to 100 MB of the 32-bit game's address space. Nothing drawn chan
 TS3W.exe is 32-bit and large-address-aware (4 GB of address space). With DXVK, the Vulkan loader loads every installed
 driver when DXVK enumerates GPUs. On a PC with an NVIDIA card and an AMD integrated GPU this puts AMD's 32-bit Vulkan
 driver `amdvlk32.dll` (an 85 MB image) into the low 2 GB that the game's heaps use, and DXVK reports
-"Found device: AMD Radeon(TM) Graphics" in `TS3W_d3d9.log` though it renders on the other card.
+"Found device: AMD Radeon(TM) Graphics" in `TS3W_d3d9.log` though it renders on the other card. AMD also registers the
+same library as an implicit Vulkan layer (`VK_LAYER_AMD_switchable_graphics`, listed in the display adapter's
+`VulkanImplicitLayersWow` registry value), which the loader loads even when the driver itself is disabled.
 
 ## How Apex Radiance solves it
 
@@ -31,6 +33,12 @@ In Apex's `Direct3DCreate9` detour, before the first real call (DXVK loads `vulk
 3. DXGI lists an AMD adapter (vendor 0x1002) and a non-AMD one;
 4. the adapter with the most dedicated memory is not AMD;
 5. every AMD adapter has under half of that memory.
+
+It then also sets the implicit layer's own `disable_environment` variable, read from every AMD layer manifest listed in
+`VulkanImplicitLayersWow` under the display adapter class key
+(`HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\<n>`), or
+`DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1` when no manifest can be read. A variable the user already set is left
+alone.
 
 ## Settings
 
@@ -48,8 +56,10 @@ None.
 
 ## Technical reference
 
-- Log: `[VulkanDriverGuard] ...` (the decision) and `[D3D] Adapter N of M; AMD Vulkan driver in the game: loaded / not
-  loaded`.
+- Log: `[VulkanDriverGuard] ...` (the decision, naming the layer variables set: "and its implicit layer: ...") and
+  `[D3D] Adapter N of M; AMD Vulkan driver in the game: loaded / not loaded`.
+- The layer manifests are parsed for their `"disable_environment": { "NAME": "VALUE" }` entry (`AmdLayerDisables`);
+  only manifest paths containing "amd" are read.
 - The adapter list comes from `CreateDXGIFactory1` / `EnumAdapters1` (`ListAdapters`). The decision runs once
   (`std::once_flag`).
 

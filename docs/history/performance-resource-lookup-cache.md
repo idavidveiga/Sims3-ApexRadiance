@@ -28,3 +28,14 @@ slots.
 ### 2026-10-02: on by default (2.5.5)
 
 **Outcome:** default changed to on, with the other switches. See [group history](performance.md).
+
+### 2026-10-05: read-only reliability latched per list generation
+
+**Context:** commit `cf9daea`. Sampling showed every lookup that reached the game walking the roughly 300 packages for
+`ReadOnlyAboveReliable` before its probe, and Remember missing files walking them again.
+
+**Finding:** reliability only goes from unreliable to reliable while the list and its generation stay, so a "yes" for
+the same list, generation and size still holds.
+
+**Outcome:** a thread-local latch keeps a whole-list "yes" for 100 ms while the list's begin, size and generation are
+unchanged and no list method is running. Released in 2.7.0.

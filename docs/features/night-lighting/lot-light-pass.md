@@ -8,7 +8,7 @@ border. Near the border the two sides blend over 3 m, so a lamp standing next to
 
 | | |
 |---|---|
-| Availability | Released (part of Night Lighting since 0.1.0). Lot UV alignment, daylight terrain term and the constant-read guard: in development (PR #2) |
+| Availability | Released (part of Night Lighting since 0.1.0). Lot UV alignment, daylight terrain term and the constant-read guard: Released in 2.6.0. Rain and other weather variants recognised (exact rain variant and by structure): Released in 2.7.0 |
 | Default | On |
 | Menu | Lighting > Ground > Ground & Lots > *Street lamps light lots* |
 | Configuration | `[patches.NightTerrainRelight]` `luzDoPosteNaGramaDoLote` in `ApexRadiance.toml` |
@@ -37,7 +37,8 @@ The lot light pass is redrawn with a replacement pixel shader that takes `max(lo
 terrain light is the [world light atlas](world-atlas-and-smoothed-maps.md) (or, before the atlas exists, the light map
 of the lot's home chunk). The terrain map contains lot lamps too when [terrain relight](terrain-relight.md) bakes them.
 
-Per draw, when the bound PS is `PsClass::LotLight` (exact `kLotLightPs`, 568 bytes, FNV-1a `0xFDAD274B`):
+Per draw, when the bound PS is `PsClass::LotLight` (exact `kLotLightPs`, 568 bytes, FNV-1a `0xFDAD274B`, or one of its
+weather variants, below):
 
 1. The replacement `kReplacementHlsl` (ps_3_0) is created from the start-up bytecode (`EnsureReplacement`, `CompilePs`);
    status "Active" or "Failed: <error>".
@@ -47,6 +48,18 @@ Per draw, when the bound PS is `PsClass::LotLight` (exact `kLotLightPs`, 568 byt
 5. Lot map uv alignment and gains go into PS c31.
 6. The original PS c28..c31 are read; if that read fails, the game draws unchanged.
 7. Terrain texture bound to s2, replacement drawn, everything restored.
+
+**Weather variants.** In rain the game draws lots and world terrain with variants of the same passes: the dry shader with
+its defined constants moved to other registers and a different tail that darkens the colour with wetness constants
+(`c5.x`, `c6.x`). Exact identities miss them, which left a cut at every lot edge when it rained. The rain lot pass
+(`kLotLightRainPs`, 608 bytes, `0xA8E5F9F8`) is drawn with a second build of the replacement that keeps the game's wet
+darkening (`col *= 1 + c5.x x (c6.x - 1)`); the rain world pass (`kWorldMultiLightRainPs`, 796 bytes) reads its lamp map
+the same way as the dry one. Any other variant is recognised by structure ([`shaders/shader_structure.h`](../../../shaders/shader_structure.h)):
+the body up to the first colour-output write, with defined constants renumbered, must have the dry body's token count
+and hash (`kLotLightStruct`, `kWorldMultiLightStruct`), and the tail must be the dry final instruction written to a
+temp, followed only by arithmetic on temps and constants the body never reads, writing `oC0`. A lot variant with the
+rain tail (`c5`, `c6`) keeps it; one with another tail is drawn as the dry pass (logged). Only counts and hashes are
+kept, never the game's bytecode. The snowy and melting-snow lot passes are separate shaders ([snow.md](snow.md)).
 
 ## Settings
 

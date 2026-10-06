@@ -10,7 +10,7 @@ tone. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). The 10 to 80% Brightness range, the 0% Blue tint default, the structure-change recovery and the *S3SS compatibility* correction: in development (PR #2) |
+| Availability | Released (present since 2.1.0, the first version in this repository). The 10 to 80% Brightness range, the 0% Blue tint default, the structure-change recovery and the *S3SS compatibility* correction: Released in 2.6.0 |
 | Default | On; Brightness 35%; Blue tint 0% |
 | Menu | Lighting > Buildings > Rooms at Night |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |

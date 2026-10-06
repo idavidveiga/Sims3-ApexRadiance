@@ -41,3 +41,5 @@ None offline. Every session checks the first 64 answers and then 1 in 64 against
 - The Layer mutators (AddChild / RemoveChild* / RemoveAll / Clear / SetId) could be hooked through their vtable slots as
   an extra "something changed" signal, and the eight WorldManager root writers through their entries; not done (the
   validation already covers removals; only an earlier duplicate ID is not covered).
+- Object service ID index (2.7.0): the Off line's checked answers with no "Verification" or turn-off message in a long
+  session; its effect on hitches when lot lights update.

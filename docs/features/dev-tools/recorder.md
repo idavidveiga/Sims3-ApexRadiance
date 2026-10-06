@@ -10,7 +10,7 @@ recording goes to its own capture folder, with a `Wall seams.csv` of the wall li
 
 | | |
 |---|---|
-| Availability | Released in 2.5.0 as a player capture (Report a problem). `Wall seams.csv`: In development (PR #2) |
+| Availability | Released in 2.5.0 as a player capture (Report a problem). `Wall seams.csv`: Released in 2.6.0. Light update trace (screen pixels, room solve ends, lamp edits, per-edit summary): Released in 2.7.0 |
 | Default | Idle; no switch |
 | Menu | System > Report a problem > Save a capture > Record a few seconds (Start / Stop) |
 | Configuration | No feature table. Shortcut `[ui] recorder_key` in `ApexRadiance.toml` (see [ui.md](../../ui.md#shortcuts)) |
@@ -92,10 +92,9 @@ then `==== ApexRadiance.toml at the start of the recording ====` and the setting
 | `[room]` | `LevelLightShare::TraceRooms` | Every indoor room of the loaded lots once at the start and again when its ambient (+0x110, the colour its walls take; +0x120), normalisation, solve state, LOD class (solving / shown), light count or shown story changes |
 | `[probe]` | `LightProbe` | Each capture with its reason, and `[probe] floor change (...): automatic captures in 1 s and 3 s` |
 
-### Light update trace (06/10)
+### Light update trace
 
-User: "can we build something to measure better what happens when the lights update?". Three additions, all inside the
-recording, nothing to arm:
+Three parts measure how the light updates on screen after a lamp edit, all inside the recording, nothing to arm:
 
 - **Screen pixels** (`features/screen_watch.{h,cpp}`, started from Night Lighting's Present next to the Light Probe): 33
   points copied from the back buffer at every frame with `StretchRect` into a 33×1 render target (a ring of 4, each with an
@@ -107,9 +106,8 @@ recording, nothing to arm:
   - A grid of 6 × 4 over the screen (x 10, 26, 42, 58, 74, 90%; y 18, 38, 58, 78%, above the game's bottom bar), so a
     recording started from the menu still measures the house.
   - Copied at `RenderCallbacks::filteredSceneBeforeOverlay` (the first EndScene of the frame, right before the Apex menu
-    and notices are drawn, as the report screenshot does), at Present only when no EndScene reached the overlay that frame.
-    The first version copied at Present: recording 06/10 13:52 was started from the menu, which stayed open, and its 9
-    points read the menu's own pixels (unchanged through three switches of every lamp).
+    and notices are drawn, as the report screenshot does), at Present only when no EndScene reached the overlay that frame,
+    so a recording started from the open menu measures the game and not the menu's own pixels.
   - `Screen pixels.csv`: elapsed ms, then luma, r, g, b per point; the column's names carry the row offset (`luma+0` = the
     mouse or the centre), the grid's their place in percent (`luma_x26y38`).
 - **Room solve ends**: `FUN_006a0e00` (step 8 of the budgeted solve, its call at `0x6A3E65` in `FUN_006a3c90`, Steam,
@@ -122,8 +120,8 @@ recording, nothing to arm:
   game marks the rooms of every story its light reaches, so the story is where the change was seen, not always the lamp's).
 
 `Recording.txt` then opens with **Light updates**, one block per edit burst (edits less than 400 ms apart). A burst's window
-ends at the next burst, or when its lot shows another story or leaves the view (the "Stories shown" status, every 100 ms;
-recording 13:52 counted a trip to the map view as 6 more seconds of the third switch). Per burst:
+ends at the next burst, or when its lot shows another story or leaves the view (the "Stories shown" status, every 100 ms,
+so a trip to the map view does not count as more time of the switch). Per burst:
 
 - the lamp lights (on, off, moved) and the stories that saw them, and the story the lot showed;
 - the rooms of that lot that showed new light: a room counts from its first invalidate or send in the window, and its

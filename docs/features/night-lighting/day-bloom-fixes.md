@@ -1,212 +1,104 @@
 # Daytime bloom and wall bloom fixes
 
-Found and validated by **idavidveiga** (fork `idavidveiga/Sims3-ApexRadiance`, 04/10/2026, EA 1.69.47), ported on 06/10/2026.
+By day, Night Lighting no longer makes objects look as if they glowed: in full daylight fences, snow on objects and
+outdoor objects keep the game's own lighting. Exterior walls and foundations lit brighter by Apex keep the game's bloom,
+so they no longer turn white in the bloom pass, and a cinema/theatre facade of the base game no longer blooms in the
+sun. Switching *Smooth ground light* changes only how the ground light is filtered, without relighting anything. Found
+and validated by **idavidveiga**. Part of [Night Lighting](README.md).
 
-## Port notes (06/10)
+## Status
 
-- Ported: (the ObjectLightBridge day fade was removed the same day: its rig re-gathers at every 0.1 of night level slowed indoor lighting);
-  ExteriorWall keeps the game's bloom alpha (alpha-only pass with the original
-  scale, then RGB with Apex's scale; blended walls keep one pass), combined with 2.6.0's daytime wall term
-  (TerrainLightingPolicy::WallLampScale); the cinema / theatre daytime bloom guard (exact shader pairs); Smooth ground light
-  no longer refreshes the lighting; the Lighting + Bloom census and the bloom alpha capture (Developer > Lighting).
-- Already in 2.6.0 in another form, so the fork's version was not taken: fences, stairs, their snow and outdoor objects
-  fading by day (TerrainLightingPolicy::SurfaceLampGain), and the level-light hooks on EA 1.69 (GameAddr).
-
-## The fork's notes
-
-## 3. Day/night isolation fixes
-
-### 3.1 Fence, stair and snow ground-light consumers
-
-The ground-light contribution used by fences/stairs and their snow variants is now gated by the live night level:
-
-- **full day** (`g_night <= 0.01`): Apex does not add the night ground-light term;
-- **dawn/dusk**: the added term fades with `g_night`;
-- **full night**: the configured strength is unchanged.
-
-This prevents the smoothed night-light atlas from making these object families look artificially emissive in daylight.
-
-### 3.2 Outdoor object draw path
-
-The same rule was applied to the outdoor object ground-light replacement. The smoothed ground map can remain enabled for
-terrain/roads/lots during the day while the object-specific night contribution stays neutral.
-
-This was important because disabling **Smooth ground light** globally hid the symptom but also removed the desired
-ground-light quality improvement.
-
-### 3.3 ObjectLightBridge pre-draw rig boost
-
-The Lighting + Bloom census proved that some outdoor object draws had **zero Apex draw claims** in daylight while lamps and
-signs still bloomed. The source was earlier in the pipeline: `ObjectLightBridge` had already strengthened the object's
-light record before the vanilla draw.
-
-The bridge now receives the real night level:
-
-- day: no Apex boost;
-- twilight: boost multiplied by the live night blend;
-- night: the original configured boost;
-- cached object rigs are re-gathered only when the blend moves far enough to matter (about 0.1), plus the day/night
-  boundary crossings, instead of every frame.
-
-## 4. Smooth ground light no longer triggers unrelated relighting
-
-**Smooth ground light** is a draw/map filtering choice. It now changes only whether the draw paths consume the
-smoothed/raw maps.
-
-It no longer:
-
-- calls the generic full lighting refresh;
-- re-solves terrain, lots, rooms or exterior walls;
-- requests an object-rig re-gather.
-
-This isolates the switch from unrelated wall/room state and prevents an A/B of ground-map smoothing from changing the
-lighting solution itself.
-
-## 5. Exterior walls and foundations: boosted RGB, vanilla bloom
-
-### Problem
-
-The wall option intentionally uses a default strength of **200%** so exterior walls close to lamps do not remain as dim as
-the stock game. The stock ExteriorWall shader derives its output alpha (the scene bloom mask) from the final luminance.
-
-Multiplying the wall lamp term therefore had two effects at once:
-
-1. the desired brighter RGB wall lighting;
-2. an unintended much larger bloom alpha, which could turn entire walls and foundations white in the bloom pass.
-
-### Correction
-
-For opaque ExteriorWall draws Apex now separates those results:
-
-1. an alpha-only pass writes the **vanilla wall bloom alpha** using the original wall-light scale;
-2. the authoritative RGB pass writes the configured Apex wall brightness with alpha disabled.
-
-The alpha-only pass is prevented from writing depth or stencil. Blended/unsupported wall variants deliberately use the
-previous one-pass fallback instead of risking a change to their compositing semantics.
-
-The result keeps the intended **200% wall RGB lighting** while preventing that extra gain from widening the bloom mask.
-
-Developer status reports:
-
-- draws where vanilla bloom alpha was preserved;
-- fallback wall draws.
-
-## 6. Cinema/theatre facade: daytime bloom only
-
-The remaining daytime bloom was traced with F7/Light Probe instead of changing global bloom.
-
-### 6.1 Main marquee
-
-EA 1.69 capture:
-
-- VS: `BFFCCC56 / 1060`;
-- PS: `D5ED0EF3 / 864`;
-- outdoor rig mode 2.
-
-The pixel shader writes its bloom alpha from final luminance minus a material threshold. In full daylight only, Apex
-temporarily raises that **isolated alpha threshold** for this exact shader pair. RGB, depth and stencil remain the game's
-output.
-
-### 6.2 Narrow centre panel
-
-After the main marquee was fixed, one narrow vertical panel still bloomed. The captured night material was:
-
-- VS: `BFFCCC56 / 1060`;
-- PS: `36F5E915 / 1296`;
-- 2-primitive outdoor-object draw.
-
-Day/night census correlation identified its day counterpart:
-
-- VS: `BFFCCC56 / 1060`;
-- PS: `4E570819 / 500`.
-
-The day variant is now handled by the same principle, with additional safeguards:
-
-- full day only;
-- exact VS + PS;
-- outdoor rig mode 2;
-- the bytecode analyzer must prove that the threshold constant is used only by the final luminance-derived alpha write;
-- the centre-panel variant is accepted only on a very small draw (no more than 4 primitives).
-
-The captured night shader `36F5E915` is deliberately **not** in the day-guard list, so the theatre keeps its intended
-night bloom.
-
-## 7. Bloom safety rule
-
-These corrections do **not** implement a global "disable bloom in daylight" rule.
-
-That is intentional. Bloom is used by many valid TS3 materials. The current policy is:
-
-- neutralise an Apex-added light term in daytime when Apex is the cause;
-- preserve the game's original bloom alpha when Apex intentionally increases only RGB;
-- for a stock material with a confirmed daytime defect, target the exact proven shader/material path and leave night
-  variants untouched.
-
-This keeps unrelated emissive materials and night lighting stable.
-
-## 8. Diagnostics added during the refinement
-
-### Lighting + Bloom census
-
-The developer census records visible draw families for several frames and reports:
-
-- day / twilight / night counts;
-- whether Apex claimed the draw;
-- shader hashes/sizes;
-- rig mode;
-- representative position/textures;
-- **exact Apex claim source**, such as `ExteriorWallGain`, `OutdoorObjectGroundLight` or
-  `CinemaMarqueeDayBloomGuard`.
-
-This allowed a draw that was visually wrong to be separated from an earlier pre-draw rig modification.
-
-### Bloom Alpha Probe
-
-The probe captures the raw scene alpha before the game's bloom composite/UI and writes Day/Twilight/Night PNG + TXT
-statistics. It was used to prove:
-
-- the wall/foundation region was writing a very large night bloom mask before the wall-alpha correction;
-- the corrected wall/base no longer saturates that region;
-- the cinema facade was still writing isolated daytime bloom after the Apex object-day paths had already been neutralised.
-
-### Light Probe / F7
-
-F7 captures every draw covering one selected pixel, with shaders, constants and bound textures. It was used to isolate
-the cinema materials without applying a broad object or global-bloom workaround.
-
-## 9. Main implementation areas
-
-| Area | Main code |
+| | |
 |---|---|
-| live night-level / settings / UI | `patches/night_terrain_relight_patch.cpp` |
-| object rig pre-draw light records | `features/object_light_bridge.cpp/.h` |
-| per-draw terrain/lot/object/wall/roof/water handling | `features/lot_light_bridge.cpp/.h` |
-| safe shader-pattern analysis/patches | `features/shader_patches.cpp/.h` |
-| exact captured shader IDs | `shaders/shader_ids.h` |
-| smoothed light maps / atlas | `features/lightmap_smooth.cpp/.h` |
-| translations | `i18n/tr_lighting.cpp`, `i18n/tr_menu.cpp`, `i18n/tr_features.cpp` |
-| focused subsystem notes | `docs/features/night-lighting/` |
+| Availability | Released in 2.7.0 |
+| Default | On with Night Lighting (no switch of its own) |
+| Menu | None. Diagnostics: Developer > Lighting (*Lighting + Bloom census*, *Capture bloom alpha mask*, developer mode) |
+| Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` (the existing Night Lighting keys) |
+| Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawWallGain`, `DrawCinemaMarqueeDayBloomGuard`, the daylight gates), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`BloomThresholdConst`), [`features/bloom_alpha_probe.{h,cpp}`](../../../features/bloom_alpha_probe.cpp), [`shaders/shader_ids.h`](../../../shaders/shader_ids.h), [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp) |
 
-## 10. Current validation target
+## The problem
 
-The final lighting/bloom validation for this pass is deliberately small:
+- Night Lighting's object, fence and snow passes add the ground light atlas, which has no notion of day: in daylight
+  those families could look emissive next to the sunlit ground.
+- The ExteriorWall pixel shader derives its output alpha, the scene's bloom mask, from the final luminance. Multiplying
+  the wall lamp term to brighten walls near lamps also widened that mask, so whole walls and foundations could turn
+  white in the bloom pass.
+- The base game's cinema/theatre facade writes bloom alpha from its final luminance minus a material threshold; in full
+  daylight its marquee and a narrow centre panel bloomed.
+- Switching *Smooth ground light* used to refresh the whole lighting (terrain, lots, rooms, walls, rigs), so an A/B of
+  the ground filter also changed the lighting solution.
 
-1. **day — cinema/theatre:** main marquee and narrow centre panel keep their visible colour/brightness but do not create
-   the unwanted bloom halo;
-2. **night — cinema/theatre:** the normal night lamp/bloom materials remain unchanged;
-3. **night — previously tested building:** boosted exterior wall/foundation lighting remains visible without the former
-   white bloom wash;
-4. normal ground/object/roof/water lighting remains unchanged from the approved night behaviour.
+## How Apex Radiance solves it
 
-If those checks pass, this lighting/bloom refinement is considered complete. Further lighting changes should be treated as
-separate features/regressions instead of broadening these guards.
+1. **Full daylight gates.** At a night level of 0.01 or less the fence pass, the snow-on-objects pass and the outdoor
+   object per-pixel pass are not drawn (as the moon-shadow and leaf-shadow passes already were not), so the game's
+   draw stays. At dusk and dawn the lamp terms fade with `TerrainLightingPolicy::SurfaceLampGain`
+   ([fences.md](fences.md), [objects-and-rigs.md](objects-and-rigs.md), [snow.md](snow.md)).
+2. **Wall bloom kept.** For opaque ExteriorWall draws with alpha writable, an alpha-only pass with the game's own lamp
+   constant (no depth or stencil write) writes the game's bloom alpha, then the RGB pass writes Apex's brighter lamp term
+   with alpha writes off. Blended or unusual wall draws keep the single pass ([walls.md](walls.md)).
+3. **Cinema/theatre facade.** For the facade's exact vertex shader (`BFFCCC56`, 1060 bytes) with one of its exact pixel
+   shaders, in outdoor rig mode 2, the constant that holds the material's bloom threshold is raised to 1000 for the draw
+   and put back: RGB, depth and stencil stay the game's, only the bloom alpha goes. The threshold constant must be proven
+   by the bytecode (`BloomThresholdConst`: used only by the luminance-derived alpha write) and read between 0.5 and 5;
+   the centre panel is accepted only on draws of at most 4 primitives.
+4. **Smooth ground light** only selects smoothed or raw maps in the draw paths; it calls no lighting refresh and no rig
+   re-gather ([world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md)).
 
-## 11. What was deliberately not changed
+There is no global "no bloom by day" rule: an Apex-added term is neutralised by day where Apex is the cause, the game's
+bloom alpha is kept where Apex raises only RGB, and a stock material with a confirmed daytime defect is targeted by its
+exact shaders.
 
-- no global bloom threshold;
-- no global alpha clamp;
-- no change to Advanced Rendering;
-- no reduction of the approved night object/roof/water lighting;
-- no change to the validated Lot Streaming 300 / 16 values;
-- no blanket suppression of emissive materials;
-- no modification of the cinema's captured night pixel shaders.
+## Settings
+
+None of its own. *Lamps light walls* and wall *Brightness*, *Fences and stairs catch light*, *Doors and windows stay lit*
+and *Smooth ground light* ([README](README.md#settings)) decide which of these paths run.
+
+## Compatibility and interactions
+
+- **Walls:** the two-pass draw is combined with the daytime wall term of [walls.md](walls.md); the counters "wall bloom
+  preserved" and "fallback" are in the developer status.
+- **Bloom:** the game's bloom composite is untouched; only the alpha written by the facade and by Apex's wall gain
+  changes.
+- Other mods that replace the facade or wall shaders: the exact identities and bytecode proofs fail and the game's draw
+  stays.
+
+## Limitations
+
+- The facade guard has no night-level test and also matches the facade's night pixel shaders (`kCinemaMarqueeNightPs`
+  1748 bytes, `kCinemaMarqueePanelNightPs` 1296 bytes), so the facade's bloom alpha is suppressed at night as well.
+  Unverified in game.
+- The facade shaders were captured on the EA app build 1.69; the shader package is the same on Steam, but the guard has
+  not been confirmed in game there.
+- Only the one facade with the captured shaders is handled; other emissive materials keep the game's bloom.
+
+## Technical reference
+
+| Item | Identity / site | Notes |
+|---|---|---|
+| Facade VS | `kCinemaMarqueeDayVs` {1060, `0xBFFCCC56`} | `VsInfo::cinemaMarqueeDay` |
+| Main marquee PS | day `kCinemaMarqueeDayPs` {864, `0xD5ED0EF3`}, night `kCinemaMarqueeNightPs` {1748, `0xDD77CDE4`} | Threshold constant from `BloomThresholdConst`, kept per pixel shader |
+| Centre panel PS | day `kCinemaMarqueePanelDayPs` {500, `0x4E570819`}, night `kCinemaMarqueePanelNightPs` {1296, `0x36F5E915`} | At most 4 primitives |
+| Wall gain | ExteriorWall pixel shaders, the lamp scale constant per variant | Alpha pass with `D3DRS_COLORWRITEENABLE` = alpha only, then RGB |
+
+Diagnostics (developer mode, Developer > Lighting): *Lighting + Bloom census* writes
+`ApexRadiance_LightingBloomCensus.txt` (read-only: the visible draw families of several frames by day, twilight and
+night, whether and which Apex path claimed each, shader hashes and sizes, rig mode, a representative position and
+textures, and possible bloom-mask families); *Capture bloom alpha mask* (`BloomAlphaProbe`) saves the raw scene alpha at
+the post-scene boundary, before the bloom composite, as PNG and TXT statistics tagged day, twilight or night; it never
+changes constants, states or colours. The object status line counts "cinema day bloom suppressed" draws (and the centre
+panel).
+
+## Rejected approaches
+
+- A global bloom threshold, alpha clamp or daytime bloom switch: would change many valid emissive materials.
+- The fork's day fade of the object rig boost: its rig re-gathers at every 0.1 of night level slowed indoor lighting.
+- Turning *Smooth ground light* off to hide daytime glow: it also removed the ground light quality it exists for.
+
+Details in [history](../../history/night-lighting-day-bloom-fixes.md).
+
+## See also
+
+- [Validation](../../validation/night-lighting-day-bloom-fixes.md)
+- [History](../../history/night-lighting-day-bloom-fixes.md) (with the fork's notes)
+- [Walls](walls.md), [Objects and rigs](objects-and-rigs.md), [Fences](fences.md)

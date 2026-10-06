@@ -44,8 +44,9 @@ Per-switch harnesses (`tools/dxt_test`, `tools/refpack_test`, `tools/cas_sort_te
 
 ## Open checks
 
-- In-game visual and performance validation of the removal of the *Optimize rendering* mode (PR #2).
-- Group switch, profile behaviour and default-on loading on PR #2 (not yet confirmed in game).
+- In-game visual and performance validation of the removal of the *Optimize rendering* mode (released in 2.6.0).
+- Group switch of fifteen (2.7.0), profile behaviour and default-on loading (not yet confirmed in game).
+- Lot Streaming off by default and left alone by the built-in profiles (2.7.0).
 
 ## Per-switch validation
 
@@ -55,4 +56,6 @@ Per-switch harnesses (`tools/dxt_test`, `tools/refpack_test`, `tools/cas_sort_te
 [file lists](performance-file-list-cache.md), [object lookups](performance-object-lookup-index.md),
 [texture compression](performance-fast-texture-compression.md), [cache compression](performance-fast-cache-compression.md),
 [Sim building](performance-fast-cas-sort.md), [memory](performance-fast-memory.md),
+[room to save](performance-room-to-save.md), [window updates](performance-lighter-window-updates.md),
+[scripts](performance-faster-scripts.md), [Lot Streaming](performance-lot-streaming.md),
 [Vulkan driver guard](performance-vulkan-driver-guard.md).

@@ -22,7 +22,7 @@ This page describes the framework as it is in the code. The frozen combined buil
 | Per-frame and per-event flows | | [8](#8-one-frame), [9](#9-per-event-flows) |
 | Threads and synchronisation | | [10](#10-threads-and-synchronisation) |
 | Coexistence with official S3SS | [framework/s3ss_detect.cpp](../framework/s3ss_detect.cpp) | [11](#11-coexisting-with-official-s3ss) |
-| Loaded-world gate (menu, start note, Depth Blur) | [features/world_session.h](../features/world_session.h) | [12](#12-loaded-world-gate-and-start-note) |
+| Loaded-world gate (menu, start note, screen effects) | [features/world_session.h](../features/world_session.h) | [12](#12-loaded-world-gate-and-start-note) |
 | Report storage | [features/captures.cpp](../features/captures.cpp) | [13](#13-report-storage) |
 | Adding a feature | | [14](#14-how-to-add-a-new-feature) |
 
@@ -242,7 +242,11 @@ registered:
   cast in. Lower runs first. **Equal priorities run in registration order** (stable).
 - **Results:** `HookAction::Continue` goes on; `Skip` stops the chain, the device call is not made and `S_OK` is
   returned to the game; `Block` stops the chain and returns `E_FAIL`.
-- `DeviceContext { device }` is passed to every callback.
+- `DeviceContext { device }` is passed to every callback. `ZEnable()` and `ZWriteEnable()` read `D3DRS_ZENABLE` /
+  `D3DRS_ZWRITEENABLE` once per dispatch and share the value between the draw callbacks (PostScene, Picture, the Banding
+  Fix), instead of one device query per callback for each of the roughly 2,000 back-buffer draws of a frame. The values
+  hold for that dispatch only; a callback that changes those states through `CallOriginal*` restores them before it
+  returns.
 - **Nesting:** a callback may call the device (a nested dispatch on the same thread) or register and unregister
   callbacks; a chain being run keeps the list it started with until it returns.
 - **`CallOriginal*`** calls the next hook in the Detours chain (or the driver) without any Apex callback. It exists for
@@ -420,6 +424,16 @@ Apex's own HLSL pixel shaders are never compiled on the render thread
   freed after its compile). Log: `[ShaderCache] Precompiling N Apex shaders on a background thread`, then
   `[ShaderCache] Precompiled N Apex shaders in X ms on a background thread (F failed; slowest: ...)`; a failure logs
   `[ShaderCache] <tag> did not compile: <message>`.
+- **Disk cache:** every compiled variant's bytecode is saved to `ApexRadiance_ShaderCache.bin` in the Apex Radiance
+  folder (magic `APXS`; written to a temporary file and renamed), keyed by the variant's identity (source, entry,
+  target, flags, macros). At the next start the variants found there are created without `D3DCompile`; a variant whose
+  identity changed misses and compiles as before, and the file is written again with the current set only. A damaged
+  file is read up to the damage. `d3dcompiler_47.dll` is delay-loaded, so a start with a complete cache never maps the
+  compiler into the 32-bit address space. Before the first compile the DLL is loaded explicitly (`CompilerAvailable`):
+  a missing delay-loaded DLL would otherwise raise a structured exception at the first `D3DCompile` and end the game.
+  Without it, shaders missing from the cache stay off (`[ShaderCache] d3dcompiler_47.dll not found: ...`). Log:
+  `[ShaderCache] N Apex shaders: X from ApexRadiance_ShaderCache.bin, Y to compile` and `[ShaderCache] Saved N compiled
+  Apex shaders ...`.
 - **Use:** `ShaderCache::CreatePixelShader(dev, id, &ps, &msg)` only creates the D3D9 object from the bytecode. If the
   worker has not reached that variant yet, it becomes the worker's next job and the caller waits (logged as a warning
   `waited for the precompile`, counted; the worker is raised to normal priority). With no worker left (thread creation
@@ -739,7 +753,7 @@ Engine details: [engine/lot-loading-and-streaming.md](engine/lot-loading-and-str
   rebuild; "Terrain rebuilt" is logged when the countdown at `cells+0x38` reaches -1. After that, reconciliation relights
   only the chunks whose bake rectangle overlaps a changed lamp
   ([features/night-lighting/terrain-relight.md](features/night-lighting/terrain-relight.md)).
-- The menu, the start note and Depth Blur wait for the loaded-world gate ([section 12](#12-loaded-world-gate-and-start-note)).
+- The menu, the start note and the screen effects wait for the loaded-world gate ([section 12](#12-loaded-world-gate-and-start-note)).
 
 ### 9.4 A setting change in the menu
 
@@ -880,8 +894,8 @@ re-verify every second without restoring over foreign bytes. Only the interface 
 
 ## 12. Loaded-world gate and start note
 
-The menu, the start note and Depth Blur wait until a world is really playable, so they never appear or run over a
-loading screen.
+The screen effects wait until a world is really drawn, and the menu and the start note until the startup loading is
+over, so nothing runs over a loading screen.
 
 - **World active** (`WorldSession::IsActive`, [features/world_session.h](../features/world_session.h), read-only): the
   WorldManager global (`GameAddr` `WorldManagerPtr`, `0x011ECBC4` on Steam) is non-null, its active byte `+0x41` is set,
@@ -892,17 +906,24 @@ loading screen.
   its code is `A1 <global> ... C3`, reads the service, calls its root getter (vtable +4) and the root's child lookup
   (vtable +0xF4) for that ID. A missing getter, service or root, or an exception, fails closed (the world counts as not
   active). A world-loaded flag alone is not enough, because the world can be active behind the loading screen.
+- **World drawn** (`WorldSession::InWorld`): the world is active, the last complete frame had at least 48
+  depth-writing scene draws (counted by PostScene) for 500 ms in a row, and Night Lighting's world-live signal (terrain
+  drawn; true with Night Lighting off) is set. It stays open while the world is active (the save screen and in-game
+  menus keep the same look) and closes with the world. Color (Picture), Ambient Occlusion, Edge Smoothing and Depth
+  Blur do nothing while it is closed, so the main menu and load screens keep the game's picture.
 - **Menu availability** (`apex_gui.cpp` `UpdateMenuAvailability`, render thread, at most every 200 ms): the startup state
-  is `Running` (or `RefusedOldBuild`, so the banner can show), the world is active, and, when Night Lighting is on, its
-  world-live signal is set; then 3 continuous seconds must pass. The result is cached in an atomic
+  is `Running` (or `RefusedOldBuild`, so the banner can show) and either the world is drawn or the startup loading window
+  is gone (from the world selector on); then 3 continuous seconds must pass. The result is cached in an atomic
   (`g_menuAvailable`); the window thread never reads game memory (`Client::CanOpen`). While it is false the menu is
   closed and cannot open, and shortcuts do not run.
 - **Start note:** the "Apex Radiance is ready, press <key>" note starts once per process, only when the menu first
   becomes available (first Present alone does not start it), if `[ui] start_note` is on and the menu is not already
   open. It lasts 8 s (`kHintMs`). A later load hides and pauses a running note; returning does not restart its lifetime.
   Opening the menu ends it.
-- **Depth Blur** keeps its own settling state (`WorldSession::Settled`: 3 s of continuous activity, reset whenever the
-  world is not active), updated at the Present frame boundary and checked again before blurring. While it is not ready,
+- **Depth Blur** also waits for Night Lighting's load-settled signal and keeps its own settling state
+  (`WorldSession::Settled`: 3 s of continuous activity, reset whenever the world is not playable), then holds 2 s and fades
+  in over 1 s; it skips frames with fewer than 48 depth-writing draws (a frozen save screen). It is updated at the
+  Present frame boundary and checked again before blurring. While it is not ready,
   every blur and debug GPU pass is skipped, the autofocus snaps on return, the map-view fade resets, and the shared depth
   is not released ([features/depth-blur.md](features/depth-blur.md)).
 - No game writes or hooks are involved. Validation: [tools/loading_gate_test](../tools/loading_gate_test/) and the

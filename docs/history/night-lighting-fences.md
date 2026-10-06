@@ -86,3 +86,23 @@ did not reach this path.
 **Outcome:** `DrawInstanced` (and snow on objects) uses the shared `SurfaceLampGain`. A first candidate used a quarter
 response at full day (`0.25 x min(strength, 1)`); after gameplay feedback on it the endpoint was lowered to 0.08. Full
 night math, the native vertex-light lower bound and solar inputs are unchanged. Commit `92582b6`.
+
+### 2026-10-05: per-pixel lamps on fences, walls blocking them
+
+**Context:** an F7 capture showed a brick fence group of 57 instances taking the red lamp's ground atlas, which has no
+direction, 15 to 30 m from it; the top of a deck's stone half wall took the ground pool of a wall lamp under the deck; a
+brick fence behind a tower took the wall lamp on the other side.
+
+**Finding:** the instanced vertex shader already passes the world normal and height (TEXCOORD2), so the fence pixel
+patch can take the objects' per-pixel lamps chosen around the group's centre (read from instance stream 1).
+
+**Outcome:** commits `ed575ee`, `664dac1` and `d14fee4`: per-pixel lamps, no atlas on any face when they are present
+(groups without a readable centre keep the atlas on every face), and a lamp dropped when an outside wall hides it from
+the group's centre and both ends. Released in 2.7.0.
+
+### 2026-10-06: the game's own fence lighting in full daylight
+
+**Context:** port of idavidveiga's day/night isolation fixes (commit `6427d96`).
+
+**Outcome:** with a night level of 0.01 or less the fence patch is not drawn, so fences keep the game's daylight look;
+`SurfaceLampGain` still fades the lamp term at dusk and dawn. Released in 2.7.0.

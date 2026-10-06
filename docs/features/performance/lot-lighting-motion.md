@@ -8,7 +8,7 @@ the game's own pace as soon as the camera stops.
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (on by default since its introduction) |
+| Availability | Released in 2.1.0 or earlier (on by default since its introduction). Lot build slice while moving, the lamp edit and after-load budgets and the refinement cap: Released in 2.7.0 |
 | Default | On, 3 ms |
 | Menu | System > Performance > Camera and lighting > *Spread lot lighting while moving* |
 | Configuration | `[patches.LotLightingMotion]` in `ApexRadiance.toml` |
@@ -34,6 +34,21 @@ The single CALL that fetches the budget is redirected to Apex Radiance:
 At the default 3 ms the priority lot goes from 15 to 3 ms (30 to 6 while loading) and other lots from 5 to 1 ms (10 to 2
 while loading). The engine's own order and the priority lot's larger share stay; only the time per frame shrinks. The
 tool mode's 1000 ms budget is never changed.
+
+The same hook also adjusts the budget around lamp edits and loads (budgets of 15 ms or more and under 100 ms, that is
+the lot being played):
+
+- **A lamp just switched:** the game's own budget is kept for a moment, even while the camera moves (`Boost`).
+- **After a load:** for 15 s after the world goes live (`LevelLightShare::SettlingAfterLoad`), the lot being played keeps
+  the game's budget while the camera moves and gets 25 ms with it still, so a lot corrects its lighting in one round.
+- **A lamp edited in Build mode:** while its rooms wait for or are in their solve, the lot being played gets 25 ms with
+  the camera still once the lamp is let go; while it is dragged the game's 15 ms stays.
+- **Refinement after a quick pass:** while the rooms of a lamp switch that already show their quick pass are refined
+  ([Faster room lighting](room-light-queue.md), *Quick update for lamp switches*), the budget is capped at 6 ms so the
+  frame rate holds.
+
+**Lot build slice.** A streaming lot is built a slice per frame by 0x00AEA680 with a 20 ms budget (35 ms for a priority
+lot). While the camera moves Apex lowers that slice to 6 ms; the loading screen's 2000 ms is never changed.
 
 ## Settings
 
@@ -103,8 +118,13 @@ tool mode's 1000 ms budget is never changed.
   same way, only if it still points to Apex's hook). Start checks that the CALL reaches 0x00ADB120 and that the next
   instruction reads ST0 (`D9` / `DD`).
 - `float __fastcall Hook_LotLightBudget(mgr, edx)` calls 0x00ADB120 (a float return is ST0 in every x86 convention; the
-  caller's x87 stack is empty at the call), samples the camera, and applies the rule above. The minimum is 0.25 ms
-  (`kMinMs`).
+  caller's x87 stack is empty at the call), samples the camera, and applies the rules above. The minimum is 0.25 ms
+  (`kMinMs`); the lamp edit and after-load budget is `kLampEditMs` (25 ms), the refinement cap `kRefineMs` (6 ms).
+- **Lot build slice** (optional part; skipped with a warning when the code differs): 0x00AEA680 stores its slice budget
+  at `[esp+14h]` (20 ms, 35 for a priority lot), then tests `[[0x011ECBC4]+0x1B4]` for the loading screen's 2000 ms. The
+  5-byte `mov eax,[0x011ECBC4]` at 0x00AEA6D8, right after the budget is chosen, becomes a CALL of `LotBuildStub`: it
+  lowers the budget to 6 ms (`kBuildMovingMs`) while the camera moves (only budgets above 6 and under 1000 ms) and loads
+  eax as the original did, so the 2000 ms test still runs after it. Stop writes the original bytes back.
 
 ### Camera motion
 
@@ -130,6 +150,7 @@ first `SampleCameraMoving`); the getters must have the shapes `A1 imm32 C3` and 
 | LotLightBudgetCall / LotLightBudget | 0x00ADB95D / 0x00ADB120 | Sig / Target (fallback Sig) |
 | CameraRootCall / CameraGetterCall | 0x00C6D5BD / 0x00C6D5C4 | Sig (+0 / +7) |
 | CameraRootGetter / CameraGetter | 0x006E8330 / 0x006E8400 | Target |
+| LotBuildBudgetLoad | 0x00AEA6D8 | Sig (+0x2C) |
 
 Group `LotLightingMotion`.
 
@@ -141,8 +162,8 @@ Group `LotLightingMotion`.
 `Performance::LotLightingBudgetMs` / `SetLotLightingBudgetMs` in [`patches/performance.h`](../../../patches/performance.h).
 
 Developer card *Lighting while the camera moves*: the call and camera addresses, "Camera moving" / "Camera still", the
-last camera move, frames sampled, budget calls, calls scaled while moving, camera reads failed and the last budget
-("game 15.00 ms -> 3.00 ms").
+last camera move, frames sampled, lot build slices (shortened while moving, on / off), budget calls, calls scaled while
+moving, camera reads failed and the last budget ("game 15.00 ms -> 3.00 ms").
 
 ## Rejected approaches
 

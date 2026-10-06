@@ -34,3 +34,27 @@ flag is the lot thumbnail's forced quality, not a Build mode flag.
 
 **Outcome:** reverted the same day (`ba41dd4`). Small gain, visible cost. Do not bring it back without a real
 Build-mode or lamp-moved signal.
+
+### 2026-10-05: lamp edits in Build mode
+
+**Context:** commits `3604e77` and `9de1c74`. Lamps edited in Build mode corrected their rooms slowly; a later recording
+of a dragged sconce in an atrium house showed 5.9 s of solving in 6.5 s (about 9 frames a second).
+
+**Outcome:** while a lamp edit's rooms wait for or are in their solve, the lot being played gets 25 ms of solving a frame
+with the camera still once the lamp is let go; while it is dragged the game's 15 ms stays.
+
+### 2026-10-05: lot build slice while moving
+
+**Context:** commit `36c66e5`. A streaming lot is built a slice per frame by 0x00AEA680 with 20 ms (35 for a priority
+lot), which made hitches while the camera moved over lots streaming in.
+
+**Outcome:** the load at 0x00AEA6D8 becomes a call that lowers the slice to 6 ms while the camera moves; the loading
+screen's 2000 ms is still written after it.
+
+### 2026-10-06: after-load settle and the refinement cap
+
+**Context:** commits `a93bbd0` and `e286d0f`. Entering a lot took long to correct its lighting (4.4 ms of solving a
+frame for 8 s); and many lamps refined after their quick pass took 35 to 44 ms of solving a frame for 2 to 3 s.
+
+**Outcome:** for 15 s after the world goes live the lot being played keeps the game's budget while moving and gets 25 ms
+still; while a quick pass is refined the budget is capped at 6 ms. All four changes released in 2.7.0.

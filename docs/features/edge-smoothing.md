@@ -9,7 +9,7 @@ menu stay perfectly sharp. Two methods are offered: **FXAA** (recommended, light
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (present in the first version in this repository) |
+| Availability | Released in 2.1.0 or earlier (present in the first version in this repository). The wait for the drawn world (never on the main menu or load screens): Released in 2.7.0 |
 | Default | On for new configurations; method SMAA, quality High |
 | Menu | System > Edge Smoothing; Overview > Image > Edge Smoothing |
 | Configuration | `[patches.EdgeSmoothing]` in `ApexRadiance.toml` |

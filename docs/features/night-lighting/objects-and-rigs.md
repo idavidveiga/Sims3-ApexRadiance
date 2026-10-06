@@ -9,8 +9,8 @@ shadows. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). Daytime response of the per-pixel terms: in development (PR #2) |
-| Default | On (all switches), Brightness 100%, Seamless light brightness 100% |
+| Availability | Released (present since 2.1.0, the first version in this repository). Daytime response of the per-pixel terms: Released in 2.6.0. Walls blocking per-pixel lamps outdoors, indoor objects lit by lamps of another story, furniture keeping its light until its room changes at a lamp switch, and the game's own lighting in full daylight: Released in 2.7.0 |
+| Default | On (all switches), Brightness 75%, Seamless light brightness 75% (the Soft light style) |
 | Menu | Lighting > Objects (cards *Objects* and *Doors, counters and fences*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
 | Source | [`features/object_light_bridge.cpp`](../../../features/object_light_bridge.cpp), [`features/rig_tracker.cpp`](../../../features/rig_tracker.cpp), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchObjectLampVs`, `PatchObjectLampPs`), [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawObjectLamp`), [`features/terrain_lighting_policy.h`](../../../features/terrain_lighting_policy.h) |
@@ -44,6 +44,11 @@ Three layers:
    patched shader reads the ground light atlas below the pixel and up to 8 world lamps evaluated at the pixel, the same
    lamps for every piece near each other: `max(sun + rig or per-pixel lamps, ground)`, never darker than the game where
    the rig is weak.
+
+In full daylight (night level 0.01 or less) the per-pixel patch, the moon-shadow pass and the leaf-shadow pass are not
+drawn, so objects keep the game's daylight look; at dusk and dawn the lamp terms fade with `SurfaceLampGain`. Outdoor
+objects drop a per-pixel lamp hidden behind an outside wall of the lot (Lighting > Stories > *Walls block light on
+objects*, see [level-light-share.md](level-light-share.md#walls-block-light-outdoors)).
 
 ## Settings
 
@@ -79,7 +84,8 @@ forcaLuzPorPixelNosObjetos)`. The *Fences and stairs catch light* rows of the sa
 
 ## Limitations
 
-- Rigs and per-pixel lamps have no wall shadow: objects inside a U of walls can get lamp light through a wall.
+- The game's rig lamps have no wall shadow: objects inside a U of walls can get rig light through a wall. Per-pixel lamps
+  are dropped only for outside walls of the lot, tested from the object's position.
 - The ground term is the light of the ground below, without height: an upper-story window can pick up ground light.
 - Specular from rig lamps (c5 read twice in 84 Counters and 300 Phong pixel shaders) is not replaced, so highlights can
   still differ between pieces.
@@ -277,12 +283,12 @@ channel (`kBasisCap`). While the light-between-stories directional-map guard is 
 0..7, +8 for the uncapped variant), because the cap transferred floor-height shadows onto wall objects (the cap removes 12
 tokens, three instructions). Without the guard the capped variant stays.
 
-### A lamp switch's furniture waits for its room (06/10)
+### Furniture during a lamp switch
 
-User: "objects together with the walls". At a switch the game updates the rigs of the lamp's room at once (recording 13:52:
-the rig lights changed 0.05 s after the switch), while the room's walls and light map show the new light only when its
-solve ends (0.1 .. 0.5 s; with the quick pass, `RoomLightQueue`), so the lamp's light left the furniture first and the
-room followed. In `OnDrawInner` (room-mode parts, `lot_light_bridge.cpp`):
+At a switch the game updates the rigs of the lamp's room at once (about 0.05 s after the switch), while the room's walls
+and light map show the new light only when its solve ends (0.1 to 0.5 s, or later with *Lamp switches all at once*,
+[room-light-queue.md](../performance/room-light-queue.md)), so the furniture would change before the room. In
+`OnDrawInner` (room-mode parts, `lot_light_bridge.cpp`):
 
 - While no player switch is on (`LampMarkFilter::SwitchActive`), every part draw remembers its rig's lights as the game
   set them: PS c0..c7 (directions and colours) and the vertex lights (VS `vl - 4 .. vl + 3`), keyed by rig and vertex-light

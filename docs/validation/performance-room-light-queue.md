@@ -31,8 +31,12 @@ not identified.
 
 ## Confirmed in game
 
-- Nothing recorded beyond its release.
+- Lamp switches all at once (2.7.0): tested in game by the author on Steam 1.67.2 before publication.
 
 ## Open checks
 
 - Its status line has no menu location in the current menu (no Developer card calls `RenderDeveloperUI`).
+- Lamp switches all at once on other game builds (the solve end hook is Steam 1.67.2 only; elsewhere switches change
+  room by room).
+- Quick update for lamp switches (with *Lamp switches all at once* off): rooms show a quick light within a few frames
+  and refine without a frame-rate drop.

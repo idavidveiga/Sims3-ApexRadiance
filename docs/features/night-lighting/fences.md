@@ -1,15 +1,15 @@
 # Fences, railings, posts and stairs
 
-At night, fence rails and posts, railings and outdoor stairs near lamps are as bright as the lit ground next to them,
-instead of staying dark while the grass around them glows. Snow lying on fence tops and stair tops follows the same
-switch and strength. By day the lamp term fades to a small share, so sunlit fences keep the game's look. Part of
+At night, fence rails and posts, railings and outdoor stairs are lit by the lamps around them: faces turned toward a lamp
+are brighter, faces turned away and fences behind a wall stay dark. Snow lying on fence tops and stair tops follows the
+same switch and strength. By day the lamp term fades, and in full daylight fences keep the game's look. Part of
 [Night Lighting](README.md).
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released in 1.0.0. Subdued daytime lamp response: in development (PR #2) |
+| Availability | Released in 1.0.0. Subdued daytime lamp response: Released in 2.6.0. Per-pixel lamps, walls blocking them and the game's own lighting in full daylight: Released in 2.7.0 |
 | Default | On |
 | Menu | Lighting > Objects > *Doors, counters and fences* card |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -25,17 +25,26 @@ lamp light at all. See [engine/light-objects-and-rigs.md](../../engine/light-obj
 
 ## How Apex Radiance solves it
 
-Apex Radiance patches the fence pixel shader by pattern so that its lamp term becomes the brighter of the game's vertex
-lights and the world ground-light atlas at the pixel's world position. Every rail and post then receives the same lamp
-light as the ground beside it.
+Apex Radiance patches the fence pixel shader by pattern so that it adds per-pixel lamp light, as on outdoor objects:
+the lamps around the fence group, with angle and distance. Where the group's position cannot be read, the lamp term
+falls back to the brighter of the game's vertex lights and the world ground-light atlas at the pixel's world position.
 
 1. **Recognise the instanced structure vertex shader** by its instance streams and output shape.
-2. **Patch the pixel shader** once per game shader: read the ground light atlas at world xz, scale it, and take the `max`
-   with the game's vertex lights (COLOR0) in place of the plain add.
-3. **Draw with the atlas bound** and the strength set per draw; restore everything afterwards.
-4. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)`. At full night it is the
-   configured strength; at full day it is `0.08 x min(strength, 1)`; in between it moves linearly with the night level.
-   The game's vertex lighting stays the lower bound, and sunlight, geometry, materials and atlas mapping are untouched.
+2. **Patch the pixel shader** once per game shader: up to 8 per-pixel lamps (colour x sat(N.l) x sat(1 - d^2/R^2)^2,
+   from the world normal and height the instanced vertex shader already passes in TEXCOORD2) added to the game's vertex
+   lights, and the ground light atlas at world xz, scaled, with `max` in place of the plain add.
+3. **Choose the lamps per group.** The group's centre and its two ends are read from the instance stream (the mean of the
+   instance positions, the farthest instance from it, then the farthest from that one; read again every 5 s). Lamps
+   within 40 m plus the group's half length (at most 60 m more) are chosen around the centre. A lamp is dropped when an
+   outside wall stands between it and the centre and both ends (0.5 m above the pieces), so a fence wholly behind a wall
+   loses it and one that only runs past a wall keeps it. With lamps, the atlas weight is 0 on every face (the atlas is
+   light lying on the ground, at no height); a group whose centre cannot be read gets no lamps and the atlas on every
+   face.
+4. **Draw with the atlas bound** and the strength and lamps set per draw; restore everything afterwards.
+5. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)`: the configured strength
+   at full night, moving linearly toward `0.08 x min(strength, 1)` as day comes. In full daylight (night level 0.01 or
+   less) the patch is not drawn at all and the game's own fence lighting stays. The game's vertex lighting is always the
+   lower bound, and sunlight, geometry and materials are untouched.
 
 There are two fence shader families in the game. The `vs_2_0` instanced "object rig" family shares its shaders with
 bushes and is fixed by the foliage and rig changes ([foliage.md](foliage.md), [objects-and-rigs.md](objects-and-rigs.md)).
@@ -46,7 +55,7 @@ This page covers the `vs_3_0` instanced structure family.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Fences and stairs catch light | `cercasComLuzDoChao` | bool | on | | Ground light on fences, railings, posts and stairs, and on snow lying on objects and stair tops ([snow.md](snow.md)) |
-| Fence brightness | `forcaNasCercas` | float | 75% | 25 to 200% | Multiplies the atlas term; 100% = the same light as the ground. Shown when the switch is on |
+| Fence brightness | `forcaNasCercas` | float | 75% | 25 to 200% | Multiplies the atlas term and the per-pixel lamps; 100% = the same light as the ground. Shown when the switch is on |
 
 Both apply live (`LotLightBridge::SetFenceGroundLight`, every frame). The card disables these rows unless *Street lamps
 light lots* and *Smooth ground light* are both on (the atlas exists only with both) and offers a button to turn them on.
@@ -60,14 +69,18 @@ The Lighting balance styles set `forcaNasCercas` to 67.5% (Subtle), 75% (Soft) o
   ([objects-and-rigs.md](objects-and-rigs.md)).
 - `PS_2673D758`, a fence and railing pixel shader, also matches the outdoor object patch; the instanced structure class is
   dispatched first.
+- Per-pixel lamps follow *Seamless light on pieces* (`luzPorPixelNosObjetos`) and its brightness
+  (`forcaLuzPorPixelNosObjetos`) on the same card ([objects-and-rigs.md](objects-and-rigs.md)); walls block them only
+  while Lighting > Stories > *Walls block light on objects* is on ([level-light-share.md](level-light-share.md)).
 - No game code is patched for the shader part; recognition is by instruction shape.
 
 ## Limitations
 
-- The atlas is the light of the ground, without height or occlusion. A balcony railing gets the ground light below it,
-  and an indoor stair railing near an outdoor lamp can glow. The atlas term applies whatever the rig mode.
-- There are no per-pixel lamps on fences: faces turned towards a lamp are not brighter than the ground at their foot. A
-  fence far from any lamp's ground pool stays dim.
+- One lamp list serves a whole fence group (up to 8 lamps around its centre); a very long group can miss a lamp near one
+  end. Walls block a lamp only when they hide it from the centre and both ends of the group.
+- Groups whose instance positions cannot be read keep the atlas term: the light of the ground, without height or
+  occlusion, so a balcony railing gets the ground light below it and an indoor stair railing near an outdoor lamp can
+  glow.
 - Requires the world atlas, so it needs *Street lamps light lots* and *Smooth ground light*.
 - Only the instanced structure vertex shaders that match the pattern are handled; other instanced objects (grids, columns,
   repeated fences with per-instance positions) keep the game's lighting.
@@ -100,6 +113,18 @@ rotation); outputs TEXCOORD1 and COLOR0; contains `mov oT1.zw, rW.xyxz` (world x
 
 ### Pixel shader patch (`ShaderPatches::PatchInstancedLamps`, `ps_3_0`)
 
+With a TEXCOORD2 input (world normal xyz, world height w) the patch also adds the per-pixel object lamps
+(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, 0)) and a
+ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(0, 0)` with lamps, `(0, 1)` (every
+face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`. The part
+below is the base patch:
+
+With a TEXCOORD2 input (world normal xyz, world height w) the patch also adds the per-pixel object lamps
+(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, 0)) and a
+ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(0, 0)` with lamps, `(0, 1)` (every
+face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`. The part
+below is the base patch:
+
 Needs a COLOR0 input with `.xyz`, a TEXCOORD1 input, and exactly one `add rD.xyz, rS, vC` (COLOR0 in either operand, the
 other a temp). Resources: sampler `E = maxSampler + 1` (refused at 15), `cA = maxConst + 1` (atlas mapping),
 `cB = cA + 1` (`.x` strength), temp `T = maxTemp + 1`; refused if `maxConst + 2 >= 224` or `maxTemp + 1 >= 32`. The
@@ -116,7 +141,8 @@ max   rT.xyz, rT, vC                     ; never below the game's vertex lights
 
 Reached from `OnDrawInner` when the VS is class 7, after the *Street lamps light lots* gate.
 
-1. Off if `cercasComLuzDoChao` is off or the atlas (`LightmapSmooth::Atlas`) is not ready.
+1. Off if `cercasComLuzDoChao` is off, the night level is 0.01 or less, or the atlas (`LightmapSmooth::Atlas`) is not
+   ready.
 2. `PatchedFor(g_fencePs, "Fence/stairs", PatchInstancedLamps)`: one patched copy per game pixel shader.
 3. Save `cA` and `cB`; bind the atlas to `sE` (`SamplerBind`, no mip filter); set `cA` to the atlas mapping and
    `cB = (SurfaceLampGain(night, forcaNasCercas), 0, 0, 0)`; swap the pixel shader; draw; restore. The game's vertex

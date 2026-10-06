@@ -2,14 +2,15 @@
 
 At night, ponds and lakes near lamps show warm glints and a soft glow from each lamp. With Depth Blur on, the water also
 mirrors the shore (trees, houses and lit lamps) instead of only a fixed sky. The ocean and swimming pools keep the game's
-look. Part of [Night Lighting](README.md); the reflection card is described from the player's side in
-[reflections.md](../reflections.md).
+look. The water of Twinbrook, Bridgeport and Moonlight Falls, drawn with a water shader that never shows the game's
+reflection, gets the same pass. Part of [Night Lighting](README.md); the reflection card is described from the
+player's side in [reflections.md](../reflections.md).
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released in 1.0.0. Second lake shader (cloudy and rainy weather): 2.5.2. Highlight filter and colour preservation: 2.5.5 |
+| Availability | Released in 1.0.0. Second lake shader (cloudy and rainy weather): 2.5.2. Highlight filter and colour preservation: 2.5.5. The water shader without the game's reflection (Twinbrook, Bridgeport, Moonlight Falls): 2.7.0 |
 | Default | On |
 | Menu | World > Water & Snow > *Lamp Glow* and *Water Reflections* cards; Developer > Lighting > *Compare lighting paths* > Water highlights |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -19,7 +20,8 @@ look. Part of [Night Lighting](README.md); the reflection card is described from
 
 The game's pond and lake water gets no lamp light and reflects only a fixed sky cube. Its brightness comes from the sun's
 specular term and shadow alone, so at night ponds are dark and dead even beside a row of street lamps. The ocean renders a
-real-time planar reflection, but lakes do not. See [engine/shaders.md](../../engine/shaders.md).
+real-time planar reflection, but lakes do not, and neither does a third water shader used by Twinbrook's sea,
+Bridgeport's lake and Moonlight Falls' water. See [engine/shaders.md](../../engine/shaders.md).
 
 ## How Apex Radiance solves it
 
@@ -27,7 +29,8 @@ Right after the game draws its lake water, Apex Radiance draws a second pass on 
 and glow from up to 16 nearby lamps and, when the scene depth is available, a screen-space reflection of the shore. It
 blends premultiplied over the game's water, so the game's own shader and states stay untouched.
 
-1. **Recognise the lake water** by the exact identity of its pixel shaders (sunny and other weather) and vertex shader.
+1. **Recognise the lake water** by the exact identity of its pixel shaders (sunny and other weather) and vertex shader,
+   and the water without the game's reflection by its own shader pair.
 2. **Draw the game's water** unchanged.
 3. **Choose lamps** from the shared lamp list ([roofs.md](roofs.md)) around the water mesh's position.
 4. **Build world-to-clip** from the water vertex shader's matrices, so rotated lots project correctly.
@@ -44,8 +47,8 @@ keep their hue. Both are spatial: there is no frame history, jitter or temporal 
 |---|---|---|---|---|---|
 | Lamps glow on ponds (Lamp Glow card) | `lagosRefletemLampadas` | bool | on | | Lamp glints and glow. With it off the pass still runs for the shore reflection, with lamp strength 0 |
 | Glow brightness | `brilhoNaAgua` | float | 40% | 10 to 40% | Lamp glint and glow strength (PS `c52.x`). Older saved values are clamped to the range at run time |
-| Water Reflections (card switch) | `reflexoNoLago` > 0 | | on | | Off sets the strength to 0; on restores the last value (default 100%) |
-| Reflection brightness (Water Reflections card) | `reflexoNoLago` | float | 100% | 0 to 300% (slider from 5%) | Shore reflection strength (PS `c58.x`). Needs Night Lighting and Depth Blur on |
+| Water Reflections (card switch) | `reflexoNoLago` > 0 | | on | | Off sets the strength to 0; on restores the last value (default 156%) |
+| Reflection brightness (Water Reflections card) | `reflexoNoLago` | float | 156% | 0 to 300% (slider from 5%) | Shore reflection strength (PS `c58.x`). Needs Night Lighting and Depth Blur on |
 | Developer > Water highlights > Stabilize lamp sparkles on water | `waterSpecularFilter` | bool | on | | Spatial widening of undersampled lamp highlights. Off = the original lamp lobe |
 | Developer > Water highlights > Preserve bright lamp colors on water | `waterPreserveLampColors` | bool | on | | Shared RGB scale for highlights above 0.7. Off = the original per-channel clamp at 0.8 |
 
@@ -69,7 +72,8 @@ settings. The two Developer switches are for A/B comparison; with both off the l
 
 ## Limitations
 
-- Only the lake pixel and vertex shader pair is handled. The ocean (whose planar reflection already shows lit lamps),
+- Only the lake shader pairs and the pair of the water without the game's reflection are handled. The reflecting ocean
+  (whose planar reflection already shows lit lamps),
   swimming-pool water (`PS_3140B910`, `ps_2_0`, reflection and refraction only) and any other water shader, such as the
   plaza fountain, keep the game's look.
 - Without scene depth (Depth Blur off, or the game's MSAA on) there are lamp glints and glow only, no shore reflection.
@@ -87,7 +91,16 @@ settings. The two Developer switches are for A/B comparison; with both off the l
   with the sun shadow compared by hand (`texld` + `cmp` against `v5.z`, `dcl_texcoord6`) instead of the hardware
   `texldp`; the game uses it when the weather is not sunny. The shader package has only these two pixel shaders with the
   lake constants `c8 = (5, 1.25, 0.15, 0.1)`.
-- If the lake pixel shader is drawn with another vertex shader, the pass is skipped (logged once).
+- Water without the game's reflection (Twinbrook's sea, Bridgeport's lake and Moonlight Falls' water): PS
+  `kSeaNoReflPs` {1136, `0xC1F59F1B`} (`PsClass::Sea`; the scene copy in `s6`, the sky cube in `s3`, no planar
+  reflection) with VS `kSeaNoReflVs` {1136, `0xA784C725`} (VS class 12). The reflecting ocean is another shader. The
+  pass is the lake's, compiled a second time with the macro `SEA` (`kWaterSeaPsId`): its camera is in `c0`, its wave
+  scales in `c4`, its world position in `TEXCOORD2` and its fog in `COLOR1.w`. `DrawLake(..., sea = true)` reads the
+  world-view-projection from VS `c0..c3` and the world rows (an identity) from `c4..c6`, and picks lamps around the
+  camera (VS `c7`), since the sea mesh is large and has no translation. Log: `Water: sea without the game's reflection
+  seen`.
+- If the lake pixel shader is drawn with another vertex shader, the pass is skipped (logged once); the sea pixel shader
+  with another vertex shader is skipped too.
 - The lake branch runs before the *Street lamps light lots* gate in `OnDrawInner`, so water works with that option off.
 - The pass shader is compiled at start-up by `framework/shader_cache` and created at the first lake draw.
 

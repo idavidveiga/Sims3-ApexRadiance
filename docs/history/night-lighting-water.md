@@ -127,3 +127,15 @@ passed 12 flat-normal A/B cases.
 **Outcome:** `brilhoNaAgua` limited to 10 to 40%, default 40%; the run-time clamp also limits older saved values. Shore
 reflection strength unchanged. At that time the light styles set the glow (Soft 30%, Natural and Bright 40%); the current
 Lighting balance styles do not change water settings.
+
+### 2026-10-06: water that never shows the game's reflection
+
+**Context:** commit `749e3ed`. Twinbrook's sea showed only the sky cube map: an F7 capture (2026-10-06 00:56) found its
+own shader pair (`kSeaNoReflPs`, `kSeaNoReflVs`), which never reads the planar reflection; the reflecting ocean of
+Sunset Valley is another shader.
+
+**Finding:** the pair binds the scene copy in `s6` like the lake, with other input registers (camera `c0`, wave scales
+`c4`, world position in `TEXCOORD2`, fog in `COLOR1.w`) and an identity world matrix.
+
+**Outcome:** the lake pass compiled with `SEA` is drawn after it. A capture of 2026-10-06 01:09 showed the same pair on
+Bridgeport's lake, and Moonlight Falls' water uses it too (seen in game). Released in 2.7.0.

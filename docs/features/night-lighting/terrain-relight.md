@@ -9,7 +9,7 @@ a time, so the game does not freeze for a full terrain rebuild. Part of [Night L
 
 | | |
 |---|---|
-| Availability | Released (visitor patch, arm sites and dusk rebuild since 0.1.0; paced sweep default since 2.5.3; local relight of user and visible-lot edits since 2.5.4; world-owned type-11 lamps since 2.5.6). Day/night endpoint rebuilds, Build-mode phase response, priority re-queue of in-flight chunks and the world-lamp rig request on early completion: in development (PR #2) |
+| Availability | Released (visitor patch, arm sites and dusk rebuild since 0.1.0; paced sweep default since 2.5.3; local relight of user and visible-lot edits since 2.5.4; world-owned type-11 lamps since 2.5.6; day/night endpoint rebuilds, Build-mode phase response, priority re-queue of in-flight chunks and the world-lamp rig request on early completion since 2.6.0). Changed in 2.7.0: the world-load and Refresh terrain rebuilds run one chunk per frame, nearest first; a lamp switch's ground changes in one frame; urgent chunks go back to back |
 | Default | On |
 | Menu | Lighting > Ground > Ground & Lots > *Lot lamps light the street*; Lighting > Ground > Updates (*Update at dusk*, *Delay after dusk*); Lighting > Overview > Refresh lighting |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` (keys below) |
@@ -51,6 +51,12 @@ Reverse-engineering summary (Steam 1.67.2.024037; details in
 4. **Relight locally.** A lamp change re-renders only the chunks under the changed lamps' old and new light rects through
    the game's one-chunk sweep branch (chunk+0x54); a change the local path refuses, and the day/night endpoint rebuilds,
    become a paced sweep of every chunk, nearest to the camera first; a full rebuild is the last fallback.
+5. **Pace the full rebuilds.** The world-load rebuild and the *Refresh terrain* button run the game's own full rebuild
+   (chunk+0x55) one chunk per frame, nearest to the camera first (`ChunkRelight::QueueRebuild`), instead of every chunk
+   in one frame of about 240 ms. When that is not possible the full rebuild is armed as before.
+6. **One frame for a lamp switch.** The chunks of a player's lamp switch are re-rendered back to back, and their
+   smoothed maps are held until the last one is done and then shown together (see
+   [world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md)), so the ground does not change in pieces.
 
 ## Settings
 
@@ -60,12 +66,13 @@ Reverse-engineering summary (Steam 1.67.2.024037; details in
 | Ground > Updates > Update at dusk | `automaticoAoAnoitecer` | bool | on | | Rebuild at each settled endpoint (night above 0.99, day below 0.01) |
 | Ground > Updates > Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5 to 10 s | Wait before an endpoint rebuild; 0 while Build mode editing (`WorldManager+0x1B4 == 2`) |
 | Developer: Relight only nearby terrain | `relightNearbyChunks` | bool | off | | Developer mode only. Automatic lamp changes also try the local relight (user-driven edits always do) |
-| Developer: Paced terrain sweep | `relightPacedSweep` | bool | on | | Registered in developer mode only; the default is active in every mode. Endpoint, lamp-change and stuck-countdown rebuilds become a paced sweep |
+| Developer: Paced terrain sweep | `relightPacedSweep` | bool | on | | Registered in developer mode only; the default is active in every mode. Endpoint, lamp-change and stuck-countdown rebuilds become a paced sweep, and the world-load and button rebuilds run one chunk per frame |
 | Individual options | `recalcularLotesAoAnoitecer` | bool | off | | Experimental: re-solve room 0 of every lot 3 s after a dusk rebuild (not after a load rebuild); fallback 6 s after the dusk endpoint |
 | Individual options | `postesAcesosNoCalculo` | bool | off | | Experimental: street lamps count as lit in lot light solves (0x6BE18C, [lot-light-pass](lot-light-pass.md)); reinstall |
 
 Buttons (Lighting > Overview > Refresh lighting, also Developer > Lighting; enabled once the world is live): *Refresh
-terrain* (`g_kickRequested`: arms both countdowns like a lamp pick-up, a full rebuild, day or night) and *Refresh lots*
+terrain* (`g_kickRequested`: the paced full rebuild, one chunk per frame; when it cannot start, both countdowns are
+armed like a lamp pick-up, a full rebuild, day or night) and *Refresh lots*
 (`g_relightLotsRequested`: queues room 0 of every loaded lot story). *Refresh lights* and the hotkey run
 `NightLighting::RefreshAll` ([README](README.md#refresh-controls)).
 
@@ -103,6 +110,8 @@ terrain* (`g_kickRequested`: arms both countdowns like a lamp pick-up, a full re
 - `+0x54` does not refresh the road partition mark (`0x00B789B0`); roads are expected to see the in-place light map.
 - A paced sweep of 64 chunks takes several seconds at 8 releases per second; at most the 4 nearest chunks are
   prioritised during Build mode editing.
+- The paced world-load rebuild shows the far chunks' new light a moment after the near ones (one chunk per frame), and
+  lamp edits wait until it ends.
 - The developer status line *Rebuild pending: the game only rebuilds the terrain at night (or in Build mode)* and the
   wait text *rate-limited (automatic: 30 s after the last rebuild)* are stale wording (see *Countdown consume* and
   *Decision rules*).
@@ -258,10 +267,9 @@ rect updaters 0x006BDE66 / 0x006BE816 / 0x006BE8AB are not verified to run in th
 
 **Release** (every frame): one chunk in flight, its +0x54 set only after the previous one finished and never in the
 frame right after a render; at most 8 releases in any 1 s, 12 for urgent work once the latest measured chunk render in
-this world took at most 12 ms, and that urgent work goes back to back, one chunk a frame (06/10: a player's lamp switch
-holds its ground until its last chunk is done and then shows it in one frame, `LightmapSmooth::HoldChunks`, see
-[world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md); the 06/10 recording's 4 chunks took 8 frames, now
-4); never while any chunk has +0x55 or +0x56; never while a gate is closed. Gates mirrored
+this world took at most 12 ms, and that urgent work goes back to back, one chunk a frame (a player's lamp switch holds
+its ground until its last chunk is done and then shows it in one frame, `LightmapSmooth::HoldChunks`, see
+[world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md)); never while any chunk has +0x55 or +0x56; never while a gate is closed. Gates mirrored
 from `0x00C7E7A0`: live and TerrainData (terrain+0x64) +0x1D == 0; `[WM+0x54] ? [[WM+0x54]+8] : 0` (`0x00C61040`) != 0
 and TerrainData +0x20 == 0; byte `[[TerrainData+0x0C]+0x6C] != 0` (the sweep branch is skipped at `0x00C85011`, read at
 `0x00C8471A..0x00C8473A`, probably a tool state). Refusal text names the gate. A chunk flagged while closed would stall
@@ -270,6 +278,16 @@ the game's whole per-chunk loop: `0x00C7E7A0` returns without clearing +0x54 and
 **Sweep** (`QueueSweep`): every chunk; during Build mode editing with a known eye, the 4 nearest are urgent
 (`PreviewPriorityChunks`). A new sweep clears the queue and re-queues a chunk in flight. Log `Terrain sweep started:
 <reason> (N chunks, ...)` / `Terrain sweep done: ...`.
+
+**Paced full rebuild** (`QueueRebuild`, world load and *Refresh terrain*, while `relightPacedSweep` is on): the game's
+own full rebuild (chunk+0x55: geometry, light map bake, road mark, then the +0x54 render) one chunk at a time, nearest
+to the camera first. The game's consume (0x00C84C3E..0x00C84C5E) only resets the countdown and sets +0x55 on every
+chunk, and its +0x55 branch clears the flag when done (0x00C850B1), so a chunk is finished when its +0x55 is 0 again.
+Unlike a sweep it needs no earlier rebuild of this world and no light map (the bake creates it). It drops the +0x54
+queue; lamp edits decided meanwhile wait for it ("waiting for the terrain rebuild in progress"). It starts like a
+consumed rebuild (the lamps go into the snapshot, the smoothed maps expect every chunk again) and its end enables the
+local path. Log `Terrain rebuild started, one chunk at a time: <reason> (...)` / `Terrain rebuilt one chunk at a time:
+...`; when it cannot start, `Paced rebuild not possible (...): ...; full rebuild instead`.
 
 **Completion**: the thunk sees the chunk rendered (+0x54 back to 0, QPC time), or +0x54 is 0 at Present (rendered by
 another game path, `0x00C83060` during a LOD change; `FinishFlight` then calls `NoteChunkRendered` itself). **Timeout**:

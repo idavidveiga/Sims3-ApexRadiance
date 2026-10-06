@@ -8,7 +8,7 @@ sun and shadows; only the lamp light baked into each wall is scaled. Part of [Ni
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: in development (PR #2) |
+| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: Released in 2.6.0. The game's bloom alpha kept on lit walls and the rebalanced style brightness (84% for Soft): Released in 2.7.0 |
 | Default | On, Brightness 200% |
 | Menu | Lighting > Buildings > Buildings card, group *WALLS* (lamps of every story: Lighting > Stories) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -36,6 +36,12 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
    draw, Apex reads the constant that scales the baked map, writes `native x Brightness + (1 - night) x min(Brightness, 1)
    x 0.08` into its `.x`, draws, and restores the constant. At full night this is exactly `native x Brightness`; by day a
    subdued lamp term is added so the baked lamp light is not discarded.
+
+   The ExteriorWall shader derives its output alpha, the scene's bloom mask, from the final luminance, so a stronger lamp
+   term would also widen the bloom over whole walls and foundations. For opaque wall draws Apex therefore draws twice:
+   an alpha-only pass with the game's own constant (no depth or stencil write) writes the game's bloom alpha, then the
+   RGB pass with Apex's gain and alpha writes off. Blended wall variants keep the single pass. Found and validated by
+   idavidveiga ([day-bloom-fixes.md](day-bloom-fixes.md)).
 
 ## Settings
 

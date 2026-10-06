@@ -8,8 +8,8 @@ from looking dirty under the scene shade while furniture and rooms keep their fu
 
 | | |
 |---|---|
-| Availability | In development (PR #2) |
-| Default | Off |
+| Availability | Released in 2.6.0; on by default since 2.7.0 (Sims 40%, hair 0%, at most 11%) |
+| Default | On (with Ambient Occlusion) |
 | Menu | Image > Ambient Occlusion > *Sim Occlusion* card |
 | Configuration | `[patches.AmbientOcclusion]` in `ApexRadiance.toml` (shared with Ambient Occlusion) |
 | Requires | [Ambient Occlusion](ambient-occlusion.md) on |

@@ -10,7 +10,7 @@ game's own sunlight and shadows untouched. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released (part of Night Lighting since 0.1.0; GPU path default). Native solar alpha, daylight range and squared terrain lamp scales: in development (PR #2) |
+| Availability | Released (part of Night Lighting since 0.1.0; GPU path default). Native solar alpha, daylight range and squared terrain lamp scales: Released in 2.6.0. A lamp switch's ground in one frame, and *Smooth ground light* switched without relighting: Released in 2.7.0 |
 | Default | On |
 | Menu | Lighting > Ground > Ground & Lots > *Smooth ground light* |
 | Configuration | `[patches.NightTerrainRelight]` `mapaDeLuzSuavizado` in `ApexRadiance.toml` |
@@ -49,7 +49,7 @@ the automatic fallback.
 
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Pushed every frame (`LightmapSmooth::SetEnabled`); off calls `Clear()` (everything released). The Doors, counters and fences options are disabled without it (no atlas) |
+| Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Pushed every frame (`LightmapSmooth::SetEnabled`); off calls `Clear()` (everything released). A change only switches the draw paths between the smoothed and raw maps: it does not refresh the lighting or re-solve terrain, lots, rooms or rigs. The Doors, counters and fences options are disabled without it (no atlas) |
 | Ground brightness | `brilhoNoChao` | float | 75% | 25 to 300% | Terrain lamp scale constant (see *World terrain draw*) |
 | Developer: Smooth the ground light maps on the GPU (A/B) | `mapaDeLuzSuavizadoNaGpu` | bool | on | | Registered only in developer mode; pushed every frame (`SetGpuPreferred`), applied at the next Present: a switch calls `Clear()` and the new path rebuilds every map. Normal mode always prefers the GPU and falls back to the CPU by itself |
 
@@ -185,11 +185,10 @@ the driver (DXVK blits with linear filtering), not the integer `(sum + 2) / 4`.
 - Present (`OnPresentGpu`): timestamp read-back, fallback hash checks, sweep end, `EnsureAtlas`, the hold's time limit.
   No drawing at Present.
 
-**A lamp switch's ground in one frame** (06/10, user: "can the ground's update be as perfect as the walls'?"). A switch's
-local relight re-renders its chunks one at a time (the atrium house of the 06/10 recordings sits at the corner of chunks
-(3,3), (3,4), (4,3), (4,4)): each chunk showed its new light in its own frame, two frames apart, and the smoothed strip
-along the borders between them (the 6 texels read from the neighbour) only `kSettleFrames` after the last change, so the
-ground changed in quarters with a cross-shaped seam for about a second. Now, for a player's pure switch (lamps on or off,
+**A lamp switch's ground in one frame.** A switch's local relight re-renders its chunks one at a time: without a hold
+each chunk would show its new light in its own frame, and the smoothed strip along the borders between them (the 6
+texels read from the neighbour) only `kSettleFrames` after the last change, so ground at the corner of four chunks would
+change in quarters with a cross-shaped seam for about a second. For a player's pure switch (lamps on or off,
 nothing added, removed, moved or recoloured: `TryLocal` in the terrain relight), `HoldChunks(batch, cells)` marks the
 batch's chunks that have a smoothed map `held`: `Current` keeps returning their map from before the switch and the
 service builds none of them (nor `Get`'s own build). `ReleaseHold(batch)` when the batch's last chunk was re-rendered

@@ -433,3 +433,35 @@ grey. F8 23:58:17 identifies only lamp #2084, story 2 room 16, imported into low
 
 **Outcome:** the exterior-wall veto for basis-map lamps (PR #2, `2584e01`), together with the structure-change refresh
 and the 250 ms floor-edit delay (was 1.5 s of quiet).
+
+### 2026-10-05: walls block lamp light on outdoor floors and objects
+
+**Context:** commits `bf0e71a` and `5fe54b4`. A wall lamp outside lit the floor of a yard without a roof behind the
+wall, an upper deck behind its half wall, and the objects there: outdoor floors take `max(floor map, ground atlas)`
+and the atlas carries room 0's lamps with no walls.
+
+**Outcome:** the blocked share of room 0's lamps stored in the alpha of outdoor floor texels of stories 1 and up (the
+floor atlas shader takes `atlas x (1 - alpha)`), and a copy of each story's outside walls for a render-thread segment
+test on objects. Two switches under Lighting > Stories, both on. Released in 2.7.0.
+
+### 2026-10-06: indoor objects take lamps of another story
+
+**Context:** commit `b3741b4`. A light capture showed an atrium's upper window frame black (0.02), its rig holding only
+fill lights, right over the lower frame lit by the sconce below: the game's rig gather takes only lamps of the object's
+own room.
+
+**Outcome:** `ObjectLightBridge` runs the game's gather once more for a room-mode rig with the list's lamps of other
+rooms that reach its centre (`CrossLampReach`: share at least 0.25, within 15 m) and gathers those rigs again after every
+lamp edit. Released in 2.7.0.
+
+### 2026-10-06: upper half walls lit by a lamp of the story below
+
+**Context:** commit `bec724d`. A ground-floor sconce left the upper story's half wall of a balcony dark beside the lit
+wall next to it; in a recording all 21 half-wall points were blocked by the game's wall test and passed by WallPass.
+
+**Finding:** the game's own wall test of the lit story (`GameWallTest`, CALL at `0x0069FE93`) has no wall base and its
+soft mode shades rays passing near a wall's end.
+
+**Outcome:** for an outdoor lamp of a lower story, that test runs from where the ray reaches the lit story's lowest floor
+(`OutdoorEntry`), as for indoor rooms; a ray that comes up through a floor a player placed on that story keeps the
+whole ray. Released in 2.7.0.

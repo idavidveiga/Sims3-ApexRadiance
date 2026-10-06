@@ -46,3 +46,5 @@ The harnesses only read captures and sources and print to stdout.
 
 - Daytime response 0.08 (PR #2): gameplay appearance pending; only the captured bench shader was tested offline.
 - Same-lot gameplay and DXVK confirmation of the PR #2 lighting changes: pending.
+- Per-pixel lamps on fences and walls blocking them (2.7.0): the patched fence shader was not validated offline;
+  in-game check of a fence beside a lamp, a fence behind a wall, and a long fence running past a wall.

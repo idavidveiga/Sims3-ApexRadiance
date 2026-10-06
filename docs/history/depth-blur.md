@@ -143,3 +143,18 @@ signature and has the shape `mov eax, [global]; ret`.
 **Outcome:** the shared gate also requires that window to be absent, failing closed on missing UI state or an
 unrecognised getter. The menu's readiness interval starts only after the window is gone, and `BlurEffect` re-checks
 immediately. 91 mock checks pass; real transitions and non-Steam builds are not yet validated.
+
+### 2026-10-05: no blur over a frozen screen
+
+**Context:** commit `e46d47d`. While saving, the game shows a still image of the world and draws almost nothing with
+depth, yet Depth Blur blurred the whole screen (with Depth Blur off the save screen was sharp).
+
+**Outcome:** PostScene counts the depth-writing scene draws of each frame and Depth Blur skips a frame with fewer than 48,
+logging when it pauses and resumes. The threshold is not verified against a capture of the save frame. Released in 2.7.0.
+
+### 2026-10-06: the shared world gate
+
+**Context:** commit `23799c2` and the follow-ups listed in [architecture history](architecture.md).
+
+**Outcome:** Depth Blur waits for `WorldSession::InWorld` (the world drawn) and Night Lighting's load-settled signal,
+then its 3 s settle, a 2 s hold and a 1 s fade-in. Released in 2.7.0.

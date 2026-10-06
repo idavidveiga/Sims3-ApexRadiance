@@ -2,7 +2,7 @@
 
 # Apex Radiance for The Sims 3
 
-A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come color filters, soft ambient occlusion with separate control for Sims, clean anti-aliasing, a soft depth blur and filtered screenshots, all from one in-game menu.
+A lighting, visuals and performance mod for The Sims 3. At night, street lamps and lot lamps really light the world around them: the ground, lots, objects, fences, walls, roofs, ponds and snow. It also goes after the game's small, frequent stutters, especially while you move the camera and while lots, Sims and textures load, without changing how the game looks. On top of that come a full color editor with 26 stackable filters, soft ambient occlusion with separate control for Sims, clean anti-aliasing, a soft depth blur and filtered screenshots, all from one in-game menu.
 
 
 <div align="center">
@@ -41,23 +41,24 @@ A lighting, visuals and performance mod for The Sims 3. At night, street lamps a
 In the base game, lamps glow but barely light anything around them. Apex Radiance rebuilds night lighting so they really light their surroundings:
 
 - **Ground, lots and streets:** smooth, warm pools of light on grass, sidewalks, roads and lot floors, with no hard edge where a lot ends.
-- **Objects, fences, walls and roofs:** outdoor objects, fences, stairs, house walls and roofs pick up the light of nearby lamps.
+- **Objects, fences, walls and roofs:** outdoor objects, fences, stairs, house walls and roofs pick up the light of nearby lamps, and walls stop it: a yard behind a wall stays dark.
 - **Every-Story Ground Light:** lamps on upper floors, balconies and terraces light the ground below too.
 - **Inside the house:** indoor lamps shine through stairwells, atriums and open floors to the stories above and below, and stop at solid floors and walls. Furniture, stairs and curtains take the room's light smoothly, and walls meet at the floor line without a step in the light.
 - **Rooms at Night:** instead of the game's strong blue glow in rooms with every lamp off, a soft background light you set with Brightness and Blue tint.
-- **Light styles and brightness:** Soft, Natural or Bright sets lamp brightness everywhere at once, and the ground, roads, street lamps, lot lamps, objects, fences, walls, roofs and ponds each have their own slider.
+- **Light styles and brightness:** Subtle, Soft or Natural sets lamp brightness everywhere at once, and the ground, roads, street lamps, lot lamps, objects, fences, walls, roofs and ponds each have their own slider.
 - **Lamp colors and moonlight:** from the game's pink to warm white, with an optional separate color for lot lamps, and a slider for how much the moon lights the world.
+- **Lamp switches all at once (Experimental):** switching one lamp or all the lights of a house changes the rooms, the furniture, the ground and the trees together, in a single frame, once the new light is ready. No steps and no corrections afterwards.
+- **Light detail (Experimental):** an option for sharper lamp light on walls and floors.
 - **Fast, correct updates:** placing, moving, switching or recoloring a lamp, adding a story or a roof, and the change from day to night all update the light quickly. **Refresh lighting** relights rooms, lots and objects at any time.
-
 ### Water & Snow
 
 - Lamps glow and sparkle on ponds and lakes.
-- Ponds mirror the trees and houses along their shore.
+- Ponds mirror the trees and houses along their shore, and so does the water of Twinbrook, Bridgeport and Moonlight Falls that never showed the game's reflection.
 - Walked-on sidewalks show through the snow.
 
 ### Ambient Occlusion
 
-Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. It is computed at full resolution with no noise, so it stays perfectly still when the camera does, and lamp-lit or bright surfaces keep their light and color. Five quality levels, adjustable strength, reach and distance, and it also works in map view.
+Soft shade where things meet: under furniture, in corners, where walls meet the floor and around houses and trees. Lamp-lit and bright surfaces keep their light and color. Temporal smoothing keeps it clean and steady, Half resolution makes it lighter on the graphics card, and Thin object detail lets the shade pass behind legs and rails. Five quality levels, adjustable strength, reach and distance, and it also works in map view.
 
 ### Sim Occlusion
 
@@ -70,7 +71,12 @@ A full picture editor for the 3D world; menus and text keep their normal look.
 - Brightness, contrast, saturation, warmth and sharpness.
 - Film-style tones, a six-color mixer and a vignette.
 - A before/after switch and a hold-to-compare key.
-- **Banding Fix:** an invisible, fixed grain that removes the visible steps in smooth light and shadow, with optional smoother gradients in the sky.
+- **Filters:** 26 looks you can stack, each with its own strength: Technicolor 1 and 2, DPX Cineon, Vintage, Cross-process, Filmic pass, Black and white, Tint, Colorfulness, Night Mode, Levels, LUT, Atmospheric fog, Auto exposure, Adaptive sharpening, Glow, Halation, Dreamy, Fake HDR, Emphasize, Tilt-shift, Prism, Film grain, 3DFX, CRT and Color-blind mode. All start off.
+- **LUT files:** put PNG look-up tables (Lightroom, Photoshop or ReShade LUT packs) in the LUTs folder of Apex Radiance and pick one in the LUT filter.
+
+### Banding Fix
+
+An invisible, fixed grain that removes the visible steps in smooth light and shadow, on its own page, with optional smoother gradients in the sky.
 
 ### Depth Blur
 
@@ -91,9 +97,14 @@ Apex Radiance goes after the game's small, frequent stutters, especially while y
 - **Camera and lighting:** rooms light up sooner when you enter a lot or change floors; lot lighting and wall shading are spread out or postponed while the camera moves; new objects join the scene over a few frames instead of all at once.
 - **Files and objects:** the game remembers where its files are instead of searching every package each time, skips repeated searches for files that do not exist, builds file lists faster and finds objects faster.
 - **Textures and Sims:** faster texture and cache compression with exactly the same output, split over several processor cores, and faster sorting of hair and clothing layers when Sims are built.
-- **Memory:** less waiting when the game reserves and frees memory.
+- **Memory:** less waiting when the game reserves and frees memory, and **Room to save** (Experimental) keeps memory free for saving (Error 12) and drops unused game files when memory runs low.
+- **Game and scripts (Experimental):** the game stops repainting its own window every frame, and its scripts compare numbers and look up types with less work.
 
-Apex Radiance's own shaders are compiled at startup on a background thread, never in the middle of play.
+Apex Radiance's own shaders are compiled once on a background thread and kept on disk, never in the middle of play.
+
+### Lot Streaming
+
+Lots keep their full detail farther away (up to 300 m) and more of them at once (up to 16), streaming in smoothly while the camera moves, with steadier lot visibility and a pause in map view. Experimental and off by default: turn it on in its own page under System. Research and code by [idavidveiga](https://github.com/idavidveiga).
 
 ### The menu
 
@@ -154,6 +165,7 @@ How every feature works, including the reverse-engineered engine details, is doc
 - **Apex Radiance** by [@loinyx](https://github.com/loinyx).
 - Sims3SettingsSetter by sims3fiend
 - Every-Story Ground Light (lamps on upper floors lighting the ground) uses a technique from [Arro](https://arro-now.tumblr.com/)'s Split-Level Lighting Fix.
+- Lot Streaming and the daytime bloom fixes: research and code by [idavidveiga](https://github.com/idavidveiga).
 - Edge Smoothing's FXAA mode follows FXAA 3.11 by Timothy Lottes (NVIDIA).
 - Third-party code: [Dear ImGui](https://github.com/ocornut/imgui) (MIT), [Microsoft Detours](https://github.com/microsoft/Detours) (MIT), [toml++](https://github.com/marzer/tomlplusplus) (MIT), [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al. (see `third_party/smaa/LICENSE.txt`), the texture sharpening after [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT), [Lucide](https://lucide.dev) icons (ISC, see `third_party/lucide/LICENSE`).
 

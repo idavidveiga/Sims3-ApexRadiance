@@ -2,17 +2,18 @@
 
 Performance reduces the stutters (single long frames, also called hitches) that The Sims 3 produces while lots stream
 in, the camera pans over a neighbourhood, Sims are built in Create a Sim, textures and caches are written, and rooms
-relight. It is a group of twelve independent switches. Each one replaces or reschedules one specific piece of game work;
-none of them changes what the game draws once its work is done. Most of them produce exactly the game's own result
-faster; the scheduling switches spread the same work over more frames while the camera moves.
+relight. It is a group of fifteen independent switches, plus the separate [Lot Streaming](lot-streaming.md) page. Each
+one replaces or reschedules one specific piece of game work; none of them changes what the game draws once its work is
+done. Most of them produce exactly the game's own result faster; the scheduling switches spread the same work over more
+frames while the camera moves.
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Released. The individual switches were introduced between 2.1.0 and 2.4.0 (see the table below); all twelve are on by default since 2.5.5. The single Overview switch for the group: in development (PR #2) |
-| Default | All twelve on when no saved choice exists. An explicit saved off choice stays off |
-| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Memory handling*); Overview > Performance (one switch for the group) |
+| Availability | Released. The individual switches were introduced between 2.1.0 and 2.7.0 (see the table below); the first twelve are on by default since 2.5.5. The single Overview switch for the group: Released in 2.6.0, covering fifteen switches since 2.7.0. Room to save, Lighter window updates and Faster scripts: Experimental, released in 2.7.0 |
+| Default | All fifteen on when no saved choice exists. An explicit saved off choice stays off. The Lot Streaming switches are off by default |
+| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
 | Configuration | One `[patches.<Name>]` table per switch in `ApexRadiance.toml` |
 | Developer mode | Switches: no. Counters, verification controls and tuning: Developer > Performance |
 | Source | [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp), [`patches/performance.h`](../../../patches/performance.h), the feature modules linked from each page |
@@ -29,7 +30,9 @@ The game does several expensive things on the render thread or while the render 
 - it places every newly queued scene node in one frame;
 - it walks the whole world object tree to find a lot by its ID;
 - it compresses textures (DXT) and cache records (RefPack) with slow single-threaded encoders, sorts CAS triangles with
-  a quadratic test, and serialises every allocation of every thread on one barely spinning lock.
+  a quadratic test, and serialises every allocation of every thread on one barely spinning lock;
+- its 32-bit address space fragments in long sessions until a save fails (Error 12);
+- it repaints its own window every frame and its scripts call a library for every decimal comparison.
 
 Each of these shows up as a dominant cause of hitches in the [Frame Profiler](../frame-profiler.md). The engine side of
 each problem is described on the switch's own page and in the engine references:
@@ -48,15 +51,14 @@ Every switch works at the exact game function behind one measured cost, and foll
 3. **Checked against the game.** The first calls of every session (16 for the encoders, 64 for object lookups) also run
    the game's own function and compare. Any difference is logged, the game's answer is used, and that switch turns
    itself off for the session.
-4. **Refuse when unsure.** Every hook site is compared with the studied Steam 1.67.2 bytes before it is written. A
-   difference leaves the switch off with a status message.
+4. **Refuse when unsure.** Every hook site is compared with the studied Steam 1.67.2 bytes (or found by signature on
+   other builds) before it is written. A difference leaves the switch off with a status message.
 
 ### The switches
 
 | Switch (menu label) | Card | Introduced | Page |
 |---|---|---|---|
-| Faster room lighting | Camera and lighting | 2.1.0 or earlier | [room-light-queue.md](room-light-queue.md) |
-| Lot detail streaming, Object streaming (5 switches) | Lot detail streaming, Object streaming | unreleased (06/10, from idavidveiga's fork) | [lot-streaming.md](lot-streaming.md) |
+| Faster room lighting (with *Lamp switches all at once*, 2.7.0) | Camera and lighting | 2.1.0 or earlier | [room-light-queue.md](room-light-queue.md) |
 | Spread lot lighting while moving | Camera and lighting | 2.1.0 or earlier | [lot-lighting-motion.md](lot-lighting-motion.md) |
 | Wall shading waits while moving | Camera and lighting | 2.1.0 or earlier | [wall-shading-while-moving.md](wall-shading-while-moving.md) |
 | Spread new objects over frames | Camera and lighting | 2.1.0 or earlier | [scene-node-budget.md](scene-node-budget.md) |
@@ -68,6 +70,13 @@ Every switch works at the exact game function behind one measured cost, and foll
 | Faster cache compression (includes record checksums) | Textures and Sims | 2.1.0 or earlier; checksums 2.4.0 | [fast-cache-compression.md](fast-cache-compression.md) |
 | Faster Sim building | Textures and Sims | 2.3.0 | [fast-cas-sort.md](fast-cas-sort.md) |
 | Faster memory handling | Memory handling | 2.4.0 | [fast-memory.md](fast-memory.md) |
+| Room to save (Experimental) | Memory handling | 2.7.0 | [room-to-save.md](room-to-save.md) |
+| Lighter window updates (Experimental) | Game and scripts | 2.7.0 | [lighter-window-updates.md](lighter-window-updates.md) |
+| Faster scripts (Experimental) | Game and scripts | 2.7.0 | [faster-scripts.md](faster-scripts.md) |
+
+The System > Lot Streaming page holds five more switches, off by default (Extended lot detail, Smooth lot streaming,
+Keep lot visibility stable, Pause lot streaming in map view, Spread lot objects while loading; Experimental, 2.7.0,
+research and code by idavidveiga): [lot-streaming.md](lot-streaming.md). They are not part of the Overview group.
 
 One related change has no switch: the [Vulkan driver guard](vulkan-driver-guard.md) keeps an unused AMD Vulkan driver
 out of the game's address space on hybrid-GPU PCs.
@@ -78,11 +87,12 @@ Each switch's settings are documented once, on its own page. The group-level con
 
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Overview > Performance | (none: sets the twelve `enabled` keys) | bool | on when all twelve are on | | Turns all twelve on or off. Turning on enables *Faster game file lookups* before *Remember missing files*; turning off stops them in the reverse order. Not switchable while the game is loading |
+| Overview > Performance | (none: sets the fifteen `enabled` keys) | bool | on when all fifteen are on | | Turns all fifteen on or off; a switch the game version does not have counts neither as on nor as off. Turning on enables *Faster game file lookups* before *Remember missing files*; turning off stops them in the reverse order. Not switchable while the game is loading |
 | Overview > All effects | (none) | bool | | | Also turns the Performance group on or off |
 | (row switch on each page) | `[patches.<Name>] enabled` | bool | on | | A missing key reads as on; an explicit `false` stays off |
 
-The rows show no Experimental badge. Each row's hover text is the switch's description, ending with the credit.
+Room to save, Lighter window updates and Faster scripts show an Experimental badge. Each row's hover text is the
+switch's description, ending with the credit.
 
 ## Compatibility and interactions
 
@@ -103,16 +113,19 @@ The rows show no Experimental badge. Each row's hover text is the switch's descr
 - A literal scan of `Sims3SettingsSetter.asi`, `Sims3Performance.asi` and `MonoPatcher.asi` for the addresses and slots
   used by these switches finds none.
 - **Old combined build / older `S3SSApex.asi`:** Apex Radiance idles when one is loaded (see [architecture](../../architecture.md)).
-- **Profiles:** the Performance profile part carries nine of the twelve switches (*Faster game file lookups*,
+- **Profiles:** the Performance profile part carries nine of the fifteen switches (*Faster game file lookups*,
   *Remember missing files*, *Faster file lists*, *Spread lot lighting while moving*, *Wall shading waits while moving*,
   *Faster texture compression*, *Faster cache compression*, *Spread new objects over frames*, *Faster object lookups*).
-  *Faster room lighting*, *Faster Sim building* and *Faster memory handling* are not in any profile part
-  (`FeaturePart` in [`apex_config.cpp`](../../../apex_config.cpp)). Undo covers every `[patches.*]` table.
+  *Faster room lighting*, *Faster Sim building*, *Faster memory handling*, *Room to save*, *Lighter window updates*,
+  *Faster scripts* and the Lot Streaming switches are not in any profile part (`FeaturePart` in
+  [`apex_config.cpp`](../../../apex_config.cpp)): applying a profile, built-in ones included, leaves them as they are.
+  Undo covers every `[patches.*]` table.
 - **Configurations from 2.5.6:** a `[ui] performance_mode` key (the removed *Optimize rendering* switch) still loads;
   it is ignored and dropped at the next save. The rendering paths it selected always use their original form.
-- **Game build:** every switch is Steam 1.67.2 only (`supportedVersions = VERSION_STEAM`). Addresses resolve through
-  [`framework/game_addresses.cpp`](../../../framework/game_addresses.cpp); the full signature table is in
-  [game-versions.md](../../engine/game-versions.md) section 6.
+- **Game build:** every switch is written for Steam 1.67.2 (`supportedVersions = VERSION_STEAM`; Faster scripts also
+  `VERSION_EA`). On other builds a switch is available when its address group resolves by signature
+  ([`framework/game_addresses.cpp`](../../../framework/game_addresses.cpp); the full signature table is in
+  [game-versions.md](../../engine/game-versions.md) section 6); otherwise it stays off with a status message.
 
 ## Limitations
 
@@ -120,7 +133,7 @@ The rows show no Experimental badge. Each row's hover text is the switch's descr
   moves. Each page states the bound.
 - A switch whose verification finds a difference turns itself off for the rest of the session. The status line and
   `ApexRadiance_LOG.txt` say why.
-- The three switches outside the Performance profile part keep their current state when a profile is applied.
+- The switches outside the Performance profile part keep their current state when a profile is applied.
 
 ## Technical reference
 
@@ -160,9 +173,9 @@ lighting while moving* is on. Its definition of "moving" is on [lot-lighting-mot
 
 | File | Role |
 |---|---|
-| [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) | The twelve `ApexPatch` features, their registration (`APEX_REGISTER_FEATURE`, category `Performance`) and the menu accessors |
+| [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) | The Performance and Lot Streaming `ApexPatch` features, their registration (`APEX_REGISTER_FEATURE`, category `Performance`) and the menu accessors |
 | [`patches/performance.h`](../../../patches/performance.h) | TOML section names (`kResourceCacheName` .. `kRoomLightQueueName`, never renamed), `kLotLightingBudgetDefault`, `LotLightingBudgetMs` / `SetLotLightingBudgetMs`, `FastTextureSeveralCores` / `SetFastTextureSeveralCores`, the `*Status` one-line states |
-| [`apex_gui.cpp`](../../../apex_gui.cpp) | `PerformancePage`, `PerformanceCard`, `FeatureSwitchRow`, the Overview group (`kOverviewPerformancePatches`, `SetPerformanceGroup`), Developer > Performance cards (`DevProfilerTab`) |
+| [`apex_gui.cpp`](../../../apex_gui.cpp) | `PerformancePage`, `PerformanceCard`, `LotStreamingPage`, `LotStreamingCards`, `FeatureSwitchRow`, the Overview group (`kOverviewPerformancePatches`, `SetPerformanceGroup`), Developer > Performance cards (`DevProfilerTab`) |
 | [`framework/game_addresses.{h,cpp}`](../../../framework/game_addresses.h) | Address ids and groups (fixed on Steam, signatures elsewhere) |
 | [`features/developer_settings.h`](../../../features/developer_settings.h) | Developer tuning saved under `[developer.controls.<module>]` while developer mode is on |
 
@@ -171,14 +184,15 @@ lighting while moving* is on. Its definition of "moving" is on [lot-lighting-mot
 Developer > Performance shows a card per module with its counters (under *Live counters*), verification controls
 (*Check 1 answer in N against the game*, *Check every answer for 10 s*, and similar) and tuning sliders. Cards exist
 for the file caches, object lookups, lot lighting, wall shading, scene objects, texture compression and cache
-compression. *Faster room lighting*, *Faster Sim building* and *Faster memory handling* have no card; the Frame
+compression. *Faster room lighting*, *Faster Sim building*, *Faster memory handling*, *Room to save*, *Lighter window updates*,
+*Faster scripts* and the Lot Streaming switches have no card; the Frame
 Profiler report carries the memory and record-checksum status lines. Tuning values are saved with the developer
 preferences ([developer-mode.md](../developer-mode.md)), never with profiles unless the Development part is chosen.
 
 ## Rejected approaches
 
 - A per-frame "Optimize rendering" mode (`[ui] performance_mode`) that cached lamp blocks, indexed light maps and
-  reused texture metadata: removed in PR #2. Details in [history](../../history/performance.md).
+  reused texture metadata: removed in 2.6.0. Details in [history](../../history/performance.md).
 - A lot lighting budget while the camera is still: reverted, lamps moved in Build mode updated visibly slower. See
   [lot-lighting-motion.md](lot-lighting-motion.md).
 

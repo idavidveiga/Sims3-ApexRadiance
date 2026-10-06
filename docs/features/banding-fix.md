@@ -3,16 +3,16 @@
 The Banding Fix removes the visible colour steps (banding) in smooth gradients of the 3D world: the pool of light a lamp
 throws on a wall or floor, the fall-off of room light and soft shadows. Instead of rings, light fades smoothly. It does
 this with a fixed, invisible grain added to the scene before the game rounds its colours to 8 bits. Menus, the HUD and
-the Apex overlay are not touched. The Banding tab of the Color page also holds *Smooth gradients*, a filter that
-softens the steps the grain cannot reach (the sky and some other surfaces).
+the Apex overlay are not touched. The Banding Fix page also holds *Smooth gradients*, a filter that softens the steps
+the grain cannot reach (the sky and some other surfaces).
 
 ## Status
 
 | | |
 |---|---|
-| Availability | Experimental: released in 2.2.0; the Banding tab shows a "Still being tested" note |
+| Availability | Experimental: released in 2.2.0; the page shows a "Still being tested" note. Its own page, Smooth gradients off by default and copies made at a shader's first scene draw: Released in 2.7.0 |
 | Default | On for new configurations |
-| Menu | Image > Color > Banding (card *Banding Fix*); Overview > Image > Banding Fix |
+| Menu | Image > Banding Fix (card *Banding Fix*, with *Smooth gradients*); Overview > Image > Banding Fix |
 | Configuration | `[patches.SceneDither]` in `ApexRadiance.toml` (Smooth gradients: `[qol.picture] deband`) |
 | Source | [`features/scene_dither.cpp`](../../features/scene_dither.cpp), [`features/shader_patches.cpp`](../../features/shader_patches.cpp) (`AddDither`, `AddDither2`, `AddScreenPosVs`) |
 
@@ -31,9 +31,9 @@ most one 8-bit step (at 100% Strength) to the colour, derived from the pixel pos
 rounded. The rounding then turns a hard ring into a fine grain that the eye averages into a smooth gradient. The pattern
 is fixed per pixel, so nothing flickers. The alpha channel, which the game uses as its bloom mask, is never changed.
 
-1. **Shader creation.** When the game creates a pixel shader, Apex creates the game's shader first (to learn its
-   pointer), then a dithered copy. Shaders that already existed when the feature was turned on get their copy at their
-   first draw.
+1. **Copies on first use.** A shader gets its dithered copy at its first draw in the 3D scene, so shadow, reflection,
+   UI and bloom shaders never get one (DXVK keeps every shader object for the whole session). When the game creates a
+   shader at an address that held an older one, the older copy is dropped.
 2. **ps_3_0 shaders** read the pixel position from `vPos`.
 3. **ps_2_0 / ps_2_x shaders** have no pixel position. A copy of the paired vertex shader writes the clip position to a
    free texture coordinate, and the pixel copy (compiled as ps_2_x) converts it to a pixel position.
@@ -50,7 +50,7 @@ is fixed per pixel, so nothing flickers. The alpha channel, which the game uses 
 | Banding Fix (card switch) | `enabled` | bool | on | | Turns the grain on |
 | Strength | `forca` | float | 100% | 0 to 100% | Peak of the triangular grain in 8-bit steps (100% = plus or minus one step, the full TPDF). 0% adds nothing |
 | Moving grain | `graoEmMovimento` | bool | off | | A new grain pattern every frame. High frame rates average it away; at low frame rates it shows as a faint shimmer |
-| Smooth gradients | `[qol.picture] deband` | float | 100% | 0 to 200% | Deband filter of the Picture pass (threshold `deband x 6/255`). Runs only while the Banding Fix is on |
+| Smooth gradients | `[qol.picture] deband` | float | 0% (off) | 0 to 200% | Deband filter of the Picture pass (threshold `deband x 6/255`). Runs only while the Banding Fix is on |
 | Developer > Show covered surfaces | (not saved) | bool | off | | Replaces the grain with a coarse 24-step grain on every covered surface |
 
 Settings apply live. The Developer page also shows the shader coverage counters (under *Shader coverage*).
@@ -65,7 +65,7 @@ Settings apply live. The Developer page also shows the shader coverage counters 
 - **Picture filters:** the Picture pass applies its own fixed dither when it grades; Smooth gradients lives in that
   pass.
 - **Compare with the game** (shortcut) turns the Banding Fix off with the other effects until it is pressed again.
-- **Profiles:** the Banding Fix belongs to the Color part of a profile.
+- **Profiles:** the Banding Fix belongs to the Color part of a profile. The three built-in profiles leave it as it is.
 - **Other Apex passes:** any new Apex pass that draws into the back buffer with the depth test on receives the grain.
 
 ## Limitations
@@ -110,10 +110,10 @@ subroutines or `ret`, use relative constant addressing or have no free register 
   "vertex shader" in the coverage).
 
 **Creation and caching.** `CreatePixelShader` and `CreateVertexShader` callbacks run after every other callback
-(priority 1000). They call `D3D9Hooks::CallOriginalCreate*Shader` to create the game's shader, then the copy, and return
-`Skip`. Pairs are kept by the game shader's pointer; a reused address replaces the old copy (`ForgetVs` for vertex
-shaders). Everything is released when the feature turns off. Older shaders are read with `GetFunction` at their first
-draw. Lookups go through a `ShaderLookupCache`.
+(priority 1000). They call `D3D9Hooks::CallOriginalCreate*Shader` to create the game's shader, drop the copies of a
+reused address (`Forget`, `ForgetVs`) and return `Skip`. Copies are made at a shader's first draw in the 3D scene
+(`CopyOf`, `VsCopyOf`), from its bytecode read with `GetFunction`. Pairs are kept by the game shader's pointer.
+Everything is released when the feature turns off. Lookups go through a `ShaderLookupCache`.
 
 **Draw gate** (DIP/DP callbacks, priority 1000, after every observer): the copy is bound only when render target 0 is the
 back buffer and `D3DRS_ZENABLE` is on. This keeps the grain out of:
