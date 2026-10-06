@@ -157,8 +157,10 @@ against 1.0 s for class 0.
   "shown" (the step writes the new class there too, so the first version only saw it at the very end); and while refining,
   the lot lighting budget (LotLightingMotion's hook, which raised it to 25 ms for a lamp edit) is held at 6 ms.
 
-## Smooth light changes indoors (06/10)
+## Smooth light changes indoors (06/10, removed the same day)
 
+Removed after the fixes below (user: "much better without"): the light changes at once; the module became AtriumHold
+(`features/atrium_hold.{h,cpp}`), which only makes an atrium's stories wait for each other. History:
 `[patches.RoomLightQueue] lightFade` (default on, Experimental), `features/room_light_fade.{h,cpp}`. The user saw the quick
 pass as a blink (video 11:01: the lower walls went darker for ~1 s, the class-0 solve has no wall blur, then the refinement
 brightened them). The room solves write the story maps (MANAGED single-level A8R8G8B8: wall atlas, floor, ceiling, room light
@@ -198,9 +200,9 @@ Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 o
    around each step).
 3. **A refinement's maps show at once.** They are the other class's maps, not on screen and still holding the light from
    before the edit; fading from them brought the old light back for a quarter of a second, room after room.
-4. **An atrium's stories together.** The atrium's members of an edit (any member urgent) are solved right after the lamp's
-   room whatever their story; their new maps wait while another member is still waiting for or in its solve (at most
-   1.5 s; not while a lamp is dragged), then fade in the same frame. The switched lamp's own room is no longer solved twice
+4. **An atrium's stories together** (AtriumHold). The atrium's members of an edit (any member urgent) are solved right
+   after the lamp's room whatever their story; their new maps wait while another member is still waiting for or in its
+   solve (at most 1.5 s; not while a lamp is dragged), then show in the same frame. Only atrium rooms' maps are kept. The switched lamp's own room is no longer solved twice
    when its gather fell in the change's tick (a gather serial now orders gathers and lamp marks).
 5. **Loads** ("when entering the lot it takes long to correct"; log 12:18: 17 s after the world went live). The
    after-load refresh keeps every room gathered again since the world went live (it re-sent 75 rooms of 16 lots after the
@@ -213,6 +215,5 @@ same wall points at class 0 and class 2), and frames extracted from the user's v
 Left as they are: a single lamp switch still sends every room of its lot through the safety net (17 rooms, ~1.5 s of
 solving in the background); the refinement of a burst ends room by room (now only a change of resolution).
 
-The "Smooth light changes indoors" option is now only the 250 ms fade (user: "the fade is not needed any more, is it?";
-its first reason, the quick pass's blink, is gone): off, a room's new light shows at once. The maps are kept during every
-lamp edit either way, so an atrium's stories still wait for each other, and a refinement's maps always show at once.
+The "Smooth light changes indoors" option was then removed (user: "the fade is not needed any more, is it?" and, with it
+off, "much better without"): its first reason, the quick pass's blink, was gone. An old `lightFade` key is ignored.

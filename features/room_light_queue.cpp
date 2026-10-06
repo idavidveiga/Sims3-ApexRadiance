@@ -45,7 +45,7 @@
 #include "lot_lighting_motion.h"
 #include "level_light_share.h"
 #include "lamp_mark_filter.h"
-#include "room_light_fade.h"
+#include "atrium_hold.h"
 #include "room_ambient_policy.h"
 #include "memory_patch.h"
 #include "imgui.h"
@@ -99,7 +99,7 @@ void __fastcall EmptyRemovalHook(uint8_t* level, void* edx, uint32_t idLo, uint3
 }
 std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
-constexpr const char* kFadePresentName = "RoomLightFade";
+constexpr const char* kHoldPresentName = "AtriumHold";
 
 std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0}, g_prioStacked{0};
 std::atomic<long long> g_drainMicros{0};
@@ -162,8 +162,8 @@ long g_quickEvent = -1;
 // of solving a frame for 2-3 s while the rooms already showed the right light)
 DWORD g_quickStart = 0;
 bool g_quickShown = false;
-// A burst's quick pass is running (set at its first room, cleared when every room shows it or after kQuickHoldMs): the
-// room maps that change meanwhile hold their fade, so every story starts it together (RoomLightFade, 06/10)
+// A burst's quick pass is running (set at its first room, cleared when every room shows it or after kQuickHoldMs; the
+// 06/10 fade held the changed maps meanwhile, AtriumHold now waits only for an atrium's own stories)
 std::atomic<bool> g_quickPending{false};
 constexpr DWORD kQuickHoldMs = 1500;
 std::atomic<bool> g_refining{false}; // read by the lot lighting budget too (LotLightingMotion)
@@ -482,9 +482,9 @@ bool Start(std::string* error) {
         if (error) *error = "Faster room lighting: the game code differs (different game version?)";
         return false;
     }
-    // 6. smooth light changes indoors (room_light_fade.h): the fades advance at every frame boundary
-    D3D9Hooks::RegisterPresent(kFadePresentName, [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
-        RoomLightFade::OnPresent(ctx.device);
+    // 6. an atrium's stories take their new light together (atrium_hold.h): waiting maps are released at frame boundaries
+    D3D9Hooks::RegisterPresent(kHoldPresentName, [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
+        AtriumHold::OnPresent(ctx.device);
         return D3D9Hooks::HookAction::Continue;
     });
     g_running = true;
@@ -497,8 +497,8 @@ void Stop() {
     std::lock_guard<std::mutex> lk(g_ctrl);
     if (!g_running) return;
     D3D9Hooks::UnregisterAll(kPresentName);
-    D3D9Hooks::UnregisterAll(kFadePresentName);
-    RoomLightFade::Clear();
+    D3D9Hooks::UnregisterAll(kHoldPresentName);
+    AtriumHold::Clear();
     RestoreAll();
     g_running = std::any_of(std::begin(g_writes), std::end(g_writes), [](const Write& w) { return w.done; });
     LOG_INFO(g_running ? "[RoomLightQueue] Stopped, but some game code could not be put back" : "[RoomLightQueue] Stopped");
@@ -568,13 +568,13 @@ std::string StatusText() {
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_prioStacked.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
                        g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
                        g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes()) +
-           " | smooth light changes: " + RoomLightFade::Status();
+           " | an atrium's stories together: " + AtriumHold::Status();
 }
 
 void RenderDeveloperUI() {
     if (kPublicBuild) return;
     ImGui::TextWrapped("Room lighting queue: %s", StatusText().c_str());
-    ImGui::TextWrapped("Smooth light changes indoors: %s", RoomLightFade::Status().c_str());
+    ImGui::TextWrapped("An atrium's stories together: %s", AtriumHold::Status().c_str());
 }
 
 } // namespace RoomLightQueue

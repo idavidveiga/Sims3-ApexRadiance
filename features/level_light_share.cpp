@@ -6213,6 +6213,11 @@ bool StackedWithEdit(const void* room) {
     return false;
 }
 
+bool InAtrium(const void* room) {
+    std::vector<DepKey> others;
+    return OtherMembers(room, others);
+}
+
 // Another member of the room's atrium group is waiting for its gather or its solve, or being solved (states 1 to 3)
 bool GroupPending(const void* room) {
     std::vector<DepKey> others;

@@ -64,8 +64,10 @@ bool StackedWithEdit(const void* room);
 // The first seconds after the world went live, while the loaded lots' rooms correct themselves (LotLightingMotion and
 // RoomLightQueue give the room solves a larger share of the frame meanwhile)
 bool SettlingAfterLoad();
+// Render thread: the room belongs to an atrium (a stacked-ambient group of 2 rooms or more)
+bool InAtrium(const void* room);
 // Render thread: another member of the room's atrium group is waiting for its gather or its solve, or being solved
-// (RoomLightFade holds the room's new maps meanwhile, so the atrium's stories change together)
+// (AtriumHold keeps the room's new maps waiting meanwhile, so the atrium's stories change together)
 bool GroupPending(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();

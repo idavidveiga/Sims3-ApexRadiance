@@ -40,9 +40,6 @@ void SetLotLightingBudgetMs(int ms);
 // "Quick update when many lamps switch" under Faster room lighting ([patches.RoomLightQueue] quickPass, default on)
 bool RoomQuickPass();
 void SetRoomQuickPass(bool on);
-// "Smooth light changes indoors" under Faster room lighting ([patches.RoomLightQueue] lightFade, default on)
-bool RoomLightFade();
-void SetRoomLightFade(bool on);
 
 // "Use several cores" under Faster texture compression ([patches.FastTextureCompression] useSeveralCores, default on):
 // the saved setting; Set saves it and applies it to the next texture
