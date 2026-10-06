@@ -109,6 +109,10 @@ void SetWallGain(float gain, bool enabled);
 std::string WallStatus();
 // Outdoor objects lit by a rig (doors, windows, counters) also get the ground light per pixel (max with the rig lamps).
 void SetObjectPixelLamps(bool on, float strength);
+// Windows take outdoor light (experimental, off by default): the faces of a room-lit window part that look out of the house
+// take the outdoor ground light and lamps (DrawWindowOutdoor); outdoor objects pass the wall they sit in (0.75 m)
+void SetWindowOutdoor(bool on);
+std::string WindowOutdoorStatus();
 // Soft lot edges: within 3 m of a lot edge the lot grass lamp term blends to the terrain term the world grass shows
 // outside (no step where a lamp stands near a lot edge). Default on; developer A/B toggle.
 void SetSoftLotEdges(bool on);

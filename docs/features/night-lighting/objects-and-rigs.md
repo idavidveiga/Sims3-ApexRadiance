@@ -58,6 +58,7 @@ objects*, see [level-light-share.md](level-light-share.md#walls-block-light-outd
 | Objects > Brightness | `forcaNosObjetos` | float | 75% | 25 to 300% | Scales the rig boost, raises the rig cap to `cap x max(1, s)`, and sets the ground-light strength on patched objects. A change re-gathers all rigs (`FUN_006b58f0`) |
 | Objects > Light stairs, railings, columns | `lampadasEmTodosObjetos` | bool | on | | Opens rigs the game created closed to lamps; applies to rigs created afterwards (world load; the row carries a reload badge). Also gates the fenced-yard gather |
 | Doors, counters and fences > Doors and windows stay lit | `objetosDeForaComLuzDoChao` | bool | on | | Installs `RigTracker` and enables the per-pixel object patch (`DrawObjectLamp`). Disabled unless *Street lamps light lots* and *Smooth ground light* are on (the card offers a button to turn them on) |
+| Doors, counters and fences > Windows take outdoor light (Experimental) | `janelasLuzDeFora` | bool | off | | Faces of a room-lit window part that look out of the house take the outdoor ground light and per-pixel lamps (`DrawWindowOutdoor`, `PatchWindowOutdoor`); outdoor objects also pass the wall they sit in (0.75 m instead of 0.2 m). Needs *Doors and windows stay lit*. Untested in game; see *Windows lit by the room* below |
 | Doors, counters and fences > Seamless light on pieces | `luzPorPixelNosObjetos` | bool | on | | Per-pixel world lamps on objects (and on fences). Off: the lamp blocks are zero and only the ground term remains |
 | Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 75% | 25 to 300% | Strength of the per-pixel lamps (`cS.y`) |
 
@@ -282,6 +283,24 @@ channel (`kBasisCap`). While the light-between-stories directional-map guard is 
 (`LevelLightShare::BasisFloorGuardReady`), a separate cached variant without the cap is used (`g_indoorPs` keys sampler
 0..7, +8 for the uncapped variant), because the cap transferred floor-height shadows onto wall objects (the cap removes 12
 tokens, three instructions). Without the guard the capped variant stays.
+
+### Windows lit by the room (experimental)
+
+F7 captures of 06/10 (19-17-47 / 19-17-52 / 19-21-19 / 19-21-24): a window's origin is the centre of the tile in front of it, 0.5 m from its
+wall. Turned with that tile inside the house, its frame is still an outdoor rig (mode 2) but every outdoor lamp crossed its own wall more than
+0.2 m from the origin, so `WallBlocks` dropped all of them (0 of 19) and the ground share went to 0. Its sash and glass part gets a room rig
+(mode 0) and is drawn by a basis-reading object shader (VS class 10 + basis PS, e.g. `VS_1E93EFA8` / `PS_8B83B1A0`; drawn as the game does
+through the Rooms at Night furniture path): faces looking out read the directional maps towards the outside, which hold no light, so they were
+black (screen 0, 0, 0) while the inner side looked lit.
+
+With `janelasLuzDeFora` on: `PickObjectLamps` passes a wall within 0.75 m of the object (`WallBlocks(.., nearSkip)`), and `DrawWindowOutdoor`
+(rig mode 0, object VS, basis PS, night level > 0.01, ground atlas ready) draws the part with the patched object VS (TEXCOORD8 = world xzy) and
+`PatchWindowOutdoor`: after the shader's last light `max` before oC0, `rL = max(rL, (ground + lamps x cS.y) x w)` with
+`w = sat(1 - alpha)`, alpha = the basis map's house-plan alpha read at the basis uv moved 0.75 m along the world normal (rows from
+`WorldUvRows`: `dp4 rA.zw, rWorld, c15/c16` then `mul oT0.xy, rA.zwzw, c18.zwzw`). Faces looking into the house keep the game's light exactly.
+No object catalog identifies windows: the rule is geometric, so any room-rig object drawn with a basis-reading object shader whose faces look
+out of the house plan is affected (in the captures only window parts were). The light in the shader's bloom alpha (`lum - c3.x`) can rise
+slightly with it. Offline: 1 of the 13 captured basis-reading pixel shaders is accepted (the window one), and native D3D9 creates it.
 
 ### Furniture during a lamp switch
 

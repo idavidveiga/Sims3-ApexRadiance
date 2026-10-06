@@ -187,6 +187,7 @@ float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 0.75f;
+bool g_windowOutdoor = false;          // experimental: windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
 float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
 float g_wallStrength = 0.84f; // multiplier of baked wall lamp RGB, independent of the enabled state
@@ -1736,6 +1737,8 @@ class NightTerrainRelightPatch : public ApexPatch {
                     "Outdoor objects (counters, modular pieces, doors) get lamp light computed at every point, the same for every piece: no colour seams between neighbouring pieces."));
         RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             S3SS_TR("Forca das lampadas calculadas por ponto nos objetos de fora.", "Strength of the per-point lamp light on outdoor objects."));
+        RegisterBoolSetting(&g_windowOutdoor, "janelasLuzDeFora", false,
+            "Experimental: the outer side of a window lit by the room takes the outdoor ground light and lamps (a window turned inward no longer goes black outside).");
         RegisterBoolSetting(&g_roofs, "telhadosComLuz", true,
             S3SS_TR("Telhados recebem a luz das lampadas e postes proximos (sombra mais suave tambem).",
                     "Roofs receive light from nearby lamps (with softer shadows)."));
@@ -2010,6 +2013,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LotLightBridge::SetWallGain(g_wallStrength, g_walls);
             LotLightBridge::SetObjectPixelLamps(g_objPixel && RigTracker::IsInstalled(), g_objStrength);
             LotLightBridge::SetObjectPixelLights(g_objPixelLights, g_objPixelLightStrength);
+            LotLightBridge::SetWindowOutdoor(g_windowOutdoor);
             LightmapSmooth::SetGpuPreferred(g_smoothMapsGpu);
             LotLightBridge::SetSoftLotEdges(g_softLotEdges);
             LightmapSmooth::OnPresent(ctx.device);
@@ -2211,6 +2215,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_objPixel = true;
         g_objPixelLights = true;
         g_objPixelLightStrength = 0.75f;
+        g_windowOutdoor = false;
         g_fenceGround = true;
         g_fenceGroundStrength = 0.75f;
         g_walls = true;
@@ -2447,6 +2452,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                 }
                 ImGui::BeginDisabled(!groundLight);
                 changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
+                ImGui::BeginDisabled(!g_objPixel);
+                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+                changed |= ApexUi::SwitchRow("Windows take outdoor light", &g_windowOutdoor, "The outer side of windows lit by the room takes the outdoor light", false);
+                ImGui::EndDisabled();
                 changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
                 if (g_objPixelLights)
                     changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "Intensity on counters and modular pieces", 0.75f);
@@ -2670,6 +2679,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::TextWrapped("Ground brightness: %s", LotLightBridge::GroundBrightnessStatus().c_str());
         ImGui::TextWrapped("Room light map edges: %s", RoomMapPadding::Status().c_str());
         ImGui::TextWrapped("Smooth indoor light: %s", LotLightBridge::IndoorSmoothStatus().c_str());
+        ImGui::TextWrapped("Windows take outdoor light: %s", LotLightBridge::WindowOutdoorStatus().c_str());
         ImGui::TextWrapped("Terrain bake: %s | moonlight: %s", g_bakeGainInstalled ? std::format("street lamps x{:.2f}, lot lamps x{:.2f}", g_bakeStreetMul[0], g_bakeLotMul[0]).c_str() : "not installed",
                            g_sunlightBase < 0.0f ? (kSunlightScale ? "waiting for a world" : "not available")
                                                  : std::format("sunlight scale {:.3f} (base {:.3f}, moonlight x{:.2f})", g_moonWritten, g_sunlightBase, g_moonlight).c_str());

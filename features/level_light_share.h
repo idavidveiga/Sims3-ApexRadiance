@@ -38,7 +38,9 @@ void SetFloorWalls(bool on);
 bool FloorWallsActive();
 // Walls block light on objects: true when an outside wall stands between the lamp and the point at the height the ray
 // crosses it (render thread; a copy of each story's outside walls taken when room 0 is solved)
-bool WallBlocks(const float lamp[3], const float point[3]);
+// A wall crossed within nearSkip metres of the point is the wall the object sits in and does not block (0.2 m; Windows
+// take outdoor light passes more: a turned window's origin is half a tile inside its wall).
+bool WallBlocks(const float lamp[3], const float point[3], float nearSkip = 0.2f);
 void SetObjectWalls(bool on);
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text

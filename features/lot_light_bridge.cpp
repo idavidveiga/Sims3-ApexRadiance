@@ -716,6 +716,9 @@ struct VsInfo {
     FloorVs floor;        // copy for the outdoor floors of summer (any class; made at the first such draw)
     int lmSem = -1;       // DrawIndoorObject: the semantic (usage << 4 | index) lmRow was found for, -1 = not looked yet
     int lmRow[2] = {-1, -1}; // the VS constants whose dp4 with the position make the room light map uv .x / .y (-1: not found)
+    int winSem = -1;      // DrawWindowOutdoor: the semantic winRows was looked for (usage << 4 | index), -1 = not looked yet
+    bool winRowsOk = false;
+    ShaderPatches::UvRows winRows; // how the basis uv is made from the world position (ShaderPatches::WorldUvRows)
 };
 std::unordered_map<IDirect3DVertexShader9*, VsInfo> g_vsInfo;
 VsInfo* g_curVsInfo = nullptr; // entry of g_curVs (null for no shader)
@@ -1831,6 +1834,7 @@ struct PatchedPs {
     ShaderPatches::ObjectLampPatch obj;
     ShaderPatches::IndoorBasisPatch indoor;
     ShaderPatches::BasisSmoothPatch smooth;
+    ShaderPatches::WindowOutdoorPatch window;
     DWORD nightConst = 0;
     int cubeTint = -1; // PatchCubeTint
     DWORD nativeAlphaSampler = 0;
@@ -1845,6 +1849,10 @@ std::atomic<bool> g_objPixel{true};
 std::atomic<float> g_objPixelStrength{1.0f};
 std::atomic<bool> g_objPixelLamps{true};          // outdoor rig objects: world lamps per pixel instead of the rig lamps
 std::atomic<float> g_objPixelLampStrength{1.0f};
+// Windows take outdoor light (experimental, off by default): see DrawWindowOutdoor
+std::atomic<bool> g_windowOutdoor{false};
+constexpr float kWindowWallSkip = 0.75f;  // a wall this close to an object's origin is its own wall (a turned window's origin is 0.5 m in)
+constexpr float kWindowPlanReach = 0.75f; // metres along the normal at which the house plan is read
 std::atomic<bool> g_fenceFix{true};
 std::atomic<float> g_fenceStrength{1.0f};
 std::atomic<float> g_sidewalkClear{0.5f};
@@ -2205,6 +2213,40 @@ std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::Objec
     return s;
 }
 
+// The per-pixel lamps of an object at translation (x, y, z): SelectLamps there, then Walls block light on objects
+// (LevelLightShare::WallBlocks, user 05/10): a lamp with an outside wall between it and the object's middle (its origin +
+// 0.5 m) is left out, and the next one takes its slot. groundShare (left as it is when no lamp is near) = the share of
+// the nearby lamps' light that is not blocked: the ground light (the atlas, which has no walls) is scaled by it. Fills
+// lamps[1 + 2 k] = (pos, 1/R^2) and lamps[2 + 2 k] = (colour) for the lamps kept; returns how many.
+int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundShare, float nearSkip) {
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    int nLamps = 0;
+    const int n = SelectLamps(x, z, 40.0f);
+    const float obj[3] = {x, y + 0.5f, z};
+    float seen = 0.0f, all = 0.0f;
+    for (int k = 0; k < n; k++) {
+        const float* pr = g_lampData[k];
+        const float* col = g_lampData[16 + k];
+        const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
+        const float dx = pr[0] - obj[0], dy = pr[1] - obj[1], dz = pr[2] - obj[2];
+        const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
+        all += w;
+        if (LevelLightShare::WallBlocks(pr, obj, nearSkip)) continue;
+        seen += w;
+        if (nLamps >= static_cast<int>(N)) continue;
+        const int slot = nLamps++;
+        lamps[1 + 2 * slot][0] = pr[0];
+        lamps[1 + 2 * slot][1] = pr[1];
+        lamps[1 + 2 * slot][2] = pr[2];
+        lamps[1 + 2 * slot][3] = 1.0f / (r * r);
+        lamps[2 + 2 * slot][0] = col[0];
+        lamps[2 + 2 * slot][1] = col[1];
+        lamps[2 + 2 * slot][2] = col[2];
+    }
+    if (all > 1e-5f) groundShare = std::clamp(seen / all, 0.0f, 1.0f);
+    return nLamps;
+}
+
 template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn draw) {
     // rig modes 2 (outdoors) and 1 (roofless fenced areas) both draw with the exterior technique (rig report 25/09)
     const int rigMode = RigTracker::CurrentMode();
@@ -2240,32 +2282,11 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     if (pixelLamps) {
         float m[3][4];
         if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
-            const int n = SelectLamps(m[0][3], m[2][3], 40.0f);
-            // Walls block light on objects (LevelLightShare::WallBlocks, user 05/10): a lamp with an outside wall between it
-            // and the object's middle (its origin + 0.5 m) is left out, and the next one takes its slot. The ground light
-            // (the atlas, which has no walls) is scaled by the share of the nearby lamps' light that is not blocked.
-            const float obj[3] = {m[0][3], m[1][3] + 0.5f, m[2][3]};
-            float seen = 0.0f, all = 0.0f;
-            for (int k = 0; k < n; k++) {
-                const float* pr = g_lampData[k];
-                const float* col = g_lampData[16 + k];
-                const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
-                const float dx = pr[0] - obj[0], dy = pr[1] - obj[1], dz = pr[2] - obj[2];
-                const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
-                all += w;
-                if (LevelLightShare::WallBlocks(pr, obj)) continue;
-                seen += w;
-                if (nLamps >= static_cast<int>(N)) continue;
-                const int slot = nLamps++;
-                lamps[1 + 2 * slot][0] = pr[0];
-                lamps[1 + 2 * slot][1] = pr[1];
-                lamps[1 + 2 * slot][2] = pr[2];
-                lamps[1 + 2 * slot][3] = 1.0f / (r * r);
-                lamps[2 + 2 * slot][0] = col[0];
-                lamps[2 + 2 * slot][1] = col[1];
-                lamps[2 + 2 * slot][2] = col[2];
-            }
-            if (all > 1e-5f) groundShare = std::clamp(seen / all, 0.0f, 1.0f);
+            // Windows take outdoor light: a window or door sits in its wall with its origin up to half a tile from the wall
+            // line (turned the other way, inside the house), so its own wall must not block every lamp in front of it
+            // (F7 19-21-19, 06/10: the turned window's frame got 0 of 19 lamps and no ground light). Off: the 0.2 m as before.
+            const float nearSkip = g_windowOutdoor.load(std::memory_order_relaxed) ? kWindowWallSkip : 0.2f;
+            nLamps = PickObjectLamps(m[0][3], m[1][3], m[2][3], lamps, groundShare, nearSkip);
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
@@ -2306,6 +2327,128 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     g_objDrawInfo.clear();
     g_inOwnCall = false;
     g_objLampDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// ---- Windows take outdoor light (experimental, "janelasLuzDeFora", off by default). F7 19-17-52 and 19-21-19 (06/10):
+// a window's origin is the centre of the tile in front of it, half a metre from its wall; turned the other way, the origin
+// is inside the room, and the window's sash and glass part gets a room-mode rig (RigTracker mode 0) and is drawn by a
+// basis-reading object shader (VS class 10 with a basis PS: VS 1E93EFA8 / PS 8B83B1A0 in that capture; Apex drew it as
+// the game does, with the Rooms at Night furniture constants, "mod draw (another fix)"). Its faces turned out of the house
+// read the room's directional maps towards the outside, which hold no light: pure black at night, while the inner side
+// looked lit, so the window looked inverted. ShaderPatches::PatchWindowOutdoor keeps the game's light and lets the faces
+// that look out of the house plan (the basis maps' alpha read half a tile out along the normal) take the outdoor terms of
+// the outdoor-object patch: the ground atlas and the per-pixel lamps around the window, at the same strengths, never
+// darker than the game. In full daylight the game's look stays. The frame of the same window (an outdoor rig, mode 2)
+// lost every lamp to its own wall; DrawObjectLamp passes a wall within kWindowWallSkip while the option is on. ----
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_windowPs;
+std::atomic<int> g_windowDrawn{0}, g_windowRefused{0};
+
+template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_windowOutdoor.load(std::memory_order_relaxed) || !g_objPixel.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
+    const float night = g_night.load(std::memory_order_relaxed);
+    if (night <= 0.01f) return false; // full daylight: the game's look
+    float atlasMap[4];
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasMap);
+    if (!atlas) return false;
+    PatchedPs& p = PatchedFor(dev, g_windowPs, "Window (outdoor light)", [](std::vector<DWORD>& t, PatchedPs& pp) {
+        // Rooms at Night's blue tint on the cube, as the game's draw of this part gets it (OnDrawFurniture), when the shader has it
+        if (!ShaderPatches::PatchCubeTint(t, pp.cubeTint)) pp.cubeTint = -1;
+        return ShaderPatches::PatchWindowOutdoor(t, pp.window);
+    });
+    if (!p.ps) return false;
+    IDirect3DVertexShader9* vs = ObjectVsFor(dev, g_curVs);
+    if (!vs) return false;
+    VsInfo& vi = *g_curVsInfo;
+    const int wk = vi.patched.worldK;
+    // how the vertex shader makes the basis uv from the world position (rows x scale), looked up once per semantic
+    const int sem = (p.window.uvUsage << 4) | p.window.uvIndex;
+    if (vi.winSem != sem) {
+        vi.winSem = sem;
+        UINT size = 0;
+        std::vector<DWORD> code;
+        if (SUCCEEDED(g_curVs->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536 && size % 4 == 0) {
+            code.resize(size / 4);
+            if (FAILED(g_curVs->GetFunction(code.data(), &size))) code.clear();
+        }
+        vi.winRowsOk = ShaderPatches::WorldUvRows(code, p.window.uvUsage, p.window.uvIndex, wk, vi.winRows);
+        LOG_INFO(std::format("[LotLightBridge] Window (outdoor light): vertex shader {:08X} basis uv rows {}", reinterpret_cast<uintptr_t>(g_curVs),
+                             vi.winRowsOk ? std::format("c{} / c{}", vi.winRows.row[0], vi.winRows.row[1]) : std::string("not found, the game draws it")));
+    }
+    if (!vi.winRowsOk) {
+        g_windowRefused.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // plan rows: d x (du/dx, du/dz) and d x (dv/dx, dv/dz) of the basis uv (the game's: 1/64 per metre along the lot axes)
+    float plan[2][4] = {};
+    for (int k = 0; k < 2; k++) {
+        float row[4] = {}, sc[4] = {1, 1, 1, 1};
+        if (FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(vi.winRows.row[k]), row, 1))) return false;
+        if (vi.winRows.scale[k] >= 0 && FAILED(dev->GetVertexShaderConstantF(static_cast<UINT>(vi.winRows.scale[k]), sc, 1))) return false;
+        const float s = vi.winRows.scale[k] >= 0 ? sc[vi.winRows.scaleComp[k] & 3] : 1.0f;
+        const float ux = row[0] * s, uz = row[2] * s, len = std::sqrt(ux * ux + uz * uz);
+        if (!std::isfinite(len) || len < 1.0f / 4096.0f || len > 1.0f) return false; // not a map over metres
+        plan[k][0] = ux * kWindowPlanReach;
+        plan[k][1] = uz * kWindowPlanReach;
+    }
+    // the same strengths and lamps as an outdoor object at this position (DrawObjectLamp)
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    float lamps[1 + 2 * N][4] = {};
+    lamps[0][3] = 1e-4f;
+    for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
+    float groundShare = 1.0f;
+    int nLamps = 0;
+    float m[3][4] = {};
+    if (g_objPixelLamps.load(std::memory_order_relaxed) && wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
+        nLamps = PickObjectLamps(m[0][3], m[1][3], m[2][3], lamps, groundShare, kWindowWallSkip);
+        lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelLampStrength.load(std::memory_order_relaxed));
+    }
+    const float strength[4] = {TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelStrength.load(std::memory_order_relaxed)) * groundShare, 0, 0, 0};
+    float tint[4] = {1, 1, 1, 1};
+    if (p.cubeTint >= 0 && UnlitRooms::FurnitureActive()) {
+        float cube[3];
+        UnlitRooms::FurnitureCubeColour(cube);
+        tint[0] = UnlitRooms::FurnitureTint();
+        tint[1] = cube[0];
+        tint[2] = cube[1];
+        tint[3] = cube[2];
+    }
+    if (LightProbe::Capturing())
+        g_objDrawInfo = std::format("WINDOW lit outdoors by the mod (experimental) | rig mode 0 (room) | per-pixel lamps: {} used of {} | ground light strength {:.2f} "
+                                    "(share not behind walls {:.2f}) | lamp strength {:.2f} | object position ({:.2f} {:.2f} {:.2f}) | house plan read {:.2f} m out along the normal",
+                                    nLamps, g_lastLampCandidates, strength[0], groundShare, lamps[0][1], m[0][3], m[1][3], m[2][3], kWindowPlanReach);
+    float oldA[4] = {}, oldB[4] = {}, oldPlan[2][4] = {}, oldTint[4] = {};
+    float oldLamps[1 + 2 * N][4] = {};
+    const ShaderPatches::WindowOutdoorPatch& w = p.window;
+    dev->GetPixelShaderConstantF(w.atlasConst, oldA, 1);
+    dev->GetPixelShaderConstantF(w.strengthConst, oldB, 1);
+    dev->GetPixelShaderConstantF(w.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+    dev->GetPixelShaderConstantF(w.planConst, &oldPlan[0][0], 2);
+    if (p.cubeTint >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.cubeTint), oldTint, 1);
+    IDirect3DPixelShader9* originalPs = g_curPs;
+    IDirect3DVertexShader9* originalVs = g_curVs;
+    g_inOwnCall = true;
+    {
+        SamplerBind bind(dev, w.atlasSampler, atlas, D3DTEXF_NONE);
+        SetPsConst(dev, w.atlasConst, atlasMap, 1);
+        SetPsConst(dev, w.strengthConst, strength, 1);
+        SetPsConst(dev, w.lampParamConst, &lamps[0][0], 1 + 2 * N);
+        SetPsConst(dev, w.planConst, &plan[0][0], 2);
+        if (p.cubeTint >= 0) SetPsConst(dev, static_cast<UINT>(p.cubeTint), tint, 1);
+        SetVs(dev, vs);
+        SetPs(dev, p.ps);
+        draw();
+        SetPs(dev, originalPs);
+        SetVs(dev, originalVs);
+        if (p.cubeTint >= 0) SetPsConst(dev, static_cast<UINT>(p.cubeTint), oldTint, 1);
+        SetPsConst(dev, w.planConst, &oldPlan[0][0], 2);
+        SetPsConst(dev, w.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+        SetPsConst(dev, w.strengthConst, oldB, 1);
+        SetPsConst(dev, w.atlasConst, oldA, 1);
+    }
+    g_objDrawInfo.clear();
+    g_inOwnCall = false;
+    g_windowDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -2911,6 +3054,7 @@ enum class ClaimSource : uint8_t {
     LotLightAtlas,
     RoomsAtNightFurniture,
     FoliageVertex,
+    WindowOutdoorLight,
     Count,
 };
 constexpr size_t kClaimSourceCount = static_cast<size_t>(ClaimSource::Count);
@@ -2938,6 +3082,7 @@ constexpr std::array<const char*, kClaimSourceCount> kClaimSourceNames = {
     "LotLightAtlas",
     "RoomsAtNightFurniture",
     "FoliageVertex",
+    "WindowOutdoorLight",
 };
 UINT g_curPrims = 0; // primitive count of the current hooked draw; set by both DrawPrimitive and DrawIndexedPrimitive
 uint32_t g_claimSourceMask = 0; // render thread; meaningful only while a development census draw is being attributed
@@ -2974,6 +3119,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? NoteClaim(ClaimSource::SnowOnStairGroundLight) : kContinue;
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
     if (g_curClass == PsClass::LotLightMelt) return DrawLotMelt(dev, draw) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue; // its VS looks like an object rig
+    if (g_curVsIsObject && g_curPsBasis && DrawWindowOutdoor(dev, draw)) return NoteClaim(ClaimSource::WindowOutdoorLight); // experimental, off by default
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return NoteClaim(ClaimSource::IndoorObjectSmooth);
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return NoteClaim(ClaimSource::OutdoorObjectGroundLight);
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue;
@@ -3996,6 +4142,12 @@ void SetObjectPixelLights(bool on, float strength) {
     g_objPixelLampStrength = strength;
 }
 
+void SetWindowOutdoor(bool on) { g_windowOutdoor = on; }
+
+std::string WindowOutdoorStatus() {
+    return std::format("{} | window parts lit outdoors: {} | left to the game (no basis uv rows): {}", g_windowOutdoor.load() ? "on" : "off", g_windowDrawn.load(), g_windowRefused.load());
+}
+
 void SetFenceGroundLight(bool on, float strength) {
     g_fenceFix = on;
     g_fenceStrength = strength;
@@ -4349,7 +4501,7 @@ void Shutdown(bool keepChunkMaps) {
         g_meltPs = nullptr;
     }
     g_meltTried = false;
-    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
+    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs, &g_windowPs}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();

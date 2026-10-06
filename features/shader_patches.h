@@ -173,6 +173,37 @@ bool AnalyzeRigPs(const std::vector<DWORD>& t, RigPsInfo& out);
 // ((1, 1, 1, 1) = unchanged; .yzw at 0 would make the cube black)
 bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 
+// Windows take outdoor light (experimental, lot_light_bridge DrawWindowOutdoor). A window turned with its origin inside
+// the room is a room-mode (rig mode 0) object whose part is drawn by a basis-reading object shader: its faces turned out
+// of the house read the room's directional maps towards the outside, which hold no light (black). The patch keeps the
+// game's light and, after the shader's last light max before oC0 ("max rL.xyz, .., .."), adds
+//   rL = max(rL, (ground atlas(world.xz) x (0.5 + 0.5 N.y) x cB.x + per-pixel lamps x cS.y) x w)
+// with w = sat(1 - plan alpha at (pixel + N x d)): the basis maps' alpha is 1 on the house plan and 0 outside, read
+// at the basis uv moved by the world normal (planConst / planConst + 1 = the rows of world xz -> uv offset, d included,
+// .z = 0, set per draw). So faces looking into the house keep the game's light exactly; faces looking out of it take the
+// outdoor terms the outdoor-object patch uses. World (x, z, y) from TEXCOORD8 (PatchObjectLampVs); ps_3_0 without flow
+// control only; the normal = the input the shader normalizes ("nrm rN.xyz, vK"). False (t unchanged) otherwise.
+struct WindowOutdoorPatch {
+    DWORD atlasSampler = 0;
+    DWORD atlasConst = 0;     // uv = world.xz x .xy + .zw
+    DWORD strengthConst = 0;  // .x = ground strength
+    DWORD lampParamConst = 0; // (0, lamp strength, 0, 1e-4)
+    DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, 0)
+    DWORD planConst = 0;      // 2 constants: (du/dx, du/dz, 0, 0) x d, (dv/dx, dv/dz, 0, 0) x d
+    int uvUsage = -1, uvIndex = -1; // the semantic of the basis uv input (the VS output to read the uv rows from)
+};
+bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out);
+// The vertex shader side: how its output (usage, index) .xy is made from the world position, either "dp4 oN.x/.y, rW,
+// cK" or "dp4 rA.c, rW, cK" then "mul oN.xy, rA.<cc>, cS.<ss>" (the game's basis uv: room light map uv x c.zw). rW must
+// be the world-position temp of the triple c[worldK .. worldK + 2]. row[k] = K, scale[k] = S (-1: none), scaleComp[k] =
+// the component of cS. False when the output is made another way.
+struct UvRows {
+    int row[2] = {-1, -1};
+    int scale[2] = {-1, -1};
+    int scaleComp[2] = {0, 0};
+};
+bool WorldUvRows(const std::vector<DWORD>& vs, int usage, int index, int worldK, UvRows& out);
+
 // Banding Fix (scene dither, scene_dither.cpp): every write to oC0 goes to a free temp rO, and at the end
 // oC0.rgb = rO.rgb + t(vPos) * cA.x, oC0.a = rO.a (the alpha is the bloom mask: untouched). t = triangular noise in
 // (-1, 1) from interleaved gradient noise (a fixed per-pixel pattern, no time); cA.x = the amount in output units, set per

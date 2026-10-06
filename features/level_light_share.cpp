@@ -6271,7 +6271,7 @@ void RefreshGrid() {
 }
 } // namespace
 
-bool WallBlocks(const float lamp[3], const float point[3]) {
+bool WallBlocks(const float lamp[3], const float point[3], float nearSkip) {
     if (!g_objectWallsOn.load(std::memory_order_relaxed) || !g_installed.load(std::memory_order_relaxed)) return false;
     RefreshGrid();
     if (g_grid.segs.empty()) return false;
@@ -6283,7 +6283,7 @@ bool WallBlocks(const float lamp[3], const float point[3]) {
     // end of the ray and was dropped; around each sconce only the wall's own baked light was left). Loose objects behind
     // a wall (a yard's telescope, 1 m or more from it) are still blocked.
     const float len = std::sqrt(rx * rx + rz * rz);
-    const float tEnd = len > 0.2f ? 1.0f - 0.2f / len : 0.0f;
+    const float tEnd = len > nearSkip ? 1.0f - nearSkip / len : 0.0f; // nearSkip = 0.2 m unless the caller passes more
     if (++g_grid.query == 0) {
         std::fill(g_grid.seen.begin(), g_grid.seen.end(), 0u);
         g_grid.query = 1;

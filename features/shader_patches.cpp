@@ -2079,6 +2079,188 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     Apply(t, std::move(edits));
     return true;
 }
+
+// ---- Windows take outdoor light (experimental, see the header) ----
+bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out) {
+    out = WindowOutdoorPatch{};
+    if (t.empty() || t[0] != 0xFFFF0300) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    for (const Ins& x : ins)
+        if (IsFlow(x.op)) return false; // straight-line shaders only (every captured window part is)
+    BasisReads r;
+    if (!FindBasisReads(t, ins, r) || r.uvType != static_cast<int>(kInput)) return false;
+    // inputs: TEXCOORD8 free, a register left for it, the basis uv's semantic
+    int maxIn = -1;
+    size_t afterLastInDcl = 0;
+    for (const Ins& x : ins) {
+        if (x.op != kDcl) continue;
+        const DWORD use = t[x.at + 1] & 0x1F, idx = (t[x.at + 1] >> 16) & 0xF, reg = t[x.at + 2];
+        if (Type(reg) != kInput) continue;
+        if (use == 5 && idx == 8) return false;
+        maxIn = std::max(maxIn, static_cast<int>(Num(reg)));
+        afterLastInDcl = End(x);
+        if (static_cast<int>(Num(reg)) == r.uvNum) {
+            out.uvUsage = static_cast<int>(use);
+            out.uvIndex = static_cast<int>(idx);
+        }
+    }
+    if (maxIn < 0 || maxIn >= 9 || !afterLastInDcl || out.uvUsage < 0) return false;
+    // the world normal: the one input the shader normalizes
+    int nIn = -1, nNrm = 0;
+    for (const Ins& x : ins)
+        if (x.op == kNrm && x.len == 2 && Type(t[x.at + 2]) == kInput && !(t[x.at + 2] & 0x0F000000u) && Swz(t[x.at + 2]) == kSwzXYZW) {
+            if (nIn != static_cast<int>(Num(t[x.at + 2]))) nNrm++;
+            nIn = static_cast<int>(Num(t[x.at + 2]));
+        }
+    if (nNrm != 1) return false;
+    // the anchor: the last "max rL.xyz, .., .." before the first colour output write, after the 4 basis reads, whose result
+    // is next read (rgb) by a plain mul / mad (the light times the material)
+    size_t firstOut = ins.size();
+    for (size_t i = 0; i < ins.size() && firstOut == ins.size(); i++)
+        if (ins[i].op != kDcl && ins[i].op != kDef && ins[i].len >= 1 && Type(t[ins[i].at + 1]) == kColorOut) firstOut = i;
+    if (firstOut == ins.size()) return false;
+    int anchor = -1;
+    for (size_t i = 0; i < firstOut; i++) {
+        const Ins& x = ins[i];
+        if (x.op == kMax && x.len == 3 && Type(t[x.at + 1]) == kTemp && (WMask(t[x.at + 1]) & 0x7) == 0x7 && !(t[x.at + 1] & 0x00100000u /* no saturate (_pp is fine) */)) anchor = static_cast<int>(i);
+    }
+    if (anchor < 0) return false;
+    for (int d = 0; d < 4; d++)
+        if (r.texld[d] > anchor) return false;
+    const DWORD L = Num(t[ins[static_cast<size_t>(anchor)].at + 1]);
+    bool usedAsLight = false;
+    for (size_t i = static_cast<size_t>(anchor) + 1; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        if (x.op == kDcl || x.op == kDef || x.len < 2) continue;
+        bool reads = false;
+        for (size_t k = 2; k <= x.len; k++)
+            if (IsReg(t[x.at + k], kTemp, L)) reads = true;
+        if (reads) {
+            usedAsLight = ((x.op == kMul && x.len == 3) || (x.op == kMad && x.len == 4)) && (IsReg(t[x.at + 2], kTemp, L) || IsReg(t[x.at + 3], kTemp, L)) &&
+                          Type(t[x.at + 1]) == kTemp && !(t[x.at + 1] & 0x00100000u);
+            break;
+        }
+        if (IsReg(t[x.at + 1], kTemp, L) && (WMask(t[x.at + 1]) & 0x7)) break;
+    }
+    if (!usedAsLight) return false;
+    const Usage u = Scan(t, ins);
+    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 6 + 2 * static_cast<int>(kObjectPixelLamps) >= 224 || u.maxTemp + 7 >= 32) return false;
+    const DWORD E = static_cast<DWORD>(u.maxSampler + 1), V = static_cast<DWORD>(maxIn + 1), Nin = static_cast<DWORD>(nIn), U = static_cast<DWORD>(r.uvNum);
+    const DWORD T = static_cast<DWORD>(u.maxTemp + 1), Fr = T + 1, A = T + 2, B = T + 3, Q = T + 4, N = T + 5, P = T + 6;
+    const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cB = cA + 1, cH = cA + 2, cS = cA + 3, cL = cA + 4;
+    const DWORD cP = cL + 2 * kObjectPixelLamps; // cP, cP + 1
+    out.atlasSampler = E;
+    out.atlasConst = cA;
+    out.strengthConst = cB;
+    out.lampParamConst = cS;
+    out.lampConst = cL;
+    out.planConst = cP;
+    constexpr DWORD kNeg = 0x01000000u;
+    std::vector<DWORD> v = {
+        Op(kNrm, 2), Dst(kTemp, N, 0x7), Src(kInput, Nin),
+        // w = sat(1 - plan alpha at the basis uv moved by the normal (d in the rows))
+        Op(kDp2add, 4), Dst(kTemp, P, 0x1), Src(kTemp, N, Sw(0, 2, 2, 2)), Src(kConst, cP), Src(kConst, cP, Sw(2, 2, 2, 2)),
+        Op(kDp2add, 4), Dst(kTemp, P, 0x2), Src(kTemp, N, Sw(0, 2, 2, 2)), Src(kConst, cP + 1), Src(kConst, cP + 1, Sw(2, 2, 2, 2)),
+        Op(kAdd, 3), Dst(kTemp, P, 0x3), Src(kTemp, P), Src(kInput, U),
+        Op(kTexld, 3), Dst(kTemp, P), Src(kTemp, P), Src(kSampler, static_cast<DWORD>(r.sampler[0])),
+        Op(kAdd, 3), Dst(kTemp, P, 0x8, true), Neg(Src(kTemp, P, kSwzW)), Src(kConst, cH, 0xAA /* 1 */),
+        // ground = atlas(world.xz) x (0.5 + 0.5 N.y) x cB.x (as the outdoor-object patch)
+        Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzXYXY), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
+        Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
+        Op(kMad, 4), Dst(kTemp, Fr, 0x8), Src(kTemp, N, kSwzY), Src(kConst, cH, kSwzX), Src(kConst, cH, kSwzY),
+        Op(kMul, 3), Dst(kTemp, Fr, 0x8), Src(kTemp, Fr, kSwzW), Src(kConst, cB, kSwzX),
+        Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, Fr, kSwzW),
+    };
+    // per-pixel lamps Q (same law as PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2, one constant per instruction)
+    const DWORD pw = Src(kInput, V, 0xD8 /* xzyw: world x, y, z */);
+    for (DWORD k = 0; k < kObjectPixelLamps; k++) {
+        const DWORD cp = cL + 2 * k, cc = cp + 1;
+        v.insert(v.end(), {Op(kAdd, 3), Dst(kTemp, A, 0x7), Src(kConst, cp), pw | kNeg,
+                           Op(kDp3, 3), Dst(kTemp, A, 0x8), Src(kTemp, A), Src(kTemp, A),
+                           Op(kMax, 3), Dst(kTemp, A, 0x8), Src(kTemp, A, kSwzW), Src(kConst, cS, kSwzW),
+                           Op(0x07 /* rsq */, 2), Dst(kTemp, B, 0x8), Src(kTemp, A, kSwzW),
+                           Op(kMul, 3), Dst(kTemp, A, 0x7), Src(kTemp, A), Src(kTemp, B, kSwzW),
+                           Op(kDp3, 3), Dst(kTemp, B, 0x1, true), Src(kTemp, N), Src(kTemp, A),
+                           Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW),
+                           Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
+                           Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
+                           Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
+        if (k == 0) v.insert(v.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX)});
+        else v.insert(v.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX), Src(kTemp, Q)});
+    }
+    // outdoor = ground + lamps x cS.y, x w; the game's light is never lowered
+    v.insert(v.end(), {Op(kMad, 4), Dst(kTemp, T, 0x7), Src(kTemp, Q), Src(kConst, cS, kSwzY), Src(kTemp, T),
+                       Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, P, kSwzW),
+                       Op(kMax, 3), Dst(kTemp, L, 0x7), Src(kTemp, L), Src(kTemp, T)});
+    std::vector<Edit> edits = {{1, {Op(kDef, 5), Dst(kConst, cH), F(0.5f), F(0.5f), F(1.0f), F(0.0f)}},
+                               {afterLastInDcl, {Op(kDcl, 2), 0x80080005u /* texcoord8 */, Dst(kInput, V, 0x7)}},
+                               {u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
+                               {End(ins[static_cast<size_t>(anchor)]), v}};
+    Apply(t, std::move(edits));
+    return true;
+}
+
+bool WorldUvRows(const std::vector<DWORD>& t, int usage, int index, int worldK, UvRows& out) {
+    out = UvRows{};
+    if (t.empty() || t[0] != 0xFFFE0300 || usage < 0 || index < 0 || worldK < 0) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    int o = -1, W = -1;
+    for (const Ins& x : ins) {
+        if (x.op == kDcl && x.len == 2 && Type(t[x.at + 2]) == kOutput && static_cast<int>(t[x.at + 1] & 0x1F) == usage && static_cast<int>((t[x.at + 1] >> 16) & 0xF) == index)
+            o = static_cast<int>(Num(t[x.at + 2]));
+        // the world-position temp: "dp4 rW.x, rP, c[worldK]"
+        if (x.op == kDp4 && x.len == 3 && Type(t[x.at + 1]) == kTemp && WMask(t[x.at + 1]) == 0x1 && IsReg(t[x.at + 3], kConst, static_cast<DWORD>(worldK))) {
+            if (W >= 0 && W != static_cast<int>(Num(t[x.at + 1]))) return false;
+            W = static_cast<int>(Num(t[x.at + 1]));
+        }
+    }
+    if (o < 0 || W < 0) return false;
+    // "dp4 dst.c, rW, cK" (either order): K, else -1
+    auto rowOf = [&](const Ins& x) -> int {
+        if (x.op != kDp4 || x.len != 3) return -1;
+        const DWORD a = t[x.at + 2], b = t[x.at + 3];
+        if (IsReg(a, kTemp, static_cast<DWORD>(W)) && Type(b) == kConst && !(b & 0x0F000000u)) return static_cast<int>(Num(b));
+        if (IsReg(b, kTemp, static_cast<DWORD>(W)) && Type(a) == kConst && !(a & 0x0F000000u)) return static_cast<int>(Num(a));
+        return -1;
+    };
+    for (size_t i = 0; i < ins.size(); i++) {
+        const Ins& x = ins[i];
+        if (x.op == kDcl || x.len < 1 || !IsReg(t[x.at + 1], kOutput, static_cast<DWORD>(o))) continue;
+        const DWORD m = WMask(t[x.at + 1]) & 0x3;
+        if (!m) continue;
+        if (t[x.at + 1] & 0x00100000u) return false; // a saturated uv
+        if (x.op == kDp4 && (m == 0x1 || m == 0x2)) {
+            const int k = rowOf(x);
+            if (k < 0) return false;
+            out.row[m == 0x1 ? 0 : 1] = k;
+            out.scale[m == 0x1 ? 0 : 1] = -1;
+            continue;
+        }
+        if (x.op != kMul || x.len != 3) return false;
+        DWORD a = t[x.at + 2], c = t[x.at + 3];
+        if (Type(a) == kConst) std::swap(a, c);
+        if (Type(a) != kTemp || Type(c) != kConst || (a & 0x0F000000u) || (c & 0x0F000000u)) return false;
+        for (int comp = 0; comp < 2; comp++) {
+            if (!(m & (1u << comp))) continue;
+            const DWORD ac = (Swz(a) >> (2 * comp)) & 3, cc = (Swz(c) >> (2 * comp)) & 3;
+            int row = -1;
+            for (int k = static_cast<int>(i) - 1; k >= 0; k--) { // the last writer of rA.ac
+                const Ins& z = ins[static_cast<size_t>(k)];
+                if (z.op == kDcl || z.op == kDef || z.len < 1 || !IsReg(t[z.at + 1], kTemp, Num(a)) || !(WMask(t[z.at + 1]) & (1u << ac))) continue;
+                if (WMask(t[z.at + 1]) == (1u << ac)) row = rowOf(z);
+                break;
+            }
+            if (row < 0) return false;
+            out.row[comp] = row;
+            out.scale[comp] = static_cast<int>(Num(c));
+            out.scaleComp[comp] = static_cast<int>(cc);
+        }
+    }
+    return out.row[0] >= 0 && out.row[1] >= 0;
+}
+
 DitherResult AddDither(std::vector<DWORD>& t, int* amountConst) {
     if (t.empty() || t[0] != 0xFFFF0300) return DitherResult::NotPs30;
     if (t.back() != 0x0000FFFFu) return DitherResult::Unreadable;
