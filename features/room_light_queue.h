@@ -35,6 +35,11 @@ bool Refining();
 bool QuickPassPending();
 // Render thread: the current room of the light tree is being solved (its maps are being written)
 bool SolveInProgress();
+// Render thread: the room was sent down to class 0 by the current burst's quick pass and that solve is not shown yet
+bool InQuickPass(const void* room);
+// Render thread: that room is being solved at a higher class than the one on screen (the quick pass's refinement): the
+// maps it writes are not the ones shown, and hold the room's light from before the edit
+bool SolveRefiningUp();
 // Development build: status lines
 void RenderDeveloperUI();
 }

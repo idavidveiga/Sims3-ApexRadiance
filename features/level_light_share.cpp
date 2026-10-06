@@ -85,6 +85,7 @@
 #include "apex_version.h"
 #include "room_ambient_policy.h"
 #include "unlit_rooms.h"
+#include "room_light_queue.h"
 #include "object_light_bridge.h"
 #include "recorder.h"
 #include "game_addresses.h"
@@ -1837,6 +1838,30 @@ void MergeStackedAmbient(BYTE* room) {
     if (g_ambApplied.size() > 8192) g_ambApplied.clear();
 }
 
+// The quick pass counts the lights its refinement will (06/10, user: "it looks right, recalculates, looks wrong, then
+// right"): a lamp edit's room solved below the top class drops every light under that class's threshold (2 x 3/255 at
+// classes 0 and 1 against 3/255 at class 2), and with 40 to 100 lights per room (the lamps of the other stories among
+// them) those many faint ones made the quick pass visibly darker than the refinement that replaced it. Right after
+// state 0 such a room takes the top class's threshold, and its ambient is taken again with it (FUN_006a0f50, its copy in
+// the sampler +0x650 as state 0 makes it with FUN_006ab110). Class 0 has few texels, so the extra lights cost little.
+std::atomic<long> g_quickThreshold{0};
+void QuickAtTopThreshold(BYTE* room) {
+    const float top = TopThreshold();
+    if (top <= 0.0f || !RoomLightQueue::InQuickPass(room)) return; // a room at a lower class by its own LOD keeps the game's
+    __try {
+        float& thr = *reinterpret_cast<float*>(room + 0x63C);
+        if (!(thr > top + 1e-7f)) return; // at the top class already
+        thr = top;
+        g_quickThreshold.fetch_add(1, std::memory_order_relaxed);
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room + 0xC8), e = *reinterpret_cast<const uintptr_t*>(room + 0xCC);
+        if (room[0x18] || !kRoomAmbientFn || !b || e <= b) return; // no ambient step (outdoor), or the unlit constant
+        reinterpret_cast<void(__fastcall*)(void*)>(kRoomAmbientFn)(room);
+        std::memcpy(room + 0x650, room + 0x110, 16);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void MergeStackedAmbientSafe(BYTE* room) {
     __try {
         MergeStackedAmbient(room);
@@ -1894,6 +1919,7 @@ void __fastcall RoomSolveStartHook(BYTE* room) {
         if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
         else {
             NoteClassThreshold(room);
+            QuickAtTopThreshold(room);
             MergeStackedAmbientSafe(room);
         }
     }
@@ -6172,9 +6198,9 @@ std::string Status() {
                                       : std::format("{}, {} taken, {} points tested ({} behind a floor, {} behind a wall), {} rooms updated, lighting detail {} ({} raised)",
                                                     g_indoorOn ? "on" : "off", g_indoorAdded.load(), g_indoorTests.load(), g_indoorFloorBlocked.load(),
                                                     g_indoorWallBlocked.load(), g_indoorQueued.load(), g_lodReady ? "on" : "not installed", g_lodBoosts.load()) +
-                                          std::format(", stacked rooms ambient {} ({} merges; members' values taken at the merge {} in {:.1f} ms, already right {}, kept from their gather {}, only an older solve's {}), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
+                                          std::format(", stacked rooms ambient {} ({} merges; members' values taken at the merge {} in {:.1f} ms, already right {}, kept from their gather {}, only an older solve's {}; quick passes counting the refinement's lights {}), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
                                                       "one update {} (lamps added, moved or removed, sent at once {}; lamp values changed without a move {}; outside of a floor marked changed without a change {}), lots rebuilt {}, floor objects made {}, rooms held until their solve ended {}, rooms still holding a lamp switched off gathered again {}",
-                                                      g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_canonTaken.load(), CanonMs(), g_canonKept.load(), g_canonReused.load(), g_canonOld.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()) +
+                                                      g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_canonTaken.load(), CanonMs(), g_canonKept.load(), g_canonReused.load(), g_canonOld.load(), g_quickThreshold.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()) +
                                           std::format(", lamp edits first: rooms made urgent {}, gathered at once {}, marks held while their room was solved {} (given back {}), "
                                                       "floor batches with per-lamp wall lists {} (every wall tested {})",
                                                       g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),

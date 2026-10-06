@@ -31,6 +31,7 @@ struct Map {
     DWORD start = 0, last = 0;      // fade start, last change
     bool fading = false, resume = false;
     bool held = false; // changed while a burst's quick pass runs: still showing "from", its fade starts with every other map's
+    bool exact = false; // written by a refinement (see LockHook): its content shows at once, never faded from "from"
     int gameLocks = 0;
     RECT rect{};
     DWORD flags = 0;
@@ -43,7 +44,7 @@ std::unordered_map<IDirect3DTexture9*, Map> g_maps; // AddRef'd while kept
 std::atomic<size_t> g_count{0};
 std::atomic<bool> g_enabled{true}, g_active{false}, g_hooked{false}, g_hookTried{false};
 thread_local bool t_own = false;
-std::atomic<long> g_fades{0}, g_writes{0}, g_gameLocks{0}, g_resumes{0}, g_peak{0}, g_heldMaps{0}, g_releases{0};
+std::atomic<long> g_fades{0}, g_writes{0}, g_gameLocks{0}, g_resumes{0}, g_peak{0}, g_heldMaps{0}, g_releases{0}, g_exact{0};
 // Every story together (06/10, user: "it applies first on the story of the light, and only later on the others"): while
 // the lamp edit's rooms are still taking their first solve (all of them for one lamp; the quick pass for many), a changed
 // map holds what was on screen; when they are done, or after kHoldMaxMs, every held map starts its fade in the same frame.
@@ -115,12 +116,18 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
     if (t_own || level != 0 || (!g_active.load(std::memory_order_relaxed) && !g_count.load(std::memory_order_relaxed)))
         return g_origLock(t, level, out, rect, flags);
     UINT w = 0, h = 0;
+    // A refinement (the quick pass's room solved again at its higher class, 06/10 recording 11:50, user: "it looks right
+    // for a moment, recalculates, looks wrong, then right"): the game writes the maps of that higher class, which are not
+    // the ones on screen and still hold the room's light from BEFORE the edit; when the solve ends the room shows them,
+    // and a fade from that content brought the old light back for a quarter of a second, room after room. Those maps take
+    // the new content at once.
+    const bool refining = RoomLightQueue::SolveRefiningUp();
     std::unique_lock<std::mutex> lk(g_mx);
     auto it = g_maps.find(t);
     if (it == g_maps.end()) {
         // a map changing while a lamp edit is pending: its content as it is now (before the solve writes it)
         // only a map written by a room solve (never the UI or anything else the game updates meanwhile)
-        if (!g_active.load(std::memory_order_relaxed) || g_maps.size() >= kMaxMaps || !RoomLightQueue::SolveInProgress() || !RoomMap(t, w, h)) {
+        if (refining || !g_active.load(std::memory_order_relaxed) || g_maps.size() >= kMaxMaps || !RoomLightQueue::SolveInProgress() || !RoomMap(t, w, h)) {
             lk.unlock();
             return g_origLock(t, level, out, rect, flags);
         }
@@ -153,6 +160,7 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
         m.resume = true;
     }
     if (m.held) m.resume = true; // held: the screen shows "from", the game gets its exact content
+    if (refining) m.exact = true;
     m.rect = Clip(m, rect);
     m.flags = flags;
     m.gameLocks++;
@@ -172,7 +180,11 @@ HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
             m.gameLocks--;
             bool changed = false;
             if (m.bits && !(m.flags & D3DLOCK_READONLY)) changed = FromMemory(m, m.to, m.rect, m.bits, m.pitch);
-            if (changed || m.resume) {
+            if (m.exact) { // a refinement's map: the game's content stays (see LockHook), and later fades start from it
+                if (changed || m.resume) g_exact.fetch_add(1, std::memory_order_relaxed);
+                m.from = m.to;
+                m.fading = m.held = m.resume = m.exact = false;
+            } else if (changed || m.resume) {
                 // what was on screen goes back; the frames fade it to the new content, or, while the edit's other rooms
                 // are still being solved, it is held and starts with them (every story together)
                 if (m.bits) ToMemory(m, m.from, m.rect, m.bits, m.pitch);
@@ -308,8 +320,8 @@ void Clear() {
 
 std::string Status() {
     if (!g_hooked.load()) return g_hookTried.load() ? "not available" : "waiting for the device";
-    return std::format("{} | maps kept {} (at most {} at once), fades {} (restarted by a new solve {}), held for the other stories {} (released together {} times), frame writes {}, game locks seen {}",
-                       g_enabled.load() ? "on" : "off", g_count.load(), g_peak.load(), g_fades.load(), g_resumes.load(), g_heldMaps.load(), g_releases.load(), g_writes.load(), g_gameLocks.load());
+    return std::format("{} | maps kept {} (at most {} at once), fades {} (restarted by a new solve {}), refinements shown at once {}, held for the other stories {} (released together {} times), frame writes {}, game locks seen {}",
+                       g_enabled.load() ? "on" : "off", g_count.load(), g_peak.load(), g_fades.load(), g_resumes.load(), g_exact.load(), g_heldMaps.load(), g_releases.load(), g_writes.load(), g_gameLocks.load());
 }
 
 } // namespace RoomLightFade

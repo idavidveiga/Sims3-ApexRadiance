@@ -504,6 +504,33 @@ bool SolveInProgress() {
     // a room of the lamp edit (06/10: other rooms solving meanwhile, even of other lots, filled the 128 kept maps)
     return room && StateOf(room) == 3 && LevelLightShare::LampUrgency(room) > 1.0f;
 }
+int ClassOf(const BYTE* room) {
+    __try {
+        return *reinterpret_cast<const int*>(room + 0xF4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+bool InQuickPass(const void* room) {
+    if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
+    const auto it = g_quickDone.find(reinterpret_cast<uintptr_t>(room));
+    if (it == g_quickDone.end() || it->second) return false;
+    const BYTE* r = static_cast<const BYTE*>(room);
+    return !QuickSolved(r) && ClassOf(r) == 0; // shown: this is its refinement
+}
+bool ClassAboveShown(const BYTE* room) {
+    __try {
+        return *reinterpret_cast<const int*>(room + 0xF4) > *reinterpret_cast<const int*>(room + 0x100);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool SolveRefiningUp() {
+    if (!SolveInProgress()) return false;
+    const BYTE* tree = g_tree.load(std::memory_order_relaxed);
+    const BYTE* room = tree ? CurrentRoom(tree) : nullptr;
+    return room && ClassAboveShown(room);
+}
 
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)
 std::string SolveTimes() {
