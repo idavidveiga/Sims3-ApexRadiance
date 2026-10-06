@@ -4,7 +4,7 @@
 
 **Upstream base:** Apex Radiance final `v2.6.0` (`9ca0b102d4ee0f90f5f4fe406d97ab0f3f5dca9a`)  
 **Validated integration build:** workflow run `37414470615` — x86 Release success  
-**Detailed Lot Streaming handoff for Luís:** `docs/Luis_Lot_Streaming_Implementation_Guide.md`
+**Detailed Lot Streaming handoff for Luís:** `docs/Lot_Streaming_Implementation_Guide.md`
 
 ### What we integrated
 
