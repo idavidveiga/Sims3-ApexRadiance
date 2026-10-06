@@ -263,6 +263,11 @@ std::atomic<int> g_chunkStraySkipped{0};
 IDirect3DPixelShader9* g_replacementPs = nullptr;
 IDirect3DPixelShader9* g_replacementWetPs = nullptr;            // kReplacementWetPsId, for the rain lot light pass
 std::unordered_set<IDirect3DPixelShader9*> g_wetLotPs;          // game shaders classified LotLight that are kLotLightRainPs
+// The wet world terrain light pass is also drawn in snow (log 06/10 00:05, user report: a lot-edge cut in snow, day and
+// night, after the rain fix): while snowy lot passes are being drawn it is left to the game, as before 2026-10-05.
+std::unordered_set<IDirect3DPixelShader9*> g_wetWorldPs;
+std::atomic<int64_t> g_snowLotAtMs{-1000000};
+int64_t NowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 IDirect3DPixelShader9* g_objectPs = nullptr;
 bool g_objectCompileTried = false;
 std::atomic<bool> g_objectFix{false};
@@ -541,6 +546,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 c = PsClass::WorldMultiLight; // the rain variant reads the lamp map and c3.x the same way; its wet tail uses only c5/c6
                 g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
                 if (size == kWorldMultiLightRainPs.size) {
+                    g_wetWorldPs.insert(ps);
                     static bool logged = false;
                     if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Rain: wet world terrain light pass seen"); }
                 }
@@ -556,6 +562,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
             else if (ShaderStructure::Match m; ShaderStructure::MatchId(reinterpret_cast<const uint32_t*>(code.data()), size / 4, kWorldMultiLightStruct, m)) {
                 c = PsClass::WorldMultiLight; // Apex patches the game's own shader here, so any tail is kept as it is
                 g_worldSamplers[ps] = 1u << 2;
+                if (m.tail != ShaderStructure::Tail::Dry) g_wetWorldPs.insert(ps);
                 LOG_INFO(std::format("[LotLightBridge] World terrain light pass: variant recognised by its structure (pixel shader {}, {} bytes)", static_cast<void*>(ps), size));
             }
             else if (IsShader(kWorldCompactPs, code.data(), size)) {
@@ -597,19 +604,8 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
             }
         }
     }
-    if ((c == PsClass::Other || c == PsClass::WorldCandidate) && size > kWetTailBytes) {
-        // Weather variants seen so far are a recognised shader plus a 40-byte wet tail: name the likely one, once per shader
-        struct Known { const ShaderId* id; const char* name; };
-        static const Known kKnown[] = {{&kLotLightPs, "lot light pass"}, {&kWorldMultiLightPs, "world terrain light pass"}, {&kWorldCompactPs, "compact world terrain"},
-                                       {&kObjectRigPs, "outdoor object rig"}, {&kRoofPs, "roofs"}, {&kLakePs, "lake water"}, {&kSnowLotPs, "snowy lot light pass"},
-                                       {&kRoofSnowPs, "snowy roofs"}};
-        for (const Known& k : kKnown)
-            if (size == k.id->size + kWetTailBytes) {
-                LOG_INFO(std::format("[LotLightBridge] Possible weather variant of the {}: pixel shader {} ({} bytes) is not recognised, left as the game draws it",
-                                     k.name, static_cast<void*>(ps), size));
-                break;
-            }
-    }
+    // (A size-only "possible weather variant" log was tried on 05/10 and removed: dozens of unrelated game shaders share
+    // those sizes. Variants are found by structure instead, see shader_structure.h and tools/shader_structure_test.)
     g_classCache[ps] = c;
     ps->AddRef();
     g_pinned.push_back(ps);
@@ -2719,9 +2715,13 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
-    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
+    if (g_curClass == PsClass::LotLightSnow) {
+        g_snowLotAtMs.store(NowMs(), std::memory_order_relaxed);
+        return DrawLotSnow(dev, draw) ? kSkip : kContinue;
+    }
     if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight || g_curClass == PsClass::WorldCompact) {
         const bool multi = g_curClass == PsClass::WorldMultiLight;
+        if (multi && g_wetWorldPs.count(g_curPs) && NowMs() - g_snowLotAtMs.load(std::memory_order_relaxed) < 5000) return kContinue; // snow: as before 05/10
         if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
         if (g_curClass == PsClass::WorldCompact && (!g_curVsInfo || !g_curVsInfo->worldCompact)) return kContinue;
         std::pair<int, int> key;
@@ -3821,6 +3821,7 @@ void Shutdown(bool keepChunkMaps) {
     }
     g_wetCompileTried = false;
     g_wetLotPs.clear();
+    g_wetWorldPs.clear();
     g_classCache.clear();
     g_basisPs.clear();
     g_rigLookup.Clear();

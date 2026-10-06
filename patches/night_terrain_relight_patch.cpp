@@ -998,8 +998,12 @@ void RebuildAll(uintptr_t cells, float level, const std::string& reason, bool du
 // nearest to the camera first (ChunkRelight::QueueRebuild), instead of every chunk in one ~240 ms frame. It starts like a
 // consumed rebuild (the lamps as they are now go into the snapshot, a waiting lamp change is covered, the smoothed maps
 // expect every chunk again); its end enables the local path. False when not possible: the caller arms the full rebuild.
+// Off since 06/10: in game the nearest chunk (3,4) kept its +0x55 for 600 frames (the chunk loop has states before the
+// +0x55 test, 0x00C84F2F..0x00C84FD3, not understood yet), and the terrain kept the old light ~10 s after the load until
+// the fallback. Needs a runtime trace of that loop before it is enabled again.
+constexpr bool kPacedRebuildEnabled = false;
 bool StartPacedRebuild(const std::string& reason, Clock::time_point now) {
-    if (!g_pacedSweep) return false;
+    if (!kPacedRebuildEnabled || !g_pacedSweep) return false;
     float eye[3] = {};
     const bool haveEye = g_camOk && ReadEye(eye);
     const float eyeXZ[2] = {eye[0], eye[2]};
