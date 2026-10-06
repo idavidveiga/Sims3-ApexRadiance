@@ -997,11 +997,15 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     IDirect3DSurface9* s = nullptr;
     if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &s)) && s) {
         gpu.backBuffer = s;
+        D3DSURFACE_DESC bd{};
+        // a back buffer of another size than the resources (a Reset BeforeReset never saw): made again at the next pass
+        if (gpu.ready && SUCCEEDED(s->GetDesc(&bd)) && (bd.Width != gpu.width || bd.Height != gpu.height)) Picture::Get().BeforeReset();
         s->Release();
     }
-    // after a device Reset (BeforeReset forgot it): render target 0 is the new back buffer, set by the Reset without any
-    // SetRenderTarget call the hook could see
-    if (!gpu.curRT0 && SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
+    // Render target 0 read again every frame, not only after a Reset (user 06/10: a friend's game with dxwrapper and
+    // Sims3SettingsSetter showed no Color filter on entering CAW until it was turned off and on, which reads it again; a
+    // change made where the SetRenderTarget hook does not see it left the remembered one stale for good)
+    if (SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
         gpu.curRT0 = s;
         s->Release();
     }

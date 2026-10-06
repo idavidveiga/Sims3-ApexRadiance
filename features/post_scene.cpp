@@ -134,7 +134,8 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g_backBuffer = s;
         s->Release();
     }
-    if (!g_curRT0 && SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
+    // read again every frame (a render target change the hook did not see stays wrong only until the next frame)
+    if (SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
         g_curRT0 = s;
         s->Release();
     }
