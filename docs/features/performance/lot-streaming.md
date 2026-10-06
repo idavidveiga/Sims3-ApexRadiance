@@ -7,7 +7,9 @@ Research, measurements and code by **idavidveiga** (fork `idavidveiga/Sims3-Apex
 
 - Menu: Performance > "Lot detail streaming" (Extended lot detail, Smooth lot streaming, Keep lot visibility stable, Pause
   lot streaming in map view) and "Object streaming" (Spread lot objects while loading, with Spread new objects over frames).
-- All five are on by default with the Experimental badge, also in the three built-in profiles (distance 300, 16 lots,
+- On by default with the Experimental badge, also in the three built-in profiles (distance 300, 16 lots), except Spread lot
+  objects while loading: off since 06/10 (lamps are objects, so they arrived one by one and every arrival relit the rooms:
+  a lamp edit took 5.8-7.2 s to settle). Its profile values (
   2 objects per window, 16 ms). "Use LoD Active-Lot Threshold 12" stays registered, off and out of the menu, as in the fork.
 - Steam 1.67.2: the fork claimed fixed addresses only for the scoring, request, throttle and visibility branch. The six
   object-throttle addresses were found offline in TS3W.exe with the fork's EA signatures, each unique:

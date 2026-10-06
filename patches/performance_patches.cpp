@@ -915,7 +915,7 @@ APEX_REGISTER_FEATURE(LotObjectThrottlePatch,
                                       "Building and apartment shells, large exterior geometry and flora stay synchronous. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                        .experimental = true,
-                       .enabledByDefault = true,
+                       .enabledByDefault = false, // 06/10: lamps arrive one by one and every arrival relit the rooms (7 s to settle)
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Port of Sims3SettingsSetter LotStreamingOptimizations.objectThrottle: Lot::AddLotObjectsToScene is replaced through Apex EntryChain and regular objects are processed in small windows.",
                                             "Default: 2 regular objects per lot window, minimum 16 ms between continuation posts. Continuations use the game's PostRemoteMethodCall so they are marshalled through the engine.",

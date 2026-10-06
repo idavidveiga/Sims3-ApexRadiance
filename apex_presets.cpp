@@ -156,7 +156,7 @@ enabled = true
 
 [patches.LotObjectThrottle]
 delayMs = 16
-enabled = true
+enabled = false
 objectsPerLot = 2
 
 [patches.LotVisibilityOverride]
@@ -337,7 +337,7 @@ enabled = true
 
 [patches.LotObjectThrottle]
 delayMs = 16
-enabled = true
+enabled = false
 objectsPerLot = 2
 
 [patches.LotVisibilityOverride]
@@ -518,7 +518,7 @@ enabled = true
 
 [patches.LotObjectThrottle]
 delayMs = 16
-enabled = true
+enabled = false
 objectsPerLot = 2
 
 [patches.LotVisibilityOverride]
