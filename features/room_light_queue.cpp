@@ -101,7 +101,7 @@ std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
 constexpr const char* kFadePresentName = "RoomLightFade";
 
-std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0};
+std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0}, g_prioStacked{0};
 std::atomic<long long> g_drainMicros{0};
 
 inline DWORD ThreadId() { return __readfsdword(0x24); }
@@ -227,6 +227,11 @@ float __fastcall PriorityHook(BYTE* room) {
     // a lamp edit's rooms (moved, switched, recoloured) before any other room: the lamp's own, then the stories taking it
     const float urgency = LevelLightShare::LampUrgency(room);
     if (urgency > 1.0f) g_prioUrgent.fetch_add(1, std::memory_order_relaxed);
+    // an atrium member of the edit: with the lamp's own room, whatever its story (the atrium's stories change together)
+    if (urgency > 1.0f && LevelLightShare::StackedWithEdit(room)) {
+        g_prioStacked.fetch_add(1, std::memory_order_relaxed);
+        return p * 4000.0f * 4.0e6f;
+    }
     return p * Factor(room) * urgency;
 }
 
@@ -510,10 +515,10 @@ std::string SolveTimes() {
 std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
-    return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
+    return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}, its atrium stories with the lamp's room {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
                        "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}), "
                        "quick pass for many lamps {} ({} rooms){}",
-                       g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
+                       g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_prioStacked.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
                        g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
                        g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes()) +
            " | smooth light changes: " + RoomLightFade::Status();

@@ -58,6 +58,9 @@ void NoteLampMark(uintptr_t treeLevel, int room, bool user, bool pure);
 bool HoldLampMark(uintptr_t treeLevel, int room, bool user);
 // Scheduler factor of a room (RoomLightQueue's priority hook): 1, or above any other room's for a lamp edit's rooms
 float LampUrgency(const void* room);
+// A lamp edit's room that is a member of an atrium (rooms joined through removed floors): the scheduler solves it right
+// after the lamp's own room whatever its story, so the atrium's stories change together
+bool StackedWithEdit(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
 // Apex's own share of the room solves so far, ms (-1 until calibrated); render thread

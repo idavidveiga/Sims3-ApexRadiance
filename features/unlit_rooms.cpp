@@ -60,6 +60,7 @@ DWORD g_orig[kSites] = {}; // what each read pointed to when Apex started
 std::vector<MemPatch::PatchLocation> g_patches;
 bool g_ready = false, g_patched = false;
 bool g_on = false;
+bool g_probe = false; // SetAmbientProbe (light tree thread)
 float g_light = 1.0f, g_blue = 1.0f;
 // Furniture (30/09, second multi-agent study): its unlit-room light is the game's [NoLight] rig lights (CustomLightRigging.ini,
 // three fixed lights FUN_006bb3e0 adds to room-mode rigs, x0.21 in the captured rooms) plus the fill light (FUN_006b7e70,
@@ -228,6 +229,7 @@ template <int Which> float* __fastcall BaseHook(BYTE* room, void*, float* out, c
     int slot = 0;
     float ce[4];
     if (!AddBase(room, r, slot, ce)) return r;
+    if (g_probe) return r; // only read (LevelLightShare's atrium targets): the room's fields are put back
     g_baseAdded.fetch_add(1, std::memory_order_relaxed);
     NoteBase(room, r, slot, ce, Which);
     return r;
@@ -703,6 +705,7 @@ void FurnitureCubeColour(float* rgb) {
 void SetNightLevel(float level) { g_night = level; }
 void SetDrawDark(bool dark) { g_drawDark = dark; }
 void RigsAgainIn(unsigned ms) { g_rigAgainAt = (GetTickCount() + ms) | 1; }
+void SetAmbientProbe(bool on) { g_probe = on; }
 // The directions of the three [NoLight] lights (normalised CustomLightRigging.ini directions; PS c0 / c3 / c2 of every
 // captured unlit room-mode furniture draw, 088-093)
 constexpr float kNoLightDir[3][3] = {{0.09535f, 0.95346f, 0.28604f}, {0.0f, 0.70711f, -0.70711f}, {-0.66667f, -0.33333f, -0.66667f}};

@@ -39,6 +39,9 @@ void SetDrawDark(bool dark);
 // Render thread: the object rigs gather once more in ms (after rooms were sent to light again: "Refresh the lighting")
 void RigsAgainIn(unsigned ms);
 bool IsDarkRoomLight(const float* colour, const float* dir);
+// Light tree thread: on while LevelLightShare runs the game's ambient step on a room only to read its result (the room's
+// fields are put back after): the base is added as usual, but not remembered as what the room holds
+void SetAmbientProbe(bool on);
 std::string Status();
 std::string SettingsText(); // development tools (F6): the sliders now and what they give furniture
 }
