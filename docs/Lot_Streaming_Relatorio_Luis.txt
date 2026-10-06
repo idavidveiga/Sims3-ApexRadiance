@@ -1,3 +1,34 @@
+ATUALIZAÇÃO FINAL — 06/10/2026
+
+Este resumo continua válido como histórico dos testes, mas o handoff técnico completo agora está em:
+docs/Luis_Lot_Streaming_Implementation_Guide.md
+
+Estado do código após integração:
+- base: Apex Radiance upstream final v2.6.0 (tag 9ca0b102d4ee0f90f5f4fe406d97ab0f3f5dca9a);
+- nossas extensões 300/16, cooperação com S3SS e bloom foram preservadas;
+- feature/color-filters pós-release NÃO foi importada;
+- level_light_share.cpp usa a implementação oficial final 2.6.0;
+- build x86 Release validada no workflow run 37414470615.
+
+IMPORTANTE SOBRE DEFAULTS:
+- 300/16/5.0 continuam sendo os valores validados/recomendados quando os recursos são ligados;
+- no código integrado atual, Extended Lot Detail e Smooth Lot Streaming estão registrados como opt-in (enabledByDefault=false);
+- portanto “default 300/16” significa default dos controles internos, não que o patch esteja automaticamente ligado.
+
+S3SS — classificação final:
+- Object Throttle: port/adaptação direta de algoritmo/código do LotStreamingOptimizations;
+- Visibility JZ->JMP: mesma linhagem de patch, com ownership/restauração Apex;
+- Map View Blocker: mesma finalidade e mesmo +0x258, mas o Apex NÃO usa o detour de WorldManager::Update do S3SS;
+- Transition Throttle / threshold 12 / camera threshold 5: linhagem de comportamento S3SS;
+- Distance 300, Max Active Lots 16, probes 200²/300², A/B e ownership de +0xDC/+0xE4: pesquisa Apex;
+- framework geral do S3SS (OptimizationPatch/PatchHelper/DetourHelper/LiveSetting/UI) não foi copiado wholesale.
+
+Fonte S3SS comparada:
+sims3fiend/Sims3SettingsSetter main 5eb2c65bb11e21dac423731c9726627f1fb118ac
+patches/lot_streaming_optimizations_patch.cpp blob def668c514230dd83855c4b2c7e7af6e6e3b7add
+
+===============================================================================
+
 APEX RADIANCE — LOT STREAMING
 RELATÓRIO TÉCNICO PARA O LUÍS — 04/10/2026
 
