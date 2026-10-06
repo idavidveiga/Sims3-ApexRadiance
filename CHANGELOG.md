@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased — upstream 2.6.0 integration + validated fork work
+
+**Upstream base:** Apex Radiance final `v2.6.0` (`9ca0b102d4ee0f90f5f4fe406d97ab0f3f5dca9a`)  
+**Validated integration build:** workflow run `37414470615` — x86 Release success  
+**Detailed Lot Streaming handoff for Luís:** `docs/Luis_Lot_Streaming_Implementation_Guide.md`
+
+### What we integrated
+
+- Updated the fork to the **published final Apex Radiance 2.6.0** rather than the post-release experimental `feature/color-filters` branch.
+- Where upstream 2.6.0 and the fork had parallel/intermediate EA 1.69 implementations of the same subsystem, the final upstream implementation was preferred. In particular, `features/level_light_share.cpp` now comes from the official 2.6.0 implementation.
+- Preserved fork-only validated work that does not exist in upstream 2.6.0:
+  - **Extended Lot Detail** research and production module: validated distance 70-300, tested/recommended 300; capacity 8-16, tested/recommended 16.
+  - **Smooth Lot Streaming** integration and S3SS cooperation layer.
+  - **Lot Object Throttle** port/adaptation and Apex ownership/integration.
+  - **Lot Visibility Override** ownership-safe implementation.
+  - Lot Streaming probes, validation logs and A/B documentation.
+  - the confirmed **wall/cinema bloom** work.
+- Kept the confirmed rule that toggling **Smooth ground light** changes the smoothed/raw draw maps only and does not trigger a general room/lot/wall/object-rig relight.
+- Kept S3SS coexistence checks: when official Sims3SettingsSetter owns a corresponding LotStreamingOptimizations subfeature, Apex yields instead of installing a second writer/hook.
+
+### Current Lot Streaming defaults vs validated values
+
+The **validated values** remain 300 distance, 16 maximum detailed lots and camera threshold 5.0.  
+The current v2.6.0-integrated patch registrations are nevertheless **opt-in**:
+
+- `Extended Lot Detail`: `enabledByDefault = false`;
+- `Smooth Lot Streaming`: `enabledByDefault = false`;
+- Map View Blocker, Lot Object Throttle and Visibility Override: opt-in.
+
+The 300/16 values are therefore the defaults **inside Extended Lot Detail when the feature is enabled**, not a statement that the feature is automatically on.
+
+### Wall seam investigation cleanup
+
+- Removed the experimental wall-seam work that was tried after the original baseline:
+  - experimental EA WallSolve resolver from that investigation;
+  - FacadeT2 / ExactSeam probes;
+  - four-state S2/S6 test;
+  - WallSeamS6 normalization.
+- The final S6 normalization test was rejected because it propagated one wall-light sampler across legitimate, different ExteriorWall draws and visibly worsened the facade.
+- **Bloom preservation remains.** The cleanup removed the seam experiments, not the separate wall bloom-alpha correction.
+
+### S3SS provenance
+
+The current comparison is pinned in the Luís handoff against public Sims3SettingsSetter main `5eb2c65bb11e21dac423731c9726627f1fb118ac`, file `patches/lot_streaming_optimizations_patch.cpp`.
+
+- Distance 300, Max Active Lots 16, the metric/cutoff probes and the controlled A/B are Apex research.
+- Object Throttle has direct source/algorithm lineage from S3SS and is a port/adaptation into Apex's `GameAddr` + `EntryChain` framework.
+- Visibility JZ->JMP, map-view blocking behavior, transition throttle, threshold 12 and camera threshold 5 have S3SS behavior lineage.
+- Apex does **not** wholesale copy the S3SS patch framework, `OptimizationPatch`, `PatchHelper`, `DetourHelper`, LiveSetting framework or S3SS UI/config system.
+- Apex's map-view implementation deliberately does not use S3SS's `WorldManager::Update` detour.
+
 ## Unreleased — Lighting/bloom refinement consolidated
 
 **Detailed technical changelog:** `docs/features/night-lighting-changelog.md`
@@ -78,7 +129,7 @@ The attributed draw census showed the previously fixed `OutdoorObject` draw path
   - **Lot detail distance**: validated range 70..300, default 300.
   - **Maximum detailed lots**: validated range 8..16, default 16.
 - Production writes use the same ownership discipline proven by the probes: capture the live WorldManager baseline, guarded writes, reassert only the captured game baseline, yield to unexpected third-party values, and restore only values Apex still owns.
-- **Smooth Lot Streaming** is now considered validated and defaults on for new configurations: native transition throttle + camera-speed threshold 5.
+- **Smooth Lot Streaming** is validated as the recommended companion behavior (native transition throttle + camera-speed threshold 5), but the current v2.6.0-integrated registration remains opt-in (`enabledByDefault = false`).
 - The final controlled A/B reduced Detailed View transitions from 149.3/min to 99.2/min, same-lot reversals within 5 s from 87 to 18, and reversals within 2 s from 48 to 3.
 - Removed the misleading **Use LoD active-lot threshold 12** row from the main Performance menu. The diagnostic/internal feature remains available to development code; the live value was already 12 in the tested game before Apex wrote anything.
 - Split the Performance menu into **Lot detail streaming** and **Object streaming** so lot eligibility/capacity is no longer mixed with object creation throttles.
@@ -128,8 +179,8 @@ The night regression log showed that an A/B of **Smooth ground light** triggered
 
 ### Current production state
 
-- **Extended Lot Detail** exposes the validated distance range 70..300 (default 300, 10-unit steps) and capacity 8..16
-  (default 16).
+- **Extended Lot Detail**, when enabled, exposes the validated distance range 70..300 (control default 300, 10-unit steps) and capacity 8..16
+  (control default 16). The feature registration itself is currently opt-in.
 - **Smooth Lot Streaming** is validated as the normal companion behaviour: native transition throttle + camera threshold 5.
 - The threshold-12 control is retained only for development/reference and is not shown in the main Performance menu.
 - Object/flora visual-distance research is intentionally separate from this Lot Streaming pass.
