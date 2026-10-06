@@ -60,8 +60,6 @@ std::vector<MemPatch::PatchLocation> g_patches;
 std::atomic<bool> g_installed{false};
 float g_strength = 1.0f;
 float g_capScaled = 1.0f;
-std::atomic<float> g_nightLevel{0.0f}; // 0 = full day, 1 = full night; supplied by NightTerrainRelight on the render thread
-float g_boostRefreshLevel = -1.0f;     // last night level whose boost was baked into the general object rigs
 std::atomic<bool> g_refreshRequested{false};
 std::atomic<DWORD> g_renderThread{0}; // the game's light system may only be touched from the render thread
 std::atomic<int> g_boosted{0};
@@ -257,11 +255,6 @@ constexpr int kStreetClass = 1; // vtable 0xFF42F8 (type 11)
 std::atomic<int> g_classesPatched{0};
 
 void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
-    // The original light function above ClassColour has already filled rec. During full daylight Apex must leave that
-    // vanilla result alone: the extra ground-footprint boost is a Night Lighting feature and was enough to push some
-    // lamp/prop materials over the game's bloom threshold even when their draw itself was not replaced by LotLightBridge.
-    const float night = g_nightLevel.load(std::memory_order_relaxed);
-    if (night <= 0.01f) return;
     __try {
         const BYTE f = L[0x100];
         if (!(f & 0x20)) return; // lamp off
@@ -280,7 +273,7 @@ void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
         w *= w;
         const float intensity = *reinterpret_cast<const float*>(L + 0x10);
         const float fade = *reinterpret_cast<const float*>(L + 0x20);
-        const float s = g_strength * night * intensity * fade * w;
+        const float s = g_strength * intensity * fade * w;
         const float* base = reinterpret_cast<const float*>(L + 0xF0);
         bool changed = false;
         for (int c = 0; c < 3; c++) {
@@ -622,31 +615,12 @@ void Uninstall() {
     g_installed = false;
     if (GetCurrentThreadId() == g_renderThread.load()) DirtyAllRigs();
     else g_refreshRequested = true; // done by the next OnPresent on the render thread
-    g_boostRefreshLevel = -1.0f;
     LOG_INFO("[ObjectLightBridge] Uninstalled");
 }
 
 void SetStrength(float s) {
     if (s != g_strength) {
         g_strength = s;
-        g_refreshRequested = true;
-    }
-}
-
-void SetNightLevel(float level) {
-    level = std::clamp(level, 0.0f, 1.0f);
-    const float previous = g_nightLevel.exchange(level, std::memory_order_relaxed);
-    if (!g_installed.load(std::memory_order_relaxed)) {
-        g_boostRefreshLevel = level;
-        return;
-    }
-
-    // General object rigs cache the light records produced by BoostRec. Re-gather only when the blend has moved enough
-    // to matter (the room-rig path below already uses the same 0.1 cadence), plus exact day/night boundary crossings.
-    const bool crossedDay = (previous <= 0.01f) != (level <= 0.01f);
-    const bool crossedNight = (previous >= 0.99f) != (level >= 0.99f);
-    if (g_boostRefreshLevel < 0.0f || std::fabs(level - g_boostRefreshLevel) >= 0.1f || crossedDay || crossedNight) {
-        g_boostRefreshLevel = level;
         g_refreshRequested = true;
     }
 }

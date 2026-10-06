@@ -4,8 +4,8 @@ Found and validated by **idavidveiga** (fork `idavidveiga/Sims3-ApexRadiance`, 0
 
 ## Port notes (06/10)
 
-- Ported: ObjectLightBridge's pre-draw boost fades with the night level (BoostRec, SetNightLevel; rigs re-gathered at
-  0.1 steps and at the day / night edges); ExteriorWall keeps the game's bloom alpha (alpha-only pass with the original
+- Ported: (the ObjectLightBridge day fade was removed the same day: its rig re-gathers at every 0.1 of night level slowed indoor lighting);
+  ExteriorWall keeps the game's bloom alpha (alpha-only pass with the original
   scale, then RGB with Apex's scale; blended walls keep one pass), combined with 2.6.0's daytime wall term
   (TerrainLightingPolicy::WallLampScale); the cinema / theatre daytime bloom guard (exact shader pairs); Smooth ground light
   no longer refreshes the lighting; the Lighting + Bloom census and the bloom alpha capture (Developer > Lighting).

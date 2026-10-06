@@ -7,7 +7,6 @@ namespace ObjectLightBridge {
 bool Install(std::string& error);
 void Uninstall();
 void SetStrength(float s);
-void SetNightLevel(float level); // 0 = full day, 1 = full night; fades only Apex's extra object-light boost
 void SetAllObjects(bool on); // also railings, stairs, columns (objects whose script never enabled lamp light); new rigs only
 void OnPresent();   // render thread, every frame
 std::string Status();

@@ -1955,7 +1955,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             OnPresent();
             LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
             ObjectLightBridge::SetStrength(g_objStrength);
-            ObjectLightBridge::SetNightLevel(g_level); // Apex's object boost fades out by day (idavidveiga's fork, 04/10)
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();
             LevelLightShare::SetIndoor(g_indoorShare);
