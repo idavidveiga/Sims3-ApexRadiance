@@ -10,6 +10,8 @@ namespace {
 // 2.7.0's lines too
 constexpr const char* k271Fixed[] = {
     "No false alarm from antivirus programs that use BitDefender's engine",
+    "Color settings and filters work again with Ambient Occlusion, Edge Smoothing or Depth Blur on",
+    "No crash after the first loading screen with dxwrapper",
     "Screen effects wait until the world is drawn, never on menus or loading screens",
     "The pie menu no longer leaves an unfiltered box or a grey square",
     "Depth Blur no longer blurs the save screen",
