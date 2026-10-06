@@ -699,7 +699,7 @@ class RoomLightQueuePatch : public ApexPatch {
   public:
     RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {
         // TOML key: never rename
-        RegisterBoolSetting(&quickPass_, "quickPass", true, "Quick update for many lamps");
+        RegisterBoolSetting(&quickPass_, "quickPass", true, "Quick update for lamp switches");
         // "lightFade" (Smooth light changes indoors, 06/10) was removed: the light changes at once (an old key is ignored)
         g_roomQueuePatch.store(this);
     }

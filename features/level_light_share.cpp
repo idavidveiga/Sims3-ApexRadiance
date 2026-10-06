@@ -6241,12 +6241,66 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
     return queued;
 }
 
+// A switched lamp's home (06/10 evening): its room id (light+8, what the object rigs' gather compares, FUN_006bb270) on the
+// story whose lowest floor (mgr+0x98, world) is the highest at or under the lamp (+0x124), and whether it is on now (the lit
+// bit and colour, as LampMarkFilter reads them). The lamp mark's room is only the first room the game marked: room 0 of
+// every story in the 13:52 recording, so every switch counted as an outdoor lamp and sent the outdoor rooms of every story.
+// False when unreadable or when that story has no such room (the caller keeps the mark's story and room).
+bool ReadLampHomeRaw(uintptr_t light, int& id, float& y, bool& on) {
+    __try {
+        id = *reinterpret_cast<const int*>(light + 8);
+        y = *reinterpret_cast<const float*>(light + 0x124);
+        const float* lit = reinterpret_cast<const float*>(light + 0xE0);
+        on = (*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20) && lit[0] + lit[1] + lit[2] > 1e-3f;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool ReadStoryBase(uintptr_t mgr, float& base) {
+    __try {
+        base = *reinterpret_cast<const float*>(mgr + 0x98);
+        return std::isfinite(base);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool LampHome(uintptr_t tracker, uintptr_t light, int& story, int& room, bool& on) {
+    int id = -1;
+    float y = 0.0f;
+    if (!light || !ReadLampHomeRaw(light, id, y, on) || id < 0 || id > 65535 || !std::isfinite(y)) return false;
+    int best = INT_MIN;
+    float bestBase = -1e30f;
+    for (int S = -4; S <= 7; S++) {
+        const uintptr_t mgr = SafeStoryManager(tracker, S);
+        float base;
+        if (mgr && ReadStoryBase(mgr, base) && base <= y + 0.01f && base > bestBase) {
+            bestBase = base;
+            best = S;
+        }
+    }
+    if (best == INT_MIN || !SafeRoomById(tracker, best, id)) return false;
+    story = best;
+    room = id;
+    return true;
+}
+// A room's light list length (SIZE_MAX when unreadable)
+size_t SafeListSize(const BYTE* room) {
+    __try {
+        return ListSize(room);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return SIZE_MAX;
+    }
+}
+
 // A lamp switched (06/10, user approved "improve it"; recording 12:01: one sconce sent 17 rooms of its lot through this safety
 // net, ~1.5 s of solving in the background, story 3 and every outdoor room among them). A switch changes the light of the
 // rooms that hold the lamp, of its own room, and of the rooms that take it through a stair opening once it is on: those of
 // its story and the stories next to it near the openings between them (the gather of part 4 takes lamps of S - 1 and S + 1
 // only, near an opening); an outdoor lamp (room 0 or a roofless room) also lights the outdoor rooms of every story. Only
 // those rooms are sent (a fresh solve kept, as above); a lamp that moved too, or into another room, still sends the lot.
+// The lamp's own story and room are its home (LampHome); when only lamps switched off, a room with no light in its list
+// is left alone (no lamp reached it before the switch, so none of them changes it: rooms 22 and 24 of the 13:52 recording).
 int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedAt, const LampSwitch* switched, int count,
                       const uintptr_t* moved, int movedCount) {
     LoadAddresses();
@@ -6262,14 +6316,18 @@ int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedA
         queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps.data(), static_cast<int>(lamps.size()));
     // the rooms the switched lamps can reach without holding them yet
     std::vector<std::pair<int, int>> reach;
-    bool outdoorLamp = false;
+    bool outdoorLamp = false, anyOn = false;
+    int homes = 0;
     OpeningMask mask;
     for (int k = 0; k < count; k++) {
-        const int L = StoryOfTreeLevel(switched[k].tl);
-        if (L < -4 || L > 7 || TreeLevel(tracker, L) != switched[k].tl) continue;
-        reach.emplace_back(L, switched[k].room);
+        int L = StoryOfTreeLevel(switched[k].tl), own = switched[k].room;
+        bool on = true; // unknown: as if switched on (its rooms are not left alone)
+        if (LampHome(tracker, switched[k].light, L, own, on)) homes++;
+        else if (L < -4 || L > 7 || TreeLevel(tracker, L) != switched[k].tl) continue;
+        anyOn = anyOn || on;
+        reach.emplace_back(L, own);
         const uintptr_t mgrL = StoryManager(tracker, L);
-        if (switched[k].room == 0 || (g_indoorReady && mgrL && RooflessRoom(mgrL, switched[k].room))) outdoorLamp = true;
+        if (own == 0 || (g_indoorReady && mgrL && RooflessRoom(mgrL, own))) outdoorLamp = true;
         if (!g_indoorOn.load(std::memory_order_relaxed)) continue;
         for (const int B : {L, L + 1}) { // the floors under and over the lamp's story
             if (B < 1 || B > 7) continue;
@@ -6293,11 +6351,16 @@ int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedA
             }
     std::sort(reach.begin(), reach.end());
     reach.erase(std::unique(reach.begin(), reach.end()), reach.end());
+    int unlit = 0;
     for (const auto& [S, id] : reach) {
         BYTE* room = SafeRoomById(tracker, S, id);
         if (!room) continue;
         if (changedAt && FreshLampSolve(room, changedAt)) {
             skipped++;
+            continue;
+        }
+        if (!anyOn && SafeListSize(room) == 0) { // only lamps switched off, and none of them reached it
+            unlit++;
             continue;
         }
         if (QueueRoomSafe(tracker, S, id)) {
@@ -6311,9 +6374,10 @@ int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedA
         g_rigWait.erase(tracker);
         UnlitRooms::RigsAgainIn(1500);
     }
-    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished) "
-                         "(the rooms holding the {} lamp{} or within its reach{})", why, queued, LotIdPart(tracker, 0x90), skipped, count,
-                         count == 1 ? "" : "s", outdoorLamp ? ", outdoor rooms of every story" : ""));
+    LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished), {} with no light "
+                         "left alone (the rooms holding the {} lamp{} or within its reach{}; {} of them found in their own room)",
+                         why, queued, LotIdPart(tracker, 0x90), skipped, unlit, count, count == 1 ? "" : "s", outdoorLamp ? ", outdoor rooms of every story" : "",
+                         homes));
     return queued;
 }
 

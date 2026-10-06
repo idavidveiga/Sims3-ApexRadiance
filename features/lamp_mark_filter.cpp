@@ -147,6 +147,17 @@ bool NoteSwitch(uintptr_t light, DWORD tick) {
     g_massLast.store(tick | 1, std::memory_order_relaxed);
     return true;
 }
+// Any switch of the player's (06/10, user: the quick pass for one lamp too): a lamp switched on or off where it is, not a
+// light switching itself (past kSelfMax switches in kSelfWindow), not at dusk or dawn. Switches less than kMassHoldMs apart
+// are one event, so "all the lights" is one too.
+std::atomic<DWORD> g_switchLast{0};
+std::atomic<long> g_switchEvents{0};
+void NoteUserSwitch(DWORD tick) {
+    const float night = NightLevelRef().load(std::memory_order_relaxed);
+    if (night < 0.0f || (night > 0.02f && night < 0.98f)) return;
+    if (tick - g_switchLast.load(std::memory_order_relaxed) > kMassHoldMs) g_switchEvents.fetch_add(1, std::memory_order_relaxed);
+    g_switchLast.store(tick | 1, std::memory_order_relaxed);
+}
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
 std::atomic<float> g_nightLevel{-1.0f};
 std::atomic<float>& NightLevelRef() { return g_nightLevel; }
@@ -267,6 +278,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
             // ... unless several different lights switch together: the player's "all the lights", however often (NoteSwitch)
             const bool burst = was.on != on && NoteSwitch(light, tick);
             const bool selfSwitching = was.on != on && ++was.events > kSelfMax && !burst;
+            if (was.on != on && !selfSwitching && !moved && was.room == room) NoteUserSwitch(tick); // the room queue's quick pass
             if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
             if (!selfSwitching) Recorder::NoteLampEdit(tl, on, was.on == on); // the recording's light update summary
             edit = edit || !selfSwitching;
@@ -492,6 +504,11 @@ void OnPresent(float nightLevel) {
     }
 }
 long MassEventId() { return g_massEvents.load(std::memory_order_relaxed); }
+long SwitchEventId() { return g_switchEvents.load(std::memory_order_relaxed); }
+bool SwitchActive() {
+    const DWORD last = g_switchLast.load(std::memory_order_relaxed);
+    return g_installed && last && GetTickCount() - last <= kMassHoldMs;
+}
 bool MassSwitchActive() {
     const DWORD last = g_massLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

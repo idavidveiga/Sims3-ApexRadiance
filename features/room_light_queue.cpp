@@ -138,7 +138,7 @@ bool Stranded(const BYTE* room) {
     }
 }
 
-// Quick pass (see SetQuickPass): a lamp edit's room waiting (state 2) at a class above 0 while many lamps switch goes to
+// Quick pass (see SetQuickPass): a lamp edit's room waiting (state 2) at a class above 0 after a player's lamp switch goes to
 // class 0, the state the game's own invalidate gives a room (part 3 keeps the class instead); "no middle step" then takes
 // it straight to its class after that solve. Render thread (the scheduler).
 std::atomic<bool> g_quickPass{true};
@@ -205,10 +205,10 @@ void CheckQuickShown() {
     g_quickPending.store(false, std::memory_order_relaxed);
     g_refining = true;
     if (shown == g_quickDone.size())
-        LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
+        LOG_INFO(std::format("[RoomLightQueue] Lamp switch: the {} rooms of the switch showed their new light (quick pass) after {} ms; refining in the background",
                              g_quickDone.size(), since));
     else
-        LOG_INFO(std::format("[RoomLightQueue] Many lamps: {} of the {} rooms of the burst showed their new light (quick pass) in {} ms; the others are still waiting",
+        LOG_INFO(std::format("[RoomLightQueue] Lamp switch: {} of the {} rooms of the switch showed their new light (quick pass) in {} ms; the others are still waiting",
                              shown, g_quickDone.size(), since));
 }
 bool WaitingAboveClass0(const BYTE* room) {
@@ -226,9 +226,11 @@ bool SetClass0(BYTE* room) {
         return false;
     }
 }
+// Any player's switch takes it (06/10 evening, user: one lamp too; it was only for bursts of 3+ lights, so one lamp of the
+// atrium had its 4 rooms solved at class 2 one after another): drags and value edits do not (LampMarkFilter::SwitchActive)
 void QuickPassRoom(BYTE* room) {
-    if (!g_quickPass.load(std::memory_order_relaxed) || !LampMarkFilter::MassSwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
-    const long burst = LampMarkFilter::MassEventId();
+    if (!g_quickPass.load(std::memory_order_relaxed) || !LampMarkFilter::SwitchActive() || LevelLightShare::LampUrgency(room) <= 1.0f) return;
+    const long burst = LampMarkFilter::SwitchEventId();
     if (burst != g_quickEvent) {
         g_quickEvent = burst;
         g_quickDone.clear();
@@ -374,7 +376,7 @@ void __fastcall PickHook(BYTE* tree) {
     if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;
     if (room) {
         // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
-        // many lamps whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
+        // a lamp switch whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
                              : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
@@ -595,7 +597,7 @@ std::string StatusText() {
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
     return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}, its atrium stories with the lamp's room {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
                        "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}), "
-                       "quick pass for many lamps {} ({} rooms){}",
+                       "quick pass for lamp switches {} ({} rooms){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_prioStacked.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
                        g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
                        g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes()) +

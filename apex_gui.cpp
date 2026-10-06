@@ -869,8 +869,8 @@ void PerformanceCard() {
         if (FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors")) {
             bool quick = Performance::RoomQuickPass();
             ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-            if (ApexUi::SwitchRow("Quick update for many lamps", &quick,
-                                  "Switching all the lights shows the new light at once, then refines it", true))
+            if (ApexUi::SwitchRow("Quick update for lamp switches", &quick,
+                                  "Switching a lamp shows its new light at once, then refines it", true))
                 Performance::SetRoomQuickPass(quick);
         }
         if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {

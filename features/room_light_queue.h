@@ -24,12 +24,12 @@ bool Start(std::string* error);
 void Stop();
 bool Running();
 std::string StatusText();
-// Quick pass when many lamps switch (06/10): while LampMarkFilter::MassSwitchActive, a lamp edit's room still waiting for
+// Quick pass after a player's lamp switch (06/10; one lamp or many): while LampMarkFilter::SwitchActive, a lamp edit's room still waiting for
 // its solve at a class above 0 goes back to class 0 (the game's own fast first solve, ~1/20 of class 2), so every room of
 // the switch takes its new light within a few frames, the camera's story first; the game then refines it to its class.
 void SetQuickPass(bool on);
 bool QuickPass();
-// The rooms of many switched lamps show their quick pass and are being refined (the lot lighting budget stays low meanwhile)
+// The rooms of a lamp switch show their quick pass and are being refined (the lot lighting budget stays low meanwhile)
 bool Refining();
 // A burst's quick pass is running: changed room maps hold their fade until every room shows it (any thread)
 bool QuickPassPending();

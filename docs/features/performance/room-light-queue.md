@@ -139,13 +139,16 @@ User report: switching all the lights of a big lot (5 stories, rooms with 35-98 
 showed the new light (the same house took up to 10 s on 05/10). Measured: the game's class-2 solve cost 24.8 s of the session
 against 1.0 s for class 0.
 
-- **Quick update when many lamps switch** (`[patches.RoomLightQueue] quickPass`, default on, Experimental; once per room and burst): while
-  LampMarkFilter sees 3 or more player switches within 1.5 s (`MassSwitchActive`, held 1.5 s after the last; not at dusk or
-  dawn), the priority hook puts a lamp edit's room that is still waiting (state 2) at a class above 0 back to class 0 before
-  the game reads its priority. Class 0 is the game's own fast first solve and has 100x the priority of class 2, so every
-  room of the switch takes its new light within a few frames, the camera's story first; "No middle step" then takes each
-  room straight to its class. Status line: "quick pass for many lamps" and its room count; each lamp edit's log line ends
-  with the rooms that took the quick pass.
+- **Quick update for lamp switches** (`[patches.RoomLightQueue] quickPass`, menu "Quick update for lamp switches", default
+  on, Experimental; once per room and switch): after any player switch (`LampMarkFilter::SwitchActive`: a lamp switched on
+  or off where it is, not a light switching itself, not at dusk or dawn; held 1.5 s after the last, switches closer than
+  that are one event, `SwitchEventId`), the priority hook puts a lamp edit's room that is still waiting (state 2) at a
+  class above 0 back to class 0 before the game reads its priority. Class 0 is the game's own fast first solve and has 100x
+  the priority of class 2, so every room of the switch takes its new light within a few frames, the camera's story first;
+  "No middle step" then takes each room straight to its class. Until 06/10 evening only bursts of 3 or more lights
+  (`MassSwitchActive`) took it: one lamp of the atrium had its 4 rooms solved at class 2 one after another (user: "the
+  quick pass for one lamp too"). Drags and value edits never take it. Status line: "quick pass for lamp switches" and its
+  room count; each lamp edit's log line ends with the rooms that took the quick pass.
 - **No second send for waiting rooms**: the lamp switch's safety net (LevelLightShare::RelightLot, about 120 ms after the
   switch) skips a room that is queued (state 2) and has not started its solve, as it would skip a fresh solve: its gather
   reads the lamps as they are when it starts.
@@ -227,6 +230,12 @@ Then (same day, user: "do the 3 improvements"):
   the lamp, its own room, the rooms near the stair openings of its story and the stories next to it, and every story's
   outdoor rooms for an outdoor lamp (fresh solves kept). It sent the whole lot before (17 rooms for one sconce). A lamp
   moved into another room, moved and switched, or more than 8 lamps at once ("all the lights") still send the lot.
+  06/10 evening: the lamp's story and room are its home (`LampHome`: room id light+8, the one the object rigs' gather
+  compares, on the story whose lowest floor is the highest at or under the lamp's height +0x124); the lamp mark's room was
+  only the first room the game marked (room 0 of every story in the 13:52 recording), so every switch counted as an
+  outdoor lamp and sent the outdoor rooms of every story. When only lamps switched off, a room whose light list is empty is
+  left alone (none of them reached it: rooms 22 and 24 of the atrium house's ground floor were solved again for nothing).
+  The log line counts both ("N with no light left alone", "M of them found in their own room").
 - **Windows the game takes back are left alone**: every load, the window activation recheck changed the same 50 windows of
   the atrium house 2-3 times within half a second (the game set them back in between), and each change solved their rooms
   again. An entry found back in the state it had before Apex's last update of it (within 10 s) is now left as the game
