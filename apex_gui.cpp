@@ -912,6 +912,7 @@ void PerformanceCard() {
         ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
         ApexUi::CardDivider();
         FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory");
+        FeatureSwitchRow(Performance::kMemoryGuardName, "Room to save", "Keeps free memory for saving (Error 12) and drops unused game files when memory runs low");
     }
     ApexUi::EndCard();
     ImGui::PopID();

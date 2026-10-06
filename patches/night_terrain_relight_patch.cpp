@@ -1865,6 +1865,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LevelLightShare::SetIndoor(g_indoorShare);
             LevelLightShare::SetWallAlign(g_wallAlign);
             LevelLightShare::SetAllFloors(g_allFloors);
+            LevelLightShare::SetAllLotsHighQuality(g_allLotsHQ);
             LevelLightShare::SetFloorWalls(g_floorWalls);
             LevelLightShare::SetObjectWalls(g_objectWalls);
             UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);

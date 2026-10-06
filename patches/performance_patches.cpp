@@ -15,6 +15,7 @@
 #include "fast_cas.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
+#include "memory_guard.h"
 #include "scene_budget.h"
 #include "object_index.h"
 #include "room_light_queue.h"
@@ -313,6 +314,31 @@ class FastMemoryPatch : public ApexPatch {
     void RenderDeveloperUI() override { FastMemory::RenderDeveloperUI(); }
 };
 
+class MemoryGuardPatch : public ApexPatch {
+  public:
+    MemoryGuardPatch() : ApexPatch(Performance::kMemoryGuardName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!MemoryGuard::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        MemoryGuard::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {} // the Performance card draws the row
+    void RenderDeveloperUI() override { MemoryGuard::RenderDeveloperUI(); }
+};
+
 class SceneNodeBudgetPatch : public ApexPatch {
   public:
     SceneNodeBudgetPatch() : ApexPatch(Performance::kSceneBudgetName, nullptr) {}
@@ -417,6 +443,7 @@ std::string Performance::WallShadingStatus() { return LotLightingMotion::WallAoS
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
+std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText(); }
 std::string Performance::SceneBudgetStatus() { return SceneBudget::StatusText(); }
 std::string Performance::ObjectIndexStatus() { return ObjectIndex::StatusText(); }
 std::string Performance::RoomLightQueueStatus() { return RoomLightQueue::StatusText(); }
@@ -554,6 +581,23 @@ APEX_REGISTER_FEATURE(FastMemoryPatch,
                                             "The decommit of a core's tail is never deferred. Every call site is checked before it is rewritten and written back when "
                                             "the feature is turned off."},
                        .gameCodeGroup = "FastMemory"});
+
+APEX_REGISTER_FEATURE(MemoryGuardPatch,
+                      {.displayName = "Room to Save",
+                       .description = "The game is 32-bit: in a long session the save can fail (Error 12) for lack of one large free block of memory, even with "
+                                      "plenty free in total. This keeps a reserve of free address space that is handed back right before every save, and when "
+                                      "memory gets tight it empties the game's cache of files it is not using. Nothing you see changes. Part of " APEX_PRODUCT_NAME
+                                      ". Credits: @loinyx",
+                       .category = "Performance",
+                        .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"A 128 MB reserve of address space (MEM_RESERVE only, top-down) is released right before the world save (its call at "
+                                            "0x00AAC320, whose failure is Error 12) and when the largest free block falls under 160 MB; taken again once a "
+                                            "free block of 640 MB is back.",
+                                            "Right before the world save, and when the largest free block falls under 320 MB (at most once a minute), the game's "
+                                            "own shrink of its two resource caches (0x00733E70) runs on the thread of their per-frame update: idle entries only.",
+                                            "Every call site is checked before it is rewritten and written back when the feature is turned off."}});
 
 APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                       {.displayName = "Spread New Objects Over Frames",

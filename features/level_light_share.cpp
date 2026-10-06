@@ -179,6 +179,7 @@ uintptr_t kWallBlurMode = 0;             // 0x011D02E4: byte, 0 = [1 2 1] along 
 uintptr_t kWallSolve = 0;                // 0x006A31D0: thiscall(room, batch, {base, pitch}, char flags[2], sampler, char) ret 0x14
 uintptr_t kWallSolveCall = 0;            // 0x006A3B0A: its call for each wall piece, in the wall pass
 uintptr_t kMarkRoom = 0;                 // 0x006C7160: thiscall(treeLevel, int room) ret 4, the lamp entry update's mark (held marks)
+uintptr_t kSomGet = 0, kPrioLot = 0;            // the priority lot test (RoomLightQueue's): FUN() -> object, thiscall(object, lo, hi)
 
 void LoadAddresses() {
     static bool loaded = false;
@@ -244,6 +245,12 @@ void LoadAddresses() {
     kWallSolve = Get(Id::WallSolve);
     kWallSolveCall = Get(Id::WallSolveCall);
     kMarkRoom = Get(Id::LampMark);
+    // the priority lot test, only where its code is the expected one (AllFloorsLod with "High quality on every lot")
+    kSomGet = kPrioLot = 0;
+    if (GameAddr::Have({Id::PriorityLotObject, Id::PriorityLotTest})) {
+        const uintptr_t som = Get(Id::PriorityLotObject), test = Get(Id::PriorityLotTest);
+        if (*reinterpret_cast<const BYTE*>(som) == 0xA1 && std::memcmp(reinterpret_cast<const void*>(test), "\x8B\x44\x24\x04", 4) == 0) kSomGet = som, kPrioLot = test;
+    }
 }
 
 using AddWorldLights_t = void(__thiscall*)(void* treeLevel, void* room);
@@ -1373,10 +1380,20 @@ int BoostedLod(BYTE* room) {
 // its light maps are solved once and stay when the camera changes floor (more solve work when entering a lot, none after).
 std::atomic<bool> g_allFloors{true};
 std::atomic<long> g_allFloorsRaised{0};
+// "High quality on every lot" (night_terrain_relight) sets +0x288 on every detailed lot: then only the lot the game plays
+// first (its priority lot) gets every story at the top class (05/10 memory study: every story of up to 8 lots held all
+// three class sets, ~4 MB a story, ~16 MB with Light detail High)
+std::atomic<bool> g_allLotsHigh{false};
+bool PriorityLotMgr(uintptr_t mgr) {
+    if (!kSomGet || !kPrioLot) return true; // cannot tell: as before
+    void* som = reinterpret_cast<void*(*)()>(kSomGet)();
+    return som && reinterpret_cast<bool(__thiscall*)(void*, uint32_t, uint32_t)>(kPrioLot)(som, *reinterpret_cast<const uint32_t*>(mgr + 0x90), *reinterpret_cast<const uint32_t*>(mgr + 0x94));
+}
 int AllFloorsLod(BYTE* room) {
     __try {
         const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
         if (!mgr || *reinterpret_cast<const BYTE*>(mgr + 0x288) != 1) return 0;
+        if (g_allLotsHigh.load(std::memory_order_relaxed) && !PriorityLotMgr(mgr)) return 0;
         g_allFloorsRaised.fetch_add(1, std::memory_order_relaxed);
         return *reinterpret_cast<const int*>(kLodMax);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -5716,6 +5733,7 @@ bool FloorWallsActive() { return g_installed.load(std::memory_order_relaxed) && 
 void SetAllFloors(bool on) {
     if (g_allFloors.exchange(on) != on && g_lodReady) RelightAllRooms(on ? "Every floor in full detail on" : "Every floor in full detail off");
 }
+void SetAllLotsHighQuality(bool on) { g_allLotsHigh.store(on, std::memory_order_relaxed); }
 
 void SetWallAlign(bool on) {
     if (g_alignOn.exchange(on) != on && g_alignReady) g_alignRequeue = true; // every room lights its walls again

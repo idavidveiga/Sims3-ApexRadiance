@@ -113,6 +113,22 @@ const I18n::Entry kEntries[] = {
      "seconde s'endormait aussitôt et se réveillait en retard, et libérer un gros bloc de mémoire faisait attendre tout le monde. "
      "Désormais elle attend quelques microsecondes avant de s'endormir, et les gros blocs sont rendus à Windows en arrière-plan. Rien "
      "d'autre ne change. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+    {"The game is 32-bit: in a long session the save can fail (Error 12) for lack of one large free block of memory, even with "
+     "plenty free in total. This keeps a reserve of free address space that is handed back right before every save, and when "
+     "memory gets tight it empties the game's cache of files it is not using. Nothing you see changes. Part of " APEX_PRODUCT_NAME
+     ". Credits: @loinyx",
+     "O jogo é 32 bits: numa sessão longa o salvamento pode falhar (Erro 12) por falta de um bloco grande de memória livre, mesmo com "
+     "bastante livre no total. Isto guarda uma reserva de espaço de endereços livre que é devolvida logo antes de cada salvamento, e "
+     "quando a memória aperta esvazia o cache de arquivos que o jogo não está usando. Nada do que você vê muda. Parte do " APEX_PRODUCT_NAME
+     ". Créditos: @loinyx",
+     "El juego es de 32 bits: en una sesión larga el guardado puede fallar (Error 12) por falta de un bloque grande de memoria libre, "
+     "aun con mucha libre en total. Esto guarda una reserva de espacio de direcciones libre que se devuelve justo antes de cada guardado, "
+     "y cuando falta memoria vacía la caché de archivos que el juego no está usando. Nada de lo que ves cambia. Parte de " APEX_PRODUCT_NAME
+     ". Créditos: @loinyx",
+     "Le jeu est en 32 bits : dans une longue session, la sauvegarde peut échouer (Erreur 12) faute d'un grand bloc de mémoire libre, "
+     "même avec beaucoup de mémoire libre au total. Ceci garde une réserve d'espace d'adressage libre rendue juste avant chaque "
+     "sauvegarde, et quand la mémoire manque, vide le cache des fichiers que le jeu n'utilise pas. Rien de visible ne change. Fait "
+     "partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"While the camera moves, objects that just loaded or moved are placed in the scene a few hundred per frame instead of all "
      "at once, so panning over a lot that streams in stutters less. An object may appear a frame or two later; everything is "
      "placed at once as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

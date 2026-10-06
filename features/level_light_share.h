@@ -30,6 +30,8 @@ void SetIndoor(bool on);
 void SetWallAlign(bool on);
 // Every room of the active lot solved at the top LOD class on every story, so a floor change re-solves nothing (default on)
 void SetAllFloors(bool on);
+// "High quality on every lot" is on (night_terrain_relight): SetAllFloors then applies to the priority lot only
+void SetAllLotsHighQuality(bool on);
 // Walls block lamp light on outdoor floors (open rooms, decks): the floor map's alpha carries the blocked share of the
 // outdoor lamps (relights every room when it changes); Active = installed, the game code matched and on
 void SetFloorWalls(bool on);

@@ -105,6 +105,7 @@
     <ClCompile Include="features\fast_cas.cpp" />
     <ClCompile Include="features\fast_crc.cpp" />
     <ClCompile Include="features\fast_memory.cpp" />
+    <ClCompile Include="features\memory_guard.cpp" />
     <ClCompile Include="features\captures.cpp" />
     <ClCompile Include="features\vulkan_driver_guard.cpp" />
     <ClCompile Include="features\address_space.cpp" />
@@ -185,6 +186,7 @@
     <ClInclude Include="features\fast_cas.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
+    <ClInclude Include="features\memory_guard.h" />
     <ClInclude Include="features\captures.h" />
     <ClInclude Include="features\vulkan_driver_guard.h" />
     <ClInclude Include="features\address_space.h" />
