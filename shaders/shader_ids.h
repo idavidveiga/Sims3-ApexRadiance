@@ -23,6 +23,14 @@ constexpr ShaderId kLakePs2 = {1308, 0xB21E05D4u};     // the same lake water wi
                                                        // game uses it in other weather (2.5.1 report: reflections gone when not sunny)
 constexpr ShaderId kSnowLotPs = {1852, 0x08DF01E8u};   // snowy lot light pass
 constexpr ShaderId kRoofSnowPs = {4992, 0x3CEB025Eu};  // snowy roofs
+// EA 1.69 Light Probe / day-night census, 2026-10-04: cinema/theatre facade.
+// The main marquee uses D5ED0EF3. The narrow centre panel uses 4E570819 by day and 36F5E915 at night,
+// all paired with the exact BFFCCC56 object VS.
+constexpr ShaderId kCinemaMarqueeDayPs = {864, 0xD5ED0EF3u};
+constexpr ShaderId kCinemaMarqueeNightPs = {1748, 0xDD77CDE4u}; // main marquee at night; captured 2026-10-04
+constexpr ShaderId kCinemaMarqueePanelDayPs = {500, 0x4E570819u};
+constexpr ShaderId kCinemaMarqueePanelNightPs = {1296, 0x36F5E915u};
+constexpr ShaderId kCinemaMarqueeDayVs = {1060, 0xBFFCCC56u};
 // vertex shaders
 constexpr ShaderId kLotLightVs = {680, 0x0C8CC5E8u}; // regular lot light pass: contracted UV, F7 2026-10-04 18:35
 constexpr ShaderId kRoofVs = {1192, 0x1F851ECBu};
