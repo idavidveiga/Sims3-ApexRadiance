@@ -411,11 +411,27 @@ bool RoReliable(uint32_t db) {
     }
 }
 
+// The last whole-list "every read-only package answers for sure" of this thread (05/10: every lookup that reaches the
+// game ran the walk over the ~300 packages before its probe, and Remember ran it again; sampled hot on 10/02). Reliability
+// only goes from unreliable to reliable while the list and its generation stay (see Remember), so a "yes" for the same
+// list, generation and size holds; it is still walked again after kRoLatchMs.
+struct RoLatch {
+    uintptr_t mgr = 0, begin = 0;
+    uint32_t count = 0, gen = 0;
+    DWORD at = 0;
+};
+thread_local RoLatch t_roLatch;
+constexpr DWORD kRoLatchMs = 100;
+
 // Every read-only package in the list before `index` (all of them for kAllAbove) answers for sure
 bool ReadOnlyAboveReliable(uintptr_t mgr, uint32_t index) {
     uintptr_t begin = 0;
     uint32_t count = 0;
     if (!ReadList(mgr, begin, count)) return false;
+    const uint32_t gen = g_gen.load(std::memory_order_acquire);
+    const bool quiet = g_mutating.load(std::memory_order_acquire) == 0;
+    RoLatch& l = t_roLatch;
+    if (quiet && l.at && l.mgr == mgr && l.begin == begin && l.count == count && l.gen == gen && GetTickCount() - l.at < kRoLatchMs) return true; // the whole list held: any part of it holds
     const uint32_t n = index == kAllAbove || index > count ? count : index;
     __try {
         const uint32_t* p = reinterpret_cast<const uint32_t*>(begin);
@@ -427,6 +443,8 @@ bool ReadOnlyAboveReliable(uintptr_t mgr, uint32_t index) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+    if (n == count && quiet && g_mutating.load(std::memory_order_acquire) == 0 && g_gen.load(std::memory_order_acquire) == gen)
+        l = RoLatch{mgr, begin, count, gen, GetTickCount() | 1};
     return true;
 }
 
