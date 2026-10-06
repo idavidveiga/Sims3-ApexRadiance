@@ -3628,7 +3628,7 @@ struct SolveCtx {
 };
 SolveCtx g_ctx;
 bool g_enterReady = false; // GameWallTest is in (Install)
-std::atomic<long> g_enterTests{0};
+std::atomic<long> g_enterTests{0}, g_outdoorEnters{0};
 struct BatchCentre {
     uintptr_t begin = 0, end = 0;
     alignas(16) float c[4] = {};
@@ -4268,6 +4268,69 @@ void Diag(const RoomInfo& info, void* light, const float* sample, const float* c
     g_lastRec = static_cast<int>(g_diag.size()) - 1;
 }
 
+// Where a lamp's ray enters the solving room's story (IndoorPassImpl and OutdoorEntry, for GameWallTest)
+struct RayEntry {
+    bool valid = false;
+    float lamp[3] = {}, at[3] = {};
+};
+
+// A floor a player placed at that quadrant of the story: not the air next to walls (the bare 0x40000000 key), a foundation,
+// a removed floor or never-built space, which FloorAt all counts as floor (RemovedFloorKey). What cannot be read counts as a
+// floor.
+bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
+    const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(level + 0x264);
+    if (!grid) return true;
+    const uintptr_t data = *reinterpret_cast<const uintptr_t*>(grid);
+    const int w = *reinterpret_cast<const int*>(grid + 0x10), h = *reinterpret_cast<const int*>(grid + 0x14);
+    if (!data || ix < 0 || iz < 0 || ix >= w || iz >= h || w > 1024 || h > 1024) return true;
+    const uint32_t* key = reinterpret_cast<const uint32_t*>(data + (static_cast<size_t>(iz) * w + ix) * 40 + 8 + q * 8);
+    if (key[0] == 0xFFFFFFF8u && key[1] == 0xFFFFFFFFu) return false;
+    return !(key[0] & 0x40000000u);
+}
+
+// Where an outdoor lamp of a lower story enters an outdoor room's story through open air (06/10, user's F7 16:30 and F8
+// 16:29:57: a sconce of the ground floor left the upper story's half wall of a balcony dark beside the lit wall next to it;
+// all 21 recorded points of the half wall were blocked by the game's wall test of the upper story and passed by ours). That
+// test (0x0069FC40) has no wall base, and its soft mode shades rays passing near a wall's end, so a ray rising past the
+// corner of the balcony below its floor was blocked by walls that stand above it. The game's test (GameWallTest) then runs
+// from where the ray reaches this story's lowest floor, as for indoor rooms (IndoorPassImpl's entry); the lamp's own story
+// is WallPass's. Where the ray comes up through a floor of this story (a deck, a balcony) the whole ray stays the game's.
+bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry) {
+    if (home < 0 || home >= info.level || info.level > 7) return false;
+    const uintptr_t mgr = StoryManager(info.tracker, info.level);
+    const uintptr_t level = mgr ? LevelFor(mgr) : 0;
+    Xform xf;
+    if (!mgr || !level || LevelManager(level) != mgr || !ReadXform(info.mgr, xf)) return false;
+    alignas(16) float pos[4];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    float P[3], Q[3];
+    ToLocal(xf, pos, P);
+    ToLocal(xf, sample, Q);
+    const float dy = Q[1] - P[1];
+    const float h = *reinterpret_cast<const float*>(mgr + 0x98) - *reinterpret_cast<const float*>(mgr + 0xD4); // the story's lowest floor, lot space
+    if (!(std::fabs(h) < 1000.0f) || dy < 1e-4f) return false; // the lamp below the point only
+    float t = (h - P[1]) / dy;
+    if (t >= 1.0f && std::fabs(Q[1] - h) < 0.02f) t = 0.9999f; // a point on that floor's plane: tested where it is
+    if (!(t > 0.0f && t < 1.0f)) return false;                 // the lamp not below that floor, or the point not above it
+    const float x = P[0] + t * (Q[0] - P[0]), z = P[2] + t * (Q[2] - P[2]);
+    const int ix = static_cast<int>(std::floor(x)), iz = static_cast<int>(std::floor(z));
+    if (PlacedFloorAt(level, ix, iz, Quadrant(x - ix, z - iz))) return false;
+    entry.valid = true;
+    for (int k = 0; k < 3; ++k) {
+        entry.lamp[k] = pos[k];
+        entry.at[k] = pos[k] + t * (sample[k] - pos[k]);
+    }
+    return true;
+}
+bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry) {
+    __try {
+        return OutdoorEntryImpl(info, home, light, sample, entry);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return false; // the game's whole-ray test, as before
+    }
+}
+
 void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
     const Cross* cross = FindCross(info, reinterpret_cast<uintptr_t>(light));
     const int home = cross ? cross->floor : -1;
@@ -4281,6 +4344,14 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         if (mine <= 0.0f) g_wallBlocked.fetch_add(1, std::memory_order_relaxed);
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
+        // a lamp of a lower story: this story's walls, tested next by the game, from where its ray enters this story
+        RayEntry entry;
+        if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis && OutdoorEntry(info, home, light, sample, entry)) {
+            g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
+            std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
+            std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
+            g_outdoorEnters.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     if (!kPublicBuild) {
         if (lit) {
@@ -4349,12 +4420,6 @@ float IndoorBoundaryPass(const RoomInfo& info, uintptr_t floorLevel, int B, void
     crossing = t;
     return 1.0f;
 }
-
-// Where a lamp's ray enters the solving room's story (IndoorPassImpl, for GameWallTest)
-struct RayEntry {
-    bool valid = false;
-    float lamp[3] = {}, at[3] = {};
-};
 
 // Test every floor crossed by the real lamp-to-sample ray, then each foreign
 // story's wall segment. The recipient's walls remain the native solve's job,
@@ -6701,8 +6766,8 @@ std::string Status() {
                                                       g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
                                                       g_maskListFallbacks.load()) +
                                           std::format(", rooms taking lamps of another story checked against them {} (sent to gather again {}, left alone a while {}), "
-                                                      "lamps of another story tested against the lit room's walls from where they enter its story {}{}, rooms a moved lamp never lit left until it is quiet {}",
-                                                      g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_editWaited.load()),
+                                                      "lamps of another story tested against the lit room's walls from where they enter its story {}{} (outdoors {}), rooms a moved lamp never lit left until it is quiet {}",
+                                                      g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_editWaited.load()),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
                                                    "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",

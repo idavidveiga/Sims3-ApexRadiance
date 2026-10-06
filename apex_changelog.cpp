@@ -18,6 +18,7 @@ constexpr const char* k270Added[] = {
 constexpr const char* k270Improved[] = {
     "The ground around switched lamps changes in one frame",
     "Furniture takes the light of lamps on other stories through openings",
+    "A ground floor wall lamp also lights the half wall of the balcony above it",
     "Walls block lamp light on outdoor floors, objects and fences",
     "A lot you enter corrects its lighting sooner",
     "Moving or switching lamps in Build mode updates rooms sooner",

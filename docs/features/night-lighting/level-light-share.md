@@ -10,8 +10,8 @@ their own story. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: in development (PR #2) |
-| Default | On (all four switches) |
+| Availability | Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together: Released in 2.7.0 |
+| Default | On (all six switches) |
 | Menu | Lighting > Stories (*Seamless walls between floors* and *Every floor in full detail* under Advanced > *Floor detail*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
 | Source | [`features/level_light_share.cpp`](../../../features/level_light_share.cpp), [`features/lamp_mark_filter.cpp`](../../../features/lamp_mark_filter.cpp), [`features/room_ambient_policy.h`](../../../features/room_ambient_policy.h), driven by [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp) |
@@ -59,12 +59,13 @@ test. The light solve itself, lamp ranges and attenuation are the game's.
 |---|---|---|---|---|---|
 | Outdoor light between floors | `luzExternaEntreAndares` | bool | on | | Shares outdoor lamps between stories (parts 1 to 3). Installs or removes the whole module live; the other three switches need it |
 | Indoor light between floors | `luzInternaEntreAndares` | bool | on | | Indoor lamps light other stories through openings (part 4). A change sends every lot's rooms near openings to gather again |
-| Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Test (05/10): the outdoor floor texels of stories >= 1 store in their map alpha the share of room 0's lamp light that walls block (normal wrapped, 2D and cross-story wall tests); the floor atlas shader takes atlas x (1 - alpha). Steam bytes at 0x006A333B. A change relights every room |
+| Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Decks and yards without a roof stay dark behind a wall: the outdoor floor texels of stories >= 1 store in their map alpha the share of room 0's lamp light that walls block (normal wrapped, 2D and cross-story wall tests); the floor atlas shader takes atlas x (1 - alpha). Steam bytes at 0x006A333B. A change relights every room |
+| Walls block light on objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Outdoor objects (and fences) drop a per-pixel lamp when an outside wall of the lot stands between the lamp and them, and their ground light is scaled by the share of the nearby lamps' light that is not blocked (`WallBlocks`, see *Walls block light outdoors*) |
 | Advanced > Seamless walls between floors | `paredesSemEmendaEntreAndares` | bool | on | | Wall samples at their drawn height and atrium walls blurred across the floor line (part 5). A change relights every room |
 | Advanced > Every floor in full detail | `todosOsAndaresEmDetalhe` | bool | on | | Every room of the played lot gets the top lighting detail on every story, so changing floors keeps the light. More solve work when entering a lot. A change relights every room |
 
-All four are applied live (`LevelLightShare::Install`/`Uninstall`, `SetIndoor`, `SetWallAlign`, `SetAllFloors`) and
-reset to on. There is no strength: borrowed lamps keep the game's weight. The module is installed only while Night
+All six are applied live (`LevelLightShare::Install`/`Uninstall`, `SetIndoor`, `SetWallAlign`, `SetAllFloors`,
+`SetObjectWalls`) and reset to on. There is no strength: borrowed lamps keep the game's weight. The module is installed only while Night
 Lighting is on. The *Lighting > Stories* card also hosts *Every-Story Ground Light* (`SplitLevelGroundLight`), a separate
 patch.
 
@@ -76,9 +77,8 @@ patch.
   matches everywhere), so walls and windows now agree on the lamp list. A rig still uses the 3 strongest lamps at the
   object centre without wall shadow; the map sums every lamp per point with wall occlusion. The game's rig gather takes
   only lamps of the object's own room (`light+8 == rig+0x1E0` at `0x6BB333` and `0x6BB283`), so an indoor lamp added to
-  another room's list never reached that room's objects (Light capture 06/10 13:20: an atrium's upper window frame black,
-  0.02, its rig only [NoLight] and fill lights, right over the lower frame lit red by the sconce below). Since 06/10
-  ObjectLightBridge runs the game's gather once more for a room-mode rig with the list's lamps of other rooms that reach
+  another room's list would never reach that room's objects (an atrium's upper window frame stayed black over the
+  lower frame lit by the sconce below). ObjectLightBridge therefore runs the game's gather once more for a room-mode rig with the list's lamps of other rooms that reach
   its centre (`LevelLightShare::CrossLampReach`: through an opening, past the walls; share at least 0.25, within 15 m),
   `rig+0x1E0` set to their room id for that call, and gathers those rigs again after every lamp edit (the game marks a
   room-mode rig only for lamps of its own room, `0x006B9230`). Status: "indoor objects given lamps of another story".
@@ -257,6 +257,14 @@ walls and lit the lower side wall around the corner.
    the batch (up to 256 entries; the output vector is pre-sized to `walls + 1` so the game never reallocates it). Without
    per-light lists (`list2D` null, or not a batch) all walls are tested, as the game does.
 5. The room's own lights are never touched.
+6. **From where the ray enters the story** (06/10): for an outdoor lamp of a lower story that WallPass let through,
+   the game's own wall test of the lit story, which follows (`GameWallTest`, CALL at `0x0069FE93`), runs from where the
+   ray reaches that story's lowest floor (`OutdoorEntry`), as for indoor rooms (part 4). That test has no wall base and
+   its soft mode shades rays passing near a wall's end, so a ground-floor sconce left the upper story's half wall of a
+   balcony dark beside the lit wall next to it (F8 of 16:29:57: all 21 recorded half-wall points blocked by the game,
+   passed by WallPass). Where the ray comes up through a floor a player placed on that story (a deck, a balcony;
+   `PlacedFloorAt`, not the bare `0x40000000` air key or never-built space) the game keeps the whole ray. Status: *from
+   where they enter its story N (outdoors M)*.
 
 ### Part 4: indoor light through openings
 
@@ -438,6 +446,25 @@ The three wall-pass redirects install all together or not at all. Status: *seaml
 samples moved to their drawn height, N wall pieces left as the game has them, N walls blurred across their edges, N edge
 rows kept out of the blur)*.
 
+### Walls block light outdoors
+
+Outdoor floors take `max(floor map, ground atlas)`, outdoor objects take per-pixel lamps and the atlas, and the atlas
+carries room 0's lamps with no walls, so a wall lamp outside would light a yard without a roof, an upper deck behind its
+half wall and the objects in them.
+
+- **Floors** (`paredesBloqueiamLuzNosPisos`, `SetFloorWalls`; Steam 1.67.2 fixed addresses only): for outdoor floor
+  texels of stories 1 and up, the batch solve evaluates room 0's lamps at the texel with the normal wrapped (only walls
+  decide), with and without the 2D and cross-story wall tests, and stores the blocked share in the texel's alpha (0 for
+  every outdoor texel in the game). 0x006A333B (`cmp byte [ebx+18h],0; xorps xmm1,xmm1`, the load of `out[3]`) becomes a
+  call that supplies it. The floor atlas shader takes `atlas x (1 - alpha)`. A change relights every room.
+- **Objects** (`paredesBloqueiamLuzNosObjetos`, `SetObjectWalls`, `WallBlocks`): room 0's outside walls of each story
+  (the LightingWall list: centre line from `+0x110` and `+0xF0` behind the `+0x150` normal, 3 m high) are copied when
+  that room is solved, on the light tree thread (`g_wallSnap`, per story manager). The render thread tests a
+  lamp-to-object segment against a 4 m grid of the copy, at the height the ray crosses each wall. A blocked lamp leaves
+  the object's per-pixel list (the next one takes the slot), and the object's ground light is scaled by the share of the
+  nearby lamps' light that is not blocked. Fences use the same test from their group's centre and both ends
+  ([fences.md](fences.md)).
+
 ### Updates
 
 `FUN_006c5e20` pushes `FUN_006c7250` (per-story room update, fastcall `(treeLevel)`, plain `ret`) as a function pointer
@@ -554,8 +581,8 @@ lighting, diagnostic arming, solves or budgets. An empty file means no qualifyin
   boost and merge flags, normalisation, ambient, ramp base, `Q` sent by Apex, `H` held until the solve ended, lot id,
   camera story and the room flag `+0x19` whose change invalidates a room, `0x006A5E00 -> 0x0069F160`).
 - Samples are recorded only while armed (Developer > Lighting *Record story light samples for the diagnostics*, or the
-  first F8 of a session). The game's wall test is wrapped (`GameWallTest`, CALL at `0x0069FE93`) only in developer
-  mode, to record its result.
+  first F8 of a session). The game's wall test is wrapped (`GameWallTest`, CALL at `0x0069FE93`) in every build (for the
+  entry points of parts 3 and 4); the development build also records its result.
 
 ### Address reference
 
