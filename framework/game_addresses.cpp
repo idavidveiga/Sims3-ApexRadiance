@@ -997,58 +997,6 @@ void ResolveEntry(const Entry& e) {
     }
 }
 
-// Diagnostic-only probe for EA/non-Steam builds where the old WallSolve signature misses because it embeds
-// Steam's absolute BatchSamples address. This never fills g_found and never installs a hook: it only logs candidates.
-void ResolveMissingWallSolve() {
-    if (IsFixedBuild() || (g_found[Index(Id::WallSolveCall)] && g_found[Index(Id::WallSolve)])) return;
-
-    const uintptr_t wallPass = g_found[Index(Id::WallPass)];
-    const uintptr_t batchSamples = g_found[Index(Id::BatchSamples)];
-    const uintptr_t batchSolveCall = g_found[Index(Id::BatchSolveCall)];
-    if (!wallPass || !batchSamples || !batchSolveCall) {
-        LOG_INFO("[Addr] WallSolve fallback skipped: WallPass, BatchSamples or BatchSolveCall is missing");
-        return;
-    }
-
-    const uintptr_t steamCallOffset =
-        static_cast<uintptr_t>(kInfo[Index(Id::WallSolveCall)].steam - kInfo[Index(Id::WallPass)].steam);
-    const uintptr_t predictedCall = wallPass + steamCallOffset;
-    const uintptr_t predictedSolve = batchSolveCall >= 0x166 ? batchSolveCall - 0x166 : 0;
-
-    uintptr_t resolvedCall = 0, resolvedSolve = 0;
-    int structuralCandidates = 0;
-    const uintptr_t end = (wallPass + 0x150 < g_text.end) ? wallPass + 0x150 : g_text.end;
-    for (uintptr_t p = wallPass; p + 12 <= end; ++p) {
-        uint8_t b[12]{};
-        if (!SafeRead(p, b, sizeof b)) continue;
-        if (b[0] != 0x68 || b[5] != 0x8B || b[6] != 0xCE || b[7] != 0xE8) continue;
-
-        uint32_t pushed = 0;
-        std::memcpy(&pushed, b + 1, sizeof pushed);
-        if (pushed != static_cast<uint32_t>(batchSamples)) continue;
-
-        const uintptr_t call = p + 7;
-        const uintptr_t target = CallTargetAt(call);
-        if (!g_text.Has(target)) continue;
-        if (static_cast<intptr_t>(batchSolveCall) - static_cast<intptr_t>(target) != 0x166) continue;
-        if (call != predictedCall || target != predictedSolve) continue;
-
-        structuralCandidates++;
-        resolvedCall = call;
-        resolvedSolve = target;
-    }
-
-    if (structuralCandidates == 1) {
-        g_found[Index(Id::WallSolveCall)] = resolvedCall;
-        g_found[Index(Id::WallSolve)] = resolvedSolve;
-        LOG_INFO(std::format("[Addr] WallSolve fallback: WallSolveCall {:#010x}, WallSolve {:#010x} resolved from unique BatchSamples/WallPass structure; "
-                             "BatchSolveCall-WallSolve = +0x166", resolvedCall, resolvedSolve));
-    } else {
-        LOG_WARNING(std::format("[Addr] WallSolve fallback rejected: {} structural candidate(s); expected exactly one at call {:#010x} -> {:#010x}",
-                                structuralCandidates, predictedCall, predictedSolve));
-    }
-}
-
 // Cross-checks between entries (non-Steam: a failed check clears the ids concerned)
 void CrossChecks() {
     auto clear = [](std::initializer_list<Id> ids, const char* why) {
@@ -1226,7 +1174,6 @@ void Resolve() {
                          g_text.end, g_readable.size(), prologues));
     if (IsFixedBuild()) LOG_INFO("[Addr] Steam 1.67.2: the fixed addresses are used; the signatures below are only a self-check");
     for (const Entry& e : kTable) ResolveEntry(e);
-    ResolveMissingWallSolve();
     CrossChecks();
     int found = 0, differs = 0;
     for (size_t i = 0; i < Index(Id::Count); i++) {
