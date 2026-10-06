@@ -18,11 +18,15 @@ hairStrength = 0.0
 noMapa = true
 protegerLuz = 0.4087177813053131
 qualidade = 3
-revisao = 9
+revisao = 10
 simControls = false
 simMaxShade = 0.23517785966396332
 simStrength = 0.30582213401794434
 transparentHair = true
+temporal = true
+halfRes = true
+thinDetail = false
+thickness = 0.75
 
 [patches.DepthBlur]
 areaNitida = 2
@@ -176,11 +180,15 @@ hairStrength = 0.0
 noMapa = true
 protegerLuz = 0.4647177457809448
 qualidade = 1
-revisao = 9
+revisao = 10
 simControls = true
 simMaxShade = 0.11
 simStrength = 0.4
 transparentHair = true
+temporal = true
+halfRes = false
+thinDetail = false
+thickness = 0.75
 
 [patches.DepthBlur]
 areaNitida = 2
@@ -334,11 +342,15 @@ hairStrength = 0.0
 noMapa = true
 protegerLuz = 0.4087177813053131
 qualidade = 3
-revisao = 9
+revisao = 10
 simControls = true
 simMaxShade = 0.11
 simStrength = 0.4
 transparentHair = true
+temporal = true
+halfRes = false
+thinDetail = true
+thickness = 0.75
 
 [patches.DepthBlur]
 areaNitida = 2

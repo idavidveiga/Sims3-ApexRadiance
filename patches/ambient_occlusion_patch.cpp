@@ -21,6 +21,19 @@
 //    keep more light and their colour, no grey film), and lamp-lit / bright pixels keep part of their light.
 // Passes per frame: depth -> 1/z, 8 downsamples, the AO pass, 4 blur passes (box H/V, tent H/V), one composite over a
 // copy of the scene (colour write RGB only).
+// 06/10 (user: grain and ghost shade below Ultra, not perfect on Ultra), four additions:
+//  - Blur on the same surface: the AO pass also writes its normal (second target) and the blur weighs taps by depth and
+//    direction; a box tap on another surface is replaced by the pixel 4 further on (same interleave offset), so the 4x4
+//    cancel holds behind rails and at corners. Always on (depth only without two render targets). The pyramid keeps the
+//    farthest depth across an edge, so a thin leg leaves no averaged "ghost" surface at the coarse levels.
+//  - Temporal smoothing (option, on): the interleave shifts every frame and the shade is blended with the last frames,
+//    reprojected with both frames' camera block (c40..c43); history dropped on a depth mismatch and held near this
+//    frame's neighbourhood, so where it is dropped the frame shows as it is without the option. The design above was
+//    deterministic on purpose; this reverses it only while the option is on (docs/removed-features.md: the old temporal
+//    lines and why they failed).
+//  - Half resolution (option, off): the AO pass and the blur on the 2x2 blocks of the pyramid's level 1 (never one of
+//    the four depth pixels, the old "micro dots" cause), scaled up by depth.
+//  - Thin object detail (option, off): visibility bitmask (8 sectors per side) with an object thickness.
 
 #include "patch_base.h"
 #include "apex_version.h"
@@ -79,6 +92,10 @@ constexpr float kFirstStep4K = 2.0f, kMipOffset = 2.0f, kMaxRadius = 0.30f;    /
 constexpr float kIsoK = 1.0f, kIsoT = 0.01f;                                    // isolated-pixel fade
 constexpr float kBlurTolerance = 0.03f;                                         // of z
 constexpr float kDeadZone = 0.05f;                                              // composite: faint shade dropped
+constexpr float kNormalPower = 8.0f;                                            // blur: normal agreement ^ this (cos 30 deg -> 0.32)
+// Temporal smoothing: weight of the new frame (about the last 8 blended), how far the history may sit outside the shade
+// of this frame's 3x3 neighbourhood, and the depth match (of 1/z) for the history to count
+constexpr float kTemporalWeight = 0.125f, kTemporalMargin = 0.08f, kTemporalDepthTolerance = 0.05f;
 // Quality by stored index (the saved "qualidade": 0 Low, 1 Medium, 2 High as in 2.1.0, then 3 Ultra, 4 Very Low) and the
 // order the menu shows them in
 constexpr int kQualityCount = 5;
@@ -89,14 +106,19 @@ const char* kShaderSource = R"HLSL(
 #ifndef SLICES
 #define SLICES 8
 #endif
+#ifndef VBM
+#define VBM 0        // 1 = visibility bitmask (Thin object detail)
+#endif
 #define STEPS 4
 sampler2D sDepth : register(s0); // INTZ scene depth, point
-sampler2D sZ     : register(s1); // 1/z pyramid (1/m, 0 = sky), point (exact texel reads)
+sampler2D sZ     : register(s1); // 1/z pyramid (1/m, 0 = sky), point (exact texel reads; mip point, level by lod)
 sampler2D sZt    : register(s2); // the same pyramid, bilinear within the nearest level (the march)
 sampler2D sAo    : register(s3); // AO + 1/z (G16R16F), point
 sampler2D sColor : register(s4); // copy of the finished scene, point
 sampler2D sSim : register(s5); // Sim receiver device-depth mask, point
 sampler2D sHair : register(s6); // blended Sim body/hair: signed device depth and source coverage
+sampler2D sNrm : register(s7); // surface normal of the AO pass (view xy * 0.5 + 0.5, A8R8G8B8), point
+sampler2D sHist : register(s8); // the previous frame's shade + 1/z (Temporal smoothing), point
 float4 cView  : register(c0);  // x = tanX, y = tanY, z = H / (2 tanY) (pixels per metre times z), w = max radius (px)
 float4 cSize  : register(c1);  // xy = screen size, zw = pyramid level-0 size (padded)
 float4 cMarch : register(c2);  // x = first step (px), y = mip offset, z = (1 + thin)^2, w = 1 / (fade1 - fade0)
@@ -110,6 +132,15 @@ float4 cRot   : register(c9);  // x = cos(pi / SLICES), y = sin(pi / SLICES)
 float4 cDepth : register(c10); // x = A, y = 1 / (near A)   (1/z = (A - d) / (near A)), z = composite grain (Banding Fix strength / 255, 0 = off), w = its grain phase
 float4 cSim : register(c11); // body strength, opaque mask available, hair strength, maximum shade
 float4 cSimView : register(c12); // mask preview, transparent hair mask available
+float4 cJit : register(c13); // x, y = this frame's offset of the slice angle / step interleave (0 without Temporal smoothing),
+                             // z = AO pixel size in screen pixels (1, 2 at half resolution), w = its pyramid level (0, 1)
+float4 cVbm : register(c14); // x = object thickness (m, Thin object detail), y = normal weight power of the blur, z = 1 normals there
+float4 cM0 : register(c15);  // reprojection: previous view-projection x inverse of this one, rows (Temporal smoothing)
+float4 cM1 : register(c16);
+float4 cM2 : register(c17);
+float4 cM3 : register(c18);
+float4 cTmp : register(c19); // x = 1 history usable, y = weight of this frame, z = clamp margin, w = depth tolerance (of 1/z)
+float4 cHalf : register(c20); // AO target size (xy) and 1 / size (zw): the upsample reads the half-resolution shade
 
 static const float PI = 3.14159265;
 
@@ -139,30 +170,57 @@ float4 DownPS(float2 uv : TEXCOORD0) : COLOR0
 }
 
 float3 PosF(float2 p, float z) { return z * float3(p * cPos.xy + cPos.zw, 1); }
-float WAt(float2 p) { return tex2Dlod(sZ, float4(p / cSize.zw, 0, 0)).r; }
+// the AO pass's 1/z at a screen position, from the pyramid level of the AO pixels (level 1 at half resolution: the
+// 2x2 average centred on the half pixel, never one of its four depth pixels, which a 1-pixel camera move would swap)
+float WAt(float2 p) { return tex2Dlod(sZ, float4(p / cSize.zw, 0, cJit.w)).r; }
 float Bayer2(float a, float b) { return 2.0 * abs(a - b) + b; }
 float Bayer4(float2 q) { float2 lo = fmod(q, 2.0), hi = floor(fmod(q, 4.0) * 0.5); return 4.0 * Bayer2(lo.x, lo.y) + Bayer2(hi.x, hi.y); }
 float ACos(float x) { return acos(clamp(x, -1, 1)); }  // exact: the fast fit biased the shade by 0.5% (lab check)
 float4 ACos4(float4 x) { return acos(clamp(x, -1, 1)); }
 
+)HLSL" R"HLSL(
 // GTAO: SLICES slices (angle (s + b1) pi / SLICES) x STEPS geometric steps per side (offset from b2 plus a golden-ratio
-// phase per half-slice), contact + large horizon per side from the same samples. Out: R = visibility, G = 1/z (blur).
-float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
+// phase per half-slice), contact + large horizon per side from the same samples. Out: R = visibility, G = 1/z (blur);
+// COLOR1 = the surface normal for the blur (view x, y * 0.5 + 0.5). All positions in screen pixels: at half resolution
+// an AO pixel is the centre of a 2x2 block (cJit.z = 2) and reads the pyramid level of that block (cJit.w = 1).
+struct GtaoOut { float4 ao : COLOR0; float4 nrm : COLOR1; };
+GtaoOut Gtao(float v, float w0, float3 n)
 {
+    GtaoOut o;
+    o.ao = float4(v, w0, 0, 0);
+    o.nrm = float4(n.xy * 0.5 + 0.5, 0, 1);
+    return o;
+}
+#if VBM
+// cosine-weighted visible share from the view direction to angle t (radians, either side) of a slice whose projected
+// normal is at angle n: (cos n + 2 t sin n - cos(2t - n)) / 4, the GTAO arc
+float4 Arc4(float4 t, float n, float cosN, float sn) { return (cosN + 2 * t * sn - cos(2 * t - n)) * 0.25; }
+// share of the 8 sectors [k, k + 1) (in sector units) covered by the interval [a.x, a.y]
+void Cover(float2 a, out float4 lo, out float4 hi)
+{
+    const float4 K0 = float4(0, 1, 2, 3), K1 = float4(4, 5, 6, 7);
+    lo = saturate(min(K0 + 1, a.y) - max(K0, a.x));
+    hi = saturate(min(K1 + 1, a.y) - max(K1, a.x));
+}
+#endif
+GtaoOut GtaoPS(float2 uv : TEXCOORD0)
+{
+    const float3 nNone = float3(0, 0, -1);
     float2 pix = uv * cSize.xy;
     float w0 = WAt(pix);
-    [branch] if (w0 <= 0.0) return float4(1, 0, 0, 0);
+    [branch] if (w0 <= 0.0) return Gtao(1, 0, nNone);
     float z = 1.0 / w0;
-    [branch] if (z >= cRad.w) return float4(1, w0, 0, 0);
+    [branch] if (z >= cRad.w) return Gtao(1, w0, nNone);
     float3 c = PosF(pix, z);
-    // normal from the neighbour with the smaller depth difference on each axis
-    float zr = 1.0 / max(WAt(pix + float2(1, 0)), 1e-9), zl = 1.0 / max(WAt(pix - float2(1, 0)), 1e-9);
-    float zd = 1.0 / max(WAt(pix + float2(0, 1)), 1e-9), zu = 1.0 / max(WAt(pix - float2(0, 1)), 1e-9);
-    float3 dx = abs(zr - z) < abs(zl - z) ? PosF(pix + float2(1, 0), zr) - c : c - PosF(pix - float2(1, 0), zl);
-    float3 dy = abs(zd - z) < abs(zu - z) ? PosF(pix + float2(0, 1), zd) - c : c - PosF(pix - float2(0, 1), zu);
+    // normal from the neighbour with the smaller depth difference on each axis (one AO pixel away)
+    float st = cJit.z;
+    float zr = 1.0 / max(WAt(pix + float2(st, 0)), 1e-9), zl = 1.0 / max(WAt(pix - float2(st, 0)), 1e-9);
+    float zd = 1.0 / max(WAt(pix + float2(0, st)), 1e-9), zu = 1.0 / max(WAt(pix - float2(0, st)), 1e-9);
+    float3 dx = abs(zr - z) < abs(zl - z) ? PosF(pix + float2(st, 0), zr) - c : c - PosF(pix - float2(st, 0), zl);
+    float3 dy = abs(zd - z) < abs(zu - z) ? PosF(pix + float2(0, st), zd) - c : c - PosF(pix - float2(0, st), zu);
     float3 n = cross(dx, dy);
     float nl = length(n);
-    [branch] if (nl < 1e-12) return float4(1, w0, 0, 0);
+    [branch] if (nl < 1e-12) return Gtao(1, w0, nNone);
     n /= nl;
     n = dot(n, c) > 0 ? -n : n;
     float iso = max(min(abs(zr - z), abs(zl - z)), min(abs(zd - z), abs(zu - z))) * w0;
@@ -170,11 +228,13 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
     float fz = saturate((z - cBlend.x) * cBlend.y);
     float Rl = lerp(cRad.y, cRad.z, fz), kl = lerp(cK.y, cK.z, fz);
     float rMax = min(Rl * cView.z * w0, cView.w);
-    [branch] if (rMax < 1.5 * cMarch.x) return float4(1, w0, 0, 0);
+    [branch] if (rMax < 1.5 * cMarch.x) return Gtao(1, w0, n);
     float lg = log2(rMax / cMarch.x) / STEPS;
     float lodAdd = log2(1.0 - exp2(-lg)) - cMarch.y + log2(cMarch.x);
-    float2 q = floor(pix);
-    float b1 = (Bayer4(q) + 0.5) / 16.0, b2 = (Bayer4(q.yx + float2(1, 2)) + 0.5) / 16.0;
+    // the 4x4 Bayer interleaves on the AO pixel grid (the box blur cancels them), shifted every frame by cJit.xy within one
+    // interleave step when Temporal smoothing is on: the frames then hold other angles and offsets, which it averages
+    float2 q = floor(pix / st);
+    float b1 = frac((Bayer4(q) + 0.5) / 16.0 + cJit.x), b2 = frac((Bayer4(q.yx + float2(1, 2)) + 0.5) / 16.0 + cJit.y);
     float2 fMul = float2(-1.0 / (0.615 * cRad.x), -1.0 / (0.615 * Rl));
     const float fAdd = 0.385 / 0.615 + 1.0;
     float2 om;
@@ -190,24 +250,64 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
         float cosN = saturate(dot(projN, view) / max(projLen, 1e-6));
         float sgn = dot(ortho, projN) >= 0 ? 1 : -1;
         float nA = sgn * ACos(cosN), sn = sgn * sqrt(1 - cosN * cosN);
+#if VBM
+        // Thin object detail (visibility bitmask, Therrien et al. 2023, 8 sectors per side with soft coverage): a sample
+        // shades the angles from its front to its back (cVbm.x metres behind it along the view ray), not everything below
+        // it, so shade passes behind thin things (legs, rails) and an object in front of a wall leaves no halo on it.
+        // Side 0 spans the angles [0, n + pi/2] from the view direction, side 1 [0, pi/2 - n] the other way.
+        float t0m = nA + PI * 0.5, t1m = PI * 0.5 - nA;
+        float2 sec = float2(8.0 / max(t0m, 1e-4), 8.0 / max(t1m, 1e-4));
+        float4 mC0a = 0, mC0b = 0, mL0a = 0, mL0b = 0, mC1a = 0, mC1b = 0, mL1a = 0, mL1b = 0;
+#else
         float4 low = float4(-sn, -sn, sn, sn);                  // (contact, large) side 0, (contact, large) side 1
         float4 hz = low;
+#endif
         float ph0 = frac(b2 + (2 * s) * 0.618034), ph1 = frac(b2 + (2 * s + 1) * 0.618034);
+#if VBM
+        [loop] for (int j = 0; j < STEPS; j++)                  // unrolled, the 8 masks run out of ps_3_0 registers
+#else
         [unroll] for (int j = 0; j < STEPS; j++)
+#endif
         {
             float2 lr = (j + float2(ph0, ph1)) * lg;
             float2 r = cMarch.x * exp2(lr);
             float4 sp = pix.xyxy + float4(om * r.x, -om * r.y);
-            float2 ws = float2(tex2Dlod(sZt, float4(sp.xy / cSize.zw, 0, lr.x + lodAdd)).r,
-                               tex2Dlod(sZt, float4(sp.zw / cSize.zw, 0, lr.y + lodAdd)).r);
+            float2 lod = max(lr + lodAdd, cJit.w);
+            float2 ws = float2(tex2Dlod(sZt, float4(sp.xy / cSize.zw, 0, lod.x)).r,
+                               tex2Dlod(sZt, float4(sp.zw / cSize.zw, 0, lod.y)).r);
             // off-screen samples count as sky (no occlusion), like the lab
             ws *= float2(all(sp.xy >= 0) && all(sp.xy < cSize.xy), all(sp.zw >= 0) && all(sp.zw < cSize.xy));
             float3 d0 = PosF(sp.xy, 1.0 / max(ws.x, 1e-9)) - c, d1 = PosF(sp.zw, 1.0 / max(ws.y, 1e-9)) - c;
             float2 cc = float2(dot(d0, view), dot(d1, view)) * rsqrt(max(float2(dot(d0, d0), dot(d1, d1)), 1e-12));
             float2 dt = sqrt(float2(dot(d0.xy, d0.xy), dot(d1.xy, d1.xy)) + float2(d0.z * d0.z, d1.z * d1.z) * cMarch.z);
             float4 w = saturate(dt.xxyy * fMul.xyxy + fAdd);
+#if VBM
+            float3 e0 = d0 + normalize(d0 + c) * cVbm.x, e1 = d1 + normalize(d1 + c) * cVbm.x;
+            float2 cb = float2(dot(e0, view), dot(e1, view)) * rsqrt(max(float2(dot(e0, e0), dot(e1, e1)), 1e-12));
+            float2 af = float2(ACos(cc.x), ACos(cc.y)), ab = float2(ACos(cb.x), ACos(cb.y));
+            float4 v0a, v0b, v1a, v1b;
+            Cover(float2(min(af.x, ab.x), max(af.x, ab.x)) * sec.x, v0a, v0b);
+            Cover(float2(min(af.y, ab.y), max(af.y, ab.y)) * sec.y, v1a, v1b);
+            mC0a = max(mC0a, v0a * w.x); mC0b = max(mC0b, v0b * w.x);
+            mL0a = max(mL0a, v0a * w.y); mL0b = max(mL0b, v0b * w.y);
+            mC1a = max(mC1a, v1a * w.z); mC1b = max(mC1b, v1b * w.z);
+            mL1a = max(mL1a, v1a * w.w); mL1b = max(mL1b, v1b * w.w);
+#else
             hz = max(hz, low + (cc.xxyy - low) * w);
+#endif
         }
+#if VBM
+        // each sector's cosine-weighted share: the arc to its far edge minus the arc to its near edge
+        const float4 K0 = float4(0, 1, 2, 3), K1 = float4(4, 5, 6, 7);
+        float s0 = t0m / 8.0, s1 = -t1m / 8.0;
+        float4 W0a = Arc4((K0 + 1) * s0, nA, cosN, sn) - Arc4(K0 * s0, nA, cosN, sn);
+        float4 W0b = Arc4((K1 + 1) * s0, nA, cosN, sn) - Arc4(K1 * s0, nA, cosN, sn);
+        float4 W1a = Arc4((K0 + 1) * s1, nA, cosN, sn) - Arc4(K0 * s1, nA, cosN, sn);
+        float4 W1b = Arc4((K1 + 1) * s1, nA, cosN, sn) - Arc4(K1 * s1, nA, cosN, sn);
+        float visC = dot(W0a, 1 - mC0a) + dot(W0b, 1 - mC0b) + dot(W1a, 1 - mC1a) + dot(W1b, 1 - mC1b);
+        float visL = dot(W0a, 1 - mL0a) + dot(W0b, 1 - mL0b) + dot(W1a, 1 - mL1a) + dot(W1b, 1 - mL1b);
+        acc += projLen * float3(visC, visL, cosN + nA * sn);
+#else
         // arcs for the 4 horizons: h0 = -acos(side 1), h1 = acos(side 0); cos(2h - n) by the double angle
         float4 hcs = hz.zwxy;                                   // (h0 contact, h0 large, h1 contact, h1 large) cosines
         float4 sg = float4(-1, -1, 1, 1);
@@ -216,33 +316,122 @@ float4 GtaoPS(float2 uv : TEXCOORD0) : COLOR0
         float4 c2 = (2 * hcs * hcs - 1) * cosN + (2 * sh * hcs) * sn;
         float4 arc = (cosN + 2 * h * sn - c2) * 0.25;
         acc += projLen * float3(arc.x + arc.z, arc.y + arc.w, cosN + nA * sn);
+#endif
         om = float2(om.x * cRot.x - om.y * cRot.y, om.x * cRot.y + om.y * cRot.x);
     }
     float oC = saturate(1 - acc.x / max(acc.z, 1e-6)), oL = saturate(1 - acc.y / max(acc.z, 1e-6));
     float occ = cK.x * oC + kl * max(0, oL - oC);
     occ *= saturate((cRad.w - z) * cMarch.w);
     occ *= 1 - cBlend.z * saturate((iso - cBlend.w) / cBlend.w);
-    return float4(saturate(1 - occ), w0, 0, 0);
+    return Gtao(saturate(1 - occ), w0, n);
 }
 
+)HLSL" R"HLSL(
 // separable depth-aware filter: box (0.5 1 1 1 0.5: one of each interleave offset) or tent (1 2 3 2 1)
 static const float BX[5] = { 0.5, 1.0, 1.0, 1.0, 0.5 };
 static const float TT[5] = { 1.0, 2.0, 3.0, 2.0, 1.0 };
+float3 NrmAt(float2 uv)
+{
+    float2 e = tex2Dlod(sNrm, float4(uv, 0, 0)).xy * 2 - 1;
+    return float3(e, -sqrt(saturate(1 - dot(e, e))));
+}
+// a tap counts when it is on the same surface: the same depth (within cK.w of z) and, with the normals there, facing
+// the same way (06/10: a corner's floor shade no longer bleeds up the wall)
+float TapWeight(float w0, float3 n0, float2 v, float2 uv)
+{
+    float dw = saturate(1.0 - abs(w0 / max(v.y, 1e-9) - 1.0) / cK.w);
+    [branch] if (cVbm.z > 0.5 && dw > 0) dw *= pow(saturate(dot(n0, NrmAt(uv))), cVbm.y);
+    return dw;
+}
 float4 BlurPS(float2 uv : TEXCOORD0) : COLOR0
 {
     float2 c0 = tex2Dlod(sAo, float4(uv, 0, 0)).rg;
     [branch] if (c0.y <= 0.0) return float4(1, 0, 0, 0);
+    float3 n0 = cVbm.z > 0.5 ? NrmAt(uv) : float3(0, 0, -1);
     float sum = 0, ws = 0;
     [unroll] for (int t = -2; t <= 2; t++)
     {
-        float2 v = tex2Dlod(sAo, float4(uv + cDir.xy * t, 0, 0)).rg;
-        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * saturate(1.0 - abs(c0.y / max(v.y, 1e-9) - 1.0) / cK.w);
+        float2 tuv = uv + cDir.xy * t;
+        float2 v = tex2Dlod(sAo, float4(tuv, 0, 0)).rg;
+        float dw = TapWeight(c0.y, n0, v, tuv);
+        // box pass: a tap on another surface (a rail in front of the wall, the other side of a corner) breaks the
+        // interleave cancel and leaves the 4x4 dots; the pixel 4 AO pixels further on has the same interleave offset
+        [branch] if (cDir.z < 0.5 && t != 0 && dw < 0.5)
+        {
+            float2 auv = uv + cDir.xy * (abs(t) == 1 ? -3 * t : 3 * t);
+            float2 a = tex2Dlod(sAo, float4(auv, 0, 0)).rg;
+            float da = TapWeight(c0.y, n0, a, auv);
+            if (da > dw) { v = a; dw = da; }
+        }
+        float w = (cDir.z > 0.5 ? TT[t + 2] : BX[t + 2]) * dw;
         sum += v.x * w;
         ws += w;
     }
     return float4(ws > 0 ? sum / ws : c0.x, c0.y, 0, 0);
 }
 
+// Half resolution: the shade back to full resolution, from the 4 nearest half pixels weighted by distance and by how
+// close their depth is to this pixel's (an edge takes the side it belongs to; none close: the closest in depth)
+float4 UpsamplePS(float2 uv : TEXCOORD0) : COLOR0
+{
+    float wF = tex2Dlod(sZ, float4(uv * cSize.xy / cSize.zw, 0, 0)).r;
+    [branch] if (wF <= 0.0) return float4(1, 0, 0, 0);
+    float2 t = uv * cHalf.xy - 0.5, t0 = floor(t), f = t - t0;
+    const float2 O[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
+    float sum = 0, ws = 0, best = 1, bestErr = 1e9;
+    [unroll] for (int k = 0; k < 4; k++)
+    {
+        float2 v = tex2Dlod(sAo, float4((t0 + O[k] + 0.5) * cHalf.zw, 0, 0)).rg;
+        float err = v.y > 0 ? abs(v.y / wF - 1.0) : 1e9;
+        float2 bw = lerp(1 - f, f, O[k]);
+        float w = bw.x * bw.y * saturate(1.0 - err / cK.w);
+        sum += v.x * w;
+        ws += w;
+        if (err < bestErr) { bestErr = err; best = v.x; }
+    }
+    return float4(ws > 1e-3 ? sum / ws : best, wF, 0, 0);
+}
+
+// Temporal smoothing: this frame's shade blended into the last frames' (reprojected with the camera of both frames).
+// The history is dropped where its depth does not match (moved objects, newly seen surfaces) and held within the
+// shade of this frame's neighbourhood plus a margin, so a moving Sim leaves no trail; where it is dropped the frame
+// shows as it is without the option. Out: R = shade, G = 1/z (the next frame's history).
+float4 TemporalPS(float2 uv : TEXCOORD0) : COLOR0
+{
+    float2 cur = tex2Dlod(sAo, float4(uv, 0, 0)).rg;
+    [branch] if (cur.y <= 0.0 || cTmp.x < 0.5) return float4(cur, 0, 0);
+    float d = tex2Dlod(sDepth, float4(uv, 0, 0)).r;
+    float4 p = float4(uv.x * 2 - 1, 1 - uv.y * 2, d, 1);
+    float4 q = float4(dot(cM0, p), dot(cM1, p), dot(cM2, p), dot(cM3, p));
+    [branch] if (q.w <= 1e-6) return float4(cur, 0, 0);
+    float2 puv = float2(q.x / q.w * 0.5 + 0.5, 0.5 - q.y / q.w * 0.5);
+    [branch] if (any(puv < 0) || any(puv > 1)) return float4(cur, 0, 0);
+    float wExp = cur.y / q.w;                                   // this point's 1/z as the previous camera saw it
+    float2 t = puv * cSize.xy - 0.5, t0 = floor(t), f = t - t0;
+    const float2 O[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
+    float sum = 0, ws = 0;
+    [unroll] for (int k = 0; k < 4; k++)
+    {
+        float2 h = tex2Dlod(sHist, float4((t0 + O[k] + 0.5) / cSize.xy, 0, 0)).rg;
+        float2 bw = lerp(1 - f, f, O[k]);
+        float w = bw.x * bw.y * (h.y > 0 && abs(h.y / wExp - 1.0) < cTmp.w);
+        sum += h.x * w;
+        ws += w;
+    }
+    [branch] if (ws < 0.05) return float4(cur, 0, 0);
+    float hv = sum / ws;
+    float mn = cur.x, mx = cur.x;
+    [unroll] for (int y = -1; y <= 1; y++)
+        [unroll] for (int x = -1; x <= 1; x++)
+        {
+            float2 v = tex2Dlod(sAo, float4(uv + float2(x, y) / cSize.xy, 0, 0)).rg;
+            if (v.y > 0 && abs(v.y / cur.y - 1.0) < cK.w) { mn = min(mn, v.x); mx = max(mx, v.x); }
+        }
+    hv = clamp(hv, mn - cTmp.z, mx + cTmp.z);
+    return float4(lerp(hv, cur.x, max(cTmp.y, 1 - ws)), cur.y, 0, 0);
+}
+
+)HLSL" R"HLSL(
 // Triangular noise in (-1, 1) of the pixel position (the Banding Fix's grain): the composite rounds to 8 bits again
 float TriNoise(float2 p, float phase)
 {
@@ -305,7 +494,7 @@ float4 CompositePS(float2 uv : TEXCOORD0, float2 vpos : VPOS) : COLOR0
 )HLSL";
 
 // Every variant is compiled at start-up on a background thread (framework/shader_cache.h)
-ShaderCache::Id AddShader(const char* tag, const char* entry, int priority, const char* slices = nullptr) {
+ShaderCache::Id AddShader(const char* tag, const char* entry, int priority, const char* slices = nullptr, bool vbm = false) {
     ShaderCache::Desc d;
     d.tag = tag;
     d.source = kShaderSource;
@@ -314,6 +503,7 @@ ShaderCache::Id AddShader(const char* tag, const char* entry, int priority, cons
     d.target = "ps_3_0";
     d.flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
     if (slices) d.macros.emplace_back("SLICES", slices);
+    if (vbm) d.macros.emplace_back("VBM", "1");
     d.priority = priority;
     return ShaderCache::Add(std::move(d));
 }
@@ -321,10 +511,17 @@ const ShaderCache::Id kLinearPsId = AddShader("AO LinearizePS", "LinearizePS", 0
 const ShaderCache::Id kDownPsId = AddShader("AO DownPS", "DownPS", 0);
 const ShaderCache::Id kBlurPsId = AddShader("AO BlurPS", "BlurPS", 0);
 const ShaderCache::Id kCompositePsId = AddShader("AO CompositePS", "CompositePS", 0);
+const ShaderCache::Id kUpsamplePsId = AddShader("AO UpsamplePS (Half resolution)", "UpsamplePS", 1);
+const ShaderCache::Id kTemporalPsId = AddShader("AO TemporalPS (Temporal smoothing)", "TemporalPS", 0);
 const ShaderCache::Id kDepthPsId = AddShader("AO DepthPS (Developer capture)", "DepthPS", 1);
-const ShaderCache::Id kGtaoPsId[kQualityCount] = {AddShader("AO GtaoPS (Low, SLICES 4)", "GtaoPS", 1, "4"), AddShader("AO GtaoPS (Medium, SLICES 6)", "GtaoPS", 1, "6"),
-                                                  AddShader("AO GtaoPS (High, SLICES 8)", "GtaoPS", 0, "8"), AddShader("AO GtaoPS (Ultra, SLICES 12)", "GtaoPS", 1, "12"),
-                                                  AddShader("AO GtaoPS (Very Low, SLICES 2)", "GtaoPS", 1, "2")};
+// [0] the horizon form, [1] Thin object detail (visibility bitmask)
+const ShaderCache::Id kGtaoPsId[2][kQualityCount] = {
+    {AddShader("AO GtaoPS (Low, SLICES 4)", "GtaoPS", 1, "4"), AddShader("AO GtaoPS (Medium, SLICES 6)", "GtaoPS", 1, "6"),
+     AddShader("AO GtaoPS (High, SLICES 8)", "GtaoPS", 0, "8"), AddShader("AO GtaoPS (Ultra, SLICES 12)", "GtaoPS", 1, "12"),
+     AddShader("AO GtaoPS (Very Low, SLICES 2)", "GtaoPS", 1, "2")},
+    {AddShader("AO GtaoPS (Low, SLICES 4, thin detail)", "GtaoPS", 1, "4", true), AddShader("AO GtaoPS (Medium, SLICES 6, thin detail)", "GtaoPS", 1, "6", true),
+     AddShader("AO GtaoPS (High, SLICES 8, thin detail)", "GtaoPS", 1, "8", true), AddShader("AO GtaoPS (Ultra, SLICES 12, thin detail)", "GtaoPS", 1, "12", true),
+     AddShader("AO GtaoPS (Very Low, SLICES 2, thin detail)", "GtaoPS", 1, "2", true)}};
 static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices[2] == 8 && kQualitySlices[3] == 12 && kQualitySlices[4] == 2,
               "kGtaoPsId lists the SLICES of kQualitySlices");
 
@@ -341,12 +538,17 @@ struct Params {
     float hairStrength = 0.0f;
     float simMaxShade = 0.11f;
     bool transparentHair = true;
+    // 06/10 (user: grain and ghosts below Ultra): each one a switch
+    bool temporal = true;    // Temporal smoothing: the last frames blended in (each frame with other angles)
+    bool halfRes = false;    // Half resolution: the shade computed on a quarter of the pixels, then scaled up by depth
+    bool thinDetail = false; // Thin object detail: visibility bitmask, things have a thickness (costs about twice the AO pass)
+    float thickness = 0.75f; // its object thickness, metres
 
 };
 
 struct State {
     bool active = false, ready = false, fixedTried = false;
-    bool gtaoTried[kQualityCount] = {};
+    bool gtaoTried[2][kQualityCount] = {};
     bool showShade = false; // Advanced > Show the shade alone (not saved)
     bool showSimMask = false; // preview only, never persisted
     int retryCountdown = 0;
@@ -355,10 +557,23 @@ struct State {
     IDirect3DSurface9* zLevel[kLevels] = {};
     IDirect3DTexture9* tmp[kLevels] = {}; // one-level targets for levels 1.., copied into zTex
     IDirect3DSurface9* tmpSurf[kLevels] = {};
-    IDirect3DTexture9 *aoA = nullptr, *aoB = nullptr, *colorTex = nullptr;
-    IDirect3DSurface9 *aoASurf = nullptr, *aoBSurf = nullptr, *colorSurf = nullptr;
+    // aoA, aoB, nrm: the AO pass and its blur, at the AO size (aoW x aoH: the screen, or half of it); aoFull: the half-
+    // resolution shade scaled up; hist: Temporal smoothing's two frames (screen size, made while it is on)
+    UINT aoW = 0, aoH = 0;
+    bool halfBuilt = false, mrt = false;
+    IDirect3DTexture9 *aoA = nullptr, *aoB = nullptr, *colorTex = nullptr, *nrm = nullptr, *aoFull = nullptr;
+    IDirect3DSurface9 *aoASurf = nullptr, *aoBSurf = nullptr, *colorSurf = nullptr, *nrmSurf = nullptr, *aoFullSurf = nullptr;
+    IDirect3DTexture9* hist[2] = {};
+    IDirect3DSurface9* histSurf[2] = {};
+    int histCur = 0;
+    bool histFailed = false;
+    unsigned presents = 0, histAt = 0; // frame counter and the frame the history was written (usable only right after)
+    float prevVp[4][4] = {};
+    bool prevVpValid = false;
     IDirect3DPixelShader9 *psLinear = nullptr, *psDown = nullptr, *psBlur = nullptr, *psComposite = nullptr, *psDepth = nullptr;
-    IDirect3DPixelShader9* psGtao[kQualityCount] = {};
+    IDirect3DPixelShader9 *psUpsample = nullptr, *psTemporal = nullptr;
+    bool upTried = false, temporalTried = false;
+    IDirect3DPixelShader9* psGtao[2][kQualityCount] = {};
     // GPU cost (timestamp queries, read a few frames later)
     static constexpr int kQ = 4;
     IDirect3DQuery9 *qDisjoint[kQ] = {}, *qBegin[kQ] = {}, *qEnd[kQ] = {}, *qFreq[kQ] = {};
@@ -566,9 +781,19 @@ template <typename Draw> void RecordSimReceiver(IDirect3DDevice9* dev, Draw draw
     SafeRelease(vs); SafeRelease(ps); SafeRelease(rt); SafeRelease(ds);
 }
 
+void ReleaseHistory() {
+    for (int i = 0; i < 2; i++) {
+        SafeRelease(g.histSurf[i]);
+        SafeRelease(g.hist[i]);
+    }
+    g.histAt = 0;
+}
+
 void ReleaseResources() {
     g.ready = false;
     ReleaseSimMask();
+    ReleaseHistory();
+    g.histFailed = false;
     for (int i = 0; i < kLevels; i++) {
         SafeRelease(g.zLevel[i]);
         SafeRelease(g.tmpSurf[i]);
@@ -578,9 +803,13 @@ void ReleaseResources() {
     SafeRelease(g.aoASurf);
     SafeRelease(g.aoBSurf);
     SafeRelease(g.colorSurf);
+    SafeRelease(g.nrmSurf);
+    SafeRelease(g.aoFullSurf);
     SafeRelease(g.aoA);
     SafeRelease(g.aoB);
     SafeRelease(g.colorTex);
+    SafeRelease(g.nrm);
+    SafeRelease(g.aoFull);
     for (int i = 0; i < State::kQ; i++) {
         SafeRelease(g.qDisjoint[i]);
         SafeRelease(g.qBegin[i]);
@@ -596,10 +825,14 @@ void ReleaseShaders() {
     SafeRelease(g.psBlur);
     SafeRelease(g.psComposite);
     SafeRelease(g.psDepth);
-    for (int q = 0; q < kQualityCount; q++) {
-        SafeRelease(g.psGtao[q]);
-        g.gtaoTried[q] = false;
-    }
+    SafeRelease(g.psUpsample);
+    SafeRelease(g.psTemporal);
+    g.upTried = g.temporalTried = false;
+    for (int v = 0; v < 2; v++)
+        for (int q = 0; q < kQualityCount; q++) {
+            SafeRelease(g.psGtao[v][q]);
+            g.gtaoTried[v][q] = false;
+        }
     g.fixedTried = false;
 }
 
@@ -623,11 +856,21 @@ IDirect3DPixelShader9* CreateShader(IDirect3DDevice9* dev, ShaderCache::Id id, c
 // The AO pass of one quality, created on first use
 IDirect3DPixelShader9* GtaoShader(IDirect3DDevice9* dev, int q) {
     q = std::clamp(q, 0, kQualityCount - 1);
-    if (g.psGtao[q] || g.gtaoTried[q]) return g.psGtao[q];
-    g.gtaoTried[q] = true;
-    g.psGtao[q] = CreateShader(dev, kGtaoPsId[q], "GtaoPS");
-    if (!g.psGtao[q]) g.status = "ERROR: the shader did not compile (see ApexRadiance_LOG.txt)";
-    return g.psGtao[q];
+    const int v = g.p.thinDetail ? 1 : 0;
+    if (g.psGtao[v][q] || g.gtaoTried[v][q]) return g.psGtao[v][q];
+    g.gtaoTried[v][q] = true;
+    g.psGtao[v][q] = CreateShader(dev, kGtaoPsId[v][q], "GtaoPS");
+    if (!g.psGtao[v][q]) g.status = "ERROR: the shader did not compile (see ApexRadiance_LOG.txt)";
+    return g.psGtao[v][q];
+}
+// the optional passes, created on first use; null: the option is skipped (the failure is logged once)
+IDirect3DPixelShader9* UpsampleShader(IDirect3DDevice9* dev) {
+    if (!g.psUpsample && !g.upTried) { g.upTried = true; g.psUpsample = CreateShader(dev, kUpsamplePsId, "UpsamplePS"); }
+    return g.psUpsample;
+}
+IDirect3DPixelShader9* TemporalShader(IDirect3DDevice9* dev) {
+    if (!g.psTemporal && !g.temporalTried) { g.temporalTried = true; g.psTemporal = CreateShader(dev, kTemporalPsId, "TemporalPS"); }
+    return g.psTemporal;
 }
 
 bool EnsureShaders(IDirect3DDevice9* dev) {
@@ -683,11 +926,23 @@ bool InitResources(IDirect3DDevice9* dev) {
     for (int i = 1; ok && i < kLevels; i++)
         ok = SUCCEEDED(dev->CreateTexture(g.padW >> i, g.padH >> i, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &g.tmp[i], nullptr)) && g.tmp[i] &&
              SUCCEEDED(g.tmp[i]->GetSurfaceLevel(0, &g.tmpSurf[i])) && g.tmpSurf[i];
-    auto make = [&](IDirect3DTexture9** tex, IDirect3DSurface9** surf, D3DFORMAT fmt) {
-        return SUCCEEDED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, tex, nullptr)) && *tex &&
+    auto make = [&](IDirect3DTexture9** tex, IDirect3DSurface9** surf, D3DFORMAT fmt, UINT w, UINT h) {
+        return SUCCEEDED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, tex, nullptr)) && *tex &&
                SUCCEEDED((*tex)->GetSurfaceLevel(0, surf)) && *surf;
     };
-    ok = ok && make(&g.aoA, &g.aoASurf, D3DFMT_G16R16F) && make(&g.aoB, &g.aoBSurf, D3DFMT_G16R16F) && make(&g.colorTex, &g.colorSurf, bd.Format);
+    // Half resolution: the AO pass and its blur on the 2x2 blocks of the pyramid's level 1, then scaled up into aoFull
+    g.halfBuilt = g.p.halfRes;
+    g.aoW = g.halfBuilt ? g.width / 2 : g.width;
+    g.aoH = g.halfBuilt ? g.height / 2 : g.height;
+    ok = ok && make(&g.aoA, &g.aoASurf, D3DFMT_G16R16F, g.aoW, g.aoH) && make(&g.aoB, &g.aoBSurf, D3DFMT_G16R16F, g.aoW, g.aoH) &&
+         make(&g.colorTex, &g.colorSurf, bd.Format, g.width, g.height) &&
+         (!g.halfBuilt || make(&g.aoFull, &g.aoFullSurf, D3DFMT_G16R16F, g.width, g.height));
+    // the normals for the blur come from the AO pass as a second target (same 32 bits per pixel as G16R16F); without
+    // two render targets the blur compares depth only, as before 06/10
+    D3DCAPS9 caps{};
+    g.mrt = ok && SUCCEEDED(dev->GetDeviceCaps(&caps)) && caps.NumSimultaneousRTs >= 2 && FormatSupported(dev, D3DFMT_A8R8G8B8, false) &&
+            make(&g.nrm, &g.nrmSurf, D3DFMT_A8R8G8B8, g.aoW, g.aoH);
+    if (!g.mrt) { SafeRelease(g.nrmSurf); SafeRelease(g.nrm); }
     if (!ok) {
         ReleaseResources();
         g.status = "ERROR: not enough video memory for the shade textures";
@@ -702,7 +957,8 @@ bool InitResources(IDirect3DDevice9* dev) {
     }
     g.ready = true;
     g.status = "Active";
-    LOG_INFO(std::format("[AO] Resources ready ({}x{}, pyramid {}x{})", g.width, g.height, g.padW, g.padH));
+    LOG_INFO(std::format("[AO] Resources ready ({}x{}, pyramid {}x{}, AO pass {}x{}{})", g.width, g.height, g.padW, g.padH, g.aoW, g.aoH,
+                         g.mrt ? ", normals for the blur" : ", no second render target: the blur compares depth only"));
     return true;
 }
 
@@ -719,13 +975,13 @@ void DrawQuad(IDirect3DDevice9* dev, UINT w, UINT h) {
 // ---- minimal state save/restore (only what the passes touch) ----
 constexpr D3DRENDERSTATETYPE kRenderStates[] = {D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_ALPHATESTENABLE,
                                                 D3DRS_STENCILENABLE, D3DRS_CULLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_FOGENABLE, D3DRS_SRGBWRITEENABLE,
-                                                D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE};
+                                                D3DRS_CLIPPLANEENABLE, D3DRS_COLORWRITEENABLE, D3DRS_COLORWRITEENABLE1};
 constexpr D3DSAMPLERSTATETYPE kSamplerStates[] = {D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_SRGBTEXTURE,
                                                   D3DSAMP_MAXMIPLEVEL, D3DSAMP_MIPMAPLODBIAS};
 constexpr int kRS = static_cast<int>(sizeof(kRenderStates) / sizeof(kRenderStates[0]));
 constexpr int kSS = static_cast<int>(sizeof(kSamplerStates) / sizeof(kSamplerStates[0]));
-constexpr DWORD kSamplers = 7; // s5 opaque Sims, s6 transparent hair
-constexpr UINT kPSConsts = 13; // c0..c12
+constexpr DWORD kSamplers = 9; // s5 opaque Sims, s6 transparent hair, s7 normals, s8 history
+constexpr UINT kPSConsts = 21; // c0..c20
 
 struct SavedState {
     IDirect3DSurface9 *rt0 = nullptr, *ds = nullptr;
@@ -799,11 +1055,13 @@ void SetPassStates(IDirect3DDevice9* dev) {
     dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
     dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
     dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF); // the AO pass's normals (second target)
     for (DWORD s = 0; s < kSamplers; s++) {
         const bool march = s == 2; // sZt: the march's prefiltered reads, bilinear within the nearest level
         dev->SetSamplerState(s, D3DSAMP_MINFILTER, march ? D3DTEXF_LINEAR : D3DTEXF_POINT);
         dev->SetSamplerState(s, D3DSAMP_MAGFILTER, march ? D3DTEXF_LINEAR : D3DTEXF_POINT);
-        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, march ? D3DTEXF_POINT : D3DTEXF_NONE);
+        // sZ (s1) also by level: the AO pass reads level 1 at half resolution
+        dev->SetSamplerState(s, D3DSAMP_MIPFILTER, march || s == 1 ? D3DTEXF_POINT : D3DTEXF_NONE);
         dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, 0);
@@ -938,6 +1196,47 @@ void CaptureFrame(IDirect3DDevice9* dev, IDirect3DTexture9* depth, float nearZ, 
     LOG_INFO("[AO] " + g.captureNote);
 }
 
+// 4x4 inverse (rows), Gauss-Jordan in double; false when singular
+bool Invert4(const double in[4][4], double out[4][4]) {
+    double a[4][8];
+    for (int r = 0; r < 4; r++)
+        for (int k = 0; k < 8; k++) a[r][k] = k < 4 ? in[r][k] : (k - 4 == r ? 1.0 : 0.0);
+    for (int col = 0; col < 4; col++) {
+        int piv = col;
+        for (int r = col + 1; r < 4; r++)
+            if (std::fabs(a[r][col]) > std::fabs(a[piv][col])) piv = r;
+        if (std::fabs(a[piv][col]) < 1e-12) return false;
+        if (piv != col)
+            for (int k = 0; k < 8; k++) std::swap(a[piv][k], a[col][k]);
+        const double d = a[col][col];
+        for (int k = 0; k < 8; k++) a[col][k] /= d;
+        for (int r = 0; r < 4; r++) {
+            if (r == col) continue;
+            const double f = a[r][col];
+            for (int k = 0; k < 8; k++) a[r][k] -= f * a[col][k];
+        }
+    }
+    for (int r = 0; r < 4; r++)
+        for (int k = 0; k < 4; k++) out[r][k] = a[r][k + 4];
+    return true;
+}
+
+// Temporal smoothing's history: two screen-size targets, made while the option is on (false: not available)
+bool EnsureHistory(IDirect3DDevice9* dev) {
+    if (g.hist[0] && g.hist[1]) return true;
+    if (g.histFailed) return false;
+    for (int i = 0; i < 2; i++)
+        if (FAILED(dev->CreateTexture(g.width, g.height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G16R16F, D3DPOOL_DEFAULT, &g.hist[i], nullptr)) || !g.hist[i] ||
+            FAILED(g.hist[i]->GetSurfaceLevel(0, &g.histSurf[i])) || !g.histSurf[i]) {
+            ReleaseHistory();
+            g.histFailed = true;
+            LOG_WARNING("[AO] Temporal smoothing unavailable: not enough video memory for its two frames");
+            return false;
+        }
+    g.histAt = 0;
+    return true;
+}
+
 void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* bb, IDirect3DPixelShader9* psGtao) {
     SavedState saved;
     saved.Capture(dev);
@@ -966,6 +1265,36 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
     const bool map = g.p.inMapView && MapView::IsOpen();
     const float distance = std::clamp(g.p.distance, 25.0f, 1000.0f);
     const float fadeStart = distance * (kFade0 / kFade1);
+    const bool half = g.halfBuilt;
+    const float aw = static_cast<float>(g.aoW), ah = static_cast<float>(g.aoH);
+    IDirect3DPixelShader9* psUp = half ? UpsampleShader(dev) : nullptr;
+
+    // Temporal smoothing: the history is usable when it was written on the frame right before and the camera block was
+    // found in both frames; the reprojection maps this frame's (ndc, device depth) onto the previous screen
+    IDirect3DPixelShader9* psTemp = g.p.temporal ? TemporalShader(dev) : nullptr;
+    const bool temporal = psTemp && EnsureHistory(dev);
+    if (!g.p.temporal && g.hist[0]) ReleaseHistory();
+    float reproj[4][4] = {};
+    bool histOk = temporal && g.histAt != 0 && g.histAt + 1 == g.presents && g.lastCamera && g.prevVpValid;
+    if (histOk) {
+        double cur[4][4], prev[4][4], inv[4][4];
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) { cur[r][k] = vp[r][k]; prev[r][k] = g.prevVp[r][k]; }
+        histOk = Invert4(cur, inv);
+        for (int r = 0; histOk && r < 4; r++)
+            for (int k = 0; k < 4; k++) {
+                double v = 0;
+                for (int m = 0; m < 4; m++) v += prev[r][m] * inv[m][k];
+                reproj[r][k] = static_cast<float>(v);
+            }
+    }
+    // each frame's interleave offset (R2 sequence over 8 frames, within one 1/16 step); 0 without the option, as before
+    float jit[2] = {0, 0};
+    if (temporal && g.lastCamera) { // no camera: no history, and a moving interleave alone would shimmer
+        const float k = static_cast<float>(g.presents % 8);
+        jit[0] = std::fmod(0.5f + 0.7548776662f * k, 1.0f) / 16.0f;
+        jit[1] = std::fmod(0.5f + 0.5698402910f * k, 1.0f) / 16.0f;
+    }
     const float c[kPSConsts][4] = {
         {tanX, tanY, H / (2.0f * tanY), kMaxRadius * H},
         {W, H, static_cast<float>(g.padW), static_cast<float>(g.padH)},
@@ -980,7 +1309,15 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         {A, 1.0f / (nearZ * A), SceneDither::On() ? SceneDither::Strength() / 255.0f : 0.0f, SceneDither::GrainPhase()},
         {std::clamp(g.p.simStrength, 0.0f, 1.0f), WantSimMask() && simMask.cleared && !simMask.failed ? 1.0f : 0.0f,
          std::clamp(g.p.hairStrength, 0.0f, 1.0f), std::clamp(g.p.simMaxShade, 0.0f, 1.0f)},
-        {g.p.simControls && g.showSimMask ? 1.0f : 0.0f, WantSimMask() && simMask.hairCleared && !simMask.failed ? 1.0f : 0.0f, 0, 0}};
+        {g.p.simControls && g.showSimMask ? 1.0f : 0.0f, WantSimMask() && simMask.hairCleared && !simMask.failed ? 1.0f : 0.0f, 0, 0},
+        {jit[0], jit[1], half ? 2.0f : 1.0f, half ? 1.0f : 0.0f},
+        {std::clamp(g.p.thickness, 0.1f, 3.0f), kNormalPower, g.mrt ? 1.0f : 0.0f, 0},
+        {reproj[0][0], reproj[0][1], reproj[0][2], reproj[0][3]},
+        {reproj[1][0], reproj[1][1], reproj[1][2], reproj[1][3]},
+        {reproj[2][0], reproj[2][1], reproj[2][2], reproj[2][3]},
+        {reproj[3][0], reproj[3][1], reproj[3][2], reproj[3][3]},
+        {histOk ? 1.0f : 0.0f, kTemporalWeight, kTemporalMargin, kTemporalDepthTolerance},
+        {aw, ah, 1.0f / aw, 1.0f / ah}};
     dev->SetPixelShaderConstantF(0, &c[0][0], kPSConsts);
 
     if (!kPublicBuild)
@@ -1009,27 +1346,63 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
         dev->StretchRect(g.tmpSurf[i], nullptr, g.zLevel[i], nullptr, D3DTEXF_NONE);
     }
 
-    // 3. GTAO at full resolution -> aoA (R = visibility, G = 1/z)
+    // 3. GTAO at the AO size -> aoA (R = visibility, G = 1/z), the normals -> nrm (second target)
     dev->SetRenderTarget(0, g.aoASurf);
+    if (g.mrt) dev->SetRenderTarget(1, g.nrmSurf);
     dev->SetTexture(1, g.zTex);
     dev->SetTexture(2, g.zTex);
     dev->SetPixelShader(psGtao);
-    DrawQuad(dev, g.width, g.height);
+    DrawQuad(dev, g.aoW, g.aoH);
+    if (g.mrt) dev->SetRenderTarget(1, nullptr);
     dev->SetTexture(2, nullptr);
 
-    // 4. filter: box H, box V (cancels the 4x4 interleave), tent H, tent V; a -> b -> a -> b -> a
+    // 4. filter: box H, box V (cancels the 4x4 interleave), tent H, tent V; a -> b -> a -> b -> a (taps on the same
+    // surface: depth and, with the normals, direction)
     dev->SetPixelShader(g.psBlur);
+    dev->SetTexture(7, g.nrm);
     for (int pass = 0; pass < 4; pass++) {
-        const float dir[4] = {pass & 1 ? 0.0f : 1.0f / W, pass & 1 ? 1.0f / H : 0.0f, pass < 2 ? 0.0f : 1.0f, 0};
+        const float dir[4] = {pass & 1 ? 0.0f : 1.0f / aw, pass & 1 ? 1.0f / ah : 0.0f, pass < 2 ? 0.0f : 1.0f, 0};
         dev->SetPixelShaderConstantF(6, dir, 1);
         dev->SetRenderTarget(0, pass & 1 ? g.aoASurf : g.aoBSurf);
         dev->SetTexture(3, pass & 1 ? g.aoB : g.aoA);
-        DrawQuad(dev, g.width, g.height);
+        DrawQuad(dev, g.aoW, g.aoH);
+    }
+    dev->SetTexture(7, nullptr);
+    IDirect3DTexture9* shade = g.aoA;
+
+    // 5. Half resolution: back to the screen size, edges by depth
+    if (half) {
+        dev->SetRenderTarget(0, g.aoFullSurf);
+        if (psUp) {
+            dev->SetTexture(3, g.aoA);
+            dev->SetPixelShader(psUp);
+            DrawQuad(dev, g.width, g.height);
+        } else {
+            dev->StretchRect(g.aoASurf, nullptr, g.aoFullSurf, nullptr, D3DTEXF_LINEAR); // the shader failed: a plain scale
+        }
+        shade = g.aoFull;
     }
 
-    // 5. composite over the scene copy
+    // 6. Temporal smoothing: blended with the reprojected last frames into the other history target
+    if (temporal) {
+        const int next = g.histCur ^ 1;
+        dev->SetRenderTarget(0, g.histSurf[next]);
+        dev->SetTexture(0, depth);
+        dev->SetTexture(3, shade);
+        dev->SetTexture(8, g.hist[g.histCur]);
+        dev->SetPixelShader(psTemp);
+        DrawQuad(dev, g.width, g.height);
+        dev->SetTexture(8, nullptr);
+        g.histCur = next;
+        g.histAt = g.presents;
+        shade = g.hist[next];
+    }
+    if (g.lastCamera) std::memcpy(g.prevVp, vp, sizeof vp);
+    g.prevVpValid = g.lastCamera;
+
+    // 7. composite over the scene copy
     dev->SetRenderTarget(0, bb);
-    dev->SetTexture(3, g.aoA);
+    dev->SetTexture(3, shade);
     dev->SetTexture(4, g.colorTex);
     dev->SetTexture(0, depth);
     dev->SetTexture(5, simMask.texture);
@@ -1060,13 +1433,14 @@ void AoEffect(IDirect3DDevice9* dev) {
     if (FAILED(dev->GetRenderTarget(0, &bb)) || !bb) return;
     D3DSURFACE_DESC bd{};
     bb->GetDesc(&bd);
-    if (bd.Width != g.width || bd.Height != g.height) { // the back buffer changed without a Reset: rebuild next frame
+    // the back buffer changed without a Reset, or Half resolution was switched (other target sizes): rebuild next frame
+    if (bd.Width != g.width || bd.Height != g.height || g.p.halfRes != g.halfBuilt) {
         bb->Release();
         ReleaseResources();
         g.retryCountdown = 0;
         return;
     }
-    const int key = g.p.quality;
+    const int key = g.p.quality + (g.p.halfRes ? 8 : 0) + (g.p.thinDetail ? 16 : 0) + (g.p.temporal ? 32 : 0); // GPU cost per setup
     if (key != g.qKey) {
         g.qKey = key;
         g.gpuMs = -1.0f;
@@ -1092,6 +1466,7 @@ void AoEffect(IDirect3DDevice9* dev) {
 
 void OnFrameBoundary(IDirect3DDevice9* dev) {
     if (!g.active) return;
+    if (++g.presents == 0) g.presents = 1; // 0 means "no history"
     simRenderThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     simMask.lastDraws = simMask.draws;
     simMask.draws = 0;
@@ -1193,6 +1568,10 @@ class AmbientOcclusionPatch : public ApexPatch {
         RegisterFloatSetting(&g.p.hairStrength, "hairStrength", SettingWidget::Slider, Params{}.hairStrength, 0.0f, 1.0f, "Shade on recognized hair; 0% removes it, 100% keeps the original");
         RegisterFloatSetting(&g.p.simMaxShade, "simMaxShade", SettingWidget::Slider, Params{}.simMaxShade, 0.0f, 1.0f, "Limit the maximum added shade on Sims and hair");
         RegisterBoolSetting(&g.p.transparentHair, "transparentHair", true, "Also adjust supported transparent hair strands");
+        RegisterBoolSetting(&g.p.temporal, "temporal", Params{}.temporal, "Blend the last frames for a smoother shade at any quality");
+        RegisterBoolSetting(&g.p.halfRes, "halfRes", Params{}.halfRes, "Compute the shade on a quarter of the pixels, then scale it up by depth");
+        RegisterBoolSetting(&g.p.thinDetail, "thinDetail", Params{}.thinDetail, "Give objects a thickness: shade passes behind thin things and leaves no halo around them");
+        RegisterFloatSetting(&g.p.thickness, "thickness", SettingWidget::Slider, Params{}.thickness, 0.1f, 3.0f, "Object thickness for Thin object detail");
     }
 
     bool Install() override {
@@ -1296,11 +1675,24 @@ class AmbientOcclusionPatch : public ApexPatch {
             g.p.quality = kQualityShown[std::clamp(shown, 0, kQualityCount - 1)];
             changed = true;
         }
+        changed |= ApexUi::SwitchRow("Temporal smoothing", &g.p.temporal,
+                                     "Blends the last frames, each with other sample angles: a smooth shade even at low quality", kDefaults.temporal);
+        changed |= ApexUi::SwitchRow("Thin object detail", &g.p.thinDetail,
+                                     "Objects get a thickness: shade passes behind legs and rails and leaves no halo around them. Costs more GPU",
+                                     kDefaults.thinDetail);
+        changed |= ApexUi::SwitchRow("Half resolution", &g.p.halfRes,
+                                     "Computes the shade on a quarter of the pixels: much lighter, slightly softer. Best with Temporal smoothing",
+                                     kDefaults.halfRes);
         changed |= ApexUi::SwitchRow("Also in map view", &g.p.inMapView, "Soft shade around houses and trees when the map view is open", kDefaults.inMapView);
         if (ApexUi::BeginAdvanced("Advanced##AmbientOcclusion")) {
             changed |= ApexUi::SliderPercent("Reach", &g.p.reach, 0.5f, 2.0f, "How far the shade spreads from where things meet", kDefaults.reach);
             changed |= ApexUi::SliderPercent("Keep lamp light", &g.p.protect, 0.0f, 1.0f, "Lamp-lit and bright spots keep more of their light; 0% shades everything alike",
                                              kDefaults.protect);
+            ImGui::BeginDisabled(!g.p.thinDetail);
+            changed |= ApexUi::Slider("Object thickness", &g.p.thickness, 0.1f, 3.0f,
+                                     {.format = "%.2f m", .tooltip = "How deep objects are taken to be for Thin object detail: less shows more light behind thin things",
+                                      .defaultValue = kDefaults.thickness});
+            ImGui::EndDisabled();
             ApexUi::EndAdvanced();
         }
         if (changed) NotifySettingChanged();
@@ -1311,8 +1703,9 @@ class AmbientOcclusionPatch : public ApexPatch {
     // qualities, shade preview), 3 = 30/09 evening (grain in the composite), 4 = 30/09 night (the map view), 5 = 30/09 night
     // (the composite grain follows the Banding Fix, only where the shade changed the pixel); 6 = distance and Sim receivers;
     // 7 = independent hair, transparency coverage and a separate Sim card; 8 = Sim Occlusion defaults off;
-    // 9 = user-approved default configuration for scene and Sim controls.
-    static constexpr int kSettingsRevision = 9;
+    // 9 = user-approved default configuration for scene and Sim controls; 10 = 06/10 Temporal smoothing (on), Half
+    // resolution, Thin object detail (off) and its thickness.
+    static constexpr int kSettingsRevision = 10;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }
     // Start from current defaults, then overlay every value that was explicitly saved.
@@ -1344,6 +1737,10 @@ class AmbientOcclusionPatch : public ApexPatch {
                             simMask.lastDraws, simMask.refused, simMask.copies.size(), simMask.failed ? " (unavailable)" : "");
         if (g.ready) {
             if (g.gpuMs >= 0) ImGui::TextDisabled("GPU cost: %.2f ms per frame (%d slices)", g.gpuMs, kQualitySlices[std::clamp(g.p.quality, 0, kQualityCount - 1)]);
+            ImGui::TextDisabled("AO pass %ux%u%s | blur normals %s | temporal %s | thin detail %s", g.aoW, g.aoH, g.halfBuilt ? " (half)" : "",
+                                g.mrt ? "yes" : "no (one render target)",
+                                !g.p.temporal ? "off" : g.histFailed ? "unavailable" : g.histAt + 1 >= g.presents && g.histAt ? "blending" : "waiting",
+                                g.p.thinDetail ? "on" : "off");
             ImGui::TextDisabled("Frames shaded: %u  |  screen %ux%u, depth pyramid %ux%u (%d levels)", g.frames, g.width, g.height, g.padW, g.padH, kLevels);
             ImGui::TextDisabled("Camera: near %.3f m, A %.6f, tan %.4f x %.4f (%s)", g.lastNear, g.lastA, g.lastTanX, g.lastTanY,
                                 g.lastCamera ? "read this frame" : "fallback");
@@ -1362,8 +1759,11 @@ APEX_REGISTER_FEATURE(AmbientOcclusionPatch,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_ALL,
                        .technicalDetails = {"Reads the INTZ scene depth shared by the Depth Blur module (kept running even with Depth Blur off).",
-                                            "GTAO at full resolution, deterministic: 2 to 12 slices (quality) x 4 geometric steps per side over a 9-level "
-                                            "1/z pyramid read bilinearly within the nearest level, contact and large horizons, 4x4 Bayer interleave "
-                                            "cancelled by a 4x4 box, then a tent.",
+                                            "GTAO at full resolution (or on the 2x2 blocks with Half resolution): 2 to 12 slices (quality) x 4 geometric "
+                                            "steps per side over a 9-level 1/z pyramid read bilinearly within the nearest level, contact and large horizons "
+                                            "(or an 8-sector visibility bitmask with an object thickness: Thin object detail), 4x4 Bayer interleave "
+                                            "cancelled by a 4x4 box, then a tent, both on the same surface by depth and normal.",
+                                            "Temporal smoothing: the interleave shifts every frame and the shade is blended with the last frames, "
+                                            "reprojected with the camera of both frames; history dropped on a depth mismatch and clamped near the frame.",
                                             "Composite: dead zone, Jimenez multi-bounce per channel, lamp-lit pixels keep part of their light.",
                                             "Runs first in the PostScene chain (before edge smoothing and Depth Blur); saves/restores only the states it touches."}})

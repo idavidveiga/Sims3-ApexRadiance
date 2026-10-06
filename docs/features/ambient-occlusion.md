@@ -47,11 +47,15 @@ Each frame:
 | Strength | `forca` | float | 168% | 0 to 200% | How dark the shade gets; 0 skips every pass |
 | Distance | `distance` | float | 351 m | 25 to 1000 m | View distance where the shade fades out (fade starts at 37.5% of it). Not used in map view |
 | Quality | `qualidade` | enum | High | Very Low, Low, Medium, High, Ultra | Directions per pixel: 2, 4, 6, 8, 12. Stored as 4, 0, 1, 2, 3 for compatibility with 2.1.0 |
+| Temporal smoothing | `temporal` | bool | on | | Shifts the sample pattern every frame and blends about the last 8 frames, reprojected with the camera; see [Temporal smoothing](#temporal-smoothing) |
+| Thin object detail | `thinDetail` | bool | off (on in the Quality profile) | | Visibility bitmask: objects have a thickness, so shade passes behind legs and rails and leaves no halo. About twice the cost of the AO pass |
+| Half resolution | `halfRes` | bool | off (on in the Performance profile) | | The AO pass and blur on a quarter of the pixels, scaled up by depth |
 | Also in map view | `noMapa` | bool | on | | Shades the map view with radii sized for houses and trees (contact 4 m, large 15 m, no distance fade) |
 | Advanced > Reach | `alcance` | float | 130% | 50 to 200% | Scales all radii |
 | Advanced > Keep lamp light | `protegerLuz` | float | 38% | 0 to 100% | Share of light that bright and lamp-lit pixels keep |
+| Advanced > Object thickness | `thickness` | float | 0.75 m | 0.1 to 3 m | Thin object detail only: how deep an object is taken to be |
 | Advanced > Show the shade alone | (not saved) | bool | off | | Shows only the shade, in grey |
-| (none) | `revisao` | int | 9 | | Settings revision. Older files keep every saved value and only gain missing keys |
+| (none) | `revisao` | int | 10 | | Settings revision. Older files keep every saved value and only gain missing keys |
 
 All settings apply immediately. Keys from the old combined build (`intensidade`, `raioM`, `visualizar`) are not read.
 
@@ -85,9 +89,42 @@ All settings apply immediately. Keys from the old combined build (`intensidade`,
 | Copy | `StretchRect` | Colour copy |
 | Linearise | `LinearizePS` | Level 0 of an R32F pyramid of 1/z in 1/m, padded to a multiple of 256 |
 | Downsample x8 | `DownPS` | 2x2 average of 1/z (sky excluded) per level |
-| GTAO | `GtaoPS` (SLICES 2/4/6/8/12) | G16R16F: R = visibility, G = 1/z |
-| Blur x4 | `BlurPS` | Depth-aware box (H, V) then tent |
+| GTAO | `GtaoPS` (SLICES 2/4/6/8/12, VBM 0/1) | G16R16F: R = visibility, G = 1/z; second target A8R8G8B8: view normal xy |
+| Blur x4 | `BlurPS` | Box (H, V) then tent, taps on the same surface (depth and normal) |
+| Upsample | `UpsamplePS` | Half resolution only: back to W x H, 4 taps weighted by distance and depth |
+| Temporal | `TemporalPS` | Temporal smoothing only: blended with the reprojected history (G16R16F x2, ping-pong) |
 | Composite | `CompositePS` | Over the copy, RGB write |
+
+**Same-surface blur (06/10).** The AO pass writes its normal as a second render target; blur taps weigh
+`depth match x max(0, n0 . n)^8`. In the box passes a tap that fails (a rail in front of the wall, the other side of a
+corner) is replaced by the pixel 4 further on, which has the same interleave offset, so the 4x4 cancel still holds. The
+pyramid's downsample keeps the farthest 1/z when the four texels differ by more than 10%, so a thin leg does not leave
+an averaged surface that is not there at the coarse levels (it cast a blurred "ghost" shade around legs). Without two
+render targets (`NumSimultaneousRTs < 2`) the blur compares depth only.
+
+### Temporal smoothing
+
+The 4x4 interleave of slice angle and step offset is shifted every frame by an R2 sequence within one interleave step
+(8 frames), so consecutive frames hold different directions. `TemporalPS` reprojects each pixel with
+`M = VP(previous) x inverse(VP(this))` (the camera block c40..c43 of both frames), reads the history with 4 point taps
+that count only within 5% of the expected 1/z, clamps it to this frame's 3x3 neighbourhood (same surface) +- 0.08 and
+blends with weight 1/8. Where the history is dropped (new surfaces, moving objects, the first frame after a gap) the
+frame shows as it is without the option. No camera block: no history and no shift.
+
+### Half resolution
+
+The AO pass and blur run at W/2 x H/2. Each AO pixel is the centre of a 2x2 block and reads the pyramid's level 1 (the
+block average), never one of its four depth pixels, which was the cause of the old half-resolution "micro dots". The
+interleave is on the half-pixel grid. `UpsamplePS` returns to full size from the 4 nearest half pixels weighted by
+bilinear distance and 1/z match (fallback: the closest in depth).
+
+### Thin object detail
+
+Variant `VBM 1` of `GtaoPS`: instead of the highest horizon per side, each side keeps 8 angular sectors from the view
+direction to the hemisphere edge. A sample covers the sectors from its front angle to its back angle (the sample pushed
+`thickness` metres along the view ray), with soft coverage scaled by the falloff; contact and large shade keep separate
+masks. Visibility is the sum of the uncovered sectors' cosine-weighted arcs (the GTAO arc formula between sector edges).
+Its inner loop is not unrolled (register limit of ps_3_0).
 
 **GTAO details.** Normal from the neighbour with the smaller depth step per axis. Slices at angle `(s + b1) pi / SLICES`,
 4 geometric steps per side from 2 px (at 4K, scaled with height) up to the large radius (at most 30% of the height). Each
@@ -103,8 +140,11 @@ Isolated pixels (leaf edges, thin rails) fade out. Off-screen samples count as s
 scene draws). Fallback: near 0.25, A 1.00008, `tanY = 1/4.293`. See
 [engine/camera-and-map-view.md](../engine/camera-and-map-view.md).
 
-**Resources.** R32F pyramid (3840x2304 with 9 levels at 4K) plus 8 one-level targets, two G16R16F screen targets and a
-colour copy. Everything is released on device reset and rebuilt on the next frame.
+**Resources.** R32F pyramid (3840x2304 with 9 levels at 4K) plus 8 one-level targets, two G16R16F targets and one
+A8R8G8B8 normal target at the AO size (screen, or half of it), a colour copy, with Half resolution one G16R16F screen
+target for the scaled-up shade, and with Temporal smoothing two G16R16F screen targets for the history (made and
+released with the option). Switching Half resolution rebuilds the targets on the next frame. Everything is released on
+device reset and rebuilt on the next frame.
 
 **Cost** at 3840x2160, native D3D9, RTX 4070 Ti SUPER:
 
@@ -120,8 +160,10 @@ About 0.55 ms is fixed (copy and pyramid 0.26, blur 0.2, composite 0.09).
 
 ## Rejected approaches
 
-- Half-resolution AO: caused the "micro dots" reports.
-- Per-frame noise with temporal accumulation: twinkling on foliage.
+- Half-resolution AO reading one of the four depth pixels: caused the "micro dots" reports. The 06/10 Half resolution
+  option reads the 2x2 average instead.
+- Per-frame noise with temporal accumulation as the only filter: twinkling on foliage. The 06/10 Temporal smoothing
+  option keeps the full spatial filter and falls back to it wherever the history is dropped.
 - Radii in near-plane units: shade breathing with zoom.
 - HBAO with a plain multiply: dirty and grey, too weak when toned down.
 - Fast `acos` approximation: 0.5% bias for no measurable gain.
