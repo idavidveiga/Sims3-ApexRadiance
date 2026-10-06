@@ -1401,6 +1401,10 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     if (!ShaderCache::PrecompileComplete()) return; // keep loading frames moving while bytecode compiles
     RegisterHooks(dev);
     if (!g_atBoundary && g_boundaryDone) return; // already applied on the finished scene this frame
+    // The end-of-frame fallback never filters without a scene copy (06/10, user: at some angles Color went over the game's
+    // UI while Ambient Occlusion never did): with too few scene draws for the boundary, AO skips the frame, but this pass
+    // filtered the whole picture, the UI included. Now Color skips that frame too.
+    if (!g_atBoundary && !gpu.sceneCopied) return;
     const unsigned long long now = GetTickCount64();
     if (dev != m_lastDevice) { // the game has two devices (a tiny one first): which one the frames end on
         if (m_lastDevice && m_deviceChanges++ < 10)
