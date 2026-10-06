@@ -17,6 +17,9 @@ in Build mode and at dusk. By day, lamps that the game keeps lit add a subdued g
 | Game build | Steam 1.67.2 (`supportedVersions = VERSION_STEAM`); every patch site is byte-checked. Other builds resolve addresses by signature, see [engine/game-versions.md](../../engine/game-versions.md) |
 | Source | [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp), [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) and the modules listed under *Module map* |
 
+> **Current custom refinement changelog:** [Night Lighting refinement changelog](../night-lighting-changelog.md).  
+> It records the validated fork-only bloom/cinema corrections and diagnostic tools retained on top of the official 2.6.0 implementation.
+
 Older names in notes and code: "Night Remake", "Iluminacao melhorada", "Lot Edge Lighting" (a dev-only predecessor,
 `patches/lot_edge_lighting_patch.cpp`, never shipped).
 
