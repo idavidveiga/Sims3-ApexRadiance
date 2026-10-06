@@ -171,3 +171,10 @@ Faster room lighting status line ("smooth light changes").
 
 Also fixed the quick pass: a room sent back to its class by the switch's safety net before its class-0 solve ran is set
 to 0 again until "shown" (+0x100) reads 0 ("class 2/0" in the recorder), and never after.
+
+Every story together (06/10, user: the light's story changed first and the others up to 0.5 s later): while the edit's
+first solves run (the quick pass of a burst, or every room of a smaller edit; not its refinement, not a dragged lamp; at most
+2.5 s) a changed map holds what was on screen, then every held map starts its fade in the same frame. Maps are kept only
+for the edit's own rooms (the solved room must have lamp-edit urgency: other rooms, even of other lots, had filled the 128
+slots). A burst is now 3 different lights switching within 1.5 s, even when each switched more than 3 times in 10 s (the
+self-switching rule had turned repeated tests of "all the lights" into no edit at all).

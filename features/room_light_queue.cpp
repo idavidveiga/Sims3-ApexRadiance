@@ -153,6 +153,10 @@ long g_quickEvent = -1;
 // of solving a frame for 2-3 s while the rooms already showed the right light)
 DWORD g_quickStart = 0;
 bool g_quickShown = false;
+// A burst's quick pass is running (set at its first room, cleared when every room shows it or after kQuickHoldMs): the
+// room maps that change meanwhile hold their fade, so every story starts it together (RoomLightFade, 06/10)
+std::atomic<bool> g_quickPending{false};
+constexpr DWORD kQuickHoldMs = 1500;
 std::atomic<bool> g_refining{false}; // read by the lot lighting budget too (LotLightingMotion)
 // Its class-0 solve is shown ("shown" +0x100 is 0 after it: "class 2/0" in the recorder), or the room finished
 bool QuickSolved(const BYTE* room) {
@@ -164,6 +168,7 @@ bool QuickSolved(const BYTE* room) {
     }
 }
 void CheckQuickShown() {
+    if (g_quickPending.load(std::memory_order_relaxed) && GetTickCount() - g_quickStart > kQuickHoldMs) g_quickPending.store(false, std::memory_order_relaxed);
     if (g_quickShown || g_quickDone.empty()) return;
     bool all = true;
     for (auto& [room, solved] : g_quickDone) {
@@ -172,6 +177,7 @@ void CheckQuickShown() {
     }
     if (!all) return;
     g_quickShown = true;
+    g_quickPending.store(false, std::memory_order_relaxed);
     g_refining = true;
     LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
                          g_quickDone.size(), GetTickCount() - g_quickStart));
@@ -208,6 +214,7 @@ void QuickPassRoom(BYTE* room) {
     const bool first = it == g_quickDone.end();
     if (first && g_quickDone.size() >= 4096) return;
     if (first) g_quickDone.emplace(key, false);
+    if (first && !g_quickShown) g_quickPending.store(true, std::memory_order_relaxed);
     if (SetClass0(room) && first) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -483,12 +490,14 @@ bool Running() {
 void SetQuickPass(bool on) { g_quickPass.store(on, std::memory_order_relaxed); }
 bool QuickPass() { return g_quickPass.load(std::memory_order_relaxed); }
 bool Refining() { return g_refining.load(std::memory_order_relaxed); }
+bool QuickPassPending() { return g_quickPending.load(std::memory_order_relaxed); }
 
 bool SolveInProgress() {
     if (ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
     const BYTE* tree = g_tree.load(std::memory_order_relaxed);
     const BYTE* room = tree ? CurrentRoom(tree) : nullptr;
-    return room && StateOf(room) == 3;
+    // a room of the lamp edit (06/10: other rooms solving meanwhile, even of other lots, filled the 128 kept maps)
+    return room && StateOf(room) == 3 && LevelLightShare::LampUrgency(room) > 1.0f;
 }
 
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)

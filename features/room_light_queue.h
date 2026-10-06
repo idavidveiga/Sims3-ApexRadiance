@@ -31,6 +31,8 @@ void SetQuickPass(bool on);
 bool QuickPass();
 // The rooms of many switched lamps show their quick pass and are being refined (the lot lighting budget stays low meanwhile)
 bool Refining();
+// A burst's quick pass is running: changed room maps hold their fade until every room shows it (any thread)
+bool QuickPassPending();
 // Render thread: the current room of the light tree is being solved (its maps are being written)
 bool SolveInProgress();
 // Development build: status lines

@@ -109,22 +109,39 @@ std::atomic<bool> g_editRefresh{false};
 // in a window; MassSwitchActive lets the room queue give the rooms a quick pass first (room_light_queue.cpp)
 constexpr int kMassSwitches = 3;
 constexpr DWORD kMassWindowMs = 1500, kMassHoldMs = 1500;
-std::atomic<DWORD> g_massWindowFrom{0}, g_massLast{0};
-std::atomic<int> g_massCount{0};
+std::atomic<DWORD> g_massLast{0};
 std::atomic<long> g_massEvents{0};
 std::atomic<float>& NightLevelRef();
-void NoteUserSwitch(DWORD tick) {
+// Every switch is counted here, the light's own self-switching test aside (06/10 capture: after testing "all the lights"
+// four times within 10 s every lamp of the lot counted as switching itself, so the burst was neither a lamp edit nor a mass
+// switch). kMassSwitches DIFFERENT lights within kMassWindowMs make a burst; a light flickering alone never does. True while
+// a burst is on (the switch is the player's even when the light switched often).
+std::mutex g_massMx;
+struct RecentSwitch {
+    uintptr_t light;
+    DWORD tick;
+};
+RecentSwitch g_recent[16] = {};
+int g_recentNext = 0;
+bool NoteSwitch(uintptr_t light, DWORD tick) {
     // dusk / dawn switches every lamp itself: not the player
     const float night = NightLevelRef().load(std::memory_order_relaxed);
-    if (night < 0.0f || (night > 0.02f && night < 0.98f)) return;
-    if (tick - g_massWindowFrom.load(std::memory_order_relaxed) > kMassWindowMs) {
-        g_massWindowFrom.store(tick, std::memory_order_relaxed);
-        g_massCount.store(0, std::memory_order_relaxed);
+    if (night < 0.0f || (night > 0.02f && night < 0.98f)) return false;
+    int distinct = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_massMx);
+        g_recent[g_recentNext] = RecentSwitch{light, tick};
+        g_recentNext = (g_recentNext + 1) % static_cast<int>(std::size(g_recent));
+        uintptr_t seen[std::size(g_recent)];
+        for (const RecentSwitch& r : g_recent) {
+            if (!r.light || tick - r.tick > kMassWindowMs) continue;
+            if (std::find(seen, seen + distinct, r.light) == seen + distinct) seen[distinct++] = r.light;
+        }
     }
-    if (g_massCount.fetch_add(1, std::memory_order_relaxed) + 1 >= kMassSwitches) {
-        if (tick - g_massLast.load(std::memory_order_relaxed) > kMassHoldMs) g_massEvents.fetch_add(1, std::memory_order_relaxed);
-        g_massLast.store(tick | 1, std::memory_order_relaxed);
-    }
+    if (distinct < kMassSwitches) return GetTickCount() - g_massLast.load(std::memory_order_relaxed) <= kMassHoldMs && g_massLast.load() != 0;
+    if (tick - g_massLast.load(std::memory_order_relaxed) > kMassHoldMs) g_massEvents.fetch_add(1, std::memory_order_relaxed);
+    g_massLast.store(tick | 1, std::memory_order_relaxed);
+    return true;
 }
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
 std::atomic<float> g_nightLevel{-1.0f};
@@ -242,11 +259,12 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
                 was.events = 0;
             }
             // a light that switches itself on and off (a flickering TV or effect light): not the player (a drag only moves: never left out)
-            const bool selfSwitching = was.on != on && ++was.events > kSelfMax;
+            // ... unless several different lights switch together: the player's "all the lights", however often (NoteSwitch)
+            const bool burst = was.on != on && NoteSwitch(light, tick);
+            const bool selfSwitching = was.on != on && ++was.events > kSelfMax && !burst;
             if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
             edit = edit || !selfSwitching;
             user = user || (was.on != on && !selfSwitching);
-            if (was.on != on && !selfSwitching) NoteUserSwitch(tick);
             // the per-pixel lamps (objects, fences, roofs, water) and the ground bake read the lamp list again soon, not at
             // the next 20-frame enumeration: a dragged lamp's light follows it
             if (moved && ((type >= 3 && type <= 6) || type == 11)) g_editRefresh.store(true, std::memory_order_relaxed);
