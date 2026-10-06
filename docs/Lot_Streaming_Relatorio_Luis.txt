@@ -1,7 +1,7 @@
 ATUALIZAÇÃO FINAL — 06/10/2026
 
 Este resumo continua válido como histórico dos testes, mas o handoff técnico completo agora está em:
-docs/Luis_Lot_Streaming_Implementation_Guide.md
+docs/Lot_Streaming_Implementation_Guide.md
 
 Estado do código após integração:
 - base: Apex Radiance upstream final v2.6.0 (tag 9ca0b102d4ee0f90f5f4fe406d97ab0f3f5dca9a);
