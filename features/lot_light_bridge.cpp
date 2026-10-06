@@ -131,6 +131,10 @@ float4 c1 : register(c1);
 float4 c2 : register(c2);
 float4 c3 : register(c3);
 float4 c4 : register(c4);
+#ifdef WET
+float4 c5 : register(c5);
+float4 c6 : register(c6);
+#endif
 float4 cLotX : register(c28);
 float4 cLotZ : register(c29);
 float4 cEdge : register(c30);
@@ -168,6 +172,9 @@ float4 main(PSIn i) : COLOR0 {
     float3 lamps = lerp(terrain, max(tex2D(sLot, lotUv).rgb * cLotGain.x * c3.x, terrain), w);
     float3 col = sun * c0.rgb + lamps;
     col = texCUBE(sSky, i.normal).rgb * c4.x + col;
+#ifdef WET
+    col *= 1 + c5.x * (c6.x - 1); // the rain variant's wet darkening (kLotLightRainPs), with the game's c5.x / c6.x
+#endif
     return float4(col * 0.5, 0);
 }
 )";
@@ -221,6 +228,15 @@ ShaderCache::Id AddLotShader(const char* tag, const char* hlsl, const char* targ
     return ShaderCache::Add(std::move(d));
 }
 const ShaderCache::Id kReplacementPsId = AddLotShader("NightLighting lot light pass", kReplacementHlsl, "ps_3_0", 0);
+const ShaderCache::Id kReplacementWetPsId = [] { // the same pass for the game's rain variant (kLotLightRainPs)
+    ShaderCache::Desc d;
+    d.tag = "NightLighting lot light pass (rain)";
+    d.source = kReplacementHlsl;
+    d.sourceName = "lot_light_bridge";
+    d.macros = {{"WET", "1"}};
+    d.priority = 1;
+    return ShaderCache::Add(std::move(d));
+}();
 const ShaderCache::Id kObjectRigPsId = AddLotShader("NightLighting object rig (moon shadow)", kObjectRigHlsl, "ps_2_0", 0);
 const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl, "ps_3_0", 0);
 const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
@@ -245,6 +261,8 @@ bool g_curPsBasis = false;
 std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
 std::atomic<int> g_chunkStraySkipped{0};
 IDirect3DPixelShader9* g_replacementPs = nullptr;
+IDirect3DPixelShader9* g_replacementWetPs = nullptr;            // kReplacementWetPsId, for the rain lot light pass
+std::unordered_set<IDirect3DPixelShader9*> g_wetLotPs;          // game shaders classified LotLight that are kLotLightRainPs
 IDirect3DPixelShader9* g_objectPs = nullptr;
 bool g_objectCompileTried = false;
 std::atomic<bool> g_objectFix{false};
@@ -299,6 +317,7 @@ struct TerrainConst {
 
 std::atomic<int> g_objectDrawn{0};
 bool g_compileTried = false;
+bool g_wetCompileTried = false;
 std::string g_status = "Off";
 
 struct ChunkTex {
@@ -512,9 +531,19 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
         if (SUCCEEDED(ps->GetFunction(code.data(), &size))) {
             if (RoomMapPadding::IsBasisPs(reinterpret_cast<const DWORD*>(code.data()), size / 4)) g_basisPs.insert(ps); // reads the room basis maps
             if (IsShader(kLotLightPs, code.data(), size)) c = PsClass::LotLight;
-            else if (IsShader(kWorldMultiLightPs, code.data(), size)) {
-                c = PsClass::WorldMultiLight;
+            else if (IsShader(kLotLightRainPs, code.data(), size)) {
+                c = PsClass::LotLight;
+                g_wetLotPs.insert(ps); // drawn with the wet replacement
+                static bool logged = false;
+                if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Rain: wet lot light pass seen (replaced with its wet darkening kept)"); }
+            }
+            else if (IsShader(kWorldMultiLightPs, code.data(), size) || IsShader(kWorldMultiLightRainPs, code.data(), size)) {
+                c = PsClass::WorldMultiLight; // the rain variant reads the lamp map and c3.x the same way; its wet tail uses only c5/c6
                 g_worldSamplers[ps] = 1u << 2; // only s2 is the lamp map; s1 is the normal map
+                if (size == kWorldMultiLightRainPs.size) {
+                    static bool logged = false;
+                    if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Rain: wet world terrain light pass seen"); }
+                }
             }
             else if (IsShader(kWorldCompactPs, code.data(), size)) {
                 c = PsClass::WorldCompact;
@@ -554,6 +583,19 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 }
             }
         }
+    }
+    if ((c == PsClass::Other || c == PsClass::WorldCandidate) && size > kWetTailBytes) {
+        // Weather variants seen so far are a recognised shader plus a 40-byte wet tail: name the likely one, once per shader
+        struct Known { const ShaderId* id; const char* name; };
+        static const Known kKnown[] = {{&kLotLightPs, "lot light pass"}, {&kWorldMultiLightPs, "world terrain light pass"}, {&kWorldCompactPs, "compact world terrain"},
+                                       {&kObjectRigPs, "outdoor object rig"}, {&kRoofPs, "roofs"}, {&kLakePs, "lake water"}, {&kSnowLotPs, "snowy lot light pass"},
+                                       {&kRoofSnowPs, "snowy roofs"}};
+        for (const Known& k : kKnown)
+            if (size == k.id->size + kWetTailBytes) {
+                LOG_INFO(std::format("[LotLightBridge] Possible weather variant of the {}: pixel shader {} ({} bytes) is not recognised, left as the game draws it",
+                                     k.name, static_cast<void*>(ps), size));
+                break;
+            }
     }
     g_classCache[ps] = c;
     ps->AddRef();
@@ -1369,6 +1411,13 @@ void EnsureReplacement(IDirect3DDevice9* dev) {
     const std::string err = CompilePs(dev, kReplacementPsId, &g_replacementPs);
     g_status = err.empty() ? "Active" : "Failed: " + err;
     LOG_INFO("[LotLightBridge] " + g_status);
+}
+
+void EnsureWetReplacement(IDirect3DDevice9* dev) {
+    if (g_replacementWetPs || g_wetCompileTried) return;
+    g_wetCompileTried = true;
+    const std::string err = CompilePs(dev, kReplacementWetPsId, &g_replacementWetPs);
+    if (!err.empty()) LOG_WARNING("[LotLightBridge] Rain lot light pass: " + err + " (left as the game draws it)");
 }
 
 void EnsureObjectReplacement(IDirect3DDevice9* dev) {
@@ -2733,6 +2782,10 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
 
     EnsureReplacement(dev);
     if (!g_replacementPs) return D3D9Hooks::HookAction::Continue;
+    const bool wet = g_wetLotPs.count(g_curPs) != 0;
+    if (wet) EnsureWetReplacement(dev);
+    IDirect3DPixelShader9* const replacement = wet ? g_replacementWetPs : g_replacementPs;
+    if (!replacement) return D3D9Hooks::HookAction::Continue;
     float v[8];
     if (FAILED(dev->GetVertexShaderConstantF(14, v, 2)) || !Near(v[0], 1.0f / 256.0f) || !Near(v[1], 1.0f / 256.0f)) return D3D9Hooks::HookAction::Continue;
     // World atlas when ready, as in DrawLotSnow (a lot can reach past its home chunk). The summer lot VS computes the
@@ -2787,7 +2840,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     {
         // s2 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
         SamplerBind terrainMap(dev, 2, terrain);
-        SetPs(dev, g_replacementPs);
+        SetPs(dev, replacement);
         if (atlas) SetVsConst(dev, 14, atlasMap, 1);
         SetPsConst(dev, 28, edge, 3);
         SetPsConst(dev, 31, lotGain, 1);
@@ -3749,6 +3802,12 @@ void Shutdown(bool keepChunkMaps) {
     g_roofCompileTried = false;
     g_roofFix = false;
     g_compileTried = false;
+    if (g_replacementWetPs) {
+        g_replacementWetPs->Release();
+        g_replacementWetPs = nullptr;
+    }
+    g_wetCompileTried = false;
+    g_wetLotPs.clear();
     g_classCache.clear();
     g_basisPs.clear();
     g_rigLookup.Clear();

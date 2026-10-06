@@ -13,6 +13,11 @@ struct ShaderId {
 // pixel shaders
 constexpr ShaderId kLotLightPs = {568, 0xFDAD274Bu};   // lot terrain light pass
 constexpr ShaderId kWorldMultiLightPs = {756, 0xEC3141ABu}; // summer multi-pass WORLD terrain, F7 2026-10-02
+// Rain variants (F7 2026-10-05 23:20, raining at night): the shaders above with their c5/c6 moved to c7/c8 and a wet tail,
+// output * (1 + c5.x * (c6.x - 1)) (c5.x = wetness ~0.037, c6.x = 0.5: about 2% darker). Same vertex shaders, samplers and c0..c4.
+constexpr ShaderId kLotLightRainPs = {608, 0xA8E5F9F8u};
+constexpr ShaderId kWorldMultiLightRainPs = {796, 0xCB0A4C22u};
+constexpr size_t kWetTailBytes = 40; // what the rain variants add to the dry shader's size
 constexpr ShaderId kWorldMultiLightVs = {656, 0x5882F972u}; // s2 lamp UV from c13; chunk matrix c8/c10
 constexpr ShaderId kWorldCompactPs = {1296, 0x73376C6Au}; // single diffuse layer WORLD terrain, s3 lamp, c7.x gain; F7 19:55
 constexpr ShaderId kWorldCompactVs = {744, 0x34E1F1B7u}; // lamp UV c15; chunk matrix c8/c10, same pair at 19:44
