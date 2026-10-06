@@ -621,7 +621,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 static bool logged = false;
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: lake shader of rain or snow seen"); }
             }
-            else if (IsShader(kSeaNoReflPs, code.data(), size)) {
+            else if (IsShader(kSeaNoReflPs, code.data(), size) || IsShader(kSeaNoReflRainPs, code.data(), size)) {
                 c = PsClass::Sea;
                 static bool logged = false;
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: sea without the game's reflection seen (gets the shore reflection pass)"); }

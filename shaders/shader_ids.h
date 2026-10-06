@@ -32,6 +32,7 @@ constexpr ShaderId kRoofPs = {1136, 0x6EC87E3Bu};      // roofs
 constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water (sun shadow read with a hardware depth compare, texldp)
 constexpr ShaderId kLakePs2 = {1308, 0xB21E05D4u};     // the same lake water with the sun shadow compared by hand (texld + cmp): the
                                                        // game uses it in other weather (2.5.1 report: reflections gone when not sunny)
+constexpr ShaderId kSeaNoReflRainPs = {1296, 0xAC8AF7EBu}; // the same sea in rain (ripple map s7, noise s2; the other registers as kSeaNoReflPs; F7 2026-10-06 20:49)
 constexpr ShaderId kLakeRainPs = {2892, 0x91A9AEF7u};   // lake water in rain (Seasons weather: ripple maps s9..s13, camera c3, wave maps s2 / s3 scaled by c9,
                                                        // scene copy s8); F7 2026-10-06 20:21-20:22, with kLakeWeatherVs
 constexpr ShaderId kLakeSnowPs = {2756, 0x8C1D384Bu};   // the same lake water while it snows (same registers; F7 2026-10-06 20:20)

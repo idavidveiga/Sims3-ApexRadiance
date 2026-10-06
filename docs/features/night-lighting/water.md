@@ -98,7 +98,13 @@ settings. The two Developer switches are for A/B comparison; with both off the l
   scales in `c4`, its world position in `TEXCOORD2` and its fog in `COLOR1.w`. `DrawLake(..., sea = true)` reads the
   world-view-projection from VS `c0..c3` and the world rows (an identity) from `c4..c6`, and picks lamps around the
   camera (VS `c7`), since the sea mesh is large and has no translation. Log: `Water: sea without the game's reflection
-  seen`.
+  seen`. In rain the same sea uses PS `kSeaNoReflRainPs` {1296, `0xAC8AF7EB`} (a ripple map in `s7`, noise in `s2`, every
+  other register as above), handled the same way.
+- Lake water in rain and snow (Seasons weather): PS `kLakeRainPs` {2892, `0x91A9AEF7`} and `kLakeSnowPs` {2756,
+  `0x8C1D384B`} (`PsClass::LakeWeather`) with VS `kLakeWeatherVs` {1208, `0x3123FF89`} (VS class 13). Matrices and inputs
+  are the lake's (world-view-projection VS `c4..c7`, world `c8..c10`); the pixel shader has the camera in `c3`, the wave
+  scales in `c9`, the wave maps in `s2` / `s3` and the scene copy in `s8`. The pass is compiled a third time with the macro
+  `WEATHER` (`kWaterWeatherPsId`). Before 2.7.2 these lakes kept the game's look (dark at night, F7 2026-10-06 20:20).
 - If the lake pixel shader is drawn with another vertex shader, the pass is skipped (logged once); the sea pixel shader
   with another vertex shader is skipped too.
 - The lake branch runs before the *Street lamps light lots* gate in `OnDrawInner`, so water works with that option off.
