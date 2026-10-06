@@ -61,6 +61,9 @@ float LampUrgency(const void* room);
 // A lamp edit's room that is a member of an atrium (rooms joined through removed floors): the scheduler solves it right
 // after the lamp's own room whatever its story, so the atrium's stories change together
 bool StackedWithEdit(const void* room);
+// Render thread: another member of the room's atrium group is waiting for its gather or its solve, or being solved
+// (RoomLightFade holds the room's new maps meanwhile, so the atrium's stories change together)
+bool GroupPending(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
 // Apex's own share of the room solves so far, ms (-1 until calibrated); render thread

@@ -147,6 +147,15 @@ std::atomic<long> g_quickRooms{0};
 // right after it was set to 0, which gave it back its class without any quick solve; it is set to 0 again until its
 // quick solve is seen, and never after, so a refined room is not sent back to class 0)
 std::unordered_map<uintptr_t, bool> g_quickDone;
+std::unordered_map<uintptr_t, int> g_quickTarget; // per room of the burst: its class before the quick pass set it to 0
+bool g_editNow = false; // render thread, set by each pick: a lamp edit's rooms are pending
+int ClassOf(const BYTE* room) {
+    __try {
+        return *reinterpret_cast<const int*>(room + 0xF4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
 long g_quickEvent = -1;
 // When every room of the burst shows its quick solve (06/10): the time is logged ("showed its new light"), and the rest of
 // the burst is refinement, given 4 ms of extra solving a frame instead of 12 so the frame rate holds (the capture: 35-39 ms
@@ -203,6 +212,7 @@ void QuickPassRoom(BYTE* room) {
     if (burst != g_quickEvent) {
         g_quickEvent = burst;
         g_quickDone.clear();
+        g_quickTarget.clear();
         g_quickStart = GetTickCount();
         g_quickShown = false;
         g_refining = false;
@@ -213,7 +223,10 @@ void QuickPassRoom(BYTE* room) {
     if (!WaitingAboveClass0(room)) return;
     const bool first = it == g_quickDone.end();
     if (first && g_quickDone.size() >= 4096) return;
-    if (first) g_quickDone.emplace(key, false);
+    if (first) {
+        g_quickDone.emplace(key, false);
+        g_quickTarget[key] = ClassOf(room); // the class it is refined to (its quick solve takes that class's tests)
+    }
     if (first && !g_quickShown) g_quickPending.store(true, std::memory_order_relaxed);
     if (SetClass0(room) && first) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
 }
@@ -227,8 +240,9 @@ float __fastcall PriorityHook(BYTE* room) {
     // a lamp edit's rooms (moved, switched, recoloured) before any other room: the lamp's own, then the stories taking it
     const float urgency = LevelLightShare::LampUrgency(room);
     if (urgency > 1.0f) g_prioUrgent.fetch_add(1, std::memory_order_relaxed);
-    // an atrium member of the edit: with the lamp's own room, whatever its story (the atrium's stories change together)
-    if (urgency > 1.0f && LevelLightShare::StackedWithEdit(room)) {
+    // an atrium member of the edit (itself or another member a lamp edit's): with the lamp's own room, whatever its story
+    // (the atrium's stories change together)
+    if ((urgency > 1.0f || g_editNow) && LevelLightShare::StackedWithEdit(room)) {
         g_prioStacked.fetch_add(1, std::memory_order_relaxed);
         return p * 4000.0f * 4.0e6f;
     }
@@ -317,6 +331,7 @@ void __fastcall PickHook(BYTE* tree) {
     if (tree) g_tree.store(tree, std::memory_order_relaxed);
     const auto pick = reinterpret_cast<Pick_t>(kPick);
     BYTE* before = tree ? CurrentRoom(tree) : nullptr;
+    g_editNow = g_prioOn && LevelLightShare::LampEditPending(); // for the priority calls of this pick
     pick(tree);
     if (!g_drainOn || !tree || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
     // Drain only when the room that was current last time is done (so the lot pass of its lot ran: that lot is not paused,
@@ -504,12 +519,10 @@ bool SolveInProgress() {
     // a room of the lamp edit (06/10: other rooms solving meanwhile, even of other lots, filled the 128 kept maps)
     return room && StateOf(room) == 3 && LevelLightShare::LampUrgency(room) > 1.0f;
 }
-int ClassOf(const BYTE* room) {
-    __try {
-        return *reinterpret_cast<const int*>(room + 0xF4);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
-    }
+const void* SolvingRoom() {
+    if (!SolveInProgress()) return nullptr;
+    const BYTE* tree = g_tree.load(std::memory_order_relaxed);
+    return tree ? CurrentRoom(tree) : nullptr;
 }
 bool InQuickPass(const void* room) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
@@ -517,6 +530,11 @@ bool InQuickPass(const void* room) {
     if (it == g_quickDone.end() || it->second) return false;
     const BYTE* r = static_cast<const BYTE*>(room);
     return !QuickSolved(r) && ClassOf(r) == 0; // shown: this is its refinement
+}
+int QuickPassTarget(const void* room) {
+    if (!InQuickPass(room)) return -1;
+    const auto it = g_quickTarget.find(reinterpret_cast<uintptr_t>(room));
+    return it == g_quickTarget.end() ? -1 : it->second;
 }
 bool ClassAboveShown(const BYTE* room) {
     __try {

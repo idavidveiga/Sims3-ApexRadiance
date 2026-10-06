@@ -1838,20 +1838,68 @@ void MergeStackedAmbient(BYTE* room) {
     if (g_ambApplied.size() > 8192) g_ambApplied.clear();
 }
 
-// The quick pass counts the lights its refinement will (06/10, user: "it looks right, recalculates, looks wrong, then
-// right"): a lamp edit's room solved below the top class drops every light under that class's threshold (2 x 3/255 at
-// classes 0 and 1 against 3/255 at class 2), and with 40 to 100 lights per room (the lamps of the other stories among
-// them) those many faint ones made the quick pass visibly darker than the refinement that replaced it. Right after
-// state 0 such a room takes the top class's threshold, and its ambient is taken again with it (FUN_006a0f50, its copy in
-// the sampler +0x650 as state 0 makes it with FUN_006ab110). Class 0 has few texels, so the extra lights cost little.
-std::atomic<long> g_quickThreshold{0};
-void QuickAtTopThreshold(BYTE* room) {
-    const float top = TopThreshold();
-    if (top <= 0.0f || !RoomLightQueue::InQuickPass(room)) return; // a room at a lower class by its own LOD keeps the game's
+// The quick pass lights a room the way its refinement will (06/10). Class 0 is not only coarser: the game's per-class
+// switches turn every test off there. Steam 1.67.2, from the code that reads them (index idx = classEntry+8, classEntry =
+// [room+4] + class * 64):
+//  - FUN_006a8cb0: wall mode room+0x639 (wall height test / soft shadows in FUN_0069fc40), 0xFF36A4[idx] = 0 0 1;
+//  - FUN_006a8ce0(pass): test the room's 2D walls, 0xFF36C4[3 pass + idx]; FUN_006a8d00(pass): test 3D occluders (objects),
+//    0xFF36D0[3 pass + idx]. Passes 0 floor, 1 ceiling, 2 objects are copied by state 0 (0x6A1AA1..0x6A1B8C) to
+//    +0x1B0/+0x1B1, +0x2A0/+0x2A1 and +0x390/+0x391; pass 3, the walls, is read by the wall pass FUN_006a3a30 at every
+//    step (0x6A3A76). Class 0: 0 everywhere (no wall and no object stops a light); class 2: walls on every pass;
+//  - the light threshold room+0x63C (FUN_006a8e50, see "One round for an atrium"): 2 x 3/255 at classes 0-1, 3/255 at 2.
+// So with every lamp switched off, the window lights and the lamps of the room next door reached the walls straight
+// through them in the quick pass (Wall seams of 11:50: room 19 five times brighter at class 0 than at class 2, same
+// points), and the refinement then took that light away (user, video of 12:00: "some corners look right, then wrong
+// again"). Right after state 0 a quick-pass room takes the threshold and the switches of the class it will be refined to
+// (the wall pass's ones around each wall step, WallPassHook), and its ambient is taken again with that threshold
+// (FUN_006a0f50; its copy in the sampler +0x650 as state 0 makes it with FUN_006ab110). Class 0 has few texels, so the
+// tests cost little.
+constexpr uintptr_t kClassWallMode = 0x00FF36A4, kClassWalls2D = 0x00FF36C4, kClassObjects3D = 0x00FF36D0;
+bool g_classTables = false; // the code above checked (and the pass tables made writable) at install
+bool CheckClassTables() {
+    if (!GameAddr::IsFixed()) return false;
+    const BYTE mode[] = {0x8B, 0x41, 0x08, 0x8A, 0x80, 0xA4, 0x36, 0xFF, 0x00, 0xC3};
+    const BYTE walls[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x49, 0x08, 0x8D, 0x04, 0x40, 0x8A, 0x84, 0x08, 0xC4, 0x36, 0xFF, 0x00, 0xC2, 0x04, 0x00};
+    BYTE objects[sizeof walls];
+    std::memcpy(objects, walls, sizeof walls);
+    objects[13] = 0xD0;
+    BYTE got[sizeof walls] = {};
+    if (!MemPatch::ReadBytes(0x006A8CB0, got, sizeof mode) || std::memcmp(got, mode, sizeof mode) != 0) return false;
+    if (!MemPatch::ReadBytes(0x006A8CE0, got, sizeof walls) || std::memcmp(got, walls, sizeof walls) != 0) return false;
+    if (!MemPatch::ReadBytes(0x006A8D00, got, sizeof walls) || std::memcmp(got, objects, sizeof walls) != 0) return false;
+    DWORD old = 0;
+    return VirtualProtect(reinterpret_cast<void*>(kClassWalls2D), 0x18, PAGE_READWRITE, &old) != 0;
+}
+int ClassIndex(const BYTE* room, int cls) {
     __try {
-        float& thr = *reinterpret_cast<float*>(room + 0x63C);
-        if (!(thr > top + 1e-7f)) return; // at the top class already
-        thr = top;
+        const uintptr_t entries = *reinterpret_cast<const uintptr_t*>(room + 4);
+        if (!entries || cls < 0 || cls > 3) return -1;
+        const int idx = *reinterpret_cast<const int*>(entries + cls * 64 + 8);
+        return idx >= 0 && idx < 3 ? idx : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+std::atomic<long> g_quickThreshold{0}, g_quickTests{0};
+void QuickLikeRefinement(BYTE* room) {
+    const int target = RoomLightQueue::QuickPassTarget(room); // a room at a lower class by its own LOD keeps the game's
+    if (target <= 0) return;
+    const float thr = target < 4 && g_thrByClass[target] > 0.0f ? g_thrByClass[target] : TopThreshold();
+    const int to = g_classTables ? ClassIndex(room, target) : -1;
+    __try {
+        if (to >= 0) {
+            room[0x639] = *reinterpret_cast<const BYTE*>(kClassWallMode + to);
+            if (!room[0x18]) // indoor: the passes state 0 set up
+                for (int pass = 0; pass < 3; pass++) {
+                    BYTE* f = room + (pass == 0 ? 0x1B0 : pass == 1 ? 0x2A0 : 0x390);
+                    f[0] = *reinterpret_cast<const BYTE*>(kClassWalls2D + 3 * pass + to);
+                    f[1] = *reinterpret_cast<const BYTE*>(kClassObjects3D + 3 * pass + to);
+                }
+            g_quickTests.fetch_add(1, std::memory_order_relaxed);
+        }
+        float& own = *reinterpret_cast<float*>(room + 0x63C);
+        if (!(thr > 0.0f) || !(own > thr + 1e-7f)) return; // at that threshold already
+        own = thr;
         g_quickThreshold.fetch_add(1, std::memory_order_relaxed);
         const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room + 0xC8), e = *reinterpret_cast<const uintptr_t*>(room + 0xCC);
         if (room[0x18] || !kRoomAmbientFn || !b || e <= b) return; // no ambient step (outdoor), or the unlit constant
@@ -1919,7 +1967,7 @@ void __fastcall RoomSolveStartHook(BYTE* room) {
         if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
         else {
             NoteClassThreshold(room);
-            QuickAtTopThreshold(room);
+            QuickLikeRefinement(room);
             MergeStackedAmbientSafe(room);
         }
     }
@@ -1938,6 +1986,47 @@ float SwapWallBase(BYTE* room, float base) {
     }
 }
 using WallPass_t = char(__thiscall*)(void* room, int arg, float budget);
+// A quick-pass room's wall step reads the wall tests of the class it will be refined to (see QuickLikeRefinement): the
+// pass-3 bytes of its class index take the target's for the call (the gather thread solves one room at a time)
+struct WallTests {
+    int idx = -1;
+    BYTE walls = 0, objects = 0;
+};
+WallTests SwapWallTests(BYTE* room) {
+    WallTests saved;
+    if (!g_classTables) return saved;
+    const int target = RoomLightQueue::QuickPassTarget(room);
+    if (target <= 0) return saved;
+    int cls = -1;
+    __try {
+        cls = *reinterpret_cast<const int*>(room + 0xF4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return saved;
+    }
+    const int cur = ClassIndex(room, cls), to = ClassIndex(room, target);
+    if (cur < 0 || to < 0 || cur == to) return saved;
+    BYTE* walls = reinterpret_cast<BYTE*>(kClassWalls2D + 9 + cur);
+    BYTE* objects = reinterpret_cast<BYTE*>(kClassObjects3D + 9 + cur);
+    saved = WallTests{cur, *walls, *objects};
+    *walls = *reinterpret_cast<const BYTE*>(kClassWalls2D + 9 + to);
+    *objects = *reinterpret_cast<const BYTE*>(kClassObjects3D + 9 + to);
+    return saved;
+}
+void RestoreWallTests(const WallTests& saved) {
+    if (saved.idx < 0) return;
+    *reinterpret_cast<BYTE*>(kClassWalls2D + 9 + saved.idx) = saved.walls;
+    *reinterpret_cast<BYTE*>(kClassObjects3D + 9 + saved.idx) = saved.objects;
+}
+char WallPassCall(BYTE* room, int arg, float budget) {
+    const WallTests tests = SwapWallTests(room);
+    char done = 0;
+    __try {
+        done = reinterpret_cast<WallPass_t>(kWallPass)(room, arg, budget);
+    } __finally {
+        RestoreWallTests(tests);
+    }
+    return done;
+}
 char __fastcall WallPassHook(BYTE* room, void*, int arg, float budget) {
     float saved = 0.0f;
     bool swapped = false;
@@ -1949,7 +2038,7 @@ char __fastcall WallPassHook(BYTE* room, void*, int arg, float budget) {
             swapped = true;
         }
     }
-    const char done = reinterpret_cast<WallPass_t>(kWallPass)(room, arg, budget);
+    const char done = WallPassCall(room, arg, budget);
     if (swapped) SwapWallBase(room, saved);
     return done;
 }
@@ -3377,6 +3466,7 @@ struct GatherStamp { uintptr_t mgr; int id; DWORD started; uint32_t serial; };
 std::mutex g_gatherStampMx;
 std::unordered_map<uintptr_t, GatherStamp> g_gatherStamps;
 uint32_t g_gatherSerial = 0; // under g_gatherStampMx: one per gather (never 0)
+uint32_t g_markSerial = 0;   // under g_gatherStampMx: g_gatherSerial at the latest lamp mark (NoteLampMark)
 void NoteGatherStamp(BYTE* room, DWORD started) {
     const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
     const int id = *reinterpret_cast<const int*>(room + 0xC);
@@ -4496,6 +4586,8 @@ bool InstallIndoor(std::string& why) {
     else g_lodPatches.insert(g_lodPatches.end(), ambPatches.begin(), ambPatches.end());
     g_ambReady = amb;
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
+    g_classTables = amb && CheckClassTables(); // the quick pass takes its refinement's wall tests (QuickLikeRefinement)
+    if (amb && !g_classTables) LOG_INFO("[LevelLightShare] Quick pass with the refinement's wall tests: not on this build (only its light threshold)");
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
     kRoomNormCall = GameAddr::Get(Id::RoomNormCall);
@@ -4581,8 +4673,11 @@ bool FreshLampSolveImpl(BYTE* room, DWORD changed, bool waiting) {
     if (!waiting) {
         std::lock_guard<std::mutex> lock(g_gatherStampMx);
         const auto stamp = g_gatherStamps.find(reinterpret_cast<uintptr_t>(room));
-        if (stamp == g_gatherStamps.end() || stamp->second.mgr != mgr || stamp->second.id != id
-            || !RoomAmbientPolicy::GatherAfterChange(stamp->second.started, changed)) return false;
+        if (stamp == g_gatherStamps.end() || stamp->second.mgr != mgr || stamp->second.id != id) return false;
+        // a gather in the same tick as the change counts when it came after the latest lamp mark (06/10, recording 12:01:
+        // the switched lamp's own room, gathered by the game's walk in that tick, was solved a second time for nothing)
+        if (!RoomAmbientPolicy::GatherAfterChange(stamp->second.started, changed)
+            && !(stamp->second.started == changed && stamp->second.serial > g_markSerial)) return false;
     }
     const uintptr_t tracker = MgrTracker(mgr);
     if (!tracker) return false;
@@ -6006,6 +6101,10 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
 // Lamp edits first (see "Lamp edits first" above)
 void NoteLampMark(uintptr_t tl, int room, bool user, bool pure) {
     if (!g_installed.load(std::memory_order_relaxed) || !g_indoorReady) return;
+    {
+        std::lock_guard<std::mutex> stamps(g_gatherStampMx);
+        g_markSerial = g_gatherSerial; // gathers after this mark see the lamp as it is now (FreshLampSolveImpl)
+    }
     std::lock_guard<std::mutex> lk(g_lampMarkMx);
     for (LampMarkNote& n : g_lampMarks)
         if (n.tl == tl && n.room == room) {
@@ -6051,19 +6150,45 @@ float LampUrgency(const void* room) {
     return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : 1.0e5f) * CameraStoryFactor(room);
 }
 
-// (06/10, user: "it applies first on the light's story, and only then on the others"; recording 11:17: after the lamp's
-// room the scheduler took the camera story's rooms, then the stories below, so the atrium's member on story 0 came 1.5 s
-// and the one beside the lamp 3 s after the lamp's own)
-bool StackedWithEdit(const void* room) {
-    if (UrgentTier(room) < 0) return false;
+// The other members of a room's atrium group (false: not in one)
+bool OtherMembers(const void* room, std::vector<DepKey>& others) {
+    others.clear();
     uintptr_t mgr = 0;
     int level = 0, id = 0;
-    if (!AmbientIdentity(static_cast<BYTE*>(const_cast<void*>(room)), mgr, level, id)) return false;
+    if (!room || !AmbientIdentity(static_cast<BYTE*>(const_cast<void*>(room)), mgr, level, id)) return false;
     const uintptr_t tracker = MgrTracker(mgr);
     if (!tracker) return false;
     std::lock_guard<std::mutex> lk(g_ambMx);
     const auto it = g_ambGroups.find(DepKey{tracker, level, id});
-    return it != g_ambGroups.end() && it->second.size() >= 2;
+    if (it == g_ambGroups.end() || it->second.size() < 2) return false;
+    for (const auto& member : it->second)
+        if (member.key.level != level || member.key.room != id) others.push_back(member.key);
+    return true;
+}
+
+// (06/10, user: "it applies first on the light's story, and only then on the others"; recording 11:17: after the lamp's
+// room the scheduler took the camera story's rooms, then the stories below, so the atrium's member on story 0 came 1.5 s
+// and the one beside the lamp 3 s after the lamp's own). A member counts when any member of its group is a lamp edit's
+// (recording 12:01: the atrium's room beside the lamp's, sent by the lamp's safety net and so not urgent, came 2.8 s late).
+bool StackedWithEdit(const void* room) {
+    std::vector<DepKey> others;
+    if (!OtherMembers(room, others)) return false;
+    if (UrgentTier(room) >= 0) return true;
+    for (const DepKey& key : others)
+        if (const BYTE* member = SafeRoomById(key.tracker, key.level, key.room); member && UrgentTier(member) >= 0) return true;
+    return false;
+}
+
+// Another member of the room's atrium group is waiting for its gather or its solve, or being solved (states 1 to 3)
+bool GroupPending(const void* room) {
+    std::vector<DepKey> others;
+    if (!OtherMembers(room, others)) return false;
+    for (const DepKey& key : others)
+        if (const BYTE* member = SafeRoomById(key.tracker, key.level, key.room)) {
+            const int state = RoomState(member);
+            if (state >= 1 && state <= 3) return true;
+        }
+    return false;
 }
 
 // Apex's share of the room solves so far (LightEvalHook and the basis test), ms: cycles calibrated against the performance
@@ -6198,9 +6323,9 @@ std::string Status() {
                                       : std::format("{}, {} taken, {} points tested ({} behind a floor, {} behind a wall), {} rooms updated, lighting detail {} ({} raised)",
                                                     g_indoorOn ? "on" : "off", g_indoorAdded.load(), g_indoorTests.load(), g_indoorFloorBlocked.load(),
                                                     g_indoorWallBlocked.load(), g_indoorQueued.load(), g_lodReady ? "on" : "not installed", g_lodBoosts.load()) +
-                                          std::format(", stacked rooms ambient {} ({} merges; members' values taken at the merge {} in {:.1f} ms, already right {}, kept from their gather {}, only an older solve's {}; quick passes counting the refinement's lights {}), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
+                                          std::format(", stacked rooms ambient {} ({} merges; members' values taken at the merge {} in {:.1f} ms, already right {}, kept from their gather {}, only an older solve's {}; quick passes with the refinement's light threshold {} and wall tests {}), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
                                                       "one update {} (lamps added, moved or removed, sent at once {}; lamp values changed without a move {}; outside of a floor marked changed without a change {}), lots rebuilt {}, floor objects made {}, rooms held until their solve ended {}, rooms still holding a lamp switched off gathered again {}",
-                                                      g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_canonTaken.load(), CanonMs(), g_canonKept.load(), g_canonReused.load(), g_canonOld.load(), g_quickThreshold.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()) +
+                                                      g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_canonTaken.load(), CanonMs(), g_canonKept.load(), g_canonReused.load(), g_canonOld.load(), g_quickThreshold.load(), g_quickTests.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()) +
                                           std::format(", lamp edits first: rooms made urgent {}, gathered at once {}, marks held while their room was solved {} (given back {}), "
                                                       "floor batches with per-lamp wall lists {} (every wall tested {})",
                                                       g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
