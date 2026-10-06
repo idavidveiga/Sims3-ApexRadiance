@@ -2448,6 +2448,26 @@ void __fastcall FinalizeHook(BYTE* room) {
     RoomLightQueue::NoteSolveEnd(room);
     if (Recorder::Active()) NoteSolve(room, 'E');
 }
+std::atomic<bool> g_finalizeReady{false}, g_lockStepReady{false};
+
+// Step 1 of a room's solve (06/10 review): FUN_0069fa40 binds the room's texture set and locks its maps (0x00618DF0, the
+// lock pointers room+0x1C4 / +0x2B4 / +0x3A4); its only call is 0x1B after the state-0 call (0x006A3D26 on Steam 1.67.2),
+// "mov ecx,esi; fstp st0; call; test al,al; je". AtriumHold keeps a map only when the game locks it here
+// (InMapLockStep), never a texture something else locks on the render thread while a room is mid-solve (custom content
+// streaming in, Apex's LUT).
+uintptr_t kLockStep = 0;
+using LockStep_t = char(__thiscall*)(void* room);
+thread_local int t_lockStep = 0;
+char __fastcall LockStepHook(BYTE* room) {
+    char ok = 0;
+    t_lockStep++;
+    __try {
+        ok = reinterpret_cast<LockStep_t>(kLockStep)(room);
+    } __finally {
+        t_lockStep--;
+    }
+    return ok;
+}
 
 void ClearJournal() {
     std::lock_guard<std::mutex> lk(g_journalMx);
@@ -4697,7 +4717,15 @@ bool InstallIndoor(std::string& why) {
     ReadThresholdTable();
     // the end of every room solve, for the quick pass and the recorder's light update trace (FinalizeHook)
     if (GameAddr::IsFixed() && CallsTarget(kFinalizeCall, kFinalize))
-        Redirect(kFinalizeCall, kFinalize, reinterpret_cast<const void*>(&FinalizeHook), &g_lodPatches);
+        g_finalizeReady = Redirect(kFinalizeCall, kFinalize, reinterpret_cast<const void*>(&FinalizeHook), &g_lodPatches);
+    // the solve's step 1, where it locks the maps a lamp switch or an atrium holds (LockStepHook)
+    if (const uintptr_t site = kRoomSolveStartCall ? kRoomSolveStartCall + 0x1B : 0;
+        site && std::memcmp(reinterpret_cast<const void*>(site - 4), "\x8B\xCE\xDD\xD8\xE8", 5) == 0 &&
+        std::memcmp(reinterpret_cast<const void*>(site + 5), "\x84\xC0\x0F\x84", 4) == 0) {
+        kLockStep = site + 5 + *reinterpret_cast<const int32_t*>(site + 1);
+        g_lockStepReady = Redirect(site, kLockStep, reinterpret_cast<const void*>(&LockStepHook), &g_lodPatches);
+    }
+    if (!g_lockStepReady) LOG_WARNING("[LevelLightShare] The room solve's map lock step: the game code differs, lamp switches and atriums change room by room");
     if (amb && !g_classTables) LOG_INFO("[LevelLightShare] Quick pass with the refinement's wall tests: not on this build (only its light threshold)");
     // No boost for rooms lit only by lamps of another story (optional; RoomNormHook)
     std::vector<MemPatch::PatchLocation> normPatches;
@@ -5908,6 +5936,8 @@ void Uninstall() {
     g_lodReady = false;
     g_ctx = {};
     g_ambReady = false;
+    g_finalizeReady = false;
+    g_lockStepReady = false;
     MemPatch::RestoreAll(g_lodPatches);
     g_lodPatches.clear();
     const bool alignWasOn = g_alignReady.exchange(false) && g_alignOn; // the walls as the game lights them, again (below)
@@ -6520,6 +6550,9 @@ double ApexSolveMs() {
     if (ms < 100.0 || c <= c0) return -1.0;
     return static_cast<double>(g_apexSolveCycles.load(std::memory_order_relaxed)) / (static_cast<double>(c - c0) / ms);
 }
+
+bool InMapLockStep() { return t_lockStep > 0; }
+bool SolveHooksReady() { return g_finalizeReady.load(std::memory_order_relaxed) && g_lockStepReady.load(std::memory_order_relaxed); }
 
 int SwitchRoomsPending(unsigned long since, int* visible) {
     struct Entry {

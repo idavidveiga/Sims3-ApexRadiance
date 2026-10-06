@@ -22,6 +22,9 @@ long SwitchEventId();
 unsigned long SwitchEventStart();
 // GetTickCount of the latest player switch (bit 0 set; 0 = none yet)
 unsigned long SwitchLastTick();
+// How many player switches so far (grows by one at each): SolvedSince compares solve starts with it, as a solve begun in the
+// same GetTickCount step as the switch (10-16 ms) is one a tick cannot tell before from after
+unsigned long SwitchSerial();
 // Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
 void SetEnabled(bool on);
 bool Enabled();

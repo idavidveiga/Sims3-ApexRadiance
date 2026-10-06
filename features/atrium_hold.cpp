@@ -26,6 +26,7 @@ UnlockRect_t g_origUnlock = nullptr;
 constexpr DWORD kHoldMs = 1500;  // the longest a map waits for the other stories of its atrium
 constexpr DWORD kKeepMs = 3000;  // a map's buffers are kept this long after its last change
 constexpr size_t kMaxMaps = 192; // maps kept at once (a switch of every lamp of the atrium house: about 150)
+constexpr size_t kMaxBytes = 96u << 20; // their buffers together (2 x w x h x 4 each); past it a map is left to the game
 
 // ---- Lamp switches all at once (06/10 evening, user chose "one change only" over the quick pass and its corrections) ----
 // From a player's switch until every room it marked on a story its lot shows has ended a solve begun after the switch
@@ -36,16 +37,23 @@ constexpr size_t kMaxMaps = 192; // maps kept at once (a switch of every lamp of
 std::atomic<bool> g_allAtOnce{true}, g_switchHolding{false};
 unsigned long g_switchSeen = 0;              // the latest switch handled (LampMarkFilter::SwitchLastTick)
 DWORD g_switchFirst = 0, g_switchLatest = 0; // the hold's first and latest switch
+unsigned long g_switchLatestSerial = 0;      // LampMarkFilter::SwitchSerial at the latest switch (for SwitchRoomsPending)
 constexpr DWORD kSwitchMinMs = 150, kSwitchHoldMs = 2500, kSwitchMaxMs = 4000;
 std::atomic<long> g_switchHolds{0}, g_switchTimeouts{0}, g_switchLastMs{-1}, g_switchLastRooms{0};
 std::atomic<DWORD> g_switchUpdated{0}; // the last UpdateSwitchHold: a hold not updated for 1 s (the queue stopped) is over
+// On, and the game's solve hooks are in (its end and its map lock step): without them no room would ever count as solved
+// and every switch would wait the whole kSwitchHoldMs (other game builds: the switches change room by room)
+bool AllAtOnceUsable() { return g_allAtOnce.load(std::memory_order_relaxed) && LevelLightShare::SolveHooksReady(); }
 // A switch is held, or one happened that UpdateSwitchHold has not seen yet: a room's solve may lock its maps in the very
-// frame of the switch, before the next Present starts the hold (render thread)
+// frame of the switch, before the next Present starts the hold (render thread). Never once the queue stopped (Clear) or
+// stopped calling UpdateSwitchHold: nothing would release what waits.
 bool SwitchPendingNow() {
+    if (!AllAtOnceUsable()) return false;
+    const DWORD now = GetTickCount();
+    if (now - g_switchUpdated.load(std::memory_order_relaxed) >= 1000) return false;
     if (g_switchHolding.load(std::memory_order_relaxed)) return true;
-    if (!g_allAtOnce.load(std::memory_order_relaxed)) return false;
     const unsigned long last = LampMarkFilter::SwitchLastTick();
-    return last && last != g_switchSeen && GetTickCount() - last < 1000;
+    return last && last != g_switchSeen && now - last < 1000;
 }
 
 struct Map {
@@ -67,6 +75,7 @@ struct Map {
 
 std::mutex g_mx;
 std::unordered_map<IDirect3DTexture9*, Map> g_maps; // AddRef'd while kept
+size_t g_bytes = 0;                                 // their buffers (g_mx)
 std::atomic<size_t> g_count{0};
 std::atomic<bool> g_active{false}, g_hooked{false}, g_hookTried{false};
 thread_local bool t_own = false;
@@ -133,11 +142,14 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
     std::unique_lock<std::mutex> lk(g_mx);
     auto it = g_maps.find(t);
     if (it == g_maps.end()) {
-        // a map an atrium room's solve writes while a lamp edit is pending: its content as it is now (before the solve
-        // writes it); never the UI or anything else the game updates meanwhile
+        // a map a lamp switch's room or an atrium room's solve locks in its step 1 while a lamp edit is pending: its content
+        // as it is now (before the solve writes it). Only in that step (LevelLightShare::InMapLockStep), as a room stays
+        // mid-solve across frames: never the UI or anything else the render thread locks meanwhile (06/10 review). A
+        // switch's room is kept from the very frame of the switch, before the next Present sets g_active (review, H2).
         const bool switchRoom = solving && SwitchPendingNow() && LevelLightShare::LampUrgency(solving) > 1.0f;
-        if (refining || !solving || !g_active.load(std::memory_order_relaxed) || g_maps.size() >= kMaxMaps || !RoomMap(t, w, h) ||
-            !(switchRoom || LevelLightShare::InAtrium(solving))) {
+        if (refining || !solving || !LevelLightShare::InMapLockStep() || g_maps.size() >= kMaxMaps || !RoomMap(t, w, h) ||
+            g_bytes + static_cast<size_t>(w) * h * 8 > kMaxBytes ||
+            !(switchRoom || (g_active.load(std::memory_order_relaxed) && LevelLightShare::InAtrium(solving)))) {
             lk.unlock();
             return g_origLock(t, level, out, rect, flags);
         }
@@ -149,12 +161,19 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
         Map m;
         m.w = w;
         m.h = h;
-        m.latest.resize(static_cast<size_t>(w) * h);
-        FromMemory(m, m.latest, RECT{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)}, static_cast<const BYTE*>(lr.pBits), lr.Pitch);
+        try {
+            m.latest.resize(static_cast<size_t>(w) * h);
+            FromMemory(m, m.latest, RECT{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)}, static_cast<const BYTE*>(lr.pBits), lr.Pitch);
+            m.shown = m.latest;
+        } catch (...) { // no memory for its copies: the game keeps the map as it writes it (a throw here would end the game)
+            g_origUnlock(t, 0);
+            lk.unlock();
+            return g_origLock(t, level, out, rect, flags);
+        }
         g_origUnlock(t, 0);
-        m.shown = m.latest;
         m.last = GetTickCount();
         t->AddRef();
+        g_bytes += static_cast<size_t>(w) * h * 8;
         it = g_maps.emplace(t, std::move(m)).first;
         g_count.store(g_maps.size(), std::memory_order_relaxed);
         g_peak.store(std::max<long>(g_peak.load(), static_cast<long>(g_maps.size())), std::memory_order_relaxed);
@@ -229,7 +248,7 @@ bool InstallHooks(IDirect3DDevice9* dev) {
 // Render thread, every frame: a new player switch starts (or extends) the hold; it ends once every room the switch marked on a
 // shown story has its final light, kSwitchHoldMs after the latest switch, or kSwitchMaxMs after the first
 void UpdateSwitchHold() {
-    if (!g_allAtOnce.load(std::memory_order_relaxed)) {
+    if (!AllAtOnceUsable()) {
         g_switchHolding.store(false, std::memory_order_relaxed);
         return;
     }
@@ -244,6 +263,7 @@ void UpdateSwitchHold() {
                 g_switchHolds.fetch_add(1, std::memory_order_relaxed);
             }
             g_switchLatest = last;
+            g_switchLatestSerial = LampMarkFilter::SwitchSerial();
             g_switchHolding.store(true, std::memory_order_relaxed);
         }
     }
@@ -251,7 +271,7 @@ void UpdateSwitchHold() {
     const DWORD sinceLatest = now - g_switchLatest, sinceFirst = now - g_switchFirst;
     if (sinceLatest < kSwitchMinMs) return; // the game's marks and the safety net send the rooms first
     int visible = 0;
-    const int pending = LevelLightShare::SwitchRoomsPending(g_switchLatest, &visible) + (LightmapSmooth::HoldPending() ? 1 : 0); // and the ground's chunks
+    const int pending = LevelLightShare::SwitchRoomsPending(g_switchLatestSerial, &visible) + (LightmapSmooth::HoldPending() ? 1 : 0); // and the ground's chunks
     const bool timeout = sinceLatest >= kSwitchHoldMs || sinceFirst >= kSwitchMaxMs;
     if (pending > 0 && !timeout) return;
     if (pending > 0) g_switchTimeouts.fetch_add(1, std::memory_order_relaxed);
@@ -271,16 +291,9 @@ void SetAllAtOnce(bool on) {
     if (!g_allAtOnce.exchange(on) || on) return;
     g_switchHolding.store(false, std::memory_order_relaxed); // switched off during a hold: it ends now
 }
-bool AllAtOnce() { return g_allAtOnce.load(std::memory_order_relaxed) && g_hooked.load(std::memory_order_relaxed); }
-bool SwitchHolding() {
-    if (!g_hooked.load(std::memory_order_relaxed) || !g_allAtOnce.load(std::memory_order_relaxed)) return false;
-    const DWORD now = GetTickCount();
-    if (now - g_switchUpdated.load(std::memory_order_relaxed) >= 1000) return false; // the queue stopped: nobody would end it
-    if (g_switchHolding.load(std::memory_order_relaxed)) return true;
-    // a switch in this very frame, before the next Present starts the hold: the furniture and lamps already wait
-    const unsigned long last = LampMarkFilter::SwitchLastTick();
-    return last && last != g_switchSeen && now - last < 1000;
-}
+bool AllAtOnce() { return AllAtOnceUsable() && g_hooked.load(std::memory_order_relaxed); }
+// held, or a switch in this very frame, before the next Present starts the hold: the furniture and lamps already wait
+bool SwitchHolding() { return g_hooked.load(std::memory_order_relaxed) && SwitchPendingNow(); }
 
 void OnPresent(IDirect3DDevice9* dev) {
     if (!g_hookTried.exchange(true)) {
@@ -322,6 +335,7 @@ void OnPresent(IDirect3DDevice9* dev) {
         }
         if (now - m.last > kKeepMs) { // idle: buffers and the reference go
             tex->Release();
+            g_bytes -= std::min(g_bytes, static_cast<size_t>(m.w) * m.h * 8);
             it = g_maps.erase(it);
             continue;
         }
@@ -337,7 +351,13 @@ void Clear() {
         tex->Release();
     }
     g_maps.clear();
+    g_bytes = 0;
     g_count.store(0, std::memory_order_relaxed);
+    // the queue stopped (or the world changed): nothing waits or is kept until the next Present runs the hold again (review
+    // 06/10: a switch after Faster Room Lighting went off kept capturing maps nobody released)
+    g_active.store(false, std::memory_order_relaxed);
+    g_switchHolding.store(false, std::memory_order_relaxed);
+    g_switchUpdated.store(GetTickCount() - 1000, std::memory_order_relaxed);
 }
 
 std::string Status() {

@@ -153,6 +153,7 @@ bool NoteSwitch(uintptr_t light, DWORD tick) {
 std::atomic<DWORD> g_switchLast{0};
 std::atomic<long> g_switchEvents{0};
 std::atomic<DWORD> g_switchStart{0}; // the first switch of the current event
+std::atomic<unsigned long> g_switchSerial{0}; // counts the switches: a solve begun after one has a serial at least its own (no tick step to share)
 void NoteUserSwitch(DWORD tick) {
     const float night = NightLevelRef().load(std::memory_order_relaxed);
     if (night < 0.0f || (night > 0.02f && night < 0.98f)) return;
@@ -161,6 +162,7 @@ void NoteUserSwitch(DWORD tick) {
         g_switchEvents.fetch_add(1, std::memory_order_relaxed);
     }
     g_switchLast.store(tick | 1, std::memory_order_relaxed);
+    g_switchSerial.fetch_add(1, std::memory_order_relaxed);
 }
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
 std::atomic<float> g_nightLevel{-1.0f};
@@ -511,6 +513,7 @@ long MassEventId() { return g_massEvents.load(std::memory_order_relaxed); }
 long SwitchEventId() { return g_switchEvents.load(std::memory_order_relaxed); }
 unsigned long SwitchEventStart() { return g_switchStart.load(std::memory_order_relaxed); }
 unsigned long SwitchLastTick() { return g_switchLast.load(std::memory_order_relaxed); }
+unsigned long SwitchSerial() { return g_switchSerial.load(std::memory_order_relaxed); }
 bool SwitchActive() {
     const DWORD last = g_switchLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

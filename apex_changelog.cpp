@@ -22,7 +22,7 @@ constexpr const char* k270Improved[] = {
     "A lot you enter corrects its lighting sooner",
     "Moving or switching lamps in Build mode updates rooms sooner",
     "Lot edges stay seamless in rain, snow and melting snow",
-    "Shore reflections on Twinbrook's sea",
+    "Shore reflections on the water of Twinbrook, Bridgeport and Moonlight Falls",
     "Banding Fix has its own page; Smooth gradients is off by default",
     "The menu and start note open from the world selector on",
     "Built-in profiles turn on every Performance switch and keep Water & Snow and Banding Fix",

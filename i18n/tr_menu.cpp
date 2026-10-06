@@ -451,7 +451,7 @@ const I18n::Entry kEntries[] = {
     {"Some effects are on", "Alguns efeitos estão ligados", "Algunos efectos están activados", "Certains effets sont activés"},
     {"All effects are off", "Todos os efeitos estão desligados", "Todos los efectos están desactivados", "Tous les effets sont désactivés"},
     {"Turn all effects on or off together", "Ligue ou desligue todos os efeitos de uma vez", "Activa o desactiva todos los efectos a la vez", "Activez ou désactivez tous les effets à la fois"},
-    {"One switch for all 12 performance options", "Um único controle para as 12 opções de desempenho", "Un solo control para las 12 opciones de rendimiento", "Un seul interrupteur pour les 12 options de performance"},
+    {"One switch for all 15 performance options", "Um único controle para as 15 opções de desempenho", "Un solo control para las 15 opciones de rendimiento", "Un seul interrupteur pour les 15 options de performance"},
 
     // ---- Sims3SettingsSetter recommendation ----
     {"Recommended: Sims3SettingsSetter", "Recomendado: Sims3SettingsSetter", "Recomendado: Sims3SettingsSetter", "Recommandé : Sims3SettingsSetter"},
@@ -1301,7 +1301,7 @@ const I18n::Entry kWhatsNewEntries[] = {
     {"A lot you enter corrects its lighting sooner", "Um lote em que você entra corrige a iluminação mais cedo", "Un solar en el que entras corrige su iluminación antes", "Un terrain où vous entrez corrige son éclairage plus tôt"},
     {"Moving or switching lamps in Build mode updates rooms sooner", "Mover ou acender luminárias no modo Construir atualiza os cômodos mais cedo", "Mover o encender lámparas en el modo Construir actualiza las habitaciones antes", "Déplacer ou allumer des lampes en mode Construction met à jour les pièces plus tôt"},
     {"Lot edges stay seamless in rain, snow and melting snow", "As bordas dos lotes continuam sem emenda na chuva, na neve e no degelo", "Los bordes de los solares siguen sin cortes con lluvia, nieve y deshielo", "Les bords des terrains restent sans raccord sous la pluie, la neige et au dégel"},
-    {"Shore reflections on Twinbrook's sea", "Reflexo na orla do mar de Twinbrook", "Reflejo en la orilla del mar de Twinbrook", "Reflet sur le rivage de la mer de Twinbrook"},
+    {"Shore reflections on the water of Twinbrook, Bridgeport and Moonlight Falls", "Reflexo na orla da água de Twinbrook, Bridgeport e Moonlight Falls", "Reflejo en la orilla del agua de Twinbrook, Bridgeport y Moonlight Falls", "Reflet sur le rivage de l'eau de Twinbrook, Bridgeport et Moonlight Falls"},
     {"Banding Fix has its own page; Smooth gradients is off by default", "Correção de Faixas tem página própria; Gradientes suaves vem desligado", "Corrección de Bandas tiene su propia página; Degradados suaves viene desactivado", "Correction des Bandes a sa propre page ; Dégradés lisses est désactivé par défaut"},
     {"The menu and start note open from the world selector on", "O menu e o aviso de início abrem a partir da seleção de mundo", "El menú y el aviso de inicio se abren desde la selección de mundo", "Le menu et la note de démarrage s'ouvrent dès la sélection du monde"},
     {"Built-in profiles turn on every Performance switch and keep Water & Snow and Banding Fix", "Os perfis prontos ligam todas as opções de Desempenho e mantêm Água e Neve e Correção de Faixas", "Los perfiles listos activan todas las opciones de Rendimiento y mantienen Agua y Nieve y Corrección de Bandas", "Les profils prêts activent toutes les options de Performances et gardent Eau et Neige et Correction des Bandes"},

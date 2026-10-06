@@ -52,15 +52,23 @@ approximate light with corrections. With `switchAllAtOnce` on (`AtriumHold`, `fe
 - A player's switch (`LampMarkFilter::SwitchLastTick`) starts a hold (`AtriumHold::SwitchHolding`, also true in the very
   frame of the switch, before the next Present). The quick pass is off (`QuickPassRoom`); the drain gives the switch's rooms
   16 ms a frame.
-- Every map the switch's rooms (lamp-edit urgency) write waits at the game's UnlockRect, as an atrium's maps do; the
+- Every map the switch's rooms (lamp-edit urgency) write waits at the game's UnlockRect, as an atrium's maps do. A map is
+  taken only when the game locks it in step 1 of the room's solve (`0x0069FA40`, its call `0x006A3D26` hooked by
+  `LevelLightShare`, `InMapLockStep`), never another texture the render thread locks while a room is mid-solve; at most
+  192 maps and 96 MB of copies, and a map with no memory for its copies is left to the game. The
   furniture of those rooms keeps its rig lights (`lot_light_bridge.cpp`, `HoldRig`); the ground keeps its smoothed chunk
   maps (`LightmapSmooth`); the per-pixel lamps (roofs, water, outdoor objects, trees) keep their list (`LotLightBridge`).
 - It ends when every room the switch marked on the camera's story (and the atrium's rooms below it) has ended a solve
   begun after the latest switch (`LevelLightShare::SwitchRoomsPending`, `RoomLightQueue::SolvedSince`, from the solve
-  start and end hooks), and the ground's chunks are re-rendered, at least 150 ms after the latest switch; at most 2.5 s
-  after it (4 s after the first). Then the maps take their content and the others follow in the same frame.
+  start and end hooks; a solve start is stamped with `LampMarkFilter::SwitchSerial`, not a tick: a solve begun in the
+  switch's own 10-16 ms tick step counted as before it and the switch waited the whole 2.5 s, review 06/10), and the
+  ground's chunks are re-rendered, at least 150 ms after the latest switch; at most 2.5 s after it (4 s after the
+  first). Then the maps take their content and the others follow in the same frame.
 - The lamp object itself (its lit model) is the game's and changes at once. Recordings note `[switch] lamp switch shown
   all at once, N ms ...`; the status line counts the switches and the last one's time.
+- It needs both solve hooks (the end `0x006A3E65`, Steam 1.67.2 only, and the lock step): without them the switches
+  change room by room as with the option off (`AtriumHold::AllAtOnce`). Turning Faster Room Lighting off ends any hold and
+  stops new ones (`AtriumHold::Clear`).
 
 ## Compatibility and interactions
 

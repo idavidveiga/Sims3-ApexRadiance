@@ -169,8 +169,24 @@ void SaveDisk(Registry& r) {
     LOG_INFO(std::format("[ShaderCache] Saved {} compiled Apex shaders to ApexRadiance_ShaderCache.bin (the next start loads them without the compiler)", all.size()));
 }
 
+// d3dcompiler_47.dll can be loaded. Being delay-loaded, a missing DLL would raise a structured exception at the first
+// D3DCompile that catch (...) does not take under /EHsc, and end the game (06/10 review; 2.6.0 then failed to load
+// instead). Loaded here first, the delay-load helper finds the same module.
+bool CompilerAvailable() {
+    static const bool ok = [] {
+        if (LoadLibraryW(L"d3dcompiler_47.dll")) return true;
+        LOG_WARNING("[ShaderCache] d3dcompiler_47.dll not found: Apex shaders missing from ApexRadiance_ShaderCache.bin stay off");
+        return false;
+    }();
+    return ok;
+}
+
 // Outside the lock: a Compiling job is touched by the thread compiling it only.
 void Compile(Job& j) {
+    if (!CompilerAvailable()) {
+        j.error = "d3dcompiler_47.dll not found";
+        return;
+    }
     try {
         std::vector<D3D_SHADER_MACRO> macros;
         for (const auto& [name, value] : j.d.macros) macros.push_back({name.c_str(), value.c_str()});

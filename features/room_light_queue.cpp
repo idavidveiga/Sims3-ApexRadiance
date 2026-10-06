@@ -161,8 +161,10 @@ constexpr int kQuickSetsMax = 3;
 std::atomic<bool> g_endsSeen{false};
 // Every room's last solve end (GetTickCount; render thread): a lamp switch's furniture waits for its room's (AwaitingSwitchLight)
 std::unordered_map<uintptr_t, DWORD> g_lastEnd;
-// Every room's last solve start, and the start of its last finished solve (render thread): lamp switches all at once wait
-// for a solve that began after the switch (SolvedSince; a solve running at the switch read the lamps as they were)
+// Every room's last solve start, and the start of its last finished solve, as LampMarkFilter::SwitchSerial at that moment
+// (render thread): lamp switches all at once wait for a solve that began after the switch (SolvedSince; a solve running at
+// the switch read the lamps as they were). A tick would not do: a solve begun in the switch's own tick step (the lamp's room,
+// often picked in the same light tree update) compared before it, and its switch waited the whole kSwitchHoldMs (review 06/10)
 std::unordered_map<uintptr_t, DWORD> g_solveStart, g_lastSolved;
 std::unordered_map<uintptr_t, int> g_quickTarget; // per room of the burst: its class before the quick pass set it to 0
 bool g_editNow = false; // render thread, set by each pick: a lamp edit's rooms are pending
@@ -578,12 +580,12 @@ void NoteSolveEnd(const void* room) {
     g_lastEnd[reinterpret_cast<uintptr_t>(room)] = now;
     if (g_lastSolved.size() > 16384) g_lastSolved.clear();
     const auto s = g_solveStart.find(reinterpret_cast<uintptr_t>(room));
-    g_lastSolved[reinterpret_cast<uintptr_t>(room)] = s != g_solveStart.end() ? s->second : now;
+    g_lastSolved[reinterpret_cast<uintptr_t>(room)] = s != g_solveStart.end() ? s->second : LampMarkFilter::SwitchSerial();
 }
 void NoteSolveStart(const void* room) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
     if (g_solveStart.size() > 16384) g_solveStart.clear();
-    g_solveStart[reinterpret_cast<uintptr_t>(room)] = GetTickCount();
+    g_solveStart[reinterpret_cast<uintptr_t>(room)] = LampMarkFilter::SwitchSerial();
 }
 bool SolvedSince(const void* room, unsigned long since) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return true; // unknown: never waited for

@@ -86,10 +86,14 @@ bool GroupPending(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
 // Lamp switches all at once (AtriumHold, render thread): of the rooms a lamp edit marked (the urgent list) on stories their
-// lot shows (its story, and an atrium's rooms below it), how many are still gathered or solved or ended no solve begun at or
-// after `since`;
+// lot shows (its story, and an atrium's rooms below it), how many are still gathered or solved or ended no solve begun after
+// the switch whose LampMarkFilter::SwitchSerial is `since`;
 // `visible` gets how many there are
 int SwitchRoomsPending(unsigned long since, int* visible = nullptr);
+// This thread is in step 1 of a room's solve, where the game locks the room's maps (AtriumHold keeps only those)
+bool InMapLockStep();
+// The solve's end and its map lock step are hooked: lamp switches can be shown all at once (else they change room by room)
+bool SolveHooksReady();
 // Apex's own share of the room solves so far, ms (-1 until calibrated); render thread
 double ApexSolveMs();
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off

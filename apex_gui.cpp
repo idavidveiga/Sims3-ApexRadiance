@@ -355,16 +355,19 @@ constexpr const char* kOverviewPerformancePatches[] = {
     Performance::kRoomLightQueueName, Performance::kLotLightingName, Performance::kWallShadingName,
     Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName,
     Performance::kFastMemoryName, Performance::kSceneBudgetName, Performance::kObjectIndexName,
+    Performance::kMemoryGuardName, Performance::kWindowRepaintName, Performance::kScriptMathName,
 };
 
 constexpr const char* kOverviewMainPatches[] = {
     kNightLighting, "AmbientOcclusion", "SceneDither", "DepthBlur", "EdgeSmoothing",
 };
 
+// An option this game version does not have counts neither as on nor as off: the group switch works with the others
 bool PerformanceGroupEnabled() {
     for (const char* name : kOverviewPerformancePatches) {
         const ApexPatch* patch = Find(name);
-        if (!patch || !patch->IsEnabled()) return false;
+        if (!patch) return false;
+        if (patch->IsCompatibleWithCurrentVersion() && !patch->IsEnabled()) return false;
     }
     return true;
 }
@@ -378,7 +381,7 @@ bool PerformanceGroupAnyEnabled() {
 bool PerformanceGroupSwitchable() {
     if (Loading()) return false;
     for (const char* name : kOverviewPerformancePatches)
-        if (!Switchable(Find(name))) return false;
+        if (!Find(name)) return false;
     return true;
 }
 
@@ -479,7 +482,7 @@ void OverviewPage() {
     ApexUi::GroupLabel("Performance");
     if (ApexUi::BeginCard("##PerformanceScreen")) {
         bool on = PerformanceGroupEnabled(), nameClicked = false;
-        if (ApexUi::OverviewRow("PerformanceGroup", IconId::Gauge, "Performance", "One switch for all 12 performance options",
+        if (ApexUi::OverviewRow("PerformanceGroup", IconId::Gauge, "Performance", "One switch for all 15 performance options",
                                 nullptr, &on, PerformanceGroupSwitchable(), nullptr, &nameClicked))
             SetPerformanceGroup(on);
         if (nameClicked) Go(PagePerformance);
