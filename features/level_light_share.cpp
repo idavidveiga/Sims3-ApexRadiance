@@ -2425,12 +2425,15 @@ void __fastcall InvalidateFlagNoteHook(BYTE* room, void*, char flag) {
 
 // The end of a room's solve (06/10, light update trace): FUN_006a0e00, step 8 of the budgeted solve (its call at
 // 0x6A3E65 in FUN_006a3c90), unlocks the maps the solve wrote and gives them back to the room, which shows them from the
-// next frame. Noted 'E' in the solve journal while a recording runs. Steam 1.67.2 (the call checked at install).
+// next frame. Noted 'E' in the solve journal while a recording runs, and told to Faster Room Lighting: a quick pass is
+// shown only once its room's solve ended (RoomLightQueue::NoteSolveEnd). Steam 1.67.2 (the call checked at install).
 constexpr uintptr_t kFinalizeCall = 0x006A3E65, kFinalize = 0x006A0E00;
 using Finalize_t = void(__thiscall*)(void* room);
 void __fastcall FinalizeHook(BYTE* room) {
     reinterpret_cast<Finalize_t>(kFinalize)(room);
-    if (room && Recorder::Active()) NoteSolve(room, 'E');
+    if (!room) return;
+    RoomLightQueue::NoteSolveEnd(room);
+    if (Recorder::Active()) NoteSolve(room, 'E');
 }
 
 void ClearJournal() {
@@ -4679,7 +4682,7 @@ bool InstallIndoor(std::string& why) {
     if (!amb) LOG_WARNING("[LevelLightShare] One ambient for rooms stacked through an opening: the game code differs, left as the game has it");
     g_classTables = amb && CheckClassTables(); // the quick pass takes its refinement's wall tests (QuickLikeRefinement)
     ReadThresholdTable();
-    // the end of every room solve, for the recorder's light update trace (FinalizeHook)
+    // the end of every room solve, for the quick pass and the recorder's light update trace (FinalizeHook)
     if (GameAddr::IsFixed() && CallsTarget(kFinalizeCall, kFinalize))
         Redirect(kFinalizeCall, kFinalize, reinterpret_cast<const void*>(&FinalizeHook), &g_lodPatches);
     if (amb && !g_classTables) LOG_INFO("[LevelLightShare] Quick pass with the refinement's wall tests: not on this build (only its light threshold)");

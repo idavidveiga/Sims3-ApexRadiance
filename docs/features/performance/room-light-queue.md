@@ -172,7 +172,17 @@ atlas); at its unlock the new content is the target and what was on screen goes 
 Faster room lighting status line ("smooth light changes").
 
 Also fixed the quick pass: a room sent back to its class by the switch's safety net before its class-0 solve ran is set
-to 0 again until "shown" (+0x100) reads 0 ("class 2/0" in the recorder), and never after.
+to 0 again until its quick solve is shown, and never after.
+
+Its quick solve is shown when the room's solve ends (06/10 evening, from the first light update trace, recording 13:52):
+LevelLightShare's `FinalizeHook` (the solve's step 8, `0x006A0E00` called at `0x6A3E65`) calls
+`RoomLightQueue::NoteSolveEnd`, and on the render thread a room of the burst counts as shown at the first solve end after the
+quick pass set it to 0. The earlier test, "shown" (+0x100) is 0, was already true for a room still showing the previous
+switch's quick pass while it refined: lights off, then on 2.6 s later, ground floor room 25 was set to 0, given its class 2
+back by the safety net's invalidate 31 ms later, then taken as done, and it kept the lights-off light 3.5 s, waiting for its
+class-2 solve (the lights-on log line said every room showed its new light after 313 ms). Without the hook (another game
+build) the old test stays. Bounds: a room is set to 0 at most 3 times per burst; after 3 s the burst counts as refining even
+if some rooms never ran (logged: "N of the M rooms ... showed their new light").
 
 Every story together (06/10, user: the light's story changed first and the others up to 0.5 s later): while the edit's
 first solves run (the quick pass of a burst, or every room of a smaller edit; not its refinement, not a dragged lamp; at most

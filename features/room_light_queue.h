@@ -41,6 +41,9 @@ const void* SolvingRoom();
 bool InQuickPass(const void* room);
 // Render thread: for such a room, the class it will be refined to (its class before the quick pass); -1 otherwise
 int QuickPassTarget(const void* room);
+// Any thread (LevelLightShare's FinalizeHook): a room's solve ended, it shows the maps it wrote from the next frame; on
+// the render thread this is when a quick pass counts as shown
+void NoteSolveEnd(const void* room);
 // Render thread: that room is being solved at a higher class than the one on screen (the quick pass's refinement): the
 // maps it writes are not the ones shown, and hold the room's light from before the edit
 bool SolveRefiningUp();

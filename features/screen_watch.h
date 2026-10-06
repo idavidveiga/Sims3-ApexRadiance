@@ -1,26 +1,33 @@
 #pragma once
 // Screen pixels during a recording (06/10, user: "can we build something to measure better what happens when the lights
-// update?"). While a recording (F8) runs, the pixel under the mouse when it started and 8 more in a column above and below
-// it are read from the back buffer at every frame, without stalling it (StretchRect into a small render target, read back
-// a few frames later once an event query says the copy is done). Pointing the mouse at the line between two floors
-// measures both stories at once. The recorder writes the samples ("Screen pixels.csv") and, for every lamp edit, when each
-// point began to change, when it settled and whether it went the wrong way first (Recording.txt, "Light updates").
+// update?"). While a recording (F8) runs, 33 pixels are read from the back buffer at every frame, without stalling it
+// (StretchRect into a small render target, read back a few frames later once an event query says the copy is done): a
+// column of 9 around the mouse (the screen's centre when the mouse is over the Apex menu or outside the game), so pointing
+// at the line between two floors measures both stories at once, and a grid of 6 x 4 over the whole screen. They are copied
+// before the Apex menu and notices are drawn (the first recording, 06/10 13:52, measured the menu's own pixels). The
+// recorder writes the samples ("Screen pixels.csv") and, for every lamp edit, when each point began to change, when it
+// settled and whether it went the wrong way first (Recording.txt, "Light updates").
 #include <d3d9.h>
 #include <string>
 #include <vector>
 
 namespace ScreenWatch {
-constexpr int kPoints = 9;
+constexpr int kColumn = 9;            // around the mouse: points 0..8, the mouse's is kColumn / 2
+constexpr int kGridX = 6, kGridY = 4; // over the screen: points kColumn.., row by row
+constexpr int kPoints = kColumn + kGridX * kGridY;
 struct Sample {
     unsigned long tick; // GetTickCount of the frame the pixels were copied in
     unsigned char rgb[kPoints][3];
 };
-// Render thread, every Present: starts with a recording (the pixel under the mouse then), samples, stops with it
+// Render thread, every Present: starts with a recording, samples, stops with it
 void OnPresent(IDirect3DDevice9* dev);
-// The points (back-buffer pixels, the mouse's is the middle one) and the samples of the last recording (render thread)
+// The points (back-buffer pixels) and the samples of the last recording (render thread)
 std::vector<Sample> Samples();
+int PointX(int i);
 int PointY(int i);
-int PointX();
+int Width();
+int Height();
+bool ColumnAtCentre(); // the mouse was over the Apex menu or outside the game when the recording started
 bool Watching();
 // Releases the device objects (device lost / reset)
 void Release();

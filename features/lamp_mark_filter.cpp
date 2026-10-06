@@ -251,7 +251,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
             std::memcpy(was.editable, editable, sizeof editable);
             g_editRefresh.store(true, std::memory_order_relaxed);
             user = edit = true;
-            if (was.on == on) Recorder::NoteLampEdit(tl, room, on, true); // a value changed (a switch is noted below)
+            if (was.on == on) Recorder::NoteLampEdit(tl, on, true); // a value changed (a switch is noted below)
         }
         same = was.sig == h;
         const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
@@ -268,7 +268,7 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
             const bool burst = was.on != on && NoteSwitch(light, tick);
             const bool selfSwitching = was.on != on && ++was.events > kSelfMax && !burst;
             if (!selfSwitching) g_lampEvents.fetch_add(1, std::memory_order_relaxed);
-            if (!selfSwitching) Recorder::NoteLampEdit(tl, room, on, was.on == on); // the recording's light update summary
+            if (!selfSwitching) Recorder::NoteLampEdit(tl, on, was.on == on); // the recording's light update summary
             edit = edit || !selfSwitching;
             user = user || (was.on != on && !selfSwitching);
             // the per-pixel lamps (objects, fences, roofs, water) and the ground bake read the lamp list again soon, not at

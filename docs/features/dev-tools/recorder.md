@@ -97,27 +97,48 @@ then `==== ApexRadiance.toml at the start of the recording ====` and the setting
 User: "can we build something to measure better what happens when the lights update?". Three additions, all inside the
 recording, nothing to arm:
 
-- **Screen pixels** (`features/screen_watch.{h,cpp}`, called from Night Lighting's Present next to the Light Probe): when the
-  recording starts, the pixel under the mouse (the screen's centre when the mouse is outside the game) and 8 more in a
-  column above and below it (±0.7, 1.85, 3.75, 7.5% of the height: ±15, 40, 81, 162 px at 2160) are copied from the back
-  buffer at every frame with `StretchRect` into a 9×1 render target (a ring of 4, each with an event query) and read back
-  with `GetRenderTargetData` only once its query is done, so the frame never waits. Up to 4000 samples. Released at the
-  end and before a device Reset (`RenderCallbacks::preReset`). Point the mouse at the line between two floors: both
-  stories are measured at once. Written to `Screen pixels.csv` (elapsed ms, then luma, r, g, b per point; the column names
-  carry the row offset).
+- **Screen pixels** (`features/screen_watch.{h,cpp}`, started from Night Lighting's Present next to the Light Probe): 33
+  points copied from the back buffer at every frame with `StretchRect` into a 33×1 render target (a ring of 4, each with an
+  event query) and read back with `GetRenderTargetData` only once its query is done, so the frame never waits. Up to 4000
+  samples. Released at the end and before a device Reset (`RenderCallbacks::preReset`).
+  - A column of 9 at the mouse's pixel when the recording starts (±0.7, 1.85, 3.75, 7.5% of the height: ±15, 40, 81, 162 px
+    at 2160). Point the mouse at the line between two floors: both stories are measured at once. The screen's centre when
+    the mouse is outside the game or over the Apex menu (`Overlay::MouseOverMenu`: ImGui wants the mouse).
+  - A grid of 6 × 4 over the screen (x 10, 26, 42, 58, 74, 90%; y 18, 38, 58, 78%, above the game's bottom bar), so a
+    recording started from the menu still measures the house.
+  - Copied at `RenderCallbacks::filteredSceneBeforeOverlay` (the first EndScene of the frame, right before the Apex menu
+    and notices are drawn, as the report screenshot does), at Present only when no EndScene reached the overlay that frame.
+    The first version copied at Present: recording 06/10 13:52 was started from the menu, which stayed open, and its 9
+    points read the menu's own pixels (unchanged through three switches of every lamp).
+  - `Screen pixels.csv`: elapsed ms, then luma, r, g, b per point; the column's names carry the row offset (`luma+0` = the
+    mouse or the centre), the grid's their place in percent (`luma_x26y38`).
 - **Room solve ends**: `FUN_006a0e00` (step 8 of the budgeted solve, its call at `0x6A3E65` in `FUN_006a3c90`, Steam,
   checked at install) unlocks the maps the solve wrote and gives them to the room, which shows them from the next frame.
   It is noted `E` in the solve journal, and during a recording the journal keeps every room (not only those sharing light
-  through an opening).
+  through an opening). The same hook tells Faster Room Lighting when a quick pass is shown
+  ([room-light-queue.md](../performance/room-light-queue.md)).
 - **Lamp edits**: `LampMarkFilter` notes every player edit (a switch, a move or a value change; not a light switching
-  itself) as `[edit]` lines.
+  itself) as `[edit]` lines, one per light and story tree level that saw it first (a lamp object has several lights; the
+  game marks the rooms of every story its light reaches, so the story is where the change was seen, not always the lamp's).
 
-`Recording.txt` then opens with **Light updates**, one block per edit burst (edits less than 400 ms apart): the lamps (on,
-off, moved), the rooms of that lot that showed new light with the first and the last time, each story's span, how far
-apart the stories got (first light and last solve), the atrium rooms and their spread, the rooms solved more than once
-(with each solve's time and class: 0 = quick pass), and for every screen point its value before and after, when it began
-to change, when it settled, its reversals and `RIGHT THEN WRONG` when it reached its final value and then left it again
-by more than 6 luma levels, ending with how far apart the points above and below the mouse settled.
+`Recording.txt` then opens with **Light updates**, one block per edit burst (edits less than 400 ms apart). A burst's window
+ends at the next burst, or when its lot shows another story or leaves the view (the "Stories shown" status, every 100 ms;
+recording 13:52 counted a trip to the map view as 6 more seconds of the third switch). Per burst:
+
+- the lamp lights (on, off, moved) and the stories that saw them, and the story the lot showed;
+- the rooms of that lot that showed new light: a room counts from its first invalidate or send in the window, and its
+  first solve end after it is when its new light appears (rooms that only finished a solve started before are counted
+  apart); when all of them had it, how many took the quick pass first, the last solve;
+- per story: its rooms, when its new light appeared (first .. all rooms), its last solve; between stories, how far apart
+  each story had all its new light and its last solve;
+- the atrium rooms (new light and last solve) and their spread;
+- the rooms solved more than once, with each solve's time and the class it then showed (0 = the quick pass, 2 = its
+  refinement; the `E` note is taken after the finalize, so "shown" +0x100 is that solve's class);
+- the column's points: value before and after, when it began to change, when it settled, its reversals and
+  `RIGHT THEN WRONG` when it reached its final value and then left it again by more than 6 luma levels, and how far apart
+  the points above and below the mouse settled;
+- the grid: how many points changed, when they settled, how many reversed, the `RIGHT THEN WRONG` ones with their place,
+  and every changed point.
 
 ### `Wall seams.csv`
 
@@ -147,8 +168,10 @@ discards samples from a previous recording.
 
 | File | Symbol | Role |
 |---|---|---|
-| `features/recorder.h/.cpp` | `Recorder::Active`, `Verbose`, `Note`, `SecondsRecorded`, `RequestToggle`, `RequestStop`, `RequestCancel`, `JustSaved`, `OnPresent` | API |
-| | `Start`, `Stop`, `Status`, `FurnitureLine`, `CameraLine`, `Clock` | Lifecycle and lines |
+| `features/recorder.h/.cpp` | `Recorder::Active`, `Verbose`, `Note`, `NoteLampEdit`, `SecondsRecorded`, `RequestToggle`, `RequestStop`, `RequestCancel`, `JustSaved`, `OnPresent` | API |
+| | `Start`, `Stop`, `Status`, `FurnitureLine`, `CameraLine` (keeps `g_views`), `Clock` | Lifecycle and lines |
+| | `LightUpdates`, `TellPoint`, `PixelCsv`, `StoryShown` | Light updates summary, `Screen pixels.csv` |
+| `features/screen_watch.h/.cpp` | `ScreenWatch::OnPresent`, `Samples`, `PointX`, `PointY`, `Width`, `Height`, `ColumnAtCentre` | Screen pixels |
 | `features/level_light_share.cpp` | `BeginSeamRecording`, `EndSeamRecording`, `RecordRequestedSeam`, `MakeSeamRec`, `TraceRooms`, `JournalSince` | Seams, rooms, solve journal |
 | `features/lot_light_bridge.cpp` | `FurnitureTraceReset`, `FurnitureDiag`, furniture trace | `[furniture]` lines |
 | `apex_gui.cpp` | Report page row, top notice | UI |

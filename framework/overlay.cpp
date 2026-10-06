@@ -290,6 +290,12 @@ void Shutdown() {
 
 bool IsVisible() { return g_visible.load(); }
 
+bool MouseOverMenu() {
+    if (!g_visible.load() || !g_ready.load()) return false;
+    std::lock_guard<std::mutex> lock(g_imguiLock);
+    return ImGui::GetIO().WantCaptureMouse;
+}
+
 void SetVisible(bool visible) {
     if (visible && g_client && !g_client->CanOpen()) return;
     if (g_visible.exchange(visible) != visible && !visible) g_clearInput.store(true); // no stuck keys when it opens again

@@ -71,20 +71,43 @@ std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirect
 // ---- Light update trace (06/10, user: "can we build something to measure better what happens when the lights update?") ----
 // The lamps the player edited during the recording (lamp_mark_filter.cpp), the end of every room solve (the solve journal's
 // 'E' notes: the room shows its new maps from the next frame) and the screen pixels of ScreenWatch, summed up per lamp edit
-// at the top of Recording.txt ("Light updates"), the pixels also in "Screen pixels.csv".
+// at the top of Recording.txt ("Light updates"), the pixels also in "Screen pixels.csv". A room's first 'E' after an edit is
+// when its new light appears (class 0 = the quick pass), the last one its refinement; an edit's window ends at the next
+// edit or when its lot shows another story.
 struct Edit {
     DWORD tick;
     uint32_t lot;
-    int story, room;
+    int story; // the story whose tree level saw it first (the game marks the rooms of the stories its light reaches)
     bool on, moved;
 };
 std::mutex g_editMx;
 std::vector<Edit> g_edits;
 constexpr DWORD kBurstGapMs = 400; // edits closer than this are one ("all the lights" switches each lamp a few ms apart)
+// The story each lot shows, at the start and at every change (the 100 ms status check). A lamp edit's window ends when its
+// lot shows another story or leaves the view (06/10 13:52: the third edit counted the solves of a trip to the map view)
+struct ViewSnap {
+    DWORD tick;
+    std::map<uint32_t, int> stories;
+};
+std::vector<ViewSnap> g_views;
+constexpr int kNotShown = -1000;
 std::string Clock(DWORD tick);
 
 std::string Seconds(DWORD from, DWORD at) { return std::format("{:+.2f} s", static_cast<int32_t>(at - from) / 1000.0); }
 float Luma(const unsigned char* c) { return 0.299f * c[0] + 0.587f * c[1] + 0.114f * c[2]; }
+bool Before(DWORD a, DWORD b) { return static_cast<int32_t>(a - b) < 0; }
+DWORD Earliest(DWORD a, DWORD b) { return !a || Before(b, a) ? b : a; }
+DWORD Latest(DWORD a, DWORD b) { return !a || Before(a, b) ? b : a; }
+
+int StoryShown(uint32_t lot, DWORD at) {
+    int story = kNotShown;
+    for (const ViewSnap& v : g_views) {
+        if (Before(at, v.tick)) break;
+        const auto it = v.stories.find(lot);
+        story = it == v.stories.end() ? kNotShown : it->second;
+    }
+    return story;
+}
 
 // One screen point over a lamp edit's window: from what to what, when it began to change and settled, and whether it
 // reached its new value and then left it again ("right, then wrong, then right")
@@ -95,17 +118,18 @@ struct PointStory {
     float worstAway = 0; // the farthest it went from its final value after reaching it once
     DWORD worstAt = 0;
     int reversals = 0;
+    bool wrong() const { return worstAway > 6.0f; }
 };
 PointStory TellPoint(const std::vector<ScreenWatch::Sample>& samples, int point, DWORD t0, DWORD t1) {
     PointStory p;
     std::vector<std::pair<DWORD, float>> v;
     float base = -1.0f;
     for (const auto& s : samples) {
-        if (static_cast<int32_t>(s.tick - t0) < 0) {
+        if (Before(s.tick, t0)) {
             base = Luma(s.rgb[point]);
             continue;
         }
-        if (static_cast<int32_t>(s.tick - t1) >= 0) break;
+        if (!Before(s.tick, t1)) break;
         v.emplace_back(s.tick, Luma(s.rgb[point]));
     }
     if (v.empty()) return p;
@@ -126,11 +150,11 @@ PointStory TellPoint(const std::vector<ScreenWatch::Sample>& samples, int point,
     // after the first time it is at its final value, how far it leaves it again
     bool reached = false;
     for (const auto& [t, l] : v) {
-        if (!reached) {
+        if (!Before(t, p.first) && !reached) {
             reached = std::fabs(l - p.to) <= kNoise;
             continue;
         }
-        if (std::fabs(l - p.to) > p.worstAway) {
+        if (reached && std::fabs(l - p.to) > p.worstAway) {
             p.worstAway = std::fabs(l - p.to);
             p.worstAt = t;
         }
@@ -152,128 +176,206 @@ PointStory TellPoint(const std::vector<ScreenWatch::Sample>& samples, int point,
     return p;
 }
 
+// A grid point's place on the screen in percent ("x 26% y 38%")
+std::string GridPlace(int i) {
+    const int w = std::max(1, ScreenWatch::Width()), h = std::max(1, ScreenWatch::Height());
+    return std::format("x {}% y {}%", (ScreenWatch::PointX(i) * 100 + w / 2) / w, (ScreenWatch::PointY(i) * 100 + h / 2) / h);
+}
+
 std::string LightUpdates(DWORD start, DWORD end) {
     std::vector<Edit> edits;
     {
         std::lock_guard<std::mutex> lk(g_editMx);
         edits = g_edits;
     }
-    std::sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return static_cast<int32_t>(a.tick - b.tick) < 0; });
+    std::sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return Before(a.tick, b.tick); });
     const auto events = LevelLightShare::JournalEventsSince(start);
     const auto samples = ScreenWatch::Samples();
+    constexpr int kMid = ScreenWatch::kColumn / 2;
     std::string s = "==== Light updates (per lamp edit: when each room showed its new light, and the screen pixels) ====\n";
     if (!samples.empty()) {
         std::string rows;
-        for (int i = 0; i < ScreenWatch::kPoints; i++) rows += std::format("{}{}", i ? ", " : "", ScreenWatch::PointY(i));
-        s += std::format("Screen points: x {}, rows {} (the mouse's row in the middle): every frame in \"Screen pixels.csv\"\n", ScreenWatch::PointX(), rows);
+        for (int i = 0; i < ScreenWatch::kColumn; i++) rows += std::format("{}{}", i ? ", " : "", ScreenWatch::PointY(i));
+        s += std::format("Screen points, read before the Apex menu and notices are drawn (every frame in \"Screen pixels.csv\"): a column at x {}, "
+                         "rows {} around {}, and a grid of {} x {} over the screen\n",
+                         ScreenWatch::PointX(kMid), rows,
+                         ScreenWatch::ColumnAtCentre() ? "the screen's centre (the mouse was on the Apex menu or outside the game)" : "the mouse",
+                         ScreenWatch::kGridX, ScreenWatch::kGridY);
     } else
         s += "Screen points: none (the back buffer could not be read)\n";
+    s += "Class 0 = the quick pass (the light shown first), 2 = its refinement\n";
     if (edits.empty()) return s + "No lamp was edited during the recording.\n\n";
     // bursts of edits
     std::vector<std::pair<size_t, size_t>> bursts; // [first, last] indices
     for (size_t i = 0; i < edits.size(); i++)
         if (bursts.empty() || edits[i].tick - edits[bursts.back().second].tick > kBurstGapMs) bursts.emplace_back(i, i);
         else bursts.back().second = i;
-    const int mouseRow = ScreenWatch::PointY(ScreenWatch::kPoints / 2);
+    const int mouseRow = ScreenWatch::PointY(kMid);
     for (size_t b = 0; b < bursts.size(); b++) {
         const Edit& e0 = edits[bursts[b].first];
-        const DWORD t0 = e0.tick, t1 = b + 1 < bursts.size() ? edits[bursts[b + 1].first].tick : end;
+        const DWORD t0 = e0.tick;
+        DWORD t1 = b + 1 < bursts.size() ? edits[bursts[b + 1].first].tick : end;
+        // the window ends when the lot shows another story (or leaves the view)
+        const int storyThen = StoryShown(e0.lot, t0);
+        DWORD viewAt = 0;
+        int storyAfter = storyThen;
+        for (const ViewSnap& v : g_views) {
+            if (!Before(t0, v.tick) || !Before(v.tick, t1)) continue;
+            const auto it = v.stories.find(e0.lot);
+            const int now = it == v.stories.end() ? kNotShown : it->second;
+            if (now != storyThen) {
+                viewAt = v.tick;
+                storyAfter = now;
+                break;
+            }
+        }
+        if (viewAt) t1 = viewAt;
         int on = 0, off = 0, moved = 0;
-        std::string where;
+        std::map<int, int> perStoryEdits;
         for (size_t i = bursts[b].first; i <= bursts[b].second; i++) {
             const Edit& e = edits[i];
             if (e.moved) moved++;
             else if (e.on) on++;
             else off++;
-            if (where.size() < 120) where += std::format("{}room {} story {}", where.empty() ? "" : ", ", e.room, e.story);
+            perStoryEdits[e.story]++;
         }
-        s += std::format("\n-- Lamp edit at {} (lot {:08X}): {} lamp(s), {} switched on, {} off, {} moved or changed; {}\n", Clock(t0), e0.lot,
-                         bursts[b].second - bursts[b].first + 1, on, off, moved, where);
-        // the rooms of that lot that ended a solve in the window
+        std::string where;
+        for (const auto& [story, n] : perStoryEdits) where += std::format("{}story {}: {}", where.empty() ? "" : ", ", story, n);
+        s += std::format("\n-- Lamp edit at {} (lot {:08X}, showing story {}): {} lamp light(s), {} switched on, {} off, {} moved or changed (seen on {})\n", Clock(t0),
+                         e0.lot, storyThen == kNotShown ? std::string("none") : std::to_string(storyThen), bursts[b].second - bursts[b].first + 1, on, off,
+                         moved, where);
+        if (viewAt)
+            s += std::format("   the view changed at {} (the lot shows {}): what came after is not counted for this edit\n", Seconds(t0, viewAt),
+                             storyAfter == kNotShown ? std::string("no story, out of the view") : std::format("story {}", storyAfter));
+        // the rooms of that lot that ended a solve in the window: (tick, class just shown)
+        // (a solve ending before the room was invalidated or sent in this window was started for an earlier change)
         struct RoomTimes {
-            std::vector<std::pair<DWORD, int>> ends; // (tick, class)
-            bool merged = false;
-            int sent = 0;
+            std::vector<std::pair<DWORD, int>> ends;
+            DWORD asked = 0;
+            bool older = false, merged = false;
         };
         std::map<std::pair<int, int>, RoomTimes> rooms; // (story, room)
         for (const auto& ev : events) {
-            if (ev.lot != e0.lot || static_cast<int32_t>(ev.tick - t0) < 0 || static_cast<int32_t>(ev.tick - t1) >= 0) continue;
+            if (ev.lot != e0.lot || Before(ev.tick, t0) || !Before(ev.tick, t1)) continue;
             RoomTimes& r = rooms[{ev.level, ev.id}];
-            if (ev.event == 'E') r.ends.emplace_back(ev.tick, ev.cls);
-            if (ev.event == 'Q' || ev.event == 'I') r.sent++;
+            if ((ev.event == 'I' || ev.event == 'Q') && !r.asked) r.asked = ev.tick;
+            if (ev.event == 'E') {
+                if (r.asked) r.ends.emplace_back(ev.tick, ev.shown); // noted after the finalize: the class it now shows
+                else r.older = true;
+            }
             r.merged = r.merged || ev.merged;
         }
-        DWORD first = 0, last = 0;
-        int shown = 0, twice = 0;
-        std::map<int, std::pair<DWORD, DWORD>> perStory;
-        std::map<int, int> perStoryCount;
+        int olderOnly = 0;
+        for (const auto& [key, r] : rooms)
+            if (r.older && r.ends.empty()) olderOnly++;
+        struct StorySpan {
+            int rooms = 0;
+            DWORD firstLight = 0, allLit = 0, lastSolve = 0;
+        };
+        std::map<int, StorySpan> perStory;
+        DWORD first = 0, allLit = 0, last = 0, atriumLitMin = 0, atriumLitMax = 0, atriumLastMin = 0, atriumLastMax = 0;
+        int shown = 0, twice = 0, quickFirst = 0;
         std::string again, atrium;
-        DWORD atriumFirst = 0, atriumLast = 0;
         for (const auto& [key, r] : rooms) {
             if (r.ends.empty()) continue;
             shown++;
             const DWORD a = r.ends.front().first, z = r.ends.back().first;
-            if (!first || static_cast<int32_t>(a - first) < 0) first = a;
-            if (!last || static_cast<int32_t>(z - last) > 0) last = z;
-            auto& st = perStory[key.first];
-            if (!st.first || static_cast<int32_t>(a - st.first) < 0) st.first = a;
-            if (!st.second || static_cast<int32_t>(z - st.second) > 0) st.second = z;
-            perStoryCount[key.first]++;
+            if (r.ends.front().second == 0) quickFirst++;
+            first = Earliest(first, a);
+            allLit = Latest(allLit, a);
+            last = Latest(last, z);
+            StorySpan& st = perStory[key.first];
+            st.rooms++;
+            st.firstLight = Earliest(st.firstLight, a);
+            st.allLit = Latest(st.allLit, a);
+            st.lastSolve = Latest(st.lastSolve, z);
             if (r.ends.size() > 1) {
                 twice++;
-                if (again.size() < 400) {
+                if (again.size() < 600) {
                     again += std::format("{}room {} story {} x{} (", again.empty() ? "" : "; ", key.second, key.first, r.ends.size());
                     for (size_t k = 0; k < r.ends.size(); k++) again += std::format("{}{} class {}", k ? ", " : "", Seconds(t0, r.ends[k].first), r.ends[k].second);
                     again += ")";
                 }
             }
             if (r.merged) {
-                if (!atriumFirst || static_cast<int32_t>(z - atriumFirst) < 0) atriumFirst = z;
-                if (!atriumLast || static_cast<int32_t>(z - atriumLast) > 0) atriumLast = z;
-                atrium += std::format("{}room {} story {} {}", atrium.empty() ? "" : ", ", key.second, key.first, Seconds(t0, z));
+                atriumLitMin = Earliest(atriumLitMin, a);
+                atriumLitMax = Latest(atriumLitMax, a);
+                atriumLastMin = Earliest(atriumLastMin, z);
+                atriumLastMax = Latest(atriumLastMax, z);
+                atrium += std::format("{}room {} story {} {} (last {})", atrium.empty() ? "" : ", ", key.second, key.first, Seconds(t0, a), Seconds(t0, z));
             }
         }
         if (!shown) s += "   no room of that lot ended a solve in this window\n";
         else {
-            s += std::format("   rooms that showed new light: {}, the first {}, the last {}\n", shown, Seconds(t0, first), Seconds(t0, last));
+            s += std::format("   rooms that showed new light: {}, all of them by {} (the first {}), {} with the quick pass first; the last solve {}\n", shown,
+                             Seconds(t0, allLit), Seconds(t0, first), quickFirst, Seconds(t0, last));
             for (const auto& [story, span] : perStory)
-                s += std::format("   story {}: {} room(s), {} .. {}\n", story, perStoryCount[story], Seconds(t0, span.first), Seconds(t0, span.second));
+                s += std::format("   story {}: {} room(s), new light {} .. {}, last solve {}\n", story, span.rooms, Seconds(t0, span.firstLight), Seconds(t0, span.allLit),
+                                 Seconds(t0, span.lastSolve));
             if (perStory.size() > 1) {
-                DWORD firstMin = 0, firstMax = 0, lastMin = 0, lastMax = 0;
+                DWORD litMin = 0, litMax = 0, lastMin = 0, lastMax = 0;
                 for (const auto& [story, span] : perStory) {
-                    if (!firstMin || static_cast<int32_t>(span.first - firstMin) < 0) firstMin = span.first;
-                    if (!firstMax || static_cast<int32_t>(span.first - firstMax) > 0) firstMax = span.first;
-                    if (!lastMin || static_cast<int32_t>(span.second - lastMin) < 0) lastMin = span.second;
-                    if (!lastMax || static_cast<int32_t>(span.second - lastMax) > 0) lastMax = span.second;
+                    litMin = Earliest(litMin, span.allLit);
+                    litMax = Latest(litMax, span.allLit);
+                    lastMin = Earliest(lastMin, span.lastSolve);
+                    lastMax = Latest(lastMax, span.lastSolve);
                 }
-                s += std::format("   between stories: new light reached them {:.2f} s apart (first room of each), their last solves {:.2f} s apart\n",
-                                 static_cast<int32_t>(firstMax - firstMin) / 1000.0, static_cast<int32_t>(lastMax - lastMin) / 1000.0);
+                s += std::format("   between stories: each story had all its new light by {} .. {}: {:.2f} s apart; their last solves {:.2f} s apart\n",
+                                 Seconds(t0, litMin), Seconds(t0, litMax), static_cast<int32_t>(litMax - litMin) / 1000.0,
+                                 static_cast<int32_t>(lastMax - lastMin) / 1000.0);
             }
             if (!atrium.empty())
-                s += std::format("   atrium rooms (last solve): {}; {:.2f} s apart\n", atrium, static_cast<int32_t>(atriumLast - atriumFirst) / 1000.0);
+                s += std::format("   atrium rooms, new light (last solve): {}; new light {:.2f} s apart, last solves {:.2f} s apart\n", atrium,
+                                 static_cast<int32_t>(atriumLitMax - atriumLitMin) / 1000.0, static_cast<int32_t>(atriumLastMax - atriumLastMin) / 1000.0);
             if (twice) s += std::format("   solved more than once: {} room(s): {}\n", twice, again);
         }
-        // the screen
+        if (olderOnly) s += std::format("   {} room(s) only finished a solve started before this edit (not counted)\n", olderOnly);
+        // the screen: the column around the mouse (or the centre)...
         if (samples.empty()) continue;
         DWORD aboveSettled = 0, belowSettled = 0;
-        for (int i = 0; i < ScreenWatch::kPoints; i++) {
+        for (int i = 0; i < ScreenWatch::kColumn; i++) {
             const PointStory p = TellPoint(samples, i, t0, t1);
             const int dy = ScreenWatch::PointY(i) - mouseRow;
-            const std::string label = dy == 0 ? std::string("at the mouse") : std::format("{:+} px", dy);
+            const std::string label = dy == 0 ? std::string(ScreenWatch::ColumnAtCentre() ? "at the centre" : "at the mouse") : std::format("{:+} px", dy);
             if (!p.changed) {
                 s += std::format("   pixel {}: unchanged ({:.0f})\n", label, p.from);
                 continue;
             }
             s += std::format("   pixel {}: {:.0f} -> {:.0f}, changing from {}, settled {}{}{}\n", label, p.from, p.to, Seconds(t0, p.first), Seconds(t0, p.settled),
                              p.reversals ? std::format(", {} reversal(s)", p.reversals) : std::string(),
-                             p.worstAway > 6.0f ? std::format(", RIGHT THEN WRONG: it left its final value by {:.0f} at {}", p.worstAway, Seconds(t0, p.worstAt))
-                                                : std::string());
-            if (dy < 0 && (!aboveSettled || static_cast<int32_t>(p.settled - aboveSettled) > 0)) aboveSettled = p.settled;
-            if (dy > 0 && (!belowSettled || static_cast<int32_t>(p.settled - belowSettled) > 0)) belowSettled = p.settled;
+                             p.wrong() ? std::format(", RIGHT THEN WRONG: it left its final value by {:.0f} at {}", p.worstAway, Seconds(t0, p.worstAt)) : std::string());
+            if (dy < 0) aboveSettled = Latest(aboveSettled, p.settled);
+            if (dy > 0) belowSettled = Latest(belowSettled, p.settled);
         }
         if (aboveSettled && belowSettled)
-            s += std::format("   on screen: above the mouse settled {}, below it {}: {:.2f} s apart\n", Seconds(t0, aboveSettled), Seconds(t0, belowSettled),
-                             std::fabs(static_cast<int32_t>(aboveSettled - belowSettled) / 1000.0));
+            s += std::format("   on screen: above the {} settled {}, below it {}: {:.2f} s apart\n", ScreenWatch::ColumnAtCentre() ? "centre" : "mouse",
+                             Seconds(t0, aboveSettled), Seconds(t0, belowSettled), std::fabs(static_cast<int32_t>(aboveSettled - belowSettled) / 1000.0));
+        // ... and the grid over the screen
+        int changed = 0, reversing = 0, wrong = 0;
+        DWORD settledMin = 0, settledMax = 0;
+        std::string list, wrongList;
+        for (int i = ScreenWatch::kColumn; i < ScreenWatch::kPoints; i++) {
+            const PointStory p = TellPoint(samples, i, t0, t1);
+            if (!p.changed) continue;
+            changed++;
+            settledMin = Earliest(settledMin, p.settled);
+            settledMax = Latest(settledMax, p.settled);
+            if (p.reversals) reversing++;
+            if (p.wrong()) {
+                wrong++;
+                wrongList += std::format("{}{} (settled {}, left it by {:.0f} at {})", wrongList.empty() ? "" : "; ", GridPlace(i), Seconds(t0, p.settled), p.worstAway,
+                                         Seconds(t0, p.worstAt));
+            }
+            list += std::format("{}{} {:.0f} -> {:.0f} settled {}{}", list.empty() ? "" : "; ", GridPlace(i), p.from, p.to, Seconds(t0, p.settled),
+                                p.reversals ? std::format(" ({} reversal(s))", p.reversals) : std::string());
+        }
+        if (!changed) s += std::format("   screen grid ({} points): none changed\n", ScreenWatch::kPoints - ScreenWatch::kColumn);
+        else {
+            s += std::format("   screen grid ({} points): {} changed, settled {} .. {}; {} with reversals; RIGHT THEN WRONG at {}{}\n",
+                             ScreenWatch::kPoints - ScreenWatch::kColumn, changed, Seconds(t0, settledMin), Seconds(t0, settledMax), reversing, wrong,
+                             wrong ? ": " + wrongList : std::string());
+            s += "   grid points that changed: " + list + "\n";
+        }
     }
     return s + "\n";
 }
@@ -282,10 +384,13 @@ std::string PixelCsv(DWORD start) {
     const auto samples = ScreenWatch::Samples();
     if (samples.empty()) return {};
     std::string s = "elapsed_ms";
-    const int mouseRow = ScreenWatch::PointY(ScreenWatch::kPoints / 2);
+    const int mouseRow = ScreenWatch::PointY(ScreenWatch::kColumn / 2);
+    const int w = std::max(1, ScreenWatch::Width()), h = std::max(1, ScreenWatch::Height());
     for (int i = 0; i < ScreenWatch::kPoints; i++) {
-        const int dy = ScreenWatch::PointY(i) - mouseRow;
-        s += std::format(",luma{0:+},r{0:+},g{0:+},b{0:+}", dy);
+        // the column by its row offset (luma+0 = the mouse or the centre), the grid by its place in percent (luma_x26y38)
+        const std::string name = i < ScreenWatch::kColumn ? std::format("{:+}", ScreenWatch::PointY(i) - mouseRow)
+                                                          : std::format("_x{}y{}", (ScreenWatch::PointX(i) * 100 + w / 2) / w, (ScreenWatch::PointY(i) * 100 + h / 2) / h);
+        s += std::format(",luma{0},r{0},g{0},b{0}", name);
     }
     s += "\n";
     for (const auto& smp : samples) {
@@ -312,23 +417,24 @@ std::string FurnitureLine() {
     return std::format("Furniture (last 100 ms): {} | night level {:.2f}", LotLightBridge::FurnitureDiag(), level);
 }
 
-// the story each loaded lot shows (a floor switch shows as a new line; the lot played is the one whose number moves)
-std::string CameraLine() {
+// the story each loaded lot shows (a floor switch shows as a new line; the lot played is the one whose number moves),
+// also kept for the light update summary (g_views)
+std::string CameraLine(DWORD now) {
     uint32_t lots[256];
     int stories[256];
     const int n = LevelLightShare::DisplayLevels(lots, stories, 256);
-    std::vector<std::pair<uint32_t, int>> v;
-    for (int i = 0; i < n; i++) v.emplace_back(lots[i], stories[i]);
-    std::sort(v.begin(), v.end());
+    std::map<uint32_t, int> v;
+    for (int i = 0; i < n; i++) v[lots[i]] = stories[i];
     std::string s = "Stories shown (lot:story):";
     for (const auto& [lot, story] : v) s += std::format(" {:08X}:{}", lot, story);
+    if (g_views.empty() || g_views.back().stories != v) g_views.push_back({now, std::move(v)});
     return s;
 }
 
 void Status(DWORD now) {
     const std::string texts[8] = {"Indoor light between stories: " + LevelLightShare::Status(), "Rooms at Night: " + UnlitRooms::Status(),
                                   "Faster Room Lighting: " + RoomLightQueue::StatusText(), "Indoor object maps: " + RoomMapPadding::Status(), FurnitureLine(),
-                                  CameraLine(), "Rooms at Night sliders: " + UnlitRooms::SettingsText(),
+                                  CameraLine(now), "Rooms at Night sliders: " + UnlitRooms::SettingsText(),
                                   "Rooms keep their light: " + LampMarkFilter::Status()};
     for (int i = 0; i < 8; i++)
         if (texts[i] != g_lastStatusText[i]) {
@@ -359,6 +465,7 @@ void Start() {
         std::lock_guard<std::mutex> lk(g_editMx);
         g_edits.clear();
     }
+    g_views.clear();
     g_settingsAtStart.clear();
     {
         std::ifstream in(Dir() / L"ApexRadiance.toml", std::ios::binary);
@@ -399,7 +506,7 @@ void Stop() {
     {
         std::lock_guard<std::mutex> lk(g_editMx);
         for (const Edit& e : g_edits)
-            all.emplace_back(Clock(e.tick), std::format("[edit] a lamp of room {} story {} (lot {:08X}) {}", e.room, e.story, e.lot,
+            all.emplace_back(Clock(e.tick), std::format("[edit] a lamp light seen on story {} (lot {:08X}) {}", e.story, e.lot,
                                                         e.moved ? "moved or changed" : e.on ? "switched on" : "switched off"));
     }
     for (auto& [tick, text] : LevelLightShare::JournalSince(g_startTick)) all.emplace_back(Clock(static_cast<DWORD>(tick)), "[solve] " + text);
@@ -446,13 +553,13 @@ void Note(const std::string& text) {
     g_notes++;
     g_lines.push_back({GetTickCount(), text});
 }
-void NoteLampEdit(uintptr_t treeLevel, int room, bool on, bool moved) {
+void NoteLampEdit(uintptr_t treeLevel, bool on, bool moved) {
     if (!g_on) return;
     uint32_t lot = 0;
     int story = 0;
     if (!LevelLightShare::TreeLevelLot(treeLevel, lot, story)) return;
     std::lock_guard<std::mutex> lk(g_editMx);
-    if (g_edits.size() < 4096) g_edits.push_back(Edit{GetTickCount(), lot, story, room, on, moved});
+    if (g_edits.size() < 4096) g_edits.push_back(Edit{GetTickCount(), lot, story, on, moved});
 }
 int SecondsRecorded() { return g_on ? static_cast<int>((GetTickCount() - g_startTick) / 1000) : -1; }
 void RequestToggle() { g_toggleRequest = true; }

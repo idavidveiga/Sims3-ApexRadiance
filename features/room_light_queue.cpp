@@ -145,8 +145,20 @@ std::atomic<bool> g_quickPass{true};
 std::atomic<long> g_quickRooms{0};
 // Per room of the burst: whether its class-0 solve is shown (06/10 capture: the switch's safety net invalidated a room
 // right after it was set to 0, which gave it back its class without any quick solve; it is set to 0 again until its
-// quick solve is seen, and never after, so a refined room is not sent back to class 0)
-std::unordered_map<uintptr_t, bool> g_quickDone;
+// quick solve is seen, and never after, so a refined room is not sent back to class 0), and how often it was set to 0
+struct QuickRoom {
+    bool solved = false;
+    int sets = 0;
+};
+std::unordered_map<uintptr_t, QuickRoom> g_quickDone;
+// A room set to 0 this often without its solve's end being seen refines at its class (a safety bound: every quick solve
+// ends within one or two sets)
+constexpr int kQuickSetsMax = 3;
+// The solve ends are seen (FinalizeHook, NoteSolveEnd, on the render thread): a quick pass is shown when its room's solve
+// ends. 06/10 13:52 recording: the test below without it ("shown" +0x100 is 0) was already true for a room still showing
+// the previous switch's quick pass, so the next switch's quick pass gave it up after the safety net's invalidate gave it
+// back its class 2, and it kept the old light 3.5 s, waiting for its class-2 solve
+std::atomic<bool> g_endsSeen{false};
 std::unordered_map<uintptr_t, int> g_quickTarget; // per room of the burst: its class before the quick pass set it to 0
 bool g_editNow = false; // render thread, set by each pick: a lamp edit's rooms are pending
 int ClassOf(const BYTE* room) {
@@ -167,29 +179,37 @@ bool g_quickShown = false;
 std::atomic<bool> g_quickPending{false};
 constexpr DWORD kQuickHoldMs = 1500;
 std::atomic<bool> g_refining{false}; // read by the lot lighting budget too (LotLightingMotion)
-// Its class-0 solve is shown ("shown" +0x100 is 0 after it: "class 2/0" in the recorder), or the room finished
+// Its class-0 solve is shown: its solve's end was seen (NoteSolveEnd), or without those, "shown" +0x100 is 0 after it
+// ("class 2/0" in the recorder) or the room finished; a room gone counts as shown
 bool QuickSolved(const BYTE* room) {
     __try {
         const int state = *reinterpret_cast<const int*>(room + 0xF0);
+        if (g_endsSeen.load(std::memory_order_relaxed)) return false;
         return state == 4 || state == 5 || *reinterpret_cast<const int*>(room + 0x100) == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return true; // gone
     }
 }
+constexpr DWORD kQuickGiveUpMs = 3000; // a room never solved meanwhile (its lot paused): the burst is refining anyway
 void CheckQuickShown() {
-    if (g_quickPending.load(std::memory_order_relaxed) && GetTickCount() - g_quickStart > kQuickHoldMs) g_quickPending.store(false, std::memory_order_relaxed);
+    const DWORD since = GetTickCount() - g_quickStart;
+    if (g_quickPending.load(std::memory_order_relaxed) && since > kQuickHoldMs) g_quickPending.store(false, std::memory_order_relaxed);
     if (g_quickShown || g_quickDone.empty()) return;
-    bool all = true;
-    for (auto& [room, solved] : g_quickDone) {
-        if (!solved) solved = QuickSolved(reinterpret_cast<const BYTE*>(room));
-        all = all && solved;
+    size_t shown = 0;
+    for (auto& [room, q] : g_quickDone) {
+        if (!q.solved) q.solved = QuickSolved(reinterpret_cast<const BYTE*>(room));
+        if (q.solved) shown++;
     }
-    if (!all) return;
+    if (shown < g_quickDone.size() && since <= kQuickGiveUpMs) return;
     g_quickShown = true;
     g_quickPending.store(false, std::memory_order_relaxed);
     g_refining = true;
-    LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
-                         g_quickDone.size(), GetTickCount() - g_quickStart));
+    if (shown == g_quickDone.size())
+        LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
+                             g_quickDone.size(), since));
+    else
+        LOG_INFO(std::format("[RoomLightQueue] Many lamps: {} of the {} rooms of the burst showed their new light (quick pass) in {} ms; the others are still waiting",
+                             shown, g_quickDone.size(), since));
 }
 bool WaitingAboveClass0(const BYTE* room) {
     __try {
@@ -219,16 +239,21 @@ void QuickPassRoom(BYTE* room) {
     }
     const uintptr_t key = reinterpret_cast<uintptr_t>(room);
     const auto it = g_quickDone.find(key);
-    if (it != g_quickDone.end() && (it->second || (it->second = QuickSolved(room)))) return; // its quick solve was shown
+    if (it != g_quickDone.end() && (it->second.solved || (it->second.solved = QuickSolved(room)))) return; // its quick solve was shown
     if (!WaitingAboveClass0(room)) return;
     const bool first = it == g_quickDone.end();
     if (first && g_quickDone.size() >= 4096) return;
-    if (first) {
-        g_quickDone.emplace(key, false);
-        g_quickTarget[key] = ClassOf(room); // the class it is refined to (its quick solve takes that class's tests)
+    QuickRoom& q = first ? g_quickDone.emplace(key, QuickRoom{}).first->second : it->second;
+    if (first) g_quickTarget[key] = ClassOf(room); // the class it is refined to (its quick solve takes that class's tests)
+    if (q.sets >= kQuickSetsMax) {
+        q.solved = true; // its solve's end was never seen: it refines at its class
+        return;
     }
     if (first && !g_quickShown) g_quickPending.store(true, std::memory_order_relaxed);
-    if (SetClass0(room) && first) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
+    if (SetClass0(room)) {
+        q.sets++;
+        if (first) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 float __fastcall PriorityHook(BYTE* room) {
@@ -529,9 +554,15 @@ const void* SolvingRoom() {
 bool InQuickPass(const void* room) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
     const auto it = g_quickDone.find(reinterpret_cast<uintptr_t>(room));
-    if (it == g_quickDone.end() || it->second) return false;
+    if (it == g_quickDone.end() || it->second.solved) return false;
     const BYTE* r = static_cast<const BYTE*>(room);
     return !QuickSolved(r) && ClassOf(r) == 0; // shown: this is its refinement
+}
+void NoteSolveEnd(const void* room) {
+    if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return; // the quick pass's maps: that thread only
+    g_endsSeen.store(true, std::memory_order_relaxed);
+    const auto it = g_quickDone.find(reinterpret_cast<uintptr_t>(room));
+    if (it != g_quickDone.end()) it->second.solved = true; // set to 0 while waiting: this is the solve that followed
 }
 int QuickPassTarget(const void* room) {
     if (!InQuickPass(room)) return -1;

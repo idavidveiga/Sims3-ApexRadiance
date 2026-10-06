@@ -54,6 +54,7 @@ void AfterReset();
 void Shutdown(); // FreeLibrary only: restores the window procedure
 
 bool IsVisible();
+bool MouseOverMenu(); // the menu is open and the mouse is over one of its windows (render or window thread)
 void SetVisible(bool visible);
 void SetCaptureSuppressed(bool suppressed); // skip all Apex ImGui draw data for a player screenshot frame
 bool PostGameKeyPress(WPARAM vk); // post a synthetic key press to the game, bypassing Apex shortcut interception
