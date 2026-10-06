@@ -391,7 +391,71 @@ O próprio documento `docs/features/performance/scene-node-budget.md` registra q
 
 ---
 
-## 11. O que NÃO copiamos do S3SS
+## 11. Mapa função por função: S3SS -> Apex
+
+Esta tabela é o atalho para manutenção futura. Ela compara a implementação pública do S3SS auditada com o código atual do Apex.
+
+| S3SS | Apex | Relação |
+|---|---|---|
+| `Detour_AddLotObjectsToScene` | `Hook_AddLotObjectsToScene` em `features/lot_object_throttle.cpp` | **Port/adaptação direta do algoritmo.** Mantém estado por lote, quota de objetos regulares, shells/flora síncronos e cancelamento quando Detailed View muda. |
+| `DrainPending` | `LotObjectThrottle::Tick()` | **Port/adaptação direta.** Aguarda o delay e usa `PostRemoteMethodCall` para a continuação. |
+| `InstallThrottle` + `PatchHelper::WriteRelativeJump` | `LotObjectThrottle::Start()` + `EntryChain::Install` | Mesmo ponto funcional; infraestrutura de hook foi reescrita para o framework Apex. |
+| `Uninstall` + `PatchHelper::RestoreAll` | `LotObjectThrottle::Stop()` + `EntryChain::Remove` | Mesmo lifecycle; rollback implementado pelo framework Apex. |
+| `InstallVisibility` | `LotVisibilityOverride::Start()` | Mesmo patch `0x74 -> 0xEB`; Apex adiciona detecção de owner externo e rollback condicional. |
+| `Hooked_WorldManagerUpdate` | **não portado** | Apex não detoura `WorldManager::Update` para map view. |
+| map-view write em `WorldManager+0x258` | `LotLodStreaming::TickMapViewBlocker()` | Mesmo gate nativo e mesma janela de grace de 1000 ms, mas implementação própria via pump. |
+| `TryApplyStreamingSettings` — throttle | `LotLodStreaming::Start()/Tick()` | Mesmo comportamento nativo; Apex resolve o byte e mantém/restaura com ownership próprio. |
+| `TryApplyStreamingSettings` — camera threshold 5 | `WorldManager+0xEC` em `lot_lod_streaming.cpp` | Mesmo valor de referência, validado também pelos A/B do Apex. |
+| `TryApplyStreamingSettings` — threshold 12 | `LotActiveThreshold::Start()/Tick()` | Mantido separado para desenvolvimento/referência; não é a capacidade 16. |
+| S3SS patch framework | `ApexPatch`, `GameAddr`, `MemPatch`, `EntryChain` | **Não portado.** Apex usa sua própria infraestrutura. |
+| S3SS UI/config | Performance UI + Apex TOML | **Não portado.** Apenas os comportamentos selecionados foram integrados. |
+
+### 11.1 Nomes/constantes do Object Throttle que foram preservados conceitualmente
+
+A implementação Apex mantém os mesmos dados essenciais necessários para o algoritmo:
+
+- offsets do vetor de objetos do lote: `+0x14` / `+0x18`;
+- `DetailedViewRequested`: `+0xC1`;
+- `Bulldozing`: `+0xC9`;
+- ScriptMessageScope begin/end: `0x04C55E8C` / `0x04C55EFA`;
+- default de **2 objetos regulares por janela**;
+- default de **16 ms** entre janelas;
+- `PostRemoteMethodCall(thread=1, ...)` para repostar a continuação;
+- `IsObjectLargeOrFlora` para excluir shells/flora do throttle.
+
+No Apex esses valores estão em `features/lot_object_throttle.cpp`; não devem ser duplicados em outra feature.
+
+### 11.2 Signatures: onde manter
+
+Os signatures usados pelo port ficam centralizados em `framework/game_addresses.cpp`, grupo `LotObjectThrottle`, e não dentro do feature.
+
+O comentário atual registra a origem de auditoria:
+
+`Per-lot object streaming throttle (S3SS LotStreamingOptimizations objectThrottle, frozen 5eb2c65)`.
+
+Se o executável alvo mudar:
+
+1. validar novamente cada signature contra a função real;
+2. atualizar `GameAddr`, não espalhar endereços fixos no feature;
+3. exigir que o grupo inteiro resolva antes de instalar;
+4. em caso de ambiguidade, falhar fechado.
+
+### 11.3 O que foi deliberadamente melhorado no port Apex
+
+Além da troca de framework, o Apex acrescenta:
+
+- detecção de S3SS por subfeature antes de instalar;
+- `EntryChain` para coexistência com outros layers no mesmo entry point;
+- contadores de chamadas, janelas, objetos regulares, shells/flora, posts e cancelamentos;
+- `StatusText()` para diagnóstico;
+- clamps explícitos das configurações;
+- separação formal entre Lot Object Throttle e SceneNodeBudget;
+- endereço/resolução centralizados em `GameAddr`;
+- política de restore/owner consistente com o restante do Apex.
+
+---
+
+## 12. O que NÃO copiamos do S3SS
 
 Do `LotStreamingOptimizations` público comparado, o Apex **não carrega wholesale**:
 
@@ -417,7 +481,7 @@ O Apex usa seus próprios:
 
 ---
 
-## 12. Detecção e cooperação com S3SS
+## 13. Detecção e cooperação com S3SS
 
 Arquivo: `framework/s3ss_detect.cpp/.h`.
 
@@ -435,7 +499,7 @@ Isso deve continuar em qualquer port futuro.
 
 ---
 
-## 13. Registro no framework Apex
+## 14. Registro no framework Apex
 
 O wiring atual está em `patches/performance_patches.cpp`.
 
@@ -473,7 +537,7 @@ Na hora de portar para outra branch, não basta copiar os `.cpp`: registrar no p
 
 ---
 
-## 14. Endereços e resolvers importantes
+## 15. Endereços e resolvers importantes
 
 Arquivo: `framework/game_addresses.cpp/.h`.
 
@@ -498,7 +562,7 @@ Regra para futuro: **fail closed**. Não adivinhar endereço.
 
 ---
 
-## 15. Sequência recomendada para portar para uma futura versão
+## 16. Sequência recomendada para portar para uma futura versão
 
 1. Começar do **upstream final publicado**, não de branch experimental.
 2. Confirmar se o upstream já implementou parte do nosso código.
@@ -519,7 +583,7 @@ Regra para futuro: **fail closed**. Não adivinhar endereço.
 
 ---
 
-## 16. Validação que definiu o baseline
+## 17. Validação que definiu o baseline
 
 Com distância 300 + capacidade 16 fixas:
 
@@ -545,7 +609,7 @@ Não houve crash/fatal/exception nos testes decisivos registrados.
 
 ---
 
-## 17. Integração com Apex upstream 2.6.0
+## 18. Integração com Apex upstream 2.6.0
 
 Em 06/10/2026 o fork foi atualizado para a **release final upstream 2.6.0**.
 
@@ -564,7 +628,7 @@ Workflow de validação:
 
 ---
 
-## 18. Limite importante: parede/bloom não é Lot Streaming
+## 19. Limite importante: parede/bloom não é Lot Streaming
 
 Durante a investigação visual da fachada foram testadas soluções de seam envolvendo WallSolve, ExactSeam e samplers S2/S6. O último teste piorou a iluminação ao normalizar S6 de draws diferentes.
 
@@ -581,7 +645,7 @@ O que permanece é a correção separada e validada de **bloom alpha** em `featu
 
 ---
 
-## 19. Checklist de rollback
+## 20. Checklist de rollback
 
 Se uma versão futura der problema:
 
@@ -607,7 +671,7 @@ Se uma versão futura der problema:
 
 ---
 
-## 20. Arquivos que o Luís deve consultar primeiro
+## 21. Arquivos que o Luís deve consultar primeiro
 
 1. `docs/features/lot-streaming-changelog.md` — pesquisa e A/B.
 2. `docs/Luis_Lot_Streaming_Implementation_Guide.md` — este handoff.
@@ -624,7 +688,7 @@ Se uma versão futura der problema:
 
 ---
 
-## 21. Regra curta de autoria/proveniência
+## 22. Regra curta de autoria/proveniência
 
 Ao descrever publicamente:
 
