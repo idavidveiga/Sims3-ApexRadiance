@@ -1,0 +1,277 @@
+// Smooth light changes indoors (see room_light_fade.h).
+#include "room_light_fade.h"
+#include "apex_log.h"
+#include "lamp_mark_filter.h"
+#include "level_light_share.h"
+#include "room_light_queue.h"
+#include "memory_patch.h"
+#include <windows.h>
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <format>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+namespace {
+
+using LockRect_t = HRESULT(__stdcall*)(IDirect3DTexture9*, UINT, D3DLOCKED_RECT*, const RECT*, DWORD);
+using UnlockRect_t = HRESULT(__stdcall*)(IDirect3DTexture9*, UINT);
+LockRect_t g_origLock = nullptr;
+UnlockRect_t g_origUnlock = nullptr;
+
+constexpr DWORD kFadeMs = 250;   // from what was on screen to the new light
+constexpr DWORD kKeepMs = 3000;  // a map's buffers are kept this long after its last change
+constexpr size_t kMaxMaps = 128; // maps faded at once (a five-story lot has about forty)
+
+struct Map {
+    UINT w = 0, h = 0;
+    std::vector<uint32_t> from, to; // what was on screen when the fade (re)started, the game's exact content
+    DWORD start = 0, last = 0;      // fade start, last change
+    bool fading = false, resume = false;
+    int gameLocks = 0;
+    RECT rect{};
+    DWORD flags = 0;
+    BYTE* bits = nullptr; // the game's lock (its rect's top-left) while it holds the map
+    INT pitch = 0;
+};
+
+std::mutex g_mx;
+std::unordered_map<IDirect3DTexture9*, Map> g_maps; // AddRef'd while kept
+std::atomic<size_t> g_count{0};
+std::atomic<bool> g_enabled{true}, g_active{false}, g_hooked{false}, g_hookTried{false};
+thread_local bool t_own = false;
+std::atomic<long> g_fades{0}, g_writes{0}, g_gameLocks{0}, g_resumes{0}, g_peak{0};
+
+// A MANAGED single-level A8R8G8B8 texture of a room map's size (docs/engine/room-light-maps.md, room_map_padding.cpp)
+bool RoomMap(IDirect3DTexture9* t, UINT& w, UINT& h) {
+    if (!t || t->GetLevelCount() != 1) return false;
+    D3DSURFACE_DESC d{};
+    if (FAILED(t->GetLevelDesc(0, &d))) return false;
+    w = d.Width;
+    h = d.Height;
+    return d.Format == D3DFMT_A8R8G8B8 && d.Pool == D3DPOOL_MANAGED && w >= 8 && h >= 8 && w <= 1024 && h <= 1024;
+}
+
+RECT Clip(const Map& m, const RECT* r) {
+    RECT c{0, 0, static_cast<LONG>(m.w), static_cast<LONG>(m.h)};
+    if (r) {
+        c.left = std::clamp<LONG>(r->left, 0, m.w);
+        c.top = std::clamp<LONG>(r->top, 0, m.h);
+        c.right = std::clamp<LONG>(r->right, c.left, m.w);
+        c.bottom = std::clamp<LONG>(r->bottom, c.top, m.h);
+    }
+    return c;
+}
+
+// rows of a rect between a full-size buffer and locked memory (bits: the rect's top-left)
+void ToMemory(const Map& m, const std::vector<uint32_t>& buf, const RECT& r, BYTE* bits, INT pitch) {
+    const size_t n = static_cast<size_t>(r.right - r.left) * 4;
+    for (LONG y = r.top; y < r.bottom; y++) std::memcpy(bits + static_cast<size_t>(y - r.top) * pitch, &buf[static_cast<size_t>(y) * m.w + r.left], n);
+}
+bool FromMemory(const Map& m, std::vector<uint32_t>& buf, const RECT& r, const BYTE* bits, INT pitch) {
+    const size_t n = static_cast<size_t>(r.right - r.left) * 4;
+    bool changed = false;
+    for (LONG y = r.top; y < r.bottom; y++) {
+        uint32_t* dst = &buf[static_cast<size_t>(y) * m.w + r.left];
+        const BYTE* src = bits + static_cast<size_t>(y - r.top) * pitch;
+        if (std::memcmp(dst, src, n) != 0) {
+            std::memcpy(dst, src, n);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// The blend of from and to at weight w (0..256), per channel
+inline uint32_t Mix(uint32_t a, uint32_t b, uint32_t w) {
+    const uint32_t rbA = a & 0x00FF00FFu, gaA = (a >> 8) & 0x00FF00FFu;
+    const uint32_t rbB = b & 0x00FF00FFu, gaB = (b >> 8) & 0x00FF00FFu;
+    const uint32_t rb = (rbA * (256 - w) + rbB * w) >> 8 & 0x00FF00FFu;
+    const uint32_t ga = (gaA * (256 - w) + gaB * w) & 0xFF00FF00u;
+    return rb | ga;
+}
+uint32_t Weight(const Map& m, DWORD now) {
+    const float t = std::clamp(static_cast<float>(now - m.start) / static_cast<float>(kFadeMs), 0.0f, 1.0f);
+    return static_cast<uint32_t>(t * t * (3.0f - 2.0f * t) * 256.0f + 0.5f); // smoothstep
+}
+// what is on screen now: from <- blend(from, to)
+void Settle(Map& m, DWORD now) {
+    const uint32_t w = Weight(m, now);
+    for (size_t i = 0; i < m.from.size(); i++) m.from[i] = Mix(m.from[i], m.to[i], w);
+}
+
+HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out, const RECT* rect, DWORD flags) {
+    if (t_own || level != 0 || (!g_active.load(std::memory_order_relaxed) && !g_count.load(std::memory_order_relaxed)))
+        return g_origLock(t, level, out, rect, flags);
+    UINT w = 0, h = 0;
+    std::unique_lock<std::mutex> lk(g_mx);
+    auto it = g_maps.find(t);
+    if (it == g_maps.end()) {
+        // a map changing while a lamp edit is pending: its content as it is now (before the solve writes it)
+        // only a map written by a room solve (never the UI or anything else the game updates meanwhile)
+        if (!g_active.load(std::memory_order_relaxed) || g_maps.size() >= kMaxMaps || !RoomLightQueue::SolveInProgress() || !RoomMap(t, w, h)) {
+            lk.unlock();
+            return g_origLock(t, level, out, rect, flags);
+        }
+        D3DLOCKED_RECT lr{};
+        if (FAILED(g_origLock(t, 0, &lr, nullptr, D3DLOCK_READONLY))) {
+            lk.unlock();
+            return g_origLock(t, level, out, rect, flags);
+        }
+        Map m;
+        m.w = w;
+        m.h = h;
+        m.to.resize(static_cast<size_t>(w) * h);
+        FromMemory(m, m.to, RECT{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)}, static_cast<const BYTE*>(lr.pBits), lr.Pitch);
+        g_origUnlock(t, 0);
+        m.from = m.to;
+        m.last = GetTickCount();
+        t->AddRef();
+        it = g_maps.emplace(t, std::move(m)).first;
+        g_count.store(g_maps.size(), std::memory_order_relaxed);
+        g_peak.store(std::max<long>(g_peak.load(), static_cast<long>(g_maps.size())), std::memory_order_relaxed);
+    }
+    const HRESULT hr = g_origLock(t, level, out, rect, flags);
+    if (FAILED(hr) || !out || !out->pBits) return hr;
+    Map& m = it->second;
+    g_gameLocks.fetch_add(1, std::memory_order_relaxed);
+    const DWORD now = GetTickCount();
+    if (m.fading) { // what is on screen becomes the start of the next fade; the game gets its exact content
+        Settle(m, now);
+        m.fading = false;
+        m.resume = true;
+    }
+    m.rect = Clip(m, rect);
+    m.flags = flags;
+    m.gameLocks++;
+    if (m.resume) ToMemory(m, m.to, m.rect, static_cast<BYTE*>(out->pBits), out->Pitch);
+    m.bits = static_cast<BYTE*>(out->pBits);
+    m.pitch = out->Pitch;
+    return hr;
+}
+
+HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
+    if (t_own || level != 0 || !g_count.load(std::memory_order_relaxed)) return g_origUnlock(t, level);
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        const auto it = g_maps.find(t);
+        if (it != g_maps.end() && it->second.gameLocks > 0) {
+            Map& m = it->second;
+            m.gameLocks--;
+            bool changed = false;
+            if (m.bits && !(m.flags & D3DLOCK_READONLY)) changed = FromMemory(m, m.to, m.rect, m.bits, m.pitch);
+            if (changed || m.resume) {
+                // what was on screen goes back; the frames fade it to the new content
+                if (m.bits) ToMemory(m, m.from, m.rect, m.bits, m.pitch);
+                if (!m.fading) g_fades.fetch_add(1, std::memory_order_relaxed);
+                if (m.resume) g_resumes.fetch_add(1, std::memory_order_relaxed);
+                m.fading = true;
+                m.resume = false;
+                m.start = GetTickCount();
+            }
+            m.last = GetTickCount();
+            m.bits = nullptr;
+        }
+    }
+    return g_origUnlock(t, level);
+}
+
+bool InstallHooks(IDirect3DDevice9* dev) {
+    IDirect3DTexture9* probe = nullptr;
+    if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &probe, nullptr)) || !probe) return false;
+    void** vt = *reinterpret_cast<void***>(probe);
+    g_origLock = reinterpret_cast<LockRect_t>(vt[19]);
+    g_origUnlock = reinterpret_cast<UnlockRect_t>(vt[20]);
+    probe->Release();
+    std::vector<DetourBatch::Hook> hooks = {{reinterpret_cast<void**>(&g_origLock), reinterpret_cast<void*>(&LockHook)},
+                                            {reinterpret_cast<void**>(&g_origUnlock), reinterpret_cast<void*>(&UnlockHook)}};
+    return DetourBatch::InstallHooks(hooks);
+}
+
+} // namespace
+
+namespace RoomLightFade {
+
+void OnPresent(IDirect3DDevice9* dev) {
+    if (!g_hookTried.exchange(true)) {
+        const bool ok = dev && InstallHooks(dev);
+        g_hooked.store(ok);
+        LOG_INFO(ok ? "[RoomLightFade] Texture lock hooks installed: room maps fade to their new light during lamp edits"
+                    : "[RoomLightFade] Texture lock hooks not available: light changes stay instant");
+    }
+    if (!g_hooked.load()) return;
+    g_active.store(g_enabled.load(std::memory_order_relaxed) && (LevelLightShare::LampEditPending() || LampMarkFilter::MassSwitchActive()),
+                   std::memory_order_relaxed);
+    if (!g_count.load(std::memory_order_relaxed)) return;
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (auto it = g_maps.begin(); it != g_maps.end();) {
+        Map& m = it->second;
+        IDirect3DTexture9* tex = it->first;
+        if (m.gameLocks > 0) { ++it; continue; } // never written while the game holds it
+        if (m.fading) {
+            const uint32_t w = Weight(m, now);
+            D3DLOCKED_RECT lr{};
+            t_own = true;
+            if (SUCCEEDED(g_origLock(tex, 0, &lr, nullptr, 0))) {
+                for (UINT y = 0; y < m.h; y++) {
+                    uint32_t* row = reinterpret_cast<uint32_t*>(static_cast<BYTE*>(lr.pBits) + static_cast<size_t>(y) * lr.Pitch);
+                    const size_t base = static_cast<size_t>(y) * m.w;
+                    if (w >= 256) std::memcpy(row, &m.to[base], m.w * 4);
+                    else for (UINT x = 0; x < m.w; x++) row[x] = Mix(m.from[base + x], m.to[base + x], w);
+                }
+                g_origUnlock(tex, 0);
+                g_writes.fetch_add(1, std::memory_order_relaxed);
+            }
+            t_own = false;
+            if (w >= 256) {
+                m.from = m.to;
+                m.fading = false;
+            }
+            ++it;
+            continue;
+        }
+        if (now - m.last > kKeepMs) { // idle: buffers and the reference go
+            tex->Release();
+            it = g_maps.erase(it);
+            continue;
+        }
+        ++it;
+    }
+    g_count.store(g_maps.size(), std::memory_order_relaxed);
+}
+
+void SetEnabled(bool on) {
+    g_enabled.store(on, std::memory_order_relaxed);
+    if (!on) g_active.store(false, std::memory_order_relaxed);
+}
+bool Enabled() { return g_enabled.load(std::memory_order_relaxed); }
+
+void Clear() {
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (auto& [tex, m] : g_maps) {
+        // a fade cut short: the map gets its exact content
+        if (m.fading && m.gameLocks == 0) {
+            D3DLOCKED_RECT lr{};
+            t_own = true;
+            if (SUCCEEDED(g_origLock(tex, 0, &lr, nullptr, 0))) {
+                for (UINT y = 0; y < m.h; y++) std::memcpy(static_cast<BYTE*>(lr.pBits) + static_cast<size_t>(y) * lr.Pitch, &m.to[static_cast<size_t>(y) * m.w], m.w * 4);
+                g_origUnlock(tex, 0);
+            }
+            t_own = false;
+        }
+        tex->Release();
+    }
+    g_maps.clear();
+    g_count.store(0, std::memory_order_relaxed);
+}
+
+std::string Status() {
+    if (!g_hooked.load()) return g_hookTried.load() ? "not available" : "waiting for the device";
+    return std::format("{} | maps kept {} (at most {} at once), fades {} (restarted by a new solve {}), frame writes {}, game locks seen {}",
+                       g_enabled.load() ? "on" : "off", g_count.load(), g_peak.load(), g_fades.load(), g_resumes.load(), g_writes.load(), g_gameLocks.load());
+}
+
+} // namespace RoomLightFade

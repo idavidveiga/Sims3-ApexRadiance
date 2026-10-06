@@ -156,3 +156,18 @@ against 1.0 s for class 0.
   Fixed the same day: the quick pass is seen as done when the room's class rose again (the end of its class-0 solve), not by
   "shown" (the step writes the new class there too, so the first version only saw it at the very end); and while refining,
   the lot lighting budget (LotLightingMotion's hook, which raised it to 25 ms for a lamp edit) is held at 6 ms.
+
+## Smooth light changes indoors (06/10)
+
+`[patches.RoomLightQueue] lightFade` (default on, Experimental), `features/room_light_fade.{h,cpp}`. The user saw the quick
+pass as a blink (video 11:01: the lower walls went darker for ~1 s, the class-0 solve has no wall blur, then the refinement
+brightened them). The room solves write the story maps (MANAGED single-level A8R8G8B8: wall atlas, floor, ceiling, room light
+map, basis maps) through LockRect / UnlockRect; both are detoured (vtable 19 / 20 of a probe texture). While a lamp edit is
+pending, a map first locked during a room solve (the queue's current room in state 3, render thread: never the UI) is kept
+(AddRef, two buffers): at the game's lock the exact content is put back (the game never reads a blend: the wall blur reads the
+atlas); at its unlock the new content is the target and what was on screen goes back; every frame the smoothstep blend over
+250 ms is written, ending on the exact content. Maps are released 3 s after their last change. Status: Developer page and the
+Faster room lighting status line ("smooth light changes").
+
+Also fixed the quick pass: a room sent back to its class by the switch's safety net before its class-0 solve ran is set
+to 0 again until "shown" (+0x100) reads 0 ("class 2/0" in the recorder), and never after.

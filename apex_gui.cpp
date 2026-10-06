@@ -872,6 +872,11 @@ void PerformanceCard() {
             if (ApexUi::SwitchRow("Quick update when many lamps switch", &quick,
                                   "Switching all the lights of a lot shows the new light at once in a quick pass, then refines it", true))
                 Performance::SetRoomQuickPass(quick);
+            bool fade = Performance::RoomLightFade();
+            ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+            if (ApexUi::SwitchRow("Smooth light changes indoors", &fade,
+                                  "When lamps switch, rooms fade to their new light instead of changing at once", true))
+                Performance::SetRoomLightFade(fade);
         }
         if (FeatureSwitchRow(Performance::kLotLightingName, "Spread lot lighting while moving", "Lots relight in small steps while the camera moves")) {
             float ms = static_cast<float>(Performance::LotLightingBudgetMs());

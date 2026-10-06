@@ -122,6 +122,7 @@
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
     <ClCompile Include="features\bloom_alpha_probe.cpp" />
+    <ClCompile Include="features\room_light_fade.cpp" />
     <ClCompile Include="features\lot_lod_streaming.cpp" />
     <ClCompile Include="features\lot_detail_range.cpp" />
     <ClCompile Include="features\lot_object_throttle.cpp" />
@@ -211,6 +212,7 @@
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
     <ClInclude Include="features\bloom_alpha_probe.h" />
+    <ClInclude Include="features\room_light_fade.h" />
     <ClInclude Include="features\lot_lod_streaming.h" />
     <ClInclude Include="features\lot_detail_range.h" />
     <ClInclude Include="features\lot_object_throttle.h" />

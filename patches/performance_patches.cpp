@@ -28,6 +28,7 @@
 #include "object_index.h"
 #include "object_id_map.h"
 #include "room_light_queue.h"
+#include "room_light_fade.h"
 #include <algorithm>
 #include <atomic>
 #include <format>
@@ -700,6 +701,7 @@ class RoomLightQueuePatch : public ApexPatch {
     RoomLightQueuePatch() : ApexPatch(Performance::kRoomLightQueueName, nullptr) {
         // TOML key: never rename
         RegisterBoolSetting(&quickPass_, "quickPass", true, "Quick update when many lamps switch");
+        RegisterBoolSetting(&lightFade_, "lightFade", true, "Smooth light changes indoors");
         g_roomQueuePatch.store(this);
     }
     ~RoomLightQueuePatch() override { g_roomQueuePatch.store(nullptr); }
@@ -708,8 +710,16 @@ class RoomLightQueuePatch : public ApexPatch {
     void Update() override {
         pendingReinstall = false;
         RoomLightQueue::SetQuickPass(quickPass_);
+        RoomLightFade::SetEnabled(lightFade_);
     }
     bool QuickPass() const { return quickPass_; }
+    bool LightFade() const { return lightFade_; }
+    void SetLightFade(bool on) {
+        if (on == lightFade_) return;
+        lightFade_ = on;
+        RoomLightFade::SetEnabled(on);
+        NotifySettingChanged();
+    }
     void SetQuickPass(bool on) {
         if (on == quickPass_) return;
         quickPass_ = on;
@@ -721,6 +731,7 @@ class RoomLightQueuePatch : public ApexPatch {
         if (isEnabled) return true;
         lastError.clear();
         RoomLightQueue::SetQuickPass(quickPass_);
+        RoomLightFade::SetEnabled(lightFade_);
         std::string error;
         if (!RoomLightQueue::Start(&error)) return Fail(error);
         isEnabled = true;
@@ -741,6 +752,7 @@ class RoomLightQueuePatch : public ApexPatch {
 
   private:
     bool quickPass_ = true;
+    bool lightFade_ = true;
 };
 
 } // namespace
@@ -761,6 +773,15 @@ bool Performance::RoomQuickPass() {
 
 void Performance::SetRoomQuickPass(bool on) {
     if (RoomLightQueuePatch* p = g_roomQueuePatch.load()) p->SetQuickPass(on);
+}
+
+bool Performance::RoomLightFade() {
+    RoomLightQueuePatch* p = g_roomQueuePatch.load();
+    return p ? p->LightFade() : true;
+}
+
+void Performance::SetRoomLightFade(bool on) {
+    if (RoomLightQueuePatch* p = g_roomQueuePatch.load()) p->SetLightFade(on);
 }
 
 bool Performance::FastTextureSeveralCores() {

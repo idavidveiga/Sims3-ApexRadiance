@@ -31,6 +31,8 @@ void SetQuickPass(bool on);
 bool QuickPass();
 // The rooms of many switched lamps show their quick pass and are being refined (the lot lighting budget stays low meanwhile)
 bool Refining();
+// Render thread: the current room of the light tree is being solved (its maps are being written)
+bool SolveInProgress();
 // Development build: status lines
 void RenderDeveloperUI();
 }

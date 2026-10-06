@@ -45,6 +45,7 @@
 #include "lot_lighting_motion.h"
 #include "level_light_share.h"
 #include "lamp_mark_filter.h"
+#include "room_light_fade.h"
 #include "room_ambient_policy.h"
 #include "memory_patch.h"
 #include "imgui.h"
@@ -55,6 +56,7 @@
 #include <format>
 #include <mutex>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace {
 
@@ -97,6 +99,7 @@ void __fastcall EmptyRemovalHook(uint8_t* level, void* edx, uint32_t idLo, uint3
 }
 std::atomic<DWORD> g_renderThread{0};
 constexpr const char* kPresentName = "RoomLightQueue";
+constexpr const char* kFadePresentName = "RoomLightFade";
 
 std::atomic<long> g_prioCalls{0}, g_prioBoosted{0}, g_drainFrames{0}, g_drainSolves{0}, g_drainFinished{0}, g_prioUrgent{0}, g_drainUrgent{0};
 std::atomic<long long> g_drainMicros{0};
@@ -140,9 +143,10 @@ bool Stranded(const BYTE* room) {
 // it straight to its class after that solve. Render thread (the scheduler).
 std::atomic<bool> g_quickPass{true};
 std::atomic<long> g_quickRooms{0};
-// Once per room and burst (06/10 capture: a room back at its class after the quick solve was set to 0 again and again while
-// the burst lasted, 500-700 quick passes for some 30 rooms, and its refinement waited)
-std::unordered_set<uintptr_t> g_quickDone;
+// Per room of the burst: whether its class-0 solve is shown (06/10 capture: the switch's safety net invalidated a room
+// right after it was set to 0, which gave it back its class without any quick solve; it is set to 0 again until its
+// quick solve is seen, and never after, so a refined room is not sent back to class 0)
+std::unordered_map<uintptr_t, bool> g_quickDone;
 long g_quickEvent = -1;
 // When every room of the burst shows its quick solve (06/10): the time is logged ("showed its new light"), and the rest of
 // the burst is refinement, given 4 ms of extra solving a frame instead of 12 so the frame rate holds (the capture: 35-39 ms
@@ -150,22 +154,25 @@ long g_quickEvent = -1;
 DWORD g_quickStart = 0;
 bool g_quickShown = false;
 std::atomic<bool> g_refining{false}; // read by the lot lighting budget too (LotLightingMotion)
-// Its class-0 solve finished: the class was set to 0 here and only the end of that solve raises it again ("no middle step"
-// takes it to its class), or the room finished. (06/10: "shown" is not a sign, the step writes the new class there too, so
-// the first version saw the quick pass only when everything was refined.)
+// Its class-0 solve is shown ("shown" +0x100 is 0 after it: "class 2/0" in the recorder), or the room finished
 bool QuickSolved(const BYTE* room) {
     __try {
         const int state = *reinterpret_cast<const int*>(room + 0xF0);
-        return state == 4 || state == 5 || *reinterpret_cast<const int*>(room + 0xF4) > 0;
+        return state == 4 || state == 5 || *reinterpret_cast<const int*>(room + 0x100) == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return true; // gone
     }
 }
 void CheckQuickShown() {
     if (g_quickShown || g_quickDone.empty()) return;
-    for (const uintptr_t room : g_quickDone)
-        if (!QuickSolved(reinterpret_cast<const BYTE*>(room))) return;
-    g_quickShown = g_refining = true;
+    bool all = true;
+    for (auto& [room, solved] : g_quickDone) {
+        if (!solved) solved = QuickSolved(reinterpret_cast<const BYTE*>(room));
+        all = all && solved;
+    }
+    if (!all) return;
+    g_quickShown = true;
+    g_refining = true;
     LOG_INFO(std::format("[RoomLightQueue] Many lamps: the {} rooms of the burst showed their new light (quick pass) after {} ms; refining in the background",
                          g_quickDone.size(), GetTickCount() - g_quickStart));
 }
@@ -191,12 +198,17 @@ void QuickPassRoom(BYTE* room) {
         g_quickEvent = burst;
         g_quickDone.clear();
         g_quickStart = GetTickCount();
-        g_quickShown = g_refining = false;
+        g_quickShown = false;
+        g_refining = false;
     }
     const uintptr_t key = reinterpret_cast<uintptr_t>(room);
-    if (g_quickDone.contains(key) || !WaitingAboveClass0(room)) return;
-    if (g_quickDone.size() < 4096) g_quickDone.insert(key);
-    if (SetClass0(room)) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
+    const auto it = g_quickDone.find(key);
+    if (it != g_quickDone.end() && (it->second || (it->second = QuickSolved(room)))) return; // its quick solve was shown
+    if (!WaitingAboveClass0(room)) return;
+    const bool first = it == g_quickDone.end();
+    if (first && g_quickDone.size() >= 4096) return;
+    if (first) g_quickDone.emplace(key, false);
+    if (SetClass0(room) && first) g_quickRooms.fetch_add(1, std::memory_order_relaxed);
 }
 
 float __fastcall PriorityHook(BYTE* room) {
@@ -280,7 +292,17 @@ void NoteEditBurst(bool lampEdit) {
                          g_quickRooms.load(std::memory_order_relaxed) - g_burst.quick, ApexPart(g_burst.apexMs)));
 }
 
+std::atomic<BYTE*> g_tree{nullptr}; // the light tree the scheduler runs on (SolveInProgress)
+int StateOf(const BYTE* room) {
+    __try {
+        return *reinterpret_cast<const int*>(room + 0xF0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
 void __fastcall PickHook(BYTE* tree) {
+    if (tree) g_tree.store(tree, std::memory_order_relaxed);
     const auto pick = reinterpret_cast<Pick_t>(kPick);
     BYTE* before = tree ? CurrentRoom(tree) : nullptr;
     pick(tree);
@@ -431,6 +453,11 @@ bool Start(std::string* error) {
         if (error) *error = "Faster room lighting: the game code differs (different game version?)";
         return false;
     }
+    // 6. smooth light changes indoors (room_light_fade.h): the fades advance at every frame boundary
+    D3D9Hooks::RegisterPresent(kFadePresentName, [](D3D9Hooks::DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
+        RoomLightFade::OnPresent(ctx.device);
+        return D3D9Hooks::HookAction::Continue;
+    });
     g_running = true;
     LOG_INFO(std::format("[RoomLightQueue] Started: viewed lot first {}, no middle step {}, requeues keep the class {}, several rooms per frame {}, empty removals skipped {}",
                          g_prioOn ? "yes" : "no", g_stepOn ? "yes" : "no", g_keepOn ? "yes" : "no", g_drainOn ? "yes" : "no", g_emptyOn ? "yes" : "no"));
@@ -441,6 +468,8 @@ void Stop() {
     std::lock_guard<std::mutex> lk(g_ctrl);
     if (!g_running) return;
     D3D9Hooks::UnregisterAll(kPresentName);
+    D3D9Hooks::UnregisterAll(kFadePresentName);
+    RoomLightFade::Clear();
     RestoreAll();
     g_running = std::any_of(std::begin(g_writes), std::end(g_writes), [](const Write& w) { return w.done; });
     LOG_INFO(g_running ? "[RoomLightQueue] Stopped, but some game code could not be put back" : "[RoomLightQueue] Stopped");
@@ -454,6 +483,13 @@ bool Running() {
 void SetQuickPass(bool on) { g_quickPass.store(on, std::memory_order_relaxed); }
 bool QuickPass() { return g_quickPass.load(std::memory_order_relaxed); }
 bool Refining() { return g_refining.load(std::memory_order_relaxed); }
+
+bool SolveInProgress() {
+    if (ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
+    const BYTE* tree = g_tree.load(std::memory_order_relaxed);
+    const BYTE* room = tree ? CurrentRoom(tree) : nullptr;
+    return room && StateOf(room) == 3;
+}
 
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)
 std::string SolveTimes() {
@@ -470,12 +506,14 @@ std::string StatusText() {
                        "quick pass for many lamps {} ({} rooms){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
                        g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
-                       g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes());
+                       g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes()) +
+           " | smooth light changes: " + RoomLightFade::Status();
 }
 
 void RenderDeveloperUI() {
     if (kPublicBuild) return;
     ImGui::TextWrapped("Room lighting queue: %s", StatusText().c_str());
+    ImGui::TextWrapped("Smooth light changes indoors: %s", RoomLightFade::Status().c_str());
 }
 
 } // namespace RoomLightQueue
