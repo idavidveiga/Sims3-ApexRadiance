@@ -664,7 +664,7 @@ APEX_REGISTER_FEATURE(SceneNodeBudgetPatch,
                        .technicalDetails = {"Scene::BeginFrame's call of the pending-node drain (0x6EBC49 -> 0x6E4130) goes through Apex: while the camera eye moved in "
                                             "the last 300 ms, an exact copy of the game's loop stops after 512 nodes or 2 ms; the rest stays queued in the game's own "
                                             "list and goes first next frame.",
-                                            "Camera still, or a node waited 500 ms: the game's own drain runs. The other five callers of the drain are untouched.",
+                                            "Camera still, or a node waited 1.5 s: the game's own drain runs (from 500 ms on the budget grows every frame). The other five callers of the drain are untouched.",
                                             "Every node left queued is recorded: the node destructor (0x6FD930) unlinks a recorded node that is still queued, AddNode "
                                             "(0x6E6480) unlinks one before queueing it again, and the scene teardown (0x6E4DE0) forgets its records, so a node "
                                             "held for later can never be freed or queued twice while linked."},

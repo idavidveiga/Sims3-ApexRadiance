@@ -50,8 +50,10 @@
 //   in their order, and the remainder is spliced back at the TAIL of the holder's list (where the drain takes from), so they
 //   are processed first next frame and stay queued exactly as the game would have them: RemoveNode unlinks them, MarkDirty
 //   sees them as queued, any other drain processes them.
-//   The rule: camera still -> the game's drain; camera moving -> the budgeted copy; a node waited maxDeferMs -> the game's
-//   drain (so the backlog cannot grow without end while the camera keeps moving).
+//   The rule: camera still -> the game's drain; camera moving -> the budgeted copy; once a node waited maxDeferMs the budget
+//   grows every frame (x2, x4 ... x64, doubling every kGrowStepMs) instead of the whole backlog at once (05/10: the forced full
+//   drain was a single long frame in the middle of a camera move); a node waited kHardFactor x maxDeferMs -> the game's drain
+//   (so the backlog cannot grow without end while the camera keeps moving).
 //
 // ---- The node lifetime guard (the registry and three entry hooks) ----
 //   Every node the budgeted copy leaves queued is recorded (link -> holder). Invariant kept for recorded nodes: when the
@@ -95,7 +97,7 @@
 #include <format>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace SceneBudget {
@@ -160,8 +162,14 @@ uintptr_t g_textBegin = 0, g_textEnd = 0, g_rdataBegin = 0, g_rdataEnd = 0, g_de
 
 // ---- the registry of nodes left queued (link -> holder); guarded by g_regLock, never held across a game call ----
 SRWLOCK g_regLock = SRWLOCK_INIT;
-std::unordered_map<Link*, void*> g_deferred;
+std::vector<std::pair<Link*, void*>> g_deferred; // sorted by link: rebuilt once per budgeted drain without allocating
 std::atomic<uint32_t> g_deferredCount{0}; // mirror of g_deferred.size() for the lock-free fast path of the hooks
+
+// The record of l, or g_deferred.end() (caller holds the lock)
+std::vector<std::pair<Link*, void*>>::iterator FindDeferred(Link* l) {
+    auto it = std::lower_bound(g_deferred.begin(), g_deferred.end(), l, [](const std::pair<Link*, void*>& e, Link* k) { return e.first < k; });
+    return it != g_deferred.end() && it->first == l ? it : g_deferred.end();
+}
 
 struct RegGuard {
     RegGuard() { AcquireSRWLockExclusive(&g_regLock); }
@@ -178,6 +186,8 @@ struct Waiting {
 };
 constexpr int kHolders = 8;
 constexpr uint64_t kEvictAfterMs = 1000; // a slot is reused only when its holder has not drained for this long
+constexpr uint64_t kGrowStepMs = 50;     // past maxDeferMs the budget doubles this often
+constexpr uint64_t kHardFactor = 3;      // past this many times maxDeferMs the game's drain runs
 constexpr uint64_t kSteadyMs = 100;      // only holders drained every frame (the world scene) are budgeted
 Waiting g_waiting[kHolders] = {};
 double g_qpcMs = 0.0;
@@ -206,6 +216,7 @@ struct Counter {
     void Add(uint64_t n = 1) { v.fetch_add(n, std::memory_order_relaxed); }
     uint64_t Get() const { return v.load(std::memory_order_relaxed); }
 };
+Counter c_grown;
 Counter c_calls, c_fullStill, c_fullForced, c_budgeted, c_framesLeft, c_nodesBudgeted, c_nodesLeft;
 Counter c_dtorUnlinked, c_addUnlinked, c_teardownDropped, c_otherThread, c_foreignOwner, c_repaired;
 std::atomic<uint32_t> g_maxLeft{0}, g_lastDone{0}, g_lastLeft{0};
@@ -265,15 +276,9 @@ void UnlinkDead(const Link* l) {
 
 // Registry: forgets the holder's records (caller holds the lock). Returns how many.
 uint32_t DropHolderLocked(void* holder) {
-    uint32_t n = 0;
-    for (auto it = g_deferred.begin(); it != g_deferred.end();) {
-        if (it->second == holder) {
-            it = g_deferred.erase(it);
-            n++;
-        } else {
-            ++it;
-        }
-    }
+    const auto end = std::remove_if(g_deferred.begin(), g_deferred.end(), [holder](const std::pair<Link*, void*>& e) { return e.second == holder; });
+    const uint32_t n = static_cast<uint32_t>(g_deferred.end() - end);
+    g_deferred.erase(end, g_deferred.end());
     g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
     return n;
 }
@@ -301,7 +306,7 @@ void __fastcall Hook_NodeDtor(void* node, void* edx) {
         bool found = false, unlinked = false, bad = false;
         {
             RegGuard lock;
-            auto it = g_deferred.find(l);
+            auto it = FindDeferred(l);
             if (it != g_deferred.end()) {
                 found = true;
                 g_deferred.erase(it);
@@ -345,7 +350,7 @@ void __fastcall Hook_AddNode(void* holder, void* edx, void* node, int group) {
         bool unlinked = false, bad = false;
         {
             RegGuard lock;
-            auto it = g_deferred.find(l);
+            auto it = FindDeferred(l);
             if (it != g_deferred.end()) {
                 g_deferred.erase(it);
                 g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
@@ -519,7 +524,8 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
     {
         RegGuard lock;
         DropHolderLocked(holder);
-        for (Link* x : rest) g_deferred[x] = holder;
+        for (Link* x : rest) g_deferred.emplace_back(x, holder);
+        std::sort(g_deferred.begin(), g_deferred.end());
         g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
     }
     if (foreign) c_foreignOwner.Add(foreign);
@@ -546,7 +552,10 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
     // Budget only a scene drained every frame (the world); a scene drawn once or now and then (UI / off-screen) gets
     // everything, so it is never drawn with objects missing
     const bool steady = wp && prevSeen && now - prevSeen <= kSteadyMs;
-    const bool waitedTooLong = wp && wp->since && now - wp->since >= static_cast<uint64_t>(g_maxDeferMs.load(std::memory_order_relaxed));
+    const uint64_t maxDefer = static_cast<uint64_t>(g_maxDeferMs.load(std::memory_order_relaxed));
+    const uint64_t waited = wp && wp->since ? now - wp->since : 0;
+    const bool waitedTooLong = waited >= maxDefer * kHardFactor;
+    const uint32_t grow = waited >= maxDefer ? 1u << std::min<uint64_t>(6, 1 + (waited - maxDefer) / kGrowStepMs) : 1u;
     const bool stopped = g_stopped.load(std::memory_order_acquire);
     if (!moving || waitedTooLong || !steady || stopped || !CheckRecords(holder)) {
         (waitedTooLong && moving ? c_fullForced : c_fullStill).Add();
@@ -557,9 +566,10 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
     }
     Waiting& w = *wp;
     const int64_t t0 = Qpc();
-    const float ms = std::max(0.1f, g_msPerFrame.load(std::memory_order_relaxed));
+    const float ms = std::max(0.1f, g_msPerFrame.load(std::memory_order_relaxed)) * static_cast<float>(grow);
     const int64_t deadline = t0 + static_cast<int64_t>(static_cast<double>(ms) / g_qpcMs);
-    const uint32_t cap = static_cast<uint32_t>(std::max(static_cast<int>(kMinNodes), g_nodesPerFrame.load(std::memory_order_relaxed)));
+    const uint32_t cap = static_cast<uint32_t>(std::max(static_cast<int>(kMinNodes), g_nodesPerFrame.load(std::memory_order_relaxed))) * grow;
+    if (grow > 1) c_grown.Add();
     uint32_t left = 0;
     const uint32_t done = BudgetedDrain(static_cast<uint8_t*>(holder), cap, deadline, &left);
     const float took = static_cast<float>(static_cast<double>(Qpc() - t0) * g_qpcMs);
@@ -711,10 +721,10 @@ void Stop() {
     }
     g_started = false;
     const Stats s = GetStats();
-    LOG_INFO(std::format("[SceneBudget] Off ({} drains, {} with a budget, {} left nodes for later, largest backlog {}, {} forced full drains; lifetime guard: {} "
+    LOG_INFO(std::format("[SceneBudget] Off ({} drains, {} with a budget, {} left nodes for later, largest backlog {}, {} frames with a grown budget, {} forced full drains; lifetime guard: {} "
                          "unlinked at destruction, {} before AddNode, {} records dropped at teardown, {} destroyed on another thread, {} not owned by their "
                          "holder, {} repaired; {} records forgotten now)",
-                         s.calls, s.budgeted, s.framesLeft, s.maxLeft, s.fullForced, s.dtorUnlinked, s.addUnlinked, s.teardownDropped, s.otherThread, s.foreignOwner,
+                         s.calls, s.budgeted, s.framesLeft, s.maxLeft, s.grown, s.fullForced, s.dtorUnlinked, s.addUnlinked, s.teardownDropped, s.otherThread, s.foreignOwner,
                          s.repaired, forgotten));
 }
 
@@ -735,6 +745,7 @@ Stats GetStats() {
     s.calls = c_calls.Get();
     s.fullStill = c_fullStill.Get();
     s.fullForced = c_fullForced.Get();
+    s.grown = c_grown.Get();
     s.budgeted = c_budgeted.Get();
     s.framesLeft = c_framesLeft.Get();
     s.nodesBudgeted = c_nodesBudgeted.Get();
@@ -775,9 +786,10 @@ void RenderDeveloperUI() {
     if (ApexUi::DiagnosticIntRow("Longest wait (ms)##SbWait", &wait, 16, 5000)) SetMaxDeferMs(wait);
     if (ApexUi::BeginAdvanced("LiveCounters", "Live counters")) {
     ImGui::TextWrapped("%s", ("Spread new objects over frames: " + StatusText()).c_str());
-    ImGui::TextWrapped("Drain call %#010x -> %#010x; drains %llu: game's (camera still) %llu, game's (a node waited too long) %llu, with a budget %llu",
+    ImGui::TextWrapped("Drain call %#010x -> %#010x; drains %llu: game's (camera still) %llu, game's (a node waited too long) %llu, with a budget %llu (%llu of them grown: a node waited too long)",
                         static_cast<unsigned>(CallChain::CallAddress(Site::SceneDrain)), static_cast<unsigned>(g_drainFn), static_cast<unsigned long long>(s.calls),
-                        static_cast<unsigned long long>(s.fullStill), static_cast<unsigned long long>(s.fullForced), static_cast<unsigned long long>(s.budgeted));
+                        static_cast<unsigned long long>(s.fullStill), static_cast<unsigned long long>(s.fullForced), static_cast<unsigned long long>(s.budgeted),
+                        static_cast<unsigned long long>(s.grown));
     ImGui::TextWrapped("With a budget: %llu nodes processed, %llu frames left nodes (%llu node-frames waiting), largest backlog %u; last: %u done, %u left, %.2f ms",
                         static_cast<unsigned long long>(s.nodesBudgeted), static_cast<unsigned long long>(s.framesLeft), static_cast<unsigned long long>(s.nodesLeft), s.maxLeft,
                         s.lastDone, s.lastLeft, s.lastMs);
