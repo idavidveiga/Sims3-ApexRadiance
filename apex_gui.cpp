@@ -914,7 +914,7 @@ void PerformanceCard() {
         ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
         ApexUi::CardDivider();
         FeatureSwitchRow(Performance::kFastMemoryName, "Faster memory handling", "Less waiting when the game hands out and frees memory");
-        FeatureSwitchRow(Performance::kMemoryGuardName, "Room to save", "Keeps free memory for saving (Error 12) and drops unused game files when memory runs low");
+        FeatureSwitchRow(Performance::kMemoryGuardName, "Room to save", "Keeps free memory for saving (Error 12) and drops unused game files when memory runs low", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -922,8 +922,8 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Monitor, "Game and scripts", "Less work for the game every frame", nullptr, nullptr);
         ApexUi::CardDivider();
-        FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame");
-        FeatureSwitchRow(Performance::kScriptMathName, "Faster scripts", "The game's scripts compare numbers and look up types with less work");
+        FeatureSwitchRow(Performance::kWindowRepaintName, "Lighter window updates", "The game stops repainting its own window every frame", true);
+        FeatureSwitchRow(Performance::kScriptMathName, "Faster scripts", "The game's scripts compare numbers and look up types with less work", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -3026,8 +3026,11 @@ void UpdateMenuAvailability() {
         g_worldEpoch.fetch_add(1);
         Captures::OnWorldSessionChanged(); // the game shows its UI again after a load
     }
-    const bool worldLive = session && (startup == Startup::RefusedOldBuild || !night || !night->IsEnabled() || NightLighting::LoadSettled());
-    if ((startup != Startup::Running && startup != Startup::RefusedOldBuild) || !worldLive) {
+    // 06/10 (user): the menu and the start note from the world selector on (the startup loading window gone), not only
+    // once a world is drawn; the screen effects still wait for the world (WorldSession::InWorld)
+    (void)night;
+    const bool menuReady = session || WorldSession::LoaderDismissed();
+    if ((startup != Startup::Running && startup != Startup::RefusedOldBuild) || !menuReady) {
         g_menuLiveAt = 0;
         g_menuAvailable.store(false);
         return;
