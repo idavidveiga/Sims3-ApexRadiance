@@ -448,7 +448,13 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // UI mask (05/10, user: new strong filters still touched translucent panels and text shadows): the scene copy comes
     // from the same back buffer, so a pixel the UI never touched is identical bit for bit; any change of one 8-bit step
     // or more is UI and is left exactly as the game drew it. (It was saturate(diff x 64): a soft edge was half filtered.)
-    float ui = cLook.y > 0.5 ? saturate((max(d.r, max(d.g, d.b)) * 255.0 - 0.5) * 2.0) : 0.0;
+    // 06/10 (user: a box around the pie menu): a faint veil, like the pie menu's backing rectangle (a few steps darker),
+    // was a box of unfiltered picture. Now only a clear change (from 4 to 24 steps, smoothly) counts as UI; under a faint
+    // veil the scene copy is filtered and the veil applied again as the ratio frame / scene, as a translucent overlay
+    // would be. A pixel the UI never touched is identical bit for bit (ratio 1); text, buttons and panels stay as drawn.
+    float dmax = max(d.r, max(d.g, d.b));
+    float ui = cLook.y > 0.5 ? smoothstep(4.0 / 255.0, 24.0 / 255.0, dmax) : 0.0;
+    float3 veil = (cLook.y > 0.5 && dmax > 0.25 / 255.0) ? min((f + 1.0 / 255.0) / (s + 1.0 / 255.0), 4.0) : float3(1.0, 1.0, 1.0);
     bool scene = ui < 0.5;
 
     // CRT: the scene seen through curved glass (sampled further out toward the corners); outside it is black
@@ -459,7 +465,7 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
         crtQ *= 1.0 + cCrt.y * 0.12 * dot(crtQ, crtQ) * float2(0.7, 1.0);
         suv = lerp(uv, crtQ * 0.5 + 0.5, cCrt.x);
     }
-    float3 fs = (cFlagE.y > 0.5 && scene) ? SceneTap(suv) : f;
+    float3 fs = (cFlagE.y > 0.5 && scene) ? SceneTap(suv) : (cLook.y > 0.5 ? s : f); // the scene under any veil (see the UI mask)
     fs = (cDeband.w > 0.5 && scene) ? Deband(suv, fs) : fs; // the scene only; the UI keeps its sharp edges
     [branch] if (cFlagD.z > 0.5 && scene) fs = Prism(suv, fs);
     // 3DFX soft pixels: the old cards' output filter blurred each pixel with its horizontal neighbours
@@ -639,6 +645,7 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // a fixed dither (interleaved gradient noise, the same pattern every frame, below one 8-bit step) so the grading does
     // not turn smooth gradients into steps
     if (!posterized) o += (frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+    o = saturate(o * veil); // a faint veil over the filtered scene again (1 where the UI never drew)
     if (before) o = f;
     if (divider) o = float3(1, 0, 0);
     return float4(lerp(o, f, ui), 1.0);
