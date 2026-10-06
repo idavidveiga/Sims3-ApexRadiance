@@ -42,10 +42,10 @@ Custom content that uses the standard Sim materials is covered automatically. Cu
 
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
-| Sim Occlusion (card switch) | `simControls` | bool | off | | Enables the Sim controls. Off hides them and releases the mask resources |
-| Sim intensity | `simStrength` | float | 47% | 0 to 100% | Shade on body, face and clothes. 0% removes it, 100% keeps the scene shade |
-| Hair intensity | `hairStrength` | float | 38% | 0 to 100% | Shade on recognised hair, independent of the body |
-| Maximum darkening | `simMaxShade` | float | 47% | 0 to 100% | Caps the shade added to Sims and hair, before the light protection of the composite |
+| Sim Occlusion (card switch) | `simControls` | bool | on | | Enables the Sim controls. Off hides them and releases the mask resources |
+| Sim intensity | `simStrength` | float | 40% | 0 to 100% | Shade on body, face and clothes. 0% removes it, 100% keeps the scene shade |
+| Hair intensity | `hairStrength` | float | 0% | 0 to 100% | Shade on recognised hair, independent of the body |
+| Maximum darkening | `simMaxShade` | float | 11% | 0 to 100% | Caps the shade added to Sims and hair, before the light protection of the composite |
 | Advanced > Transparent hair | `transparentHair` | bool | on | | Also adjusts recognised transparent hair strands. Blended body layers always follow Sim intensity |
 | Advanced > Show Sim coverage | (not saved) | bool | off | | Preview: blue = Sim controls, green = hair controls, black = scene shade |
 

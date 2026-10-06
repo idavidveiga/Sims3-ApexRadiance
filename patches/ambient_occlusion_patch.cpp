@@ -350,10 +350,11 @@ struct Params {
     int quality = 2; // stored index into kQualitySlices (2 = High, 8 slices)
     bool inMapView = true; // the map view gets its own radii (else the shade fades out there, as it is far)
     float distance = 351.0f;
-    float simStrength = 0.47f;
-    bool simControls = false;
-    float hairStrength = 0.38f;
-    float simMaxShade = 0.47f;
+    // Sim Occlusion defaults (user 06/10, the same in the built-in profiles that have AO on)
+    float simStrength = 0.40f;
+    bool simControls = true;
+    float hairStrength = 0.0f;
+    float simMaxShade = 0.11f;
     bool transparentHair = true;
 
 };
@@ -1205,7 +1206,7 @@ class AmbientOcclusionPatch : public ApexPatch {
         RegisterBoolSetting(&g.p.inMapView, "noMapa", true, "Also shade the map view (radii for houses and trees seen from far away)");
         RegisterFloatSetting(&g.p.distance, "distance", SettingWidget::Slider, Params{}.distance, 25.0f, 1000.0f, "Distance at which the shade fades out outside map view");
         RegisterFloatSetting(&g.p.simStrength, "simStrength", SettingWidget::Slider, Params{}.simStrength, 0.0f, 1.0f, "Shade on supported Sim materials; 0% removes it, 100% keeps the original");
-        RegisterBoolSetting(&g.p.simControls, "simControls", false, "Adjust occlusion on Sims separately from the scene");
+        RegisterBoolSetting(&g.p.simControls, "simControls", Params{}.simControls, "Adjust occlusion on Sims separately from the scene");
         RegisterFloatSetting(&g.p.hairStrength, "hairStrength", SettingWidget::Slider, Params{}.hairStrength, 0.0f, 1.0f, "Shade on recognized hair; 0% removes it, 100% keeps the original");
         RegisterFloatSetting(&g.p.simMaxShade, "simMaxShade", SettingWidget::Slider, Params{}.simMaxShade, 0.0f, 1.0f, "Limit the maximum added shade on Sims and hair");
         RegisterBoolSetting(&g.p.transparentHair, "transparentHair", true, "Also adjust supported transparent hair strands");
