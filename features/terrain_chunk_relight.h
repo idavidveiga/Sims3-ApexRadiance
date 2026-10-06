@@ -56,9 +56,20 @@ int QueueSweep(const float* eyeXZ, std::string& why, std::string& info, bool int
 // A batch is queued or in flight
 bool Busy();
 
+// Paced full rebuild (item 13b, 05/10): the game's own full rebuild (chunk+0x55: geometry, light map bake, road mark, the
+// later +0x54 render) one chunk at a time, nearest to (x, z) first, instead of every chunk in one ~240 ms frame. The
+// game's consume (0x00C84C3E..0x00C84C5E) only resets the countdown and sets +0x55 on every chunk, and its +0x55 branch
+// clears the flag when done (0x00C850B1), so a chunk is finished when its +0x55 is 0 again. Unlike QueueSweep it needs
+// no earlier rebuild of this world (it is the load rebuild) nor a light map (the bake creates it). Drops the +0x54 queue;
+// local relights and sweeps queued meanwhile wait until it is done. Its end reports Done{rebuild = true} and enables the
+// local path like a consumed full rebuild. 0 with `why` when not possible: the caller arms the full rebuild instead.
+int QueueRebuild(const float* eyeXZ, std::string& why, std::string& info);
+bool RebuildActive();
+
 struct Done {
     int id = 0;
     bool sweep = false;
+    bool rebuild = false; // the paced full rebuild (QueueRebuild)
     std::string text; // "N chunks in K frames, M ms per chunk (max X)"
 };
 struct FrameResult {

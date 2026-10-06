@@ -104,6 +104,20 @@ bool g_rebuiltThisWorld = false, g_offThisWorld = false;
 int g_timeoutsThisWorld = 0; // in-flight timeouts in this world (the second one turns the local path off)
 std::string g_offWhy;
 
+// Paced full rebuild (QueueRebuild): one chunk's +0x55 at a time
+constexpr uint32_t kRebuildTimeout = 600; // frames one chunk may keep its +0x55 (the branch waits behind other chunks' work)
+struct Rebuild {
+    bool active = false, flight = false;
+    int id = 0;
+    std::vector<Entry> order;
+    size_t next = 0;
+    Entry cur;
+    uint32_t frames = 0, startFrame = 0, maxFrames = 0;
+    uintptr_t terrain = 0, begin = 0;
+};
+Rebuild g_rb;
+int g_statRebuilds = 0;
+
 // ---- developer status ----
 int g_statLocal = 0, g_statSweeps = 0, g_statChunks = 0, g_statOtherPath = 0, g_statRefused = 0, g_statFailed = 0;
 int g_waitRebuildFlags = 0, g_waitGates = 0, g_waitRate = 0, g_timedChunks = 0;
@@ -292,6 +306,17 @@ int WriteFlag54(uintptr_t chunk, uint8_t value) {
         BYTE* b = reinterpret_cast<BYTE*>(chunk);
         const int prev = b[0x54];
         b[0x54] = value;
+        return prev;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int WriteFlag55(uintptr_t chunk, uint8_t value) {
+    __try {
+        BYTE* b = reinterpret_cast<BYTE*>(chunk);
+        const int prev = b[0x55];
+        b[0x55] = value;
         return prev;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;
@@ -490,6 +515,7 @@ void OnChunkRendered(void* terrain, const void* chunk, bool rendered, int64_t ti
 
 void OnWorldChanged() {
     ClearQueue();
+    g_rb = Rebuild{};
     g_rebuiltThisWorld = false;
     g_offThisWorld = false;
     g_offWhy.clear();
@@ -500,15 +526,20 @@ void OnWorldChanged() {
 }
 
 bool Drop() {
-    const bool had = g_haveFlight || !g_queue.empty() || !g_batches.empty();
+    const bool had = g_rb.active || g_haveFlight || !g_queue.empty() || !g_batches.empty();
+    g_rb = Rebuild{}; // a chunk already flagged +0x55 is still rebuilt by the game
     ClearQueue();
     return had;
 }
 
 bool OnFullRebuild() {
     g_rebuiltThisWorld = true;
-    return Drop();
+    const bool rebuilding = g_rb.active; // the game flagged every chunk: a paced rebuild is covered (its flag is consumed too)
+    g_rb = Rebuild{};
+    return Drop() || rebuilding;
 }
+
+bool RebuildActive() { return g_rb.active; }
 
 bool LikelyAvailable() { return g_resolved && g_hooked && g_rebuiltThisWorld && !g_offThisWorld; }
 
@@ -520,7 +551,7 @@ bool Editing() {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-bool Busy() { return g_haveFlight || !g_queue.empty() || !g_batches.empty(); }
+bool Busy() { return g_rb.active || g_haveFlight || !g_queue.empty() || !g_batches.empty(); }
 
 size_t ReleaseLimit(bool urgent, double recentMs) {
     // Small reserve for an interactive edit behind a sweep, only after measured
@@ -660,8 +691,101 @@ int QueueSweep(const float* eyeXZ, std::string& why, std::string& info, bool int
     return b.id;
 }
 
+int QueueRebuild(const float* eyeXZ, std::string& why, std::string& info) {
+    if (!g_resolved) return Refuse(why = g_resolveInfo);
+    if (g_rb.active) return Refuse(why = "a paced rebuild is already running");
+    View v;
+    if (!ReadView(v, why)) return Refuse(why);
+    if (v.live == 0) return Refuse(why = "not in live play (engine tool mode)");
+    std::vector<std::pair<float, Entry>> all;
+    all.reserve(v.n);
+    for (uint32_t slot = 0; slot < v.n; slot++) {
+        const uintptr_t ch = ReadPtr(v.begin + 4 * static_cast<uintptr_t>(slot));
+        ChunkRaw c;
+        const int ix = static_cast<int>(slot % v.nx), iz = static_cast<int>(slot / v.nx);
+        if (!ReadChunkRaw(ch, c) || !LayoutOk(v, slot, c)) return Refuse(why = std::format("the chunk at ({},{}) is not laid out as studied", ix, iz));
+        if (c.f55) return Refuse(why = std::format("the chunk at ({},{}) already waits for a rebuild", ix, iz));
+        Entry e;
+        e.chunk = ch;
+        e.slot = slot;
+        e.ix = ix;
+        e.iz = iz;
+        float d = static_cast<float>(slot);
+        if (eyeXZ) {
+            const float dx = static_cast<float>(c.cx) - eyeXZ[0], dz = static_cast<float>(c.cz) - eyeXZ[1];
+            d = dx * dx + dz * dz;
+        }
+        all.emplace_back(d, std::move(e));
+    }
+    if (all.empty()) return Refuse(why = "the terrain has no chunks");
+    std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    ClearQueue(); // every chunk is rebuilt and re-rendered: pending +0x54 work is covered (a chunk in flight is left to the game)
+    g_rb = Rebuild{};
+    g_rb.active = true;
+    g_rb.id = g_nextId++;
+    g_rb.order.reserve(all.size());
+    for (auto& a : all) g_rb.order.push_back(std::move(a.second));
+    g_rb.startFrame = g_frame;
+    g_rb.terrain = v.terrain;
+    g_rb.begin = v.begin;
+    g_statRebuilds++;
+    info = std::format("{} chunks, {}", all.size(), eyeXZ ? "nearest to the camera first" : "in grid order");
+    return g_rb.id;
+}
+
+namespace {
+void FailRebuild(FrameResult& out, const std::string& why) {
+    g_rb = Rebuild{};
+    g_statFailed++;
+    out.failed = true;
+    out.why = why;
+    LOG_WARNING("[ChunkRelight] Paced rebuild: " + why + ": one full rebuild instead");
+}
+
+// One step of the paced rebuild: the chunk in flight done (+0x55 cleared by the game), then the next one flagged
+void StepRebuild(FrameResult& out) {
+    View v;
+    std::string why;
+    if (!ReadView(v, why)) return FailRebuild(out, "the terrain could not be read (" + why + ")");
+    if (v.terrain != g_rb.terrain || v.begin != g_rb.begin) return FailRebuild(out, "the terrain changed under it");
+    if (g_rb.flight) {
+        ChunkRaw c;
+        if (!ReadChunkRaw(g_rb.cur.chunk, c)) return FailRebuild(out, "a chunk could not be read");
+        if (c.f55 != 0) {
+            if (++g_rb.frames > kRebuildTimeout)
+                return FailRebuild(out, std::format("the chunk at ({},{}) was not rebuilt within {} frames", g_rb.cur.ix, g_rb.cur.iz, kRebuildTimeout));
+            return;
+        }
+        g_rb.flight = false;
+        g_rb.maxFrames = std::max(g_rb.maxFrames, g_rb.frames);
+        g_statChunks++;
+    }
+    if (g_rb.next >= g_rb.order.size()) {
+        Done d;
+        d.id = g_rb.id;
+        d.rebuild = true;
+        d.text = std::format("{} chunks in {} frames (a chunk waited at most {} frames)", g_rb.order.size(), g_frame - g_rb.startFrame, g_rb.maxFrames);
+        g_lastDone = "rebuild: " + d.text;
+        out.done.push_back(std::move(d));
+        g_rb = Rebuild{};
+        g_rebuiltThisWorld = true; // as a consumed full rebuild: every chunk has its rebuilt light map now
+        return;
+    }
+    const Entry& e = g_rb.order[g_rb.next];
+    ChunkRaw c;
+    if (ReadPtr(v.begin + 4 * static_cast<uintptr_t>(e.slot)) != e.chunk || !ReadChunkRaw(e.chunk, c) || !LayoutOk(v, e.slot, c))
+        return FailRebuild(out, std::format("the chunk at ({},{}) changed while it was queued", e.ix, e.iz));
+    if (WriteFlag55(e.chunk, 1) < 0) return FailRebuild(out, std::format("the chunk at ({},{}) could not be flagged", e.ix, e.iz));
+    g_rb.cur = e;
+    g_rb.next++;
+    g_rb.flight = true;
+    g_rb.frames = 0;
+}
+} // namespace
+
 void OnPresent(FrameResult& out) {
     g_frame++;
+    if (g_rb.active) return StepRebuild(out); // the +0x54 queue waits (it was cleared when the rebuild started)
     if (!g_haveFlight && g_queue.empty()) {
         FlushDone(out);
         return;
@@ -746,6 +870,8 @@ std::string Status() {
     std::string s = std::format("{} | local relights {}, paced sweeps {}, chunks re-rendered {} ({} by another game path), refused {} (last: {}), failures {} | queue {}",
                                 state, g_statLocal, g_statSweeps, g_statChunks, g_statOtherPath, g_statRefused, g_lastRefusal, g_statFailed, g_queue.size());
     if (g_haveFlight) s += std::format(", in flight ({},{}) for {} frames", g_flight.ix, g_flight.iz, g_flightFrames);
+    s += std::format(" | paced rebuilds {}", g_statRebuilds);
+    if (g_rb.active) s += std::format(" (running: {} of {} chunks)", g_rb.next, g_rb.order.size());
     if (g_timedChunks > 0) s += std::format(" | chunk render: last {:.2f} ms, average {:.2f}, max {:.2f}", g_lastMs, g_sumMs / g_timedChunks, g_maxMs);
     s += std::format(" | waits: rebuild flags {}, terrain not ready {}, 8 per second {} | sweep renders seen {} | last: {}", g_waitRebuildFlags, g_waitGates, g_waitRate,
                      g_sweepRenders.load(std::memory_order_relaxed), g_lastDone);
