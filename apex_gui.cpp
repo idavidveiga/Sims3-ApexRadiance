@@ -3197,7 +3197,7 @@ void Banner() {
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
 // takes input; fades out). Starts only after the loaded-world/menu gate settles. Each frame counts at most 100 ms
 // so a loading stall does not use up the note; opening the menu ends it. ----
-constexpr int kHintMs = 8000;
+constexpr int kHintMs = 4000; // 4 s (user 06/10)
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
