@@ -26,6 +26,10 @@ float CameraNear();
 // Depth-writing back buffer draws so far this frame (render thread): the world being drawn. A frozen screen (the save
 // screen shows a still image of the world) has almost none.
 int DepthWritesThisFrame();
+// The same for the last complete frame (stable whatever the time of the frame it is read), and whether draws are counted
+// at all (the draw hooks are registered while any post-scene effect is on)
+int DepthWritesLastFrame();
+bool Counting();
 // The camera's view-projection of the current frame (world -> clip, rows = c40..c43), false when not seen this frame
 bool CameraViewProj(float vp[4][4]);
 // A of the projection (d = A - near * A / z, so view z / near = A / (A - d)); 1.00008 when unknown

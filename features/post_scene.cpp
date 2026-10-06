@@ -29,6 +29,7 @@ IDirect3DSurface9* g_curRT0 = nullptr;     // identity only
 IDirect3DSurface9* g_backBuffer = nullptr; // identity only
 int g_sceneDraws = 0;
 int g_depthWrites = 0; // of those, the ones that write depth (the drawn world; a frozen screen such as the save screen has almost none)
+int g_lastDepthWrites = 0; // the count of the last complete frame (read at any time of the next frame: InWorld)
 bool g_done = false;
 bool g_rejectedBoundary = false; // no late composite over UI already drawn after an invalid boundary
 
@@ -136,6 +137,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         g_curRT0 = s;
         s->Release();
     }
+    g_lastDepthWrites = g_depthWrites;
     g_sceneDraws = 0;
     g_depthWrites = 0;
     g_done = false;
@@ -264,6 +266,8 @@ void WantCamera(bool on) {
 float CameraNear() { return g_near; }
 
 int DepthWritesThisFrame() { return g_depthWrites; }
+int DepthWritesLastFrame() { return g_lastDepthWrites; }
+bool Counting() { return g_hooks; }
 
 // (row2 . row3) / |row3|^2 of the camera block: 1.00008 in LightProbe-m80, a far plane near 3 km
 float CameraDepthA() {

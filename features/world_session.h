@@ -64,7 +64,7 @@ constexpr unsigned long long kDrawnMs = 1000;
 // Night Lighting's "load settled" (true when it is off), registered by it; null = not required
 inline bool (*g_loadSettled)() = nullptr;
 }
-namespace PostScene { int DepthWritesThisFrame(); }
+namespace PostScene { int DepthWritesThisFrame(); int DepthWritesLastFrame(); bool Counting(); }
 namespace WorldSession {
 inline bool InWorld() {
     static bool open = false;
@@ -76,7 +76,12 @@ inline bool InWorld() {
     }
     if (open) return true;
     const unsigned long long now = GetTickCount64();
-    if (PostScene::DepthWritesThisFrame() >= kMinDepthWrites && (!g_loadSettled || g_loadSettled())) {
+    // the last complete frame's count (06/10: Night Lighting asks at Present, after the count was reset for the next
+    // frame, so the current count read 0 there and restarted the timer every frame); no counting at all (no post-scene
+    // effect on): the settled signal alone
+    const int now0 = PostScene::DepthWritesThisFrame(), last = PostScene::DepthWritesLastFrame();
+    const int writes = now0 > last ? now0 : last;
+    if ((!PostScene::Counting() || writes >= kMinDepthWrites) && (!g_loadSettled || g_loadSettled())) {
         if (!drawnSince) drawnSince = now;
         open = now - drawnSince >= kDrawnMs;
     } else drawnSince = 0;
