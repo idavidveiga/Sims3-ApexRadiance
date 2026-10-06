@@ -94,6 +94,20 @@ struct PictureParams {
     float dreamyAmount = 0.4f, dreamySoftness = 0.6f, dreamySaturation = 0.3f;
     bool fakeHdr = false;                     // local contrast: detail in shadows and highlights without halos
     float hdrAmount = 0.5f, hdrRadius = 0.5f, hdrShadows = 0.4f, hdrHighlights = 0.4f, hdrHalo = 0.6f, hdrSaturation = 0.1f;
+    // Relight (06/10, user: "can we add the Relight?", ReShade's ReLight): up to 4 lights of the player's own, fixed in the
+    // world, lighting what the scene depth shows (positions and normals rebuilt from it), with screen-space shadows
+    static constexpr int kRelightLights = 4;
+    bool relight = false;
+    float relightDark = 0.25f;                // how much light surfaces that look black take (most are dark for want of light)
+    bool relightShadows = true;
+    bool rlOn[kRelightLights] = {true, false, false, false};
+    bool rlPlaced[kRelightLights] = {};       // a point was picked (rlPoint holds it)
+    float rlPoint[kRelightLights][3] = {};    // world point under the screen's centre when placed (m)
+    float rlHeight[kRelightLights] = {1.2f, 1.2f, 1.2f, 1.2f};          // above that point (m)
+    float rlBrightness[kRelightLights] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float rlRange[kRelightLights] = {8.0f, 8.0f, 8.0f, 8.0f};           // m
+    float rlHue[kRelightLights] = {35.0f, 35.0f, 210.0f, 35.0f};
+    float rlColor[kRelightLights] = {0.35f, 0.35f, 0.35f, 0.35f};       // 0 = white light
     // Camera
     bool emphasize = false;                   // grey outside a band of distance around the focus
     bool emphAuto = true;                     // focus on what is at the center of the screen
@@ -189,4 +203,8 @@ class Picture {
     std::string m_loggedProblem;          // render thread
     bool m_appliedLogged = false;         // render thread
     std::atomic<bool> m_resetDiag{false}; // turned on or off (any thread): the render thread starts the diagnostics over
+    // Relight: "Place at the screen center" asks for light N (render thread picks the point at the next pass), its result
+    std::atomic<int> m_pickLight{-1};
+    int m_pickTries = 0;                  // render thread: frames waited for the depth copy
+    std::string m_pickError;              // guarded by m_mutex: why the last place failed ("" = fine)
 };

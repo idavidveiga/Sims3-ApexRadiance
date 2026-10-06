@@ -70,6 +70,52 @@ All values are stored in `[qol.picture]`. Sliders apply live while dragging and 
 
 Missing keys keep their defaults. *Film tones* and *Color mixer* are collapsed *Advanced* groups.
 
+### Filters tab: Relight (06/10)
+
+User: "can we add the Relight?" (ReShade's ReLight, a paid iMMERSE Ultimate shader by Marty's Mods). Up to 4 lights of the
+player's own, fixed in the world, that light what the scene depth shows. Card *Relight* in the *LIGHT AND DETAIL* section of
+the Filters tab, off by default, stored in `[qol.picture.filters]`.
+
+| Menu label | TOML key | Type | Default | Range | Effect |
+|---|---|---|---|---|---|
+| Relight (card switch) | `relight` | bool | off | | Turns the lights on; also requests the scene depth and the camera |
+| Light 1 .. 4 | `relight_lightN_on` | bool | Light 1 on, the others off | | That light's switch |
+| Place at the screen center / Move to the screen center | `relight_lightN_placed`, `relight_lightN_point` | bool, [x, y, z] (m) | not placed | | The world point under the screen's centre at the next frame (the depth copy's centre pixel read back once); the light hangs *Height* above it |
+| Brightness | `relight_lightN_brightness` | float | 100% | 0 to 400% | |
+| Reach | `relight_lightN_range` | float | 8 m | 1 to 30 m | Where its light ends |
+| Height | `relight_lightN_height` | float | 1.2 m | 0 to 5 m | Above the placed point (world up) |
+| Color | `relight_lightN_hue` | float | 35 (Light 3: 210) | 0 to 360 degrees | |
+| Color strength | `relight_lightN_color` | float | 35% | 0 to 100% | 0% is white light |
+| Advanced > Shadows | `relight_shadows` | bool | on | | Screen-space shadows |
+| Advanced > Dark surfaces | `relight_dark` | float | 25% | 0 to 100% | Light taken by surfaces that look black |
+
+While the card is open, each placed light shows on the screen as a dot of its colour with its number (the Apex overlay's
+foreground list; never the game's UI).
+
+How it is drawn (`Relight` in the Picture shader, right after the scene is decoded to linear light, so the grade and every
+other filter apply to the lit picture; scene pixels only, the sky skipped):
+
+- **The camera**: `PostScene::CameraViewProj` (the scene draws' view-projection, clip = VP x (world, 1)); on the CPU in
+  double, its eye (where clip x, y and w are 0) and its inverse. Both matrices are shifted to the eye (the world is about
+  1 km from the origin): `cRlInv` (c58..c61) rebuilds a pixel's position from (ndc, device depth) relative to the eye,
+  `cRlVp` (c62..c65) projects eye-relative points; the lights (c66..c69: position from the eye, w = reach; c70..c73: colour
+  of luminance 1 x brightness) are eye-relative too. `cRelight` (c57): on, dark surfaces, shadows, shadow reach (4 m).
+  These 17 constants are uploaded apart from the 57 others and saved / restored with them.
+- **Per pixel**: the position from the depth copy (R32F, the scene depth copied with the scene), the normal from the 4
+  neighbours (on each axis the side nearer in depth, so an edge does not smear), facing the camera. Per light: angle
+  `saturate((N.l + 0.1) / 1.1)` x window `(1 - (d/R)^4)^2` x `1 / (1 + (4 d / R)^2)`.
+- **Shadows**: 12 steps from just off the surface toward the light (at most 4 m), offset per pixel by interleaved gradient
+  noise, each projected on the screen; a step behind the depth there by 2 cm .. 1 m (in view z) blocks it, smoothly.
+- **Surface colour**: `max(pixel, hue of the 1/4-size scene x Dark surfaces)`: at night most surfaces are dark for want of
+  light, and a single dark pixel's hue is noise, so the neighbourhood gives it. The light added is `a / (1 + a)` per
+  channel (a soft shoulder: strong light does not clip at once).
+- Cost: about 265 more instruction slots (2129 in all, ps_3_0 has 32768 on the test machine); 5 depth reads per pixel
+  plus up to 12 per light with shadows, only while a light is on.
+
+Limitations: it lights only what the screen shows (a light behind the camera still lights what is in view; shadows come
+only from what is on screen); surfaces are treated as matte; the lights stay at their world points when you travel to
+another lot (place them again there).
+
 ## Compatibility and interactions
 
 - **Post-scene effects** (Ambient Occlusion, Edge Smoothing, Depth Blur) run at the end of the scene, before Picture's
