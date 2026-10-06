@@ -6,6 +6,34 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k270Added[] = {
+    "Filters in Color: 25 looks to stack, each with its own strength",
+    "LUT filter: your own look-up tables from the LUTs folder",
+    "Lamp switches all at once: rooms, furniture and ground change together",
+    "Lot Streaming page: more lots in full detail, streamed smoothly (by idavidveiga)",
+    "Ambient Occlusion: Temporal smoothing, Half resolution and Thin object detail",
+    "Light detail: sharper lamp light on walls and floors",
+    "Room to save, Lighter window updates and Faster scripts in Performance",
+    nullptr};
+constexpr const char* k270Improved[] = {
+    "The ground around switched lamps changes in one frame",
+    "Furniture takes the light of lamps on other stories through openings",
+    "Walls block lamp light on outdoor floors, objects and fences",
+    "A lot you enter corrects its lighting sooner",
+    "Moving or switching lamps in Build mode updates rooms sooner",
+    "Lot edges stay seamless in rain, snow and melting snow",
+    "Shore reflections on Twinbrook's sea",
+    "Banding Fix has its own page; Smooth gradients is off by default",
+    "The menu and start note open from the world selector on",
+    "Built-in profiles turn on every Performance switch and keep Water & Snow and Banding Fix",
+    "Sim Occlusion is on by default, and Ambient Occlusion has less grain",
+    nullptr};
+constexpr const char* k270Fixed[] = {
+    "Screen effects wait until the world is drawn, never on menus or loading screens",
+    "The pie menu no longer leaves an unfiltered box or a grey square",
+    "Depth Blur no longer blurs the save screen",
+    nullptr};
+
 constexpr const char* k260Added[] = {
     "Sim Occlusion: soft contact shadows on Sims, with separate body and hair strength",
     "A Distance slider for Ambient Occlusion",
@@ -43,6 +71,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
     {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
     {"2.5.6", "2026-10-03", k256Added, k256Improved, k256Fixed},
 };
