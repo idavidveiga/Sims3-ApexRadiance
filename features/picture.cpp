@@ -375,18 +375,18 @@ float3 ColorLooks(float3 g)
     }
     [branch] if (cFlagG.z > 0.5) // color-blind mode (daltonize): what the eye cannot tell apart is moved into channels it can see
     {
-        float3 e = pow(saturate(g), 1.0 / 2.2);
-        float3 lms = float3(dot(e, float3(17.8824, 43.5161, 4.11935)), dot(e, float3(3.45565, 27.1554, 3.86714)),
-                            dot(e, float3(0.0299566, 0.184309, 1.46709)));
+        float3 lin = saturate(g); // the cone matrices take linear light
+        float3 lms = float3(dot(lin, float3(17.8824, 43.5161, 4.11935)), dot(lin, float3(3.45565, 27.1554, 3.86714)),
+                            dot(lin, float3(0.0299566, 0.184309, 1.46709)));
         float3 sim = lms;
         if (cDalt.x < 0.5) sim.x = 2.02344 * lms.y - 2.52581 * lms.z;       // protan: no long-wave cones
         else if (cDalt.x < 1.5) sim.y = 0.494207 * lms.x + 1.24827 * lms.z; // deutan: no medium-wave cones
         else sim.z = -0.395913 * lms.x + 0.801109 * lms.y;                  // tritan: no short-wave cones
         float3 seen = float3(dot(sim, float3(0.0809444479, -0.130504409, 0.116721066)), dot(sim, float3(-0.0102485335, 0.0540193266, -0.113614708)),
                              dot(sim, float3(-0.000365296938, -0.00412161469, 0.693511405)));
-        float3 err = e - seen;
-        float3 fixd = e + float3(0.0, 0.7 * err.r + err.g, 0.7 * err.r + err.b);
-        g = pow(saturate(lerp(e, fixd, cDalt.y)), 2.2);
+        float3 err = lin - seen;
+        float3 fixd = lin + float3(0.0, 0.7 * err.r + err.g, 0.7 * err.r + err.b);
+        g = saturate(lerp(lin, fixd, cDalt.y));
     }
     return g;
 }
@@ -394,19 +394,36 @@ float3 ColorLooks(float3 g)
 // The light filters, added in linear light on top of the graded picture
 float3 LightFilters(float2 uv, float3 g)
 {
-    [branch] if (cFlagC.x > 0.5) // Glow: a soft halo from the bright parts of a blurred copy of the scene
+    // Glow (06/10: it read only the pixel's own blurred colour, so no halo spread past a lamp and averaging dimmed small
+    // lamps below the threshold): the bright parts around the pixel gathered on a disc, thresholded per tap, screened in
+    [branch] if (cFlagC.x > 0.5)
     {
-        float3 b = lerp(Decode(tex2Dlod(sQuart, float4(uv, 0, 0)).rgb), Decode(SampleBase(uv)), cGlow.z);
-        float L = dot(b, kLum);
-        float3 bright = b * saturate((L - cGlow.y) / max(1.0 - cGlow.y, 0.05));
-        bright *= float3(1.0 + 0.25 * cGlow.w, 1.0, 1.0 - 0.25 * cGlow.w);
-        g += bright * cGlow.x * 1.5;
+        float r = 0.01 + 0.07 * cGlow.z; // radius, a share of the screen height
+        float2 k = float2(r * cSize.x / cSize.y, r);
+        float3 sum = 0.0;
+        float wsum = 0.0;
+        [unroll] for (int i = 0; i < 16; i++)
+        {
+            float a = i * 2.39996, d = sqrt((i + 0.5) / 16.0);
+            float3 c = Decode(tex2Dlod(sQuart, float4(uv + float2(cos(a), sin(a)) * k * d, 0, 0)).rgb);
+            float w = exp(-3.0 * d * d);
+            sum += c * smoothstep(cGlow.y * 0.5, cGlow.y + 0.05, dot(c, kLum)) * w;
+            wsum += w;
+        }
+        float3 bright = sum / wsum * float3(1.0 + 0.25 * cGlow.w, 1.0, 1.0 - 0.25 * cGlow.w) * cGlow.x * 2.5;
+        g = 1.0 - (1.0 - saturate(g)) * (1.0 - saturate(bright)); // screened: it lifts, never clips
     }
-    [branch] if (cFlagC.y > 0.5) // Halation: a tight colored halo only around the strongest light
+    [branch] if (cFlagC.y > 0.5) // Halation: a tight coloured halo around the strongest light, gathered around the pixel
     {
-        float3 b = Decode(tex2Dlod(sQuart, float4(uv, 0, 0)).rgb);
-        float h = saturate((dot(b, kLum) - cHal.y) / max(1.0 - cHal.y, 0.05));
-        g += cHalC.rgb * h * h * cHal.x;
+        float2 k = float2(0.012 * cSize.x / cSize.y, 0.012);
+        float h = 0.0;
+        [unroll] for (int j = 0; j < 8; j++)
+        {
+            float a = j * 0.785398;
+            float3 c = Decode(tex2Dlod(sQuart, float4(uv + float2(cos(a), sin(a)) * k, 0, 0)).rgb);
+            h += smoothstep(cHal.y * 0.6, cHal.y + 0.05, dot(c, kLum));
+        }
+        g = 1.0 - (1.0 - saturate(g)) * (1.0 - saturate(cHalC.rgb * (h / 8.0) * cHal.x * 1.5));
     }
     [branch] if (cFlagC.z > 0.5) // Dreamy (Orton): the picture screened with a soft blurred copy, a little more color
     {
@@ -1430,7 +1447,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fFilm = on(q.filmic, q.filmicAmount), fTintF = on(q.tintFilter, q.tintFilterAmount);
     const bool fLevels = q.levels && (q.levelsBlack > 0.001f || q.levelsWhite < 0.999f);
     const bool wantFog = on(q.fog, q.fogAmount);
-    const bool fCas = q.cas, fDalt = on(q.daltonize, q.daltonAmount);
+    const bool fCas = on(q.cas, q.casAmount), fDalt = on(q.daltonize, q.daltonAmount);
     const bool fAuto = on(q.autoExposure, q.autoAmount) && gpu.adaptTex[0] && gpu.adaptTex[1];
     // LUT: (re)loaded on the frame its file changes; on only with a usable strip
     if (q.lut && gpu.lutLoaded != q.lutFile) {

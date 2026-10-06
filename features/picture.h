@@ -87,7 +87,7 @@ struct PictureParams {
     float daltonType = 1.0f, daltonAmount = 1.0f; // type 0 protan (red), 1 deutan (green), 2 tritan (blue)
     // Light
     bool glow = false;                        // soft halo around bright areas: lamps, windows, sky
-    float glowAmount = 0.4f, glowThreshold = 0.6f, glowSize = 0.5f, glowWarmth = 0.0f;
+    float glowAmount = 0.4f, glowThreshold = 0.4f, glowSize = 0.5f, glowWarmth = 0.0f;
     bool halation = false;                    // film's red halo around strong light
     float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f;
     bool dreamy = false;                      // Orton: a soft glow over the whole picture, a little more color
