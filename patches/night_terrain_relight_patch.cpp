@@ -2229,14 +2229,14 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
-                // Smooth ground light is only a texture/filter choice consumed directly by the draw paths. It must not
-                // trigger the generic lighting refresh or re-gather object rigs; the next draw sees the selected map.
-                if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
-                    NotifySettingChanged();
-                    LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
-                }
                 return changed;
             });
+            // Smooth ground light is only a texture/filter choice consumed directly by the draw paths. It must not
+            // trigger the generic lighting refresh or re-gather object rigs; the next draw sees the selected map.
+            if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
+                NotifySettingChanged();
+                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
+            }
             // When the ground light is rebuilt (lamp changes are always followed; this is the rebuild at dusk)
             if (ApexUi::BeginAdvanced("Updates##NightGround", "Updates")) {
                 Edit([] {
