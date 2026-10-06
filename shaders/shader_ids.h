@@ -33,6 +33,8 @@ constexpr ShaderId kLakePs = {1344, 0x4F52846Au};      // lake water (sun shadow
 constexpr ShaderId kLakePs2 = {1308, 0xB21E05D4u};     // the same lake water with the sun shadow compared by hand (texld + cmp): the
                                                        // game uses it in other weather (2.5.1 report: reflections gone when not sunny)
 constexpr ShaderId kSnowLotPs = {1852, 0x08DF01E8u};   // snowy lot light pass
+constexpr ShaderId kMeltLotPs = {2144, 0x69580706u};   // lot light pass while snow melts (puddles; F7 2026-10-06 00:21): the snowy
+                                                       // pass's lamp term (s2 x basis, later x 0.25) with the dry pass's VS c14/c15 uv
 constexpr ShaderId kRoofSnowPs = {4992, 0x3CEB025Eu};  // snowy roofs
 // vertex shaders
 constexpr ShaderId kLotLightVs = {680, 0x0C8CC5E8u}; // regular lot light pass: contracted UV, F7 2026-10-04 18:35

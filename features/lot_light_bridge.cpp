@@ -242,7 +242,7 @@ const ShaderCache::Id kRoofPsId = AddLotShader("NightLighting roofs", kRoofHlsl,
 const ShaderCache::Id kWaterPsId = AddLotShader("NightLighting lake water", kWaterLampsHlsl, "ps_3_0", 0);
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -571,6 +571,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: second lake shader seen (sun shadow without a depth compare)"); }
             }
             else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kMeltLotPs, code.data(), size)) c = PsClass::LotLightMelt;
             else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
             else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
                 g_wallConst[ps] = static_cast<DWORD>(k);
@@ -1616,7 +1617,9 @@ IDirect3DPixelShader9* g_snowPs = nullptr;
 bool g_snowTried = false;
 std::atomic<int> g_snowDrawn{0};
 
-bool PatchSnowBytecode(std::vector<DWORD>& t) {
+// The same patch for the snowy pass (last sampler s11, terrain light in s12) and the melting-snow pass (kMeltLotPs: last
+// sampler s13, terrain light in s14). r7, v7 and the new sampler must be unused (checked).
+bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampler) {
     auto regNum = [](DWORD r) { return r & 0x7FF; };
     auto regType = [](DWORD r) { return ((r >> 28) & 7) | (((r >> 11) & 3) << 3); };
     size_t dclEnd = 0, texldEnd = 0;
@@ -1627,7 +1630,15 @@ bool PatchSnowBytecode(std::vector<DWORD>& t) {
         const size_t len = (tok >> 24) & 0xF;
         const DWORD op = tok & 0xFFFF;
         if (i + len >= t.size()) return false;
-        if (op == 0x1F && regType(t[i + 2]) == 10 && regNum(t[i + 2]) == 11) dclEnd = i + 1 + len;
+        for (size_t k = 1; k <= len; k++) {
+            const DWORD r = t[i + k];
+            if (op == 0x1F && k == 1) continue; // dcl usage token
+            if (op == 0x51 && k > 1) continue;  // def values
+            if (!(r & 0x80000000u)) continue;
+            const DWORD ty = regType(r), n = regNum(r);
+            if ((ty == 0 && n == 7) || (ty == 1 && n == 7) || (ty == 10 && n == newSampler)) return false; // r7 / v7 / new sampler taken
+        }
+        if (op == 0x1F && regType(t[i + 2]) == 10 && regNum(t[i + 2]) == lastSampler) dclEnd = i + 1 + len;
         if (op == 0x42 && !texldEnd && regType(t[i + 1]) == 0 && regNum(t[i + 1]) == 0 && regType(t[i + 2]) == 1 && regNum(t[i + 2]) == 3 && regType(t[i + 3]) == 10 && regNum(t[i + 3]) == 2)
             texldEnd = i + 1 + len;
         i += 1 + len;
@@ -1636,15 +1647,20 @@ bool PatchSnowBytecode(std::vector<DWORD>& t) {
     // next instruction must be "mul r0.xyz, r1.w, r0" (light basis factor)
     if ((t[texldEnd] & 0xFFFF) != 0x05 || regType(t[texldEnd + 1]) != 0 || regNum(t[texldEnd + 1]) != 0) return false;
     const size_t insertAt = texldEnd + 1 + ((t[texldEnd] >> 24) & 0xF);
-    const DWORD fetch[] = {0x03000042, 0x802F0007, 0x90E40007, 0xA0E4080C,  // texld_pp r7, v7, s12
-                           0x03000002, 0x80270007, 0x80E40007, 0x80E40007,  // add_pp r7.xyz, r7, r7
-                           0x03000002, 0x80270007, 0x80E40007, 0x80E40007,  // add_pp r7.xyz, r7, r7
-                           0x0300000B, 0x80270000, 0x80E40000, 0x80E40007}; // max_pp r0.xyz, r0, r7
+    const DWORD fetch[] = {0x03000042, 0x802F0007, 0x90E40007, 0xA0E40800 | newSampler, // texld_pp r7, v7, s<new>
+                           0x03000002, 0x80270007, 0x80E40007, 0x80E40007,              // add_pp r7.xyz, r7, r7
+                           0x03000002, 0x80270007, 0x80E40007, 0x80E40007,              // add_pp r7.xyz, r7, r7
+                           0x0300000B, 0x80270000, 0x80E40000, 0x80E40007};             // max_pp r0.xyz, r0, r7
     t.insert(t.begin() + insertAt, std::begin(fetch), std::end(fetch));
-    const DWORD decl[] = {0x0200001F, 0x80010005, 0x90230007, 0x0200001F, 0x90000000, 0xA00F080C};
+    const DWORD decl[] = {0x0200001F, 0x80010005, 0x90230007, 0x0200001F, 0x90000000, 0xA00F0800 | newSampler}; // v7 = TEXCOORD1, s<new> 2D
     t.insert(t.begin() + dclEnd, std::begin(decl), std::end(decl));
     return true;
 }
+bool PatchSnowBytecode(std::vector<DWORD>& t) { return PatchLotTerrainMax(t, 11, 12); }
+
+// Melting snow (kMeltLotPs): the patched copy, made once from the first such shader drawn
+IDirect3DPixelShader9* g_meltPs = nullptr;
+bool g_meltTried = false;
 
 template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_curVsIsSnowLot) return false;
@@ -1689,6 +1705,48 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) 
         TerrainConst lampGain(dev, 4, false);
         draw();
         if (atlas) SetVsConst(dev, 15, v, 1);
+        SetPs(dev, original);
+    }
+    g_inOwnCall = false;
+    g_snowDrawn.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// The lot light pass while snow melts (kMeltLotPs, F7 2026-10-06 00:21: the lot kept the game's light next to Apex's world
+// terrain, a cut at the lot edge). Same lamp term as the snowy pass, so the same patch (terrain light in s14); its VS
+// gives the terrain uv in TEXCOORD1 from c14/c15 like the dry lot pass, so the atlas goes through VS c14 as there.
+template <typename DrawFn> bool DrawLotMelt(IDirect3DDevice9* dev, DrawFn draw) {
+    if (!g_meltPs && !g_meltTried) {
+        g_meltTried = true;
+        std::vector<DWORD> t = ShaderCode(g_curPs);
+        const bool ok = !t.empty() && PatchLotTerrainMax(t, 13, 14) && SUCCEEDED(dev->CreatePixelShader(t.data(), &g_meltPs));
+        if (!ok) g_meltPs = nullptr;
+        LOG_INFO(std::string("[LotLightBridge] Melting snow (lot light pass): ") + (ok ? "active" : "failed, left as the game draws it"));
+    }
+    if (!g_meltPs) return false;
+    float v[8];
+    if (FAILED(dev->GetVertexShaderConstantF(14, v, 2)) || !Near(v[0], 1.0f / 256.0f) || !Near(v[1], 1.0f / 256.0f)) return false;
+    float atlasC[4]{};
+    IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasC);
+    IDirect3DBaseTexture9* terrain = atlas;
+    if (!atlas) {
+        auto it = g_chunks.find(Key(v[4], v[6])); // c15.xz = chunk centre
+        if (it == g_chunks.end() || !it->second.tex) {
+            g_lotMissing.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        terrain = ChunkTexture(it->first, it->second.tex);
+    }
+    const float atlasMap[4] = {atlasC[0], atlasC[1], atlasC[2] + v[4] * atlasC[0], atlasC[3] + v[6] * atlasC[1]};
+    IDirect3DPixelShader9* original = g_curPs;
+    g_inOwnCall = true;
+    {
+        SamplerBind terrainMap(dev, 14, terrain);
+        SetPs(dev, g_meltPs);
+        if (atlas) SetVsConst(dev, 14, atlasMap, 1);
+        TerrainConst lampGain(dev, 4, false); // c4.x scales max(lot map, terrain), as in the snowy pass
+        draw();
+        if (atlas) SetVsConst(dev, 14, v, 1);
         SetPs(dev, original);
     }
     g_inOwnCall = false;
@@ -2709,6 +2767,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsSnowCover) return DrawSnowCover(dev, draw) ? kSkip : kContinue;
     if (g_curVsIsSnowRelief) return DrawSnowRelief(dev, draw) ? kSkip : kContinue;
     // Class 10 also holds roof and snow vertex shaders: when the object patch does not apply, fall through to the rest.
+    if (g_curClass == PsClass::LotLightMelt) return DrawLotMelt(dev, draw) ? kSkip : kContinue; // its VS looks like an object rig
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return kSkip;
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return kSkip;
     if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? kSkip : kContinue;
@@ -3768,6 +3827,11 @@ void Shutdown(bool keepChunkMaps) {
         g_snowPs = nullptr;
     }
     g_snowTried = false;
+    if (g_meltPs) {
+        g_meltPs->Release();
+        g_meltPs = nullptr;
+    }
+    g_meltTried = false;
     for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
