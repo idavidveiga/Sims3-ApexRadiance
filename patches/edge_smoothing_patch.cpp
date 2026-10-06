@@ -21,6 +21,7 @@
 #include "depth_share.h"
 #include "render_callbacks.h"
 #include "post_scene.h"
+#include "world_session.h"
 #include "shader_cache.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
@@ -960,6 +961,7 @@ void ReadTimings() {
 // PostScene effect (order kEdgeSmoothing): before Depth Blur and the UI
 void FxaaEffect(IDirect3DDevice9* dev) {
     if (!g.ready || g.resolveFailed || (g.gameAaOn)) return;
+    if (!WorldSession::InWorld()) return; // main menu, load screens: left as the game draws them
     const int method = g.p.method == 1 ? 1 : 0;
     const int key = method * 10 + (method ? g.p.smaaQuality : g.p.quality);
     if (key != g.qMethod) {

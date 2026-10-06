@@ -31,6 +31,7 @@
 #include "render_callbacks.h"
 #include "depth_share.h"
 #include "post_scene.h"
+#include "world_session.h"
 #include "shader_cache.h"
 #include "imgui.h"
 #include "ui/violet_theme.h"
@@ -1036,6 +1037,7 @@ void RunAo(IDirect3DDevice9* dev, IDirect3DTexture9* depth, IDirect3DSurface9* b
 // PostScene effect (order kAmbientOcclusion): first, before edge smoothing, Depth Blur, bloom and the UI
 void AoEffect(IDirect3DDevice9* dev) {
     if (!g.ready || (g.p.strength <= 0.0f && !g.showShade)) return;
+    if (!WorldSession::InWorld()) return; // main menu, load screens: never shaded
     IDirect3DTexture9* depth = DepthShare::Texture();
     if (!depth) return;
     // the scene depth must be the one bound right now (not a reflection or UI pass)

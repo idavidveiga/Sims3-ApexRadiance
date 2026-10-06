@@ -22,6 +22,7 @@
 #include "d3d9_hooks.h"
 #include "depth_share.h"
 #include "post_scene.h"
+#include "world_session.h"
 #include "shader_cache.h"
 #include "imgui.h"
 #include "ui/i18n.h"
@@ -1229,6 +1230,12 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
         return;
     }
     gpu.frameReady = false;
+    if (!WorldSession::InWorld()) { // main menu, load screens: the game's own picture (idle on purpose, not a problem)
+        m_skip.store(kSkipNone);
+        m_lastApplied.store(now);
+        bb->Release();
+        return;
+    }
     if (!raw.enabled && !gpu.sceneCopied) { // smoothing only (Picture off): never over the game's menus
         bb->Release();
         return;

@@ -47,4 +47,32 @@ inline bool IsActive() {
                               *reinterpret_cast<const int*>(world + 0x1B4));
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+
+// The screen effects' gate (Picture, Ambient Occlusion, Edge Smoothing; user 06/10: nothing on the main menu or on a load
+// screen). IsActive alone opens during a load from the main menu (the script-driven load screen is not the startup
+// window; log 06/10 01:07: Bridgeport's load screen counted as playable), so the world must also have been drawn: at least
+// kMinDepthWrites depth-writing draws per frame for kDrawnMs in a row (a load screen draws 0 .. 50, the world hundreds).
+// Then it stays open while the world is active, so the save screen and the in-game menus keep the same look; it closes
+// with the world (main menu) and waits for the next world to be drawn. Render thread only.
+constexpr int kMinDepthWrites = 48;
+constexpr unsigned long long kDrawnMs = 750;
+}
+namespace PostScene { int DepthWritesThisFrame(); }
+namespace WorldSession {
+inline bool InWorld() {
+    static bool open = false;
+    static unsigned long long drawnSince = 0;
+    if (!IsActive()) {
+        open = false;
+        drawnSince = 0;
+        return false;
+    }
+    if (open) return true;
+    const unsigned long long now = GetTickCount64();
+    if (PostScene::DepthWritesThisFrame() >= kMinDepthWrites) {
+        if (!drawnSince) drawnSince = now;
+        open = now - drawnSince >= kDrawnMs;
+    } else drawnSince = 0;
+    return open;
+}
 }
