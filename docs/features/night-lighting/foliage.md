@@ -46,7 +46,7 @@ Fixes 1 and 3 act only at night (night level above 0.01). Fix 2 is applied whene
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Lamps light objects | `postesNosObjetos` | bool | on | | Turns on the rig boost, the moon-shadow replacement, the wrap-light vertex shaders and the winter leaf-shadow patch. Live |
-| Brightness (Objects card) | `forcaNosObjetos` | float | 100% | 25 to 300% | Scales the rig boost that fills the per-instance lamp colours |
+| Brightness (Objects card) | `forcaNosObjetos` | float | 75% | 25 to 300% | Scales the rig boost that fills the per-instance lamp colours |
 
 There is no foliage-specific strength. The Lighting balance styles set `forcaNosObjetos` to 67.5% (Subtle), 75% (Soft) or
 100% (Natural). The night level is the game's `lightMgr+0xF0`, passed by `LotLightBridge::SetNightLevel`.

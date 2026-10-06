@@ -54,8 +54,8 @@ Per draw, when the bound PS is `PsClass::LotLight` (exact `kLotLightPs`, 568 byt
 |---|---|---|---|---|---|
 | Street lamps light lots | `luzDoPosteNaGramaDoLote` | bool | on | | This pass; off also disables roads, floors, fences, snow and per-pixel objects (everything after the wall handler in the dispatch) |
 | Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Needed for the atlas; without it the pass uses the home chunk's game map |
-| Ground brightness | `brilhoNoChao` | float | 100% | 25 to 300% | Night-weighted scale of c3.x |
-| Lot lamp brightness | `forcaDasLampadasDoLote` | float | 100% | 25 to 300% | Night-weighted scale of the lot's own map (c31.x) |
+| Ground brightness | `brilhoNoChao` | float | 75% | 25 to 300% | Night-weighted scale of c3.x |
+| Lot lamp brightness | `forcaDasLampadasDoLote` | float | 80% | 25 to 300% | Night-weighted scale of the lot's own map (c31.x) |
 | Developer: Soft lot edges (A/B) | `bordaSuaveLote` | bool | on | | Registered only in developer mode (always on otherwise); pushed every frame (`SetSoftLotEdges`) |
 | Individual options | `gramaDoLoteUsaLuzDoLote` | bool | off | | Experimental; see *Experimental game patches* |
 | Individual options | `qualidadeAltaEmTodosOsLotes` | bool | off | | Experimental |

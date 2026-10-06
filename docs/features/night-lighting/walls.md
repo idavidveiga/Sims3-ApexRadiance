@@ -42,7 +42,7 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Lamps light walls | `paredesComLuz` | bool | on | | Off keeps the game's walls, by day and night |
-| Brightness | `forcaNasParedes` | float | 200% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
+| Brightness | `forcaNasParedes` | float | 84% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
 
 Both apply live (pushed every frame). The lamps of every story are controlled by *Outdoor light between floors*
 (`luzExternaEntreAndares`), documented in [level-light-share.md](level-light-share.md). The wall gain works with

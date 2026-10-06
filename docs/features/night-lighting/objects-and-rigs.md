@@ -50,11 +50,11 @@ Three layers:
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Objects > Lamps light objects | `postesNosObjetos` | bool | on | | Installs `ObjectLightBridge` (rig boost, cap, rig opening, fenced-yard gather) and turns on the moon-shadow and foliage fixes (`LotLightBridge::SetObjectShadowFix`) |
-| Objects > Brightness | `forcaNosObjetos` | float | 100% | 25 to 300% | Scales the rig boost, raises the rig cap to `cap x max(1, s)`, and sets the ground-light strength on patched objects. A change re-gathers all rigs (`FUN_006b58f0`) |
+| Objects > Brightness | `forcaNosObjetos` | float | 75% | 25 to 300% | Scales the rig boost, raises the rig cap to `cap x max(1, s)`, and sets the ground-light strength on patched objects. A change re-gathers all rigs (`FUN_006b58f0`) |
 | Objects > Light stairs, railings, columns | `lampadasEmTodosObjetos` | bool | on | | Opens rigs the game created closed to lamps; applies to rigs created afterwards (world load; the row carries a reload badge). Also gates the fenced-yard gather |
 | Doors, counters and fences > Doors and windows stay lit | `objetosDeForaComLuzDoChao` | bool | on | | Installs `RigTracker` and enables the per-pixel object patch (`DrawObjectLamp`). Disabled unless *Street lamps light lots* and *Smooth ground light* are on (the card offers a button to turn them on) |
 | Doors, counters and fences > Seamless light on pieces | `luzPorPixelNosObjetos` | bool | on | | Per-pixel world lamps on objects (and on fences). Off: the lamp blocks are zero and only the ground term remains |
-| Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 100% | 25 to 300% | Strength of the per-pixel lamps (`cS.y`) |
+| Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 75% | 25 to 300% | Strength of the per-pixel lamps (`cS.y`) |
 
 All apply live. Every frame the Present hook calls `ObjectLightBridge::SetStrength(forcaNosObjetos)`,
 `SetAllObjects(lampadasEmTodosObjetos)`, `LotLightBridge::SetObjectPixelLamps(objetosDeForaComLuzDoChao &&

@@ -163,7 +163,7 @@ bool g_streetLampsLit = false;
 bool g_relightLots = false;
 bool g_bridge = true;
 bool g_objLamps = true;
-float g_objStrength = 1.0f;
+float g_objStrength = 0.75f;
 bool g_objAll = true;
 bool g_smoothMaps = true;
 bool g_smoothMapsGpu = true; // developer A/B: smoothing on the GPU (default) or on the CPU worker (dev-only setting)
@@ -183,12 +183,12 @@ float g_unlitLight = 0.35f;      // how much of the game's unlit-room light stay
 float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
-float g_objPixelLightStrength = 1.0f;
-float g_fenceGroundStrength = 1.0f;
+float g_objPixelLightStrength = 0.75f;
+float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
-float g_wallStrength = 2.0f; // multiplier of baked wall lamp RGB, independent of the enabled state
+float g_wallStrength = 0.84f; // multiplier of baked wall lamp RGB, independent of the enabled state
 bool g_roofs = true;
-float g_roofStrengthSetting = 0.6f;
+float g_roofStrengthSetting = 0.45f;
 bool g_water = true;
 bool g_waterFilter = true, g_waterColorCompression = true;
 float g_waterStrengthSetting = 0.4f;
@@ -196,10 +196,10 @@ float g_waterReflSetting = 1.0f;
 // Brightness controls (Lamps and Ground tabs). Ground / roads / lot lamps on lot grass apply live in the ground shaders
 // (LotLightBridge::SetGroundBrightness); street / lot lamps in the terrain light bake (BakeColourStub) need a terrain
 // rebuild, done once when the slider is let go; the moonlight scales the game's sun / moon colour at night.
-float g_groundBrightness = 1.0f;
+float g_groundBrightness = 0.75f;
 float g_roadBrightness = 1.0f;  // x the ground brightness
-float g_streetLampGain = 1.0f;  // street lamps on the ground (terrain bake)
-float g_lotLampGain = 1.0f;     // lot lamps on the ground (terrain bake + the lot's own light map)
+float g_streetLampGain = 0.8f;  // street lamps on the ground (terrain bake)
+float g_lotLampGain = 0.8f;     // lot lamps on the ground (terrain bake + the lot's own light map)
 float g_moonlight = 1.0f;       // the moon's light at night
 bool g_edgePad = true;          // pad the room light maps' edges (RoomMapPadding): no dark side on things along walls
 bool g_lotTintOwn = false;      // lot lamps have their own colour
@@ -1635,7 +1635,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_objLamps, "postesNosObjetos", true,
             S3SS_TR("Postes e luminarias iluminam cercas, arbustos e objetos de fora como iluminam o chao.",
                     "Lamps light nearby fences, bushes and outdoor objects the way they light the ground."));
-        RegisterFloatSetting(&g_objStrength, "forcaNosObjetos", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+        RegisterFloatSetting(&g_objStrength, "forcaNosObjetos", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             S3SS_TR("Forca da luz dos postes nos objetos.", "How strongly lamps light objects."));
         RegisterBoolSetting(&g_objAll, "lampadasEmTodosObjetos", true,
             S3SS_TR("Tambem escadas, grades, colunas e outros objetos que o jogo deixa sem luz de lampada (vale ao carregar o mundo).",
@@ -1660,12 +1660,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_fenceGround, "cercasComLuzDoChao", true,
             S3SS_TR("Cercas, grades, postes de cerca e escadas recebem a luz das lampadas do chao em volta (o jogo quase nunca manda lampada para elas).",
                     "Fences, railings, fence posts and stairs get the lamp light of the ground around them."));
-        RegisterFloatSetting(&g_fenceGroundStrength, "forcaNasCercas", SettingWidget::Slider, 1.0f, 0.25f, 2.0f,
+        RegisterFloatSetting(&g_fenceGroundStrength, "forcaNasCercas", SettingWidget::Slider, 0.75f, 0.25f, 2.0f,
             S3SS_TR("Forca da luz do chao nas cercas, grades e escadas.", "How strongly fences, railings, stairs and the snow on them are lit."));
         RegisterBoolSetting(&g_walls, "paredesComLuz", true,
             S3SS_TR("As paredes externas recebem a luz das lampadas com a forca escolhida (desligado = como o jogo).",
                     "Outside walls get lamp light at the chosen brightness (off = the game's own dim wall light)."));
-        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 2.0f, 0.25f, 4.0f,
+        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 0.84f, 0.25f, 4.0f,
             S3SS_TR("Intensidade da luz das lampadas nas paredes externas, durante o dia e a noite.",
                     "Intensity of lamp light on outside walls, by day and night."));
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
@@ -1691,12 +1691,12 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_objPixelLights, "luzPorPixelNosObjetos", true,
             S3SS_TR("Objetos de fora (balcoes, pecas modulares, portas) recebem as lampadas calculadas em cada ponto, iguais para todas as pecas: sem emendas de cor entre pecas vizinhas.",
                     "Outdoor objects (counters, modular pieces, doors) get lamp light computed at every point, the same for every piece: no colour seams between neighbouring pieces."));
-        RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+        RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             S3SS_TR("Forca das lampadas calculadas por ponto nos objetos de fora.", "Strength of the per-point lamp light on outdoor objects."));
         RegisterBoolSetting(&g_roofs, "telhadosComLuz", true,
             S3SS_TR("Telhados recebem a luz das lampadas e postes proximos (sombra mais suave tambem).",
                     "Roofs receive light from nearby lamps (with softer shadows)."));
-        RegisterFloatSetting(&g_roofStrengthSetting, "forcaNosTelhados", SettingWidget::Slider, 0.6f, 0.05f, 2.0f,
+        RegisterFloatSetting(&g_roofStrengthSetting, "forcaNosTelhados", SettingWidget::Slider, 0.45f, 0.05f, 2.0f,
             S3SS_TR("Forca da luz das lampadas nos telhados.", "How strongly lamps light roofs."));
         RegisterBoolSetting(&g_unlitOn, "comodosEscurosSemLuz", true,
             "Rooms with every lamp off keep only a little light (set below) instead of the game's blue glow.");
@@ -1713,13 +1713,13 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_waterReflSetting, "reflexoNoLago", SettingWidget::Slider, 1.0f, 0.0f, 3.0f,
             S3SS_TR("Forca do reflexo da margem (arvores, casas, postes) na agua dos lagos.",
                     "Strength of the shore reflection (trees, houses, lamps) on ponds (needs Depth Blur)."));
-        RegisterFloatSetting(&g_groundBrightness, "brilhoNoChao", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+        RegisterFloatSetting(&g_groundBrightness, "brilhoNoChao", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             "How bright lamp light is on grass, lots and outdoor floors (1 = the default).");
         RegisterFloatSetting(&g_roadBrightness, "brilhoNasRuas", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
             "How bright lamp light is on roads and sidewalks, relative to the ground (1 = the same).");
-        RegisterFloatSetting(&g_streetLampGain, "forcaDosPostes", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+        RegisterFloatSetting(&g_streetLampGain, "forcaDosPostes", SettingWidget::Slider, 0.8f, 0.25f, 3.0f,
             "How strongly street lamps light the ground (1 = the default; the ground light is rebuilt when it changes).");
-        RegisterFloatSetting(&g_lotLampGain, "forcaDasLampadasDoLote", SettingWidget::Slider, 1.0f, 0.25f, 3.0f,
+        RegisterFloatSetting(&g_lotLampGain, "forcaDasLampadasDoLote", SettingWidget::Slider, 0.8f, 0.25f, 3.0f,
             "How strongly outdoor lot lamps light the ground (1 = the default; the ground light is rebuilt when it changes).");
         RegisterFloatSetting(&g_moonlight, "luar", SettingWidget::Slider, 1.0f, 0.0f, 2.0f,
             "How strong the moonlight is at night (1 = the game; 0 = no moonlight, only lamps and the sky's glow).");
@@ -2156,23 +2156,23 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_lotTintOwn = false;
         g_lotLampTint = 1.0f;
         g_edgePad = true;
-        g_groundBrightness = 1.0f;
+        g_groundBrightness = 0.75f;
         g_roadBrightness = 1.0f;
-        g_streetLampGain = 1.0f;
-        g_lotLampGain = 1.0f;
+        g_streetLampGain = 0.8f;
+        g_lotLampGain = 0.8f;
         g_moonlight = 1.0f;
         g_objLamps = true;
-        g_objStrength = 1.0f;
+        g_objStrength = 0.75f;
         g_objAll = true;
         g_objPixel = true;
         g_objPixelLights = true;
-        g_objPixelLightStrength = 1.0f;
+        g_objPixelLightStrength = 0.75f;
         g_fenceGround = true;
-        g_fenceGroundStrength = 1.0f;
+        g_fenceGroundStrength = 0.75f;
         g_walls = true;
-        g_wallStrength = 2.0f;
+        g_wallStrength = 0.84f;
         g_roofs = true;
-        g_roofStrengthSetting = 0.6f;
+        g_roofStrengthSetting = 0.45f;
         g_water = true;
         g_waterFilter = g_waterColorCompression = true;
         g_waterStrengthSetting = 0.4f;
@@ -2209,9 +2209,9 @@ class NightTerrainRelightPatch : public ApexPatch {
     };
     // Preserve the approved Soft surface ratios; variants change intensity conservatively.
     static constexpr LightStyle kStyles[] = {
-        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 1.35f, 0.405f}}, // Subtle
-        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 1.5f, 0.45f}},         // Soft reference
-        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 0.6f}},             // Natural
+        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 0.76f, 0.405f}}, // Subtle (walls 76%, user 06/10; the others keep the ratio)
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 0.84f, 0.45f}},        // Soft reference (the defaults, user 06/10)
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.13f, 0.6f}},            // Natural
     };
     static float* StyleValue(int i) {
         float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
@@ -2341,14 +2341,14 @@ class NightTerrainRelightPatch : public ApexPatch {
                 // The ground and road gains are applied in the draws of "Street lamps light lots"
                 if (!g_bridge) ApexUi::IconNote(ApexUi::IconId::Info, "Needs \"Street lamps light lots\"");
                 ImGui::BeginDisabled(!g_bridge);
-                bool changed = ApexUi::SliderPercent("Ground brightness", &g_groundBrightness, 0.25f, 3.0f, "Lamp light on grass, lots and patios", 1.0f);
+                bool changed = ApexUi::SliderPercent("Ground brightness", &g_groundBrightness, 0.25f, 3.0f, "Lamp light on grass, lots and patios", 0.75f);
                 changed |= ApexUi::SliderPercent("Roads and sidewalks", &g_roadBrightness, 0.25f, 3.0f, "Balance roads against the surrounding ground", 1.0f);
                 ImGui::EndDisabled();
                 // In the terrain light bake: the ground is rebuilt once the slider is let go
                 const char* bakeTip = g_bakeGainInstalled ? nullptr : "Not available on this game version";
                 ImGui::BeginDisabled(!g_bakeGainInstalled);
-                changed |= ApexUi::SliderPercent("Street lamp brightness", &g_streetLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "Ground light cast by street lamps", 1.0f);
-                changed |= ApexUi::SliderPercent("Lot lamp brightness", &g_lotLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "Ground light cast by lamps on lots", 1.0f);
+                changed |= ApexUi::SliderPercent("Street lamp brightness", &g_streetLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "Ground light cast by street lamps", 0.8f);
+                changed |= ApexUi::SliderPercent("Lot lamp brightness", &g_lotLampGain, 0.25f, 3.0f, bakeTip ? bakeTip : "Ground light cast by lamps on lots", 0.8f);
                 ImGui::EndDisabled();
                 return changed;
             });
@@ -2368,7 +2368,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Lamps light objects", &g_objLamps, "Outdoor objects get lamp light, even in the shade of walls", true);
                 if (g_objLamps)
-                    changed |= ApexUi::SliderPercent("Brightness##Objects", &g_objStrength, 0.25f, 3.0f, "Raise it if objects look dark next to lamps", 1.0f);
+                    changed |= ApexUi::SliderPercent("Brightness##Objects", &g_objStrength, 0.25f, 3.0f, "Raise it if objects look dark next to lamps", 0.75f);
                 ImGui::BeginDisabled(!g_objLamps);
                 ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // the game builds these pieces' light when a world loads
                 changed |= ApexUi::SwitchRow("Light stairs, railings, columns", &g_objAll, "Pieces the game leaves unlit", true);
@@ -2400,10 +2400,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                 changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
                 changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
                 if (g_objPixelLights)
-                    changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "Intensity on counters and modular pieces", 1.0f);
+                    changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "Intensity on counters and modular pieces", 0.75f);
                 changed |= ApexUi::SwitchRow("Fences and stairs catch light", &g_fenceGround, "Fences, posts, stairs and their snow match the lit ground", true);
                 if (g_fenceGround)
-                    changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "Balance fences against the surrounding ground", 1.0f);
+                    changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "Balance fences against the surrounding ground", 0.75f);
                 ImGui::EndDisabled();
 
                 return changed;
@@ -2434,11 +2434,11 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ApexUi::GroupLabel("WALLS");
                 bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
                 if (g_walls)
-                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 2.0f);
+                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 0.84f);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
-                    changed |= ApexUi::SliderPercent("Brightness##Roofs", &g_roofStrengthSetting, 0.05f, 2.0f, "Intensity of lamp light on roofs", 0.6f);
+                    changed |= ApexUi::SliderPercent("Brightness##Roofs", &g_roofStrengthSetting, 0.05f, 2.0f, "Intensity of lamp light on roofs", 0.45f);
                 return changed;
             });
         }

@@ -50,7 +50,7 @@ the automatic fallback.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Pushed every frame (`LightmapSmooth::SetEnabled`); off calls `Clear()` (everything released). The Doors, counters and fences options are disabled without it (no atlas) |
-| Ground brightness | `brilhoNoChao` | float | 100% | 25 to 300% | Terrain lamp scale constant (see *World terrain draw*) |
+| Ground brightness | `brilhoNoChao` | float | 75% | 25 to 300% | Terrain lamp scale constant (see *World terrain draw*) |
 | Developer: Smooth the ground light maps on the GPU (A/B) | `mapaDeLuzSuavizadoNaGpu` | bool | on | | Registered only in developer mode; pushed every frame (`SetGpuPreferred`), applied at the next Present: a switch calls `Clear()` and the new path rebuilds every map. Normal mode always prefers the GPU and falls back to the CPU by itself |
 
 Registration happens after the *Street lamps light lots* gate of the dispatch, so with that switch off no chunk is

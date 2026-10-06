@@ -46,7 +46,7 @@ This page covers the `vs_3_0` instanced structure family.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Fences and stairs catch light | `cercasComLuzDoChao` | bool | on | | Ground light on fences, railings, posts and stairs, and on snow lying on objects and stair tops ([snow.md](snow.md)) |
-| Fence brightness | `forcaNasCercas` | float | 100% | 25 to 200% | Multiplies the atlas term; 100% = the same light as the ground. Shown when the switch is on |
+| Fence brightness | `forcaNasCercas` | float | 75% | 25 to 200% | Multiplies the atlas term; 100% = the same light as the ground. Shown when the switch is on |
 
 Both apply live (`LotLightBridge::SetFenceGroundLight`, every frame). The card disables these rows unless *Street lamps
 light lots* and *Smooth ground light* are both on (the atlas exists only with both) and offers a button to turn them on.

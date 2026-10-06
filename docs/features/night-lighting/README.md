@@ -89,23 +89,23 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Ground > Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Smoothed chunk maps and the world atlas ([world-atlas](world-atlas-and-smoothed-maps.md)) |
 | Ground > Updates > Update at dusk | `automaticoAoAnoitecer` | bool | on | | Rebuild the terrain light at the settled day and night endpoints |
 | Ground > Updates > Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5 to 10 s | Wait before the endpoint rebuild (none while Build mode editing) |
-| Ground intensity > Ground brightness | `brilhoNoChao` | float | 100% | 25 to 300% | Lamp scale on terrain, lot grass, snowy lot grass and floors; needs *Street lamps light lots* |
+| Ground intensity > Ground brightness | `brilhoNoChao` | float | 75% | 25 to 300% | Lamp scale on terrain, lot grass, snowy lot grass and floors; needs *Street lamps light lots* |
 | Ground intensity > Roads and sidewalks | `brilhoNasRuas` | float | 100% | 25 to 300% | Road lamp scale, multiplied by the ground brightness ([roads](roads.md)) |
-| Ground intensity > Street lamp brightness | `forcaDosPostes` | float | 100% | 25 to 300% | Street-lamp colour in the terrain bake; one terrain rebuild on slider release |
-| Ground intensity > Lot lamp brightness | `forcaDasLampadasDoLote` | float | 100% | 25 to 300% | Lot-lamp colour in the terrain bake (rebuild on release) and the lot's own light map on its grass (live) |
+| Ground intensity > Street lamp brightness | `forcaDosPostes` | float | 80% | 25 to 300% | Street-lamp colour in the terrain bake; one terrain rebuild on slider release |
+| Ground intensity > Lot lamp brightness | `forcaDasLampadasDoLote` | float | 80% | 25 to 300% | Lot-lamp colour in the terrain bake (rebuild on release) and the lot's own light map on its grass (live) |
 | Objects > Lamps light objects | `postesNosObjetos` | bool | on | | Rig lamp boost and moon-shadow fix ([objects-and-rigs](objects-and-rigs.md), [foliage](foliage.md)) |
-| Objects > Brightness | `forcaNosObjetos` | float | 100% | 25 to 300% | Strength of lamps on objects |
+| Objects > Brightness | `forcaNosObjetos` | float | 75% | 25 to 300% | Strength of lamps on objects |
 | Objects > Light stairs, railings, columns | `lampadasEmTodosObjetos` | bool | on | | Objects the game leaves without lamp light; applies when a world loads ("Reload save" badge) |
 | Doors, counters and fences > Doors and windows stay lit | `objetosDeForaComLuzDoChao` | bool | on | | Outdoor rig objects get at least the ground light (`RigTracker`); needs the ground light |
 | Doors, counters and fences > Seamless light on pieces | `luzPorPixelNosObjetos` | bool | on | | Per-pixel world lamps on outdoor rig objects; needs the ground light |
-| Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 100% | 25 to 300% | Strength of those per-pixel lamps |
+| Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 75% | 25 to 300% | Strength of those per-pixel lamps |
 | Doors, counters and fences > Fences and stairs catch light | `cercasComLuzDoChao` | bool | on | | Fences, railings, stairs and their snow read the atlas ([fences](fences.md), [snow](snow.md)); needs the ground light |
-| Doors, counters and fences > Fence brightness | `forcaNasCercas` | float | 100% | 25 to 200% | Strength on fences, railings, stairs and their snow |
+| Doors, counters and fences > Fence brightness | `forcaNasCercas` | float | 75% | 25 to 200% | Strength on fences, railings, stairs and their snow |
 | Indoor objects > Smooth indoor light (Experimental) | `bordasDosMapasDeLuz` | bool | on | | Indoor objects and stairs read the room's directional light maps smoothly (see *Smooth indoor light*) |
 | Buildings > Lamps light walls | `paredesComLuz` | bool | on | | Exterior wall lamp gain by day and night; off keeps the native draw ([walls](walls.md)) |
-| Buildings > Brightness (walls) | `forcaNasParedes` | float | 200% | 25 to 400% | Wall lamp RGB multiplier (`SetWallGain` clamps 0.25 to 8) |
+| Buildings > Brightness (walls) | `forcaNasParedes` | float | 84% | 25 to 400% | Wall lamp RGB multiplier (`SetWallGain` clamps 0.25 to 8) |
 | Buildings > Lamps light roofs | `telhadosComLuz` | bool | on | | Roof lamp pass ([roofs](roofs.md)) |
-| Buildings > Brightness (roofs) | `forcaNosTelhados` | float | 60% | 5 to 200% | Roof lamp strength |
+| Buildings > Brightness (roofs) | `forcaNosTelhados` | float | 45% | 5 to 200% | Roof lamp strength |
 | Light detail > Detail (Experimental) | `detalheDaLuz` | enum | Game | Game, High | High doubles the game's lighting texels per metre on walls and floors (`features/light_detail.cpp`: texels per tile `0x00FF36AC` {1, 2, 4} -> {2, 4, 8}, wall atlases `0x00FF36DC` / `0x00FF36E8` doubled per LOD class). Written once at startup before any lot is lit, Steam 1.67.2 only, left alone when another mod changed those tables; a change takes effect after a restart. Rooms take about four times longer to solve and their maps use four times the memory |
 | Rooms at Night > Adjust the background light | `comodosEscurosSemLuz` | bool | on | | Rooms with lamps off keep the light set below ([unlit-rooms](unlit-rooms.md)) |
 | Rooms at Night > Brightness | `luzQueSobraNosComodos` | float | 35% | 10 to 80% | How much of the game's unlit-room light stays |
