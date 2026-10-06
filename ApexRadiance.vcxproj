@@ -183,6 +183,9 @@
     <ClCompile Include="i18n\tr_features.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="ApexRadiance.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="apex_config.h" />
     <ClInclude Include="apex_presets.h" />
     <ClInclude Include="apex_changelog.h" />
