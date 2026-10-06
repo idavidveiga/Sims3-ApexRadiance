@@ -13,7 +13,7 @@ Estado do código após integração:
 IMPORTANTE SOBRE DEFAULTS:
 - 300/16/5.0 continuam sendo os valores validados/recomendados quando os recursos são ligados;
 - no código integrado atual, Extended Lot Detail e Smooth Lot Streaming estão registrados como opt-in (enabledByDefault=false);
-- portanto “default 300/16” significa default dos controles internos, não que o patch esteja automaticamente ligado.
+- portanto 300/16 são os valores padrão dos controles internos quando o recurso é ativado, não uma indicação de que o patch esteja automaticamente ligado.
 
 S3SS — classificação final:
 - Object Throttle: port/adaptação direta de algoritmo/código do LotStreamingOptimizations;
