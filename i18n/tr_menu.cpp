@@ -768,6 +768,7 @@ const I18n::Entry kEntries[] = {
      "Sims3SettingsSetter, de sims3fiend: origen del proyecto y referencia para el framework.",
      "Sims3SettingsSetter, par sims3fiend : origine du projet et référence pour le framework."},
     {"FXAA 3.11: Timothy Lottes (NVIDIA).", "FXAA 3.11: Timothy Lottes (NVIDIA).", "FXAA 3.11: Timothy Lottes (NVIDIA).", "FXAA 3.11 : Timothy Lottes (NVIDIA)."},
+    {"Thanks to @boringbones for testing every build.", "Obrigado a @boringbones por testar cada build.", "Gracias a @boringbones por probar cada build.", "Merci à @boringbones d'avoir testé chaque build."},
     {"FidelityFX CAS: AMD (MIT).", "FidelityFX CAS: AMD (MIT).", "FidelityFX CAS: AMD (MIT).", "FidelityFX CAS : AMD (MIT)."},
     {"Upper-floor ground light: Arro's technique, adapted in Apex Radiance.",
      "Luz dos andares superiores no chão: técnica de Arro, adaptada no Apex Radiance.",
