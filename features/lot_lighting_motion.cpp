@@ -129,6 +129,48 @@ std::atomic<uint64_t> g_lastPresentTick{0};
 
 // statistics
 std::atomic<uint32_t> c_calls{0}, c_scaled{0}, c_eyeFails{0};
+
+// ---- Lot build slice while moving (05/10) ----
+// 0x00AEA680 builds a streaming lot a slice per frame: its budget [esp+14h] is 20 ms (35 for a priority lot; 2000 when
+// [[0x011ECBC4]+0x1B4] == 0, the loading screen), then the build steps run until it is spent. While the camera moves
+// the 20 / 35 ms slices made hitches as lots stream in. The 5-byte "mov eax,[0x011ECBC4]" at 0x00AEA6D8, right after the
+// budget is chosen and before the 2000 ms test, becomes a CALL of LotBuildStub: it lowers the budget to kBuildMovingMs
+// while the camera moves (the loading screen's 2000 is still written after it) and loads eax as the original did.
+constexpr uint32_t kBuildMovingMs = 6;
+uintptr_t g_buildSite = 0;
+uintptr_t g_buildGlobal = 0; // the address the original "mov eax,[imm32]" reads
+uint8_t g_buildOrig[5] = {};
+bool g_buildOn = false;
+std::atomic<uint32_t> c_buildCalls{0}, c_buildLowered{0};
+bool MovingAt(uint64_t now);
+void SampleCamera(uint64_t now);
+
+void __cdecl LotBuildAdjust(uint32_t* budget) {
+    c_buildCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!g_on.load(std::memory_order_acquire) || *budget <= kBuildMovingMs || *budget >= 1000) return;
+    const uint64_t now = GetTickCount64();
+    SampleCamera(now);
+    if (!MovingAt(now)) return;
+    *budget = kBuildMovingMs;
+    c_buildLowered.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Called in place of "mov eax,[g]": every register but eax kept; the caller's [esp+14h] is [esp+18h] here
+__declspec(naked) void LotBuildStub() {
+    __asm {
+        push ecx
+        push edx
+        lea eax, [esp + 20h]
+        push eax
+        call LotBuildAdjust
+        add esp, 4
+        pop edx
+        pop ecx
+        mov eax, g_buildGlobal
+        mov eax, [eax]
+        ret
+    }
+}
 std::atomic<uint32_t> g_lastGame{0}, g_lastOut{0}; // float bits
 
 // ---- wall shading gate ----
@@ -457,11 +499,28 @@ bool Start(std::string* error) {
         return fail(std::format("Could not patch the lot lighting budget call at {:#010x} (a thread kept running it, or the write failed)", call));
     }
     g_call = call;
+    // the lot build slice (optional part)
+    g_buildOn = false;
+    if (GameAddr::Have({GameAddr::Id::LotBuildBudgetLoad})) {
+        const uintptr_t site = GameAddr::Get(GameAddr::Id::LotBuildBudgetLoad);
+        uint8_t b[5] = {};
+        if (MemPatch::ReadBytes(site, b, 5) && b[0] == 0xA1) {
+            std::memcpy(g_buildOrig, b, 5);
+            std::memcpy(&g_buildGlobal, b + 1, 4);
+            uint8_t c[5] = {0xE8};
+            const int32_t r = MemPatch::CalculateRelativeOffset(site, reinterpret_cast<uintptr_t>(&LotBuildStub));
+            std::memcpy(c + 1, &r, 4);
+            g_buildSite = site;
+            g_buildOn = MemPatch::WriteCodeSuspended(site, c, 5);
+        }
+        if (!g_buildOn) LOG_WARNING(std::format("[LotLightingMotion] Lot build slice left as it is (the code at {:#010x} differs or could not be written)", site));
+    }
     g_started = true;
     UpdatePresentSampler();
     LOG_INFO(std::format("[LotLightingMotion] On: the call at {:#010x} to the lot lighting budget {:#010x} goes through Apex; camera eye [[{:#010x}]+{:#x}]+{:#x}; "
-                         "budget while moving {} ms for the current lot",
-                         call, budget, g_rootGlobal, g_camOff, g_eyeOff, g_budgetMs.load()));
+                         "budget while moving {} ms for the current lot; lot build slice {}",
+                         call, budget, g_rootGlobal, g_camOff, g_eyeOff, g_budgetMs.load(),
+                         g_buildOn ? std::format("{} ms while moving ({:#010x})", kBuildMovingMs, g_buildSite) : std::string("left as it is")));
     return true;
 }
 
@@ -478,9 +537,14 @@ void Stop() {
     } else {
         LOG_WARNING(std::format("[LotLightingMotion] The call at {:#010x} was changed by another module after Apex; left as it is", g_call));
     }
+    if (g_buildOn) {
+        if (MemPatch::WriteCodeSuspended(g_buildSite, g_buildOrig, 5)) g_buildOn = false;
+        else LOG_ERROR(std::format("[LotLightingMotion] Could not restore the lot build slice at {:#010x}; it stays on Apex's stub, which keeps the game's budget now", g_buildSite));
+    }
     g_started = false;
     UpdatePresentSampler();
-    LOG_INFO(std::format("[LotLightingMotion] Off ({} budget calls, {} scaled while the camera moved)", c_calls.load(), c_scaled.load()));
+    LOG_INFO(std::format("[LotLightingMotion] Off ({} budget calls, {} scaled while the camera moved; lot build slices {}, {} shortened)", c_calls.load(), c_scaled.load(),
+                         c_buildCalls.load(), c_buildLowered.load()));
 }
 
 bool Running() { return g_on.load(std::memory_order_acquire); }
@@ -518,6 +582,8 @@ void RenderDeveloperUI() {
     ImGui::TextWrapped("Call %#010x -> %#010x; camera eye [[%#010x]+0x%X]+0x%X (%s); last camera move %s; frames sampled %u", static_cast<unsigned>(g_call),
                         static_cast<unsigned>(g_budgetFn), static_cast<unsigned>(g_rootGlobal), g_camOff, g_eyeOff, g_haveEye ? "read" : "not readable now",
                         last ? std::format("{:.1f} s ago", static_cast<double>(now - last) / 1000.0).c_str() : "never", g_frame.load());
+    ImGui::TextWrapped("Lot build slices %u, shortened to %u ms while moving %u (%s)", c_buildCalls.load(), kBuildMovingMs, c_buildLowered.load(),
+                        g_buildOn ? "on" : "off");
     ImGui::TextWrapped("Budget calls %u, scaled while moving %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(), c_scaled.load(), c_eyeFails.load(),
                         Bits(g_lastGame.load()), Bits(g_lastOut.load()));
         ApexUi::EndAdvanced();

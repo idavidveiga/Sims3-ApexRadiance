@@ -556,15 +556,18 @@ APEX_REGISTER_FEATURE(WallShadingWhileMovingPatch,
 
 APEX_REGISTER_FEATURE(LotLightingMotionPatch,
                       {.displayName = "Lot Lighting While Moving",
-                       .description = "While the camera moves, lots relight in smaller steps each frame instead of taking up to 15 ms at once, so panning over busy "
-                                      "neighborhoods stutters less. Lights finish as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                       .description = "While the camera moves, lots relight, and lots that just loaded are built, in smaller steps each frame instead of taking up to "
+                                      "15 ms (lighting) or 35 ms (building) at once, so panning over busy neighborhoods stutters less. Everything finishes "
+                                      "as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                        .experimental = false,
                        .enabledByDefault = true,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"The lot lighting update's budget call (0xADB95D -> 0xADB120) goes through Apex: while the camera eye moved in the last 300 ms, "
                                             "the budget is scaled so the current lot gets the chosen ms and every other lot the same fraction of its own.",
-                                            "Tool mode (1000 ms) is never changed; nothing is skipped, the room solves resume next frame."},
+                                            "Tool mode (1000 ms) is never changed; nothing is skipped, the room solves resume next frame.",
+                                            "A streaming lot's build slice (0xAEA680, 20 ms, 35 for a priority lot) is 6 ms while the camera moves (the load at "
+                                            "0xAEA6D8 becomes a call that lowers the budget; the loading screen's 2000 ms is still set after it)."},
                        .gameCodeGroup = "LotLightingMotion"});
 
 APEX_REGISTER_FEATURE(FastTextureCompressionPatch,

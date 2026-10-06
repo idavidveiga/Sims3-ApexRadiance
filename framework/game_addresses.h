@@ -254,6 +254,7 @@ enum class Id : uint16_t {
     ObjMapInsert, // FUN_00939170 thiscall(map; out[3], node, flag), ret 0xC: its insert (leaf)
     ObjMapErase, // FUN_00938d00 thiscall(map; out[2], node, bucket*), ret 0xC: its erase (leaf)
     LightObjectRemove, // FUN_006c7610 thiscall(levelLights; idLo, idHi), ret 8: an object's entries out of the five per-level light maps
+    LotBuildBudgetLoad, // 0x00AEA6D8 in FUN_00aea680 (a lot's per-frame build slice): "mov eax,[0x011ECBC4]" right after its budget [esp+14h] (20 / 35 ms) is set
     Count
 };
 

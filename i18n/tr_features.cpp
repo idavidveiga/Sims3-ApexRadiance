@@ -60,16 +60,18 @@ const I18n::Entry kEntries[] = {
      "Pendant que la caméra bouge, l'ombrage doux des murs extérieurs des terrains tout juste chargés attend que la caméra s'arrête (ou deux "
      "secondes), et jamais plus d'une passe de murs par image : survoler un quartier en cours de chargement saccade moins. Fait partie d'"
      APEX_PRODUCT_NAME ". Crédits : @loinyx"},
-    {"While the camera moves, lots relight in smaller steps each frame instead of taking up to 15 ms at once, so panning over busy "
-     "neighborhoods stutters less. Lights finish as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
-     "Enquanto a câmera se move, os lotes são reiluminados em passos menores a cada quadro em vez de levar até 15 ms de uma vez, então "
-     "mover a câmera sobre bairros cheios trava menos. As luzes terminam assim que a câmera para. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
-     "Mientras la cámara se mueve, los solares se reiluminan en pasos más pequeños cada fotograma en lugar de tomar hasta 15 ms de golpe, "
-     "así que recorrer barrios concurridos da menos tirones. Las luces terminan en cuanto la cámara se detiene. Parte de " APEX_PRODUCT_NAME
-     ". Créditos: @loinyx",
-     "Pendant que la caméra bouge, les terrains se rééclairent par petites étapes à chaque image au lieu de prendre jusqu'à 15 ms d'un coup : "
-     "survoler des quartiers animés saccade moins. L'éclairage se termine dès que la caméra s'arrête. Fait partie d'" APEX_PRODUCT_NAME
-     ". Crédits : @loinyx"},
+    {"While the camera moves, lots relight, and lots that just loaded are built, in smaller steps each frame instead of taking up to "
+     "15 ms (lighting) or 35 ms (building) at once, so panning over busy neighborhoods stutters less. Everything finishes "
+     "as soon as the camera stops. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "Enquanto a câmera se move, os lotes são reiluminados, e os lotes que acabaram de carregar são montados, em passos menores a cada "
+     "quadro em vez de levar até 15 ms (iluminação) ou 35 ms (montagem) de uma vez, então mover a câmera sobre bairros cheios trava menos. "
+     "Tudo termina assim que a câmera para. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Mientras la cámara se mueve, los solares se reiluminan, y los solares recién cargados se construyen, en pasos más pequeños cada "
+     "fotograma en lugar de tomar hasta 15 ms (iluminación) o 35 ms (construcción) de golpe, así que recorrer barrios concurridos da menos "
+     "tirones. Todo termina en cuanto la cámara se detiene. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "Pendant que la caméra bouge, les terrains se rééclairent, et les terrains qui viennent de charger se construisent, par petites "
+     "étapes à chaque image au lieu de prendre jusqu'à 15 ms (éclairage) ou 35 ms (construction) d'un coup : survoler des quartiers animés "
+     "saccade moins. Tout se termine dès que la caméra s'arrête. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Compresses the textures the game builds while you play (terrain, Sims, lot views, thumbnails) several times faster, with "
      "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
      "Comprime as texturas que o jogo cria enquanto você joga (terreno, Sims, vistas de lotes, miniaturas) várias vezes mais rápido, com "
