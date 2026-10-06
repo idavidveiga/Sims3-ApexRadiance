@@ -121,6 +121,7 @@
     <ClCompile Include="features\light_probe.cpp" />
     <ClCompile Include="features\lightmap_smooth.cpp" />
     <ClCompile Include="features\lot_light_bridge.cpp" />
+    <ClCompile Include="features\bloom_alpha_probe.cpp" />
     <ClCompile Include="features\room_map_padding.cpp" />
     <ClCompile Include="features\unlit_rooms.cpp" />
     <ClCompile Include="features\lamp_mark_filter.cpp" />
@@ -204,6 +205,7 @@
     <ClInclude Include="features\light_probe.h" />
     <ClInclude Include="features\lightmap_smooth.h" />
     <ClInclude Include="features\lot_light_bridge.h" />
+    <ClInclude Include="features\bloom_alpha_probe.h" />
     <ClInclude Include="features\room_map_padding.h" />
     <ClInclude Include="features\unlit_rooms.h" />
     <ClInclude Include="features\lamp_mark_filter.h" />

@@ -35,6 +35,7 @@
 #include "hotkeys.h"
 #include "light_probe.h"
 #include "lot_light_bridge.h"
+#include "bloom_alpha_probe.h"
 #include "lightmap_smooth.h"
 #include "terrain_chunk_relight.h"
 #include "terrain_lighting_policy.h"
@@ -1954,6 +1955,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             OnPresent();
             LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
             ObjectLightBridge::SetStrength(g_objStrength);
+            ObjectLightBridge::SetNightLevel(g_level); // Apex's object boost fades out by day (idavidveiga's fork, 04/10)
             ObjectLightBridge::SetAllObjects(g_objAll);
             ObjectLightBridge::OnPresent();
             LevelLightShare::SetIndoor(g_indoorShare);
@@ -2347,9 +2349,14 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
-                changed |= ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true);
                 return changed;
             });
+            // Smooth ground light only chooses which map the draws read (idavidveiga's fork, 04/10): no lighting refresh, no
+            // terrain, lot, room or wall solve and no object rig gather; the next draw reads the smoothed or the raw map
+            if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
+                NotifySettingChanged();
+                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
+            }
             // When the ground light is rebuilt (lamp changes are always followed; this is the rebuild at dusk)
             if (ApexUi::BeginAdvanced("Updates##NightGround", "Updates")) {
                 Edit([] {
@@ -2607,6 +2614,15 @@ class NightTerrainRelightPatch : public ApexPatch {
             if (ApexUi::TextButton("Census: write ApexRadiance_Censo.txt")) LotLightBridge::RequestCensus();
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::CensusStatus().c_str());
+            // idavidveiga's fork (04/10): which draw families Apex modifies by day / twilight / night, and the scene's bloom mask
+            if (ApexUi::TextButton("Lighting + Bloom census")) LotLightBridge::RequestLightingBloomCensus();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", LotLightBridge::LightingBloomCensusStatus().c_str());
+            ApexUi::Tooltip("Writes ApexRadiance_LightingBloomCensus.txt. Read-only: records which visible draw families Apex modifies in day, twilight and night and flags known or possible bloom-mask families");
+            if (ApexUi::TextButton("Capture bloom alpha mask")) BloomAlphaProbe::Request(g_level);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", BloomAlphaProbe::Status().c_str());
+            ApexUi::Tooltip("Read-only. Captures the scene alpha before the game's bloom composite and writes ApexRadiance_BloomAlphaProbe_Day/Twilight/Night.png and .txt. One short hitch from the GPU readback");
         }
         }
         ApexUi::EndCard();
