@@ -146,25 +146,6 @@ enabled = true
 [patches.WindowRepaint]
 enabled = true
 
-[patches.LotDetailRange]
-distance = 300
-enabled = true
-maxActiveLots = 16
-
-[patches.LotLodStreaming]
-enabled = true
-
-[patches.LotObjectThrottle]
-delayMs = 16
-enabled = false
-objectsPerLot = 2
-
-[patches.LotVisibilityOverride]
-enabled = true
-
-[patches.MapViewStreamingBlocker]
-enabled = true
-
 [qol.picture]
 blacks = 0.0
 clarity = 0.0
@@ -327,25 +308,6 @@ enabled = true
 [patches.WindowRepaint]
 enabled = true
 
-[patches.LotDetailRange]
-distance = 300
-enabled = true
-maxActiveLots = 16
-
-[patches.LotLodStreaming]
-enabled = true
-
-[patches.LotObjectThrottle]
-delayMs = 16
-enabled = false
-objectsPerLot = 2
-
-[patches.LotVisibilityOverride]
-enabled = true
-
-[patches.MapViewStreamingBlocker]
-enabled = true
-
 [qol.picture]
 blacks = 0.0
 clarity = 0.0
@@ -506,25 +468,6 @@ enabled = true
 enabled = true
 
 [patches.WindowRepaint]
-enabled = true
-
-[patches.LotDetailRange]
-distance = 300
-enabled = true
-maxActiveLots = 16
-
-[patches.LotLodStreaming]
-enabled = true
-
-[patches.LotObjectThrottle]
-delayMs = 16
-enabled = false
-objectsPerLot = 2
-
-[patches.LotVisibilityOverride]
-enabled = true
-
-[patches.MapViewStreamingBlocker]
 enabled = true
 
 [qol.picture]

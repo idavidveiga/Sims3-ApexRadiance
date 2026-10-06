@@ -7,10 +7,10 @@ Research, measurements and code by **idavidveiga** (fork `idavidveiga/Sims3-Apex
 
 - Menu: System > Lot Streaming (its own page since 06/10) > "Lot detail streaming" (Extended lot detail, Smooth lot streaming, Keep lot visibility stable, Pause
   lot streaming in map view) and "Object streaming" (Spread lot objects while loading, with Spread new objects over frames).
-- On by default with the Experimental badge, also in the three built-in profiles (distance 300, 16 lots), except Spread lot
-  objects while loading: off since 06/10 (lamps are objects, so they arrived one by one and every arrival relit the rooms:
-  a lamp edit took 5.8-7.2 s to settle). Its profile values (
-  2 objects per window, 16 ms). "Use LoD Active-Lot Threshold 12" stays registered, off and out of the menu, as in the fork.
+- Off by default with the Experimental badge (user 06/10, for 2.7.0: little play on Steam yet), and not part of the
+  built-in profiles: applying one leaves the page as the player set it. Spread lot objects while loading was already off
+  (lamps are objects, so they arrived one by one and every arrival relit the rooms: a lamp edit took 5.8-7.2 s to
+  settle; 2 objects per window, 16 ms). "Use LoD Active-Lot Threshold 12" stays registered, off and out of the menu, as in the fork.
 - Steam 1.67.2: the fork claimed fixed addresses only for the scoring, request, throttle and visibility branch. The six
   object-throttle addresses were found offline in TS3W.exe with the fork's EA signatures, each unique:
   LotAddObjectsToScene 0x00AC1130, LotUpdateObjectSceneNode 0x00ABFAC0, ScriptMessageScopeCtor 0x007D2DB0,
@@ -226,12 +226,12 @@ This distinction should be preserved in future public documentation and credits.
 
 The validated research values are now in the normal production path, without the metric probe:
 
-- **Extended Lot Detail**: enabled by default on EA 1.69.
+- **Extended Lot Detail**: off by default (2.7.0).
   - **Lot detail distance**: range **70-300**, default **300**, snapped in 10-unit steps.
   - **Maximum detailed lots**: range **8-16**, default **16**, one-lot steps.
   - Apex captures the native values per live WorldManager, writes only guarded expected values, stops maintaining a field
     if another owner changes it, and restores only fields it still owns.
-- **Smooth Lot Streaming**: enabled by default where supported; native transition throttle ON + camera threshold **5.0**.
+- **Smooth Lot Streaming**: off by default (2.7.0); native transition throttle ON + camera threshold **5.0**.
 - **Keep Lot Visibility Stable**: optional/experimental; camera-angle bias JZ -> JMP with ownership-safe restoration.
 - **Pause Lot Streaming in Map View**: optional/experimental; uses WorldManager+0x258 while the map is open plus a 1 s exit grace.
 - **Object streaming** remains separate from lot eligibility/capacity:
