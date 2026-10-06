@@ -6,7 +6,6 @@ on:
       - feature/lot-lod-streaming
       - feature/lot-lod-streaming-2.5.6
       - test/room-light-queue-ea169
-      - fix/restore-wall-baseline
   workflow_dispatch:
 
 jobs:
