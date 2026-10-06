@@ -878,7 +878,14 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx, bool isStripOfTwo) {
     IDirect3DDevice9* dev = ctx.device;
     if (DepthShare::InternalPass()) return;
     if (!gpu.curRT0 || gpu.curRT0 != gpu.backBuffer) return;
-    const DWORD z = ctx.ZEnable();
+    DWORD z = ctx.ZEnable();
+    // The depth test on but passing everything with no depth write uses no depth: not scene (06/10, frame capture with
+    // the pie menu open: ~25 full-screen copies of the back buffer at the end of the frame, z on / ALWAYS / no write,
+    // counted as more scene, so the end-of-frame copy took the UI and the Sim portrait's cleared depth: a grey box)
+    if (z != D3DZB_FALSE && !ctx.ZWriteEnable()) {
+        DWORD func = D3DCMP_LESSEQUAL;
+        if (SUCCEEDED(dev->GetRenderState(D3DRS_ZFUNC, &func)) && func == D3DCMP_ALWAYS) z = D3DZB_FALSE;
+    }
     if (z != D3DZB_FALSE) {
         gpu.sceneDraws++;
         gpu.runDraws++;
