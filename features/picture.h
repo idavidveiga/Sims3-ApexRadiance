@@ -51,6 +51,7 @@ struct PictureParams {
     // Color looks
     bool tech1 = false;                       // two-strip film: a red record and a cyan record
     float tech1Amount = 0.6f, tech1Cyan = 0.0f, tech1Saturation = 1.0f; // cyan: -1 greener .. +1 bluer
+    float tech1Brightness = 0.0f, tech1Contrast = 1.0f; // brightness -1..1 (half a stop each way), contrast 0.5..1.5
     bool tech2 = false;                       // three-strip dye transfer: dense, pure primaries
     float tech2Amount = 0.5f, tech2Saturation = 1.0f, tech2Brightness = 0.0f;
     float tech2Dye[3] = {1.0f, 1.0f, 1.0f};   // strength of the red, green and blue dye
@@ -62,34 +63,35 @@ struct PictureParams {
     bool night = false;                       // cooler, darker evening tone; lamp light kept
     float nightAmount = 0.6f, nightDarkness = 0.35f, nightBlue = 0.5f, nightKeepLamps = 0.6f;
     bool vintage = false;                     // faded photo: lifted blacks, warm, washed-out colors
-    float vintageAmount = 0.7f, vintageFade = 0.5f, vintageWarmth = 0.5f, vintageColors = 0.4f;
+    float vintageAmount = 0.7f, vintageFade = 0.5f, vintageWarmth = 0.5f, vintageColors = 0.4f, vintageVignette = 0.0f;
     bool crossProcess = false;                // slide film in negative chemistry: green shadows, yellow highlights
     float crossAmount = 0.5f, crossContrast = 0.5f;
+    float crossHue = 180.0f, crossSaturation = 1.0f; // hue of the shadows' cast (180 = the original cyan cast), saturation 0..2
     bool bw = false;                          // black and white with a lens filter and a toning
-    float bwAmount = 1.0f, bwFilterHue = 30.0f, bwFilter = 0.5f, bwToneHue = 35.0f, bwTone = 0.0f, bwContrast = 0.0f;
+    float bwAmount = 1.0f, bwFilterHue = 30.0f, bwFilter = 0.5f, bwToneHue = 35.0f, bwTone = 0.0f, bwContrast = 0.0f, bwBrightness = 0.0f; // brightness -1..1 (one stop)
     bool filmic = false;                      // filmic pass: S-curve contrast, film curves per channel, bleach bypass, fade
     float filmicAmount = 0.85f, filmicFade = 0.4f, filmicContrast = 1.0f, filmicBleach = 0.0f, filmicSaturation = -0.15f;
     float filmicCurve[3] = {1.0f, 1.0f, 1.0f}; // brightness curve of the red, green and blue channel
     bool tintFilter = false;                  // the picture in one color (sepia by default), mixed in
     float tintFilterHue = 35.0f, tintFilterAmount = 0.58f;
+    float tintPreserve = 1.0f, tintBalance = 0.0f; // preserve brightness 0..1; balance -1 shadows only .. +1 highlights only
     bool levels = false;                      // new black and white points, like an editor's Levels
-    float levelsBlack = 16.0f / 255.0f, levelsWhite = 235.0f / 255.0f;
+    float levelsBlack = 16.0f / 255.0f, levelsWhite = 235.0f / 255.0f, levelsGamma = 1.0f; // gamma 0.5..2, above 1 brighter midtones
     bool lut = false;                         // a color look-up table: a PNG strip (Lightroom, Photoshop, ReShade LUT packs)
     float lutAmount = 1.0f;
     std::string lutFile;                      // file name in Apex Radiance\LUTs\ (empty = none chosen)
-    bool fog = false;                         // atmospheric haze growing with distance, as bright as the light around it
-    float fogAmount = 0.5f, fogStart = 30.0f, fogDensity = 0.35f, fogHue = 215.0f, fogTint = 0.25f; // start in metres
     bool autoExposure = false;                // the picture slowly adapts to dark and bright views, like the eye
     float autoAmount = 0.7f, autoTarget = 0.5f, autoSpeed = 0.4f, autoRange = 0.5f;
     bool cas = false;                         // adaptive sharpening: strong on soft detail, none on hard edges
     float casAmount = 0.5f;
     bool daltonize = false;                   // color-blind assistance
     float daltonType = 1.0f, daltonAmount = 1.0f; // type 0 protan (red), 1 deutan (green), 2 tritan (blue)
+    bool daltonSimulate = false;              // show the simulated color-blind view instead of the correction
     // Light
     bool glow = false;                        // soft halo around bright areas: lamps, windows, sky
-    float glowAmount = 0.4f, glowThreshold = 0.4f, glowSize = 0.5f, glowWarmth = 0.0f;
+    float glowAmount = 0.4f, glowThreshold = 0.4f, glowSize = 0.5f, glowWarmth = 0.0f, glowHue = 40.0f, glowColor = 0.0f; // color strength 0 = the light's own color
     bool halation = false;                    // film's red halo around strong light
-    float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f;
+    float halationAmount = 0.4f, halationThreshold = 0.7f, halationHue = 15.0f, halationSize = 8.0f / 26.0f; // size: radius 0.004..0.03 of the screen height
     bool dreamy = false;                      // Orton: a soft glow over the whole picture, a little more color
     float dreamyAmount = 0.4f, dreamySoftness = 0.6f, dreamySaturation = 0.3f;
     bool fakeHdr = false;                     // local contrast: detail in shadows and highlights without halos
@@ -99,11 +101,12 @@ struct PictureParams {
     bool emphAuto = true;                     // focus on what is at the center of the screen
     float emphAmount = 0.8f, emphDistance = 30.0f, emphWidth = 0.5f, emphSoftness = 0.5f, emphGrey = 0.5f; // width: fraction of the distance
     bool tiltShift = false;                   // miniature: sharp band, blurred top and bottom
-    float tiltAmount = 0.7f, tiltCenter = 0.55f, tiltWidth = 0.25f, tiltSaturation = 0.25f;
+    float tiltAmount = 0.7f, tiltCenter = 0.55f, tiltWidth = 0.25f, tiltSaturation = 0.25f, tiltBlur = 1.0f; // blur 1..2 (above 1: extra wide blur)
     bool prism = false;                       // chromatic aberration growing toward the edges
     float prismAmount = 0.35f, prismStart = 0.35f, prismQuality = 0.5f;
     bool grain = false;                       // film grain
-    float grainAmount = 0.3f, grainSize = 0.3f, grainShadows = 0.5f;
+    float grainAmount = 0.3f, grainSize = 0.3f, grainShadows = 0.5f, grainColor = 0.0f;
+    bool grainAnimated = false;               // a new grain every frame
     // Retro and style
     bool retro3dfx = false;                   // late-90s 3D card: 16-bit color, dithering, scanlines, soft pixels
     float fxAmount = 1.0f, fxDepth = 0.5f, fxScanlines = 0.3f, fxDither = 0.6f, fxPixelWidth = 0.3f, fxGamma = 1.0f;
