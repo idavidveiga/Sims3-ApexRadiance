@@ -14,7 +14,8 @@
 //   - Before the first write the CALL must reach the game function the address table gives; later, the hook Apex wrote.
 //     Anything else (another module redirected it) makes Install fail and is never overwritten by Remove.
 // Used by the Frame Profiler (dev build, the outer layer, "Scene pending nodes" counter) and the scene node budget
-// (features/scene_budget.h) on Scene::BeginFrame's CALL of the pending-node drain. Thread-safe (Install / Remove
+// (features/scene_budget.h) on Scene::BeginFrame's CALL of the pending-node drain, and by the compositor readback part of
+// Faster Sim building (features/compositor_readback.h) on four calls of the texture builder. Thread-safe (Install / Remove
 // serialise on one mutex; Next is lock-free).
 #include <atomic>
 #include <cstdint>
@@ -24,9 +25,13 @@ namespace CallChain {
 
 enum class Site : int {
     SceneDrain, // CALL 0x006EBC49 in Scene::BeginFrame 0x006EBB70 -> 0x006E4130 thiscall() (the pending-node drain)
+    CompQueue,    // CALL 0x006082F8 in the texture compositor queue loop 0x00608270 -> 0x005FDEF0 thiscall(job), ret 4
+    CompState2,   // CALL 0x005FDFEC in 0x005FDEF0 -> 0x005FDDE0 thiscall(job), ret 4 (render the tile, read it back)
+    CompState3,   // CALL 0x005FDFFF in 0x005FDEF0 -> 0x005FD420 thiscall(job), ret 4 (use the locked tile)
+    CompReadback, // CALL 0x005FDC8A in 0x005FDBF0 -> 0x005FBCE0 thiscall(format), ret 4 (GetRenderTargetData)
     Count
 };
-enum class Layer : int { FrameProfiler, SceneBudget, Count }; // lower = outer
+enum class Layer : int { FrameProfiler, SceneBudget, CompositorReadback, Count }; // lower = outer
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

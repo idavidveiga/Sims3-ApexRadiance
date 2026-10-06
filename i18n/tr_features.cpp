@@ -90,16 +90,20 @@ const I18n::Entry kEntries[] = {
      "du jeu : ces moments saccadent moins. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"When the game builds a Sim (Create a Sim, and when a Sim changes outfits), it sorts the triangles of hair and other see-through "
      "layers with a slow test of every triangle against every point of the mesh. This does the same sort many times faster, with "
-     "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+     "exactly the same result, so those moments stutter less. The textures the game paints for Sims and objects are also read back from "
+     "the graphics card without stopping the game to wait for it. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
      "Quando o jogo monta um Sim (no Criar um Sim e quando um Sim troca de roupa), ele ordena os triângulos do cabelo e de outras camadas "
      "transparentes com um teste lento de cada triângulo contra cada ponto da malha. Isto faz a mesma ordenação muitas vezes mais rápido, "
-     "com exatamente o mesmo resultado, então esses momentos travam menos. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "com exatamente o mesmo resultado, então esses momentos travam menos. As texturas que o jogo pinta para Sims e objetos também são "
+     "lidas da placa de vídeo sem parar o jogo para esperar por ela. Parte do " APEX_PRODUCT_NAME ". Créditos: @loinyx",
      "Cuando el juego construye un Sim (en Crear un Sim y cuando un Sim cambia de ropa), ordena los triángulos del pelo y de otras capas "
      "transparentes con una prueba lenta de cada triángulo contra cada punto de la malla. Esto hace la misma ordenación muchas veces más "
-     "rápido, con exactamente el mismo resultado, así que esos momentos dan menos tirones. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
+     "rápido, con exactamente el mismo resultado, así que esos momentos dan menos tirones. Las texturas que el juego pinta para Sims y "
+     "objetos también se leen de la tarjeta gráfica sin detener el juego para esperarla. Parte de " APEX_PRODUCT_NAME ". Créditos: @loinyx",
      "Quand le jeu construit un Sim (dans Créer un Sim et quand un Sim change de tenue), il trie les triangles des cheveux et des autres "
      "couches transparentes avec un test lent de chaque triangle contre chaque point du maillage. Ceci fait le même tri bien plus vite, avec "
-     "exactement le même résultat : ces moments saccadent moins. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
+     "exactement le même résultat : ces moments saccadent moins. Les textures que le jeu peint pour les Sims et les objets sont aussi relues "
+     "depuis la carte graphique sans arrêter le jeu pour l'attendre. Fait partie d'" APEX_PRODUCT_NAME ". Crédits : @loinyx"},
     {"Every part of the game shares one memory manager. When two parts need it at once, the second one used to go to sleep at once "
      "and wake up late, and freeing a big block of memory made everyone wait. Now it waits a few microseconds before sleeping, and "
      "big blocks are handed back to Windows in the background. Nothing else changes. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",

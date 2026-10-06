@@ -13,6 +13,7 @@
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
+#include "compositor_readback.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
 #include "memory_guard.h"
@@ -276,12 +277,15 @@ class FastCasSortPatch : public ApexPatch {
         lastError.clear();
         std::string error;
         if (!FastCas::Start(&error)) return Fail(error);
+        std::string partError; // the compositor part is optional: the switch stays on without it
+        if (!CompositorReadback::Start(&partError)) LOG_WARNING("[CompositorReadback] Not started: " + partError);
         isEnabled = true;
         return true;
     }
 
     bool Uninstall() override {
         if (!isEnabled) return true;
+        CompositorReadback::Stop();
         FastCas::Stop();
         isEnabled = false;
         lastError.clear();
@@ -289,7 +293,10 @@ class FastCasSortPatch : public ApexPatch {
     }
 
     void RenderCustomUI() override {} // the Performance card draws the row
-    void RenderDeveloperUI() override { FastCas::RenderDeveloperUI(); }
+    void RenderDeveloperUI() override {
+        FastCas::RenderDeveloperUI();
+        CompositorReadback::RenderDeveloperUI();
+    }
 };
 
 class FastMemoryPatch : public ApexPatch {
@@ -605,7 +612,8 @@ APEX_REGISTER_FEATURE(FastCasSortPatch,
                       {.displayName = "Faster Sim Building",
                        .description = "When the game builds a Sim (Create a Sim, and when a Sim changes outfits), it sorts the triangles of hair and other see-through "
                                       "layers with a slow test of every triangle against every point of the mesh. This does the same sort many times faster, with "
-                                      "exactly the same result, so those moments stutter less. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
+                                      "exactly the same result, so those moments stutter less. The textures the game paints for Sims and objects are also read back from "
+                                      "the graphics card without stopping the game to wait for it. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx",
                        .category = "Performance",
                         .experimental = false,
                        .enabledByDefault = true,
@@ -613,7 +621,10 @@ APEX_REGISTER_FEATURE(FastCasSortPatch,
                        .technicalDetails = {"The CAS model builder's triangle sort (0x5D1960, \"CAS/ModelBuilder/TriangleSortDataList\") is answered by a rewrite with the "
                                             "same arithmetic: vertex positions computed once, four vertices per SSE instruction, the triangles split over worker threads, "
                                             "and the same stable sort.",
-                                            "The first 16 calls of each session also run the game's function and compare the indices; a difference turns the feature off."},
+                                            "The first 16 calls of each session also run the game's function and compare the indices; a difference turns the feature off.",
+                                            "Texture compositor: after a tile's GetRenderTargetData (0x5FDC8A) in the queue's state 2, an EVENT query is issued and the "
+                                            "queue stops for the frame; the lock (0x5FDCB2) runs in state 3 (0x5FDFFF) once the query signals (at most 8 frames), so it no "
+                                            "longer waits for the GPU. Same bytes; each tile finishes a frame or more later. Optional part: the switch works without it."},
                        .gameCodeGroup = "FastCasSort"});
 
 APEX_REGISTER_FEATURE(FastMemoryPatch,

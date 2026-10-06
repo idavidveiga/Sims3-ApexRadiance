@@ -27,6 +27,10 @@ struct SiteInfo {
 // No branch in .text lands on bytes 1..4 of the CALL (checked in research\engine_map\full.asm).
 const SiteInfo kSiteInfo[kSites] = {
     {"Scene::BeginFrame pending-node drain", GameAddr::Id::SceneDrainCall, GameAddr::Id::SceneDrain},
+    {"texture compositor queue step", GameAddr::Id::CompQueueCall, GameAddr::Id::CompDispatch},
+    {"texture builder state 2 (render and read back a tile)", GameAddr::Id::CompState2Call, GameAddr::Id::CompTileRender},
+    {"texture builder state 3 (use the tile)", GameAddr::Id::CompState3Call, GameAddr::Id::CompTileRead},
+    {"texture builder tile readback", GameAddr::Id::CompReadbackCall, GameAddr::Id::CompReadback},
 };
 static_assert(std::size(kSiteInfo) == static_cast<size_t>(Site::Count), "kSiteInfo must list every Site in order");
 

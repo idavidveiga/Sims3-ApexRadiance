@@ -253,6 +253,16 @@ enum class Id : uint16_t {
     ObjMapFind, // FUN_00939100 thiscall(map; out[2], key*), ret 8: the object service's hash map find (1033 buckets)
     ObjMapInsert, // FUN_00939170 thiscall(map; out[3], node, flag), ret 0xC: its insert (leaf)
     ObjMapErase, // FUN_00938d00 thiscall(map; out[2], node, bucket*), ret 0xC: its erase (leaf)
+    // ---- Compositor tile readback without the GPU wait (features/compositor_readback.cpp; group "CompositorReadback")
+    CompQueueCall,    // call FUN_005fdef0 in the texture compositor queue loop FUN_00608270 (0x006082F8)
+    CompDispatch,     // FUN_005fdef0 thiscall(builder; job), ret 4: the texture builder's state machine ([b+0x74] state, [b+0x70] tile)
+    CompState2Call,   // its state-2 call of FUN_005fdde0 (0x005FDFEC)
+    CompTileRender,   // FUN_005fdde0 thiscall(builder; job), ret 4: renders the tile, then FUN_005fdbf0
+    CompState3Call,   // its state-3 call of FUN_005fd420 (0x005FDFFF)
+    CompTileRead,     // FUN_005fd420 thiscall(builder; job), ret 4: reads the locked tile
+    CompReadbackCall, // call FUN_005fbce0 in FUN_005fdbf0 (0x005FDC8A)
+    CompReadback,     // FUN_005fbce0 thiscall(builder; format), ret 4: GetRenderTargetData into the staging texture [b+0x20]
+    CompTileFetch,    // FUN_005fdbf0 thiscall(builder; job), ret 4: readback, then LockRect of [b+0x20] and [b+0x1C] into the job
     LightObjectRemove, // FUN_006c7610 thiscall(levelLights; idLo, idHi), ret 8: an object's entries out of the five per-level light maps
     LotBuildBudgetLoad, // 0x00AEA6D8 in FUN_00aea680 (a lot's per-frame build slice): "mov eax,[0x011ECBC4]" right after its budget [esp+14h] (20 / 35 ms) is set
     Count
