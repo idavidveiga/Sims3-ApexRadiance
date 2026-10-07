@@ -86,6 +86,8 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 |---|---|---|---|---|---|
 | Ground > Street lamps light lots | `luzDoPosteNaGramaDoLote` | bool | on | | Lot light pass and every draw handler after it ([lot-light-pass](lot-light-pass.md)) |
 | Ground > Lot lamps light the street | `luzDoLoteNaGrama` | bool | on | | Outdoor lot lamps in the terrain bake ([terrain-relight](terrain-relight.md)) |
+| Ground > Lamp colors stay near lamps | `reflexosNeutrosANoite` | bool | on | | At night the game's light probes (the sky light cube that outdoor floors, roofs, sims and glossy objects sample) lose the lamps' hue right after the game writes them (`features/probe_neutral.cpp`, hooks 0x006B4720 / 0x006B4B10): brightness kept, nothing by day. A coloured lamp tinted every outdoor floor and a far glossy rug before |
+| (Developer) Lamp colour removal strength | `forcaReflexosNeutros` | float | 1 | 0..1 | How much of the hue leaves the night probe |
 | Ground > Smooth ground light | `mapaDeLuzSuavizado` | bool | on | | Smoothed chunk maps and the world atlas ([world-atlas](world-atlas-and-smoothed-maps.md)) |
 | Ground > Updates > Update at dusk | `automaticoAoAnoitecer` | bool | on | | Rebuild the terrain light at the settled day and night endpoints |
 | Ground > Updates > Delay after dusk | `atrasoSegundos` | float | 2.0 s | 0.5 to 10 s | Wait before the endpoint rebuild (none while Build mode editing) |
