@@ -5491,6 +5491,11 @@ std::vector<DiagRec> g_diag;
 // recorded whatever their distance to the lamp (the 3.5 m rule never reached an upper story's wall 12 m from its lamp)
 std::atomic<bool> g_diagFocusOn{false};
 std::atomic<float> g_diagFocus[3]{};
+// The focused records: kept apart (no budget, not cleared by a relight), shown and emptied by the next F8
+std::vector<DiagRec> g_focusRecs; // under g_diagMx
+int g_lastFocusRec = -1;          // light tree thread: the focused record the game's wall test fills next
+std::atomic<uintptr_t> g_focusRelightMgr{0}; // the focused wall's story manager: its lot relights (OnPresent)
+std::atomic<bool> g_focusLogged{false};
 std::atomic<long> g_diagSeen{0};
 int g_diagIndoorUsed = 0, g_diagOutdoorUsed = 0; // records per part since the last dump (under g_diagMx)
 std::atomic<bool> g_diagFull[2]{};
@@ -6461,17 +6466,28 @@ bool ActiveLot(uintptr_t mgr) {
 
 void DiagImpl(const RoomInfo& info, void* light, const float* sample, const float* colour, int home, float mine, bool culledList) {
     g_lastRec = -1;
+    g_lastFocusRec = -1;
+    if (g_diagFocusOn.load(std::memory_order_relaxed)) {
+        const float fx = sample[0] - g_diagFocus[0].load(std::memory_order_relaxed), fy = sample[1] - g_diagFocus[1].load(std::memory_order_relaxed),
+                    fz = sample[2] - g_diagFocus[2].load(std::memory_order_relaxed);
+        if (fx * fx + fy * fy + fz * fz < 1.0f) {
+            const float* lq = reinterpret_cast<const float*>(static_cast<const BYTE*>(light) + 0x120);
+            DiagRec r{info.level, home, reinterpret_cast<uintptr_t>(light), {lq[0], lq[1], lq[2]}, {sample[0], sample[1], sample[2]},
+                      {sample[4], sample[5], sample[6]}, colour[0] + colour[1] + colour[2], mine, -1, 1.0f, g_ctx.batch, culledList};
+            r.type = *reinterpret_cast<const int*>(static_cast<const BYTE*>(light) + 0xB0);
+            r.room = info.id;
+            std::lock_guard<std::mutex> lk(g_diagMx);
+            if (g_focusRecs.size() < 4000) {
+                g_focusRecs.push_back(r);
+                g_lastFocusRec = static_cast<int>(g_focusRecs.size()) - 1;
+            }
+        }
+    }
     if (g_diagFull[info.indoor ? 1 : 0].load(std::memory_order_relaxed)) return;
     if (!ActiveLot(info.mgr)) return;
     const float* lp = reinterpret_cast<const float*>(static_cast<const BYTE*>(light) + 0x120);
     const float dx = sample[0] - lp[0], dy = sample[1] - lp[1], dz = sample[2] - lp[2];
-    bool focused = false;
-    if (g_diagFocusOn.load(std::memory_order_relaxed)) {
-        const float fx = sample[0] - g_diagFocus[0].load(std::memory_order_relaxed), fy = sample[1] - g_diagFocus[1].load(std::memory_order_relaxed),
-                    fz = sample[2] - g_diagFocus[2].load(std::memory_order_relaxed);
-        focused = fx * fx + fy * fy + fz * fz < 1.0f;
-    }
-    if (!focused && dx * dx + dy * dy + dz * dz > 3.5f * 3.5f) return;
+    if (dx * dx + dy * dy + dz * dz > 3.5f * 3.5f) return;
     g_diagSeen.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lk(g_diagMx);
     // separate budgets: the outdoor lamps of every loaded lot would fill the record before an indoor point is seen
@@ -7221,6 +7237,19 @@ bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos
             *t = hardT;
             g_penumbraLifted.fetch_add(1, std::memory_order_relaxed);
         }
+    }
+    if (!kPublicBuild && g_lastFocusRec >= 0 && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        bool first = false;
+        {
+            std::lock_guard<std::mutex> lk(g_diagMx);
+            if (g_lastFocusRec < static_cast<int>(g_focusRecs.size())) {
+                g_focusRecs[g_lastFocusRec].game = ok ? 1 : 0;
+                g_focusRecs[g_lastFocusRec].gameT = *t;
+            }
+            first = !g_focusLogged.exchange(true);
+        }
+        g_lastFocusRec = -1;
+        if (first) LOG_INFO("[LevelLightShare] F7 point: samples recorded, press F8 now");
     }
     if (!kPublicBuild && g_lastRec >= 0 && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> lk(g_diagMx);
@@ -8754,7 +8783,19 @@ bool BasisFloorGuardReady() {
     return g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_basisGuardReady.load(std::memory_order_relaxed);
 }
 
+int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount); // below
 void OnPresent() {
+    if (const uintptr_t fm = g_focusRelightMgr.exchange(0)) { // an F7 focused the recording: its lot lights again now
+        uintptr_t trackers[256];
+        const int lots = AllTrackers(trackers, 256);
+        for (int t = 0; t < lots; t++)
+            for (int level = -4; level <= 7; level++)
+                if (SafeStoryManager(trackers[t], level) == fm) {
+                    RelightLot(trackers[t], "F7 point recorded", 0, nullptr, 0);
+                    t = lots;
+                    break;
+                }
+    }
     // the wall light of a recording (NoteWallLight): its lines go in on this thread
     {
         const bool rec = Recorder::Active();
@@ -9188,6 +9229,12 @@ std::string WallNotesOnRay(const float o[3], const float d[3], float* hitOut) {
         for (int k = 0; k < 3; k++) g_diagFocus[k].store(hit[k], std::memory_order_relaxed);
         g_diagFocusOn.store(true, std::memory_order_relaxed);
         g_diagArmed.store(true);
+        {
+            std::lock_guard<std::mutex> lk(g_diagMx);
+            g_focusRecs.clear();
+        }
+        g_focusLogged.store(false);
+        g_focusRelightMgr.store(w.mgr, std::memory_order_relaxed);
     }
     s += std::format("      the pixel: world ({:.3f} {:.3f} {:.3f}), {:.3f} m above the base, {:.2f} m along the line; reads row k {:.2f} (drawn) = atlas texel ({:.1f}, {})\n", hit[0],
                      hit[1], hit[2], h, along, kDrawn, col, w.block.y0 + w.rows - 1 - kRow);
@@ -9719,6 +9766,24 @@ void SetBakeConeSpill(bool on) { g_bakeConeSpill.store(on, std::memory_order_rel
 void SetDiagArmed(bool on) { g_diagArmed = on; }
 bool DiagArmed() { return g_diagArmed.load(); }
 
+// The records of the F7 point (within 1 m of it), then emptied
+std::string FocusText() {
+    std::vector<DiagRec> f;
+    float c[3] = {g_diagFocus[0].load(), g_diagFocus[1].load(), g_diagFocus[2].load()};
+    {
+        std::lock_guard<std::mutex> lk(g_diagMx);
+        f.swap(g_focusRecs);
+    }
+    if (!g_diagFocusOn.load()) return "F7 point: none (take an F7 on a wall first)\n";
+    std::string s = std::format("==== F7 POINT ({:.3f} {:.3f} {:.3f}): {} samples within 1 m (light, type, light's story, point, normal, colour sum, game test and factor, ours) ====\n",
+                                c[0], c[1], c[2], f.size());
+    for (const DiagRec& r : f)
+        s += std::format("F story {} room {} L{:08X} type{} home{} light({:.2f} {:.2f} {:.2f}) p({:.2f} {:.2f} {:.2f}) n({:.2f} {:.2f} {:.2f}) colour={:.3f} game={} t={:.2f} ours={:.2f} batch={} culled={}\n",
+                         r.level, r.room, r.light, r.type, r.home, r.lpos[0], r.lpos[1], r.lpos[2], r.p[0], r.p[1], r.p[2], r.n[0], r.n[1], r.n[2], r.lum, r.game, r.gameT,
+                         r.mine, r.batch ? 1 : 0, r.culledList ? 1 : 0);
+    if (f.empty()) s += "(no sample yet: the room had not lit again since the F7)\n";
+    return s;
+}
 std::string DiagText() {
     const bool wasArmed = g_diagArmed.exchange(true); // a dump arms the recording for the next one
     std::vector<DiagRec> recs;
@@ -9741,6 +9806,7 @@ std::string DiagText() {
     });
     std::string s = std::format("\n==== ANDARES (luz externa entre andares) ====\n{}\nPontos a ate 3,5 m de cada luz do lote ativo, no ultimo calculo: {} registrados de {} vistos.\n",
                                 Status(), recs.size(), g_diagSeen.load());
+    s += FocusText();
     s += "Colunas: andar do ponto | luz, tipo, andar da luz (-1 = do proprio andar ou do mundo) | ponto | normal | soma da cor | teste do jogo (1 passou, 0 bloqueou, "
          "-1 nao rodou) e fator | nosso fator (-1 = nao testado) | lote de pontos | lista filtrada\n";
     struct Sum {
