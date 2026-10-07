@@ -12,6 +12,7 @@
 #include "recorder.h"
 #include "d3d9_hooks.h"
 #include "apex_log.h"
+#include "apex_util.h"
 #include "apex_paths.h"
 #include "imgui.h"
 #include <windows.h>
@@ -177,7 +178,7 @@ std::filesystem::path CapDir() { return g_capDir.empty() ? Captures::Root() : g_
 void StartCaptureFolder() {
     const bool automatic = g_captureWhy.rfind("automatic", 0) == 0;
     g_capDir = Captures::NewFolder(automatic ? "Light capture (automatic)" : "Light capture");
-    g_capName = g_capDir.filename().string();
+    g_capName = ApexUtil::ToUtf8(g_capDir.filename().wstring());
 }
 
 const char* FmtName(D3DFORMAT f) {
@@ -418,7 +419,8 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
         auto q = [&](float v) { return static_cast<uint32_t>(std::clamp(v * scale, 0.f, 1.f) * 255.f + 0.5f); };
         bgra[i] = 0xFF000000u | (q(rgb[i * 3]) << 16) | (q(rgb[i * 3 + 1]) << 8) | q(rgb[i * 3 + 2]);
     }
-    std::filesystem::create_directories(CapDir());
+    std::error_code dirError; // (07/10: the throwing overload could end the game; a failed folder just fails the writes below)
+    std::filesystem::create_directories(CapDir(), dirError);
     const std::string file = std::format("{}_{}x{}_{}.bmp", name, d.Width, d.Height, FmtStr(d.Format));
     WriteBmp(CapDir() / file, d.Width, d.Height, bgra);
     fileOut = file;
@@ -687,7 +689,8 @@ template <typename S> std::string DumpShader(S* shader, const std::string& name)
     if (FAILED(shader->GetFunction(nullptr, &size)) || size == 0) return "GetFunction failed";
     std::vector<BYTE> code(size);
     if (FAILED(shader->GetFunction(code.data(), &size))) return "GetFunction failed";
-    std::filesystem::create_directories(CapDir());
+    std::error_code dirError; // (07/10: the throwing overload could end the game; a failed folder just fails the writes below)
+    std::filesystem::create_directories(CapDir(), dirError);
     {
         std::ofstream bin(CapDir() / (name + ".bin"), std::ios::binary);
         bin.write(reinterpret_cast<const char*>(code.data()), size);
