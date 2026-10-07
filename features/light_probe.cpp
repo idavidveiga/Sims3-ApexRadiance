@@ -58,6 +58,7 @@ struct DrawRec {
     ConstList psc, vsc;
     std::string bridge; // LotLightBridge::DescribeDraw
     std::string instances; // instanced draws: the per-instance data (read while the draw is recorded)
+    std::vector<std::array<float, 4>> verts; // the draw's vertex positions as stored (stream POSITION, raw), for the wall block (WallUnderPixel)
     DWORD samples = 0;
     bool resolved = false;
 };
@@ -463,8 +464,60 @@ bool AnyBlank() {
     return false;
 }
 
+// The positions of the vertices a draw reads (POSITION 0 of its declaration, as stored), read-only; up to 20000. The wall
+// shader scales them by 1/256 into lot space (x, z; y full height), so the wall block can tell where a wall is drawn.
+std::vector<std::array<float, 4>> ReadPositions(IDirect3DDevice9* dev, UINT first, UINT count) {
+    std::vector<std::array<float, 4>> out;
+    if (count == 0 || count > 20000) return out;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    if (FAILED(dev->GetVertexDeclaration(&decl)) || !decl) return out;
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1] = {};
+    UINT ne = MAXD3DDECLLENGTH + 1;
+    const bool okDecl = SUCCEEDED(decl->GetDeclaration(el, &ne));
+    decl->Release();
+    if (!okDecl) return out;
+    const D3DVERTEXELEMENT9* pos = nullptr;
+    for (UINT i = 0; i < ne && el[i].Stream != 0xFF; i++)
+        if (el[i].Usage == D3DDECLUSAGE_POSITION && el[i].UsageIndex == 0) pos = &el[i];
+    if (!pos) return out;
+    IDirect3DVertexBuffer9* vb = nullptr;
+    UINT off = 0, stride = 0;
+    if (FAILED(dev->GetStreamSource(pos->Stream, &vb, &off, &stride)) || !vb) return out;
+    D3DVERTEXBUFFER_DESC d{};
+    vb->GetDesc(&d);
+    const UINT begin = off + first * stride, bytes = count * stride;
+    void* p = nullptr;
+    if (stride >= 8 && d.Pool != D3DPOOL_DEFAULT && begin + bytes <= d.Size && SUCCEEDED(vb->Lock(begin, bytes, &p, D3DLOCK_READONLY)) && p) {
+        const BYTE* b = static_cast<const BYTE*>(p);
+        for (UINT i = 0; i < count; i++) {
+            const BYTE* v = b + static_cast<size_t>(i) * stride + pos->Offset;
+            std::array<float, 4> f{0, 0, 0, 1};
+            switch (pos->Type) {
+                case D3DDECLTYPE_FLOAT3: std::memcpy(f.data(), v, 12); break;
+                case D3DDECLTYPE_FLOAT4: std::memcpy(f.data(), v, 16); break;
+                case D3DDECLTYPE_SHORT4: for (int k = 0; k < 4; k++) f[k] = reinterpret_cast<const int16_t*>(v)[k]; break;
+                case D3DDECLTYPE_UBYTE4: for (int k = 0; k < 4; k++) f[k] = v[k]; break;
+                case D3DDECLTYPE_FLOAT16_4: {
+                    for (int k = 0; k < 4; k++) {
+                        const uint16_t h = reinterpret_cast<const uint16_t*>(v)[k];
+                        const int e = (h >> 10) & 31, m = h & 1023;
+                        const float val = e == 0 ? m / 1024.0f / 16384.0f : std::ldexp(1.0f + m / 1024.0f, e - 15);
+                        f[k] = (h & 0x8000) ? -val : val;
+                    }
+                    break;
+                }
+                default: i = count; continue;
+            }
+            out.push_back(f);
+        }
+        vb->Unlock();
+    }
+    vb->Release();
+    return out;
+}
+
 // ---- per-draw work ----
-template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, const char* kind, D3DPRIMITIVETYPE type, UINT prims, DrawFn draw) {
+template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, const char* kind, D3DPRIMITIVETYPE type, UINT prims, DrawFn draw, UINT firstVertex = 0, UINT vertexCount = 0) {
     if (g_inProbeCall) return D3D9Hooks::HookAction::Continue;
 
     if (g_state == State::Capturing && g_draws.size() < kMaxDraws) {
@@ -502,6 +555,15 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, c
                 if (tmp[i][0] != 0 || tmp[i][1] != 0 || tmp[i][2] != 0 || tmp[i][3] != 0) r.vsc.push_back({i, {tmp[i][0], tmp[i][1], tmp[i][2], tmp[i][3]}});
             r.bridge = LotLightBridge::DescribeDraw();
             if (std::strcmp(kind, "DIP") == 0) r.instances = ReadInstances(dev);
+            // a wall shader's draw (local -> world rows c8..c10 a rotation): its vertices, for the wall block
+            if (vertexCount) {
+                bool rigid = true;
+                for (int k = 8; k <= 10 && rigid; k++) {
+                    const float l = std::sqrt(tmp[k][0] * tmp[k][0] + tmp[k][1] * tmp[k][1] + tmp[k][2] * tmp[k][2]);
+                    rigid = l > 0.99f && l < 1.01f;
+                }
+                if (rigid) r.verts = ReadPositions(dev, firstVertex, vertexCount);
+            }
 
             IDirect3DQuery9* q = nullptr;
             if (r.index < static_cast<int>(g_queryPool.size())) q = g_queryPool[r.index];
@@ -584,12 +646,12 @@ void RegisterHooks() {
     if (g_hooksRegistered) return;
     D3D9Hooks::RegisterDrawIndexedPrimitive(kHookName,
         [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
-            return OnDraw(ctx.device, "DIP", type, prims, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); });
+            return OnDraw(ctx.device, "DIP", type, prims, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); }, static_cast<UINT>(bvi + static_cast<INT>(minV)), numV);
         },
         D3D9Hooks::Priority::Last);
     D3D9Hooks::RegisterDrawPrimitive(kHookName,
         [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT start, UINT prims) {
-            return OnDraw(ctx.device, "DP", type, prims, [&]() { ctx.device->DrawPrimitive(type, start, prims); });
+            return OnDraw(ctx.device, "DP", type, prims, [&]() { ctx.device->DrawPrimitive(type, start, prims); }, start, type == D3DPT_TRIANGLELIST ? prims * 3 : prims + 2);
         },
         D3D9Hooks::Priority::Last);
     g_hooksRegistered = true;
@@ -756,7 +818,28 @@ std::string WallUnderPixel(const DrawRec& d) {
         for (int r = 0; r < 3; r++) pw[z][r] = static_cast<float>(m[8 + r][0] * lp[0] + m[8 + r][1] * lp[1] + m[8 + r][2] * lp[2] + m[8 + r][3]);
     }
     const float dir[3] = {pw[1][0] - pw[0][0], pw[1][1] - pw[0][1], pw[1][2] - pw[0][2]};
-    return LevelLightShare::WallNotesOnRay(pw[0], dir);
+    float hit[3] = {1e30f, 0, 0};
+    std::string s = LevelLightShare::WallNotesOnRay(pw[0], dir, hit);
+    // where the wall is drawn: the draw's vertices near the hit (the wall shader: lot space = stored / 256, y full height)
+    if (hit[0] < 1e29f && !d.verts.empty()) {
+        float lo = 1e30f, hi = -1e30f;
+        int nNear = 0;
+        for (const auto& v : d.verts) {
+            const float l[3] = {v[0] / 256.0f, v[1] / 256.0f, v[2] / 256.0f};
+            float wp[3];
+            for (int r = 0; r < 3; r++) wp[r] = m[8 + r][0] * l[0] + m[8 + r][1] * l[1] + m[8 + r][2] * l[2] + m[8 + r][3];
+            const float dx = wp[0] - hit[0], dz = wp[2] - hit[2];
+            if (dx * dx + dz * dz > 0.6f * 0.6f) continue;
+            nNear++;
+            lo = std::min(lo, wp[1]);
+            hi = std::max(hi, wp[1]);
+        }
+        s += nNear ? std::format("      drawn here (the draw's {} vertices within 0.6 m of the pixel, of {}): from y {:.3f} to {:.3f} ({:.3f} m tall); the pixel is {:.3f} m above that foot\n",
+                                nNear, d.verts.size(), lo, hi, hi - lo, hit[1] - lo)
+                  : std::format("      drawn here: none of the draw's {} vertices lie within 0.6 m of the pixel\n", d.verts.size());
+    } else if (d.verts.empty())
+        s += "      drawn here: the draw's vertices were not readable\n";
+    return s;
 }
 
 void FinishCapture(IDirect3DDevice9* dev) {

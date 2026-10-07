@@ -6488,7 +6488,7 @@ int ReadNoteLamps(uintptr_t room, NoteLamp* out, int max) {
         return -1;
     }
 }
-std::string WallNotesOnRay(const float o[3], const float d[3]) {
+std::string WallNotesOnRay(const float o[3], const float d[3], float* hitOut) {
     std::vector<WallNote> notes;
     {
         std::lock_guard<std::mutex> lk(g_wallNoteMx);
@@ -6515,6 +6515,7 @@ std::string WallNotesOnRay(const float o[3], const float d[3]) {
         len = L;
     }
     if (!best) return std::format("no wall piece noted on the pixel's ray ({} pieces noted since the lots were lit; the walls are noted when they are solved, so relight the lot first if it was lit before this build)", notes.size());
+    if (hitOut) std::memcpy(hitOut, hit, sizeof hit);
     const WallNote& w = *best;
     const float h = hit[1] - w.oy;
     const float col = w.colLo + along / len * static_cast<float>(w.colHi - w.colLo);
