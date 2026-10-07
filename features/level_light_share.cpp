@@ -3973,11 +3973,15 @@ bool g_wallBaseReady = false;
 std::atomic<long> g_wallBaseRaised{0}, g_wallBaseKept{0}, g_wallBaseLogged{0};
 struct WallBaseRead {
     int story = -99;
-    float lotBase = 0;      // mgr +0xD4 (world)
-    float h[4] = {};        // the floor heights (+0x78, lot space) at the wall's cell and the cells before it on x, z, both
-    bool have[4] = {};
+    float lotBase = 0; // mgr +0xD4 (world)
+    float house = 0, own = 0;      // the floor (+0x78, lot space) across the wall's edge (the house side) and of its own cell
+    bool haveHouse = false, haveOwn = false, houseIsRoom = false; // houseIsRoom: that tile holds an indoor room
+    int hx = 0, hz = 0;
 };
-bool ReadWallBase(const BYTE* wall, int x, int z, WallBaseRead& r) { // POD only (SEH)
+// The tile across the wall's edge, from its orientation (FUN_006ab280's switch on the 4th argument, table 0x006ABCE8):
+// 0: along x at the cell's -z edge (origin z + 0.05), 1: along x at +z (z + 0.95), 2: along z at +x (x + 0.95), 3: along
+// z at -x (x + 0.05); 4..7: the diagonals, inside the cell. The middle of a run of `len` cells.
+bool ReadWallBase(const BYTE* wall, int x, int z, int len, int orient, WallBaseRead& r) { // POD only (SEH)
     __try {
         const BYTE* room = *reinterpret_cast<BYTE* const*>(wall);
         if (!room) return false;
@@ -3986,42 +3990,58 @@ bool ReadWallBase(const BYTE* wall, int x, int z, WallBaseRead& r) { // POD only
         r.story = *reinterpret_cast<const int*>(mgr + 0x88);
         r.lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
         const int cx = x + *reinterpret_cast<const int*>(room + 0x1C), cz = z + *reinterpret_cast<const int*>(room + 0x24);
-        const int dx[4] = {0, -1, 0, -1}, dz[4] = {0, 0, -1, -1};
-        for (int k = 0; k < 4; k++) {
-            const uintptr_t tile = LightTile(mgr, cx + dx[k], cz + dz[k]);
-            if (!tile) continue;
-            const float v = *reinterpret_cast<const float*>(tile + 0x78);
-            if (std::isfinite(v)) r.h[k] = v, r.have[k] = true;
+        const int mid = len > 1 && len < 64 ? (len - 1) / 2 : 0;
+        int ox = cx, oz = cz, hx = cx, hz = cz;
+        switch (orient) {
+            case 0: ox += mid, hx = ox, hz = cz - 1; break;
+            case 1: ox += mid, hx = ox, hz = cz + 1; break;
+            case 2: oz += mid, hz = oz, hx = cx + 1; break;
+            case 3: oz += mid, hz = oz, hx = cx - 1; break;
+            default: break; // a diagonal: the house half is in the same cell
+        }
+        r.hx = hx, r.hz = hz;
+        if (const uintptr_t t = LightTile(mgr, ox, oz)) {
+            const float v = *reinterpret_cast<const float*>(t + 0x78);
+            if (std::isfinite(v)) r.own = v, r.haveOwn = true;
+        }
+        if (const uintptr_t t = LightTile(mgr, hx, hz)) {
+            const float v = *reinterpret_cast<const float*>(t + 0x78);
+            if (std::isfinite(v)) r.house = v, r.haveHouse = true;
+            for (int q = 0; q < 4; q++) r.houseIsRoom = r.houseIsRoom || TileRoom(t, q) > 0;
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }
-extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal) {
+extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal, int len, int orient) {
     if (!g_foundationWallsOn.load(std::memory_order_relaxed)) return nominal;
     WallBaseRead r;
-    if (!ReadWallBase(wall, x, z, r) || r.story < 1) return nominal;
-    float best = nominal;
-    bool found = false;
-    for (int k = 0; k < 4; k++)
-        if (r.have[k] && r.h[k] >= nominal - 3.2f && r.h[k] <= nominal + 0.3f && (!found || r.h[k] > best)) best = r.h[k], found = true;
-    (found && std::fabs(best - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
-    if (g_wallBaseLogged.fetch_add(1, std::memory_order_relaxed) < 300)
-        LOG_INFO(std::format("[WallBase] story {} cell ({}, {}) nominal {:.3f}: floors {} {} {} {} -> {:.3f} (lot base {:.3f})", r.story, x, z, nominal,
-                             r.have[0] ? std::format("{:.3f}", r.h[0]) : "-", r.have[1] ? std::format("{:.3f}", r.h[1]) : "-", r.have[2] ? std::format("{:.3f}", r.h[2]) : "-",
-                             r.have[3] ? std::format("{:.3f}", r.h[3]) : "-", found ? best : nominal, r.lotBase));
-    return found ? best : nominal;
+    if (!ReadWallBase(wall, x, z, len, orient, r) || r.story < 1) return nominal;
+    auto usable = [&](float h) { return h >= nominal - 3.2f && h <= nominal + 0.3f; };
+    // the floor the wall stands on: the house side across its edge; else its own cell's floor; else story * 3 as before
+    float base = nominal;
+    const char* from = "kept";
+    if (r.haveHouse && usable(r.house)) base = r.house, from = r.houseIsRoom ? "house side" : "across the edge";
+    else if (r.haveOwn && usable(r.own)) base = r.own, from = "own cell";
+    (std::fabs(base - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
+    if (g_wallBaseLogged.fetch_add(1, std::memory_order_relaxed) < 1500)
+        LOG_INFO(std::format("[WallBase] story {} cell ({}, {}) len {} orient {} nominal {:.3f}: across ({}, {}) {}{}, own {} -> {:.3f} ({}) (lot base {:.3f})", r.story, x, z, len,
+                             orient, nominal, r.hx, r.hz, r.haveHouse ? std::format("{:.3f}", r.house) : "-", r.houseIsRoom ? " (indoor)" : "",
+                             r.haveOwn ? std::format("{:.3f}", r.own) : "-", base, from, r.lotBase));
+    return base;
 }
 __declspec(naked) void OutdoorWallBaseThunk() {
     __asm {
         pushad
+        push dword ptr [ebp + 18h] // the orientation (0..7)
+        push dword ptr [ebp + 14h] // the run in cells
         push dword ptr [ebp + 10h] // story * 3.0
         push ebx                   // z
         push edi                   // x
         push esi                   // the wall
         call OutdoorWallBase
-        add esp, 16
+        add esp, 24
         fstp dword ptr [ebp + 10h] // the parameter slot (read only by the replaced movss)
         popad
         movss xmm0, dword ptr [ebp + 10h]
