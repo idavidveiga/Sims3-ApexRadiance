@@ -2387,7 +2387,7 @@ void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
     const bool tall = sane && std::max({c.hl, c.hm, c.hr}) > 3.02f;
     if (sane) g_wallUvMatched.fetch_add(1, std::memory_order_relaxed);
     if (tall) g_wallTallCells.fetch_add(1, std::memory_order_relaxed);
-    if ((!sane || tall || std::fabs(c.foot - c.base) > 0.05f) && g_wallTallLogged.fetch_add(1, std::memory_order_relaxed) < 300)
+    if (!kPublicBuild && (!sane || tall || std::fabs(c.foot - c.base) > 0.05f) && g_wallTallLogged.fetch_add(1, std::memory_order_relaxed) < 300)
         LOG_INFO(std::format("[WallTall] story {} wall {:08X} edge {} cell {} of {} ({}): foot {:.3f} (light base {:.3f}, lot base {:.3f}), drawn height left {:.3f} middle {:.3f} right {:.3f}, {:.2f} m off its line",
                              c.story, c.wall, c.edge, cell, c.len, sane ? (tall ? "taller than 3 m" : "foot differs") : "NOT MATCHED", c.foot, c.base, c.lotBase, c.hl, c.hm,
                              c.hr, c.perp));
@@ -6696,21 +6696,19 @@ bool BasisFloorGuardReady() {
     return g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_basisGuardReady.load(std::memory_order_relaxed);
 }
 
-void WallSelfCheck(); // below (SetFoundationWalls)
 void OnPresent() {
     // the wall light of a recording (NoteWallLight): its lines go in on this thread
     {
         const bool rec = Recorder::Active();
         if (g_recordWalls.exchange(rec) != rec && rec) g_wallLightCount.store(0);
-        // where the walls are drawn: measured while the option is on (the self-check) or a recording runs (its wall light)
+        // where the walls are drawn: measured while a recording runs (its wall light)
         static bool measuring = false;
-        const bool want = rec || g_foundationWallsOn.load(std::memory_order_relaxed);
+        const bool want = rec;
         if (want != measuring) {
             measuring = want;
             if (want) WallHeights::Install();
             else WallHeights::Uninstall();
         }
-        if (g_foundationWallsOn.load(std::memory_order_relaxed)) WallSelfCheck();
         if (g_foundationWallsOn.load(std::memory_order_relaxed)) RequeueTallWalls();
         std::vector<std::string> lines;
         {
@@ -7618,74 +7616,6 @@ void RelightAllRooms(const char* why) {
         if (g_relightWhy.find(why) == std::string::npos) g_relightWhy += (g_relightWhy.empty() ? "" : " + ") + std::string(why);
     }
     g_relightAllAt.store((GetTickCount() + 250) | 1, std::memory_order_relaxed);
-}
-
-// ---- Wall self-check (06/10, user: no more captures): with "Outside walls on foundations" on, every few seconds each wall
-// noted by the solves is compared with where its mesh is drawn (wall_heights.h); a wall whose light starts more than 25 cm
-// away from its drawn foot goes to the log once, with its side, story, run and the base decision, so the walls still wrong
-// are found by playing and sending the log.
-struct WallCheckRead {
-    float lotBase = 0, ax = 0, az = 0; // the lot's base, the run along the lot's x and z axes
-    bool ok = false;
-};
-bool ReadWallCheck(uintptr_t mgr, uintptr_t room, float dx, float dz, WallCheckRead& r) { // POD only (SEH)
-    __try {
-        r.lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
-        const float* m = *reinterpret_cast<float* const*>(room + 0xF8);
-        if (m) {
-            r.ax = dx * m[0] + dz * m[2];
-            r.az = dx * m[8] + dz * m[10];
-        }
-        r.ok = std::isfinite(r.lotBase);
-        return r.ok;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-std::unordered_set<uint64_t> g_wallChecked; // (wall, rounded base) already reported
-std::atomic<long> g_wallCheckReported{0};
-DWORD g_wallCheckAt = 0;
-void WallSelfCheck() {
-    const DWORD now = GetTickCount();
-    if (now - g_wallCheckAt < 3000) return;
-    g_wallCheckAt = now;
-    std::vector<WallNote> notes;
-    {
-        std::lock_guard<std::mutex> lk(g_wallNoteMx);
-        notes.reserve(g_wallNotes.size());
-        std::unordered_set<uintptr_t> seen;
-        for (const auto& [k, w] : g_wallNotes)
-            if (seen.insert(w.wall).second) notes.push_back(w);
-    }
-    int found = 0, off = 0;
-    for (const WallNote& w : notes) {
-        if (!w.mgr || !w.room || w.story < 0 || g_wallCheckReported.load(std::memory_order_relaxed) >= 400) continue;
-        WallCheckRead r;
-        if (!ReadWallCheck(w.mgr, w.room, w.dx, w.dz, r)) continue;
-        const float nominal = r.lotBase + 3.0f * static_cast<float>(w.story);
-        float foot = 0.0f;
-        if (!WallHeights::DrawnFoot(w.cx, w.cz, w.cx + w.dx, w.cz + w.dz, 0.1f, nominal, foot)) continue;
-        found++;
-        if (std::fabs(foot - w.oy) <= 0.25f) continue;
-        off++;
-        const uint64_t key = (static_cast<uint64_t>(w.wall) << 16) ^ static_cast<uint64_t>(static_cast<int64_t>(std::lround(w.oy * 100.0f)) & 0xFFFF);
-        if (!g_wallChecked.insert(key).second) continue;
-        g_wallCheckReported.fetch_add(1, std::memory_order_relaxed);
-        const float len = std::sqrt(r.ax * r.ax + r.az * r.az);
-        const bool diagonal = len > 1e-3f && std::fabs(r.ax) > 0.2f * len && std::fabs(r.az) > 0.2f * len;
-        std::string dec;
-        WallBaseDecision d;
-        if (w.outdoor && LookupWallDecision(w.wall, d))
-            dec = std::format("; outdoor decision: orientation {} -> {:.3f} ({})", d.orient, d.base, d.from);
-        LOG_INFO(std::format("[WallCheck] story {} room {} ({}) wall {:08X} {} ({:.2f} m): light from y {:.3f}, DRAWN from y {:.3f}: off by {:+.3f} m (story x 3 = {:.3f}){}",
-                             w.story, w.roomId, w.outdoor ? "outdoor side" : "indoor side", w.wall, diagonal ? "diagonal" : "straight", len, w.oy, foot, w.oy - foot,
-                             nominal, dec));
-    }
-    static int lastOff = -1;
-    if (off != lastOff && found) {
-        lastOff = off;
-        LOG_INFO(std::format("[WallCheck] {} walls measured, {} lit more than 25 cm away from where they are drawn", found, off));
-    }
 }
 
 void SetFoundationWalls(bool on) {

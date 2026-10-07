@@ -177,7 +177,7 @@ bool g_fenceGround = true;
 bool g_levelShare = true;
 bool g_indoorShare = true;       // indoor lamps light the story above or below through stair openings (LevelLightShare::SetIndoor)
 bool g_wallAlign = true;         // walls lit where their light is drawn: no step at the floor line (LevelLightShare::SetWallAlign)
-bool g_foundationWalls = false; // (experimental, 06/10) outside walls lit where the game draws them (LevelLightShare::SetFoundationWalls)
+bool g_foundationWalls = true; // (07/10) wall lamp light at the height the game draws the wall (LevelLightShare::SetFoundationWalls)
 bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
 bool g_floorWalls = true;       // walls block lamp light on outdoor floors (LevelLightShare::SetFloorWalls)
 bool g_objectWalls = true;      // walls block lamp light on outdoor objects (LevelLightShare::SetObjectWalls)
@@ -1720,8 +1720,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             "Indoor lamps light the story above or below through stairwells, atriums and removed floors (needs \"Outdoor light between floors\").");
         RegisterBoolSetting(&g_wallAlign, "paredesSemEmendaEntreAndares", true,
             "Walls are lit at the heights the game draws their light at, so the walls above and below a floor line meet on the same light (needs \"Outdoor light between floors\").");
-        RegisterBoolSetting(&g_foundationWalls, "paredesExternasNaAlturaDesenhada", false,
-            "Outside walls are lit where the game draws them: on a house on a foundation it draws them about 2 m lower than it lights them (experimental).");
+        RegisterBoolSetting(&g_foundationWalls, "paredesExternasNaAlturaDesenhada", true,
+            "Fixes two game bugs that put wall lamp light at the wrong height: outside walls of houses on a foundation, and walls taller than a story (up to the roof).");
         RegisterBoolSetting(&g_floorWalls, "paredesBloqueiamLuzNosPisos", true,
             "Walls stop lamp light on outdoor floors: decks and yards without a roof behind a wall stay dark (relights the rooms when changed).");
         RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
@@ -2197,7 +2197,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_allFloors = true;
         g_floorWalls = true;
         g_objectWalls = true;
-        g_foundationWalls = false;
+        g_foundationWalls = true;
         g_lightDetail = 0;
         g_unlitOn = true;
         g_unlitLight = 0.35f;
@@ -2346,8 +2346,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
                 changed |= ApexUi::SwitchRow("Walls block light on floors", &g_floorWalls, "Decks and yards without a roof stay dark behind a wall", true);
                 changed |= ApexUi::SwitchRow("Walls block light on objects", &g_objectWalls, "Furniture behind a wall gets no light from the lamp outside", true);
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-                changed |= ApexUi::SwitchRow("Outside walls on foundations", &g_foundationWalls, "Lamp light on outside walls where they are drawn", false);
+                changed |= ApexUi::SwitchRow("Wall lamps at the right height", &g_foundationWalls, "Fixes a game bug: wall light too high on tall walls and foundations", true);
                 if (ApexUi::BeginAdvanced("StoryDetail", "Floor detail")) {
                     changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
                     changed |= ApexUi::SwitchRow("Every floor in full detail", &g_allFloors, "Changing floors keeps the light; entering a lot takes a little longer", true);

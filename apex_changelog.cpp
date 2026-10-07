@@ -14,6 +14,8 @@ constexpr const char* k272Improved[] = {
     "Shore reflections on Twinbrook's sea in rain",
     nullptr};
 constexpr const char* k272Fixed[] = {
+    "Wall lamp light at the right height on tall walls and houses on a foundation (a game bug)",
+    "Color works in Edit in Game without turning it off and on",
     "Fence and curb tops no longer turn dark at night",
     "Color and screen effects no longer come and go with the camera in small worlds",
     nullptr};
@@ -101,7 +103,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
-    {"2.7.2", "2026-10-06", k272Added, k272Improved, k272Fixed},
+    {"2.7.2", "2026-10-07", k272Added, k272Improved, k272Fixed},
     {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},
     {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
     {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
