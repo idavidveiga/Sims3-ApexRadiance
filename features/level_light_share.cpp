@@ -2371,18 +2371,6 @@ int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
     }
 }
 
-// Measured wall feet per (lot, story), lot space (WallSelfCheck: the most common drawn foot of that story's walls). The
-// formula below guessed the foundation from story 1's floor; a lot whose story 1 floor is a platform (0.73 m) draws its
-// walls from the ground (the self-check of 23:45), so the measure wins once there is one.
-std::mutex g_measuredFootMx;
-std::map<std::pair<uintptr_t, int>, float> g_measuredFoot;
-bool MeasuredFoot(uintptr_t tracker, int story, float& foot) {
-    std::lock_guard<std::mutex> lk(g_measuredFootMx);
-    const auto it = g_measuredFoot.find({tracker, story});
-    if (it == g_measuredFoot.end()) return false;
-    foot = it->second;
-    return true;
-}
 // ---- The wall base from the house's foundation (06/10, the wall self-check of 23:40 against every wall on screen): the
 // walls of every story s >= 1 are drawn from lot base + foundation + 3 (s - 1), indoor or outdoor, straight or diagonal,
 // whatever the floor tiles say (platforms raise floors, not walls: a room on a 6.239 platform had its walls drawn from
@@ -2411,6 +2399,27 @@ bool ReadStoryOneFloor(uintptr_t tracker, float& floor1) { // POD only (SEH)
         return false;
     }
 }
+// A story's own lowest floor (world, mgr +0x98) and its lowest indoor floor tile (lot space, +0x78 of the 1 m tiles with an
+// indoor room): the foundation without the lot's other stories (POD only, SEH)
+bool ReadOwnFloors(uintptr_t mgr, float& lowest, float& lowestTile) {
+    lowestTile = 1e9f;
+    __try {
+        lowest = *reinterpret_cast<const float*>(mgr + 0x98);
+        const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
+        if (w > 0 && h > 0 && w <= 1024 && h <= 1024)
+            for (int iz = 0; iz < h; iz++)
+                for (int ix = 0; ix < w; ix++)
+                    if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                        for (int q = 0; q < 4; q++)
+                            if (TileRoom(tile, q) > 0) {
+                                lowestTile = std::min(lowestTile, *reinterpret_cast<const float*>(tile + 0x78));
+                                break;
+                            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 // The base (lot space) a wall of this story is drawn from on a foundation; false: leave the game's value
 bool FoundationWallBase(const BYTE* wall, float& base) {
     float lotBase = 0, floor1 = 0;
@@ -2427,9 +2436,15 @@ bool FoundationWallBase(const BYTE* wall, float& base) {
         }
     }
     const uintptr_t tracker = mgr ? MgrTracker(mgr) : 0;
-    if (tracker && MeasuredFoot(tracker, story, base)) return true; // where this story's walls are drawn, measured
-    if (!tracker || !ReadStoryOneFloor(tracker, floor1)) return false;
-    const float foundation = floor1 - lotBase;
+    // story 1's lowest floor; a lot being built is not known yet (its walls are set up before NoteLotManagers sees it:
+    // the self-check of 23:57, a lot whose outdoor walls all kept story x 3), then this story's own floors
+    float foundation = -1.0f;
+    if (tracker && ReadStoryOneFloor(tracker, floor1)) foundation = floor1 - lotBase;
+    else if (float lowest = 0, lowestTile = 0; mgr && ReadOwnFloors(mgr, lowest, lowestTile)) {
+        const float up = 3.0f * static_cast<float>(story - 1);
+        foundation = lowest - lotBase - up;
+        if (!(foundation > 0.05f && foundation < 2.95f) && lowestTile < 1e8f) foundation = lowestTile - up;
+    }
     if (!(foundation > 0.05f && foundation < 2.95f)) return false;
     base = foundation + 3.0f * static_cast<float>(story - 1);
     return true;
@@ -7452,46 +7467,6 @@ bool ReadWallCheck(uintptr_t mgr, uintptr_t room, float dx, float dz, WallCheckR
 std::unordered_set<uint64_t> g_wallChecked; // (wall, rounded base) already reported
 std::atomic<long> g_wallCheckReported{0};
 DWORD g_wallCheckAt = 0;
-// Walls already set up when a story's measure arrives (they are set up when the lot is built, FUN_006a26c0 from the lot
-// build, not by a room's relight): their height moves to the measure, in place: local and world origin and end (+0x104,
-// +0x114, +0x124, +0x134). Rooms of the story: room 0's wall list +0xD8 and every room's, as ReadStoryWalls reads them.
-int MoveStoryWalls(uintptr_t tracker, int story, float footLot) { // POD only (SEH)
-    int moved = 0;
-    __try {
-        const uintptr_t mgr = StoryManager(tracker, story);
-        if (!mgr || !kRoomById) return 0;
-        const float lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
-        const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
-        if (w <= 0 || h <= 0 || w > 1024 || h > 1024) return 0;
-        int ids[1024], n = 0;
-        ids[n++] = 0;
-        for (int iz = 0; iz < h; iz++)
-            for (int ix = 0; ix < w; ix++)
-                if (const uintptr_t tile = LightTile(mgr, ix, iz))
-                    for (int q = 0; q < 4; q++)
-                        if (const int id = TileRoom(tile, q); id > 0 && n < 1024 && std::find(ids, ids + n, id) == ids + n) ids[n++] = id;
-        for (int k = 0; k < n; k++) {
-            const BYTE* room = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), ids[k]));
-            if (!room) continue;
-            const uintptr_t b = *reinterpret_cast<const uintptr_t*>(room + 0xD8), e = *reinterpret_cast<const uintptr_t*>(room + 0xDC);
-            if (!b || e < b || (e - b) / 4 > 4096) continue;
-            for (uintptr_t p = b; p < e; p += 4) {
-                BYTE* wall = *reinterpret_cast<BYTE* const*>(p);
-                if (!wall) continue;
-                float* ly = reinterpret_cast<float*>(wall + 0x104);
-                const float dy = footLot - *ly;
-                if (std::fabs(dy) < 0.02f || std::fabs(dy) > 4.0f) continue;
-                *ly += dy;
-                *reinterpret_cast<float*>(wall + 0x124) += dy;
-                *reinterpret_cast<float*>(wall + 0x114) = lotBase + footLot;
-                *reinterpret_cast<float*>(wall + 0x134) += dy;
-                moved++;
-            }
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-    return moved;
-}
 void WallSelfCheck() {
     const DWORD now = GetTickCount();
     if (now - g_wallCheckAt < 3000) return;
@@ -7505,7 +7480,6 @@ void WallSelfCheck() {
             if (seen.insert(w.wall).second) notes.push_back(w);
     }
     int found = 0, off = 0;
-    std::map<std::pair<uintptr_t, int>, std::map<int, int>> votes; // (lot, story) -> drawn foot over the lot's base (cm) -> walls
     for (const WallNote& w : notes) {
         if (!w.mgr || !w.room || w.story < 0 || g_wallCheckReported.load(std::memory_order_relaxed) >= 400) continue;
         WallCheckRead r;
@@ -7514,7 +7488,6 @@ void WallSelfCheck() {
         float foot = 0.0f;
         if (!WallHeights::DrawnFoot(w.cx, w.cz, w.cx + w.dx, w.cz + w.dz, 0.1f, nominal, foot)) continue;
         found++;
-        if (w.story >= 1) if (const uintptr_t tracker = MgrTracker(w.mgr)) votes[{tracker, w.story}][static_cast<int>(std::lround((foot - r.lotBase) * 100.0f))]++;
         if (std::fabs(foot - w.oy) <= 0.25f) continue;
         off++;
         const uint64_t key = (static_cast<uint64_t>(w.wall) << 16) ^ static_cast<uint64_t>(static_cast<int64_t>(std::lround(w.oy * 100.0f)) & 0xFFFF);
@@ -7530,25 +7503,6 @@ void WallSelfCheck() {
                              w.story, w.roomId, w.outdoor ? "outdoor side" : "indoor side", w.wall, diagonal ? "diagonal" : "straight", len, w.oy, foot, w.oy - foot,
                              nominal, dec));
     }
-    // the measured foot of each story: the most common one, from 3 walls or more; a lot whose measure changed lights again
-    std::vector<uintptr_t> relight;
-    for (const auto& [key, hist] : votes) {
-        int best = 0, bestN = 0, total = 0;
-        for (const auto& [cm, cnt] : hist) {
-            total += cnt;
-            if (cnt > bestN) best = cm, bestN = cnt;
-        }
-        if (total < 3) continue;
-        const float v = best / 100.0f;
-        std::lock_guard<std::mutex> lk(g_measuredFootMx);
-        auto it = g_measuredFoot.find(key);
-        if (it != g_measuredFoot.end() && std::fabs(it->second - v) <= 0.02f) continue;
-        g_measuredFoot[key] = v;
-        const int movedWalls = MoveStoryWalls(key.first, key.second, v);
-        LOG_INFO(std::format("[WallCheck] lot {:08X} story {}: walls drawn from {:.3f} over the lot's base ({} of {} walls; {} walls set up before moved to it)", key.first, key.second, v, bestN, total, movedWalls));
-        if (std::find(relight.begin(), relight.end(), key.first) == relight.end()) relight.push_back(key.first);
-    }
-    for (uintptr_t t : relight) RelightLot(t, "walls measured where they are drawn", 0);
     static int lastOff = -1;
     if (off != lastOff && found) {
         lastOff = off;
