@@ -2371,6 +2371,56 @@ int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
     }
 }
 
+// ---- The wall base from the house's foundation (06/10, the wall self-check of 23:40 against every wall on screen): the
+// walls of every story s >= 1 are drawn from lot base + foundation + 3 (s - 1), indoor or outdoor, straight or diagonal,
+// whatever the floor tiles say (platforms raise floors, not walls: a room on a 6.239 platform had its walls drawn from
+// 3.989). The foundation is story 1's lowest floor over the lot's base (0.977 .. 1.105 in the captures; 3 without one, and
+// then nothing changes). Both branches of the game's wall setup take it (outdoor: story x 3, indoor: the floor tile).
+bool ReadFoundationBase(const BYTE* wall, float& lotBase, float& story1, int& story) { // POD only (SEH)
+    __try {
+        const BYTE* room = *reinterpret_cast<BYTE* const*>(wall);
+        if (!room) return false;
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr) return false;
+        story = *reinterpret_cast<const int*>(mgr + 0x88);
+        lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
+        return std::isfinite(lotBase);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool ReadStoryOneFloor(uintptr_t tracker, float& floor1) { // POD only (SEH)
+    __try {
+        const uintptr_t mgr1 = StoryManager(tracker, 1);
+        if (!mgr1) return false;
+        floor1 = *reinterpret_cast<const float*>(mgr1 + 0x98);
+        return std::isfinite(floor1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// The base (lot space) a wall of this story is drawn from on a foundation; false: leave the game's value
+bool FoundationWallBase(const BYTE* wall, float& base) {
+    float lotBase = 0, floor1 = 0;
+    int story = -99;
+    if (!ReadFoundationBase(wall, lotBase, floor1, story) || story < 1 || story > 7) return false;
+    uintptr_t mgr = 0;
+    {
+        const BYTE* room = nullptr;
+        __try {
+            room = *reinterpret_cast<BYTE* const*>(wall);
+            mgr = room ? *reinterpret_cast<const uintptr_t*>(room) : 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+    const uintptr_t tracker = mgr ? MgrTracker(mgr) : 0;
+    if (!tracker || !ReadStoryOneFloor(tracker, floor1)) return false;
+    const float foundation = floor1 - lotBase;
+    if (!(foundation > 0.05f && foundation < 2.95f)) return false;
+    base = foundation + 3.0f * static_cast<float>(story - 1);
+    return true;
+}
 // The last decision per wall (the recording's wall light shows it next to where the wall is drawn)
 struct WallBaseDecision {
     int orient = -1;
@@ -4117,32 +4167,19 @@ bool ReadWallBase(const BYTE* wall, int x, int z, int len, int orient, WallBaseR
     }
 }
 extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal, int len, int orient) {
-    if (!g_foundationWallsOn.load(std::memory_order_relaxed)) {
-        NoteWallDecision(wall, {orient, nominal, -1e9f, -1e9f, nominal, "option off"});
-        return nominal;
-    }
-    // diagonal walls (orientations 4..7) are drawn at story * 3 even on a foundation (the log of 23:21 against the F7 of
-    // 23:23: a diagonal wall at the floor of 3.989 showed its light 2 m above the sconce; a diagonal facade of story 3
-    // did the same earlier): their base was already where they are drawn
-    if (orient >= 4) {
-        NoteWallDecision(wall, {orient, nominal, -1e9f, -1e9f, nominal, "diagonal, kept"});
-        return nominal;
-    }
-    WallBaseRead r;
-    if (!ReadWallBase(wall, x, z, len, orient, r) || r.story < 1) return nominal;
-    auto usable = [&](float h) { return h >= nominal - 3.2f && h <= nominal + 0.3f; };
-    // the floor the wall stands on: the house side across its edge; else its own cell's floor; else story * 3 as before
+    (void)x, (void)z, (void)len;
     float base = nominal;
-    const char* from = "kept";
-    if (r.haveHouse && usable(r.house)) base = r.house, from = r.houseIsRoom ? "house side" : "across the edge";
-    else if (r.haveOwn && usable(r.own)) base = r.own, from = "own cell";
-    (std::fabs(base - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
-    NoteWallDecision(wall, {orient, nominal, r.haveHouse ? r.house : -1e9f, r.haveOwn ? r.own : -1e9f, base, from});
-    if (g_wallBaseLogged.fetch_add(1, std::memory_order_relaxed) < 1500)
-        LOG_INFO(std::format("[WallBase] story {} cell ({}, {}) len {} orient {} nominal {:.3f}: across ({}, {}) {}{}, own {} -> {:.3f} ({}) (lot base {:.3f})", r.story, x, z, len,
-                             orient, nominal, r.hx, r.hz, r.haveHouse ? std::format("{:.3f}", r.house) : "-", r.houseIsRoom ? " (indoor)" : "",
-                             r.haveOwn ? std::format("{:.3f}", r.own) : "-", base, from, r.lotBase));
-    return base;
+    const bool on = g_foundationWallsOn.load(std::memory_order_relaxed);
+    const bool moved = on && FoundationWallBase(wall, base);
+    (moved && std::fabs(base - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
+    NoteWallDecision(wall, {orient, nominal, -1e9f, -1e9f, moved ? base : nominal, !on ? "option off" : moved ? "foundation" : "kept"});
+    return moved ? base : nominal;
+}
+// The indoor branch: the floor tile's height as the game takes it, or the foundation's base with the option
+extern "C" float __cdecl IndoorWallBase(const BYTE* wall, float tile) {
+    float base = tile;
+    if (g_foundationWallsOn.load(std::memory_order_relaxed) && FoundationWallBase(wall, base)) return base;
+    return tile;
 }
 // Indoor faces of diagonal walls (orientations 4..7): the game takes the floor under them (0x006AB340, "movss xmm0,
 // [eax+78h]"), but diagonal walls are drawn at story * 3 like their outdoor faces (the recording of 23:33: the two faces
@@ -4157,9 +4194,15 @@ __declspec(naked) void IndoorWallBaseThunk() {
         movss xmm0, dword ptr [eax + 78h]  // the floor under the wall, as the game takes it
         cmp byte ptr [g_wallBaseFlag], 0
         je done
-        cmp dword ptr [ebp + 18h], 4       // the orientation: 4..7 are the diagonals
-        jl done
-        movss xmm0, dword ptr [ebp + 10h]  // story * 3.0, where the game draws diagonal walls
+        pushad
+        sub esp, 4
+        movss dword ptr [esp], xmm0        // the floor height
+        push esi                           // the wall
+        call IndoorWallBase
+        add esp, 8
+        fstp dword ptr [ebp + 10h]         // the parameter slot (not read on this branch)
+        popad
+        movss xmm0, dword ptr [ebp + 10h]
     done:
         ret
     }
