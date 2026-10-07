@@ -24,6 +24,9 @@ constexpr float kDefaultDepthA = 1.00008f; // LightProbe-m80
 
 std::mutex g_mutex;
 std::vector<std::pair<int, PostScene::Effect>> g_effects; // sorted by order
+std::vector<PostScene::Effect> g_noDepth; // of those, the ones that also run without the shared depth (Add needsDepth = false)
+bool g_depthValid = true;               // SceneDepthValid: false while those run on a scene drawn with another depth-stencil
+bool g_sceneOnSharedDepth = false;      // this frame: a scene draw had the shared INTZ depth bound (checked until one has)
 bool g_hooks = false;
 bool g_uiDrawSeen = false; // this frame: a depth-off back-buffer draw after scene draws (render thread)
 IDirect3DSurface9* g_curRT0 = nullptr;     // identity only
@@ -42,6 +45,21 @@ bool SceneDepthReady(IDirect3DDevice9* dev) {
     const bool ready = bound && bound == expected;
     if (bound) bound->Release();
     return ready;
+}
+
+// The effects of this boundary: all of them, or with the scene drawn on another depth-stencil than the shared one (06/10: a
+// friend's Edit in Game; every boundary was rejected for it, so Color never ran until it was turned off and on, which dropped
+// its depth request and with it the swap) only the ones that need no depth. The others stay pending as before.
+void RunEffects(IDirect3DDevice9* dev, bool depthOk) {
+    std::vector<std::pair<int, PostScene::Effect>> run;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (const auto& e : g_effects)
+            if (depthOk || std::find(g_noDepth.begin(), g_noDepth.end(), e.second) != g_noDepth.end()) run.push_back(e);
+    }
+    g_depthValid = depthOk;
+    for (const auto& e : run) e.second(dev);
+    g_depthValid = true;
 }
 
 // ---- camera (combined build's post_scene.cpp, tag combined-final) ----
@@ -144,6 +162,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
     g_depthWrites = 0;
     g_done = false;
     g_uiDrawSeen = false;
+    g_sceneOnSharedDepth = false;
     g_rejectedBoundary = false;
     g_nearDraws = 0;
     g_nearVotes.clear();
@@ -166,6 +185,7 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
     if (z != D3DZB_FALSE) {
         if (g_rejectedBoundary && ctx.ZWriteEnable() && SceneDepthReady(dev)) g_rejectedBoundary = false; // real scene resumed
         g_sceneDraws++;
+        if (!g_sceneOnSharedDepth && SceneDepthReady(dev)) g_sceneOnSharedDepth = true;
         if (ctx.ZWriteEnable()) g_depthWrites++;
         if (g_nearDraws < kNearDraws && g_cameraWanted.load(std::memory_order_relaxed) > 0) VoteCamera(dev);
         return;
@@ -175,15 +195,13 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
     if (g_rejectedBoundary) return;
     if (!SceneDepthReady(dev)) {
         g_rejectedBoundary = true;
-        return; // effects stay pending for a later scene boundary, not for the UI after this one
+        // the others stay pending for a later boundary, not for the UI after this one. A scene drawn on the shared depth and a
+        // boundary without it is a pass inside the scene (the lake pass, the game's own): nothing runs there, as before
+        if (!g_sceneOnSharedDepth) RunEffects(dev, false);
+        return;
     }
     g_done = true; // set first so a failure never retries within the frame
-    std::vector<std::pair<int, PostScene::Effect>> run;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        run = g_effects;
-    }
-    for (const auto& e : run) e.second(dev);
+    RunEffects(dev, true);
 }
 
 // With the game's UI hidden there may be no depth-off UI draw to mark the end of the scene. In that case run the same
@@ -192,7 +210,7 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx) {
 void AtEndSceneBeforeOverlay(IDirect3DDevice9* dev) {
     if (g_uiDrawSeen) return; // the UI is already drawn: never run the effects over it (06/10)
     if (!ShaderCache::PrecompileComplete()) return;
-    if (!dev || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws || !g_backBuffer || g_curRT0 != g_backBuffer || !SceneDepthReady(dev)) return;
+    if (!dev || g_done || g_rejectedBoundary || g_sceneDraws < kMinSceneDraws || !g_backBuffer || g_curRT0 != g_backBuffer) return;
     IDirect3DSurface9* rt = nullptr;
     if (FAILED(dev->GetRenderTarget(0, &rt)) || !rt) return;
     const bool onBackBuffer = rt == g_backBuffer;
@@ -200,12 +218,8 @@ void AtEndSceneBeforeOverlay(IDirect3DDevice9* dev) {
     if (!onBackBuffer) return;
 
     g_done = true; // no depth-off scene/UI draw occurred this frame; one fallback pass is enough
-    std::vector<std::pair<int, PostScene::Effect>> run;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        run = g_effects;
-    }
-    for (const auto& e : run) e.second(dev);
+    const bool depthOk = SceneDepthReady(dev);
+    if (depthOk || !g_sceneOnSharedDepth) RunEffects(dev, depthOk);
 }
 
 // A Reset replaces the back buffer and sets render target 0 to it without a SetRenderTarget call: both are read again at
@@ -243,8 +257,9 @@ void RegisterHooks() {
 
 namespace PostScene {
 
-void Add(int order, Effect fn) {
+void Add(int order, Effect fn, bool needsDepth) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (!needsDepth && std::find(g_noDepth.begin(), g_noDepth.end(), fn) == g_noDepth.end()) g_noDepth.push_back(fn);
     for (const auto& e : g_effects)
         if (e.second == fn) return;
     g_effects.push_back({order, fn});
@@ -262,6 +277,7 @@ void Add(int order, Effect fn) {
 void Remove(Effect fn) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_effects.erase(std::remove_if(g_effects.begin(), g_effects.end(), [&](const auto& e) { return e.second == fn; }), g_effects.end());
+    g_noDepth.erase(std::remove(g_noDepth.begin(), g_noDepth.end(), fn), g_noDepth.end());
     if (g_effects.empty() && g_hooks) {
         g_hooks = false;
         D3D9Hooks::UnregisterAll(kHookName);
@@ -280,9 +296,10 @@ float CameraNear() { return g_near; }
 int DepthWritesThisFrame() { return g_depthWrites; }
 int DepthWritesLastFrame() { return g_lastDepthWrites; }
 bool Counting() { return g_hooks; }
+bool SceneDepthValid() { return g_depthValid; }
 std::string DiagText() {
     return "scene draws " + std::to_string(g_sceneDraws) + " (depth writes " + std::to_string(g_depthWrites) + ", last frame " + std::to_string(g_lastDepthWrites) +
-           "), boundary " + (g_done ? "done" : "not yet") + (g_rejectedBoundary ? ", rejected" : "") + (g_uiDrawSeen ? ", UI seen" : "") +
+           "), boundary " + (g_done ? "done" : "not yet") + (g_rejectedBoundary ? ", rejected" : "") + (g_sceneOnSharedDepth ? ", scene on the shared depth" : ", scene not on the shared depth") + (DepthShare::Surface() ? "" : " (no depth swap)") + (g_uiDrawSeen ? ", UI seen" : "") +
            ", RT0 " + (!g_curRT0 ? "unknown" : g_curRT0 == g_backBuffer ? "back buffer" : "other") + ", effects " + std::to_string(g_effects.size()) +
            (g_hooks ? "" : ", hooks off");
 }

@@ -987,6 +987,7 @@ void OnGameDraw(D3D9Hooks::DeviceContext& ctx, bool isStripOfTwo) {
 // a frame in a capture), so every pixel read as UI and no setting showed.
 bool g_atBoundary = false, g_boundaryDone = false;
 void BoundaryEffect(IDirect3DDevice9* dev) {
+    if (g_boundaryDone) return; // once a frame (a boundary without the shared depth may come before a later one with it)
     g_atBoundary = true;
     Picture::Get().OnEndScene(dev);
     g_atBoundary = false;
@@ -1021,7 +1022,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
 void RegisterHooks(IDirect3DDevice9* dev) {
     if (gpu.hooks) return;
     gpu.hooks = true;
-    PostScene::Add(PostScene::kPicture, BoundaryEffect); // Color on the finished scene, before the UI (see BoundaryEffect)
+    PostScene::Add(PostScene::kPicture, BoundaryEffect, false); // Color on the finished scene, before the UI (see BoundaryEffect); runs without the shared depth too
     using namespace D3D9Hooks;
     IDirect3DSurface9* s = nullptr;
     if (SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
@@ -1525,7 +1526,9 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const bool fGlow = on(q.glow, q.glowAmount), fHal = on(q.halation, q.halationAmount), fDream = on(q.dreamy, q.dreamyAmount);
     const bool fTilt = on(q.tiltShift, q.tiltAmount), fPrism = on(q.prism, q.prismAmount);
     const bool fGrain = on(q.grain, q.grainAmount), fFx = on(q.retro3dfx, q.fxAmount), fCrt = on(q.crt, q.crtAmount);
+    // Emphasize reads the scene depth: not on a scene drawn with another depth-stencil than the shared one (PostScene)
     const bool wantEmph = on(q.emphasize, q.emphAmount);
+    const bool depthUsable = !g_atBoundary || PostScene::SceneDepthValid(); // the request stays (no swap restarted every frame)
     const bool fHdr = on(q.fakeHdr, q.hdrAmount);
     const bool fFilm = on(q.filmic, q.filmicAmount), fTintF = on(q.tintFilter, q.tintFilterAmount);
     const bool fLevels = q.levels && (q.levelsBlack > 0.001f || q.levelsWhite < 0.999f || std::fabs(q.levelsGamma - 1.0f) > 0.001f);
@@ -1540,7 +1543,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     // Emphasize reads the scene depth: requested only while it is on
     RequestDepth(wantEmph);
     // the depth copied with the scene (the live one has the Sim portrait's cleared square by now); else the live one
-    IDirect3DTexture9* depth = wantEmph ? (gpu.depthCopied && gpu.depthTex && !g_atBoundary ? gpu.depthTex : DepthShare::Texture()) : nullptr;
+    IDirect3DTexture9* depth = wantEmph && depthUsable ? (gpu.depthCopied && gpu.depthTex && !g_atBoundary ? gpu.depthTex : DepthShare::Texture()) : nullptr;
     const float camNear = PostScene::CameraNear(), camA = PostScene::CameraDepthA();
     const bool fEmph = wantEmph && depth && camNear > 0.0f;
     // clarity, glow, halation, dreamy, tilt-shift and Fake HDR: the scene (without the UI when the copy exists)

@@ -17,8 +17,12 @@
 namespace PostScene {
 using Effect = void (*)(IDirect3DDevice9*);
 enum Order : int { kAmbientOcclusion = 10, kEdgeSmoothing = 20, kDepthBlur = 30, kPicture = 40 };
-void Add(int order, Effect fn); // registers the draw hooks with the first effect
+// registers the draw hooks with the first effect. needsDepth = false: an effect that also runs when the scene was drawn with
+// another depth-stencil than the shared INTZ one (Picture: Color needs the depth only for Emphasize, see SceneDepthValid)
+void Add(int order, Effect fn, bool needsDepth = true);
 void Remove(Effect fn);         // and unregisters them with the last one
+// At a scene boundary: the shared INTZ depth holds this scene (false while a needsDepth = false effect runs without it)
+bool SceneDepthValid();
 // The camera, read from the scene draws' vertex constants while an effect asks for it (reference counted)
 void WantCamera(bool on);
 // The camera's near plane of the current frame (metres). Device depth d = A - near * A / z (A = 1.00008 measured, far
