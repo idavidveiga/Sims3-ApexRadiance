@@ -980,8 +980,8 @@ bool LevelAlive(uintptr_t level) {
     }
 }
 
-// Called by the thunks (any thread) before the game sets or removes a floor
-void __cdecl NoteLevel(uintptr_t level) {
+// Called by the thunks (any thread) before the game sets or removes a floor (through NoteLevel)
+void NoteLevelImpl(uintptr_t level) {
     g_floorEdits.fetch_add(1, std::memory_order_relaxed);
     const DWORD now = GetTickCount();
     g_floorTick.store(now ? now : 1, std::memory_order_relaxed);
@@ -996,13 +996,17 @@ void __cdecl NoteLevel(uintptr_t level) {
     if (g_dirtyLevels.size() < 256 && std::none_of(g_dirtyLevels.begin(), g_dirtyLevels.end(), [&](const auto& d) { return d.first == level; }))
         g_dirtyLevels.emplace_back(level, 10);
 }
+// 07/10, players' Runtime Error: the note allocates (its lists) inside the game's floor code: a C++ exception is caught and
+// the notes stay off (HookGuard); the game's call follows in the thunk either way
+void __cdecl NoteLevel(uintptr_t level) {
+    HookGuard::Run("LevelLightShare floor note", [level] { NoteLevelImpl(level); });
+}
 
 // A level floor object just made (FUN_00a88790 at its only call): known from now on, whatever fills its floors. Its
 // story's lighting manager (+0x238) is linked later; LevelFor reads it when asked.
 using LevelCtor_t = void*(__thiscall*)(void* level);
-void* __fastcall LevelCtorHook(void* level) {
-    void* made = reinterpret_cast<LevelCtor_t>(kLevelCtor)(level);
-    if (level) {
+void NoteLevelMade(void* level) {
+    {
         g_levelsMade.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lk(g_levelsMx);
         const uintptr_t l = reinterpret_cast<uintptr_t>(level);
@@ -1013,6 +1017,10 @@ void* __fastcall LevelCtorHook(void* level) {
             g_levelsGen++;
         }
     }
+}
+void* __fastcall LevelCtorHook(void* level) {
+    void* made = reinterpret_cast<LevelCtor_t>(kLevelCtor)(level);
+    if (level) HookGuard::Run("LevelLightShare new floor note", [level] { NoteLevelMade(level); }); // caught, as NoteLevel (07/10)
     return made;
 }
 
@@ -1284,6 +1292,11 @@ void NoteLit(const DepKey& key, uintptr_t mgr, uintptr_t light) {
     if (std::find(l.lights.begin(), l.lights.end(), light) != l.lights.end()) return;
     if (l.lights.size() >= kLitMax) l.lights.erase(l.lights.begin());
     l.lights.push_back(light);
+}
+// 07/10, players' Runtime Error: NoteLit allocates (its map) inside the game's light evaluation; caught there, then off
+// (HookGuard). Not inlined: the hot evaluation hooks keep no exception frame of their own.
+__declspec(noinline) void NoteLitSafe(const DepKey& key, uintptr_t mgr, uintptr_t light) noexcept {
+    HookGuard::Run("LevelLightShare lit-by note", [&] { NoteLit(key, mgr, light); });
 }
 // Whether one of these lamps has lit the room (unknown story manager: false)
 bool LitByAny(const DepKey& key, const uintptr_t* lights, size_t n) {
@@ -2059,17 +2072,19 @@ bool ReadSolveNote(const BYTE* room, SolveNote& n) {
 using RoomSolveStart_t = void(__thiscall*)(void* room);
 void __fastcall RoomSolveStartHook(BYTE* room) {
     reinterpret_cast<RoomSolveStart_t>(kRoomSolveStart)(room);
-    if (room) RoomLightQueue::NoteSolveStart(room); // lamp switches all at once wait for solves begun after the switch
+    // 07/10, players' Runtime Error: each of Apex's steps after the game's state 0 is caught on its own (HookGuard), then off
+    // lamp switches all at once wait for solves begun after the switch
+    if (room) HookGuard::Run("RoomLightQueue solve start note", [room] { RoomLightQueue::NoteSolveStart(room); });
     if (room && AmbientActive()) {
         if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) g_otherThread.fetch_add(1, std::memory_order_relaxed); // e.g. the lot impostor's synchronous solve
         else {
-            NoteClassThreshold(room);
-            QuickLikeRefinement(room);
-            MergeStackedAmbientSafe(room);
+            HookGuard::Run("LevelLightShare class threshold note", [room] { NoteClassThreshold(room); });
+            HookGuard::Run("LevelLightShare quick pass refinement", [room] { QuickLikeRefinement(room); });
+            HookGuard::Run("LevelLightShare stacked rooms ambient", [room] { MergeStackedAmbientSafe(room); });
         }
     }
     if (Recorder::Verbose())
-        if (room) NoteSolve(room, 'S');
+        if (room) HookGuard::Run("LevelLightShare solve note (start)", [room] { NoteSolve(room, 'S'); });
 }
 
 // The wall pass of a room with its group's ramp base; the room's own base is back for the floor, ceiling and object passes
@@ -2585,13 +2600,16 @@ void __fastcall WallUvHook(void* geo, void*, uintptr_t mgr, int x, int z, int di
         if (RecutCellV(geo, mode, c.base, k.y, vb, vt)) {
             g_shortRecut.fetch_add(1, std::memory_order_relaxed);
             if (!kPublicBuild && mode == 0 && g_shortLogged.fetch_add(1, std::memory_order_relaxed) < 40)
-                LOG_INFO(std::format("[WallTall] short wall lit at its drawn heights: story {} wall {:08X} edge {}: drawn {:.3f}..{:.3f} (light base {:.3f}, lot base {:.3f}), "
+                HookGuard::Try("LevelLightShare short wall note", [&] {
+                    LOG_INFO(std::format("[WallTall] short wall lit at its drawn heights: story {} wall {:08X} edge {}: drawn {:.3f}..{:.3f} (light base {:.3f}, lot base {:.3f}), "
                                      "top wallpaper V {:.3f}/{:.3f}: the game showed rows 0..{:.2f}/{:.2f} m, now {:.2f}..{:.2f} m (V {}..{})",
                                      c.story, c.wall, c.edge, std::min(k.y[0], k.y[2]), std::max(k.y[3], k.y[5]), c.base, c.lotBase, k.w3 / 512.0f - 8.0f,
                                      k.w5 / 512.0f - 8.0f, 3.0f * (1.0f - f3), 3.0f * (1.0f - f5), std::min(k.y[0], k.y[2]) - c.base, std::max(k.y[3], k.y[5]) - c.base, vb, vt));
+                });
         }
     }
-    if (mode == 0) NoteWallCell(geo, mgr, x, z, dir); // mode 1 writes the second UV set of the same vertices
+    // mode 1 writes the second UV set of the same vertices; the note allocates: caught, then off (07/10, players' Runtime Error)
+    if (mode == 0) HookGuard::Run("LevelLightShare wall cell note", [=] { NoteWallCell(geo, mgr, x, z, dir); });
 }
 // The drawn height at t (0..len cells along the wall) of a wall's cells; 0 = not known
 float CellHeightAt(const WallCellH* cells, int n, float t) {
@@ -2767,7 +2785,7 @@ bool ReadCutRaw(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lo
     }
 }
 // Any thread that adds or removes cutouts (the main thread, lot loads), inside the game's loop: no game call, one lock
-void __cdecl NoteCutoutPost(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lotReg) {
+void NoteCutoutPostImpl(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lotReg) {
     CutRaw r;
     if (!ReadCutRaw(add, siteEsp, frame, lotReg, r)) {
         g_cutUnread.fetch_add(1, std::memory_order_relaxed);
@@ -2816,6 +2834,11 @@ void __cdecl NoteCutoutPost(int add, const uintptr_t* siteEsp, uintptr_t frame, 
                              r.chain ? (r.mgrLot == r.postLot ? std::string(", lot id = its story managers'")
                                                               : std::format(", lot id {:016X} of the post DIFFERS (its story managers' used)", r.postLot))
                                      : std::string(", story manager not built yet")));
+}
+// 07/10, players' Runtime Error: the note allocates (maps, the log line) inside the game's object placement: a C++ exception
+// is caught and the notes stay off (HookGuard); the thunk then runs the replaced instruction as before
+void __cdecl NoteCutoutPost(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lotReg) {
+    HookGuard::Run("LevelLightShare opening note", [=] { NoteCutoutPostImpl(add, siteEsp, frame, lotReg); });
 }
 __declspec(naked) void CutAddThunk() {
     __asm {
@@ -3526,9 +3549,8 @@ void ClearYardCaches() {
     g_yardLogged.clear();
 }
 
-void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
-    reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
-    t_lastWall = reinterpret_cast<uintptr_t>(wall);
+// Apex's part after the game laid out a wall piece's samples (WallSamplesHook)
+void AfterWallSamples(void* wall, int piece, int cls, void* batch) {
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
     // outside walls lit where they are drawn: only with the option (the first, unconditional version of 06/10 evening broke the
@@ -3560,6 +3582,13 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
         std::lock_guard<std::mutex> lk(g_ghostMx);
         g_ghosts.erase(note.wall);
     }
+}
+void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
+    reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
+    t_lastWall = reinterpret_cast<uintptr_t>(wall);
+    if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) g_piece = PieceNote{}; // also when that part is off
+    // 07/10, players' Runtime Error: Apex's part (notes, maps) is caught (HookGuard) and then off; the game's layout stands
+    HookGuard::Run("LevelLightShare wall samples", [=] { AfterWallSamples(wall, piece, cls, batch); });
 }
 
 // Copies of the piece's top-row samples (k = N-1) one and two rows higher, and of its bottom-row samples (k = 0) one and
@@ -4026,9 +4055,10 @@ using Finalize_t = void(__thiscall*)(void* room);
 void __fastcall FinalizeHook(BYTE* room) {
     reinterpret_cast<Finalize_t>(kFinalize)(room);
     if (!room) return;
-    RoomLightQueue::NoteSolveEnd(room);
-    LightDetail::CheckLayout(room); // once per session: no class-2 floor or ceiling tile over its neighbours' texels
-    if (Recorder::Active()) NoteSolve(room, 'E');
+    // 07/10, players' Runtime Error: each step caught on its own (HookGuard), then off; the game's finalize has run
+    HookGuard::Run("RoomLightQueue solve end note", [room] { RoomLightQueue::NoteSolveEnd(room); });
+    HookGuard::Run("LightDetail layout check", [room] { LightDetail::CheckLayout(room); }); // once per session: no class-2 floor or ceiling tile over its neighbours' texels
+    if (Recorder::Active()) HookGuard::Run("LevelLightShare solve note (end)", [room] { NoteSolve(room, 'E'); });
 }
 std::atomic<bool> g_finalizeReady{false}, g_lockStepReady{false};
 
@@ -6180,7 +6210,7 @@ bool ActiveLot(uintptr_t mgr) {
     }
 }
 
-void Diag(const RoomInfo& info, void* light, const float* sample, const float* colour, int home, float mine, bool culledList) {
+void DiagImpl(const RoomInfo& info, void* light, const float* sample, const float* colour, int home, float mine, bool culledList) {
     g_lastRec = -1;
     if (g_diagFull[info.indoor ? 1 : 0].load(std::memory_order_relaxed)) return;
     if (!ActiveLot(info.mgr)) return;
@@ -6205,6 +6235,11 @@ void Diag(const RoomInfo& info, void* light, const float* sample, const float* c
     }
     g_diag.push_back(r);
     g_lastRec = static_cast<int>(g_diag.size()) - 1;
+}
+// The F8 record from inside the game's light evaluation (developer mode): a C++ exception is caught, then the records stay
+// off (07/10, players' Runtime Error). Not inlined, as NoteLitSafe.
+__declspec(noinline) void Diag(const RoomInfo& info, void* light, const float* sample, const float* colour, int home, float mine, bool culledList) noexcept {
+    HookGuard::Run("LevelLightShare F8 light record", [&] { DiagImpl(info, light, sample, colour, home, mine, culledList); });
 }
 
 // Where a lamp's ray enters the solving room's story (IndoorPassImpl and OutdoorEntry, for GameWallTest)
@@ -6505,7 +6540,7 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
         if (mine > 0.0f && !c->lit && !g_ctx.basis) { // this lamp lights this room (once per gather; g_litBy)
             c->lit = true;
-            NoteLit(DepKey{info.tracker, info.level, info.id}, info.mgr, reinterpret_cast<uintptr_t>(light));
+            NoteLitSafe(DepKey{info.tracker, info.level, info.id}, info.mgr, reinterpret_cast<uintptr_t>(light));
         }
         if (mine > 0.0f && entry.valid) { // the game's wall test of this room for this lamp, next: from where the ray enters
             g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
