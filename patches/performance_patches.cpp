@@ -18,6 +18,7 @@
 #include "fast_dxt.h"
 #include "fast_refpack.h"
 #include "fast_cas.h"
+#include "fast_create_a_style.h"
 #include "compositor_readback.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
@@ -516,6 +517,31 @@ class FastCacheCompressionPatch : public ApexPatch {
 
     void RenderCustomUI() override {} // the Performance card draws the row
     void RenderDeveloperUI() override { FastRefPack::RenderDeveloperUI(); }
+};
+
+class FastCreateAStylePatch : public ApexPatch {
+  public:
+    FastCreateAStylePatch() : ApexPatch(Performance::kFastCreateAStyleName, nullptr) {}
+
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!FastCreateAStyle::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        FastCreateAStyle::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
 };
 
 class FastCasSortPatch : public ApexPatch {
@@ -1037,6 +1063,19 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                                             "The texture compositor cache's record checksum (CRC-32, 0x4FA4C0) is computed eight bytes per step with tables derived from "
                                             "the game's own table; its first 16 values of each session are compared with the game's."},
                        .gameCodeGroup = "FastCacheCompression"});
+
+APEX_REGISTER_FEATURE(FastCreateAStylePatch,
+                      {.displayName = "Faster Create-a-Style",
+                       .description = "Keeps finished Create-a-Style pattern thumbnails in memory so repeated requests while browsing, scrolling or reopening the "
+                                      "pattern list do not rebuild the same preview again. The game still generates every thumbnail on the first request. Part of "
+                                      APEX_PRODUCT_NAME ". Research and code: @idavidveiga",
+                       .category = "Performance",
+                       .experimental = false,
+                       .enabledByDefault = true,
+                       .supportedVersions = VERSION_ALL,
+                       .technicalDetails = {"Hooks Mono's internal-call resolver and substitutes only IWorld.ObjectDesigner_GetPatternThumbnail plus its create/clear invalidation calls.",
+                                            "The cache key includes compositor ID, pattern hash, byte-array length and a hash of the caller-provided buffer; a hit copies the exact finished byte array back.",
+                                            "The game's native function remains the source of truth on every miss; the cache is bounded to 2048 entries / 64 MB and fails closed if the Mono resolver differs."}});
 
 APEX_REGISTER_FEATURE(FastCasSortPatch,
                       {.displayName = "Faster Sim Building",
