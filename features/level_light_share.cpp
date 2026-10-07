@@ -2281,9 +2281,11 @@ uint32_t BlurPassesFor(const BYTE* room) {
 // was not drawn yet keeps its base and its room is solved again once the wall is measured away from it. Rules guessed
 // from the story floors (20e03ce, 70d6238) were right on some stories and wrong on others.
 std::atomic<long> g_foundationPieces{0}; // pieces moved to their drawn foot
+std::atomic<bool> g_foundationWallsOn{false}; // the option (SetFoundationWalls): off = the game's heights, as before 06/10
 float MeasuredDrop(uintptr_t wall, int cls, uintptr_t batch) {
     WallNote w;
     if (!ReadWallPiece(wall, cls, batch, w)) return 0.0f;
+    if (!w.outdoor) return 0.0f; // indoor walls start at their floor (the survey: 0); they stay as the game lays them out
     // the whole wall, not only this piece: a long wall has vertices at its ends and openings only (22:43 F7: the middle
     // pieces found none and kept their base)
     const float ax = w.cx, az = w.cz, bx = w.cx + w.dx, bz = w.cz + w.dz;
@@ -2292,9 +2294,8 @@ float MeasuredDrop(uintptr_t wall, int cls, uintptr_t batch) {
     float foot = 0.0f;
     if (WallHeights::DrawnFoot(ax, az, bx, bz, ext, w.oy, foot)) {
         const float drop = foot - w.oy;
-        return std::isfinite(drop) && std::fabs(drop) > 0.02f && std::fabs(drop) < 4.0f ? drop : 0.0f;
+        return std::isfinite(drop) && std::fabs(drop) > 0.1f && std::fabs(drop) < 3.2f ? drop : 0.0f;
     }
-    if (w.mgr) WallHeights::NotePending(MgrTracker(w.mgr), w.story, w.roomId, ax, az, bx, bz, ext, w.oy);
     return 0.0f;
 }
 void DropWallSamples(uintptr_t batch, float dy) {
@@ -2310,8 +2311,9 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
-    // wall heights: measured for the F7 capture only (the drops of 06/10 evening broke the light between stories; reverted)
-    const float drop = 0.0f;
+    // outside walls lit where they are drawn: only with the option (the first, unconditional version of 06/10 evening broke the
+    // light between stories: indoor walls took wrong spans, and rooms were solved again over and over)
+    const float drop = g_foundationWallsOn.load(std::memory_order_relaxed) ? MeasuredDrop(reinterpret_cast<uintptr_t>(wall), cls, reinterpret_cast<uintptr_t>(batch)) : 0.0f;
     if (!g_alignOn.load(std::memory_order_relaxed)) {
         if (drop != 0.0f) {
             DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
@@ -7103,6 +7105,15 @@ void RelightAllRooms(const char* why) {
         if (g_relightWhy.find(why) == std::string::npos) g_relightWhy += (g_relightWhy.empty() ? "" : " + ") + std::string(why);
     }
     g_relightAllAt.store((GetTickCount() + 250) | 1, std::memory_order_relaxed);
+}
+
+void SetFoundationWalls(bool on) {
+    if (g_foundationWallsOn.exchange(on) == on) return;
+    if (on) WallHeights::Install();
+    else WallHeights::Uninstall();
+    if (!g_installed.load(std::memory_order_relaxed)) return;
+    RelightAllRooms(on ? "Outside walls where they are drawn on" : "Outside walls where they are drawn off");
+    if (on) g_relightAllAt.store((GetTickCount() + 2000) | 1, std::memory_order_relaxed); // the walls are measured as they are drawn: a moment first
 }
 
 void SetDiagArmed(bool on) { g_diagArmed = on; }

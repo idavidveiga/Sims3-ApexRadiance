@@ -217,7 +217,7 @@ bool DrawnFootPass(float ax, float az, float bx, float bz, float ext, float base
         }
     // the drawn span that covers the wall's light best: the stories above and below share the line
     const Span* best = nullptr;
-    float bestOverlap = 0.75f; // at least this much of [base - 3, base + 3]
+    float bestOverlap = 2.0f; // at least this much of [base - 3, base + 3]: a whole wall, not the story above or below
     for (const Span& s : spans) {
         const float ov = std::min(s.hi, base + 3.0f) - std::max(s.lo, base - 3.0f);
         if (ov > bestOverlap + 1e-3f || (best && std::fabs(ov - bestOverlap) <= 1e-3f && s.n > best->n)) bestOverlap = ov, best = &s;

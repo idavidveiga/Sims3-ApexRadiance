@@ -55,6 +55,9 @@ struct SurveyPoint {
 };
 std::string WallSurvey(const std::vector<SurveyPoint>& points);
 void SetObjectWalls(bool on);
+// Outside walls lit where the game draws them (houses on a foundation draw them about 2 m under the base their light uses;
+// wall_heights.h): only outdoor rooms' walls, from the measured wall meshes; off = the game's heights. Relights every room.
+void SetFoundationWalls(bool on);
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text
 void RelightAllRooms(const char* why);

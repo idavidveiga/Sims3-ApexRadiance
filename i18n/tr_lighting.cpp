@@ -140,6 +140,8 @@ const I18n::Entry kEntries[] = {
     {"Walls block light on floors", "Paredes bloqueiam a luz nos pisos", "Las paredes bloquean la luz en los suelos", "Les murs bloquent la lumière sur les sols"},
     {"Decks and yards without a roof stay dark behind a wall", "Decks e pátios sem telhado ficam escuros atrás de uma parede", "Las terrazas y patios sin techo quedan oscuros tras una pared", "Les terrasses et cours sans toit restent sombres derrière un mur"},
     {"Walls block light on objects", "Paredes bloqueiam a luz nos objetos", "Las paredes bloquean la luz en los objetos", "Les murs bloquent la lumière sur les objets"},
+    {"Outside walls on foundations", "Paredes externas sobre fundação", "Paredes exteriores sobre cimientos", "Murs extérieurs sur fondations"},
+    {"Lamp light on outside walls where they are drawn", "Luz das lâmpadas nas paredes externas onde elas são desenhadas", "Luz de las lámparas en las paredes exteriores donde se dibujan", "Lumière des lampes sur les murs extérieurs là où ils sont dessinés"},
     // ---- Lighting > Buildings > Light detail ----
     {"Light detail", "Detalhe da luz", "Detalle de la luz", "Détail de la lumière"},
     {"How sharp lamp light is on walls and floors", "Quão nítida é a luz das lâmpadas em paredes e pisos", "Qué tan nítida es la luz de las lámparas en paredes y suelos",
