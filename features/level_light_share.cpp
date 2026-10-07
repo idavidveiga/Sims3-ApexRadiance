@@ -5876,6 +5876,7 @@ const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* 
 BYTE* g_swapAt = nullptr; // room+0x639 byte changed around the game's wall test (restored on a fault too)
 BYTE g_swapSaved = 0;
 bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q); // below
+std::atomic<long> g_overLower{0}; // rays whose lower-story walls under a floor were passed over (PassesOverLowerWall)
 // A wall of a lower story the ray passes over (07/10, capture 08-43-10: a lamp post on the grass 0.95 m from a foundation
 // deck, its head 1.6 m above it, left the deck grey, map and mask alike: the foundation's sides are outdoor walls of story
 // 0 along the deck's edge, drawn 60.55..61.30, and the game's 2D test, which knows no height for a full wall, blocked every
@@ -5883,9 +5884,11 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q); // below
 // lower than a story, ends at that floor: a ray crossing it higher passes over it. Walls with no such floor beside them
 // (garden walls, a garage, closed yards) and full-height ones keep the game's test. Occluder +0x40 / +0x60: the hard
 // segment's start (world, y = its base) and run, as 0x0069AA90 reads them (mode 0). POD only (SEH in the caller).
-bool PassesOverLowerWall(uintptr_t occ, uintptr_t mgrNext, uintptr_t levelNext, const Xform& xf, const float* A, const float* B) {
-    const float* o = reinterpret_cast<const float*>(occ + 0x40);
-    const float* r = reinterpret_cast<const float*>(occ + 0x60);
+// mode: the wall test's segment (0x0069AA90 reads occ + 0x40 + mode * 0x30): 0 hard (+0x40 start, +0x60 run), 1 soft (+0x70 /
+// +0x90: the run 0.5 m longer at each end, 0xFF307C; room+0x639 != 0, 0x0069FC71). Both world space, start - end, y = the base.
+bool PassesOverLowerWall(uintptr_t occ, int mode, uintptr_t mgrNext, uintptr_t levelNext, const Xform& xf, const float* A, const float* B) {
+    const float* o = reinterpret_cast<const float*>(occ + 0x40 + mode * 0x30);
+    const float* r = o + 8; // +0x20: the run
     const float dx = B[0] - A[0], dy = B[1] - A[1], dz = B[2] - A[2];
     const float den = dx * r[2] - dz * r[0];
     if (!(std::fabs(den) > 1e-6f)) return false;
@@ -5915,7 +5918,7 @@ bool PassesOverLowerWall(uintptr_t occ, uintptr_t mgrNext, uintptr_t levelNext, 
 }
 // The game's list for this lamp (or every wall of the room, room+0x78) without the lower story's walls the ray passes over;
 // the walls kept, -1 = none left out or unreadable (the game's list stays). POD only.
-int KeepWallsNotPassedOver(const BYTE* room0, const IntVec* src, int* out, int cap, uintptr_t mgrNext, uintptr_t levelNext, const float* A, const float* B) {
+int KeepWallsNotPassedOver(const BYTE* room0, const IntVec* src, int* out, int cap, int mode, uintptr_t mgrNext, uintptr_t levelNext, const float* A, const float* B) {
     __try {
         const IntVec& v = src ? *src : *reinterpret_cast<const IntVec*>(room0 + 0x78);
         const uintptr_t* occs = *reinterpret_cast<const uintptr_t* const*>(room0 + 0x30);
@@ -5925,7 +5928,7 @@ int KeepWallsNotPassedOver(const BYTE* room0, const IntVec* src, int* out, int c
         bool dropped = false;
         for (const int* p = v.b; p < v.e; ++p) {
             const uintptr_t occ = occs[*p];
-            if (occ && PassesOverLowerWall(occ, mgrNext, levelNext, xf, A, B)) {
+            if (occ && PassesOverLowerWall(occ, mode, mgrNext, levelNext, xf, A, B)) {
                 dropped = true;
                 continue;
             }
@@ -5972,8 +5975,9 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, voi
             const size_t walls = we > wb ? (we - wb) / 4 : 0;
             if (mgrNext && s_nextLevel && walls && walls <= 65536) {
                 if (s_kept.size() < walls + 1) s_kept.resize(walls + 1);
-                const int n = KeepWallsNotPassedOver(room0, static_cast<const IntVec*>(idx), s_kept.data(), static_cast<int>(s_kept.size()), mgrNext, s_nextLevel, pos, static_cast<const float*>(sample));
+                const int n = KeepWallsNotPassedOver(room0, static_cast<const IntVec*>(idx), s_kept.data(), static_cast<int>(s_kept.size()), g_ctx.soft ? 1 : 0, mgrNext, s_nextLevel, pos, static_cast<const float*>(sample));
                 if (n >= 0) {
+                    g_overLower.fetch_add(1, std::memory_order_relaxed);
                     kept = {s_kept.data(), s_kept.data() + n, s_kept.data() + n};
                     idx = &kept; // (empty = nothing in the way: FUN_0069d4c0 tests no wall)
                 }
@@ -8054,6 +8058,11 @@ void OnPresent() {
             else WallHeights::Uninstall();
         }
         if (g_foundationWallsOn.load(std::memory_order_relaxed)) RequeueTallWalls();
+        static bool overLogged = false;
+        if (!overLogged && g_overLower.load(std::memory_order_relaxed) > 0) {
+            overLogged = true;
+            LOG_INFO("[OverLowerWall] a lamp of a lower story passes over the walls under a floor above (foundation sides, deck edges)");
+        }
         RequeueCutStories();   // light through doors and windows: openings placed or removed
         RequeueWallTopYards(); // and walls first drawn taller than a story
         std::vector<std::string> lines;
