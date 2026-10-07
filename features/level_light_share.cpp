@@ -2912,6 +2912,90 @@ void __fastcall InvalidateFlagNoteHook(BYTE* room, void*, char flag) {
     reinterpret_cast<InvalidateFlag_t>(EntryChain::Next(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare))(room, flag);
 }
 
+// ---- Indoor floor texels written by room 0 (07/10, user: an indoor sconce left the floor strip along its wall black once
+// released, right while dragged; the F7 light map and the F8 solve order): on an upper story the game's floor batches of
+// room 0 also cover tiles an indoor room owns (a column along the house's wall), and room 0 is solved after that room when
+// a lamp is placed, so its texels end up with room 0's light (none of the indoor lamps) and its mask. The indoor room
+// writes them right only if it is solved after room 0: each room 0 floor sample on such a tile notes its owner, and once
+// room 0's solve ended (FinalizeHook) those rooms are solved again (render thread, RequeueOwedFloors).
+std::mutex g_owedMx;
+std::unordered_map<uintptr_t, std::vector<int>> g_owedFloors;          // room 0 being solved -> indoor rooms whose texels it wrote
+std::vector<std::tuple<uintptr_t, int, int>> g_owedPending;            // (manager, story, room id) to solve again
+std::atomic<long> g_owedTexels{0};
+std::atomic<int> g_owedLogged{0};
+// The indoor room that owns the floor tile under a sample of room 0, else 0 (POD only, SEH)
+int OwedFloorOwner(const BYTE* room, const float* sample, uintptr_t& mgrOut, int& storyOut) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr || *reinterpret_cast<const int*>(room + 0xC) != 0 || sample[5] < 0.9f) return 0;
+        const int story = *reinterpret_cast<const int*>(mgr + 0x88);
+        if (story < 1) return 0;
+        Xform xf;
+        std::memcpy(&xf, reinterpret_cast<const void*>(mgr + 0xE0), sizeof xf);
+        float local[3];
+        ToLocal(xf, sample, local);
+        const int x = static_cast<int>(std::floor(local[0])), z = static_cast<int>(std::floor(local[2]));
+        const uintptr_t tile = LightTile(mgr, x, z);
+        if (!tile) return 0;
+        const int id = TileRoom(tile, Quadrant(local[0] - x, local[2] - z));
+        if (id <= 0) return 0;
+        const BYTE* owner = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), id));
+        if (!owner || owner[0x18]) return 0; // a roofless room is solved as outdoor: room 0's write is its own kind
+        mgrOut = mgr;
+        storyOut = story;
+        return id;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+void NoteOwedFloor(const BYTE* room, const float* sample) {
+    uintptr_t mgr = 0;
+    int story = 0;
+    const int id = OwedFloorOwner(room, sample, mgr, story);
+    if (!id) return;
+    g_owedTexels.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(g_owedMx);
+    auto& v = g_owedFloors[reinterpret_cast<uintptr_t>(room)];
+    if (std::find(v.begin(), v.end(), id) == v.end() && v.size() < 64) v.push_back(id);
+}
+// FinalizeHook: room 0's solve ended; the rooms whose texels it wrote are owed a solve after it
+bool RoomMgrStory(const BYTE* room, uintptr_t& mgr, int& story) { // POD only (SEH)
+    __try {
+        mgr = *reinterpret_cast<const uintptr_t*>(room);
+        story = mgr ? *reinterpret_cast<const int*>(mgr + 0x88) : -99;
+        return mgr != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void OwedAfterSolve(const BYTE* room) {
+    uintptr_t mgr = 0;
+    int story = -99;
+    if (!RoomMgrStory(room, mgr, story)) return;
+    std::lock_guard<std::mutex> lk(g_owedMx);
+    const auto it = g_owedFloors.find(reinterpret_cast<uintptr_t>(room));
+    if (it == g_owedFloors.end()) return;
+    for (int id : it->second)
+        if (g_owedPending.size() < 1024) g_owedPending.emplace_back(mgr, story, id);
+    g_owedFloors.erase(it);
+}
+// Render thread
+void RequeueOwedFloors() {
+    std::vector<std::tuple<uintptr_t, int, int>> rooms;
+    {
+        std::lock_guard<std::mutex> lk(g_owedMx);
+        rooms.swap(g_owedPending);
+    }
+    if (rooms.empty()) return;
+    std::sort(rooms.begin(), rooms.end());
+    rooms.erase(std::unique(rooms.begin(), rooms.end()), rooms.end());
+    int queued = 0;
+    for (const auto& [mgr, story, id] : rooms)
+        if (const uintptr_t tracker = MgrTracker(mgr)) queued += QueueRoom(tracker, story, id, true);
+    if (queued && g_owedLogged.fetch_add(1, std::memory_order_relaxed) < 100)
+        LOG_INFO(std::format("[OwedFloor] room 0 wrote floor texels of {} indoor rooms: {} solved again after it", rooms.size(), queued));
+}
+
 // The end of a room's solve (06/10, light update trace): FUN_006a0e00, step 8 of the budgeted solve (its call at
 // 0x6A3E65 in FUN_006a3c90), unlocks the maps the solve wrote and gives them back to the room, which shows them from the
 // next frame. Noted 'E' in the solve journal while a recording runs, and told to Faster Room Lighting: a quick pass is
@@ -2922,6 +3006,7 @@ void __fastcall FinalizeHook(BYTE* room) {
     reinterpret_cast<Finalize_t>(kFinalize)(room);
     if (!room) return;
     RoomLightQueue::NoteSolveEnd(room);
+    OwedAfterSolve(room);
     if (Recorder::Active()) NoteSolve(room, 'E');
 }
 std::atomic<bool> g_finalizeReady{false}, g_lockStepReady{false};
@@ -4604,6 +4689,7 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
     // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
     const float* s = static_cast<const float*>(sample);
+    if (g_floorMaskReady && room[0x18] && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) NoteOwedFloor(room, s);
     // A closed yard (07/10, user screenshot: a sconce on a wall's outside face lit the floors of the two roofless rooms behind
     // it): a roofless room with an id is walled all round (a gap in its walls would have made it part of room 0; doors and
     // windows do not merge rooms), so no outside lamp reaches its floor. The ground light map drawn over outdoor floors
@@ -6742,6 +6828,7 @@ void OnPresent() {
             else WallHeights::Uninstall();
         }
         if (g_foundationWallsOn.load(std::memory_order_relaxed)) RequeueTallWalls();
+        RequeueOwedFloors();
         std::vector<std::string> lines;
         {
             std::lock_guard<std::mutex> lk(g_wallLightMx);
