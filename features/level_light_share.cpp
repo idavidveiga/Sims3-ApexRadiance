@@ -2507,8 +2507,89 @@ void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
         std::find(g_wallHRequeue.begin(), g_wallHRequeue.end(), c.wall) == g_wallHRequeue.end() && g_wallHRequeue.size() < 4096)
         g_wallHRequeue.push_back(c.wall);
 }
+// ---- Short walls lit at their drawn heights (07/10, user: "look at the foundation"; F8 10-57-41). Foundation faces are
+// story-0 walls drawn from the terrain to the foundation's top, lit over the 3 m above their light base. The UV writer trims
+// the block only by the top vertices' wallpaper V (f = max(0, int16 +0x0A / 512 - 8), 0x00C385AB..DB; the wall builders
+// write +0x0A = (V + 8) 512 at 0x00C3C587 / 0x00C3C8B9), about 0 on foundations: the whole 3 m was squeezed onto the
+// 0.75 m face (the top of the stone took light computed 0.4-1.5 m under the sconce). A short cell whose game mapping is
+// more than 2 cm off its drawn heights is written untrimmed, then each vertex takes the row lit at its own height (rows at
+// base + 3k/(N-1), AlignWallSamples). The trim words go back after the write (the wall shader reads them too). Short walls
+// the game already maps right (gables) and walls of 2.98 m and up (StretchTallWall) are left as they were.
+std::atomic<long> g_shortRecut{0};
+std::atomic<int> g_shortLogged{0};
+struct CellCrop {
+    int16_t w3 = 0, w5 = 0; // int16 +0x0A of vertices 3 and 5 as the game wrote them
+    float y[6] = {};        // vertex heights, lot space
+};
+bool ReadCellCrop(void* geo, CellCrop& k) { // POD only (SEH)
+    __try {
+        const BYTE* v = *reinterpret_cast<BYTE* const*>(static_cast<BYTE*>(geo) + 8);
+        if (!v) return false;
+        k.w3 = *reinterpret_cast<const int16_t*>(v + 3 * 0x2C + 0x0A);
+        k.w5 = *reinterpret_cast<const int16_t*>(v + 5 * 0x2C + 0x0A);
+        for (int i = 0; i < 6; i++) k.y[i] = *reinterpret_cast<const int16_t*>(v + i * 0x2C + 2) / 256.0f;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool WriteCellCrop(void* geo, int16_t w3, int16_t w5) { // POD only (SEH)
+    __try {
+        BYTE* v = *reinterpret_cast<BYTE* const*>(static_cast<BYTE*>(geo) + 8);
+        if (!v) return false;
+        *reinterpret_cast<int16_t*>(v + 3 * 0x2C + 0x0A) = w3;
+        *reinterpret_cast<int16_t*>(v + 5 * 0x2C + 0x0A) = w5;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// After an untrimmed write (the loop at 0x00C38670: mode 0 V at +0x12, mode 1 at +0x1E, x 4096 [0x01077164]):
+// V = Vb + (Vt - Vb) clamp((y - base) / 3, 0, 1), Vb = vertex 0 (bottom row centre), Vt = vertex 5 (top row centre)
+bool RecutCellV(void* geo, int mode, float base, const float* y, int16_t& vb, int16_t& vt) { // POD only (SEH)
+    __try {
+        BYTE* v = *reinterpret_cast<BYTE* const*>(static_cast<BYTE*>(geo) + 8);
+        if (!v) return false;
+        const size_t at = mode == 0 ? 0x12 : 0x1E;
+        vb = *reinterpret_cast<const int16_t*>(v + at);
+        vt = *reinterpret_cast<const int16_t*>(v + 5 * 0x2C + at);
+        for (int i = 0; i < 6; i++) {
+            const float s = std::clamp((y[i] - base) / 3.0f, 0.0f, 1.0f);
+            *reinterpret_cast<int16_t*>(v + i * 0x2C + at) = static_cast<int16_t>(std::lround(vb + (vt - vb) * s));
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 void __fastcall WallUvHook(void* geo, void*, uintptr_t mgr, int x, int z, int dir, int mode) {
+    WallCellRead c;
+    CellCrop k;
+    bool recut = false;
+    float f3 = 0.0f, f5 = 0.0f;
+    if ((mode == 0 || mode == 1) && g_foundationWallsOn.load(std::memory_order_relaxed) && ReadWallCell(geo, mgr, x, z, dir, c) && ReadCellCrop(geo, k)) {
+        const int cell = static_cast<int>(std::floor(c.tmid * static_cast<float>(c.len)));
+        if (c.perp < 0.35f && cell >= 0 && cell < c.len && c.hl > 0.2f && c.hm > 0.2f && c.hr > 0.2f && std::max({c.hl, c.hm, c.hr}) < 2.98f) {
+            f3 = std::max(0.0f, k.w3 / 512.0f - 8.0f), f5 = std::max(0.0f, k.w5 / 512.0f - 8.0f);
+            // the game shows the bottom vertices at the light base and the top ones at base + 3 (1 - f)
+            const float off = std::max({std::fabs(k.y[0] - c.base), std::fabs(k.y[2] - c.base), std::fabs(3.0f * (1.0f - f3) - (k.y[3] - c.base)),
+                                        std::fabs(3.0f * (1.0f - f5) - (k.y[5] - c.base))});
+            recut = off > 0.02f && WriteCellCrop(geo, 0x1000, 0x1000); // (0 + 8) x 512: f = 0
+        }
+    }
     reinterpret_cast<WallUv_t>(kWallUv)(geo, mgr, x, z, dir, mode);
+    if (recut) {
+        WriteCellCrop(geo, k.w3, k.w5);
+        int16_t vb = 0, vt = 0;
+        if (RecutCellV(geo, mode, c.base, k.y, vb, vt)) {
+            g_shortRecut.fetch_add(1, std::memory_order_relaxed);
+            if (!kPublicBuild && mode == 0 && g_shortLogged.fetch_add(1, std::memory_order_relaxed) < 40)
+                LOG_INFO(std::format("[WallTall] short wall lit at its drawn heights: story {} wall {:08X} edge {}: drawn {:.3f}..{:.3f} (light base {:.3f}, lot base {:.3f}), "
+                                     "top wallpaper V {:.3f}/{:.3f}: the game showed rows 0..{:.2f}/{:.2f} m, now {:.2f}..{:.2f} m (V {}..{})",
+                                     c.story, c.wall, c.edge, std::min(k.y[0], k.y[2]), std::max(k.y[3], k.y[5]), c.base, c.lotBase, k.w3 / 512.0f - 8.0f,
+                                     k.w5 / 512.0f - 8.0f, 3.0f * (1.0f - f3), 3.0f * (1.0f - f5), std::min(k.y[0], k.y[2]) - c.base, std::max(k.y[3], k.y[5]) - c.base, vb, vt));
+        }
+    }
     if (mode == 0) NoteWallCell(geo, mgr, x, z, dir); // mode 1 writes the second UV set of the same vertices
 }
 // The drawn height at t (0..len cells along the wall) of a wall's cells; 0 = not known
@@ -9066,9 +9147,9 @@ std::string Status() {
                                                       g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_penumbraLifted.load(), g_editWaited.load()),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
-                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur, {} wall pieces lit from their drawn foot)",
+                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur, {} wall pieces lit from their drawn foot, {} short wall cells (foundation faces) lit at their drawn heights)",
                                                    g_alignOn ? "on" : "off", g_alignRows.load(), g_alignOdd.load(), g_ghostWalls.load(), g_ghostPoints.load(),
-                                                   g_alignEdges.load(), g_foundationPieces.load()) + " | wall heights: " + WallHeights::Status(),
+                                                   g_alignEdges.load(), g_foundationPieces.load(), g_shortRecut.load()) + " | wall heights: " + WallHeights::Status(),
                        g_otherThread.load() ? std::format(" | on another thread: {}", g_otherThread.load()) : "",
                        g_normCrossOnly.load() || g_normNotFinite.load()
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
