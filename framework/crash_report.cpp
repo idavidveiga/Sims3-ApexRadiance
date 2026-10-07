@@ -95,6 +95,7 @@ struct TypeDescriptorX86 {
 struct CatchableTypeX86 {
     unsigned properties;
     const TypeDescriptorX86* type;
+    int mdisp, pdisp, vdisp; // where this base lies in the thrown object (pdisp -1: not through a virtual base)
 };
 struct CatchableTypeArrayX86 {
     int count;
@@ -107,11 +108,11 @@ struct ThrowInfoX86 {
     const CatchableTypeArrayX86* catchables;
 };
 
-// The thrown type's decorated name (false when the metadata cannot be read) and whether std::exception is one of its
-// bases. Under SEH: the ThrowInfo pointer comes from a broken process.
-bool ReadThrowType(ULONG_PTR throwInfo, char* out, size_t size, bool* isStdException) {
+// The thrown type's decorated name (false when the metadata cannot be read) and the offset of its std::exception base in
+// the thrown object (-1: none, or behind a virtual base). Under SEH: the ThrowInfo pointer comes from a broken process.
+bool ReadThrowType(ULONG_PTR throwInfo, char* out, size_t size, int* stdOffset) {
     out[0] = 0;
-    if (isStdException) *isStdException = false;
+    if (stdOffset) *stdOffset = -1;
     __try {
         const auto* ti = reinterpret_cast<const ThrowInfoX86*>(throwInfo);
         if (!ti || !ti->catchables || ti->catchables->count <= 0) return false;
@@ -120,7 +121,7 @@ bool ReadThrowType(ULONG_PTR throwInfo, char* out, size_t size, bool* isStdExcep
             const CatchableTypeX86* ct = ti->catchables->types[i];
             if (!ct || !ct->type) continue;
             if (i == 0) strncpy_s(out, size, ct->type->name, _TRUNCATE);
-            if (isStdException && std::strcmp(ct->type->name, ".?AVexception@std@@") == 0) *isStdException = true;
+            if (stdOffset && ct->pdisp == -1 && std::strcmp(ct->type->name, ".?AVexception@std@@") == 0) *stdOffset = ct->mdisp;
         }
         return out[0] != 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -144,8 +145,8 @@ void ReadWhat(ULONG_PTR object, char* out, size_t size) {
 void ReadApexWhat(ULONG_PTR throwInfo, ULONG_PTR object, char* out, size_t size) {
     out[0] = 0;
     char raw[256];
-    bool isStd = false;
-    if (InSelf(throwInfo) && ReadThrowType(throwInfo, raw, sizeof raw, &isStd) && isStd) ReadWhat(object, out, size);
+    int offset = -1;
+    if (InSelf(throwInfo) && ReadThrowType(throwInfo, raw, sizeof raw, &offset) && offset >= 0) ReadWhat(object + static_cast<ULONG_PTR>(offset), out, size);
 }
 
 // "std::bad_alloc" from ".?AVbad_alloc@std@@" for plain names; anything fancier (templates) stays decorated
