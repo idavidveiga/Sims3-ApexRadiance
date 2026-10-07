@@ -1330,6 +1330,12 @@ bool GameTakesLight(uintptr_t entry, uintptr_t light) {
     if (!info) return false;
     const BYTE flags = *reinterpret_cast<const BYTE*>(info + 0x90);
     if (!(flags & 2) || !(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)) return false;
+    // A lot lamp sold or deleted in Build mode stays registered, lit (0x20) with its full colour, only disabled (0x40 clear;
+    // 07/10 snapshots 14:07:55 -> 14:07:58, a type-11 lamp post): the game's own gather still takes it for its own story,
+    // but the other stories (their outside walls) must not keep it. Lot lamps only (world street lamps: lot id 0).
+    if (!(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40) &&
+        (*reinterpret_cast<const uint32_t*>(light + 0xC0) | *reinterpret_cast<const uint32_t*>(light + 0xC4)) != 0)
+        return false;
     if (!reinterpret_cast<LightBright_t>(kLightBright)(reinterpret_cast<void*>(light))) return false;
     const int type = *reinterpret_cast<const int*>(light + 0xB0);
     return type >= 3 && (!(flags & 4) || type == 0xB);
@@ -4917,6 +4923,8 @@ uint64_t RoomLampSignature(uintptr_t tl, int room, uint64_t* shapeOut, std::vect
         if (!light) return;
         mixShape(light);
         mix(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
+        // enabled: a sold or deleted lot lamp stays registered, lit, disabled (07/10 snapshots): like a lamp removed
+        mixShape(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40);
         // the object's flags the gather's checks read (GameTakesLight): a lamp the other stories could not take for a moment
         // and that ends as it was still changes this, so they gather again (05/10, see AuditTakers)
         if (const uintptr_t info = *reinterpret_cast<const uintptr_t*>(entry + 0x20)) mix(*reinterpret_cast<const BYTE*>(info + 0x90) & 0x6);
