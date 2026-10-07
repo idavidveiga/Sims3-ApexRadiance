@@ -5487,6 +5487,10 @@ struct DiagRec {
 };
 std::mutex g_diagMx;
 std::vector<DiagRec> g_diag;
+// Focus of the records (07/10): the wall point of the last F7 (light capture) on a noted wall. Points within 1 m of it are
+// recorded whatever their distance to the lamp (the 3.5 m rule never reached an upper story's wall 12 m from its lamp)
+std::atomic<bool> g_diagFocusOn{false};
+std::atomic<float> g_diagFocus[3]{};
 std::atomic<long> g_diagSeen{0};
 int g_diagIndoorUsed = 0, g_diagOutdoorUsed = 0; // records per part since the last dump (under g_diagMx)
 std::atomic<bool> g_diagFull[2]{};
@@ -6461,7 +6465,13 @@ void DiagImpl(const RoomInfo& info, void* light, const float* sample, const floa
     if (!ActiveLot(info.mgr)) return;
     const float* lp = reinterpret_cast<const float*>(static_cast<const BYTE*>(light) + 0x120);
     const float dx = sample[0] - lp[0], dy = sample[1] - lp[1], dz = sample[2] - lp[2];
-    if (dx * dx + dy * dy + dz * dz > 3.5f * 3.5f) return;
+    bool focused = false;
+    if (g_diagFocusOn.load(std::memory_order_relaxed)) {
+        const float fx = sample[0] - g_diagFocus[0].load(std::memory_order_relaxed), fy = sample[1] - g_diagFocus[1].load(std::memory_order_relaxed),
+                    fz = sample[2] - g_diagFocus[2].load(std::memory_order_relaxed);
+        focused = fx * fx + fy * fy + fz * fz < 1.0f;
+    }
+    if (!focused && dx * dx + dy * dy + dz * dz > 3.5f * 3.5f) return;
     g_diagSeen.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lk(g_diagMx);
     // separate budgets: the outdoor lamps of every loaded lot would fill the record before an indoor point is seen
@@ -9174,6 +9184,11 @@ std::string WallNotesOnRay(const float o[3], const float d[3], float* hitOut) {
     s += std::format("      base (wall +0x114) y {:.3f}; drawn from {:.3f} to {:.3f}; lit: bottom row at {:.3f} (+{:.3f}), top row at {:.3f} (+{:.3f})\n", w.oy, w.oy, w.oy + 3.0f,
                      w.litLo, w.litLo - w.oy, w.litHi, w.litHi - w.oy);
     s += std::format("      line on the ground ({:.2f}, {:.2f}) -> ({:.2f}, {:.2f}), normal ({:.3f} {:.3f} {:.3f})\n", w.x0, w.z0, w.x1, w.z1, w.n[0], w.n[1], w.n[2]);
+    if (!kPublicBuild) { // the next F8's records cover this point (see g_diagFocus)
+        for (int k = 0; k < 3; k++) g_diagFocus[k].store(hit[k], std::memory_order_relaxed);
+        g_diagFocusOn.store(true, std::memory_order_relaxed);
+        g_diagArmed.store(true);
+    }
     s += std::format("      the pixel: world ({:.3f} {:.3f} {:.3f}), {:.3f} m above the base, {:.2f} m along the line; reads row k {:.2f} (drawn) = atlas texel ({:.1f}, {})\n", hit[0],
                      hit[1], hit[2], h, along, kDrawn, col, w.block.y0 + w.rows - 1 - kRow);
     // the room's lamps, as the solve sees them
