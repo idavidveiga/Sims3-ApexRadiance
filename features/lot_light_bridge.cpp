@@ -1221,6 +1221,13 @@ void TrackLotLampEdits() {
         if (prev == g_lotLampSig.end() || prev->first != L) {
             snapDirty = true;
             if (VisibleLot(s.lot)) g_lotArrivals.insert(s.lot); // late lamp registration on a drawn lot
+            // a lamp added to a settled lot while editing (Ctrl+Z / redo brings a deleted lamp back as a new light): its lot gathers again
+            if (editing && s.lot != 0) {
+                const auto seen = g_lotSeen.find(s.lot);
+                if (seen != g_lotSeen.end() && now - seen->second.firstSeen > std::chrono::seconds(10) &&
+                    std::find(g_disabledLots.begin(), g_disabledLots.end(), s.lot) == g_disabledLots.end())
+                    g_disabledLots.push_back(s.lot);
+            }
             if (s.baked) {
                 Change& c = changes[s.lot];
                 c.added++;
@@ -1243,8 +1250,8 @@ void TrackLotLampEdits() {
         }
         snapDirty = true;
         // a lot lamp disabled (sold or deleted in Build mode: it stays registered and lit, 07/10): every room of its lot
-        // gathers again at once, so rooms the lamp edit does not send (the diagonal outside walls) drop it too
-        if (s.lot != 0 && p.lot == s.lot && (p.flags & 0x40) && !(s.flags & 0x40) &&
+        // gathers again at once (also when it comes back enabled: Ctrl+Z / redo of a sale or delete), so rooms the lamp edit does not send (the diagonal outside walls) drop it too
+        if (s.lot != 0 && p.lot == s.lot && ((p.flags ^ s.flags) & 0x40) &&
             std::find(g_disabledLots.begin(), g_disabledLots.end(), s.lot) == g_disabledLots.end())
             g_disabledLots.push_back(s.lot);
         const char* why = nullptr; // why a raw change does not count
@@ -1328,7 +1335,7 @@ void TrackLotLampEdits() {
         }
     }
     g_lotLampSig.swap(cur); // g_lotLampCur keeps the old list's memory for the next read
-    for (uint64_t lot : g_disabledLots) LevelLightShare::RelightLotById(lot, "a lamp disabled (sold or deleted)");
+    for (uint64_t lot : g_disabledLots) LevelLightShare::RelightLotById(lot, "a lamp disabled or enabled again (sold, deleted, undo)");
 
     // lots seen: new lots start their settle time, vanished lots are forgotten (with any pending removal)
     for (uint64_t lot : g_lotsNow)
