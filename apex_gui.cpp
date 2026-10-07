@@ -355,7 +355,7 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
 constexpr const char* kOverviewPerformancePatches[] = {
     Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName,
     Performance::kRoomLightQueueName, Performance::kLotLightingName, Performance::kWallShadingName,
-    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName,
+    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName, Performance::kFastCreateAStyleName,
     Performance::kFastMemoryName, Performance::kSceneBudgetName, Performance::kObjectIndexName,
     Performance::kMemoryGuardName, Performance::kWindowRepaintName, Performance::kScriptMathName,
 };
@@ -926,6 +926,17 @@ void PerformanceCard() {
     }
     ApexUi::EndCard();
     ImGui::PopID();
+
+    ImGui::PushID("PerformanceCreateAStyle");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Palette, "Create-a-Style", "Faster pattern thumbnails and smoother browsing", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kFastCreateAStyleName, "Faster Create-a-Style",
+                         "Reuses finished pattern thumbnails so scrolling and reopening pattern lists need less work");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
     ImGui::PushID("PerformanceMemory");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Activity, "Memory handling", "Less overhead when the game creates temporary data", nullptr, nullptr);
