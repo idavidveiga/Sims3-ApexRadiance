@@ -6332,7 +6332,11 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
 // Light under balconies: on, and the share of the light at a slab's edge (SetBalconyFill)
 std::atomic<bool> g_fillOn{true};
 std::atomic<float> g_fillStrength{0.45f};
-bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab, float* edgeW) {
+struct SlabRay {
+    bool valid = false, lower = false; // through this story's slab; through a lower story's floor
+    float depth = 0.0f, miss = 0.0f, reach = 0.0f;
+};
+bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab, float* edgeW) {
     if (home < 0 || home >= info.level || info.level > 7) return false;
     const uintptr_t mgr = StoryManager(info.tracker, info.level);
     const uintptr_t level = mgr ? LevelFor(mgr) : 0;
@@ -6350,6 +6354,23 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     float t = (h - P[1]) / dy;
     if (t >= 1.0f && std::fabs(Q[1] - h) < 0.02f) t = 0.9999f; // a point on that floor's plane: tested where it is
     if (!(t > 0.0f && t < 1.0f)) return false;                 // the lamp not below that floor, or the point not above it
+    // the floors of the stories between the lamp's and this one: a ray coming up through one of them (a lower balcony's
+    // slab, a room's floor) reaches no point of this story, directly or through this story's slab (07/10, a band on story 3)
+    for (int k = home + 1; k < info.level; k++) {
+        const uintptr_t mk = StoryManager(info.tracker, k);
+        const uintptr_t lk = mk ? LevelFor(mk) : 0;
+        if (!mk || !lk || LevelManager(lk) != mk) continue;
+        const float hk = *reinterpret_cast<const float*>(mk + 0x98) - *reinterpret_cast<const float*>(mk + 0xD4);
+        if (!(std::fabs(hk) < 1000.0f)) continue;
+        const float tk = (hk - P[1]) / dy;
+        if (!(tk > 0.0f && tk < 1.0f)) continue;
+        const float xk = P[0] + tk * (Q[0] - P[0]), zk = P[2] + tk * (Q[2] - P[2]);
+        const int jx = static_cast<int>(std::floor(xk)), jz = static_cast<int>(std::floor(zk));
+        if (PlacedFloorAt(lk, jx, jz, Quadrant(xk - jx, zk - jz))) {
+            if (slab) slab->lower = true;
+            return false;
+        }
+    }
     const float x = P[0] + t * (Q[0] - P[0]), z = P[2] + t * (Q[2] - P[2]);
     const int ix = static_cast<int>(std::floor(x)), iz = static_cast<int>(std::floor(z));
     if (PlacedFloorAt(level, ix, iz, Quadrant(x - ix, z - iz))) {
@@ -6366,7 +6387,10 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
                         break;
                     }
                 }
-            *slab = depth;
+            slab->depth = depth;
+            slab->miss = el > 1e-4f ? t * dy * std::min(depth, el) / el : 0.0f; // how far below the edge the ray passes
+            slab->reach = std::sqrt((Q[0] - P[0]) * (Q[0] - P[0]) + (Q[2] - P[2]) * (Q[2] - P[2])); // lamp to point, along the ground
+            slab->valid = true;
             if (edgeW) {
                 // the point of the ray just in front of the slab's edge, where the lamp's light meets the edge (world)
                 const float te = el > 1e-4f ? std::max(0.0f, t * (1.0f - std::min(el, depth + 0.05f) / el)) : 0.0f;
@@ -6382,7 +6406,7 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     }
     return true;
 }
-bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab, float* edgeW) {
+bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab, float* edgeW) {
     __try {
         return OutdoorEntryImpl(info, home, light, sample, entry, above, slab, edgeW);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -6396,24 +6420,46 @@ std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies:
 // light under balconies, where each lamp x point of an upper story's outdoor room went (FillStatus)
 std::atomic<long> g_fillSeen{0}, g_fillNoFlags{0}, g_fillWallZero{0}, g_fillEntered{0}, g_fillAbove{0}, g_fillSlab{0}, g_fillNoSlab{0}, g_fillNoGrid{0},
     g_fillGridZero{0}, g_fillMissed{0}, g_fillGameHigher{0};
-std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0};
+std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0};
 std::string FillStatus() {
     return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, blocked on the lamp's story {}), "
-                       "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), other {} | "
+                       "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
                        "shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
                        g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillWallZero.load(),
-                       g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillNoSlab.load(),
+                       g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
                        g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
 }
 // Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
 // the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
 // (its colour was zeroed): the colour comes back and the game's test that follows ends exactly at the share (it would
 // otherwise let the direct ray through); else the game's test only never ends below it
-void FillShare(const RoomInfo& info, void* light, const float* sample, float slab, float seen, bool exact, float* colour, const float* before) {
+void FillShare(const RoomInfo& info, void* light, const float* sample, const SlabRay& slab, float seen, bool exact, float* colour, const float* before) {
     alignas(16) float pos[4] = {};
     GridWhy why{};
     const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
-    const float share = g_fillStrength.load(std::memory_order_relaxed) * (0.55f + 0.45f * std::exp(-slab / 1.5f));
+    // (07/10, user: the top of the wall must get more than the bottom, and the light went far along the wall) The share
+    // follows how close the ray comes to clearing the slab's edge (its vertical miss there: 0 = it grazes the edge, where
+    // it meets the direct light without a seam), how far it then runs under the slab (grazing rays from far along the wall
+    // run deep), and a pool centred on the lamp as its own light on the facade (on top of the game's own falloff, kept in
+    // the colour)
+    const float strength = g_fillStrength.load(std::memory_order_relaxed);
+    const float vert = std::exp(-std::max(slab.miss, 0.0f) / 0.9f);
+    const float under = std::exp(-std::max(slab.depth, 0.0f) / 2.0f);
+    // the pool's width: the offset along the wall from the point nearest the lamp (the sample's normal, world), tighter
+    // than the lamp's direct pool, plus a soft limit on the whole distance
+    const float wx = sample[0] - pos[0], wz = sample[2] - pos[2];
+    float nx = sample[4], nz = sample[6];
+    const float nl = std::sqrt(nx * nx + nz * nz);
+    float lateral = std::sqrt(wx * wx + wz * wz);
+    if (nl > 0.2f && std::isfinite(nl)) {
+        nx /= nl, nz /= nl;
+        const float along = wx * nx + wz * nz;
+        lateral = std::sqrt(std::max(0.0f, wx * wx + wz * wz - along * along));
+    }
+    const float lw = lateral / 2.5f, rw = slab.reach / 9.0f;
+    const float pool = (lw < 1.0f ? (1.0f - lw * lw) * (1.0f - lw * lw) : 0.0f) * (rw < 1.0f ? 1.0f - rw * rw : 0.0f);
+    const float graze = std::clamp(1.0f - slab.miss / 0.15f, 0.0f, 1.0f);
+    const float share = std::max(strength * vert * under, graze * graze * (3.0f - 2.0f * graze)) * pool;
     const float keep = std::clamp(pass * share * std::min(seen, 1.0f), 0.0f, 1.0f);
     if (keep <= 0.0f) {
         g_fillGridZero.fetch_add(1, std::memory_order_relaxed);
@@ -6450,26 +6496,30 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         // a lamp of a lower story: this story's walls, tested next by the game, from where its ray enters this story
         RayEntry entry;
         bool above = false;
-        float slab = -1.0f;
+        SlabRay slab;
         if (home < info.level && mine <= 0.0f) g_fillWallZero.fetch_add(1, std::memory_order_relaxed);
         alignas(16) float edge[8] = {};
         if (mine <= 0.0f && home < info.level && g_enterReady && !g_ctx.basis && !info.yard && info.grid[0] && g_fillOn.load(std::memory_order_relaxed)) {
             // Light under balconies, a ray the lamp's own story stops: the walls of that story may stand right under the
             // balcony (an arcade's arches, its back wall), so the lamp is tested to the slab's edge instead: when it sees the
             // edge, the edge scatters its share onto the point (FillShare); otherwise it stays dark
-            if (!OutdoorEntry(info, home, light, sample, entry, &above, &slab, edge) && slab >= 0.0f) {
+            if (!OutdoorEntry(info, home, light, sample, entry, &above, &slab, edge) && slab.valid && !slab.lower) {
                 std::memcpy(edge + 3, static_cast<const float*>(sample) + 3, 4 * sizeof(float));
                 bool culledEdge = false;
                 const float seen = WallPass(info.tracker, info.level, home, cross->outdoor ? cross->room : 0, light, edge, culledEdge);
                 if (seen > 0.0f) FillShare(info, light, sample, slab, seen, true, colour, before);
                 else g_fillEdgeHidden.fetch_add(1, std::memory_order_relaxed);
             }
-            slab = -1.0f;
+            slab = SlabRay{};
         }
         if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis) {
             const bool entered = OutdoorEntry(info, home, light, sample, entry, &above, &slab, nullptr);
-            (entered ? g_fillEntered : above ? g_fillAbove : slab >= 0.0f ? g_fillSlab : g_fillNoSlab).fetch_add(1, std::memory_order_relaxed);
-            if (slab >= 0.0f && !info.grid[0]) g_fillNoGrid.fetch_add(1, std::memory_order_relaxed);
+            (entered ? g_fillEntered : above ? g_fillAbove : slab.lower ? g_fillLower : slab.valid ? g_fillSlab : g_fillNoSlab).fetch_add(1, std::memory_order_relaxed);
+            if (slab.valid && !info.grid[0]) g_fillNoGrid.fetch_add(1, std::memory_order_relaxed);
+            if (slab.lower) { // a lower story's floor in the way: no light (the game's test sees no floors)
+                for (int i = 0; i < 4; i++) colour[i] = 0.0f;
+                mine = 0.0f;
+            }
             if (entered) {
                 g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
                 std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
@@ -6493,7 +6543,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 std::memcpy(g_ctx.yardLamp, pos, sizeof g_ctx.yardLamp);
                 g_aboveTests.fetch_add(1, std::memory_order_relaxed);
                 if (pass <= 0.0f) g_aboveBlocked.fetch_add(1, std::memory_order_relaxed);
-            } else if (slab >= 0.0f && info.grid[0] && !info.yard && g_fillOn.load(std::memory_order_relaxed)) {
+            } else if (slab.valid && !slab.lower && info.grid[0] && !info.yard && g_fillOn.load(std::memory_order_relaxed)) {
                 // Light under balconies (07/10, user's F7 15:25:59: the wall behind a 3 m deep balcony stayed black beside its
                 // lit neighbours). The ray comes up through a placed floor of this story: no direct light, but the slab's
                 // edge, underside and parapet scatter some onto the wall behind. A share of the light is kept, smaller the
