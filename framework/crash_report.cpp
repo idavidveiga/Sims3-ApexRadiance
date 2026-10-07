@@ -21,6 +21,7 @@ using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, 
                                           PMINIDUMP_CALLBACK_INFORMATION);
 
 LPTOP_LEVEL_EXCEPTION_FILTER g_previous = nullptr;
+PVOID g_veh = nullptr; // the RecordThrow registration, removed on FreeLibrary
 MiniDumpWriteDumpFn g_writeDump = nullptr;
 wchar_t g_textPath[MAX_PATH] = {};
 wchar_t g_dumpPath[MAX_PATH] = {};
@@ -376,7 +377,7 @@ void Install() {
     wcscpy_s(g_dumpPath, (dir + L"ApexRadiance_Crash.dmp").c_str());
     if (HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll")) g_writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
     FindSelf();
-    AddVectoredExceptionHandler(0, RecordThrow); // last in the chain, and it only records
+    g_veh = AddVectoredExceptionHandler(0, RecordThrow); // last in the chain, and it only records
     g_previous = SetUnhandledExceptionFilter(Filter);
     std::set_terminate(OnTerminate);
     std::signal(SIGABRT, OnAbortSignal);
@@ -395,6 +396,17 @@ void Refresh() {
     if (!g_installed.load()) return;
     const LPTOP_LEVEL_EXCEPTION_FILTER cur = SetUnhandledExceptionFilter(Filter);
     if (cur != Filter) g_previous = cur; // someone set theirs since: it runs after the report
+}
+
+void Shutdown() {
+    if (g_veh) {
+        RemoveVectoredExceptionHandler(g_veh);
+        g_veh = nullptr;
+    }
+    if (g_installed.exchange(false)) { // hand the unhandled filter back if it is still ours
+        const LPTOP_LEVEL_EXCEPTION_FILTER cur = SetUnhandledExceptionFilter(g_previous);
+        if (cur != Filter) SetUnhandledExceptionFilter(cur); // someone replaced ours since: leave theirs in place
+    }
 }
 
 void SetFeatureLine(const std::string& line) {

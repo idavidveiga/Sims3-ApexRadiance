@@ -178,7 +178,16 @@ LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // without Apex (the screenshot's marker bit stripped), and Apex's input handling stays off from then on
     WndDecision fallback;
     fallback.lp = lp & ~kSyntheticGameKey;
-    const WndDecision d = HookGuard::Run("Apex window procedure (menu input, hotkeys)", fallback, [&] { return Decide(hwnd, msg, wp, lp); });
+    bool decided = false;
+    const WndDecision d = HookGuard::Run("Apex window procedure (menu input, hotkeys)", fallback, [&] {
+        const WndDecision r = Decide(hwnd, msg, wp, lp);
+        decided = true;
+        return r;
+    });
+    if (!decided) { // Decide threw now, or its site is off: nothing can close the menu any more, so hide it
+        g_frameFailed.store(true);
+        g_visible.store(false);
+    }
     if (!d.forward) return d.result;
     const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, d.lp);
     if (d.keyDownAfter && g_client)

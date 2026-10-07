@@ -245,6 +245,11 @@ template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, co
 // Runs the chain. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDevice9* device, HRESULT& result, Args... args) {
     if (chain.count.load(std::memory_order_relaxed) == 0) return true;
+    // a nested dispatch (a callback calling the hooked device) must not move the outer callback's CallOriginal* count
+    struct OrigScope {
+        int s; uint32_t v;
+        ~OrigScope() { if (s >= 0) t_origCalls[s] = v; }
+    } origScope{chain.origSlot, chain.origSlot >= 0 ? t_origCalls[chain.origSlot] : 0u};
     DeviceContext ctx{device};
     ModTimeGuard mod(chain.modTimed, &ctx);
     if (chain.lockFree) {

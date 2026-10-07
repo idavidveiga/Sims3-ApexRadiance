@@ -15,6 +15,8 @@ void Install();
 void ThreadStart();
 // Takes the filter back when another module replaced it (that one then runs after the report); pump thread, every second
 void Refresh();
+// FreeLibrary only: removes the vectored handler (and the filter if still ours) before the image is unmapped
+void Shutdown();
 // The Apex features on right now (one line); the pump thread refreshes it, the report copies it
 void SetFeatureLine(const std::string& line);
 

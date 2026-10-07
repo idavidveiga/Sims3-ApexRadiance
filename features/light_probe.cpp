@@ -605,7 +605,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, c
                 dev->SetRenderState(D3DRS_COLORWRITEENABLE, cw0);
                 r.query = q;
             }
-            g_draws.push_back(r);
+            g_draws.push_back(std::move(r)); // reserved at capture start: never reallocates, cannot throw
         }
     }
 
@@ -1003,7 +1003,13 @@ void OnPresent(IDirect3DDevice9* dev) {
         FinishCapture(dev);
         if (!AnyBlank()) UnregisterHooks();
     } else if (g_state == State::Armed) {
-        g_state = State::Capturing; // draws of the next frame are recorded
+        // reserve up front so recording a draw (after its probe draw was issued) can never throw
+        try {
+            g_draws.reserve(kMaxDraws);
+            g_state = State::Capturing; // draws of the next frame are recorded
+        } catch (...) {
+            g_state = State::Idle; // no memory for the capture: skip it
+        }
     }
 
     // Its shortcut (Hotkeys: Ctrl+Shift+V, 4 or F7 by preset), eaten before the game sees it

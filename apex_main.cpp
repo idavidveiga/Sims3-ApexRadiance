@@ -269,6 +269,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
             AddressSpace::Stop();
             PatchManager::Get().UninstallAll();
             ApexD3D::Shutdown();
+            CrashReport::Shutdown();
             ApexLog::Close();
         }
         break;
