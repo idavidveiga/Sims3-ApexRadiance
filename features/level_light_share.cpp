@@ -3997,7 +3997,7 @@ bool ReadWallBase(const BYTE* wall, int x, int z, int len, int orient, WallBaseR
             case 1: ox += mid, hx = ox, hz = cz + 1; break;
             case 2: oz += mid, hz = oz, hx = cx + 1; break;
             case 3: oz += mid, hz = oz, hx = cx - 1; break;
-            default: break; // a diagonal: the house half is in the same cell
+            default: break; // a diagonal (not changed: see OutdoorWallBase)
         }
         r.hx = hx, r.hz = hz;
         if (const uintptr_t t = LightTile(mgr, ox, oz)) {
@@ -4016,6 +4016,10 @@ bool ReadWallBase(const BYTE* wall, int x, int z, int len, int orient, WallBaseR
 }
 extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal, int len, int orient) {
     if (!g_foundationWallsOn.load(std::memory_order_relaxed)) return nominal;
+    // diagonal walls (orientations 4..7) are drawn at story * 3 even on a foundation (the log of 23:21 against the F7 of
+    // 23:23: a diagonal wall at the floor of 3.989 showed its light 2 m above the sconce; a diagonal facade of story 3
+    // did the same earlier): their base was already where they are drawn
+    if (orient >= 4) return nominal;
     WallBaseRead r;
     if (!ReadWallBase(wall, x, z, len, orient, r) || r.story < 1) return nominal;
     auto usable = [&](float h) { return h >= nominal - 3.2f && h <= nominal + 0.3f; };
