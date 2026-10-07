@@ -6,14 +6,21 @@ namespace ApexChangelog {
 
 namespace {
 
-constexpr const char* k272Added[] = {
+constexpr const char* k280Added[] = {
+    "Light through doors and windows: walled yards without a roof lit only through their openings",
+    "Lamp colors stay near lamps: a colored lamp no longer tints far floors and shiny objects",
     "Windows take outdoor light: their outer side lit by the lamps outside",
     nullptr};
-constexpr const char* k272Improved[] = {
+constexpr const char* k280Improved[] = {
     "Lamp glow and shore reflections on lakes in rain and snow",
     "Shore reflections on Twinbrook's sea in rain",
     nullptr};
-constexpr const char* k272Fixed[] = {
+constexpr const char* k280Fixed[] = {
+    "Indoor lamp light with Light detail High: no more 1 m squares or light through walls",
+    "Lamp posts light the deck of a house on a foundation next to them",
+    "Lamps no longer light floors above them or plants outside their beam",
+    "Furniture behind a wall no longer takes the lamp of the next room",
+    "Moving a lamp updates the light faster",
     "Wall lamp light at the right height on tall walls and houses on a foundation (a game bug)",
     "Color works in Edit in Game without turning it off and on",
     "Fence and curb tops no longer turn dark at night",
@@ -103,7 +110,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
-    {"2.7.2", "2026-10-07", k272Added, k272Improved, k272Fixed},
+    {"2.8.0", "2026-10-07", k280Added, k280Improved, k280Fixed},
     {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},
     {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
     {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
