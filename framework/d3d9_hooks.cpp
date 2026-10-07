@@ -4,11 +4,13 @@
 #include "hook_chain.h"
 #include "memory_patch.h"
 #include "frame_profiler.h"
+#include "hook_guard.h"
 #include <detours/detours.h>
 #include <intrin.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -30,6 +32,9 @@ template <typename Fn> struct Entry {
     Fn fn;
     int priority;
     uint64_t sequence;
+    // Set when the callback threw (07/10, players' Runtime Error): it is skipped from then on. Shared by every copy of the
+    // entry in later lists, so a re-published list keeps it off.
+    std::shared_ptr<std::atomic<bool>> off;
 };
 
 // Per-name timing of a chain's callbacks (Frame Profiler, development build)
@@ -76,7 +81,8 @@ template <typename Fn> bool Add(Chain<Fn>& chain, const std::string& name, Fn fn
     if (!fn) return false;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     auto next = std::make_unique<typename Chain<Fn>::List>(*chain.list.load(std::memory_order_relaxed));
-    next->push_back({name, chain.timingSuffix ? name + chain.timingSuffix : name, std::move(fn), static_cast<int>(priority), ++g_sequence});
+    next->push_back({name, chain.timingSuffix ? name + chain.timingSuffix : name, std::move(fn), static_cast<int>(priority), ++g_sequence,
+                     std::make_shared<std::atomic<bool>>(false)});
     std::stable_sort(next->begin(), next->end(), [](const Entry<Fn>& a, const Entry<Fn>& b) {
         return a.priority != b.priority ? a.priority < b.priority : a.sequence < b.sequence;
     });
@@ -182,18 +188,36 @@ struct ModTimeGuard {
     ModTimeGuard& operator=(const ModTimeGuard&) = delete;
 };
 
+// From a catch block: names the callback without allocating
+void NoteCallbackThrew(const char* method, const char* name) noexcept {
+    char where[160];
+    std::snprintf(where, sizeof where, "D3D9 %s callback \"%s\"", method, name);
+    HookGuard::Note(where);
+}
+
 // Runs one list. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, const typename Chain<Fn>::List& list, DeviceContext& ctx, HRESULT& result, Args... args) {
     bool timed = false;
     if (!kPublicBuild)
         timed = chain.timing == Timing::Always ? FrameProfiler::PresentHookTimingActive() : (chain.timing == Timing::Option && FrameProfiler::RegistryHookTimingActive());
     for (const auto& e : list) {
-        const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
-        const HookAction r = e.fn(ctx, args...);
-        if (timed) {
-            const uint64_t dt = FrameProfiler::Ticks() - t0;
-            std::lock_guard<std::mutex> tl(g_timingLock);
-            FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+        if (e.off->load(std::memory_order_relaxed)) continue;
+        HookAction r = HookAction::Continue;
+        // 07/10, players' Runtime Error: a callback's C++ exception would unwind into the game's device call and end the
+        // game. It is caught, that callback is skipped from now on, and the chain goes on as if it had returned Continue
+        // (the device call is neither skipped nor doubled).
+        try {
+            const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
+            r = e.fn(ctx, args...);
+            if (timed) {
+                const uint64_t dt = FrameProfiler::Ticks() - t0;
+                std::lock_guard<std::mutex> tl(g_timingLock);
+                FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+            }
+        } catch (...) {
+            e.off->store(true, std::memory_order_relaxed);
+            NoteCallbackThrew(chain.method, e.name.c_str());
+            r = HookAction::Continue;
         }
         if (r == HookAction::Skip) {
             result = S_OK;

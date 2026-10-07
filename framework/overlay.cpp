@@ -3,6 +3,7 @@
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "hook_chain.h"
+#include "hook_guard.h"
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
@@ -25,6 +26,7 @@ std::atomic<bool> g_visible{false};
 std::atomic<bool> g_captureSuppressed{false};
 std::atomic<bool> g_clearInput{false};
 std::atomic<bool> g_wndProcInstalled{false};
+std::atomic<bool> g_frameFailed{false}; // the menu frame threw (Frame): no drawing, no input capture
 constexpr LPARAM kSyntheticGameKey = 1ll << 25; // reserved LPARAM bit: stripped before the game's original procedure
 HWND g_window = nullptr;
 WNDPROC g_original = nullptr;
@@ -86,44 +88,57 @@ LPARAM ScaleMouse(HWND hwnd, LPARAM lp) {
     return MAKELPARAM(static_cast<WORD>(static_cast<short>(sx)), static_cast<WORD>(static_cast<short>(sy)));
 }
 
-LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+// What Apex decided for one window message. The game's procedure is called by ApexWndProc outside Apex's try block
+// (07/10, players' Runtime Error), so an exception in Apex's part never skips or doubles the game's handling.
+struct WndDecision {
+    bool forward = true;       // pass the message on to the game's procedure
+    LPARAM lp = 0;             // with this LPARAM
+    bool keyDownAfter = false; // then tell the client about the game key
+    LRESULT result = 0;        // what the caller gets when it is not passed on
+};
+
+WndDecision Decide(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    WndDecision d;
+    d.lp = lp;
     LRESULT result = 0;
-    if (g_client && g_client->OnWindowMessage(hwnd, msg, wp, lp, &result)) return result;
+    if (g_client && g_client->OnWindowMessage(hwnd, msg, wp, lp, &result)) {
+        d.forward = false;
+        d.result = result;
+        return d;
+    }
 
     // The screenshot temporarily sends F10 to the game itself. Mark those posted messages so they bypass Apex's F10
     // screenshot shortcut and are forwarded with a normal key-message LPARAM to the game's window procedure.
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP) && (lp & kSyntheticGameKey)) {
-        const LPARAM gameLp = lp & ~kSyntheticGameKey;
-        const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, gameLp);
-        if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client)
-            g_client->GameKeyDown(wp, (gameLp & (1 << 30)) != 0);
-        return forwarded;
+        d.lp = lp & ~kSyntheticGameKey;
+        d.keyDownAfter = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+        return d;
     }
 
     // Bare F10 belongs to the game, even while ImGui wants keyboard input or a legacy binding uses it.
     const bool nativeF10 = wp == VK_F10 && GetKeyState(VK_CONTROL) >= 0 &&
                            GetKeyState(VK_SHIFT) >= 0 && GetKeyState(VK_MENU) >= 0;
     if (nativeF10 && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP)) {
-        const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, lp);
-        if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client)
-            g_client->GameKeyDown(wp, (lp & (1 << 30)) != 0);
-        return forwarded;
+        d.keyDownAfter = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+        return d;
     }
 
+    WndDecision eat;
+    eat.forward = false;
     // Apex's toggle chord (auto-repeat ignored); its key-up is eaten as well so the game never sees half of it
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client && g_client->IsToggleKey(wp)) {
         if (!(lp & (1 << 30))) SetVisible(!g_visible.load());
         g_eatKeyUp = wp;
-        return 0;
+        return eat;
     }
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && g_client && g_client->HotkeyDown(wp, (lp & (1 << 30)) != 0)) {
         g_eatKeyUp = wp;
         g_eatChar = true; // Ctrl+letter makes a control character
-        return 0;
+        return eat;
     }
     if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && g_eatKeyUp && wp == g_eatKeyUp) {
         g_eatKeyUp = 0;
-        return 0;
+        return eat;
     }
     if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) { // Alt+Tab and the like: the key-ups go elsewhere
         for (bool& b : g_eatUp) b = false;
@@ -137,7 +152,7 @@ LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     const bool claimedChar = (msg == WM_CHAR || msg == WM_SYSCHAR) && g_eatChar;
     if (claimedChar || keyDown) g_eatChar = false;
 
-    if (g_visible.load() && g_ready.load() && (IsMouseMessage(msg) || IsKeyboardMessage(msg) || msg == WM_SETFOCUS || msg == WM_KILLFOCUS)) {
+    if (g_visible.load() && g_ready.load() && !g_frameFailed.load() && (IsMouseMessage(msg) || IsKeyboardMessage(msg) || msg == WM_SETFOCUS || msg == WM_KILLFOCUS)) {
         bool wantMouse = false, wantKeyboard = false;
         {
             std::lock_guard<std::mutex> lock(g_imguiLock);
@@ -149,13 +164,26 @@ LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (keyDown && wp < 256 && g_client && g_client->CaptureKey(wp)) {
             g_eatUp[wp] = true;
             g_eatChar = true;
-            return 0;
+            return eat;
         }
-        if ((IsMouseMessage(msg) && wantMouse) || (IsKeyboardMessage(msg) && wantKeyboard)) return 0;
+        if ((IsMouseMessage(msg) && wantMouse) || (IsKeyboardMessage(msg) && wantKeyboard)) return eat;
     }
-    if (claimedUp || claimedChar) return 0;
+    if (claimedUp || claimedChar) return eat;
     if (keyDown && g_client) g_client->GameKeyDown(wp, (lp & (1 << 30)) != 0);
-    return CallWindowProcW(g_original, hwnd, msg, wp, lp);
+    return d;
+}
+
+LRESULT CALLBACK ApexWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Apex's part never throws into the window procedure: on an exception the message goes to the game as it would
+    // without Apex (the screenshot's marker bit stripped), and Apex's input handling stays off from then on
+    WndDecision fallback;
+    fallback.lp = lp & ~kSyntheticGameKey;
+    const WndDecision d = HookGuard::Run("Apex window procedure (menu input, hotkeys)", fallback, [&] { return Decide(hwnd, msg, wp, lp); });
+    if (!d.forward) return d.result;
+    const LRESULT forwarded = CallWindowProcW(g_original, hwnd, msg, wp, d.lp);
+    if (d.keyDownAfter && g_client)
+        HookGuard::Try("Apex hotkeys (game key)", [&] { g_client->GameKeyDown(wp, (d.lp & (1 << 30)) != 0); });
+    return forwarded;
 }
 
 } // namespace
@@ -200,8 +228,23 @@ void InstallWndProc() {
 
 bool WndProcInstalled() { return g_wndProcInstalled.load(); }
 
+namespace {
+void DrawFrame(IDirect3DDevice9* device);
+}
+
+// 07/10, players' Runtime Error: the menu's frame runs inside the game's EndScene. An exception there is caught and the
+// menu stays off for the session (ImGui is left mid-frame, it cannot simply go on); the Reset handling still runs, as the
+// ImGui device objects still have to be released before a Reset.
 void Frame(IDirect3DDevice9* device) {
     if (!g_ready.load() || !device) return;
+    if (!HookGuard::Run("Apex menu frame", [device] { DrawFrame(device); })) {
+        g_frameFailed.store(true);
+        g_visible.store(false); // and its input is no longer captured (ApexWndProc)
+    }
+}
+
+namespace {
+void DrawFrame(IDirect3DDevice9* device) {
     static FrameClock frameClock;
     const auto frameStart = FrameClock::Clock::now();
     const float frameDelta = frameClock.Step(frameStart);
@@ -264,6 +307,8 @@ void Frame(IDirect3DDevice9* device) {
             ImGui::GetDrawData()->TotalVtxCount, ImGui::GetDrawData()->TotalIdxCount));
     }
 }
+
+} // namespace
 
 void BeforeReset() {
     if (!g_ready.load()) return;

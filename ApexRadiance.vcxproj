@@ -153,6 +153,7 @@
     <ClCompile Include="framework\apex_util.cpp" />
     <ClCompile Include="framework\call_chain.cpp" />
     <ClCompile Include="framework\crash_report.cpp" />
+    <ClCompile Include="framework\hook_guard.cpp" />
     <ClCompile Include="framework\d3d9_bootstrap.cpp" />
     <ClCompile Include="framework\d3d9_extra_hooks.cpp" />
     <ClCompile Include="framework\d3d9_hooks.cpp" />
@@ -248,6 +249,7 @@
     <ClInclude Include="framework\apex_util.h" />
     <ClInclude Include="framework\call_chain.h" />
     <ClInclude Include="framework\crash_report.h" />
+    <ClInclude Include="framework\hook_guard.h" />
     <ClInclude Include="framework\conflict_guard.h" />
     <ClInclude Include="framework\d3d9_bootstrap.h" />
     <ClInclude Include="framework\d3d9_extra_hooks.h" />
