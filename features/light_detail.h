@@ -9,4 +9,8 @@ bool ApplyAtStartup(int level);
 // The detail in effect this session (0 = the game's own); a change made later takes effect after a restart
 int Active();
 std::string Status();
+// Once per session, at the end of a room's solve (LevelLightShare's FinalizeHook): whether every tile of its story has its
+// class-2 floor and ceiling texels at n x the tile or in the atlas, none over a neighbour's (one log line: OK, or the first
+// tile that overlaps)
+void CheckLayout(const void* room);
 }

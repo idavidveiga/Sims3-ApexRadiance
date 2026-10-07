@@ -20,15 +20,36 @@
 // and kept for the whole session (a lot lit with one detail must keep it). A change takes effect after a restart.
 // Cost: four times the texels per room, so rooms take about four times longer to light (after loading and after a lamp
 // changes) and their maps take four times the memory.
+//
+// The class-2 floor and ceiling layout (07/10, user: indoor lamp light in 1 m squares, a sconce's red through its wall in
+// the next room, the floor strip along a sconce's wall black after a lamp edit; F7 light map T5 of 01:34:43): two places
+// build it with the game's 4 written in the code instead of 0x00FF36AC[2], so High doubles them too:
+//  - 0x006A7E62 "push 4" in FUN_006a7cf0 (the story manager's tile rebuild, the only caller of FUN_006aa480): every
+//    quadrant no diagonal wall splits gets the texel origin (tile x * 4, tile z * 4) (0x006AA568, u16 at tile+0x8A /
+//    +0x8C + q*0x14). Each class-2 floor and ceiling batch writes n x n texels from it (FUN_006aa9d0 -> FUN_006aabe0,
+//    n = the table) and the floor mesh reads origin + n x (0..1) across the tile (FUN_006a6d10 -> FUN_006a9970). With
+//    n = 8 every tile wrote over the first half of its +x and +z neighbours' texels (T5: 8-texel runs 4 texels apart,
+//    row 108 texels 40..47 one ramp of room 0's tile 10) and showed its own first half metre twice: 1 m steps inside a
+//    room, and at a wall the room solved last painted the first half metre behind it (a sconce's red in the next room;
+//    room 0's wall-tested black along the house's wall when room 0 was solved after the room). Every other reader already
+//    places the tiles n apart: the border fill FUN_006a9de0 (n x tile), the tile-less blocks of FUN_006a37f0, the
+//    whole-tile blocks of FUN_006aa960, the lot-wide UV constants (FUN_006a4c10, FUN_006a4e10) and the atlas of split
+//    tiles, which starts at W / 2 = pow2(n x lot tiles) (FUN_006a8f30), past the n x tiles of the lot.
+//  - 0x006AA325 "push 4" in FUN_006aa2e0 (the tile constructor): FUN_006a9ad0 builds once (byte 0x011D0510) the offsets
+//    (n, n - 1, n - 2) the border fill copies with into the 1-texel border of those atlas pieces.
+// High writes 8 into both with the tables (the copy table is built again if a tile was already made). The first room
+// solve checks every tile of its story (CheckLayout, "[LightDetail] layout check").
 #include "light_detail.h"
 #include "apex_log.h"
 #include "game_addresses.h"
 #include "level_light_share.h"
 #include "memory_patch.h"
 #include <windows.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <vector>
 
 namespace {
 
@@ -37,13 +58,85 @@ constexpr uintptr_t kWallAtlasW = 0x00FF36DC;    // int[3]
 constexpr uintptr_t kWallAtlasH = 0x00FF36E8;    // int[3]
 constexpr uintptr_t kTexelsGetter = 0x006A8D20;  // FUN_006a8d20: mov eax,[ecx+8]; mov eax,[eax*4+0x00FF36AC]; ret
 constexpr uintptr_t kAtlasReads = 0x006A90FC;    // in FUN_006a90e0: mov edi,[eax+eax+0x00FF36DC]; mov ebx,[eax+eax+0x00FF36E8]
+constexpr uintptr_t kOriginCall = 0x006A7E5E;    // in FUN_006a7cf0: mov ecx,[esp+14h]; push 4; push ecx; lea edx,[esi+200h]; push edx; mov ecx,edi; call FUN_006aa480
+constexpr uintptr_t kOriginImm = 0x006A7E63;     // the 4 of that push (6A 04)
+constexpr uintptr_t kCopyCall = 0x006AA322;      // in FUN_006aa2e0: mov [ecx+74h],eax; push 4; movss [ecx+78h],xmm0; mov [ecx+0CCh],al; call FUN_006a9ad0; ret 8
+constexpr uintptr_t kCopyImm = 0x006AA326;       // the 4 of that push (6A 04)
+constexpr uintptr_t kCopyBuilt = 0x011D0510;     // byte (.data): FUN_006a9ad0 built its table (it builds it once)
+constexpr uintptr_t kCopyBuild = 0x006A9AD0;     // FUN_006a9ad0(int n): stdcall (ret 4), ecx unused
+using CopyBuild_t = void(__stdcall*)(int n);
 constexpr DWORD kGameTexels[3] = {1, 2, 4}, kGameAtlasW[3] = {256, 512, 1024}, kGameAtlasH[3] = {128, 256, 512};
+constexpr BYTE kGameStride = 4;
 
 int g_active = 0;
 bool g_tried = false;
 std::string g_status = "the game's own detail";
+std::atomic<bool> g_layoutChecked{false};
 
 bool ReadTable(uintptr_t at, DWORD* out) { return MemPatch::ReadBytes(at, out, 3 * sizeof(DWORD)); }
+bool CodeIs(uintptr_t at, const BYTE* expected, size_t count) {
+    BYTE seen[32] = {};
+    return count <= sizeof seen && MemPatch::ReadBytes(at, seen, count) && std::memcmp(seen, expected, count) == 0;
+}
+// One immediate byte, written only over `was`
+bool WriteImm(uintptr_t at, BYTE value, BYTE was) {
+    const std::vector<BYTE> bytes{value}, expected{was};
+    return MemPatch::WriteBytes(at, bytes, nullptr, &expected);
+}
+// FUN_006a9ad0 builds the border fill's copy table once, with the n the first tile pushes: when a tile was already made,
+// it is built again for n (nothing is lit yet, so no border fill reads it meanwhile). POD only (SEH)
+bool BuildCopyTable(int n, bool& rebuilt) {
+    rebuilt = false;
+    __try {
+        volatile BYTE* built = reinterpret_cast<volatile BYTE*>(kCopyBuilt);
+        if (!*built) return true; // the first tile builds it with the immediate
+        *built = 0;
+        reinterpret_cast<CopyBuild_t>(kCopyBuild)(n);
+        rebuilt = true;
+        return *built != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+struct LayoutCount {
+    int story = -99, w = 0, h = 0, lot = 0, atlas = 0, unset = 0, other = 0, x = -1, z = -1, u = 0, v = 0;
+};
+// The class-2 texel origins of every tile of a room's story (u16 at tile+0x8A / +0x8C + q*0x14, FUN_006aa480): n x the
+// tile, an atlas piece (past the lot's n x w texels: FUN_006a8f30 starts the atlas at W / 2 >= n x w), not set yet (0, 0),
+// or anything else: over a neighbour's texels. POD only (SEH)
+bool CountOrigins(const void* room, int n, LayoutCount& c) {
+    __try {
+        const uintptr_t mgr = *static_cast<const uintptr_t*>(room);
+        if (!mgr) return false;
+        c.story = *reinterpret_cast<const int*>(mgr + 0x88);
+        c.w = *reinterpret_cast<const int*>(mgr + 0x264);
+        c.h = *reinterpret_cast<const int*>(mgr + 0x268);
+        const uintptr_t* grid = *reinterpret_cast<const uintptr_t* const*>(mgr + 0x260);
+        if (!grid || c.w <= 0 || c.h <= 0 || c.w > 1024 || c.h > 1024) return false;
+        for (int z = 0; z < c.h; z++)
+            for (int x = 0; x < c.w; x++) {
+                const uintptr_t tile = grid[static_cast<size_t>(z) * c.w + x];
+                if (!tile) continue;
+                for (int q = 0; q < 4; q++) {
+                    const int u = *reinterpret_cast<const uint16_t*>(tile + 0x8A + q * 0x14);
+                    const int v = *reinterpret_cast<const uint16_t*>(tile + 0x8C + q * 0x14);
+                    if (u == x * n && v == z * n) c.lot++;
+                    else if (u > c.w * n) c.atlas++;
+                    else if (u == 0 && v == 0) c.unset++;
+                    else if (c.other++ == 0) {
+                        c.x = x;
+                        c.z = z;
+                        c.u = u;
+                        c.v = v;
+                    }
+                }
+            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 } // namespace
 
@@ -53,12 +146,14 @@ bool ApplyAtStartup(int level) {
     if (g_tried) return g_active == level;
     g_tried = true;
     if (level <= 0) return true;
-    // Steam 1.67.2 only: the table addresses are fixed there, and the code that reads them is checked byte by byte
+    // Steam 1.67.2 only: the table addresses are fixed there, and the code that reads them, and the two places that write the
+    // class-2 floor layout's 4 in the code, are checked byte by byte
     const BYTE getter[] = {0x8B, 0x41, 0x08, 0x8B, 0x04, 0x85, 0xAC, 0x36, 0xFF, 0x00, 0xC3};
     const BYTE atlas[] = {0x8B, 0xBC, 0x00, 0xDC, 0x36, 0xFF, 0x00, 0x8B, 0x9C, 0x00, 0xE8, 0x36, 0xFF, 0x00};
-    BYTE seen[sizeof atlas] = {};
-    if (!GameAddr::IsFixed() || !MemPatch::ReadBytes(kTexelsGetter, seen, sizeof getter) || std::memcmp(seen, getter, sizeof getter) != 0 ||
-        !MemPatch::ReadBytes(kAtlasReads, seen, sizeof atlas) || std::memcmp(seen, atlas, sizeof atlas) != 0) {
+    const BYTE originCall[] = {0x8B, 0x4C, 0x24, 0x14, 0x6A, 0x04, 0x51, 0x8D, 0x96, 0x00, 0x02, 0x00, 0x00, 0x52, 0x8B, 0xCF, 0xE8, 0x0D, 0x26, 0x00, 0x00};
+    const BYTE copyCall[] = {0x89, 0x41, 0x74, 0x6A, 0x04, 0xF3, 0x0F, 0x11, 0x41, 0x78, 0x88, 0x81, 0xCC, 0x00, 0x00, 0x00, 0xE8, 0x99, 0xF7, 0xFF, 0xFF, 0xC2, 0x08, 0x00};
+    if (!GameAddr::IsFixed() || !CodeIs(kTexelsGetter, getter, sizeof getter) || !CodeIs(kAtlasReads, atlas, sizeof atlas) ||
+        !CodeIs(kOriginCall, originCall, sizeof originCall) || !CodeIs(kCopyCall, copyCall, sizeof copyCall)) {
         g_status = "not available on this game version (Steam 1.67.2 only)";
         LOG_WARNING("[LightDetail] " + g_status);
         return false;
@@ -80,6 +175,7 @@ bool ApplyAtStartup(int level) {
         LOG_INFO("[LightDetail] " + g_status);
         return false;
     }
+    const BYTE stride = static_cast<BYTE>(kGameTexels[2] * 2); // the class-2 texels per tile once doubled: 8
     bool ok = true;
     for (int c = 0; c < 3 && ok; c++) {
         // kept for the whole session: a lot lit with this detail must never meet the game's tables again
@@ -87,12 +183,20 @@ bool ApplyAtStartup(int level) {
              MemPatch::WriteDWORD(kWallAtlasW + c * 4, kGameAtlasW[c] * 2, nullptr, &kGameAtlasW[c]) &&
              MemPatch::WriteDWORD(kWallAtlasH + c * 4, kGameAtlasH[c] * 2, nullptr, &kGameAtlasH[c]);
     }
+    // the class-2 floor and ceiling texels of a tile n apart, as every other reader places them
+    ok = ok && WriteImm(kOriginImm, stride, kGameStride) && WriteImm(kCopyImm, stride, kGameStride);
+    bool rebuilt = false;
+    ok = ok && BuildCopyTable(stride, rebuilt);
     if (!ok) { // put back what was written (nothing is lit yet)
         for (int c = 0; c < 3; c++) {
             MemPatch::WriteDWORD(kTexelsPerTile + c * 4, kGameTexels[c]);
             MemPatch::WriteDWORD(kWallAtlasW + c * 4, kGameAtlasW[c]);
             MemPatch::WriteDWORD(kWallAtlasH + c * 4, kGameAtlasH[c]);
         }
+        WriteImm(kOriginImm, kGameStride, stride); // only over a byte that holds the new value
+        WriteImm(kCopyImm, kGameStride, stride);
+        bool again = false;
+        BuildCopyTable(kGameStride, again);
         g_status = "the game's tables could not be written";
         LOG_WARNING("[LightDetail] " + g_status);
         return false;
@@ -100,7 +204,26 @@ bool ApplyAtStartup(int level) {
     g_active = level;
     g_status = "high: twice the lighting texels per metre on walls and floors (texels per tile {2, 4, 8}, wall maps up to 2048x1024)";
     LOG_INFO("[LightDetail] " + g_status);
+    LOG_INFO(std::format("[LightDetail] class-2 floor and ceiling texels {} per tile, {} apart (0x{:08X} push {}; atlas border copies 0x{:08X} push {}{})",
+                         static_cast<int>(stride), static_cast<int>(stride), kOriginImm - 1, static_cast<int>(stride), kCopyImm - 1,
+                         static_cast<int>(stride), rebuilt ? ", copy table built again" : ""));
     return true;
+}
+
+void CheckLayout(const void* room) {
+    if (!room || g_layoutChecked.load(std::memory_order_relaxed)) return;
+    DWORD n = 0;
+    if (!MemPatch::ReadBytes(kTexelsPerTile + 2 * sizeof(DWORD), &n, sizeof n) || n == 0 || n > 64) return;
+    LayoutCount c;
+    if (!CountOrigins(room, static_cast<int>(n), c) || c.lot + c.other == 0) return; // a story not rebuilt yet: a later solve
+    if (g_layoutChecked.exchange(true)) return;
+    if (!c.other)
+        LOG_INFO(std::format("[LightDetail] layout check (story {}, {}x{} tiles): {} quadrants at {} texels x the tile, {} in the atlas, none over a neighbour: OK",
+                             c.story, c.w, c.h, c.lot, n, c.atlas));
+    else
+        LOG_WARNING(std::format("[LightDetail] layout check (story {}, {}x{} tiles): {} quadrants NOT at {} texels x the tile (first: tile ({}, {}) at texel ({}, {})): "
+                                "class-2 floor and ceiling texels overlap their neighbours (1 m steps, light through walls)",
+                                c.story, c.w, c.h, c.other, n, c.x, c.z, c.u, c.v));
 }
 
 int Active() { return g_active; }
