@@ -4144,6 +4144,26 @@ extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float n
                              r.haveOwn ? std::format("{:.3f}", r.own) : "-", base, from, r.lotBase));
     return base;
 }
+// Indoor faces of diagonal walls (orientations 4..7): the game takes the floor under them (0x006AB340, "movss xmm0,
+// [eax+78h]"), but diagonal walls are drawn at story * 3 like their outdoor faces (the recording of 23:33: the two faces
+// of one diagonal were lit from 63.325 outside and 61.314 inside, 2 m apart; the floor for the outside face lifted its
+// light above the sconce). With the option, a diagonal's indoor face takes story * 3 ([ebp+10h]) as its outdoor face does.
+constexpr uintptr_t kIndoorBaseSite = 0x006AB340;
+const BYTE kIndoorBaseBytes[] = {0xF3, 0x0F, 0x10, 0x40, 0x78}; // movss xmm0,[eax+78h]
+volatile bool g_wallBaseFlag = false; // g_foundationWallsOn as a plain byte for the thunk
+bool g_indoorBaseReady = false;
+__declspec(naked) void IndoorWallBaseThunk() {
+    __asm {
+        movss xmm0, dword ptr [eax + 78h]  // the floor under the wall, as the game takes it
+        cmp byte ptr [g_wallBaseFlag], 0
+        je done
+        cmp dword ptr [ebp + 18h], 4       // the orientation: 4..7 are the diagonals
+        jl done
+        movss xmm0, dword ptr [ebp + 10h]  // story * 3.0, where the game draws diagonal walls
+    done:
+        ret
+    }
+}
 __declspec(naked) void OutdoorWallBaseThunk() {
     __asm {
         pushad
@@ -6333,6 +6353,14 @@ bool Install(std::string& error) {
         g_wallBaseReady = MemPatch::WriteBytes(kWallBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Outside walls on foundations: ") + (g_wallBaseReady ? "ready (the walls of outdoor rooms can take the floor they stand on)" : "not available (code differs)"));
+    g_indoorBaseReady = g_wallBaseReady && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kIndoorBaseSite), kIndoorBaseBytes, sizeof(kIndoorBaseBytes));
+    if (g_indoorBaseReady) {
+        BYTE call[5] = {0xE8, 0, 0, 0, 0};
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&IndoorWallBaseThunk) - (kIndoorBaseSite + 5));
+        std::memcpy(call + 1, &rel, 4);
+        g_indoorBaseReady = MemPatch::WriteBytes(kIndoorBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
+    }
+    LOG_INFO(std::string("[LevelLightShare] Indoor faces of diagonal walls on foundations: ") + (g_indoorBaseReady ? "ready" : "not available"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
@@ -7341,6 +7369,7 @@ void RelightAllRooms(const char* why) {
 
 void SetFoundationWalls(bool on) {
     if (g_foundationWallsOn.exchange(on) == on) return;
+    g_wallBaseFlag = on;
     if (!g_installed.load(std::memory_order_relaxed)) return;
     RelightAllRooms(on ? "Outside walls where they are drawn on" : "Outside walls where they are drawn off");
 }
