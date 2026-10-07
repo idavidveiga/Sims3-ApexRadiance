@@ -2262,16 +2262,55 @@ uint32_t BlurPassesFor(const BYTE* room) {
     }
 }
 
+// ---- Outside walls of a house on a foundation (06/10, F7 22-02-24/26 with the wall notes). The outdoor room (room 0) of
+// story s >= 1 lays its wall rows out from the lot's base + 3 s (wall +0x114: 63.325 for story 1 of a lot at 60.325), but
+// on a foundation that story stands on the foundation (its lowest floor, mgr+0x98: 61.315) and the wall mesh is drawn from
+// there: the block's rows are stretched between the drawn wall's foot and top (FUN_006a5600 -> FUN_006ac200, whatever its
+// height), so every row showed 2 m below where it was lit (an outside sconce lit its wall well below itself). Indoor rooms'
+// walls already start at their floor; without a foundation the two bases are the same. The samples move down to the
+// story's floor, only for room 0 above story 0, only downwards and by less than a story (pools and odd platforms excluded).
+std::atomic<long> g_foundationPieces{0};
+float FoundationDrop(const BYTE* room, uintptr_t wall) {
+    __try {
+        if (!room || *reinterpret_cast<const int*>(room + 0xC) != 0) return 0.0f;
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr || *reinterpret_cast<const int*>(mgr + 0x88) < 1) return 0.0f;
+        const float floorY = *reinterpret_cast<const float*>(mgr + 0x98), oy = *reinterpret_cast<const float*>(wall + 0x114);
+        const float drop = floorY - oy;
+        return std::isfinite(drop) && drop < -0.05f && drop > -2.95f ? drop : 0.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0.0f;
+    }
+}
+void DropWallSamples(uintptr_t batch, float dy) {
+    __try {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return;
+        for (uintptr_t p = b; p < e; p += 0x30) *reinterpret_cast<float*>(p + 4) += dy;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
+    // outside walls on a foundation: lit where they are drawn (FoundationDrop), after the rows are lined up
+    const float drop = FoundationDrop(t_wallRoom, reinterpret_cast<uintptr_t>(wall));
     if (!g_alignOn.load(std::memory_order_relaxed)) {
+        if (drop != 0.0f) {
+            DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
+            g_foundationPieces.fetch_add(1, std::memory_order_relaxed);
+        }
         NoteWallPiece(reinterpret_cast<uintptr_t>(wall), piece, cls, reinterpret_cast<uintptr_t>(batch));
         return;
     }
     PieceNote note{reinterpret_cast<uintptr_t>(wall)};
     const bool aligned = AlignWallSamples(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block, note.rows);
+    if (drop != 0.0f) {
+        DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
+        g_foundationPieces.fetch_add(1, std::memory_order_relaxed);
+    }
     NoteWallPiece(note.wall, piece, cls, reinterpret_cast<uintptr_t>(batch)); // the heights as lit (lined up or not)
     if (!aligned) {
         g_alignOdd.fetch_add(1, std::memory_order_relaxed);
@@ -7000,9 +7039,9 @@ std::string Status() {
                                                       g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_penumbraLifted.load(), g_editWaited.load()),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
-                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur)",
+                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur, {} outside wall pieces lit down to their foundation floor)",
                                                    g_alignOn ? "on" : "off", g_alignRows.load(), g_alignOdd.load(), g_ghostWalls.load(), g_ghostPoints.load(),
-                                                   g_alignEdges.load()),
+                                                   g_alignEdges.load(), g_foundationPieces.load()),
                        g_otherThread.load() ? std::format(" | on another thread: {}", g_otherThread.load()) : "",
                        g_normCrossOnly.load() || g_normNotFinite.load()
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
