@@ -59,6 +59,7 @@
 #include "ui/i18n.h"
 #include "overlay.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include <windows.h>
 #include <algorithm>
 #include <map>
@@ -1235,6 +1236,7 @@ void OnPresent() {
         // lamps-off bake, then the dusk rebuild on top): see "world live" below.
         g_loadKickPending = true;
         g_worldAt = now;
+        LoadTiming::NoteWorldChange();
         g_live = false;
         g_loadSettled.store(false);
         g_liveSignal = "none";
@@ -1265,6 +1267,7 @@ void OnPresent() {
         if (signal) {
             g_live = true;
             g_liveAt = now;
+            LoadTiming::NoteFirstWorldDraw(signal);
             g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
             if (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
             GameAddr::CheckWorldStructs(); // builds other than Steam 1.67.2: once, logs whether the assumed struct offsets hold
@@ -2021,7 +2024,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                 const bool busy = afterLoad && tick - g_afterLoadStarted < kAfterLoadMax && LevelLightShare::LoadedRoomsBusy();
                 const bool ready = !afterLoad || RoomAmbientPolicy::AfterLoadRefreshReady(tick, g_afterLoadStarted, busy, g_afterLoadQuiet);
                 if (ready) {
-                    if (afterLoad && !g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
+                    if (afterLoad && !g_loadSettled.exchange(true)) {
+                        LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
+                        LoadTiming::NoteLoadSettled("the after-load refresh ran");
+                    }
                     g_autoRefreshRoomsOnly.store(false);
                     HookGuard::Try("Night Lighting automatic refresh",
                                    [afterLoad] { NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad); });
@@ -2918,6 +2924,9 @@ bool NightLighting::WorldLive() { return g_live; }
 bool NightLighting::LoadSettled() {
     if (g_loadSettled.load()) return true;
     if (!g_live || Clock::now() - g_liveAt < kSettleFallback) return false;
-    if (!g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: 10 s after the world went live");
+    if (!g_loadSettled.exchange(true)) {
+        LOG_INFO("[NightTerrainRelight] Load settled: 10 s after the world went live");
+        LoadTiming::NoteLoadSettled("10 s after the world went live");
+    }
     return true;
 }

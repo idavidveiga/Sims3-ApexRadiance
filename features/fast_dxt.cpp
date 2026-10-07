@@ -38,6 +38,7 @@ std::atomic<bool> g_selfDisabled{false};
 std::atomic<int> g_verifyEvery{kPublicBuild ? 0 : 64};
 std::atomic<uint64_t> g_verifyAllUntil{0};
 std::atomic<uint32_t> g_seq{0};
+std::atomic<uint64_t> c_bytesOut{0}; // DXT bytes written by the fast encoder (8 or 16 per 4x4 block)
 std::atomic<uint64_t> c_images{0}, c_pixels{0}, c_blocks{0}, c_delegated{0}, c_power{0}, c_solid{0}, c_passed{0};
 std::atomic<uint64_t> c_checked{0}, c_mismatch{0}, c_notCheckable{0};
 std::atomic<uint64_t> g_fastTicks{0}, g_checkGameTicks{0}, g_checkFastTicks{0};
@@ -209,6 +210,7 @@ uint64_t Encode(bool dxt5, uint32_t dstp, uint32_t srcp) {
     }
     c_images.fetch_add(1, std::memory_order_relaxed);
     c_pixels.fetch_add(static_cast<uint64_t>(d->width) * d->height, std::memory_order_relaxed);
+    c_bytesOut.fetch_add(static_cast<uint64_t>((d->width + 3) / 4) * ((d->height + 3) / 4) * (dxt5 ? 16u : 8u), std::memory_order_relaxed);
     if (check) {
         Checked(dxt5, d, s, game);
     } else {
@@ -304,6 +306,7 @@ Stats GetStats() {
     s.images = c_images.load();
     s.pixels = c_pixels.load();
     s.blocks = c_blocks.load();
+    s.bytesOut = c_bytesOut.load();
     s.delegated = c_delegated.load();
     s.powerAxis = c_power.load();
     s.solid = c_solid.load();

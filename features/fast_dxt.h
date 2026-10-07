@@ -45,6 +45,7 @@ int ParallelMinSide();
 
 struct Stats {
     uint64_t images = 0, pixels = 0, blocks = 0;
+    uint64_t bytesOut = 0;    // DXT bytes written by the fast encoder
     uint64_t delegated = 0;   // blocks the game's function encoded (non-finite intermediate values)
     uint64_t powerAxis = 0;   // flat-luma blocks (power-iteration axis)
     uint64_t solid = 0;

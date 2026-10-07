@@ -94,6 +94,7 @@
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "light_detail.h"
@@ -2078,6 +2079,7 @@ bool ReadSolveNote(const BYTE* room, SolveNote& n) {
 using RoomSolveStart_t = void(__thiscall*)(void* room);
 void __fastcall RoomSolveStartHook(BYTE* room) {
     reinterpret_cast<RoomSolveStart_t>(kRoomSolveStart)(room);
+    if (room) LoadTiming::NoteRoomSolveStart(); // atomics only
     // 07/10, players' Runtime Error: each of Apex's steps after the game's state 0 is caught on its own (HookGuard), then off
     // lamp switches all at once wait for solves begun after the switch
     if (room) HookGuard::Run("RoomLightQueue solve start note", [room] { RoomLightQueue::NoteSolveStart(room); });
@@ -4062,6 +4064,7 @@ void __fastcall FinalizeHook(BYTE* room) {
     reinterpret_cast<Finalize_t>(kFinalize)(room);
     if (!room) return;
     // 07/10, players' Runtime Error: each step caught on its own (HookGuard), then off; the game's finalize has run
+    LoadTiming::NoteRoomSolveEnd(); // atomics only
     HookGuard::Run("RoomLightQueue solve end note", [room] { RoomLightQueue::NoteSolveEnd(room); });
     HookGuard::Run("LightDetail layout check", [room] { LightDetail::CheckLayout(room); }); // once per session: no class-2 floor or ceiling tile over its neighbours' texels
     if (Recorder::Active()) HookGuard::Run("LevelLightShare solve note (end)", [room] { NoteSolve(room, 'E'); });

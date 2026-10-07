@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstring>
 #include <format>
+#include "load_timing.h"
 #include <mutex>
 #include <string>
 
@@ -168,6 +169,7 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateDevice(IDirect3D9* self, UINT adapter, D3
     const bool hal = type == D3DDEVTYPE_HAL;
     HRESULT hr = o_createDevice(self, adapter, type, focus, flags, pp, out);
     if (SUCCEEDED(hr) && hal && out && *out) {
+        LoadTiming::NoteDeviceCreated();
         LOG_INFO(std::format("[D3D] Game device created: {}x{}, {} (device {:#x}, back buffer format {}, multisample {}, flags {:#x})", pp ? pp->BackBufferWidth : 0,
                              pp ? pp->BackBufferHeight : 0, pp && pp->Windowed ? "windowed" : "exclusive fullscreen", reinterpret_cast<uintptr_t>(*out),
                              pp ? static_cast<int>(pp->BackBufferFormat) : 0, pp ? static_cast<int>(pp->MultiSampleType) : 0, flags));

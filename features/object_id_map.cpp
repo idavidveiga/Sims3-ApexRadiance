@@ -5,6 +5,7 @@
 #include "apex_log.h"
 #include "apex_util.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "game_addresses.h"
@@ -185,6 +186,7 @@ bool Build(uint8_t* map) {
     g_live = g_used = static_cast<uint32_t>(n);
     g_map = map;
     g_builtCount.store(static_cast<uint32_t>(n), std::memory_order_relaxed);
+    LoadTiming::NoteObjectMapIndexed(); // atomics only (the earliest world load sign)
     HookGuard::Try("ObjectIdMap index note", [&] { // under g_lock, inside the game's lookup: the line may not throw (07/10)
         LOG_INFO(std::format("[ObjectIdMap] Indexed the object map {:#010x}: {} objects in {} slots ({} KB)", reinterpret_cast<uintptr_t>(map), n, slots,
                              sizeof(Slot) * slots / 1024));

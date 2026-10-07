@@ -28,6 +28,7 @@
 #include "game_addresses.h"
 #include "game_version.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include "overlay.h"
 #include "patch_base.h"
 #include "s3ss_detect.h"
@@ -193,6 +194,7 @@ DWORD InitBody() {
         }
         ApexGui::SetStartup(ApexGui::Startup::Running);
         LOG_INFO("[Main] Features started");
+        LoadTiming::NoteFeaturesStarted();
     }
     CrashReport::Install(); // after the game's own start-up (it may set a filter too): ApexRadiance_Crash.txt on a crash
 
@@ -202,6 +204,7 @@ DWORD InitBody() {
         // each step caught on its own (07/10, players' Runtime Error): one that throws is noted and the pump goes on
         if (ApexGui::GetStartup() == ApexGui::Startup::Running) HookGuard::Try("Pump: features' periodic work", [] { PatchManager::Get().UpdateAll(); });
         HookGuard::Try("Pump: settings autosave", [] { ApexConfig::PumpAutosave(); });
+        HookGuard::Try("Pump: load timing", [] { LoadTiming::Pump(); }); // log lines only ([LoadTiming])
         const ULONGLONG now = GetTickCount64();
         if (now - lastGuardTick >= 1000) {
             lastGuardTick = now;
