@@ -24,6 +24,7 @@ inline constexpr const char* kLotVisibilityOverrideName = "LotVisibilityOverride
 inline constexpr const char* kFastTextureName = "FastTextureCompression";
 inline constexpr const char* kFastCacheName = "FastCacheCompression";
 inline constexpr const char* kFastCasName = "FastCasSort";
+inline constexpr const char* kFastCreateAStyleName = "FastCreateAStyle";
 inline constexpr const char* kFastMemoryName = "FastMemory";
 inline constexpr const char* kMemoryGuardName = "MemoryGuard";
 inline constexpr const char* kWindowRepaintName = "WindowRepaint";
@@ -79,6 +80,7 @@ bool LotVisibilityOverrideHandledByS3SS();
 bool LotVisibilityOverrideAlreadyExternal();
 std::string FastTextureStatus();
 std::string FastCacheStatus();
+std::string FastCreateAStyleStatus();
 std::string FastMemoryStatus();
 std::string MemoryGuardStatus();
 std::string WindowRepaintStatus();
