@@ -135,6 +135,10 @@ bool InMapLockStep();
 bool SolveHooksReady();
 // Apex's own share of the room solves so far, ms (-1 until calibrated); render thread
 double ApexSolveMs();
+// The same split by test (wall pass, the game's wall test in it, ...), cumulative ms and calls; false until calibrated
+constexpr int kApexTestParts = 8;
+bool ApexTestPartMs(double* ms, long* calls);
+const char* ApexTestPartName(int i);
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
 void NoteLampEditing(bool continuous);
 // A lamp is being dragged (moved or a value changed within the last 200 ms). The one-go solve once an edit ended

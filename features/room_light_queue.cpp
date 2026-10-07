@@ -334,6 +334,8 @@ struct EditBurst {
     float solved = 0.0f;
     long quick = 0; // g_quickRooms at the start
     double apexMs = -1.0; // LevelLightShare::ApexSolveMs at the start
+    double partMs[LevelLightShare::kApexTestParts] = {}; // ApexTestPartMs at the start
+    long partCalls[LevelLightShare::kApexTestParts] = {};
 };
 EditBurst g_burst;
 float GameSolveMs() {
@@ -342,11 +344,23 @@ float GameSolveMs() {
 }
 std::string ApexPart(double startMs) {
     const double now = LevelLightShare::ApexSolveMs();
-    return startMs >= 0.0 && now >= startMs ? std::format("{:.0f} ms", now - startMs) : std::string("not measured yet");
+    if (!(startMs >= 0.0 && now >= startMs)) return "not measured yet";
+    // by test (07/10, wall speed): ms and calls of each since the edit began
+    double ms[LevelLightShare::kApexTestParts] = {};
+    long calls[LevelLightShare::kApexTestParts] = {};
+    std::string split;
+    if (LevelLightShare::ApexTestPartMs(ms, calls))
+        for (int i = 0; i < LevelLightShare::kApexTestParts; i++)
+            if (calls[i] != g_burst.partCalls[i])
+                split += std::format("{}{} {:.0f} ms ({} calls)", split.empty() ? " (" : ", ", LevelLightShare::ApexTestPartName(i), ms[i] - g_burst.partMs[i], calls[i] - g_burst.partCalls[i]);
+    return std::format("{:.0f} ms", now - startMs) + (split.empty() ? std::string() : split + ")");
 }
 void NoteEditBurst(bool lampEdit) {
     if (lampEdit) {
-        if (!g_burst.on) g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed), LevelLightShare::ApexSolveMs()};
+        if (!g_burst.on) {
+            g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed), LevelLightShare::ApexSolveMs()};
+            LevelLightShare::ApexTestPartMs(g_burst.partMs, g_burst.partCalls);
+        }
         g_burst.frames++;
         return;
     }

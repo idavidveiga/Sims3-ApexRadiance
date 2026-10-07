@@ -301,6 +301,107 @@ std::atomic<long> g_lotRebuilds{0}; // 4.: lots whose story managers changed (li
 std::atomic<long> g_levelsMade{0};  // 4.: level floor objects seen at their construction
 std::atomic<bool> g_diagArmed{false}; // development build: record samples and gathers for F8 (see the diagnostics below)
 
+// ---- The time of each of Apex's own tests inside the room solves (07/10, wall speed; light tree thread only) ----
+// rdtsc cycles and calls per part, written by the light tree thread alone (plain counters: a torn read on the render
+// thread only skews one log line); ms through CyclesPerMs. Nested parts: the game's wall test and the lower-wall filter
+// are inside "wall pass", the grid pass of a share under a balcony inside "fill".
+enum TestPart { kTpWall, kTpWallGame, kTpKeep, kTpEntry, kTpMid, kTpYard, kTpFill, kTpIndoor, kTpCount };
+constexpr const char* kTestPartNames[kTpCount] = {"wall pass", "of it game wall test", "of it lower-wall filter", "ray entry",
+                                                  "stories in between", "grid pass", "fill", "indoor floors"};
+uint64_t g_partCycles[kTpCount] = {};
+uint32_t g_partCalls[kTpCount] = {};
+struct PartTimer {
+    int part;
+    uint64_t t0;
+    explicit PartTimer(int p) : part(p), t0(__rdtsc()) {}
+    ~PartTimer() {
+        g_partCycles[part] += __rdtsc() - t0;
+        g_partCalls[part]++;
+    }
+};
+// rdtsc cycles per ms, calibrated against the performance counter since the first call (-1 until 100 ms have passed)
+double CyclesPerMs() {
+    static uint64_t c0 = 0;
+    static LARGE_INTEGER q0{};
+    LARGE_INTEGER f{}, q{};
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    const uint64_t c = __rdtsc();
+    if (!c0) {
+        c0 = c;
+        q0 = q;
+        return -1.0;
+    }
+    const double ms = static_cast<double>(q.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+    if (ms < 100.0 || c <= c0) return -1.0;
+    return static_cast<double>(c - c0) / ms;
+}
+// Values that stay the same for the whole of one point's solve (every lamp the game evaluates there), looked up once: the
+// lamp's position (vfunc+0x24), a room by id (FUN_006a6550), a story's floor object (LevelForPoint, below LevelFor). Keyed
+// by g_pointGen, bumped at every point solve (SolvePoint, the basis texel, the reach query): nothing is kept from one point
+// to the next. Light tree thread only. Development builds started with APEX_WALLCHECK=1 look every hit up again and count
+// mismatches (FillStatus "self-check").
+uint32_t g_pointGen = 1;
+bool g_wallCheck = [] {
+    char v[4] = {};
+    return !kPublicBuild && GetEnvironmentVariableA("APEX_WALLCHECK", v, sizeof v) > 0 && v[0] == '1';
+}();
+long g_checkHits = 0, g_checkBad = 0;
+struct LampPosEntry {
+    uint32_t gen = 0;
+    uintptr_t light = 0;
+    alignas(16) float p[4] = {};
+};
+LampPosEntry g_lampPos[8];
+unsigned g_lampPosNext = 0;
+void LampPos(void* light, float* out) {
+    const uintptr_t l = reinterpret_cast<uintptr_t>(light);
+    for (const LampPosEntry& e : g_lampPos)
+        if (e.gen == g_pointGen && e.light == l) {
+            std::memcpy(out, e.p, sizeof e.p);
+            if (g_wallCheck) {
+                alignas(16) float f[4];
+                reinterpret_cast<LightPos_t>(kLightPos)(light, f);
+                g_checkHits++;
+                if (std::memcmp(f, e.p, sizeof f) != 0) g_checkBad++;
+            }
+            return;
+        }
+    LampPosEntry& e = g_lampPos[g_lampPosNext++ % std::size(g_lampPos)];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, e.p);
+    e.gen = g_pointGen, e.light = l;
+    std::memcpy(out, e.p, sizeof e.p);
+}
+struct RoomEntry {
+    uint32_t gen = 0;
+    void* mgr = nullptr;
+    int id = 0;
+    void* room = nullptr;
+};
+RoomEntry g_roomCache[16];
+unsigned g_roomNext = 0;
+void* RoomByIdCached(void* mgr, int id) {
+    for (const RoomEntry& e : g_roomCache)
+        if (e.gen == g_pointGen && e.mgr == mgr && e.id == id) {
+            if (g_wallCheck) {
+                g_checkHits++;
+                if (reinterpret_cast<RoomById_t>(kRoomById)(mgr, id) != e.room) g_checkBad++;
+            }
+            return e.room;
+        }
+    void* room = reinterpret_cast<RoomById_t>(kRoomById)(mgr, id);
+    g_roomCache[g_roomNext++ % std::size(g_roomCache)] = RoomEntry{g_pointGen, mgr, id, room};
+    return room;
+}
+std::string TestTimeStatus() { // FillStatus: the time of each test so far
+    const double r = CyclesPerMs();
+    std::string s = "Apex test time so far:";
+    for (int i = 0; i < kTpCount; i++)
+        s += std::format("{} {} {:.0f} ms ({} calls)", i ? "," : "", kTestPartNames[i], r > 0.0 ? static_cast<double>(g_partCycles[i]) / r : 0.0, g_partCalls[i]);
+    if (g_wallCheck) s += std::format(" | per-point lookup self-check: {} hits looked up again, {} differed", g_checkHits, g_checkBad);
+    return s;
+}
+
 // A light of a room's list that belongs to another floor
 struct Cross {
     uintptr_t light = 0;
@@ -1093,6 +1194,27 @@ uintptr_t LevelFor(uintptr_t mgr) {
         RebuildLinksLocked(now);
         rebuilt = true;
     }
+}
+// LevelFor once per point solve (g_pointGen; light tree thread): the hot tests (OutdoorEntry, IndoorPass) ask it for the
+// same few stories at every lamp of a point, each a lock, a tick read and a walk of the links
+struct LevelEntry {
+    uint32_t gen = 0;
+    uintptr_t mgr = 0, level = 0;
+};
+LevelEntry g_levelCache[8];
+unsigned g_levelNext = 0;
+uintptr_t LevelForPoint(uintptr_t mgr) {
+    for (const LevelEntry& e : g_levelCache)
+        if (e.gen == g_pointGen && e.mgr == mgr) {
+            if (g_wallCheck) {
+                g_checkHits++;
+                if (LevelFor(mgr) != e.level) g_checkBad++;
+            }
+            return e.level;
+        }
+    const uintptr_t level = LevelFor(mgr);
+    g_levelCache[g_levelNext++ % std::size(g_levelCache)] = LevelEntry{g_pointGen, mgr, level};
+    return level;
 }
 
 // World -> lot: rows at mgr+0xE0 / +0xF0 / +0x100 / +0x110 (the inverse of the lot matrix, the same on every story)
@@ -3389,7 +3511,8 @@ float GridPassImpl(const StoryGrid& g, const float* A, const float* B, GridWhy& 
 // A lamp to a point (world) of a roofless room: its story's walls, and the story above's for a ray that high. lampW gets the
 // lamp's position as the game passes it to its wall test (vfunc+0x24, bit for bit)
 float YardPassImpl(const StoryGrid* g0, const StoryGrid* g1, void* light, const float* pointW, float* lampW, GridWhy& why) {
-    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    const PartTimer timer(kTpYard);
+    LampPos(light, lampW);
     float A[3], B[3];
     ToLocal(g0->xf, lampW, A);
     ToLocal(g0->xf, pointW, B);
@@ -5484,6 +5607,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
         return reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
     }
     const SolveCtx prev = g_ctx;
+    if (++g_pointGen == 0) g_pointGen = 1; // a new point: the per-point lookups start again (LampPos)
     g_ctx.info = SolveInfo(room);
     g_ctx.list2D = list2D;
     g_ctx.flags = static_cast<const char*>(flags);
@@ -6039,6 +6163,7 @@ void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light,
         if (const RoomInfo* info = SolveInfo(room); info && info->indoor && FindCross(*info, reinterpret_cast<uintptr_t>(light)) &&
                                                      !FindCross(*info, reinterpret_cast<uintptr_t>(light))->outdoor) {
             const SolveCtx prev = g_ctx;
+            if (++g_pointGen == 0) g_pointGen = 1;
             g_ctx = SolveCtx{};
             g_ctx.info = info;
             g_ctx.soft = room[0x639];
@@ -6076,6 +6201,7 @@ float CrossLampReachImpl(BYTE* room, void* light, const float* point) {
     const Cross* cross = FindCross(*info, reinterpret_cast<uintptr_t>(light));
     if (!cross || cross->outdoor) return -1.0f;
     const SolveCtx prev = g_ctx;
+    if (++g_pointGen == 0) g_pointGen = 1;
     g_ctx = SolveCtx{};
     g_ctx.info = info;
     g_ctx.soft = room[0x639];
@@ -6191,15 +6317,16 @@ int KeepWallsNotPassedOver(const BYTE* room0, const IntVec* src, int* out, int c
 // homeRoom: the lamp's room on its story (0, or a roofless room: its own walls close it, 05/10)
 float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, void* light, const void* sample, bool& culledList) {
     alignas(16) float pos[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    const PartTimer timer(kTpWall);
+    LampPos(light, pos);
     float keep = 1.0f;
     const int lo = std::min(home, roomLevel), hi = std::max(home, roomLevel);
     for (int floor = lo; floor <= hi; floor++) {
         if (floor == roomLevel) continue;
         void* mgr = *reinterpret_cast<void* const*>(TreeLevel(tracker, floor));
         if (!mgr) continue;
-        BYTE* room0 = floor == home && homeRoom > 0 ? static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, homeRoom)) : nullptr;
-        if (!room0) room0 = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(mgr, 0));
+        BYTE* room0 = floor == home && homeRoom > 0 ? static_cast<BYTE*>(RoomByIdCached(mgr, homeRoom)) : nullptr;
+        if (!room0) room0 = static_cast<BYTE*>(RoomByIdCached(mgr, 0));
         if (!room0) continue;
         IntVec list{};
         void* idx = nullptr; // null = all walls, as the game does when the batch has no per-light lists
@@ -6223,7 +6350,7 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, voi
             const size_t walls = we > wb ? (we - wb) / 4 : 0;
             if (mgrNext && s_nextLevel && walls && walls <= 65536) {
                 if (s_kept.size() < walls + 1) s_kept.resize(walls + 1);
-                const int n = KeepWallsNotPassedOver(room0, static_cast<const IntVec*>(idx), s_kept.data(), static_cast<int>(s_kept.size()), g_ctx.soft ? 1 : 0, mgrNext, s_nextLevel, pos, static_cast<const float*>(sample));
+                const int n = [&] { const PartTimer tk(kTpKeep); return KeepWallsNotPassedOver(room0, static_cast<const IntVec*>(idx), s_kept.data(), static_cast<int>(s_kept.size()), g_ctx.soft ? 1 : 0, mgrNext, s_nextLevel, pos, static_cast<const float*>(sample)); }();
                 if (n >= 0) {
                     g_overLower.fetch_add(1, std::memory_order_relaxed);
                     kept = {s_kept.data(), s_kept.data() + n, s_kept.data() + n};
@@ -6236,7 +6363,11 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, voi
         g_swapAt = room0 + 0x639;
         g_swapSaved = *g_swapAt;
         *g_swapAt = g_ctx.soft;
-        const bool passed = reinterpret_cast<WallTest_t>(kWallTest)(room0, idx, pos, sample, &t);
+        bool passed;
+        {
+            const PartTimer tg(kTpWallGame);
+            passed = reinterpret_cast<WallTest_t>(kWallTest)(room0, idx, pos, sample, &t);
+        }
         *g_swapAt = g_swapSaved;
         g_swapAt = nullptr;
         if (!passed) return 0.0f;
@@ -6341,13 +6472,14 @@ struct SlabRay {
     float depth = 0.0f, miss = 0.0f, reach = 0.0f;
 };
 bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab, float* edgeW) {
+    const PartTimer timer(kTpEntry);
     if (home < 0 || home >= info.level || info.level > 7) return false;
     const uintptr_t mgr = StoryManager(info.tracker, info.level);
-    const uintptr_t level = mgr ? LevelFor(mgr) : 0;
+    const uintptr_t level = mgr ? LevelForPoint(mgr) : 0;
     Xform xf;
     if (!mgr || !level || LevelManager(level) != mgr || !ReadXform(info.mgr, xf)) return false;
     alignas(16) float pos[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    LampPos(light, pos);
     float P[3], Q[3];
     ToLocal(xf, pos, P);
     ToLocal(xf, sample, Q);
@@ -6362,7 +6494,7 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     // slab, a room's floor) reaches no point of this story, directly or through this story's slab (07/10, a band on story 3)
     for (int k = home + 1; k < info.level; k++) {
         const uintptr_t mk = StoryManager(info.tracker, k);
-        const uintptr_t lk = mk ? LevelFor(mk) : 0;
+        const uintptr_t lk = mk ? LevelForPoint(mk) : 0;
         if (!mk || !lk || LevelManager(lk) != mk) continue;
         const float hk = *reinterpret_cast<const float*>(mk + 0x98) - *reinterpret_cast<const float*>(mk + 0xD4);
         if (!(std::fabs(hk) < 1000.0f)) continue;
@@ -6431,7 +6563,7 @@ std::atomic<long> g_midTests{0}, g_midBlocked{0};
 std::atomic<long> g_steepDimmed{0};
 float UpwardShare(void* light, const float* sample) {
     alignas(16) float lampW[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    LampPos(light, lampW);
     const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
     const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (!(len > 1e-3f) || dy <= 0.0f) return 1.0f;
@@ -6441,7 +6573,8 @@ float UpwardShare(void* light, const float* sample) {
 float MidPassImpl(const RoomInfo& info, int home, void* light, const float* sample) {
     float pass = 1.0f;
     alignas(16) float lampW[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    const PartTimer timer(kTpMid);
+    LampPos(light, lampW);
     for (int k = std::max(home + 1, 1); k < info.level && k < 8 && pass > 0.0f; k++) {
         const StoryGrid* g = info.mid[k].get();
         if (!g) continue;
@@ -6473,13 +6606,15 @@ std::string FillStatus() {
                        "walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
                        g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
                        g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
-                       g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
+                       g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load()) +
+           " | " + TestTimeStatus();
 }
 // Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
 // the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
 // (its colour was zeroed): the colour comes back and the game's test that follows ends exactly at the share (it would
 // otherwise let the direct ray through); else the game's test only never ends below it
 void FillShare(const RoomInfo& info, void* light, const float* sample, const SlabRay& slab, float seen, bool exact, float* colour, const float* before) {
+    const PartTimer timer(kTpFill);
     alignas(16) float pos[4] = {};
     GridWhy why{};
     const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
@@ -6645,7 +6780,7 @@ float IndoorBoundaryPass(const RoomInfo& info, uintptr_t floorLevel, int B, void
     };
     if (!kPublicBuild) g_passDbg = PassDebug{};
     alignas(16) float pos[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    LampPos(light, pos);
     const uintptr_t mgrB = StoryManager(info.tracker, B), mgrBelow = StoryManager(info.tracker, B - 1);
     Xform xf;
     if (!mgrB || LevelManager(floorLevel) != mgrB || !ReadXform(info.mgr, xf)) return blocked(1);
@@ -6699,6 +6834,7 @@ float IndoorBoundaryPass(const RoomInfo& info, uintptr_t floorLevel, int B, void
 // story's wall segment. The recipient's walls remain the native solve's job,
 // from where the ray enters the recipient's story (entry, GameWallTest).
 float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const float* sample, int& why, RayEntry* entry) {
+    const PartTimer timer(kTpIndoor);
     const auto blocked = [&why](int reason) { why = reason; return 0.0f; };
     if (info.level < 0 || info.level > 7 || c.floor < 0 || c.floor > 7 || info.level == c.floor) return blocked(1);
     const int direction = info.level > c.floor ? 1 : -1;
@@ -6710,7 +6846,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
     for (int story = c.floor; story != info.level; story += direction) {
         const int boundary = direction > 0 ? story + 1 : story;
         const uintptr_t manager = StoryManager(info.tracker, boundary);
-        const uintptr_t floor = boundary == std::max(info.level, c.floor) ? c.level : (manager ? LevelFor(manager) : 0);
+        const uintptr_t floor = boundary == std::max(info.level, c.floor) ? c.level : (manager ? LevelForPoint(manager) : 0);
         float t = -1.0f;
         if (!floor || IndoorBoundaryPass(info, floor, boundary, light, sample, t, why) <= 0.0f) return blocked(1);
         if (t > 0.0f) {
@@ -6726,7 +6862,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
     if (currentStory != info.level || g_ctx.basis) raySegments[count++] = RaySegment{currentStory, previous, 1.0f};
     if (!(g_ctx.flags && g_ctx.flags[0])) return 1.0f;
     alignas(16) float pos[4];
-    reinterpret_cast<LightPos_t>(kLightPos)(light, pos);
+    LampPos(light, pos);
     Xform xf;
     if (!ReadXform(info.mgr, xf)) return blocked(1);
     // Where the ray enters the solving room's story: its last floor crossing. The game's own 2D wall test of the solving
@@ -6750,7 +6886,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
         // This is a veto only: segment tests below own glass/soft attenuation.
         for (int story = std::min(info.level, c.floor); story <= std::max(info.level, c.floor); ++story) {
             const uintptr_t manager = StoryManager(info.tracker, story);
-            BYTE* exterior = manager ? static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(manager), 0)) : nullptr;
+            BYTE* exterior = manager ? static_cast<BYTE*>(RoomByIdCached(reinterpret_cast<void*>(manager), 0)) : nullptr;
             if (!exterior) return blocked(2);
             float keep = 1.0f;
             g_swapAt = exterior + 0x639;
@@ -6778,7 +6914,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
             if (!tile) return blocked(2);
             roomId = TileRoom(tile, Quadrant(local[0] - x, local[2] - z));
         }
-        BYTE* home = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(manager), roomId));
+        BYTE* home = static_cast<BYTE*>(RoomByIdCached(reinterpret_cast<void*>(manager), roomId));
         if (!home) {
             if (!g_ctx.basis && std::abs(c.floor - info.level) == 1) { // unchanged native-solve adjacent fallback: the game's
                 if (entry) entry->valid = false;                       // wall test keeps the whole ray
@@ -9412,21 +9548,19 @@ bool GroupPending(const void* room) {
 // Apex's share of the room solves so far (LightEvalHook and the basis test), ms: cycles calibrated against the performance
 // counter since the first call (-1 until 100 ms have passed)
 double ApexSolveMs() {
-    static uint64_t c0 = 0;
-    static LARGE_INTEGER q0{};
-    LARGE_INTEGER f{}, q{};
-    QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&q);
-    const uint64_t c = __rdtsc();
-    if (!c0) {
-        c0 = c;
-        q0 = q;
-        return -1.0;
-    }
-    const double ms = static_cast<double>(q.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
-    if (ms < 100.0 || c <= c0) return -1.0;
-    return static_cast<double>(g_apexSolveCycles.load(std::memory_order_relaxed)) / (static_cast<double>(c - c0) / ms);
+    const double r = CyclesPerMs();
+    return r > 0.0 ? static_cast<double>(g_apexSolveCycles.load(std::memory_order_relaxed)) / r : -1.0;
 }
+bool ApexTestPartMs(double* ms, long* calls) {
+    const double r = CyclesPerMs();
+    for (int i = 0; i < kTpCount; i++) {
+        ms[i] = r > 0.0 ? static_cast<double>(g_partCycles[i]) / r : 0.0;
+        calls[i] = static_cast<long>(g_partCalls[i]);
+    }
+    return r > 0.0;
+}
+static_assert(kApexTestParts == kTpCount);
+const char* ApexTestPartName(int i) { return i >= 0 && i < kTpCount ? kTestPartNames[i] : ""; }
 
 bool InMapLockStep() { return t_lockStep > 0; }
 bool SolveHooksReady() { return g_finalizeReady.load(std::memory_order_relaxed) && g_lockStepReady.load(std::memory_order_relaxed); }
