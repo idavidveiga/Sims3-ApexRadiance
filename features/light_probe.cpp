@@ -706,6 +706,59 @@ void WriteComparison(std::ostream& out, const Pick& a, const Pick& b) {
     out << "\n";
 }
 
+// The wall under the pixel (06/10: the light of an outside sconce sat well below it on its wall): the pixel's ray from a
+// draw whose vertex shader has local -> clip in c4..c7 and local -> world in c8..c10 (the game's wall shader), handed to
+// LevelLightShare::WallNotesOnRay. Empty when the draw has no such matrices.
+std::string WallUnderPixel(const DrawRec& d) {
+    float m[11][4] = {};
+    bool have[11] = {};
+    for (const auto& [i, v] : d.vsc)
+        if (i >= 4 && i <= 10) {
+            std::memcpy(m[i], v.data(), sizeof m[i]);
+            have[i] = true;
+        }
+    for (int i = 4; i <= 10; i++)
+        if (!have[i] && i != 9) return {}; // c9 may be (0 1 0 y): never all zero, but keep the test simple
+    // local -> world must be a rotation (the lot's) plus a translation
+    for (int r = 8; r <= 10; r++) {
+        const float l = std::sqrt(m[r][0] * m[r][0] + m[r][1] * m[r][1] + m[r][2] * m[r][2]);
+        if (!(l > 0.99f && l < 1.01f)) return {};
+    }
+    // inverse of local -> clip (rows c4..c7), Gauss-Jordan
+    double a[4][8] = {};
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) a[r][c] = m[4 + r][c];
+        a[r][4 + r] = 1;
+    }
+    for (int c = 0; c < 4; c++) {
+        int p = c;
+        for (int r = c + 1; r < 4; r++)
+            if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
+        if (std::fabs(a[p][c]) < 1e-12) return {};
+        for (int k = 0; k < 8; k++) std::swap(a[c][k], a[p][k]);
+        const double inv = 1.0 / a[c][c];
+        for (int k = 0; k < 8; k++) a[c][k] *= inv;
+        for (int r = 0; r < 4; r++)
+            if (r != c) {
+                const double f = a[r][c];
+                for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k];
+            }
+    }
+    const double x = (g_pixel.x + 0.5) / g_bbWidth * 2.0 - 1.0, y = 1.0 - (g_pixel.y + 0.5) / g_bbHeight * 2.0;
+    float pw[2][3];
+    for (int z = 0; z < 2; z++) {
+        const double clip[4] = {x, y, static_cast<double>(z), 1.0};
+        double l[4] = {};
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++) l[r] += a[r][4 + c] * clip[c];
+        if (std::fabs(l[3]) < 1e-12) return {};
+        const double lp[4] = {l[0] / l[3], l[1] / l[3], l[2] / l[3], 1.0};
+        for (int r = 0; r < 3; r++) pw[z][r] = static_cast<float>(m[8 + r][0] * lp[0] + m[8 + r][1] * lp[1] + m[8 + r][2] * lp[2] + m[8 + r][3]);
+    }
+    const float dir[3] = {pw[1][0] - pw[0][0], pw[1][1] - pw[0][1], pw[1][2] - pw[0][2]};
+    return LevelLightShare::WallNotesOnRay(pw[0], dir);
+}
+
 void FinishCapture(IDirect3DDevice9* dev) {
     // Collect occlusion results
     const auto t0 = std::chrono::steady_clock::now();
@@ -790,6 +843,14 @@ void FinishCapture(IDirect3DDevice9* dev) {
         std::memcpy(now.color, screen, sizeof screen);
     }
     out << std::format("== COR NA TELA NO PIXEL: {}\n\n", hasColor ? std::format("({:.3f} {:.3f} {:.3f})", screen[0], screen[1], screen[2]) : std::string("(not read)"));
+    // the wall under the pixel: the topmost covering draw with the wall shader's matrices
+    for (auto it = g_draws.rbegin(); it != g_draws.rend(); ++it) {
+        if (it->samples == 0 || it->prims <= 2) continue;
+        const std::string wall = WallUnderPixel(*it);
+        if (wall.empty()) continue;
+        out << std::format("== PAREDE (desenho #{}): ", it->index) << wall << "\n";
+        break;
+    }
     if (g_prevPick.valid && now.valid) WriteComparison(out, g_prevPick, now);
     if (now.valid) g_prevPick = std::move(now);
     out << "== TEXTURAS DOS DESENHOS QUE PINTAM O PIXEL ==\n";

@@ -44,6 +44,9 @@ bool WallBlocks(const float lamp[3], const float point[3], float nearSkip = 0.2f
 // An outside wall running along (dirX, dirZ) (unit, within about 10 degrees) passes within maxDist metres of the point at
 // its height + 0.5 m (render thread): the object is set in that wall (Windows take outdoor light picks its lamps there)
 bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist);
+// F7 light capture: the wall piece a screen ray (world origin, direction) meets, as the solve laid it out (base, rows, the
+// heights its rows were lit at, the atlas texel the pixel reads) and the lamps of its room; a note when none
+std::string WallNotesOnRay(const float origin[3], const float dir[3]);
 void SetObjectWalls(bool on);
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text

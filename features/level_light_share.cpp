@@ -266,6 +266,7 @@ using SolvePoint_t = float*(__thiscall*)(void* room, float* out, void* list2D, v
 using LightEval_t = void(__thiscall*)(void* light, const float* sample, const float* normal, float* colour);
 using WallTest_t = bool(__thiscall*)(void* room, void* indexVec, const float* lightPos, const void* sample, float* transmission);
 using LightPos_t = void(__thiscall*)(void* light, float* out);
+thread_local BYTE* t_wallRoom = nullptr; // the room whose wall pass runs on this thread (WallPassHook; the F7 wall notes)
 using WallCull_t = void(__thiscall*)(void* walls, void* out, const float* from, const float* lightPos);
 using LightBright_t = char(__fastcall*)(void* light);
 using AddRoomLight_t = void(__thiscall*)(void* room, void* light);
@@ -2067,7 +2068,10 @@ char __fastcall WallPassHook(BYTE* room, void*, int arg, float budget) {
             swapped = true;
         }
     }
+    BYTE* const outer = t_wallRoom;
+    t_wallRoom = room; // the wall notes of the F7 capture name the room
     const char done = WallPassCall(room, arg, budget);
+    t_wallRoom = outer;
     if (swapped) SwapWallBase(room, saved);
     return done;
 }
@@ -2172,6 +2176,70 @@ struct PieceNote {
     WallBlock block{};
 };
 PieceNote g_piece;            // the piece WallSamplesHook just lined up, lit next by the wall pass (light tree thread)
+
+// ---- Wall notes for the F7 light capture (06/10, user: "a capture that measures it"; an outside sconce lit its wall well
+// below the lamp). Every wall piece the solve lays out (WallSamplesHook, any thread): its atlas block, rows, the base and
+// the heights its bottom and top rows are lit at, its line on the ground and its normal, and the room being solved.
+// WallNotesOnRay finds the piece a screen ray meets and reports it with the room's lamps. Read-only, bounded.
+struct WallNote {
+    uintptr_t wall = 0, room = 0;
+    int cls = 0, piece = 0, rows = 0, cols = 0, colLo = 0, colHi = 0, roomId = -1, story = -99;
+    WallBlock block{};
+    float oy = 0, litLo = 0, litHi = 0;
+    float x0 = 0, z0 = 0, x1 = 0, z1 = 0; // the bottom row's first and last sample (world xz)
+    float n[3] = {};
+    DWORD tick = 0;
+};
+std::mutex g_wallNoteMx;
+std::unordered_map<uint64_t, WallNote> g_wallNotes; // (wall, class, piece) -> note
+bool ReadWallPiece(uintptr_t wall, int cls, uintptr_t batch, WallNote& w) { // POD only (SEH)
+    __try {
+        if (cls < 0 || cls > 2) return false;
+        w.rows = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x2C);
+        w.cols = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x28);
+        w.block = *reinterpret_cast<const WallBlock*>(wall + cls * 0x20 + 0x58);
+        w.oy = *reinterpret_cast<const float*>(wall + 0x114);
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (w.rows < 2 || w.rows > 4096 || !b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return false;
+        int lo = 1 << 30, hi = -1;
+        float lit0 = 1e9f, litN = -1e9f;
+        for (uintptr_t p = b; p < e; p += 0x30) {
+            const int col = *reinterpret_cast<const uint16_t*>(p + 0x20), k = w.block.y0 + w.rows - 1 - *reinterpret_cast<const uint16_t*>(p + 0x22);
+            const float* s = reinterpret_cast<const float*>(p);
+            if (k == 0) {
+                lit0 = std::min(lit0, s[1]);
+                if (col < lo) { lo = col; w.x0 = s[0]; w.z0 = s[2]; w.n[0] = s[4]; w.n[1] = s[5]; w.n[2] = s[6]; }
+                if (col > hi) { hi = col; w.x1 = s[0]; w.z1 = s[2]; }
+            }
+            if (k == w.rows - 1) litN = std::max(litN, s[1]);
+        }
+        if (hi < 0) return false;
+        w.colLo = lo;
+        w.colHi = hi;
+        w.litLo = lit0;
+        w.litHi = litN;
+        if (BYTE* room = t_wallRoom) {
+            w.room = reinterpret_cast<uintptr_t>(room);
+            w.roomId = *reinterpret_cast<const int*>(room + 0xC);
+            const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+            if (mgr) w.story = *reinterpret_cast<const int*>(mgr + 0x88);
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void NoteWallPiece(uintptr_t wall, int piece, int cls, uintptr_t batch) {
+    WallNote w;
+    if (!ReadWallPiece(wall, cls, batch, w)) return;
+    w.wall = wall;
+    w.cls = cls;
+    w.piece = piece;
+    w.tick = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_wallNoteMx);
+    if (g_wallNotes.size() > 20000) g_wallNotes.clear();
+    g_wallNotes[(static_cast<uint64_t>(wall) << 8) ^ (static_cast<uint64_t>(cls) << 6) ^ static_cast<uint64_t>(piece & 63)] = w;
+}
 bool g_ghostSolve = false;    // the game's solve is lighting our rows beyond the edges (light tree thread)
 constexpr int kMaxGhosts = 512;
 alignas(16) BYTE g_ghostSamples[kMaxGhosts * 0x30];
@@ -2198,9 +2266,14 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
-    if (!g_alignOn.load(std::memory_order_relaxed)) return;
+    if (!g_alignOn.load(std::memory_order_relaxed)) {
+        NoteWallPiece(reinterpret_cast<uintptr_t>(wall), piece, cls, reinterpret_cast<uintptr_t>(batch));
+        return;
+    }
     PieceNote note{reinterpret_cast<uintptr_t>(wall)};
-    if (!AlignWallSamples(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block, note.rows)) {
+    const bool aligned = AlignWallSamples(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block, note.rows);
+    NoteWallPiece(note.wall, piece, cls, reinterpret_cast<uintptr_t>(batch)); // the heights as lit (lined up or not)
+    if (!aligned) {
         g_alignOdd.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -6310,6 +6383,102 @@ bool WallBlocks(const float lamp[3], const float point[3], float nearSkip) {
             }
         }
     return false;
+}
+struct NoteLamp {
+    uintptr_t ptr = 0;
+    int type = 0;
+    float pos[3] = {}, colour[3] = {}, range = 0;
+    bool cone = false;
+    float a1[3] = {}, a2[3] = {}, c1 = 0, c2 = 0;
+};
+// The lamps of a noted wall's room (POD only: SEH); the count, -1 when unreadable
+int ReadNoteLamps(uintptr_t room, NoteLamp* out, int max) {
+    __try {
+        const uintptr_t* lb = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+        const uintptr_t* le = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+        if (!lb || le < lb || le - lb >= 512) return -1;
+        int n = 0;
+        for (const uintptr_t* p = lb; p < le && n < max; p++) {
+            const BYTE* L = reinterpret_cast<const BYTE*>(*p);
+            if (!L) continue;
+            NoteLamp& o = out[n++];
+            o.ptr = *p;
+            o.type = *reinterpret_cast<const int*>(L + 0xB0);
+            std::memcpy(o.pos, L + 0x120, sizeof o.pos);
+            std::memcpy(o.colour, L + 0xE0, sizeof o.colour);
+            o.range = *reinterpret_cast<const float*>(L + 0x130);
+            o.cone = *reinterpret_cast<const uintptr_t*>(L) == GameAddr::Get(GameAddr::Id::LightVtable5);
+            if (o.cone) {
+                std::memcpy(o.a1, L + 0x1A0, sizeof o.a1);
+                std::memcpy(o.a2, L + 0x190, sizeof o.a2);
+                o.c1 = *reinterpret_cast<const float*>(L + 0x174);
+                o.c2 = *reinterpret_cast<const float*>(L + 0x170);
+            }
+        }
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+std::string WallNotesOnRay(const float o[3], const float d[3]) {
+    std::vector<WallNote> notes;
+    {
+        std::lock_guard<std::mutex> lk(g_wallNoteMx);
+        notes.reserve(g_wallNotes.size());
+        for (const auto& [k, w] : g_wallNotes) notes.push_back(w);
+    }
+    const WallNote* best = nullptr;
+    float bestT = 1e30f, hit[3] = {}, along = 0, len = 0;
+    for (const WallNote& w : notes) {
+        const float ux = w.x1 - w.x0, uz = w.z1 - w.z0, L = std::sqrt(ux * ux + uz * uz);
+        if (L < 0.05f || w.colHi <= w.colLo) continue;
+        const float cw = L / static_cast<float>(w.colHi - w.colLo), nx = -uz / L, nz = ux / L;
+        const float den = d[0] * nx + d[2] * nz;
+        if (std::fabs(den) < 1e-7f) continue;
+        const float t = ((w.x0 - o[0]) * nx + (w.z0 - o[2]) * nz) / den;
+        if (t <= 0 || t >= bestT) continue;
+        const float h[3] = {o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]};
+        const float a = ((h[0] - w.x0) * ux + (h[2] - w.z0) * uz) / L;
+        if (a < -0.5f * cw || a > L + 0.5f * cw || h[1] < w.oy - 0.05f || h[1] > w.oy + 3.05f) continue;
+        best = &w;
+        bestT = t;
+        std::memcpy(hit, h, sizeof hit);
+        along = a;
+        len = L;
+    }
+    if (!best) return std::format("no wall piece noted on the pixel's ray ({} pieces noted since the lots were lit; the walls are noted when they are solved, so relight the lot first if it was lit before this build)", notes.size());
+    const WallNote& w = *best;
+    const float h = hit[1] - w.oy;
+    const float col = w.colLo + along / len * static_cast<float>(w.colHi - w.colLo);
+    const float kDrawn = h / 3.0f * static_cast<float>(w.rows - 1);
+    const int kRow = std::clamp(static_cast<int>(std::lround(kDrawn)), 0, w.rows - 1);
+    std::string s = std::format("piece {} of wall {:08X} (class {}, story {}, room {} {:08X}), noted {:.1f} s ago\n", w.piece, w.wall, w.cls, w.story, w.roomId, w.room,
+                                (GetTickCount() - w.tick) / 1000.0);
+    s += std::format("      atlas block x {}..{} y {}..{} ({} rows, wall {} columns; this piece columns {}..{}); row k at the bottom is texel y {}\n", w.block.x0, w.block.x1,
+                     w.block.y0, w.block.y1, w.rows, w.cols, w.colLo, w.colHi, w.block.y0 + w.rows - 1);
+    s += std::format("      base (wall +0x114) y {:.3f}; drawn from {:.3f} to {:.3f}; lit: bottom row at {:.3f} (+{:.3f}), top row at {:.3f} (+{:.3f})\n", w.oy, w.oy, w.oy + 3.0f,
+                     w.litLo, w.litLo - w.oy, w.litHi, w.litHi - w.oy);
+    s += std::format("      line on the ground ({:.2f}, {:.2f}) -> ({:.2f}, {:.2f}), normal ({:.3f} {:.3f} {:.3f})\n", w.x0, w.z0, w.x1, w.z1, w.n[0], w.n[1], w.n[2]);
+    s += std::format("      the pixel: world ({:.3f} {:.3f} {:.3f}), {:.3f} m above the base, {:.2f} m along the line; reads row k {:.2f} (drawn) = atlas texel ({:.1f}, {})\n", hit[0],
+                     hit[1], hit[2], h, along, kDrawn, col, w.block.y0 + w.rows - 1 - kRow);
+    // the room's lamps, as the solve sees them
+    if (!w.room) return s + "      the room is not known (its wall pass was not seen)\n";
+    NoteLamp lamps[64];
+    const int n = ReadNoteLamps(w.room, lamps, 64);
+    if (n < 0) return s + "      the room's lamps could not be read\n";
+    s += std::format("      lamps of that room ({}): height above the wall's base, distance in front of the wall (along its normal), range, colour, cone\n", n);
+    const float nx = w.n[0], nz = w.n[2], nl = std::sqrt(nx * nx + nz * nz);
+    for (int i = 0; i < n; i++) {
+        const NoteLamp& l = lamps[i];
+        const float front = nl > 1e-4f ? ((l.pos[0] - hit[0]) * nx + (l.pos[2] - hit[2]) * nz) / nl : 0.0f;
+        const float dx = l.pos[0] - hit[0], dz = l.pos[2] - hit[2];
+        const std::string cone = l.cone ? std::format(", cone 1 axis ({:.2f} {:.2f} {:.2f}) cos {:.3f}, cone 2 axis ({:.2f} {:.2f} {:.2f}) cos {:.3f}", l.a1[0], l.a1[1],
+                                                      l.a1[2], l.c1, l.a2[0], l.a2[1], l.a2[2], l.c2)
+                                        : std::string();
+        s += std::format("        L{:08X} type {} at ({:.2f} {:.2f} {:.2f}): {:+.3f} m above the base, {:+.3f} m in front, {:.2f} m from the pixel along the ground, range {:.3g}, colour ({:.2f} {:.2f} {:.2f}){}\n",
+                         l.ptr, l.type, l.pos[0], l.pos[1], l.pos[2], l.pos[1] - w.oy, front, std::sqrt(dx * dx + dz * dz), l.range, l.colour[0], l.colour[1], l.colour[2], cone);
+    }
+    return s;
 }
 bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist) {
     if (!g_installed.load(std::memory_order_relaxed)) return false;
