@@ -6,6 +6,9 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <atomic>
+#include <csignal>
+#include <cstdlib>
+#include <exception>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -23,6 +26,7 @@ wchar_t g_dumpPath[MAX_PATH] = {};
 std::atomic<bool> g_installed{false};
 std::atomic<LONG> g_written{0};
 thread_local int t_depth = 0;
+constexpr DWORD kAbortCode = 0xE0415058; // 'APX' + E0: an abort reported by Apex's runtime (ReportAbort), not a hardware exception
 
 // The feature line: two fixed buffers, the reader takes the last complete one
 char g_features[2][1024] = {};
@@ -84,6 +88,12 @@ void WriteText(EXCEPTION_POINTERS* ep) {
     if (!Describe(at, a, sizeof a)) std::snprintf(a, sizeof a, "%08X (not mapped)", static_cast<unsigned>(at));
     std::snprintf(line, sizeof line, "Exception %08lX at %s", er->ExceptionCode, a);
     o.Write(line);
+    if (er->ExceptionCode == kAbortCode) {
+        static const char* const kReasons[] = {"?", "C++ exception not caught (std::terminate)", "abort()", "pure virtual call", "invalid C runtime parameter"};
+        const ULONG_PTR r = er->NumberParameters ? er->ExceptionInformation[0] : 0;
+        std::snprintf(line, sizeof line, " (Apex's runtime ended the game: %s; the \"Runtime Error!\" dialog follows)", kReasons[r < 5 ? r : 0]);
+        o.Write(line);
+    }
     if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
         std::snprintf(line, sizeof line, ", %s %08X\r\n", er->ExceptionInformation[0] == 8 ? "executing" : (er->ExceptionInformation[0] ? "writing" : "reading"),
                       static_cast<unsigned>(er->ExceptionInformation[1]));
@@ -157,6 +167,37 @@ void WriteReport(EXCEPTION_POINTERS* ep) {
     }
 }
 
+// ---- Apex's own runtime aborts (07/10, players: "Microsoft Visual C++ Runtime Library: Runtime Error! ... terminate it in an
+// unusual way" with an empty "Program:"). Apex links its C runtime statically, so an exception that escapes Apex's code
+// (std::terminate), an abort(), a pure virtual call or a bad CRT parameter inside Apex ends in that dialog, never in the
+// exception filter above. These handlers belong to Apex's runtime only (the game's own msvcr aborts never reach them), so a
+// report written here means the abort came from Apex; then the runtime goes on as before (its dialog, then the end).
+void ReportAbort(DWORD reason) {
+    if (g_written.exchange(1) != 0) return;
+    CONTEXT ctx = {};
+    RtlCaptureContext(&ctx);
+    EXCEPTION_RECORD er = {};
+    er.ExceptionCode = kAbortCode;
+    er.ExceptionAddress = reinterpret_cast<PVOID>(static_cast<uintptr_t>(ctx.Eip));
+    er.NumberParameters = 1;
+    er.ExceptionInformation[0] = reason; // 1 terminate, 2 abort (SIGABRT), 3 pure virtual call, 4 invalid CRT parameter
+    EXCEPTION_POINTERS ep = {&er, &ctx};
+    WriteReport(&ep);
+}
+void __cdecl OnTerminate() {
+    ReportAbort(1);
+    std::abort();
+}
+void __cdecl OnAbortSignal(int) { ReportAbort(2); }
+void __cdecl OnPureCall() {
+    ReportAbort(3);
+    std::abort();
+}
+void __cdecl OnInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+    ReportAbort(4);
+    std::abort();
+}
+
 LONG WINAPI Filter(EXCEPTION_POINTERS* ep) {
     // A filter that took over and chains back to this one would loop: a second entry on the same thread passes
     if (t_depth > 0) return EXCEPTION_CONTINUE_SEARCH;
@@ -178,6 +219,10 @@ void Install() {
     wcscpy_s(g_dumpPath, (dir + L"ApexRadiance_Crash.dmp").c_str());
     if (HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll")) g_writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
     g_previous = SetUnhandledExceptionFilter(Filter);
+    std::set_terminate(OnTerminate);
+    std::signal(SIGABRT, OnAbortSignal);
+    _set_purecall_handler(OnPureCall);
+    _set_invalid_parameter_handler(OnInvalidParameter);
     g_installed.store(true);
 }
 
