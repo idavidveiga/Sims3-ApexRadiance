@@ -22,6 +22,15 @@ const I18n::Entry kEntries[] = {
     {"DXVK or driver settings may override V-Sync; this cannot guarantee flicker-free output", "O DXVK ou o driver pode sobrescrever o V-Sync; isso não garante eliminar cintilações", "DXVK o el controlador puede sobrescribir V-Sync; esto no garantiza eliminar el parpadeo", "DXVK ou le pilote peut remplacer V-Sync ; cela ne garantit pas l’absence de scintillement"},
     {"Restore synchronization", "Restaurar sincronização", "Restaurar sincronización", "Rétablir la synchronisation"},
     {"V-Sync", "V-Sync", "V-Sync", "V-Sync"},
+    // ---- Create-a-Style performance ----
+    {"Create-a-Style", "Criar um Estilo", "Crear un Estilo", "Créer un style"},
+    {"Faster pattern thumbnails and smoother browsing", "Miniaturas de padrões mais rápidas e navegação mais fluida", "Miniaturas de patrones más rápidas y navegación más fluida", "Miniatures de motifs plus rapides et navigation plus fluide"},
+    {"Faster Create-a-Style", "Criar um Estilo mais rápido", "Crear un Estilo más rápido", "Créer un style plus rapide"},
+    {"Reuses finished pattern thumbnails so scrolling and reopening pattern lists need less work", "Reutiliza miniaturas de padrões prontas para reduzir o trabalho ao rolar e reabrir listas de padrões", "Reutiliza miniaturas de patrones terminadas para reducir el trabajo al desplazarse y reabrir listas de patrones", "Réutilise les miniatures de motifs terminées pour réduire le travail lors du défilement et de la réouverture des listes"},
+    {"Keeps finished Create-a-Style pattern thumbnails in memory so repeated requests while browsing, scrolling or reopening the pattern list do not rebuild the same preview again. The game still generates every thumbnail on the first request. Part of " APEX_PRODUCT_NAME ". Research and code: @idavidveiga",
+     "Mantém na memória as miniaturas de padrões já prontas do Criar um Estilo para que pedidos repetidos ao navegar, rolar ou reabrir a lista não reconstruam a mesma prévia. O jogo ainda gera cada miniatura no primeiro pedido. Parte do " APEX_PRODUCT_NAME ". Pesquisa e código: @idavidveiga",
+     "Mantiene en memoria las miniaturas de patrones ya terminadas de Crear un Estilo para que las solicitudes repetidas al navegar, desplazarse o reabrir la lista no reconstruyan la misma vista previa. El juego sigue generando cada miniatura en la primera solicitud. Parte de " APEX_PRODUCT_NAME ". Investigación y código: @idavidveiga",
+     "Conserve en mémoire les miniatures de motifs déjà terminées de Créer un style afin que les demandes répétées pendant la navigation, le défilement ou la réouverture de la liste ne reconstruisent pas le même aperçu. Le jeu génère toujours chaque miniature lors de la première demande. Fait partie d'" APEX_PRODUCT_NAME ". Recherche et code : @idavidveiga"},
     // ---- Performance feature descriptions (hover) ----
     {"Keeps nearby lots eligible for full detail farther away and allows more of them to remain detailed at once. "
      "Validated baseline: distance 300 and 16 detailed lots. Part of " APEX_PRODUCT_NAME ".",
