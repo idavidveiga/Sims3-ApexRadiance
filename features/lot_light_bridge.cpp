@@ -2277,18 +2277,20 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
 // one side of the wall or the other as it is turned (F7 20-17-15 / 20-17-20, 06/10: the same window turned took other lamps
 // and another ground share, a slightly different tone); the tile's centre, origin + (local X - local Z) / 2, is on the
 // wall line both ways. Used only when an outside wall runs along one of the object's axes through that centre; else the origin.
-void ObjectLampPoint(const float (&m)[3][4], float (&p)[3]) {
+// true when the point was moved onto an outside wall's line (the object is set in that wall: a window or a door)
+bool ObjectLampPoint(const float (&m)[3][4], float (&p)[3]) {
     p[0] = m[0][3];
     p[1] = m[1][3];
     p[2] = m[2][3];
-    if (!g_windowOutdoor.load(std::memory_order_relaxed)) return;
+    if (!g_windowOutdoor.load(std::memory_order_relaxed)) return false;
     const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
     const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
-    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return; // turned about y only, unscaled
+    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return false; // turned about y only, unscaled
     const float c[3] = {p[0] + 0.5f * (xx - zx), p[1], p[2] + 0.5f * (xz - zz)};
-    if (!LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) && !LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f)) return;
+    if (!LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) && !LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f)) return false;
     p[0] = c[0];
     p[2] = c[2];
+    return true;
 }
 
 template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn draw) {
@@ -2329,9 +2331,11 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
             // Windows take outdoor light: a window or door sits in its wall with its origin up to half a tile from the wall
             // line (turned the other way, inside the house), so its own wall must not block every lamp in front of it
             // (F7 19-21-19, 06/10: the turned window's frame got 0 of 19 lamps and no ground light). Off: the 0.2 m as before.
-            const float nearSkip = g_windowOutdoor.load(std::memory_order_relaxed) ? kWindowWallSkip : 0.2f;
+            // only an object set in its wall (ObjectLampPoint moved it onto the wall line) passes a wall within kWindowWallSkip;
+            // loose objects keep 0.2 m, so a wall 0.4 m behind an armchair still blocks the next room's lamp (F7 09-53-38, 07/10)
             float at[3];
-            ObjectLampPoint(m, at);
+            const bool inWall = ObjectLampPoint(m, at);
+            const float nearSkip = inWall ? kWindowWallSkip : 0.2f;
             nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, nearSkip);
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)

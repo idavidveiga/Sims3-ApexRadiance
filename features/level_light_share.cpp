@@ -5890,7 +5890,7 @@ bool PassesOverLowerWall(uintptr_t occ, uintptr_t mgrNext, uintptr_t levelNext, 
     const float den = dx * r[2] - dz * r[0];
     if (!(std::fabs(den) > 1e-6f)) return false;
     const float ex = o[0] - A[0], ez = o[2] - A[2];
-    const float t = (ex * r[2] - ez * r[0]) / den, u = (ex * dz - ez * dx) / den; // along the ray, along the wall
+    const float t = (ex * r[2] - ez * r[0]) / den, u = (ez * dx - ex * dz) / den; // along the ray, along the wall (+0x60 = start - end, 0x0069A7A1)
     if (!(t > 0.0f && t < 1.0f && u > -0.05f && u < 1.05f)) return false;        // not crossed: the game passes it anyway
     const float rl = std::sqrt(r[0] * r[0] + r[2] * r[2]);
     if (!(rl > 1e-4f)) return false;
