@@ -5,6 +5,29 @@
 
 namespace ApexUtil {
 
+// Scoped SRW locks (07/10, players' Runtime Error): a C++ exception inside a locked section must not leave the lock held,
+// or every later caller (game threads included) waits forever.
+class SrwShared {
+  public:
+    explicit SrwShared(SRWLOCK& lock) noexcept : lock_(lock) { AcquireSRWLockShared(&lock_); }
+    ~SrwShared() { ReleaseSRWLockShared(&lock_); }
+    SrwShared(const SrwShared&) = delete;
+    SrwShared& operator=(const SrwShared&) = delete;
+
+  private:
+    SRWLOCK& lock_;
+};
+class SrwExclusive {
+  public:
+    explicit SrwExclusive(SRWLOCK& lock) noexcept : lock_(lock) { AcquireSRWLockExclusive(&lock_); }
+    ~SrwExclusive() { ReleaseSRWLockExclusive(&lock_); }
+    SrwExclusive(const SrwExclusive&) = delete;
+    SrwExclusive& operator=(const SrwExclusive&) = delete;
+
+  private:
+    SRWLOCK& lock_;
+};
+
 inline std::wstring ToWide(const std::string& utf8) {
     if (utf8.empty()) return {};
     const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
