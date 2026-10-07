@@ -56,6 +56,9 @@ void RelightAllRooms(const char* why);
 // only the rooms whose light list holds one of them (lamps that only moved).
 // Watches this lot's completion for a furniture refresh, with a 1500 ms fallback and bounded 6 s lifetime.
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0);
+// The lamps are held by indoor rooms of two stories or more (taken through a stair opening): a lamp edit then relights the
+// whole lot at once (a targeted refresh left a closed room lit for seconds). Render thread.
+bool LampsCrossStories(uintptr_t tracker, const uintptr_t* lamps, int lampCount);
 // A lamp switched where it was (same room, not moved): its tree level (story) and room
 struct LampSwitch {
     uintptr_t light, tl;

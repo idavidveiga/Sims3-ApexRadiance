@@ -513,6 +513,18 @@ void OnPresent(float nightLevel) {
     // every room again: a gather made while the game was still registering it missed it (F8 19:22)
     // (lamps switched where they are: only the rooms they can reach, LevelLightShare::RelightLampSwitch)
     for (const Run& r : run) {
+        // lamps that reach indoor rooms of other stories through a stair opening: every room of the lot at once (a targeted
+        // refresh left a closed room lit for seconds, recording 22:09:14); the settled refresh still follows
+        if (!r.allRooms && !r.settled) {
+            uintptr_t edited[2 * kLotLamps];
+            int ne = 0;
+            for (int i = 0; i < r.lampCount; i++) edited[ne++] = r.lamps[i];
+            for (int i = 0; i < r.switchCount; i++) edited[ne++] = r.switched[i].light;
+            if (LevelLightShare::LampsCrossStories(r.tracker, edited, ne)) {
+                if (LevelLightShare::RelightLot(r.tracker, "a lamp reaching other stories", 0) >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+        }
         const int sent = !r.allRooms && r.switchCount > 0
                              ? LevelLightShare::RelightLampSwitch(r.tracker, r.lampCount ? "a lamp switched or moved" : "a lamp switched", r.changed,
                                                                   r.switched, r.switchCount, r.lamps, r.lampCount)

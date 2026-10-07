@@ -2262,25 +2262,54 @@ uint32_t BlurPassesFor(const BYTE* room) {
     }
 }
 
-// ---- Outside walls of a house on a foundation (06/10, F7 22-02-24/26 with the wall notes). The outdoor room (room 0) of
+// ---- Outside walls of a house on a foundation (06/10, F7 22-02-24/26 with the wall notes). The outdoor rooms of
 // story s >= 1 lays its wall rows out from the lot's base + 3 s (wall +0x114: 63.325 for story 1 of a lot at 60.325), but
-// on a foundation that story stands on the foundation (its lowest floor, mgr+0x98: 61.315) and the wall mesh is drawn from
+// on a foundation every story stands on it (story 1's lowest floor, mgr+0x98: 61.315) and the wall mesh is drawn from
 // there: the block's rows are stretched between the drawn wall's foot and top (FUN_006a5600 -> FUN_006ac200, whatever its
 // height), so every row showed 2 m below where it was lit (an outside sconce lit its wall well below itself). Indoor rooms'
-// walls already start at their floor; without a foundation the two bases are the same. The samples move down to the
-// story's floor, only for room 0 above story 0, only downwards and by less than a story (pools and odd platforms excluded).
+// walls already start at their floor; without a foundation the two bases are the same. Every outdoor room (room 0 and the
+// roofless rooms with an id, room +0x18; F7 22-15-15: room 17 of story 2) moves its samples down by the lot's foundation:
+// story 1's floor - (lot base + 3), the same for every story (F7 22-16-15: story 3's lowest floor is a landing 4.74 m up, so
+// a story's own floor is no measure); only downwards and by less than a story.
 std::atomic<long> g_foundationPieces{0};
-float FoundationDrop(const BYTE* room, uintptr_t wall) {
+struct DropInfo {
+    uintptr_t mgr = 0;
+    int story = 0;
+    float oy = 0;
+};
+bool ReadDropInfo(const BYTE* room, uintptr_t wall, DropInfo& d) { // POD only (SEH)
     __try {
-        if (!room || *reinterpret_cast<const int*>(room + 0xC) != 0) return 0.0f;
-        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
-        if (!mgr || *reinterpret_cast<const int*>(mgr + 0x88) < 1) return 0.0f;
-        const float floorY = *reinterpret_cast<const float*>(mgr + 0x98), oy = *reinterpret_cast<const float*>(wall + 0x114);
-        const float drop = floorY - oy;
-        return std::isfinite(drop) && drop < -0.05f && drop > -2.95f ? drop : 0.0f;
+        if (!room || !room[0x18]) return false; // indoor room: its walls start at its floor
+        d.mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!d.mgr) return false;
+        d.story = *reinterpret_cast<const int*>(d.mgr + 0x88);
+        d.oy = *reinterpret_cast<const float*>(wall + 0x114);
+        return d.story >= 1 && d.story <= 7 && std::isfinite(d.oy);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0.0f;
+        return false;
     }
+}
+bool ReadFoundation(uintptr_t tracker, float& lotBase, float& floor1) { // POD only (SEH)
+    __try {
+        const uintptr_t mgr1 = StoryManager(tracker, 1);
+        if (!mgr1) return false;
+        lotBase = *reinterpret_cast<const float*>(mgr1 + 0xD4);
+        floor1 = *reinterpret_cast<const float*>(mgr1 + 0x98);
+        return std::isfinite(lotBase) && std::isfinite(floor1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+float FoundationDrop(const BYTE* room, uintptr_t wall) {
+    DropInfo d;
+    if (!ReadDropInfo(room, wall, d)) return 0.0f;
+    const uintptr_t tracker = MgrTracker(d.mgr);
+    float lotBase = 0, floor1 = 0;
+    if (!tracker || !ReadFoundation(tracker, lotBase, floor1)) return 0.0f;
+    const float foundation = floor1 - lotBase; // 0.99 on a foundation, 3 without one
+    if (!(foundation > 0.05f && foundation < 2.95f)) return 0.0f;
+    const float drop = lotBase + foundation + 3.0f * static_cast<float>(d.story - 1) - d.oy;
+    return std::isfinite(drop) && drop < -0.05f && drop > -2.95f ? drop : 0.0f;
 }
 void DropWallSamples(uintptr_t batch, float dy) {
     __try {
@@ -6598,6 +6627,41 @@ int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* q
 // 30/09). Render thread. Returns the rooms sent, -1 when the lot is no longer loaded. With lamps (05/10: lamps that only
 // moved), only the rooms whose list holds one of them: a move changes no room's list, and the rooms that take the lamp were
 // sent at once by the lamp edit itself (AfterChangedWalk), so this is the safety net, and their fresh solves are kept.
+// The lamps are held by indoor rooms of two stories or more (lamps taken through a stair opening, part 4.): a lamp edit's
+// targeted refresh left such a room lit through the closed walls around it until every room of the lot lit again (06/10,
+// recording 22:09:14), so LampMarkFilter relights the whole lot at once for them. Render thread.
+bool LampsCrossStories(uintptr_t tracker, const uintptr_t* lamps, int lampCount) {
+    if (!tracker || !lamps || lampCount <= 0) return false;
+    LoadAddresses();
+    if (!kRoomById) return false;
+    int stories = 0;
+    for (int level = -4; level <= 7; level++) {
+        int ids[1024], n = 0;
+        bool held = false;
+        __try {
+            const uintptr_t mgr = StoryManager(tracker, level);
+            if (!mgr) continue;
+            const int w = *reinterpret_cast<const int*>(mgr + 0x264), h = *reinterpret_cast<const int*>(mgr + 0x268);
+            if (w <= 0 || h <= 0 || w > 1024 || h > 1024) continue;
+            const int cached = CachedStoryRooms(tracker, level, ids, static_cast<int>(std::size(ids)));
+            if (cached >= 0) n = cached;
+            else for (int iz = 0; iz < h; iz++)
+                for (int ix = 0; ix < w; ix++)
+                    if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                        for (int q = 0; q < 4; q++)
+                            if (const int id = TileRoom(tile, q); id > 0 && n < static_cast<int>(std::size(ids)) && std::find(ids, ids + n, id) == ids + n) ids[n++] = id;
+            for (int k = 0; k < n && !held; k++) {
+                if (ids[k] <= 0) continue;
+                BYTE* room = static_cast<BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), ids[k]));
+                held = room && HoldsAnyLamp(room, lamps, lampCount);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+        if (held && ++stories >= 2) return true;
+    }
+    return false;
+}
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount) {
     LoadAddresses();
     if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert || !tracker) return -1;
