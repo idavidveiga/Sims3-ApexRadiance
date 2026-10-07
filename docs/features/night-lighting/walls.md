@@ -96,6 +96,17 @@ LightProbe captures `andar2-b` (m44), `andar1-b` (m45), `passo3-parede` (m59) an
   families.
 - Wall VS in cutaway / walls-down mode: `max r1.xy, c12.xzzw, v7.xzzw`, `min r1.w, r1.x, c12.y`, `mad r2.y, r1.w, r0.w, r0.z`
   lower the wall (y = lerp(v0.w, v0.y, clamp(v7.x))), while the atlas UV is not lowered.
+- Light rows on the wall mesh: the light-UV writer `0x00C38530` (called per wall cell at `0x00C387B5` / `0x00C387CC`, mode 0
+  / 1 = the V at vertex `+0x12` / `+0x1E`, x 4096) maps the bottom vertices to the light base and the top ones to
+  base + 3 (1 - f), `f = max(0, int16 +0x0A / 512 - 8)` from the top vertices' wallpaper V (`0x00C385AB..DB`; the wall
+  builders write `+0x0A = (V + 8) x 512` at `0x00C3C587` / `0x00C3C8B9`). Walls taller than 3 m get their light samples
+  stretched (`StretchTallWall`, 07/10). Short walls (07/10, F8 10-57-41): on a foundation face (story 0, drawn from the
+  terrain to the foundation's top, about 0.75 m) that V is about 0, so the game squeezed the whole 3 m block onto it and
+  the top of the stone showed light computed well under a sconce. With *Wall lamps at the right height*
+  (`paredesExternasNaAlturaDesenhada`), `WallUvHook` writes a short cell (under 2.98 m) whose game mapping is more than
+  2 cm off its drawn heights untrimmed, then sets each vertex's V to the row lit at its own height (`clamp((y - base) / 3)`, rows at
+  base + 3k/(N-1)); the trim words go back. Gables the game already maps right are left byte for byte. Counter: "short
+  wall cells (foundation faces) lit at their drawn heights"; dev log `[WallTall] short wall lit at its drawn heights`.
 
 ### Wall gain
 

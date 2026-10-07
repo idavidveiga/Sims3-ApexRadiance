@@ -276,6 +276,14 @@ translation (`c[worldK..+2].w`) scores each lamp by horizontal distance minus ra
 best 16 (memoised per position and lamp-list generation), and the draw uses the first 8. Unused blocks: position
 (1e6, 0, 1e6), colour 0.
 
+**Lamp cones (07/10, F8 10-57-41).** `ReadLamp` also keeps each lamp's cones (`LampCone`, beside `g_allLamps` in
+`g_allCones`; `SelectLamps` hands them out as `g_lampCone`, memo included): the game's cone laws, type 5 `0x006BC940`
+(two cones, scale `[0x011D11A0] = 5`, spill `+0x150`) and type 4 `0x006BDA10` (one cone, spill 0). `PickObjectLamps`
+multiplies each kept lamp's colour (and its weight in the ground share) by `S + (1 - S) sat(max(t1, t2))` measured at the
+object's middle, so a piece well off a wall sconce's cones takes only its spill, as the game's own solve gives it. One
+factor per object (not per pixel; fences and stairs are gated per pixel, [fences.md](fences.md)). Log once: `Per-pixel
+lamps follow their cones`.
+
 ### Indoor objects (directional maps)
 
 Apex's indoor-object shader (`PatchIndoorBasis`) normally caps the basis light at `min(basis, 2 x room light map)` per

@@ -40,6 +40,9 @@ falls back to the brighter of the game's vertex lights and the world ground-ligh
    loses it and one that only runs past a wall keeps it. With lamps, the atlas weight is 0 on every face (the atlas is
    light lying on the ground, at no height); a group whose centre cannot be read gets no lamps and the atlas on every
    face.
+   Each lamp keeps the game's cones (07/10): a face off a wall sconce's cones takes only its spill, as the game's own
+   cone law gives it (`0x006BC940`; see the pixel shader patch below), so a brick fence face beside a sconce aimed down
+   its wall is no longer lit at full strength.
 4. **Draw with the atlas bound** and the strength and lamps set per draw; restore everything afterwards.
 5. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)`: the configured strength
    at full night, moving linearly toward `0.08 x min(strength, 1)` as day comes. In full daylight (night level 0.01 or
@@ -78,6 +81,7 @@ The Lighting balance styles set `forcaNasCercas` to 67.5% (Subtle), 75% (Soft) o
 
 - One lamp list serves a whole fence group (up to 8 lamps around its centre); a very long group can miss a lamp near one
   end. Walls block a lamp only when they hide it from the centre and both ends of the group.
+- A lamp with cones is gated per pixel by them, but roofs and water still take the lamp rows without cones.
 - Groups whose instance positions cannot be read keep the atlas term: the light of the ground, without height or
   occlusion, so a balcony railing gets the ground light below it and an indoor stair railing near an outdoor lamp can
   glow.
@@ -114,16 +118,18 @@ rotation); outputs TEXCOORD1 and COLOR0; contains `mov oT1.zw, rW.xyxz` (world x
 ### Pixel shader patch (`ShaderPatches::PatchInstancedLamps`, `ps_3_0`)
 
 With a TEXCOORD2 input (world normal xyz, world height w) the patch also adds the per-pixel object lamps
-(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, 0)) and a
-ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(0, 0)` with lamps, `(0, 1)` (every
-face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`. The part
-below is the base patch:
+(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, spill)) and a
+ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(1, 0)` with lamps, `(0, 1)` (every
+face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`.
 
-With a TEXCOORD2 input (world normal xyz, world height w) the patch also adds the per-pixel object lamps
-(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, 0)) and a
-ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(0, 0)` with lamps, `(0, 1)` (every
-face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`. The part
-below is the base patch:
+Lamp cones (07/10, F8 10-57-41): after the lamp block, `coneConst = lampConst + 16` holds two rows per lamp, the cones
+`c = (-s a, -s o)` of the game's laws (type 5 `0x006BC940`: two cones `a1 +0x1A0 / o1 +0x174`, `a2 +0x190 / o2 +0x170`,
+`s = [0x011D11A0] = 5`, spill `+0x150`; type 4 `0x006BDA10`: one cone `a +0x170`, scale `+0x154`, offset `+0x158`, spill 0),
+filled by `ReadLamp` (`LotLightBridge::LampCone`). Each lamp's term is multiplied by
+`S + (1 - S) sat(max(l.c1.xyz + c1.w, l.c2.xyz + c2.w))` (8 more instructions per lamp, `l` = pixel to lamp
+normalised, `S` = the colour row's `.w`, the spill's luminance); an unused slot or a lamp with no cone has `S = 1`. One
+upload of `1 + 4 x 8` rows covers both blocks. The patch needs `maxConst + 36 < 224` (was `+ 20`). The roof and water
+lamp rows (`g_lampData`) are unchanged. The part below is the base patch:
 
 Needs a COLOR0 input with `.xyz`, a TEXCOORD1 input, and exactly one `add rD.xyz, rS, vC` (COLOR0 in either operand, the
 other a temp). Resources: sampler `E = maxSampler + 1` (refused at 15), `cA = maxConst + 1` (atlas mapping),
