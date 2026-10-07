@@ -8825,6 +8825,13 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
                          lamps && lampCount > 0 ? std::format(" (only the rooms holding the {} lamp{} moved)", lampCount, lampCount == 1 ? "" : "s") : std::string()));
     return queued;
 }
+int RelightLotById(uint64_t lot, const char* why) {
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    for (int t = 0; t < lots; t++)
+        if ((static_cast<uint64_t>(LotIdPart(trackers[t], 0x94)) << 32 | LotIdPart(trackers[t], 0x90)) == lot) return RelightLot(trackers[t], why);
+    return -1;
+}
 
 // A switched lamp's home (06/10 evening): its room id (light+8, what the object rigs' gather compares, FUN_006bb270) on the
 // story whose lowest floor (mgr+0x98, world) is the highest at or under the lamp (+0x124), and whether it is on now (the lit

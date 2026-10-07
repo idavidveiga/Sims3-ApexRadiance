@@ -1348,6 +1348,9 @@ void TrackLotLampEdits() {
         userDriven = true;
         userLots.push_back(lot);
         what = std::format("lamp removed on lot {:016X} (user-driven)", lot);
+        // every room of the lot lights again (07/10, a deleted lamp post kept lighting its wall): a deleted lamp runs no lamp
+        // entry update, so the outdoor rooms of the other stories (the walls) kept it in their light lists
+        if (lot != 0) LevelLightShare::RelightLotById(lot, "a lamp removed");
     }
     // More than 8 changes = lamps switching at dusk / dawn or streaming in bulk; except when they are all switches (no lamp
     // added or removed) of ONE lot: a lot's own lamps switched together (30/09: a town square's 57 lamps were ignored here,
