@@ -164,8 +164,8 @@ using QueueRoom_t = void(__thiscall*)(void* treeLevel, int roomId);
 // ---- settings ----
 bool g_autoDusk = true;
 bool g_lotLamps = true;
-bool g_streetLampsLit = false;
-bool g_relightLots = false;
+bool g_streetLampsLit = true;
+bool g_relightLots = true;
 bool g_bridge = true;
 bool g_objLamps = true;
 float g_objStrength = 0.75f;
@@ -215,7 +215,7 @@ bool g_edgePad = true;          // pad the room light maps' edges (RoomMapPaddin
 bool g_lotTintOwn = false;      // lot lamps have their own colour
 float g_lotLampTint = 1.0f;     // their colour (0 = pink, 1 = warm white)
 bool g_allLotsHQ = false;
-bool g_lotPassNoTerrainMap = false;
+bool g_lotPassNoTerrainMap = true;
 // Developer toggles (29/09, not yet tested in game; the public build never registers them: always off there):
 //  - relightNearbyChunks: a lamp change re-renders only the terrain chunks under the changed lamps, one at a time through
 //    the game's sweep branch (features/terrain_chunk_relight.cpp), instead of Apex's full rebuild;
@@ -1746,7 +1746,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_floorWalls, "paredesBloqueiamLuzNosPisos", true,
             "Walls stop lamp light on outdoor floors: decks and yards without a roof behind a wall stay dark (relights the rooms when changed).");
         RegisterBoolSetting(&g_realisticOpenings, "luzRealistaPorAberturas", kRealisticOpeningsDefault,
-            "Experimental: a yard, light well or deck without a roof closed by walls takes the light of its story's outdoor lamps only through its doors, "
+            "A yard, light well or deck without a roof closed by walls takes the light of its story's outdoor lamps only through its doors, "
             "windows and arches, at their height, or over walls lower than the lamp; one closed all round stays dark (needs \"Walls block light on floors\"; "
             "relights every room when changed).");
         RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
@@ -1766,7 +1766,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_objPixelLightStrength, "forcaLuzPorPixelNosObjetos", SettingWidget::Slider, 0.75f, 0.25f, 3.0f,
             S3SS_TR("Forca das lampadas calculadas por ponto nos objetos de fora.", "Strength of the per-point lamp light on outdoor objects."));
         RegisterBoolSetting(&g_windowOutdoor, "janelasLuzDeFora", true,
-            "Experimental: the outer side of a window lit by the room takes the outdoor ground light and lamps (a window turned inward no longer goes black outside).");
+            "The outer side of a window lit by the room takes the outdoor ground light and lamps (a window turned inward no longer goes black outside).");
         RegisterBoolSetting(&g_roofs, "telhadosComLuz", true,
             S3SS_TR("Telhados recebem a luz das lampadas e postes proximos (sombra mais suave tambem).",
                     "Roofs receive light from nearby lamps (with softer shadows)."));
@@ -1812,18 +1812,18 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_delaySec, "atrasoSegundos", SettingWidget::Slider, 2.0f, 0.5f, 10.0f,
             S3SS_TR("Espera depois de anoitecer antes de refazer (da tempo de todas as luzes acenderem).",
                     "Delay after dusk before the rebuild (lets every lamp switch on)."));
-        RegisterBoolSetting(&g_streetLampsLit, "postesAcesosNoCalculo", false,
+        RegisterBoolSetting(&g_streetLampsLit, "postesAcesosNoCalculo", true,
             S3SS_TR("Quando o jogo calcula a luz de um lote, os postes da rua contam como acesos (igual a carregar o save a noite).",
-                    "Experimental: street lamps count as lit when the game solves a lot's light."));
+                    "Street lamps count as lit when the game solves a lot's light."));
         RegisterBoolSetting(&g_allLotsHQ, "qualidadeAltaEmTodosOsLotes", false,
             S3SS_TR("Todos os lotes usam a qualidade de luz alta do lote ativo (corrige o corte da luz dos postes na divisa). Vale para lotes carregados depois de ligar.",
                     "Experimental: every lot uses the active lot's high lighting quality."));
-        RegisterBoolSetting(&g_lotPassNoTerrainMap, "gramaDoLoteUsaLuzDoLote", false,
+        RegisterBoolSetting(&g_lotPassNoTerrainMap, "gramaDoLoteUsaLuzDoLote", true,
             S3SS_TR("A grama do lote continua usando a luz do proprio lote mesmo depois de refazer o terreno (a luz dos postes nao some dentro do lote).",
-                    "Experimental: lot grass keeps the lot's own light after a terrain rebuild."));
-        RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", false,
+                    "Lot grass keeps the lot's own light after a terrain rebuild."));
+        RegisterBoolSetting(&g_relightLots, "recalcularLotesAoAnoitecer", true,
             S3SS_TR("Depois de refazer o terreno a noite, recalcula a luz de todos os lotes como quando um poste e movido no modo construcao.",
-                    "Experimental: after the dusk terrain rebuild, re-solve the light of every lot."));
+                    "After the dusk terrain rebuild, re-solve the light of every lot."));
         if (!kPublicBuild) { // Developer controls only; public uses the approved paced sweep default without exposing diagnostic toggles.
             RegisterBoolSetting(&g_localRelight, "relightNearbyChunks", false,
                 "Developer: a lamp change re-renders only the terrain chunks under the changed lamps, one per frame through the game's own "
@@ -2275,10 +2275,10 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_waterReflSetting = 1.56f;
         g_sidewalkClear = 0.5f;
         g_delaySec = 2.0f;
-        g_streetLampsLit = false;
+        g_streetLampsLit = true;
         g_allLotsHQ = false;
-        g_lotPassNoTerrainMap = false;
-        g_relightLots = false;
+        g_lotPassNoTerrainMap = true;
+        g_relightLots = true;
         g_localRelight = false;
         g_pacedSweep = true;
     }
@@ -2388,7 +2388,6 @@ class NightTerrainRelightPatch : public ApexPatch {
                 if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
                 changed |= ApexUi::SwitchRow("Walls block light on floors", &g_floorWalls, "Decks and yards without a roof stay dark behind a wall", true);
                 ImGui::BeginDisabled(!g_floorWalls); // its floors rely on the walls' mask
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
                 changed |= ApexUi::SwitchRow("Light through doors and windows", &g_realisticOpenings, "Lamps light walled yards only through openings or over the walls",
                                              kRealisticOpeningsDefault);
                 ImGui::EndDisabled();
@@ -2526,7 +2525,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             ApexUi::CardDivider();
             Edit([] {
                 bool changed = false;
-                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
                 changed |= ApexUi::SwitchRow("Smooth indoor light", &g_edgePad, "Light changes smoothly on stairs, curtains and furniture; no dark sides", true);
                 return changed;
             });
