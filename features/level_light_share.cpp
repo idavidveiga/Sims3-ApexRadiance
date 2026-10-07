@@ -2189,6 +2189,7 @@ struct WallNote {
     bool outdoor = false; // room +0x18: room 0 or a roofless room
     uintptr_t mgr = 0;    // the room's story manager
     float dx = 0, dz = 0; // the wall's run (wall +0xF0, world xz)
+    float cx = 0, cz = 0; // the wall's start on its line (wall +0x110 less 5 cm along its face normal +0x150, as ReadStoryWalls)
     WallBlock block{};
     float oy = 0, litLo = 0, litHi = 0;
     float x0 = 0, z0 = 0, x1 = 0, z1 = 0; // the bottom row's first and last sample (world xz)
@@ -2206,6 +2207,8 @@ bool ReadWallPiece(uintptr_t wall, int cls, uintptr_t batch, WallNote& w) { // P
         w.oy = *reinterpret_cast<const float*>(wall + 0x114);
         w.dx = *reinterpret_cast<const float*>(wall + 0xF0);
         w.dz = *reinterpret_cast<const float*>(wall + 0xF8);
+        w.cx = *reinterpret_cast<const float*>(wall + 0x110) - *reinterpret_cast<const float*>(wall + 0x150) * 0.05f;
+        w.cz = *reinterpret_cast<const float*>(wall + 0x118) - *reinterpret_cast<const float*>(wall + 0x158) * 0.05f;
         const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
         if (w.rows < 2 || w.rows > 4096 || !b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return false;
         int lo = 1 << 30, hi = -1;
@@ -2281,17 +2284,11 @@ std::atomic<long> g_foundationPieces{0}; // pieces moved to their drawn foot
 float MeasuredDrop(uintptr_t wall, int cls, uintptr_t batch) {
     WallNote w;
     if (!ReadWallPiece(wall, cls, batch, w)) return 0.0f;
-    float ax = w.x0, az = w.z0, bx = w.x1, bz = w.z1;
-    float ext = 0.05f;
-    const float L = std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
-    if (L < 0.05f || w.colHi <= w.colLo) { // one column: a short run along the wall
-        const float dl = std::sqrt(w.dx * w.dx + w.dz * w.dz);
-        if (!(dl > 1e-3f)) return 0.0f;
-        bx = ax + w.dx / dl * 0.1f;
-        bz = az + w.dz / dl * 0.1f;
-        ext = 0.15f;
-    } else
-        ext += 0.5f * L / static_cast<float>(w.colHi - w.colLo);
+    // the whole wall, not only this piece: a long wall has vertices at its ends and openings only (22:43 F7: the middle
+    // pieces found none and kept their base)
+    const float ax = w.cx, az = w.cz, bx = w.cx + w.dx, bz = w.cz + w.dz;
+    if (!std::isfinite(ax) || !std::isfinite(az) || !std::isfinite(bx) || !std::isfinite(bz) || w.dx * w.dx + w.dz * w.dz < 1e-4f) return 0.0f;
+    const float ext = 0.1f;
     float foot = 0.0f;
     if (WallHeights::DrawnFoot(ax, az, bx, bz, ext, w.oy, foot)) {
         const float drop = foot - w.oy;
@@ -6517,6 +6514,7 @@ std::string WallSurvey(const std::vector<SurveyPoint>& pts) {
     };
     std::vector<Row> rows;
     std::map<std::pair<int, int>, std::map<int, int>> summary; // (story, outdoor) -> (drawn foot - lit base, cm) -> pieces
+    std::map<std::pair<int, int>, std::map<int, int>> residual; // the same against the bottom row as lit (after Apex): 0 when lit where drawn
     for (const WallNote& w : notes) {
         const float ux = w.x1 - w.x0, uz = w.z1 - w.z0, L = std::sqrt(ux * ux + uz * uz);
         if (L < 0.05f || w.colHi <= w.colLo) continue;
@@ -6551,6 +6549,7 @@ std::string WallSurvey(const std::vector<SurveyPoint>& pts) {
             if (ov > bestOverlap) bestOverlap = ov, best = &sp;
         }
         if (best) summary[{w.story, w.outdoor ? 1 : 0}][static_cast<int>(std::lround((best->lo - w.oy) * 100.0f))]++;
+        if (best && w.litLo < 1e8f) residual[{w.story, w.outdoor ? 1 : 0}][static_cast<int>(std::lround((best->lo - w.litLo) * 100.0f))]++;
         rows.push_back(std::move(r));
     }
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
@@ -6562,6 +6561,14 @@ std::string WallSurvey(const std::vector<SurveyPoint>& pts) {
         s += std::format("    story {} {}:", key.first, key.second ? "outdoor" : "indoor ");
         for (const auto& [cm, count] : deltas) s += std::format(" {:+.2f} x{}", cm / 100.0f, count);
         s += "\n";
+    }
+    s += "  what is left (drawn foot - bottom row as lit, after Apex; 0 = lit where drawn):
+";
+    for (const auto& [key, deltas] : residual) {
+        s += std::format("    story {} {}:", key.first, key.second ? "outdoor" : "indoor ");
+        for (const auto& [cm, count] : deltas) s += std::format(" {:+.2f} x{}", cm / 100.0f, count);
+        s += "
+";
     }
     s += "  pieces: story, room, class, wall / piece, lit base (wall +0x114), lit bottom row (after Apex), drawn spans [foot..top] per draw\n";
     int shown = 0;

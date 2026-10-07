@@ -179,8 +179,13 @@ void RebuildGridLocked() {
         for (uint32_t i = 0; i < mesh.edges.size(); i++) g_grid[Cell(mesh.edges[i].x, mesh.edges[i].z)].push_back({key, i});
 }
 
+bool DrawnFootPass(float ax, float az, float bx, float bz, float ext, float base, float& foot);
+// the wall's own run first; then along its line (collinear walls drawn as one mesh have their vertices at the run's ends)
 bool DrawnFootLocked(float ax, float az, float bx, float bz, float ext, float base, float& foot) {
     RebuildGridLocked();
+    return DrawnFootPass(ax, az, bx, bz, ext, base, foot) || DrawnFootPass(ax, az, bx, bz, ext + 8.0f, base, foot);
+}
+bool DrawnFootPass(float ax, float az, float bx, float bz, float ext, float base, float& foot) {
     const float ux = bx - ax, uz = bz - az, L = std::sqrt(ux * ux + uz * uz);
     if (L < 0.01f) return false;
     const float pad = ext + 0.35f;
