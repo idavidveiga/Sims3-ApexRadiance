@@ -50,6 +50,9 @@ Result CreatePixelShader(IDirect3DDevice9* dev, Id id, IDirect3DPixelShader9** o
 // "Precompiled 34 of 34 Apex shaders in 1234 ms on a background thread (0 failed); render-thread waits: 0" (dev status)
 std::string StatusText();
 
+// Render-thread waits for the precompile so far: count and total ms (any thread; takes the registry lock briefly)
+void RenderThreadWaits(int* waits, double* ms);
+
 // FreeLibrary only: the worker stops between two compiles.
 void Shutdown();
 

@@ -75,6 +75,10 @@ void RelightAllRooms(const char* why);
 // only the rooms whose light list holds one of them (lamps that only moved).
 // Watches this lot's completion for a furniture refresh, with a 1500 ms fallback and bounded 6 s lifetime.
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0);
+// Render thread: RelightLot by the lot's 64-bit id (as LotLightBridge tracks lamps); -1 = not loaded. For a lamp deleted
+// in Build mode (07/10): no lamp entry update runs, so neither LampMarkFilter nor AfterChangedWalk's cross-story sends
+// always see it, and the outdoor rooms of the other stories (the walls) kept the deleted lamp in their light lists.
+int RelightLotById(uint64_t lot, const char* why);
 // The lamps are held by indoor rooms of two stories or more (taken through a stair opening): a lamp edit then relights the
 // whole lot at once (a targeted refresh left a closed room lit for seconds). Render thread.
 bool LampsCrossStories(uintptr_t tracker, const uintptr_t* lamps, int lampCount);

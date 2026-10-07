@@ -94,6 +94,7 @@
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "light_detail.h"
@@ -1330,6 +1331,12 @@ bool GameTakesLight(uintptr_t entry, uintptr_t light) {
     if (!info) return false;
     const BYTE flags = *reinterpret_cast<const BYTE*>(info + 0x90);
     if (!(flags & 2) || !(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)) return false;
+    // A lot lamp sold or deleted in Build mode stays registered, lit (0x20) with its full colour, only disabled (0x40 clear;
+    // 07/10 snapshots 14:07:55 -> 14:07:58, a type-11 lamp post): the game's own gather still takes it for its own story,
+    // but the other stories (their outside walls) must not keep it. Lot lamps only (world street lamps: lot id 0).
+    if (!(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40) &&
+        (*reinterpret_cast<const uint32_t*>(light + 0xC0) | *reinterpret_cast<const uint32_t*>(light + 0xC4)) != 0)
+        return false;
     if (!reinterpret_cast<LightBright_t>(kLightBright)(reinterpret_cast<void*>(light))) return false;
     const int type = *reinterpret_cast<const int*>(light + 0xB0);
     return type >= 3 && (!(flags & 4) || type == 0xB);
@@ -2072,6 +2079,7 @@ bool ReadSolveNote(const BYTE* room, SolveNote& n) {
 using RoomSolveStart_t = void(__thiscall*)(void* room);
 void __fastcall RoomSolveStartHook(BYTE* room) {
     reinterpret_cast<RoomSolveStart_t>(kRoomSolveStart)(room);
+    if (room) LoadTiming::NoteRoomSolveStart(); // atomics only
     // 07/10, players' Runtime Error: each of Apex's steps after the game's state 0 is caught on its own (HookGuard), then off
     // lamp switches all at once wait for solves begun after the switch
     if (room) HookGuard::Run("RoomLightQueue solve start note", [room] { RoomLightQueue::NoteSolveStart(room); });
@@ -4056,6 +4064,7 @@ void __fastcall FinalizeHook(BYTE* room) {
     reinterpret_cast<Finalize_t>(kFinalize)(room);
     if (!room) return;
     // 07/10, players' Runtime Error: each step caught on its own (HookGuard), then off; the game's finalize has run
+    LoadTiming::NoteRoomSolveEnd(); // atomics only
     HookGuard::Run("RoomLightQueue solve end note", [room] { RoomLightQueue::NoteSolveEnd(room); });
     HookGuard::Run("LightDetail layout check", [room] { LightDetail::CheckLayout(room); }); // once per session: no class-2 floor or ceiling tile over its neighbours' texels
     if (Recorder::Active()) HookGuard::Run("LevelLightShare solve note (end)", [room] { NoteSolve(room, 'E'); });
@@ -4917,6 +4926,8 @@ uint64_t RoomLampSignature(uintptr_t tl, int room, uint64_t* shapeOut, std::vect
         if (!light) return;
         mixShape(light);
         mix(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20);
+        // enabled: a sold or deleted lot lamp stays registered, lit, disabled (07/10 snapshots): like a lamp removed
+        mixShape(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40);
         // the object's flags the gather's checks read (GameTakesLight): a lamp the other stories could not take for a moment
         // and that ends as it was still changes this, so they gather again (05/10, see AuditTakers)
         if (const uintptr_t info = *reinterpret_cast<const uintptr_t*>(entry + 0x20)) mix(*reinterpret_cast<const BYTE*>(info + 0x90) & 0x6);
@@ -5225,11 +5236,33 @@ uint32_t GatherSerial(const BYTE* room) {
     }
     return GatherSerialImpl(room, mgr, id);
 }
+// A lot lamp sold or deleted in Build mode stays registered, lit (+0x100 bit 0x20) with its full colour and only disabled
+// (bit 0x40 clear), also after a save load (07/10 snapshots 14:07:58 and 14:21:45: lamp post L3BEA4030, type 11, flags B5,
+// still in 8 room lists). The game's gather (FUN_006c7820: lit, brightness, type) never reads 0x40, so its room solves kept
+// lighting the outside walls and the deck with it. Removed from the list the gather just built (a plain vector of light
+// pointers, room+0xC8..+0xCC, filled by FUN_006a2060); world lights (lot id 0) keep the game's behaviour.
+std::atomic<long> g_disabledDropped{0};
+int DropDisabledLotLights(BYTE* room) {
+    uintptr_t* b = *reinterpret_cast<uintptr_t**>(room + 0xC8);
+    uintptr_t* e = *reinterpret_cast<uintptr_t**>(room + 0xCC);
+    if (!b || e <= b || e - b > 4096) return 0;
+    uintptr_t* out = b;
+    for (uintptr_t* p = b; p < e; p++) {
+        const uintptr_t L = *p;
+        const bool drop = L && !(*reinterpret_cast<const BYTE*>(L + 0x100) & 0x40) &&
+                          (*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) != 0;
+        if (!drop) *out++ = L;
+    }
+    const int dropped = static_cast<int>(e - out);
+    if (dropped) *reinterpret_cast<uintptr_t**>(room + 0xCC) = out;
+    return dropped;
+}
 void __fastcall OutdoorGather(BYTE* treeLevel, void*, BYTE* room) {
     const DWORD started = GetTickCount();
     reinterpret_cast<AddWorldLights_t>(kAddWorldLights)(treeLevel, room);
     if (!g_installed.load(std::memory_order_relaxed) || !room) return;
     __try {
+        if (const int n = DropDisabledLotLights(room)) g_disabledDropped.fetch_add(n, std::memory_order_relaxed);
         NoteRoomStructure(room);
         ShareOutdoorLights(treeLevel, room);
         ShareIndoorLights(treeLevel, room);
@@ -5282,6 +5315,10 @@ struct Culled {
     size_t n;
 };
 std::vector<Culled> g_culled; // per batch: (light, floor) -> walls of that floor's room 0 between the batch centre and the light
+// The entries in use (07/10, wall-perf): a new batch only resets this count, so the walls' index buffers are reused instead
+// of freed and allocated again for every lamp of every batch; g_culledLast is the entry found last. The same lists in the
+// same order as before: bit-identical.
+size_t g_culledUsed = 0, g_culledLast = 0;
 
 // ---- diagnostics (F8): samples near each light of the active lot, with the game's wall test and ours ----
 // Development build only, and only while armed (2026-09-29; before, every lit cross-floor evaluation of every solve paid
@@ -5344,7 +5381,7 @@ bool BatchCentreFor(const void* sample) {
             for (int k = 0; k < 4; k++) g_batch.c[k] = sum[k] / cnt;
             g_batch.begin = b;
             g_batch.end = e;
-            g_culled.clear();
+            g_culledUsed = 0;
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -6040,19 +6077,27 @@ float CrossLampReachImpl(BYTE* room, void* light, const float* point) {
 
 // Walls of room 0 of `floor` that the game would test for this light in this batch (its own culling), or null = all.
 const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* pos) {
-    for (const Culled& c : g_culled)
-        if (c.light == light && c.floor == floor) return &c;
-    if (g_culled.size() > 256) g_culled.clear();
+    if (g_culledLast < g_culledUsed && g_culled[g_culledLast].light == light && g_culled[g_culledLast].floor == floor) return &g_culled[g_culledLast];
+    for (size_t i = 0; i < g_culledUsed; i++)
+        if (g_culled[i].light == light && g_culled[i].floor == floor) return &g_culled[g_culledLast = i];
+    if (g_culledUsed > 256) g_culledUsed = 0;
     const uintptr_t wb = *reinterpret_cast<const uintptr_t*>(room0 + 0x30), we = *reinterpret_cast<const uintptr_t*>(room0 + 0x34);
     const size_t walls = we > wb ? (we - wb) / 4 : 0;
     if (walls > 65536) return nullptr;
-    Culled c{light, floor, std::vector<int>(walls + 1), 0};
-    IntVec v{c.idx.data(), c.idx.data(), c.idx.data() + c.idx.size()}; // room for every wall: FUN_0069dff0 never grows it
+    if (g_culledUsed == g_culled.size()) g_culled.push_back(Culled{0, 0, {}, 0});
+    Culled& c = g_culled[g_culledUsed];
+    if (c.idx.size() < walls + 1) c.idx.resize(walls + 1);
+    IntVec v{c.idx.data(), c.idx.data(), c.idx.data() + walls + 1}; // room for every wall: FUN_0069dff0 never grows it
     reinterpret_cast<WallCull_t>(kWallCull)(room0 + 0x30, &v, g_batch.c, pos);
-    if (v.b != c.idx.data()) return nullptr; // cannot happen with that capacity; if it did, the game owns the memory now
+    if (v.b != c.idx.data()) { // cannot happen with that capacity; if it did, the game owns the memory now
+        new (&c.idx) std::vector<int>(); // forget the buffer without freeing it (as before, where it was dropped with the entry)
+        return nullptr;
+    }
+    c.light = light;
+    c.floor = floor;
     c.n = static_cast<size_t>(v.e - v.b);
-    g_culled.push_back(std::move(c));
-    return &g_culled.back();
+    g_culledLast = g_culledUsed;
+    return &g_culled[g_culledUsed++];
 }
 
 // Share of the light that passes the walls of the floors from the lamp's floor to the room's floor (room's floor
@@ -8824,6 +8869,13 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
     LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of lot {:08X} light again, {} retain their fresh solve (running or finished){}", why, queued, LotIdPart(tracker, 0x90), skipped,
                          lamps && lampCount > 0 ? std::format(" (only the rooms holding the {} lamp{} moved)", lampCount, lampCount == 1 ? "" : "s") : std::string()));
     return queued;
+}
+int RelightLotById(uint64_t lot, const char* why) {
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    for (int t = 0; t < lots; t++)
+        if ((static_cast<uint64_t>(LotIdPart(trackers[t], 0x94)) << 32 | LotIdPart(trackers[t], 0x90)) == lot) return RelightLot(trackers[t], why);
+    return -1;
 }
 
 // A switched lamp's home (06/10 evening): its room id (light+8, what the object rigs' gather compares, FUN_006bb270) on the

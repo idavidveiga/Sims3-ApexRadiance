@@ -1187,8 +1187,10 @@ void ReadEnumeratedLamps(bool rebuildAll) {
 }
 
 // Compares g_lotLampCur (just read) with g_lotLampSig (the previous enumeration), then keeps the new one.
+std::vector<uint64_t> g_disabledLots; // lots with a lamp disabled in this enumeration (TrackLotLampEdits)
 void TrackLotLampEdits() {
     const auto now = Clock::now();
+    g_disabledLots.clear();
     const bool editing = ChunkRelight::Editing();
     std::vector<LampSig>& cur = g_lotLampCur;
     g_lotsNow.clear();
@@ -1219,6 +1221,13 @@ void TrackLotLampEdits() {
         if (prev == g_lotLampSig.end() || prev->first != L) {
             snapDirty = true;
             if (VisibleLot(s.lot)) g_lotArrivals.insert(s.lot); // late lamp registration on a drawn lot
+            // a lamp added to a settled lot while editing (Ctrl+Z / redo brings a deleted lamp back as a new light): its lot gathers again
+            if (editing && s.lot != 0) {
+                const auto seen = g_lotSeen.find(s.lot);
+                if (seen != g_lotSeen.end() && now - seen->second.firstSeen > std::chrono::seconds(10) &&
+                    std::find(g_disabledLots.begin(), g_disabledLots.end(), s.lot) == g_disabledLots.end())
+                    g_disabledLots.push_back(s.lot);
+            }
             if (s.baked) {
                 Change& c = changes[s.lot];
                 c.added++;
@@ -1240,6 +1249,11 @@ void TrackLotLampEdits() {
             continue;
         }
         snapDirty = true;
+        // a lot lamp disabled (sold or deleted in Build mode: it stays registered and lit, 07/10): every room of its lot
+        // gathers again at once (also when it comes back enabled: Ctrl+Z / redo of a sale or delete), so rooms the lamp edit does not send (the diagonal outside walls) drop it too
+        if (s.lot != 0 && p.lot == s.lot && ((p.flags ^ s.flags) & 0x40) &&
+            std::find(g_disabledLots.begin(), g_disabledLots.end(), s.lot) == g_disabledLots.end())
+            g_disabledLots.push_back(s.lot);
         const char* why = nullptr; // why a raw change does not count
         bool counts = false, moved = false;
         float pl[3], sl[3];
@@ -1321,6 +1335,7 @@ void TrackLotLampEdits() {
         }
     }
     g_lotLampSig.swap(cur); // g_lotLampCur keeps the old list's memory for the next read
+    for (uint64_t lot : g_disabledLots) LevelLightShare::RelightLotById(lot, "a lamp disabled or enabled again (sold, deleted, undo)");
 
     // lots seen: new lots start their settle time, vanished lots are forgotten (with any pending removal)
     for (uint64_t lot : g_lotsNow)
@@ -1348,6 +1363,9 @@ void TrackLotLampEdits() {
         userDriven = true;
         userLots.push_back(lot);
         what = std::format("lamp removed on lot {:016X} (user-driven)", lot);
+        // every room of the lot lights again (07/10, a deleted lamp post kept lighting its wall): a deleted lamp runs no lamp
+        // entry update, so the outdoor rooms of the other stories (the walls) kept it in their light lists
+        if (lot != 0) LevelLightShare::RelightLotById(lot, "a lamp removed");
     }
     // More than 8 changes = lamps switching at dusk / dawn or streaming in bulk; except when they are all switches (no lamp
     // added or removed) of ONE lot: a lot's own lamps switched together (30/09: a town square's 57 lamps were ignored here,

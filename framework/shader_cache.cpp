@@ -485,3 +485,12 @@ void Shutdown() {
 }
 
 } // namespace ShaderCache
+
+namespace ShaderCache {
+void RenderThreadWaits(int* waits, double* ms) {
+    Registry& r = R();
+    std::lock_guard<std::mutex> lk(r.m);
+    if (waits) *waits = r.waits;
+    if (ms) *ms = r.waitMs;
+}
+} // namespace ShaderCache

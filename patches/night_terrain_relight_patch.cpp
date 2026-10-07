@@ -59,6 +59,7 @@
 #include "ui/i18n.h"
 #include "overlay.h"
 #include "hook_guard.h"
+#include "load_timing.h"
 #include <windows.h>
 #include <algorithm>
 #include <map>
@@ -196,7 +197,7 @@ bool g_neutralProbe = true;            // (07/10) at night the game's sky light 
 float g_neutralProbeStrength = 1.0f;
 float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
-float g_wallStrength = 0.84f; // multiplier of baked wall lamp RGB, independent of the enabled state
+float g_wallStrength = 0.30f; // multiplier of baked wall lamp RGB, independent of the enabled state
 bool g_roofs = true;
 float g_roofStrengthSetting = 0.45f;
 bool g_water = true;
@@ -1235,6 +1236,7 @@ void OnPresent() {
         // lamps-off bake, then the dusk rebuild on top): see "world live" below.
         g_loadKickPending = true;
         g_worldAt = now;
+        LoadTiming::NoteWorldChange();
         g_live = false;
         g_loadSettled.store(false);
         g_liveSignal = "none";
@@ -1265,6 +1267,7 @@ void OnPresent() {
         if (signal) {
             g_live = true;
             g_liveAt = now;
+            LoadTiming::NoteFirstWorldDraw(signal);
             g_liveSignal = std::format("{} after {:.1f} s", signal, MsSince(g_worldAt) / 1000.0);
             if (!kPublicBuild) LOG_INFO(std::format("[NightTerrainRelight] World live: {} ({})", g_liveSignal, LevelText(s.level)));
             GameAddr::CheckWorldStructs(); // builds other than Steam 1.67.2: once, logs whether the assumed struct offsets hold
@@ -1728,7 +1731,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterBoolSetting(&g_walls, "paredesComLuz", true,
             S3SS_TR("As paredes externas recebem a luz das lampadas com a forca escolhida (desligado = como o jogo).",
                     "Outside walls get lamp light at the chosen brightness (off = the game's own dim wall light)."));
-        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 0.84f, 0.25f, 4.0f,
+        RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 0.30f, 0.25f, 4.0f,
             S3SS_TR("Intensidade da luz das lampadas nas paredes externas, durante o dia e a noite.",
                     "Intensity of lamp light on outside walls, by day and night."));
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
@@ -2021,7 +2024,10 @@ class NightTerrainRelightPatch : public ApexPatch {
                 const bool busy = afterLoad && tick - g_afterLoadStarted < kAfterLoadMax && LevelLightShare::LoadedRoomsBusy();
                 const bool ready = !afterLoad || RoomAmbientPolicy::AfterLoadRefreshReady(tick, g_afterLoadStarted, busy, g_afterLoadQuiet);
                 if (ready) {
-                    if (afterLoad && !g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
+                    if (afterLoad && !g_loadSettled.exchange(true)) {
+                        LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
+                        LoadTiming::NoteLoadSettled("the after-load refresh ran");
+                    }
                     g_autoRefreshRoomsOnly.store(false);
                     HookGuard::Try("Night Lighting automatic refresh",
                                    [afterLoad] { NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad); });
@@ -2266,7 +2272,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_fenceGround = true;
         g_fenceGroundStrength = 0.75f;
         g_walls = true;
-        g_wallStrength = 0.84f;
+        g_wallStrength = 0.30f;
         g_roofs = true;
         g_roofStrengthSetting = 0.45f;
         g_water = true;
@@ -2305,9 +2311,9 @@ class NightTerrainRelightPatch : public ApexPatch {
     };
     // Preserve the approved Soft surface ratios; variants change intensity conservatively.
     static constexpr LightStyle kStyles[] = {
-        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 0.76f, 0.405f}}, // Subtle (walls 76%, user 06/10; the others keep the ratio)
-        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 0.84f, 0.45f}},        // Soft reference (the defaults, user 06/10)
-        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.13f, 0.6f}},            // Natural
+        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 0.27f, 0.405f}}, // Subtle (walls 27%, Soft 30% scaled, user 07/10; the others keep the ratio)
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 0.30f, 0.45f}},        // Soft reference (the defaults; walls 30%, user 07/10)
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.56f, 0.6f}},            // Natural (walls 56%, user 07/10)
     };
     static float* StyleValue(int i) {
         float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
@@ -2543,7 +2549,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ApexUi::GroupLabel("WALLS");
                 bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
                 if (g_walls)
-                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 0.84f);
+                    changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 0.30f);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
@@ -2918,6 +2924,9 @@ bool NightLighting::WorldLive() { return g_live; }
 bool NightLighting::LoadSettled() {
     if (g_loadSettled.load()) return true;
     if (!g_live || Clock::now() - g_liveAt < kSettleFallback) return false;
-    if (!g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: 10 s after the world went live");
+    if (!g_loadSettled.exchange(true)) {
+        LOG_INFO("[NightTerrainRelight] Load settled: 10 s after the world went live");
+        LoadTiming::NoteLoadSettled("10 s after the world went live");
+    }
     return true;
 }
