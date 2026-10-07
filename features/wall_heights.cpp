@@ -215,12 +215,13 @@ bool DrawnFootPass(float ax, float az, float bx, float bz, float ext, float base
                 if (!merged) spans.push_back({e.lo, e.hi, 1});
             }
         }
-    // the drawn span that covers the wall's light best: the stories above and below share the line
+    // The stories share the line, stacked: the wall drawn for this one has the highest foot from 3.2 m under its base to
+    // 0.3 m over it (F7 23:00:23: story 1 drawn from 61.30 for a base of 63.325, story 2 from 64.30 for 66.325, the
+    // foundation's side from 60.55 for 60.325; the largest overlap rule took the story above for the foundation's walls)
     const Span* best = nullptr;
-    float bestOverlap = 2.0f; // at least this much of [base - 3, base + 3]: a whole wall, not the story above or below
     for (const Span& s : spans) {
-        const float ov = std::min(s.hi, base + 3.0f) - std::max(s.lo, base - 3.0f);
-        if (ov > bestOverlap + 1e-3f || (best && std::fabs(ov - bestOverlap) <= 1e-3f && s.n > best->n)) bestOverlap = ov, best = &s;
+        if (s.hi - s.lo < 0.5f || s.lo < base - 3.2f || s.lo > base + 0.3f) continue;
+        if (!best || s.lo > best->lo + 0.02f || (std::fabs(s.lo - best->lo) <= 0.02f && s.n > best->n)) best = &s;
     }
     if (!best) return false;
     foot = best->lo;
