@@ -309,6 +309,9 @@ struct Cross {
     mutable bool lit = false; // it lit a point of this gather's solve (noted in g_litBy once)
     bool operator<(const Cross& o) const { return light < o.light; }
 };
+// Light through doors and windows (08/10, option "luzRealistaPorAberturas"; see "Light through doors and windows into
+// roofless rooms" below): every wall of a story with its openings and drawn tops, built on the light tree thread
+struct StoryGrid;
 // Per outdoor room (room 0 of floors 0..7), and per indoor room that takes lamps through a stair opening: the lights of
 // its list that belong to other floors. Written by the gather and read by the point solve, both on the light tree thread
 // (g_gatherThread).
@@ -318,6 +321,13 @@ struct RoomInfo {
     int id = 0;          // room id (room+0xC)
     bool indoor = false; // 4.: the lights of `cross` came through a stair opening
     std::vector<Cross> cross; // sorted by light
+    // Light through doors and windows: a roofless room's lamps of the outdoor rooms of its own story (room 0's and the other
+    // roofless rooms', sorted), each tested at every point against every wall of the story with its openings and tops
+    // (YardShadow); sameHomes = their rooms (sorted), for the sends of AfterChangedWalk
+    bool yard = false;
+    std::vector<uintptr_t> same;
+    std::vector<int> sameHomes;
+    std::shared_ptr<const StoryGrid> grid[2]; // [0] the room's story, [1] the story above (null: none)
 };
 std::unordered_map<uintptr_t, RoomInfo> g_rooms;
 uintptr_t g_evalOrig[std::size(kClasses)] = {};
@@ -341,6 +351,8 @@ struct DeferredRoom {
     DWORD at; // GetTickCount when held back (dropped after 10 s: a lot unloaded meanwhile)
 };
 extern bool g_indoorReady;
+bool OpeningsOn();      // below (after g_floorWallsOn): "Light through doors and windows" on and every part it needs in
+void ClearYardCaches(); // below: the story grids and room outlines of a world that is gone (light tree thread)
 std::mutex g_deferredMx;
 std::vector<DeferredRoom> g_deferred;
 std::atomic<long> g_deferredCount{0};
@@ -691,6 +703,7 @@ bool SeenBefore(const SeenLamp& a, const SeenLamp& b) { return a.light != b.ligh
 void MaybeClearRooms() {
     const bool world = g_clearRooms.exchange(false);
     if (world || g_seen.size() > 8192) g_seen.clear();
+    if (world) ClearYardCaches(); // light through doors and windows: the story grids and room outlines of the old world
     if (!world && g_rooms.size() <= 8192) return;
     std::erase_if(g_rooms, [](const auto& kv) { return !kv.second.indoor; });
     if (g_rooms.size() > 8192) {
@@ -750,6 +763,16 @@ void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
 // FUN_006a2060, after the indoor share (which starts this room's record again). Recorded before the first lamp goes in, so
 // a fault in the middle never leaves a lamp the point solve does not test. Needs the room update hooks (InstallIndoor): they
 // send these rooms again when an outdoor lamp of another story changes.
+// Light through doors and windows (08/10, option "luzRealistaPorAberturas"): also the outdoor lamps of its own story it can
+// reach (GatherSameStory: room 0's and the other roofless rooms', through an opening, over a wall top or past an outline edge
+// with no wall), each tested per point against every wall of the story (YardShadow); a room closed all round takes none.
+struct SameLamp {
+    uintptr_t light;
+    int home, times; // the lamp's room on this story; how often it goes in (story 0's room 0 lamps: twice, their weight there)
+};
+bool GatherSameStory(uintptr_t tracker, int S, int id, BYTE* room, const std::vector<Cross>& cross, std::vector<SameLamp>& out,
+                     std::shared_ptr<const StoryGrid>* grids); // below
+std::atomic<long> g_sameRooms{0}, g_sameAdded{0};
 void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
     const int id = *reinterpret_cast<const int*>(room + 0xC);
     if (id <= 0 || !room[0x18] || !g_indoorReady || !kAddRoomLight) return;
@@ -761,11 +784,23 @@ void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
     if (S < 0 || S > 7 || level < -4 || level > 7 || !tracker || TreeLevel(tracker, level) != reinterpret_cast<uintptr_t>(treeLevel) || StoryManager(tracker, S) != rmgr)
         return;
     g_gatherThread = ThreadId();
+    MaybeClearRooms(); // before the story grid (it may clear the grids of an old world)
     std::vector<Cross> cross;
     for (int other = 0; other <= 7; other++)
         if (other != S && StoryManager(tracker, other)) FloorOutdoorLights(TreeLevel(tracker, other), other, cross);
-    if (cross.empty()) return;
-    MaybeClearRooms();
+    std::vector<SameLamp> same;
+    std::shared_ptr<const StoryGrid> grids[2];
+    const bool yard = OpeningsOn() && GatherSameStory(tracker, S, id, room, cross, same, grids);
+    if (cross.empty() && same.empty()) {
+        // nothing to record (as before); a record of an earlier gather forgets its lamps of this story (they left the list)
+        if (const auto old = g_rooms.find(reinterpret_cast<uintptr_t>(room)); old != g_rooms.end()) {
+            old->second.yard = false;
+            old->second.same.clear();
+            old->second.sameHomes.clear();
+            old->second.grid[0] = old->second.grid[1] = nullptr;
+        }
+        return;
+    }
     RoomInfo& info = g_rooms[reinterpret_cast<uintptr_t>(room)];
     if (!info.indoor) { // a fresh record (the indoor share made none for this room)
         info.mgr = rmgr;
@@ -780,8 +815,28 @@ void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
     info.cross.insert(info.cross.end(), fresh.begin(), fresh.end());
     std::sort(info.cross.begin(), info.cross.end());
     info.cross.erase(std::unique(info.cross.begin(), info.cross.end(), [](const Cross& a, const Cross& b) { return a.light == b.light; }), info.cross.end());
-    const int added = AddOutdoorLamps(tracker, S, room, false);
+    // the lamps of its own story (light through doors and windows), recorded before the first of them goes in, as above
+    info.yard = yard;
+    info.grid[0] = grids[0];
+    info.grid[1] = grids[1];
+    info.same.clear();
+    info.sameHomes.clear();
+    for (const SameLamp& s : same) {
+        info.same.push_back(s.light);
+        info.sameHomes.push_back(s.home);
+    }
+    std::sort(info.same.begin(), info.same.end());
+    info.same.erase(std::unique(info.same.begin(), info.same.end()), info.same.end());
+    std::sort(info.sameHomes.begin(), info.sameHomes.end());
+    info.sameHomes.erase(std::unique(info.sameHomes.begin(), info.sameHomes.end()), info.sameHomes.end());
+    int added = AddOutdoorLamps(tracker, S, room, false);
+    for (const SameLamp& s : same)
+        for (int t = 0; t < s.times; t++, added++) reinterpret_cast<AddRoomLight_t>(kAddRoomLight)(room, reinterpret_cast<void*>(s.light));
     if (added) g_shared.fetch_add(added, std::memory_order_relaxed);
+    if (!same.empty()) {
+        g_sameRooms.fetch_add(1, std::memory_order_relaxed);
+        g_sameAdded.fetch_add(static_cast<long>(same.size()), std::memory_order_relaxed);
+    }
 }
 
 // ---- indoor lamps through stair openings (4.) ----
@@ -2337,10 +2392,27 @@ std::unordered_map<uintptr_t, float> g_wallSolvedH;   // wall -> the tallest col
 std::vector<uintptr_t> g_wallHRequeue;                // walls drawn taller (or shorter) than their last solve took
 std::atomic<long> g_wallUvSeen{0}, g_wallUvMatched{0}, g_wallTallCells{0}, g_wallStretched{0};
 std::atomic<int> g_wallTallLogged{0};
+// Light through doors and windows: each wall cell's drawn foot and, for a wall drawn taller than a story (> 3.02 m), the
+// tallest heights seen (kept while the wall stays: walls-down and cutaway modes draw it short for a while), with the wall's
+// line when noted (another wall made at a freed wall's address is not taken for it); the story grids read them under
+// g_wallHMx. g_wallTopGen moves when a top first appears or rises, or a foot is first seen off the wall's light base.
+struct WallTopCell {
+    float foot = 0, hl = 0, hm = 0, hr = 0; // the drawn foot (lot y) and the heights over it at the cell's low end, middle, high end
+    bool tall = false;                     // hl / hm / hr hold a height over 3.02 m
+    bool set = false;                      // the foot was seen drawn
+};
+struct WallTopRec {
+    float ox = 0, oz = 0, rx = 0, rz = 0; // the wall's line when noted (+0x100 / +0xE0, x and z)
+    std::vector<WallTopCell> cells;
+};
+std::unordered_map<uintptr_t, WallTopRec> g_wallTop; // wall -> its cells
+std::atomic<long> g_wallTopGen{1};
+std::vector<uintptr_t> g_wallTopMgrs; // story managers with a top that first appeared or rose (their roofless rooms gather again)
 struct WallCellRead {
     uintptr_t wall = 0;
     int len = 0, edge = -1, story = -99;
     float tmid = 0, perp = 0, foot = 0, hl = 3, hm = 3, hr = 3, base = 0, lotBase = 0;
+    float ox = 0, oz = 0, rx = 0, rz = 0; // the wall's line (light through doors and windows)
 };
 bool ReadWallCell(void* geo, uintptr_t mgr, int x, int z, int dir, WallCellRead& c) { // POD only (SEH)
     __try {
@@ -2359,6 +2431,7 @@ bool ReadWallCell(void* geo, uintptr_t mgr, int x, int z, int dir, WallCellRead&
         const float* r = reinterpret_cast<const float*>(c.wall + 0xE0);
         c.len = *reinterpret_cast<const int*>(c.wall + 0x24);
         c.base = o[1];
+        c.ox = o[0], c.oz = o[2], c.rx = r[0], c.rz = r[2];
         c.lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
         c.story = *reinterpret_cast<const int*>(mgr + 0x88);
         const float rr = r[0] * r[0] + r[2] * r[2];
@@ -2394,7 +2467,7 @@ void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
                              c.hr, c.perp));
     if (!sane) return;
     std::lock_guard<std::mutex> lk(g_wallHMx);
-    if (g_wallH.size() > 50000) g_wallH.clear(), g_wallSolvedH.clear();
+    if (g_wallH.size() > 50000) g_wallH.clear(), g_wallSolvedH.clear(), g_wallTop.clear();
     WallHeightRec& rec = g_wallH[c.wall];
     if (static_cast<int>(rec.cells.size()) != c.len) rec.cells.assign(c.len, WallCellH{});
     rec.cells[cell] = WallCellH{c.foot, c.hl, c.hm, c.hr, true};
@@ -2402,6 +2475,26 @@ void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
     for (const WallCellH& h : rec.cells)
         if (h.set) maxH = std::max({maxH, h.hl, h.hm, h.hr});
     rec.maxH = maxH;
+    // light through doors and windows: the cell's drawn foot, and its tallest heights over a story (never lowered while the
+    // wall stays)
+    WallTopRec& top = g_wallTop[c.wall];
+    if (static_cast<int>(top.cells.size()) != c.len || top.ox != c.ox || top.oz != c.oz || top.rx != c.rx || top.rz != c.rz) {
+        top.cells.assign(c.len, WallTopCell{});
+        top.ox = c.ox, top.oz = c.oz, top.rx = c.rx, top.rz = c.rz;
+    }
+    WallTopCell& t = top.cells[cell];
+    // a foot seen for the first time matters only where the light base is not where the wall is drawn (foundations)
+    bool rose = t.set ? std::fabs(t.foot - c.foot) > 0.02f : std::fabs(c.foot - c.base) > 0.05f;
+    t.foot = c.foot;
+    t.set = true;
+    if (tall && (!t.tall || c.hl > t.hl + 0.02f || c.hm > t.hm + 0.02f || c.hr > t.hr + 0.02f)) {
+        t.hl = std::max(t.hl, c.hl), t.hm = std::max(t.hm, c.hm), t.hr = std::max(t.hr, c.hr);
+        t.tall = rose = true;
+    }
+    if (rose) {
+        g_wallTopGen.fetch_add(1, std::memory_order_relaxed);
+        if (std::find(g_wallTopMgrs.begin(), g_wallTopMgrs.end(), mgr) == g_wallTopMgrs.end() && g_wallTopMgrs.size() < 256) g_wallTopMgrs.push_back(mgr);
+    }
     const auto it = g_wallSolvedH.find(c.wall);
     if (it != g_wallSolvedH.end() && std::fabs(it->second - (maxH > 3.02f ? maxH : 3.0f)) > 0.05f &&
         std::find(g_wallHRequeue.begin(), g_wallHRequeue.end(), c.wall) == g_wallHRequeue.end() && g_wallHRequeue.size() < 4096)
@@ -2473,6 +2566,875 @@ void RequeueTallWalls() {
     for (const auto& [mgr, story, id] : rooms)
         if (const uintptr_t tracker = MgrTracker(mgr)) queued += QueueRoom(tracker, story, id, true);
     if (queued) LOG_INFO(std::format("[WallTall] {} walls drawn taller than lit: {} rooms solved again", walls.size(), queued));
+}
+
+// ======== Light through doors and windows into roofless rooms (08/10, option "luzRealistaPorAberturas") ========
+// (user) The light of the lamps outside a walled roofless room (a yard, a light well, a deck behind a half wall) gets in
+// only as it would: a room closed all round gets none; a door, a window or an arch lets through what its opening lets
+// through, at its height (sill to head); a lamp above a wall's drawn top lights over it; every wall of the story counts, not
+// only room 0's; snow on floors respects the walls too (lot_light_bridge DrawSnowFloor / DrawFloor). The game cannot: such
+// a room gathers only its own lamps (only room 0 takes a story's outdoor lights, 0x006C6B0D), and its 2D wall test
+// (0x0069FC40) sees whole wall runs (doors and windows are cut only where the wall is drawn, through a mask texture) that
+// block at any height but half walls (occluder +0xEC bit 2 = byte [wall+0x11] & 1, 1 m over its base [0x0107A538], soft
+// mode only, 0x0069AC0A).
+//  - Openings: the lighting knows none. Lot::AddWallAndFenceCutouts 0x00B0D460 (and its removal 0x00B0D920) posts message
+//    0x06257EB4 for each wall cell an object cuts (payload, ctor 0x00B03300: lot id +0x08/+0x0C, cell edge key +0x10 {x0,
+//    z0, story, x1, z1, story}, mask texture +0x18 (all zero = closed again), orientation +0x28, piece +0x29, pieces / 2
+//    +0x2A). CutAddThunk / CutRemoveThunk note each post (any thread, lot loads included) per lot id and story, with the
+//    object's kind from its catalog product (+0xD0: 0x2 door, 0x4 window, 0x8 gate, 0x100 arch), which both functions keep
+//    on their stack.
+//  - Walls: StoryGrid, built on the light tree thread from the story's 1 m lighting tiles (mgr+0x260): every LightingWall
+//    face sits in the slot of its orientation of each tile of its run (tile +0x58 + wall[+0x8] * 4, 0x006AB04E ->
+//    0x006A9850), so the tiles hold every wall of the story. Per cell edge: its foot, its top (3 m, 1 m for a half wall,
+//    the drawn height of a wall taller than a story) and its opening; per tile, the quadrants under a roof or a ceiling.
+//  - Lamps: a roofless room also takes the outdoor lamps of its own story it can reach (GatherSameStory); each is tested at
+//    every point (YardShadow -> GridPass: the walls of its story, and of the story above for a ray that high, where the 2D
+//    path from the lamp crosses them, at the ray's height there), and the game's own wall test of that lamp is skipped
+//    (GameWallTest). The room's own lamps and the other stories' lamps keep their tests.
+// Steam 1.67.2 only (both post sites are checked at install): without them no opening is known and a closed room stays
+// closed (lamps above its walls still light over them).
+enum : uint8_t { kCutUnknown = 0, kCutDoor = 1, kCutWindow = 2, kCutArch = 3, kCutGate = 4 };
+const char* CutKindName(uint8_t k) {
+    static const char* const kNames[] = {"unknown", "door", "window", "arch", "gate"};
+    return kNames[k < 5 ? k : 0];
+}
+// The catalog product's BuildCategory flags (+0xD0; 0x00C97AC0 tests 0x4000010E for "cuts a wall"): 0x2 door, 0x4 window,
+// 0x8 gate, 0x100 arch (meanings from the build catalog, not checked in game: logged with each cut)
+uint8_t CutKind(uint32_t f) { return f & 0x100 ? kCutArch : f & 0x2 ? kCutDoor : f & 0x8 ? kCutGate : f & 0x4 ? kCutWindow : kCutUnknown; }
+struct CutRec {
+    uint8_t kind = kCutUnknown, orient = 0, piece = 0, count = 0;
+    uint32_t flags = 0;   // the product's +0xD0
+    uint32_t tgi[4] = {}; // the mask texture (payload +0x18): the opening's exact shape, for a later stage
+};
+struct StoryCuts {
+    uint32_t gen = 0;
+    std::unordered_map<uint32_t, CutRec> edges; // EdgeKey -> its cut
+};
+std::mutex g_cutMx;
+std::map<std::pair<uint64_t, int>, StoryCuts> g_cuts;     // (lot id as its story managers carry it, +0x90 / +0x94; story) -> its cut cells
+std::unordered_map<uint64_t, uint64_t> g_cutAlias;        // a lot id of the posts -> its story managers' lot id, where they differ
+std::vector<std::tuple<uint64_t, int, DWORD>> g_cutDirty; // (lot id, story, last post): its roofless rooms gather again once quiet
+std::atomic<uint32_t> g_cutGen{1};
+std::atomic<long> g_cutPosts{0}, g_cutCloses{0}, g_cutUnread{0}, g_cutChecked{0}, g_cutIdDiffers{0};
+std::atomic<int> g_cutLogged{0};
+bool g_cutReady = false;
+std::vector<MemPatch::PatchLocation> g_cutPatches;
+// A cell edge of a story's 1 m grid by its two lot cell corners (the game's WallSegmentKey without its story), either order
+uint32_t EdgeKey(int x0, int z0, int x1, int z1) {
+    if (x1 < x0 || (x1 == x0 && z1 < z0)) {
+        std::swap(x0, x1);
+        std::swap(z0, z1);
+    }
+    return static_cast<uint32_t>(static_cast<uint8_t>(x0)) | static_cast<uint32_t>(static_cast<uint8_t>(z0)) << 8 |
+           static_cast<uint32_t>(static_cast<uint8_t>(x1)) << 16 | static_cast<uint32_t>(static_cast<uint8_t>(z1)) << 24;
+}
+// At 0x00B0D860 (Add) and 0x00B0DD0F (Remove), the same 15 bytes: 8B 16 | 50 | 8B 42 1C | 68 B4 7E 25 06 | 8B CE | FF D0 =
+// mov edx,[esi]; push eax (the payload); mov eax,[edx+1Ch]; push 6257EB4h; mov ecx,esi; call eax (the message bus,
+// thiscall(bus, id, payload, 0, 0) ret 10h). The 5-byte push at +6 becomes a call of the thunk, which notes the payload and
+// pushes the id itself; every register is kept but ecx, which the next instruction loads anyway.
+constexpr uintptr_t kCutPostSites[2] = {0x00B0D866, 0x00B0DD15};
+const BYTE kCutPostBytes[15] = {0x8B, 0x16, 0x50, 0x8B, 0x42, 0x1C, 0x68, 0xB4, 0x7E, 0x25, 0x06, 0x8B, 0xCE, 0xFF, 0xD0};
+// From esp at the replaced push (three pushes since the function's own frame: two zeros and the payload): the catalog
+// product that Add keeps at [esp+34h] (0x00B0D48F) and Remove at [esp+24h] (0x00B0D94F); the lot that Remove keeps at
+// [esp+18h] (0x00B0D9A3; Add keeps it in edi from 0x00B0D4E2 on)
+constexpr uint32_t kCutProductAt[2] = {0x40, 0x30};
+constexpr uint32_t kCutLotAt = 0x24;
+struct CutRaw {
+    uint64_t postLot = 0, mgrLot = 0; // payload +0x08 / +0x0C (lot +0x48 / +0x4C); the lot's story managers' (+0x90 / +0x94), 0 = not known
+    int8_t key[6] = {};               // payload +0x10: x0, z0, story, x1, z1, story
+    uint32_t tgi[4] = {};             // payload +0x18; all zero = the cell is closed again
+    uint8_t orient = 0, piece = 0, count = 0;
+    uint32_t flags = 0;               // the product's +0xD0 (0 = not read)
+    uintptr_t obj = 0, mgr = 0;
+    bool chain = false; // the lot's lighting (+0x23C) has a story manager at the key's story (0x00ADBCC0)
+};
+bool ReadCutRaw(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lotReg, CutRaw& r) { // POD only (SEH)
+    __try {
+        const BYTE* p = reinterpret_cast<const BYTE*>(siteEsp[0]);
+        if (!p) return false;
+        r.postLot = *reinterpret_cast<const uint32_t*>(p + 0x08) | static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(p + 0x0C)) << 32;
+        std::memcpy(r.key, p + 0x10, sizeof r.key);
+        std::memcpy(r.tgi, p + 0x18, sizeof r.tgi);
+        r.orient = p[0x28];
+        r.piece = p[0x29];
+        r.count = p[0x2A];
+        r.obj = *reinterpret_cast<const uintptr_t*>(frame + 8); // the cdecl argument of Add / Remove (both keep an ebp frame)
+        const BYTE* product = *reinterpret_cast<const BYTE* const*>(reinterpret_cast<const BYTE*>(siteEsp) + kCutProductAt[add ? 0 : 1]);
+        // the entry the function read (its wall cutout infos +0xD4 / +0xD8 are not empty: checked at its start)
+        if (product && *reinterpret_cast<const uintptr_t*>(product + 0xD4) != *reinterpret_cast<const uintptr_t*>(product + 0xD8))
+            r.flags = *reinterpret_cast<const uint32_t*>(product + 0xD0);
+        const uintptr_t lot = add ? lotReg : *reinterpret_cast<const uintptr_t*>(reinterpret_cast<const BYTE*>(siteEsp) + kCutLotAt);
+        if (lot) { // the lot id its story managers carry
+            const uintptr_t lighting = *reinterpret_cast<const uintptr_t*>(lot + 0x23C);
+            r.mgr = lighting ? LotStoryManager(lighting, r.key[2]) : 0;
+            if (r.mgr && *reinterpret_cast<const int*>(r.mgr + 0x88) == r.key[2]) {
+                r.chain = true;
+                r.mgrLot = *reinterpret_cast<const uint32_t*>(r.mgr + 0x90) | static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(r.mgr + 0x94)) << 32;
+            }
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// Any thread that adds or removes cutouts (the main thread, lot loads), inside the game's loop: no game call, one lock
+void __cdecl NoteCutoutPost(int add, const uintptr_t* siteEsp, uintptr_t frame, uintptr_t lotReg) {
+    CutRaw r;
+    if (!ReadCutRaw(add, siteEsp, frame, lotReg, r)) {
+        g_cutUnread.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const int story = r.key[2];
+    if (std::abs(r.key[3] - r.key[0]) + std::abs(r.key[4] - r.key[1]) != 1 || r.key[5] != story) { // one side edge of a cell
+        g_cutUnread.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const bool cut = add && (r.tgi[0] | r.tgi[1] | r.tgi[2] | r.tgi[3]);
+    const uint32_t k = EdgeKey(r.key[0], r.key[1], r.key[3], r.key[4]);
+    uint64_t lot = r.postLot;
+    {
+        std::lock_guard<std::mutex> lk(g_cutMx);
+        if (r.chain && r.mgrLot != r.postLot) {
+            if (g_cutAlias.emplace(r.postLot, r.mgrLot).second) // first seen: what was noted under the posts' id moves
+                for (auto it = g_cuts.lower_bound({r.postLot, INT_MIN}); it != g_cuts.end() && it->first.first == r.postLot;) {
+                    StoryCuts& to = g_cuts[{r.mgrLot, it->first.second}];
+                    to.edges.insert(it->second.edges.begin(), it->second.edges.end());
+                    to.gen = g_cutGen.fetch_add(1, std::memory_order_relaxed) + 1;
+                    it = g_cuts.erase(it);
+                }
+            lot = r.mgrLot;
+        } else if (const auto a = g_cutAlias.find(r.postLot); a != g_cutAlias.end())
+            lot = a->second;
+        if (g_cuts.size() > 4096) g_cuts.clear(); // (lots of earlier worlds)
+        StoryCuts& s = g_cuts[{lot, story}];
+        if (cut) s.edges[k] = CutRec{CutKind(r.flags), r.orient, r.piece, r.count, r.flags, {r.tgi[0], r.tgi[1], r.tgi[2], r.tgi[3]}};
+        else s.edges.erase(k);
+        s.gen = g_cutGen.fetch_add(1, std::memory_order_relaxed) + 1;
+        const DWORD now = GetTickCount();
+        const auto d = std::find_if(g_cutDirty.begin(), g_cutDirty.end(), [&](const auto& e) { return std::get<0>(e) == lot && std::get<1>(e) == story; });
+        if (d != g_cutDirty.end()) std::get<2>(*d) = now;
+        else if (g_cutDirty.size() < 512) g_cutDirty.emplace_back(lot, story, now);
+    }
+    (cut ? g_cutPosts : g_cutCloses).fetch_add(1, std::memory_order_relaxed);
+    if (r.chain) {
+        g_cutChecked.fetch_add(1, std::memory_order_relaxed);
+        if (r.mgrLot != r.postLot) g_cutIdDiffers.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!kPublicBuild && g_cutLogged.fetch_add(1, std::memory_order_relaxed) < 300)
+        LOG_INFO(std::format("[Openings] {} lot {:016X} story {} edge ({},{})-({},{}): {} (product flags {:08X}, object {:08X}, orientation {}, piece {} of {}), mask {:08X} {:08X} {:08X} {:08X}{}",
+                             cut ? "cut" : "closed", lot, story, r.key[0], r.key[1], r.key[3], r.key[4], CutKindName(CutKind(r.flags)), r.flags, r.obj, r.orient, r.piece,
+                             r.count, r.tgi[0], r.tgi[1], r.tgi[2], r.tgi[3],
+                             r.chain ? (r.mgrLot == r.postLot ? std::string(", lot id = its story managers'")
+                                                              : std::format(", lot id {:016X} of the post DIFFERS (its story managers' used)", r.postLot))
+                                     : std::string(", story manager not built yet")));
+}
+__declspec(naked) void CutAddThunk() {
+    __asm {
+        pushad
+        lea eax, [esp + 24h] // esp at the replaced push (pushad 20h, this call's return address 4): [eax] = the payload
+        push edi             // the lot (Add keeps it in edi)
+        push ebp             // the function's frame: [ebp + 8] = the object
+        push eax
+        push 1
+        call NoteCutoutPost
+        add esp, 10h
+        popad
+        pop ecx              // this call's return address (the next instruction, "mov ecx,esi", loads ecx anyway)
+        push 6257EB4h        // the replaced instruction
+        jmp ecx
+    }
+}
+__declspec(naked) void CutRemoveThunk() {
+    __asm {
+        pushad
+        lea eax, [esp + 24h]
+        push 0               // (Remove keeps its lot on the stack: ReadCutRaw reads it there)
+        push ebp
+        push eax
+        push 0
+        call NoteCutoutPost
+        add esp, 10h
+        popad
+        pop ecx
+        push 6257EB4h
+        jmp ecx
+    }
+}
+// Install (Steam 1.67.2 only): both sites or none. Installed with the module whatever the option, so the lots loaded while
+// the option is off still know their openings when it is turned on
+bool InstallCutoutCapture() {
+    if (g_cutReady) return true;
+    if (!GameAddr::IsFixed()) return false;
+    for (uintptr_t site : kCutPostSites)
+        if (!MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(site - 6), kCutPostBytes, sizeof kCutPostBytes)) return false;
+    const void* const thunks[2] = {reinterpret_cast<const void*>(&CutAddThunk), reinterpret_cast<const void*>(&CutRemoveThunk)};
+    const std::vector<BYTE> expected(kCutPostBytes + 6, kCutPostBytes + 11);
+    bool ok = true;
+    for (int k = 0; k < 2 && ok; k++) {
+        BYTE call[5] = {0xE8, 0, 0, 0, 0};
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thunks[k]) - (kCutPostSites[k] + 5));
+        std::memcpy(call + 1, &rel, 4);
+        ok = MemPatch::WriteBytes(kCutPostSites[k], std::vector<BYTE>(call, call + 5), &g_cutPatches, &expected);
+    }
+    if (!ok) {
+        MemPatch::RestoreAll(g_cutPatches);
+        g_cutPatches.clear();
+        return false;
+    }
+    g_cutReady = true;
+    return true;
+}
+// Uninstall: the game's bytes back, and what was noted forgotten (cuts made while it is out would be missed: a closed room
+// stays closed rather than lit through a door that is gone)
+void UninstallCutoutCapture() {
+    MemPatch::RestoreAll(g_cutPatches);
+    g_cutPatches.clear();
+    g_cutReady = false;
+    std::lock_guard<std::mutex> lk(g_cutMx);
+    g_cuts.clear();
+    g_cutAlias.clear();
+    g_cutDirty.clear();
+}
+// A copy of one story's cut cells (light tree thread, at its grid build); gen = 0 when none were noted
+uint32_t CopyStoryCuts(uint64_t lot, int story, std::vector<std::pair<uint32_t, CutRec>>* out) {
+    std::lock_guard<std::mutex> lk(g_cutMx);
+    const auto it = g_cuts.find({lot, story});
+    if (it == g_cuts.end()) return 0;
+    if (out) out->assign(it->second.edges.begin(), it->second.edges.end());
+    return it->second.gen;
+}
+
+// ---- The walls of a story, with their openings and tops (light tree thread) ----
+constexpr float kGridSoft = 0.04f;   // m: the soft rim of an opening and of a wall's top (no hard texel stairs on a floor)
+constexpr float kGridLampSkip = 0.01f, kGridEndSkip = 0.01f; // m along the ray: a crossing this close to the lamp / the point is not one
+constexpr float kStoryWallH = 3.0f;  // [0x00FF37DC]: a wall's height over its base for the game's wall light
+constexpr float kHalfWallH = 1.0f;   // [0x0107A538]: a half wall's height in the game's own soft wall test (0x0069ACB9)
+constexpr float kSameReachM = 16.0f; // m from a room's outline: farther lamps are not taken (when a lamp's range is not readable)
+constexpr float kNoFloor = -1e30f;   // a tile with no floor height
+struct GridEdge {
+    float foot = 1e9f;                  // lot y: the lowest light base or drawn foot of its faces (a ray under it passes)
+    float base = 0.0f;                  // lot y: the floor its opening stands on (the higher floor of the tiles beside it)
+    float topL = 0, topM = 0, topR = 0; // lot y of its top at its low end (low x, or low z), middle and high end
+    uint16_t open = 0;                  // 1 + index into StoryGrid::openings, 0 = none
+    uint8_t faces = 0;
+    bool half = false;
+};
+struct GridOpening {
+    float sill = 0, head = 2.2f; // m over the edge's base
+    float u0 = 0, u1 = 1;        // along the edge from its low end (the jambs)
+    uint8_t kind = 0;
+};
+struct StoryGrid {
+    uintptr_t mgr = 0, tiles = 0;
+    int story = 0, w = 0, h = 0;
+    uint64_t sig = 0, lot = 0;
+    uint32_t cutGen = 0, serial = 0;
+    long topGen = 0;
+    Xform xf{};                 // world -> lot (mgr+0xE0, the same on every story of the lot)
+    float minFoot = 1e9f;       // the lowest wall foot (the story above is tested only for rays that high)
+    std::vector<int32_t> zl;    // edge (x, Z)-(x + 1, Z) at Z * w + x (Z = 0..h); -1 = no wall
+    std::vector<int32_t> xl;    // edge (X, z)-(X, z + 1) at z * (w + 1) + X (X = 0..w)
+    std::vector<int32_t> dg;    // per tile: [0] (x, z)-(x + 1, z + 1), [1] (x, z + 1)-(x + 1, z)
+    std::vector<uint8_t> flags; // per tile: bit 0 / 1 a diagonal wall [0] / [1]; bit 4 + q: quadrant q under a roof or a ceiling
+    std::vector<float> ceil;    // per tile: its floor + 3 m (a ray crossing that height over a roofed quadrant meets the roof)
+    std::vector<int32_t> quad;  // per tile, 4: the quadrants' room ids (FUN_006a9760)
+    std::vector<GridEdge> edges;
+    std::vector<GridOpening> openings;
+    int walls = 0, halves = 0, talls = 0, diagonals = 0, roofed = 0, cutsOnWall = 0, cutsNoWall = 0, slotOdd = 0;
+    double buildMs = 0;
+};
+int32_t GridZL(const StoryGrid& g, int x, int Z) { return x >= 0 && x < g.w && Z >= 0 && Z <= g.h ? g.zl[static_cast<size_t>(Z) * g.w + x] : -1; }
+int32_t GridXL(const StoryGrid& g, int X, int z) { return X >= 0 && X <= g.w && z >= 0 && z < g.h ? g.xl[static_cast<size_t>(z) * (g.w + 1) + X] : -1; }
+struct GridTileRead {
+    uintptr_t walls[8];
+    float floor;
+    int rooms[4];
+};
+bool ReadGridTile(uintptr_t mgr, int ix, int iz, GridTileRead& t) { // POD only (SEH); false = no tile
+    __try {
+        const uintptr_t tile = LightTile(mgr, ix, iz);
+        if (!tile) return false;
+        std::memcpy(t.walls, reinterpret_cast<const void*>(tile + 0x58), sizeof t.walls);
+        t.floor = *reinterpret_cast<const float*>(tile + 0x78);
+        for (int q = 0; q < 4; q++) t.rooms[q] = TileRoom(tile, q);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// 1 roofless (solved as outdoor, +0x18), 0 under a roof or a ceiling, -1 no such room (POD only, SEH)
+int RoomRoofState(uintptr_t mgr, int id) {
+    __try {
+        const BYTE* room = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgr), id));
+        return room ? (room[0x18] ? 1 : 0) : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+struct GridWallRead {
+    float ox, oy, oz, rx, rz; // the face's start and run (+0x100 / +0xE0, lot space; it sits 5 cm inside its cell from the edge)
+    int len, orient;          // cells (+0x24); orientation (+0x8, its tile slot: 0 -z, 1 +z, 2 +x, 3 -x edge, 4..7 diagonals)
+    bool half;                // byte +0x11 bit 0 (0x006A9480(5) at 0x006ABD6F: the occluder's half wall bit, +0xEC bit 2)
+};
+bool ReadGridWall(uintptr_t w, GridWallRead& g) { // POD only (SEH)
+    __try {
+        const float* o = reinterpret_cast<const float*>(w + 0x100);
+        const float* r = reinterpret_cast<const float*>(w + 0xE0);
+        g.ox = o[0], g.oy = o[1], g.oz = o[2], g.rx = r[0], g.rz = r[2];
+        g.len = *reinterpret_cast<const int*>(w + 0x24);
+        g.orient = *reinterpret_cast<const int*>(w + 0x8);
+        g.half = (*reinterpret_cast<const BYTE*>(w + 0x11) & 1) != 0;
+        return g.len >= 1 && g.len <= 64 && std::isfinite(g.ox) && std::isfinite(g.oy) && std::isfinite(g.oz) && std::isfinite(g.rx) && std::isfinite(g.rz);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// What the grid is built from: the tile array, every wall pointer of every tile with its light base and length (a wall set
+// up again in place moves its base: the foundation option), the lot id and the story (POD only, SEH)
+bool ReadGridStamp(uintptr_t mgr, int w, int h, uintptr_t& tiles, uint64_t& sig, uint64_t& lot, int& story) {
+    __try {
+        tiles = *reinterpret_cast<const uintptr_t*>(mgr + 0x260);
+        lot = *reinterpret_cast<const uint32_t*>(mgr + 0x90) | static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(mgr + 0x94)) << 32;
+        story = *reinterpret_cast<const int*>(mgr + 0x88);
+        uint64_t s = 1469598103934665603ull;
+        for (int iz = 0; iz < h; iz++)
+            for (int ix = 0; ix < w; ix++) {
+                const uintptr_t tile = LightTile(mgr, ix, iz);
+                s = (s ^ tile) * 1099511628211ull;
+                if (!tile) continue;
+                for (int e = 0; e < 8; e++) {
+                    const uintptr_t wall = *reinterpret_cast<const uintptr_t*>(tile + 0x58 + e * 4);
+                    if (!wall) continue;
+                    s = (s ^ wall) * 1099511628211ull;
+                    s = (s ^ *reinterpret_cast<const uint32_t*>(wall + 0x104)) * 1099511628211ull;
+                    s = (s ^ *reinterpret_cast<const uint32_t*>(wall + 0x24)) * 1099511628211ull;
+                }
+            }
+        sig = s;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// The grid edge a face found in tile (ix, iz) lies on, from its own line (the start sits 0.05 m inside the face's cell from
+// the edge, ReadWallBase; across the tile for a diagonal), and the cell of its run that holds the tile; flip = the run goes
+// toward -x (-z for a run along z): the face's left / right heights are then the edge's high / low end. False = not on
+// this tile's edges.
+bool FaceEdge(const StoryGrid& g, const GridWallRead& f, int ix, int iz, int& kind, size_t& index, int& cell, bool& flip) {
+    const float ax = std::fabs(f.rx), az = std::fabs(f.rz), rr = f.rx * f.rx + f.rz * f.rz;
+    if (!(rr > 1e-4f)) return false;
+    const float t = ((static_cast<float>(ix) + 0.5f - f.ox) * f.rx + (static_cast<float>(iz) + 0.5f - f.oz) * f.rz) / rr; // the tile's centre along the run
+    cell = static_cast<int>(std::floor(t * static_cast<float>(f.len)));
+    if (az < 0.01f * ax) { // along x: the line z = Z, the tile's -z or +z edge
+        const int Z = static_cast<int>(std::lround(f.oz));
+        if (Z != iz && Z != iz + 1) return false;
+        kind = 0, index = static_cast<size_t>(Z) * g.w + ix, flip = f.rx < 0.0f;
+    } else if (ax < 0.01f * az) { // along z: the line x = X
+        const int X = static_cast<int>(std::lround(f.ox));
+        if (X != ix && X != ix + 1) return false;
+        kind = 1, index = static_cast<size_t>(iz) * (g.w + 1) + X, flip = f.rz < 0.0f;
+    } else if (std::fabs(ax - az) < 0.02f * std::max(ax, az)) { // a diagonal across the tile
+        kind = 2, index = 2 * (static_cast<size_t>(iz) * g.w + ix) + ((f.rx > 0.0f) == (f.rz > 0.0f) ? 0 : 1), flip = f.rx < 0.0f;
+    } else
+        return false;
+    return cell >= 0 && cell < f.len;
+}
+// The slot a face of that edge kind and side has (0x006A9890: slot 0 / 1 / 2 / 3 = quadrant 0 / 2 / 1 / 3 of its tile): a check only (logged)
+bool SlotMatches(int slot, int kind, size_t index, const StoryGrid& g, int ix, int iz) {
+    if (kind == 0) return slot == (index / static_cast<size_t>(g.w) == static_cast<size_t>(iz) ? 0 : 1);
+    if (kind == 1) return slot == (index % static_cast<size_t>(g.w + 1) == static_cast<size_t>(ix) + 1 ? 2 : 3);
+    return slot >= 4;
+}
+void OpeningDefaults(uint8_t kind, GridOpening& o) { // until the masks are read (a later stage): m over the edge's base
+    o.kind = kind;
+    switch (kind) {
+    case kCutDoor:
+    case kCutGate: o.sill = 0.0f, o.head = 2.2f, o.u0 = 0.08f, o.u1 = 0.92f; break;
+    case kCutArch: o.sill = 0.0f, o.head = 2.4f, o.u0 = 0.03f, o.u1 = 0.97f; break;
+    default: o.sill = 0.85f, o.head = 2.25f, o.u0 = 0.10f, o.u1 = 0.90f; break; // a window, and a cut of unknown kind (the smaller hole)
+    }
+}
+std::unordered_map<uintptr_t, std::shared_ptr<const StoryGrid>> g_grids; // light tree thread: story manager -> its grid
+uint32_t g_gridSerial = 0;
+std::atomic<long> g_gridBuilds{0}, g_gridReused{0};
+std::atomic<int> g_gridLogged{0};
+std::shared_ptr<const StoryGrid> BuildStoryGrid(uintptr_t mgr, int story, int w, int h, uintptr_t tiles, uint64_t sig, uint64_t lot, long topGen) {
+    LARGE_INTEGER q0{}, q1{}, qf{};
+    QueryPerformanceCounter(&q0);
+    auto g = std::make_shared<StoryGrid>();
+    g->mgr = mgr, g->tiles = tiles, g->story = story, g->w = w, g->h = h, g->sig = sig, g->lot = lot, g->topGen = topGen;
+    if (!ReadXform(mgr, g->xf)) return nullptr;
+    const size_t nt = static_cast<size_t>(w) * h;
+    g->zl.assign(static_cast<size_t>(h + 1) * w, -1);
+    g->xl.assign(static_cast<size_t>(w + 1) * h, -1);
+    g->dg.assign(2 * nt, -1);
+    g->flags.assign(nt, 0);
+    g->ceil.assign(nt, 1e9f);
+    g->quad.assign(4 * nt, 0);
+    std::vector<float> floorY(nt, kNoFloor); // the tiles' +0x78
+    struct FaceSum {
+        float foot = 1e9f, fullL = -1e9f, fullM = -1e9f, fullR = -1e9f, halfTop = -1e9f;
+        bool full = false;
+        int faces = 0, kind = 0;
+        size_t index = 0;
+    };
+    struct Face {
+        int kind;
+        size_t index, wall; // wall: index into wallCache
+        int cell;
+        bool flip;
+    };
+    std::vector<FaceSum> sums;
+    std::vector<std::pair<uintptr_t, GridWallRead>> wallCache; // each wall read once (a run is in several tiles)
+    std::unordered_map<uintptr_t, size_t> wallAt;
+    std::unordered_map<uintptr_t, std::vector<WallTopCell>> tops; // the drawn feet and tall tops of the walls met (one lock)
+    std::unordered_map<int, bool> roofedRoom;                     // room id -> under a roof or a ceiling
+    std::vector<Face> faces;
+    for (int iz = 0; iz < h; iz++)
+        for (int ix = 0; ix < w; ix++) {
+            GridTileRead t{};
+            if (!ReadGridTile(mgr, ix, iz, t)) continue;
+            const size_t ti = static_cast<size_t>(iz) * w + ix;
+            if (std::isfinite(t.floor)) {
+                floorY[ti] = t.floor;
+                g->ceil[ti] = t.floor + kStoryWallH;
+            }
+            for (int q = 0; q < 4; q++) {
+                g->quad[4 * ti + q] = t.rooms[q];
+                if (t.rooms[q] <= 0) continue;
+                auto rr = roofedRoom.find(t.rooms[q]);
+                if (rr == roofedRoom.end()) rr = roofedRoom.emplace(t.rooms[q], RoomRoofState(mgr, t.rooms[q]) == 0).first;
+                if (rr->second) g->flags[ti] |= static_cast<uint8_t>(0x10 << q);
+            }
+            if (g->flags[ti] & 0xF0) g->roofed++;
+            for (int e = 0; e < 8; e++) {
+                const uintptr_t wall = t.walls[e];
+                if (!wall) continue;
+                auto at = wallAt.find(wall);
+                if (at == wallAt.end()) {
+                    GridWallRead f{};
+                    if (!ReadGridWall(wall, f)) continue;
+                    at = wallAt.emplace(wall, wallCache.size()).first;
+                    wallCache.emplace_back(wall, f);
+                }
+                Face fc{};
+                fc.wall = at->second;
+                if (!FaceEdge(*g, wallCache[fc.wall].second, ix, iz, fc.kind, fc.index, fc.cell, fc.flip)) {
+                    g->slotOdd++;
+                    continue;
+                }
+                if (!SlotMatches(e, fc.kind, fc.index, *g, ix, iz)) g->slotOdd++;
+                faces.push_back(fc);
+            }
+        }
+    {
+        std::lock_guard<std::mutex> lk(g_wallHMx);
+        for (const auto& [wall, f] : wallCache)
+            if (const auto it = g_wallTop.find(wall); it != g_wallTop.end() && static_cast<int>(it->second.cells.size()) == f.len && it->second.ox == f.ox &&
+                                                       it->second.oz == f.oz && it->second.rx == f.rx && it->second.rz == f.rz)
+                tops.emplace(wall, it->second.cells);
+    }
+    for (const Face& fc : faces) {
+        const uintptr_t wall = wallCache[fc.wall].first;
+        const GridWallRead& f = wallCache[fc.wall].second;
+        int32_t& slotRef = (fc.kind == 0 ? g->zl : fc.kind == 1 ? g->xl : g->dg)[fc.index];
+        if (slotRef < 0) {
+            slotRef = static_cast<int32_t>(g->edges.size());
+            g->edges.emplace_back();
+            FaceSum s;
+            s.kind = fc.kind;
+            s.index = fc.index;
+            sums.push_back(s);
+        }
+        FaceSum& s = sums[static_cast<size_t>(slotRef)];
+        float foot = f.oy, drawnFoot = f.oy, hl = 0, hm = 0, hr = 0;
+        bool tall = false;
+        if (const auto it = tops.find(wall); it != tops.end() && it->second[static_cast<size_t>(fc.cell)].set) {
+            const WallTopCell& c = it->second[static_cast<size_t>(fc.cell)];
+            if (std::fabs(c.foot - f.oy) < 3.5f) { // (a foot that far from the base is not this wall's)
+                drawnFoot = c.foot;
+                foot = std::min(foot, c.foot);
+                tall = c.tall;
+                hl = fc.flip ? c.hr : c.hl, hm = c.hm, hr = fc.flip ? c.hl : c.hr;
+            }
+        }
+        s.foot = std::min(s.foot, foot);
+        s.faces++;
+        if (f.half) s.halfTop = std::max(s.halfTop, foot + kHalfWallH);
+        else {
+            s.full = true;
+            const float plain = foot + kStoryWallH;
+            s.fullL = std::max(s.fullL, tall ? std::max(plain, drawnFoot + hl) : plain);
+            s.fullM = std::max(s.fullM, tall ? std::max(plain, drawnFoot + hm) : plain);
+            s.fullR = std::max(s.fullR, tall ? std::max(plain, drawnFoot + hr) : plain);
+        }
+        if (fc.kind == 2) g->flags[fc.index / 2] |= static_cast<uint8_t>(1 << (fc.index & 1));
+    }
+    const auto floorAt = [&](int x, int z) { return x >= 0 && z >= 0 && x < w && z < h ? floorY[static_cast<size_t>(z) * w + x] : kNoFloor; };
+    for (size_t i = 0; i < g->edges.size(); i++) {
+        GridEdge& e = g->edges[i];
+        const FaceSum& s = sums[i];
+        e.foot = s.foot;
+        e.faces = static_cast<uint8_t>(std::min(s.faces, 255));
+        e.half = !s.full;
+        e.topL = s.full ? s.fullL : s.halfTop;
+        e.topM = s.full ? s.fullM : s.halfTop;
+        e.topR = s.full ? s.fullR : s.halfTop;
+        float a = kNoFloor, b = kNoFloor;
+        if (s.kind == 0) a = floorAt(static_cast<int>(s.index % w), static_cast<int>(s.index / w) - 1), b = floorAt(static_cast<int>(s.index % w), static_cast<int>(s.index / w));
+        else if (s.kind == 1) a = floorAt(static_cast<int>(s.index % (w + 1)) - 1, static_cast<int>(s.index / (w + 1))), b = floorAt(static_cast<int>(s.index % (w + 1)), static_cast<int>(s.index / (w + 1)));
+        else a = floorY[s.index / 2];
+        e.base = std::max({e.foot, a, b});
+        g->minFoot = std::min(g->minFoot, e.foot);
+        g->walls++;
+        if (e.half) g->halves++;
+        else if (std::max({e.topL, e.topM, e.topR}) > e.foot + kStoryWallH + 0.02f) g->talls++;
+    }
+    for (int32_t i : g->dg) g->diagonals += i >= 0 ? 1 : 0;
+    // the openings noted for this story, on the edges with a wall
+    std::vector<std::pair<uint32_t, CutRec>> cuts;
+    g->cutGen = CopyStoryCuts(lot, story, &cuts);
+    std::unordered_set<uint32_t> cutKeys;
+    for (const auto& c : cuts) cutKeys.insert(c.first);
+    for (const auto& [key, rec] : cuts) {
+        const int x0 = static_cast<int8_t>(key & 0xFF), z0 = static_cast<int8_t>(key >> 8 & 0xFF), x1 = static_cast<int8_t>(key >> 16 & 0xFF),
+                  z1 = static_cast<int8_t>(key >> 24 & 0xFF);
+        const bool alongZ = x0 == x1; // (EdgeKey keeps the low corner first)
+        const int32_t idx = alongZ ? GridXL(*g, x0, z0) : GridZL(*g, x0, z0);
+        if (idx < 0 || g->openings.size() >= 65535) {
+            g->cutsNoWall++;
+            continue;
+        }
+        GridOpening o;
+        OpeningDefaults(rec.kind, o);
+        // a cut neighbour along the same line (a wide window, a double door, an arch over several cells): no jamb on that side
+        if (alongZ ? cutKeys.count(EdgeKey(x0, z0 - 1, x0, z0)) : cutKeys.count(EdgeKey(x0 - 1, z0, x0, z0))) o.u0 = 0.0f;
+        if (alongZ ? cutKeys.count(EdgeKey(x0, z1, x0, z1 + 1)) : cutKeys.count(EdgeKey(x1, z0, x1 + 1, z0))) o.u1 = 1.0f;
+        g->edges[static_cast<size_t>(idx)].open = static_cast<uint16_t>(g->openings.size() + 1);
+        g->openings.push_back(o);
+        g->cutsOnWall++;
+    }
+    if (++g_gridSerial == 0) g_gridSerial = 1;
+    g->serial = g_gridSerial;
+    QueryPerformanceCounter(&q1);
+    QueryPerformanceFrequency(&qf);
+    g->buildMs = static_cast<double>(q1.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(qf.QuadPart);
+    g_gridBuilds.fetch_add(1, std::memory_order_relaxed);
+    if (g_gridLogged.fetch_add(1, std::memory_order_relaxed) < (kPublicBuild ? 20 : 200))
+        LOG_INFO(std::format("[YardGrid] lot {:016X} story {}: {}x{} tiles, {} wall edges ({} half, {} taller than a story, {} diagonal; {} faces off their tile slot), "
+                             "{} openings ({} noted cuts with no wall), {} roofed tiles, built in {:.2f} ms",
+                             lot, story, w, h, g->walls, g->halves, g->talls, g->diagonals, g->slotOdd, g->cutsOnWall, g->cutsNoWall, g->roofed, g->buildMs));
+    return g;
+}
+// The grid of a story, built again only when its walls, openings or drawn tops changed (light tree thread)
+std::shared_ptr<const StoryGrid> EnsureStoryGrid(uintptr_t mgr) {
+    int w = 0, h = 0, story = -99;
+    uintptr_t tiles = 0;
+    uint64_t sig = 0, lot = 0;
+    if (!mgr || !ReadGridSize(mgr, w, h) || w <= 0 || h <= 0 || w > 256 || h > 256 || !ReadGridStamp(mgr, w, h, tiles, sig, lot, story)) return nullptr;
+    const long topGen = g_wallTopGen.load(std::memory_order_relaxed);
+    const uint32_t cutGen = CopyStoryCuts(lot, story, nullptr);
+    if (const auto it = g_grids.find(mgr); it != g_grids.end()) {
+        const StoryGrid& o = *it->second;
+        if (o.tiles == tiles && o.w == w && o.h == h && o.sig == sig && o.lot == lot && o.story == story && o.cutGen == cutGen && o.topGen == topGen) {
+            g_gridReused.fetch_add(1, std::memory_order_relaxed);
+            return it->second;
+        }
+    }
+    std::shared_ptr<const StoryGrid> g = BuildStoryGrid(mgr, story, w, h, tiles, sig, lot, topGen);
+    if (!g) return nullptr;
+    if (g_grids.size() > 64) g_grids.clear(); // (the roofless rooms that hold them keep theirs alive)
+    g_grids[mgr] = g;
+    return g;
+}
+
+// ---- One ray against a story's grid (light tree thread, every point of a roofless room x lamp of its own story) ----
+struct GridWhy {
+    bool wall = false, opening = false, over = false, roof = false;
+};
+inline float GridRamp(float x) {
+    const float t = std::clamp(x / kGridSoft + 0.5f, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+// The share of a ray crossing edge idx at u (0..1 from its low end) at lot height y
+float GridEdgePass(const StoryGrid& g, int32_t idx, float u, float y, GridWhy& why) {
+    if (idx < 0) return 1.0f;
+    const GridEdge& e = g.edges[static_cast<size_t>(idx)];
+    if (y < e.foot - kGridSoft) return 1.0f; // under its foot (another story's walls)
+    u = std::clamp(u, 0.0f, 1.0f);
+    const float top = u < 0.5f ? e.topL + (e.topM - e.topL) * u * 2.0f : e.topM + (e.topR - e.topM) * (u - 0.5f) * 2.0f;
+    float pass = GridRamp(y - top); // over its top
+    bool through = false;
+    if (pass < 1.0f && e.open) {
+        const GridOpening& o = g.openings[e.open - 1u];
+        const float hh = y - e.base;
+        const float in = GridRamp(hh - o.sill) * GridRamp(o.head - hh) * GridRamp(u - o.u0) * GridRamp(o.u1 - u);
+        if (in > pass) pass = in, through = true;
+    }
+    if (pass <= 0.0f) why.wall = true;
+    else if (through) why.opening = true;
+    else why.over = true; // (passed, not through an opening: over its top)
+    return pass;
+}
+// Diagonal walls across tile (ix, iz): [0] x - z = ix - iz, [1] x + z = ix + iz + 1 (u = x - ix from the low-x end)
+float GridDiagPass(const StoryGrid& g, int ix, int iz, const float* A, float dx, float dy, float dz, float tMin, float tMax, GridWhy& why) {
+    const size_t ti = static_cast<size_t>(iz) * g.w + ix;
+    float pass = 1.0f;
+    if (g.dg[2 * ti] >= 0 && std::fabs(dx - dz) > 1e-6f) {
+        const float t = ((static_cast<float>(ix) - A[0]) - (static_cast<float>(iz) - A[2])) / (dx - dz), s = A[0] + t * dx - static_cast<float>(ix);
+        if (t >= tMin && t <= tMax && s >= 0.0f && s <= 1.0f) pass *= GridEdgePass(g, g.dg[2 * ti], s, A[1] + t * dy, why);
+    }
+    if (g.dg[2 * ti + 1] >= 0 && std::fabs(dx + dz) > 1e-6f) {
+        const float t = (static_cast<float>(ix + iz + 1) - A[0] - A[2]) / (dx + dz), s = A[0] + t * dx - static_cast<float>(ix);
+        if (t >= tMin && t <= tMax && s >= 0.0f && s <= 1.0f) pass *= GridEdgePass(g, g.dg[2 * ti + 1], s, A[1] + t * dy, why);
+    }
+    return pass;
+}
+// A ray crossing the ceiling height of a roofed quadrant inside tile (ix, iz) (between ta and tb) meets its roof
+float GridRoofPass(const StoryGrid& g, int ix, int iz, const float* A, float dx, float dy, float dz, float ta, float tb, GridWhy& why) {
+    const size_t ti = static_cast<size_t>(iz) * g.w + ix;
+    if (tb <= ta || std::fabs(dy) < 1e-6f) return 1.0f;
+    const float t = (g.ceil[ti] - A[1]) / dy;
+    if (t < ta || t > tb) return 1.0f;
+    const int q = Quadrant(std::clamp(A[0] + t * dx - static_cast<float>(ix), 0.0f, 1.0f), std::clamp(A[2] + t * dz - static_cast<float>(iz), 0.0f, 1.0f));
+    if (!(g.flags[ti] & (0x10 << q))) return 1.0f;
+    why.roof = true;
+    return 0.0f;
+}
+// The share of the light of a lamp at A (lot space) reaching B past the walls of one story: the 2D walk over its 1 m tiles
+// (Amanatides-Woo), each wall edge crossed tested at the ray's height there; through a grid corner the better of its two
+// routes (an L or T joint stops a ray only from inside its corner). POD only (callers wrap it in SEH).
+float GridPassImpl(const StoryGrid& g, const float* A, const float* B, GridWhy& why) {
+    const float dx = B[0] - A[0], dy = B[1] - A[1], dz = B[2] - A[2];
+    const float len = std::sqrt(dx * dx + dz * dz);
+    if (!(len > 1e-4f)) return 1.0f;
+    const float tMin = kGridLampSkip / len, tMax = 1.0f - kGridEndSkip / len;
+    if (!(tMax > tMin)) return 1.0f;
+    int ix = static_cast<int>(std::floor(A[0])), iz = static_cast<int>(std::floor(A[2]));
+    const int bx = static_cast<int>(std::floor(B[0])), bz = static_cast<int>(std::floor(B[2]));
+    const int sx = dx > 0.0f ? 1 : -1, sz = dz > 0.0f ? 1 : -1;
+    constexpr float kInf = 1e30f;
+    const float tdx = std::fabs(dx) > 1e-9f ? 1.0f / std::fabs(dx) : kInf, tdz = std::fabs(dz) > 1e-9f ? 1.0f / std::fabs(dz) : kInf;
+    float tx = tdx < kInf ? (sx > 0 ? static_cast<float>(ix + 1) - A[0] : A[0] - static_cast<float>(ix)) * tdx : kInf;
+    float tz = tdz < kInf ? (sz > 0 ? static_cast<float>(iz + 1) - A[2] : A[2] - static_cast<float>(iz)) * tdz : kInf;
+    float pass = 1.0f, t0 = 0.0f;
+    for (int guard = 0; guard < 1024 && pass > 0.0f; guard++) {
+        const float t1 = std::min({tx, tz, 1.0f});
+        if (ix >= 0 && iz >= 0 && ix < g.w && iz < g.h) {
+            const uint8_t f = g.flags[static_cast<size_t>(iz) * g.w + ix];
+            if (f & 0x03) pass *= GridDiagPass(g, ix, iz, A, dx, dy, dz, tMin, tMax, why);
+            if (f & 0xF0) pass *= GridRoofPass(g, ix, iz, A, dx, dy, dz, std::max(t0, tMin), std::min(t1, tMax), why);
+        }
+        if (pass <= 0.0f || (ix == bx && iz == bz)) break;
+        const float t = std::min(tx, tz);
+        if (t >= 1.0f) break;
+        const float y = A[1] + t * dy;
+        const bool inRange = t >= tMin && t <= tMax;
+        if (std::fabs(tx - tz) <= 1e-6f) { // through the grid corner (X, Z)
+            const int X = sx > 0 ? ix + 1 : ix, Z = sz > 0 ? iz + 1 : iz;
+            if (inRange) {
+                GridWhy w1{}, w2{};
+                const float r1 = GridEdgePass(g, GridXL(g, X, iz), static_cast<float>(Z - iz), y, w1) *
+                                 GridEdgePass(g, GridZL(g, ix + sx, Z), static_cast<float>(X - ix - sx), y, w1);
+                const float r2 = GridEdgePass(g, GridZL(g, ix, Z), static_cast<float>(X - ix), y, w2) *
+                                 GridEdgePass(g, GridXL(g, X, iz + sz), static_cast<float>(Z - iz - sz), y, w2);
+                const GridWhy& w = r1 >= r2 ? w1 : w2;
+                pass *= std::max(r1, r2);
+                why.wall |= w.wall, why.opening |= w.opening, why.over |= w.over;
+            }
+            ix += sx, iz += sz, tx += tdx, tz += tdz;
+        } else if (tx < tz) {
+            if (inRange) pass *= GridEdgePass(g, GridXL(g, sx > 0 ? ix + 1 : ix, iz), A[2] + t * dz - static_cast<float>(iz), y, why);
+            ix += sx, tx += tdx;
+        } else {
+            if (inRange) pass *= GridEdgePass(g, GridZL(g, ix, sz > 0 ? iz + 1 : iz), A[0] + t * dx - static_cast<float>(ix), y, why);
+            iz += sz, tz += tdz;
+        }
+        t0 = t;
+    }
+    return std::max(pass, 0.0f);
+}
+// A lamp to a point (world) of a roofless room: its story's walls, and the story above's for a ray that high. lampW gets the
+// lamp's position as the game passes it to its wall test (vfunc+0x24, bit for bit)
+float YardPassImpl(const StoryGrid* g0, const StoryGrid* g1, void* light, const float* pointW, float* lampW, GridWhy& why) {
+    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    float A[3], B[3];
+    ToLocal(g0->xf, lampW, A);
+    ToLocal(g0->xf, pointW, B);
+    float pass = GridPassImpl(*g0, A, B, why);
+    if (pass > 0.0f && g1 && std::max(A[1], B[1]) > g1->minFoot - kGridSoft) pass *= GridPassImpl(*g1, A, B, why);
+    return pass;
+}
+std::atomic<long> g_gridFaults{0};
+float YardPass(const StoryGrid* g0, const StoryGrid* g1, void* light, const float* pointW, float* lampW, GridWhy& why) {
+    if (!g0) return 0.0f;
+    __try {
+        return YardPassImpl(g0, g1, light, pointW, lampW, why);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_gridFaults.fetch_add(1, std::memory_order_relaxed);
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return 0.0f; // never light through walls that could not be checked
+    }
+}
+
+// ---- Which lamps of its own story a roofless room takes (light tree thread, at its gather) ----
+// Its outline on the grid: box and the edges between its quadrants and any other room's
+struct YardOutline {
+    float x0 = 1e9f, z0 = 1e9f, x1 = -1e9f, z1 = -1e9f;
+    bool any = false;
+    std::vector<int32_t> boundary; // edge indices (into StoryGrid::edges) on the outline, -1 = no wall there
+};
+void OutlineOf(const StoryGrid& g, int id, YardOutline& o) {
+    const auto room = [&](int x, int z, int q) { return x >= 0 && z >= 0 && x < g.w && z < g.h ? g.quad[4 * (static_cast<size_t>(z) * g.w + x) + q] : -1; };
+    for (int iz = 0; iz < g.h; iz++)
+        for (int ix = 0; ix < g.w; ix++) {
+            const size_t ti = static_cast<size_t>(iz) * g.w + ix;
+            const int* q = &g.quad[4 * ti];
+            if (q[0] != id && q[1] != id && q[2] != id && q[3] != id) continue;
+            o.any = true;
+            o.x0 = std::min(o.x0, static_cast<float>(ix)), o.x1 = std::max(o.x1, static_cast<float>(ix + 1));
+            o.z0 = std::min(o.z0, static_cast<float>(iz)), o.z1 = std::max(o.z1, static_cast<float>(iz + 1));
+            // quadrants 0 -z, 1 +x, 2 +z, 3 -x (FUN_006aa390): across the tile's sides, then across its diagonals
+            if (q[0] == id && room(ix, iz - 1, 2) != id) o.boundary.push_back(GridZL(g, ix, iz));
+            if (q[2] == id && room(ix, iz + 1, 0) != id) o.boundary.push_back(GridZL(g, ix, iz + 1));
+            if (q[1] == id && room(ix + 1, iz, 3) != id) o.boundary.push_back(GridXL(g, ix + 1, iz));
+            if (q[3] == id && room(ix - 1, iz, 1) != id) o.boundary.push_back(GridXL(g, ix, iz));
+            if ((q[1] == id) != (q[2] == id) || (q[3] == id) != (q[0] == id)) o.boundary.push_back(g.dg[2 * ti]);
+            if ((q[0] == id) != (q[1] == id) || (q[2] == id) != (q[3] == id)) o.boundary.push_back(g.dg[2 * ti + 1]);
+        }
+}
+// Whether a lamp at L (lot space) can reach into the room at all: an outline edge with no wall (a fence, a railing), with an
+// opening, or with a top under the lamp (else the room is closed to it: not taken, nothing to solve)
+bool OutlineOpenTo(const StoryGrid& g, const YardOutline& o, const float* L) {
+    for (int32_t idx : o.boundary) {
+        if (idx < 0) return true;
+        const GridEdge& e = g.edges[static_cast<size_t>(idx)];
+        if (e.open || L[1] > std::min({e.topL, e.topM, e.topR}) - kGridSoft) return true;
+    }
+    return false;
+}
+struct YardBox {
+    float x0, z0, x1, z1;
+};
+std::unordered_map<uint64_t, YardBox> g_yardBoxes; // light tree thread: (story manager, room) -> its outline's box at its last gather
+uint64_t YardKey(uintptr_t mgr, int id) { return static_cast<uint64_t>(mgr) << 20 ^ static_cast<uint32_t>(id); }
+std::unordered_map<uint64_t, int> g_yardLogged;     // light tree thread: (story manager, room) -> lamps taken when last logged
+std::atomic<long> g_sameFar{0}, g_sameClosed{0};
+std::atomic<int> g_yardLampLines{0};
+// A lamp's range (+0x130, what RoomLampSignature compares) when readable, else kSameReachM
+float LampReach(uintptr_t light) {
+    const float range = *reinterpret_cast<const float*>(light + 0x130);
+    return std::isfinite(range) && range > 0.5f && range < 40.0f ? range : kSameReachM;
+}
+bool GatherSameStory(uintptr_t tracker, int S, int id, BYTE* room, const std::vector<Cross>& cross, std::vector<SameLamp>& out,
+                     std::shared_ptr<const StoryGrid>* grids) {
+    const uintptr_t mgr = StoryManager(tracker, S);
+    grids[0] = EnsureStoryGrid(mgr);
+    if (!grids[0]) return false;
+    if (S < 7)
+        if (const uintptr_t up = StoryManager(tracker, S + 1)) grids[1] = EnsureStoryGrid(up);
+    NoteLotManagers(tracker); // MgrTracker for the render thread's sends (RequeueWallTopYards)
+    const StoryGrid& g = *grids[0];
+    YardOutline shape;
+    OutlineOf(g, id, shape);
+    if (!shape.any) return true; // not on its story's tiles: it takes none
+    if (g_yardBoxes.size() > 4096) g_yardBoxes.clear();
+    g_yardBoxes[YardKey(mgr, id)] = YardBox{shape.x0, shape.z0, shape.x1, shape.z1};
+    int roofless[256];
+    const int nr = RooflessRoomIds(mgr, roofless, static_cast<int>(std::size(roofless)));
+    int considered = 0, beyond = 0, closed = 0;
+    WalkRegistry(TreeLevel(tracker, S), [&](uintptr_t entry) {
+        const int home = *reinterpret_cast<const int*>(entry + 0x1C);
+        if (home == id || (home != 0 && std::find(roofless, roofless + nr, home) == roofless + nr)) return;
+        const uintptr_t light = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+        if (!light || out.size() >= 256 || std::any_of(out.begin(), out.end(), [light](const SameLamp& s) { return s.light == light; })) return;
+        const int type = *reinterpret_cast<const int*>(light + 0xB0);
+        // window lights (types 7 and 8) stay out; a lamp whose class is not wrapped could not be tested (EvalWrapped)
+        if (type == 7 || type == 8 || !GameTakesLight(entry, light) || !EvalWrapped(light) || ListHolds(room, light)) return;
+        if (std::any_of(cross.begin(), cross.end(), [light](const Cross& c) { return c.light == light; })) return; // another story's: its own test
+        considered++;
+        alignas(16) float pos[4];
+        reinterpret_cast<LightPos_t>(kLightPos)(reinterpret_cast<void*>(light), pos);
+        float L[3];
+        ToLocal(g.xf, pos, L);
+        const float reach = LampReach(light);
+        const float ddx = std::max({shape.x0 - L[0], 0.0f, L[0] - shape.x1}), ddz = std::max({shape.z0 - L[2], 0.0f, L[2] - shape.z1});
+        if (ddx * ddx + ddz * ddz > reach * reach) {
+            beyond++;
+            return;
+        }
+        if (!OutlineOpenTo(g, shape, L)) {
+            closed++;
+            return;
+        }
+        out.push_back(SameLamp{light, home, home == 0 && S == 0 ? 2 : 1});
+    });
+    g_sameFar.fetch_add(beyond, std::memory_order_relaxed);
+    g_sameClosed.fetch_add(closed, std::memory_order_relaxed);
+    const uint64_t key = YardKey(mgr, id);
+    const auto logged = g_yardLogged.find(key);
+    if ((logged == g_yardLogged.end() || logged->second != static_cast<int>(out.size())) && g_yardLogged.size() < 2048) {
+        g_yardLogged[key] = static_cast<int>(out.size());
+        if (g_yardLampLines.fetch_add(1, std::memory_order_relaxed) < (kPublicBuild ? 200 : 2000))
+            LOG_INFO(std::format("[YardLamps] story {} room {}: {} lamps of its story taken ({} considered, {} beyond reach, {} closed off by walls), outline {:.0f}x{:.0f} m, "
+                                 "{} outline edges, grid {}{}",
+                                 S, id, out.size(), considered, beyond, closed, shape.x1 - shape.x0, shape.z1 - shape.z0, shape.boundary.size(), g.serial,
+                                 grids[1] ? " (+ the story above)" : ""));
+    }
+    return true;
+}
+// AfterChangedWalk (light tree thread): the roofless rooms of story L that took a lamp of the changed outdoor room `changed`
+// of that story at their last gather (sameHomes), or that may take one now (within its reach of their outline, or their
+// outline not known yet): a lamp added or removed or a wall changed (2) and a lamp moved (3) send both kinds, a value changed
+// (1) those that took one (a lamp switched on also sends every roofless room through RelightLampSwitch)
+void SameStoryYards(uintptr_t mgrL, int L, int changed, int change, const std::vector<uintptr_t>& lights, std::vector<std::pair<int, int>>& out) {
+    int roofless[256];
+    const int nr = RooflessRoomIds(mgrL, roofless, static_cast<int>(std::size(roofless)));
+    if (!nr) return;
+    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) { // (g_rooms and the outlines belong to the gathers' thread: all of them)
+        for (int k = 0; k < nr; k++)
+            if (roofless[k] != changed) out.emplace_back(L, roofless[k]);
+        return;
+    }
+    struct At {
+        float x, z, reach;
+    };
+    std::vector<At> at;
+    Xform xf;
+    const bool haveXf = change != 1 && ReadXform(mgrL, xf);
+    if (haveXf)
+        for (uintptr_t light : lights) {
+            alignas(16) float pos[4];
+            reinterpret_cast<LightPos_t>(kLightPos)(reinterpret_cast<void*>(light), pos);
+            float l[3];
+            ToLocal(xf, pos, l);
+            at.push_back(At{l[0], l[2], LampReach(light)});
+        }
+    for (int k = 0; k < nr; k++) {
+        const int id = roofless[k];
+        if (id == changed) continue;
+        const BYTE* room = static_cast<const BYTE*>(reinterpret_cast<RoomById_t>(kRoomById)(reinterpret_cast<void*>(mgrL), id));
+        if (!room) continue;
+        const auto it = g_rooms.find(reinterpret_cast<uintptr_t>(room));
+        bool send = it != g_rooms.end() && it->second.mgr == mgrL && it->second.id == id && it->second.yard &&
+                    std::binary_search(it->second.sameHomes.begin(), it->second.sameHomes.end(), changed);
+        if (!send && change != 1) {
+            const auto box = g_yardBoxes.find(YardKey(mgrL, id));
+            send = box == g_yardBoxes.end() || !haveXf;
+            for (size_t i = 0; i < at.size() && !send; i++) {
+                const YardBox& b = box->second;
+                const float ddx = std::max({b.x0 - at[i].x, 0.0f, at[i].x - b.x1}), ddz = std::max({b.z0 - at[i].z, 0.0f, at[i].z - b.z1});
+                send = ddx * ddx + ddz * ddz <= at[i].reach * at[i].reach;
+            }
+        }
+        if (send) out.emplace_back(L, id);
+    }
+}
+// MaybeClearRooms (a new world, or Uninstall): the grids and outlines of the old one
+void ClearYardCaches() {
+    g_grids.clear();
+    g_yardBoxes.clear();
+    g_yardLogged.clear();
 }
 
 void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
@@ -3919,6 +4881,10 @@ void AfterChangedWalk(BYTE* tl) {
     std::vector<std::pair<int, int>> atOnce;
     // The outdoor rooms of the other stories (room 0 and the roofless rooms, 05/10): they take this story's outdoor lamps
     std::vector<std::pair<int, int>> outdoorRooms;
+    // Light through doors and windows (08/10): this story's roofless rooms that take (or may now take) the changed outdoor
+    // rooms' lamps (SameStoryYards); the sends below, which leave story L to the game's walk, let them through
+    const bool yards = OpeningsOn();
+    std::vector<std::pair<int, int>> sameL;
     const uintptr_t mgrL = *reinterpret_cast<const uintptr_t*>(tl);
     for (int S = 0; S <= 7; S++) {
         const uintptr_t mgrS = S == L ? 0 : *reinterpret_cast<const uintptr_t*>(TreeLevel(tracker, S));
@@ -3961,6 +4927,13 @@ void AfterChangedWalk(BYTE* tl) {
             const size_t from = out.size();
             // an outdoor room of this floor: the outdoor rooms of the other floors 0..7 take its lamps (part 2)
             if (outdoor) out.insert(out.end(), outdoorRooms.begin(), outdoorRooms.end());
+            // and this floor's roofless rooms that take or may now take them (light through doors and windows); a lamp removed
+            // (change 2) sends them "now", stopping a solve that may still read it
+            if (outdoor && yards) {
+                const size_t before = out.size();
+                SameStoryYards(mgrL, L, ids[i], change, lights, out);
+                sameL.insert(sameL.end(), out.begin() + static_cast<std::ptrdiff_t>(before), out.end());
+            }
             if (deps != g_deps.end()) out.insert(out.end(), deps->second.begin(), deps->second.end());
             if (soon) soonRooms.insert(soonRooms.end(), out.begin() + static_cast<std::ptrdiff_t>(from), out.end());
             if (moved) movedLights.insert(movedLights.end(), lights.begin(), lights.end());
@@ -3973,6 +4946,8 @@ void AfterChangedWalk(BYTE* tl) {
             v->erase(std::unique(v->begin(), v->end()), v->end());
         }
         const auto in = [](const std::vector<std::pair<int, int>>& v, const std::pair<int, int>& p) { return std::binary_search(v.begin(), v.end(), p); };
+        std::sort(sameL.begin(), sameL.end());
+        sameL.erase(std::unique(sameL.begin(), sameL.end()), sameL.end());
         std::erase_if(kept, [&](const std::pair<int, int>& p) { return in(now, p); });
         std::erase_if(later, [&](const std::pair<int, int>& p) { return in(now, p) || in(kept, p); });
         if (!later.empty()) { // value changes: the first one goes now, the rest of the burst waits (FlushDepWaits)
@@ -3981,7 +4956,7 @@ void AfterChangedWalk(BYTE* tl) {
             if (g_depSentAt.size() > 8192) g_depSentAt.clear();
             std::erase_if(later, [&](const std::pair<int, int>& p) {
                 const DepKey k{tracker, p.first, p.second};
-                if (p.first == L) return true;
+                if (p.first == L && !in(sameL, p)) return true;
                 if (const auto w = g_depWait.find(k); w != g_depWait.end()) {
                     w->second.due = tick + kDepQuiet;
                     g_depCoalesced.fetch_add(1, std::memory_order_relaxed);
@@ -4012,11 +4987,12 @@ void AfterChangedWalk(BYTE* tl) {
             if (soon) GatherSoon(room);
         }
     const int tier = own.empty() ? -1 : 1; // the rooms of other stories taking the edited lamps: right after the lamp's own
+    const auto sameStory = [&sameL](int S, int r) { return std::binary_search(sameL.begin(), sameL.end(), std::make_pair(S, r)); };
     for (const auto& [S, r] : now)
-        if (S != L && QueueRoom(tracker, S, r, false, tier, false)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
+        if ((S != L || sameStory(S, r)) && QueueRoom(tracker, S, r, false, tier, false)) g_indoorQueued.fetch_add(1, std::memory_order_relaxed);
     const DWORD waitAt = GetTickCount();
     for (const auto& p : kept) {
-        if (p.first == L) continue;
+        if (p.first == L && !sameStory(p.first, p.second)) continue;
         // a moved lamp: an indoor room it never lit waits until the lamps are quiet (its light does not change while the
         // lamp is behind the floors; the wait sends it once, in case the move brought the lamp into view)
         const DepKey dk{tracker, p.first, p.second};
@@ -4112,6 +5088,11 @@ struct SolveCtx {
     uintptr_t enterLight = 0;
     float enterLamp[3] = {}, enterAt[3] = {};
     bool enterHard = false; // that test with the walls' real ends (no soft penumbra): an outdoor lamp of a lower story (OutdoorEntry)
+    // Light through doors and windows: the lamp of the roofless room's own story YardShadow just tested against every wall of
+    // the story; the game's own wall test of the solving room that follows for it (0x69FE93, the same lamp position) is
+    // skipped (GameWallTest): it sees whole wall runs, no opening and no top for a full wall
+    uintptr_t yardLight = 0;
+    float yardLamp[3] = {};
 };
 SolveCtx g_ctx;
 bool g_enterReady = false; // GameWallTest is in (Install)
@@ -4282,6 +5263,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx.soft = room[0x639];
     g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
     g_ctx.enterLight = 0;
+    g_ctx.yardLight = 0;
     g_lastRec = -1;
     float* r = reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
     if (batch && !g_ghostSolve && g_recordSeams.load(std::memory_order_relaxed)) RecordRequestedSeam(room, out, static_cast<const float*>(sample));
@@ -4311,6 +5293,14 @@ __declspec(naked) void OutdoorAlphaThunk() {
         cmp byte ptr [ebx + 18h], 0
         ret
     }
+}
+// Light through doors and windows (option "luzRealistaPorAberturas", SetRealisticOpenings; see "Light through doors and
+// windows into roofless rooms"): it needs walls blocking light on floors (a closed yard's floor takes no ground map), the
+// wrapped light evaluation (the per-point test), the room update hooks (the sends) and GameWallTest (the game's test skipped)
+std::atomic<bool> g_openingsOn{false};
+bool OpeningsOn() {
+    return g_openingsOn.load(std::memory_order_relaxed) && g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_enterReady && g_floorMaskReady &&
+           g_floorWallsOn.load(std::memory_order_relaxed) && g_evalClasses.load(std::memory_order_relaxed) > 0;
 }
 
 // ---- Outside walls: their base from the floor they stand on (06/10, reverse engineered after the F7 wall survey). The
@@ -4598,7 +5588,11 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     // mask below, which tests room 0's lamps against walls up to their tops; their masks are refreshed when room 0's lamps
     // change (AfterChangedWalk), where they went stale before
     const bool masked = g_floorMaskReady && room[0x18] && g_floorWallsOn.load(std::memory_order_relaxed) && s[5] >= 0.9f;
-    BYTE* room0 = masked ? MaskedFloorRoom0(room) : nullptr;
+    // With "Light through doors and windows" a roofless room with an id takes the outdoor lamps of its story that reach it in
+    // its own list, tested through its openings and over its walls (GatherSameStory, YardShadow): its floor takes that list
+    // only and none of the ground light map, which knows no walls
+    const bool ownYard = masked && *reinterpret_cast<const int*>(room + 0xC) > 0 && OpeningsOn();
+    BYTE* room0 = !masked ? nullptr : ownYard ? room : MaskedFloorRoom0(room);
     if (!room0) {
         float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
         if (g_floorMaskReady && room[0x18]) out[3] = 0.0f; // outdoor: the game's alpha 0
@@ -4623,6 +5617,10 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         }
     }
     float* r = SolvePoint(room, out, ownLists, list3D, walls, sample, true);
+    if (ownYard) {
+        out[3] = 1.0f; // none of the ground light map
+        return r;
+    }
     out[3] = 0.0f;
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);
@@ -5197,6 +6195,47 @@ void IndoorShadow(const RoomInfo& info, void* light, const float* sample, float*
     }
 }
 
+// Light through doors and windows: a lamp of the roofless room's own story (GatherSameStory) reaches the point only past every
+// wall of the story (and of the story above for a ray that high) where the 2D path from the lamp crosses them, through an
+// opening or over a wall's top, and under no roof (YardPass); the game's own wall test of that lamp, which sees whole walls,
+// is skipped next (GameWallTest). F8 (DiagRec.why): 3 through an opening, 4 over a wall's top, 5 stopped by a wall, 6 by a
+// roof, 0 nothing in the way.
+std::atomic<long> g_yardTests{0}, g_yardBlocked{0}, g_yardRoofed{0}, g_yardOpening{0}, g_yardOver{0}, g_yardBypass{0};
+bool FindSame(const RoomInfo& info, uintptr_t light) { return std::binary_search(info.same.begin(), info.same.end(), light); }
+void YardShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
+    if (!(colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f)) return;
+    const float before[3] = {colour[0], colour[1], colour[2]};
+    alignas(16) float pos[4] = {};
+    GridWhy why{};
+    const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
+    g_yardTests.fetch_add(1, std::memory_order_relaxed);
+    if (pass < 1.0f)
+        for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, pass);
+    int code = 0;
+    if (pass <= 0.0f) {
+        code = why.roof ? 6 : 5;
+        (why.roof ? g_yardRoofed : g_yardBlocked).fetch_add(1, std::memory_order_relaxed);
+    } else if (why.opening) {
+        code = 3;
+        g_yardOpening.fetch_add(1, std::memory_order_relaxed);
+    } else if (why.over) {
+        code = 4;
+        g_yardOver.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_ctx.yardLight = reinterpret_cast<uintptr_t>(light);
+    std::memcpy(g_ctx.yardLamp, pos, sizeof g_ctx.yardLamp);
+    if (!kPublicBuild) {
+        g_lastRec = -1;
+        if (g_diagArmed.load(std::memory_order_relaxed) && !g_ghostSolve) {
+            Diag(info, light, sample, before, info.level, pass, false);
+            if (g_lastRec >= 0) {
+                std::lock_guard<std::mutex> lk(g_diagMx);
+                if (g_lastRec < static_cast<int>(g_diag.size())) g_diag[g_lastRec].why = code;
+            }
+        }
+    }
+}
+
 // The time Apex's own tests take inside the game's room solves (06/10: is a slow "all the lights" the game's solve or ours?)
 struct ApexCycles {
     uint64_t t0 = __rdtsc();
@@ -5208,10 +6247,13 @@ template <int I> void __fastcall LightEvalHook(void* light, void*, const float* 
     if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         const ApexCycles timed;
         g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
+        g_ctx.yardLight = 0;  // and so does a lamp's skipped wall test (light through doors and windows)
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
         if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) return;
-        if (!g_ctx.info->indoor) CrossFloorShadow(*g_ctx.info, light, sample, colour);
+        if (g_ctx.info->yard && FindSame(*g_ctx.info, reinterpret_cast<uintptr_t>(light)))
+            YardShadow(*g_ctx.info, light, sample, colour); // a lamp of a roofless room's own story (light through doors and windows)
+        else if (!g_ctx.info->indoor) CrossFloorShadow(*g_ctx.info, light, sample, colour);
         else if (const Cross* c = FindCross(*g_ctx.info, reinterpret_cast<uintptr_t>(light)); c && c->outdoor)
             CrossFloorShadow(*g_ctx.info, light, sample, colour); // a roofless room taking an outdoor lamp of another story
         else IndoorShadow(*g_ctx.info, light, sample, colour);
@@ -5245,6 +6287,25 @@ bool WallTestHard(BYTE* room, void* idx, const float* from, const void* sample, 
 // solving room's walls are tested from where its ray enters this room's story (IndoorPassImpl), with the game's own list
 // of walls for that lamp; any other light as the game has it. Development build: the result is recorded for F8.
 bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos, const void* sample, float* t) {
+    // Light through doors and windows: a lamp of a roofless room's own story was just tested against every wall of the story
+    // (YardShadow, its share already in the colour); the game's test, which sees whole walls, is skipped
+    if (g_ctx.yardLight && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
+        const bool same = lightPos && lightPos[0] == g_ctx.yardLamp[0] && lightPos[1] == g_ctx.yardLamp[1] && lightPos[2] == g_ctx.yardLamp[2];
+        g_ctx.yardLight = 0;
+        if (same) {
+            if (t) *t = 1.0f;
+            g_yardBypass.fetch_add(1, std::memory_order_relaxed);
+            if (!kPublicBuild && g_lastRec >= 0) {
+                std::lock_guard<std::mutex> lk(g_diagMx);
+                if (g_lastRec < static_cast<int>(g_diag.size())) {
+                    g_diag[g_lastRec].game = 2; // skipped: the grid decided
+                    g_diag[g_lastRec].gameT = 1.0f;
+                }
+            }
+            g_lastRec = -1;
+            return true;
+        }
+    }
     const float* from = lightPos;
     alignas(16) float entered[4];
     bool hard = false;
@@ -5887,6 +6948,78 @@ bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
         return false;
     }
 }
+
+// Light through doors and windows (render thread): the roofless rooms of the stories whose openings changed (a door, window
+// or arch placed or removed; a lot loading posts hundreds, so a story is sent once its posts are quiet for kCutQuietMs) or
+// whose walls were first drawn taller than a story or off their light base gather again (their grid is built again)
+constexpr DWORD kCutQuietMs = 250;
+std::atomic<long> g_cutSends{0}, g_topSends{0};
+std::atomic<int> g_cutSendLogged{0};
+int SafeRooflessIds(uintptr_t tracker, int story, int* ids, int max) { // POD only (SEH)
+    __try {
+        return RooflessRoomIds(StoryManager(tracker, story), ids, max);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+int SafeMgrStory(uintptr_t mgr) { // POD only (SEH): -99 when unreadable
+    __try {
+        return *reinterpret_cast<const int*>(mgr + 0x88);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -99;
+    }
+}
+int QueueRooflessOf(uintptr_t tracker, int story) {
+    if (story < 0 || story > 7) return 0;
+    int roofless[256];
+    const int nr = SafeRooflessIds(tracker, story, roofless, static_cast<int>(std::size(roofless)));
+    int queued = 0;
+    for (int k = 0; k < nr; k++) queued += QueueRoomSafe(tracker, story, roofless[k]) ? 1 : 0;
+    return queued;
+}
+void RequeueCutStories() {
+    std::vector<std::pair<uint64_t, int>> due;
+    {
+        std::lock_guard<std::mutex> lk(g_cutMx);
+        if (g_cutDirty.empty()) return;
+        const DWORD now = GetTickCount();
+        for (auto it = g_cutDirty.begin(); it != g_cutDirty.end();)
+            if (now - std::get<2>(*it) >= kCutQuietMs) {
+                due.emplace_back(std::get<0>(*it), std::get<1>(*it));
+                it = g_cutDirty.erase(it);
+            } else
+                ++it;
+    }
+    if (due.empty() || !OpeningsOn()) return;
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    int queued = 0;
+    for (const auto& [lot, story] : due)
+        for (int t = 0; t < lots; t++)
+            if ((static_cast<uint64_t>(LotIdPart(trackers[t], 0x94)) << 32 | LotIdPart(trackers[t], 0x90)) == lot) {
+                queued += QueueRooflessOf(trackers[t], story);
+                break;
+            }
+    g_cutSends.fetch_add(queued, std::memory_order_relaxed);
+    if (queued && g_cutSendLogged.fetch_add(1, std::memory_order_relaxed) < 100)
+        LOG_INFO(std::format("[Openings] {} stories had openings placed or removed: {} roofless rooms gather again", due.size(), queued));
+}
+void RequeueWallTopYards() {
+    std::vector<uintptr_t> mgrs;
+    {
+        std::lock_guard<std::mutex> lk(g_wallHMx);
+        if (g_wallTopMgrs.empty()) return;
+        mgrs.swap(g_wallTopMgrs);
+    }
+    if (!OpeningsOn()) return;
+    int queued = 0;
+    for (uintptr_t mgr : mgrs)
+        if (const uintptr_t tracker = MgrTracker(mgr)) {
+            const int story = SafeMgrStory(mgr);
+            if (story >= 0 && story <= 7 && SafeStoryManager(tracker, story) == mgr) queued += QueueRooflessOf(tracker, story);
+        }
+    g_topSends.fetch_add(queued, std::memory_order_relaxed);
+}
 std::vector<uintptr_t> g_roomRefTrackers; // the loaded lots when g_roomRefs was built
 std::vector<uintptr_t> g_roomRefManagers; // story managers can change while the lot tracker survives
 int CachedStoryRooms(uintptr_t tracker, int level, int* ids, int max) {
@@ -6403,6 +7536,21 @@ std::string IndoorDiagText() {
     return s;
 }
 
+// Status line of light through doors and windows (empty while it is off and its openings are not noted)
+std::string OpeningsStatus() {
+    const bool on = g_openingsOn.load(std::memory_order_relaxed);
+    if (!on && !g_cutReady) return std::string();
+    return std::format(" | light through doors and windows: {}{} (openings noted {}, closed again {}, unread {}, lot ids checked {} / differing {}; story grids built {}, "
+                       "reused {}; roofless rooms taking lamps of their story {} ({} lamps; {} beyond reach, {} closed off by walls); points tested {}: through an opening {}, "
+                       "over a wall {}, stopped by a wall {}, by a roof {}, the game's test skipped {}; rooms sent for openings {}, "
+                       "for wall tops {}{})",
+                       on ? (OpeningsOn() ? "on" : "on, not ready") : "off", g_cutReady ? "" : ", openings not available", g_cutPosts.load(), g_cutCloses.load(),
+                       g_cutUnread.load(), g_cutChecked.load(), g_cutIdDiffers.load(), g_gridBuilds.load(), g_gridReused.load(), g_sameRooms.load(), g_sameAdded.load(),
+                       g_sameFar.load(), g_sameClosed.load(), g_yardTests.load(), g_yardOpening.load(), g_yardOver.load(), g_yardBlocked.load(), g_yardRoofed.load(),
+                       g_yardBypass.load(), g_cutSends.load(), g_topSends.load(),
+                       g_gridFaults.load() ? std::format(", faults {}", g_gridFaults.load()) : std::string());
+}
+
 } // namespace
 
 namespace LevelLightShare {
@@ -6623,6 +7771,12 @@ bool Install(std::string& error) {
         g_wallUvReady = MemPatch::WriteBytes(kWallUvCalls[k], std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Walls taller than a story: ") + (g_wallUvReady ? "ready (their light spreads over the drawn height)" : "not available (code differs)"));
+    // Light through doors and windows: the wall cutouts posted from now on (doors, windows, arches; lot loads included),
+    // whatever the option, so lots loaded while it is off know their openings when it is turned on; Steam bytes only
+    const bool cuts = InstallCutoutCapture();
+    LOG_INFO(std::string("[LevelLightShare] Openings of walls (light through doors and windows): ") +
+             (!cuts ? "not available (code differs)"
+                    : LoadedLots() > 0 ? "noted from now on (the lots already loaded know theirs once the save loads again)" : "noted from now on"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
@@ -6685,6 +7839,7 @@ void Uninstall() {
     g_indoorPatches.clear();
     MemPatch::RestoreAll(g_patches);
     g_patches.clear();
+    UninstallCutoutCapture(); // light through doors and windows: the openings noted are forgotten with the hooks
     g_enterReady = false;
     g_floorMaskReady = false;
     {
@@ -6724,6 +7879,8 @@ void OnPresent() {
             else WallHeights::Uninstall();
         }
         if (g_foundationWallsOn.load(std::memory_order_relaxed)) RequeueTallWalls();
+        RequeueCutStories();   // light through doors and windows: openings placed or removed
+        RequeueWallTopYards(); // and walls first drawn taller than a story
         std::vector<std::string> lines;
         {
             std::lock_guard<std::mutex> lk(g_wallLightMx);
@@ -7185,6 +8342,13 @@ void SetFloorWalls(bool on) {
     if (g_floorWallsOn.exchange(on) != on && g_installed.load() && g_floorMaskReady) RelightAllRooms(on ? "Walls block light on floors on" : "Walls block light on floors off");
 }
 bool FloorWallsActive() { return g_installed.load(std::memory_order_relaxed) && g_floorMaskReady && g_floorWallsOn.load(std::memory_order_relaxed); }
+
+void SetRealisticOpenings(bool on) {
+    if (g_openingsOn.exchange(on) == on) return;
+    if (g_installed.load(std::memory_order_relaxed) && g_floorMaskReady)
+        RelightAllRooms(on ? "Light through doors and windows on" : "Light through doors and windows off");
+}
+bool RealisticOpeningsActive() { return OpeningsOn(); }
 
 void SetAllFloors(bool on) {
     if (g_allFloors.exchange(on) != on && g_lodReady) RelightAllRooms(on ? "Every floor in full detail on" : "Every floor in full detail off");
@@ -7724,7 +8888,7 @@ std::string Status() {
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
                            : "",
                        g_basisTests.load() ? std::format(" | directional maps: lamps of another story tested {}, behind a floor {}", g_basisTests.load(), g_basisBlocked.load()) : "",
-                       g_faults.load() ? std::format(" | failures: {}", g_faults.load()) : "");
+                       g_faults.load() ? std::format(" | failures: {}", g_faults.load()) : "") + OpeningsStatus();
 }
 
 } // namespace LevelLightShare

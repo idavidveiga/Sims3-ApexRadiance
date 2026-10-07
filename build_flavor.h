@@ -12,3 +12,12 @@ inline constexpr bool kDevToolsBuild = false;
 #else
 inline constexpr bool kDevToolsBuild = true;
 #endif
+
+// Light through doors and windows (08/10, experimental, LevelLightShare::SetRealisticOpenings): off by default until it is
+// approved in game; a build made with APEX_REALISTIC_OPENINGS in ApexFlavorDefines (the maintainer's "realistic" test build)
+// turns it on by default
+#ifdef APEX_REALISTIC_OPENINGS
+inline constexpr bool kRealisticOpeningsDefault = true;
+#else
+inline constexpr bool kRealisticOpeningsDefault = false;
+#endif

@@ -2773,24 +2773,46 @@ template <typename DrawFn> bool DrawCinemaMarqueeDayBloomGuard(IDirect3DDevice9*
     return true;
 }
 
+// Light through doors and windows (08/10): the winter floors weight the atlas by 1 - the floor map's alpha too, as the summer
+// outdoor floors do (DrawFloorAtlas), while the option is active. The snowy floor tiles' shader (DrawFloor) is weighted only
+// with kSnowTileMask: turn it off if an F7 capture shows that shader drawing an indoor floor (indoor texels carry the
+// game's own alpha, 1 - their brightness, 0x006A33DD, which would dim the atlas there).
+constexpr bool kSnowTileMask = true;
+// The atlas weight constant of a winter floor shader, (1, -1) = 1 - map alpha, (1, 0) = whole (as before)
+void WinterAtlasWeight(const PatchedPs& p, bool allowed, float out[4]) {
+    out[0] = 1.0f;
+    out[1] = allowed && p.floor.maskAlpha && LevelLightShare::FloorWallsActive() && LevelLightShare::RealisticOpeningsActive() ? -1.0f : 0.0f;
+    out[2] = out[3] = 0.0f;
+}
+void LogWinterMask(PatchedPs& p, const char* what) {
+    if (p.floor.loggedMask) return;
+    p.floor.loggedMask = true;
+    LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} {} the walls' mask (the floor map's alpha)", what, reinterpret_cast<uintptr_t>(g_curPs),
+                         p.floor.heightConst < 0 ? "CANNOT READ" : "reads"));
+}
 template <typename DrawFn> bool DrawFloor(IDirect3DDevice9* dev, DrawFn draw) {
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
     PatchedPs& p = PatchedFor(dev, g_floorPs, "Floor", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchFloor(t, pp.floor); });
     if (!p.ps) return false;
-    float oldC[4] = {};
+    LogWinterMask(p, "Snowy floor");
+    float oldC[4] = {}, oldH[4] = {}, weight[4];
+    WinterAtlasWeight(p, kSnowTileMask, weight);
     dev->GetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+    if (p.floor.heightConst >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.floor.heightConst), oldH, 1);
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.floor.atlasConst, c, 1);
+        if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), weight, 1);
         SetPs(dev, p.ps);
         ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
+        if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), oldH, 1);
     }
     g_inOwnCall = false;
     g_floorDrawn.fetch_add(1, std::memory_order_relaxed);
@@ -2815,19 +2837,24 @@ template <typename DrawFn> bool DrawSnowFloor(IDirect3DDevice9* dev, DrawFn draw
         map->Release();
     }
     if (!roomMap) return false;
+    LogWinterMask(p, "Snow on floors");
     const float half[4] = {c[0] * 2.0f, c[1] * 2.0f, c[2], c[3]};
-    float oldC[4] = {};
+    float oldC[4] = {}, oldH[4] = {}, weight[4];
+    WinterAtlasWeight(p, true, weight); // snow lies outdoors only
     dev->GetPixelShaderConstantF(p.floor.atlasConst, oldC, 1);
+    if (p.floor.heightConst >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.floor.heightConst), oldH, 1);
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
         SamplerBind bind(dev, p.floor.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.floor.atlasConst, half, 1);
+        if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), weight, 1);
         SetPs(dev, p.ps);
         ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
+        if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), oldH, 1);
     }
     g_inOwnCall = false;
     g_snowFloorDrawn.fetch_add(1, std::memory_order_relaxed);

@@ -443,6 +443,26 @@ bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst) {
     return true;
 }
 
+namespace {
+// Winter floors (PatchFloor, PatchSnowFloor): the atlas weighted by the floor map's alpha, as PatchBakedAtlasPs does for the
+// summer floors (level_light_share stores there, for outdoor floor texels, the share of the lamps' light that walls block;
+// 1 on a closed yard's floor). The alpha is copied right after the map's texld (a write to L.w may follow it: the m69 snow
+// floor), then weight = saturate(alpha * cH.y + cH.x) ((1, 0) = always 1) scales the atlas read into temp T before the max.
+// Only when the texld writes .w and a temp and a constant are free; out.heightConst / out.maskAlpha tell the draw to set cH.
+void AtlasWeight(const std::vector<DWORD>& t, const Ins& fetch, DWORD T, DWORD cA, const Usage& u, std::vector<Edit>& edits, std::vector<DWORD>& atlas, FloorPatch& out) {
+    out.maskAlpha = false;
+    out.heightConst = -1;
+    const DWORD dest = t[fetch.at + 1];
+    if (!(WMask(dest) & 0x8) || u.maxConst + 2 >= 224 || u.maxTemp + 2 >= 32) return;
+    const DWORD L = Num(dest), T2 = T + 1, cH = cA + 1;
+    edits.push_back({End(fetch), {Op(kMov, 2), Dst(kTemp, T2, 0x1), Src(kTemp, L, kSwzW)}});
+    atlas.insert(atlas.end(), {Op(kMad, 4), Dst(kTemp, T2, 0x1, true), Src(kTemp, T2, kSwzX), Src(kConst, cH, kSwzY), Src(kConst, cH, kSwzX),
+                               Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, T2, kSwzX)});
+    out.maskAlpha = true;
+    out.heightConst = static_cast<int>(cH);
+}
+} // namespace
+
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
@@ -470,9 +490,11 @@ bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out) {
     t[v0Dcl] = (t[v0Dcl] & ~0x000F0000u) | 0x000F0000u; // v0.xy -> v0 (zw = world xz)
     std::vector<Edit> edits;
     edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}});
-    edits.push_back({End(ins[scale]), {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, 0, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
-                                       Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
-                                       Op(kMax, 3), Dst(kTemp, B, 0x7), Src(kTemp, B), Src(kTemp, T)}});
+    std::vector<DWORD> atlas = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, 0, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
+                                Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E)};
+    AtlasWeight(t, ins[fetch], T, cA, u, edits, atlas, out);
+    atlas.insert(atlas.end(), {Op(kMax, 3), Dst(kTemp, B, 0x7), Src(kTemp, B), Src(kTemp, T)});
+    edits.push_back({End(ins[scale]), std::move(atlas)});
     Apply(t, std::move(edits));
     return true;
 }
@@ -576,7 +598,7 @@ bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
         afterLastInDcl = End(x);
     }
     // the single "texld rL, vK, sM" whose next reader is "mul rB.xyz, rS.s, rL" (the room map scaled by the bump factor)
-    int scale = -1, found = 0;
+    int scale = -1, tex = -1, found = 0;
     DWORD mapSampler = 0;
     for (size_t i = 0; i < ins.size(); i++) {
         const Ins& x = ins[i];
@@ -591,6 +613,7 @@ bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
                 if (y.op == kMul && Type(t[y.at + 1]) == kTemp && WMask(t[y.at + 1]) == 0x7 && Type(t[y.at + 2]) == kTemp && (s == 0x00 || s == 0x55 || s == 0xAA || s == 0xFF) &&
                     IsReg(t[y.at + 3], kTemp, L) && Swz(t[y.at + 3]) == kSwzXYZW) {
                     scale = static_cast<int>(j);
+                    tex = static_cast<int>(i);
                     mapSampler = Num(t[x.at + 3]);
                     found++;
                 }
@@ -622,9 +645,11 @@ bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out) {
         t[tcDcl] |= 0x000F0000u;
     }
     edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}});
-    edits.push_back({End(ins[scale]), {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, swz), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
-                                       Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
-                                       Op(kMax, 3), Dst(kTemp, B, 0x7), Src(kTemp, B), Src(kTemp, T)}});
+    std::vector<DWORD> atlas = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, swz), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
+                                Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E)};
+    AtlasWeight(t, ins[tex], T, cA, u, edits, atlas, out);
+    atlas.insert(atlas.end(), {Op(kMax, 3), Dst(kTemp, B, 0x7), Src(kTemp, B), Src(kTemp, T)});
+    edits.push_back({End(ins[scale]), std::move(atlas)});
     Apply(t, std::move(edits));
     return true;
 }

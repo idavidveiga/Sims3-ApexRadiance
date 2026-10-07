@@ -181,6 +181,7 @@ bool g_wallAlign = true;         // walls lit where their light is drawn: no ste
 bool g_foundationWalls = true; // (07/10) wall lamp light at the height the game draws the wall (LevelLightShare::SetFoundationWalls)
 bool g_allFloors = true;        // every floor of the active lot in full lighting detail (LevelLightShare::SetAllFloors)
 bool g_floorWalls = true;       // walls block lamp light on outdoor floors (LevelLightShare::SetFloorWalls)
+bool g_realisticOpenings = kRealisticOpeningsDefault; // (08/10, experimental) walled yards lit only through doors, windows and over walls (LevelLightShare::SetRealisticOpenings)
 bool g_objectWalls = true;      // walls block lamp light on outdoor objects (LevelLightShare::SetObjectWalls)
 int g_lightDetail = 0;          // lighting texels per metre on walls and floors: 0 the game's, 1 twice (LightDetail; read at startup)
 bool g_unlitOn = true;           // rooms with every lamp off: Apex's light instead of the game's blue glow (UnlitRooms)
@@ -1730,6 +1731,10 @@ class NightTerrainRelightPatch : public ApexPatch {
             "Fixes two game bugs that put wall lamp light at the wrong height: outside walls of houses on a foundation, and walls taller than a story (up to the roof).");
         RegisterBoolSetting(&g_floorWalls, "paredesBloqueiamLuzNosPisos", true,
             "Walls stop lamp light on outdoor floors: decks and yards without a roof behind a wall stay dark (relights the rooms when changed).");
+        RegisterBoolSetting(&g_realisticOpenings, "luzRealistaPorAberturas", kRealisticOpeningsDefault,
+            "Experimental: a yard, light well or deck without a roof closed by walls takes the light of its story's outdoor lamps only through its doors, "
+            "windows and arches, at their height, or over walls lower than the lamp; one closed all round stays dark (needs \"Walls block light on floors\"; "
+            "relights every room when changed).");
         RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
             "Walls stop lamp light on outdoor objects: furniture in a yard without a roof behind a wall stays dark.");
         RegisterEnumSetting(&g_lightDetail, "detalheDaLuz", 0,
@@ -1984,6 +1989,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LevelLightShare::SetAllFloors(g_allFloors);
             LevelLightShare::SetAllLotsHighQuality(g_allLotsHQ);
             LevelLightShare::SetFloorWalls(g_floorWalls);
+            LevelLightShare::SetRealisticOpenings(g_realisticOpenings);
             LevelLightShare::SetObjectWalls(g_objectWalls);
             LevelLightShare::SetFoundationWalls(g_foundationWalls);
             UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);
@@ -2209,6 +2215,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_wallAlign = true;
         g_allFloors = true;
         g_floorWalls = true;
+        g_realisticOpenings = kRealisticOpeningsDefault;
         g_objectWalls = true;
         g_foundationWalls = true;
         g_neutralProbe = true;
@@ -2360,6 +2367,11 @@ class NightTerrainRelightPatch : public ApexPatch {
                 // a room can show its old light for a moment; switching floors solves the rooms shown again
                 if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
                 changed |= ApexUi::SwitchRow("Walls block light on floors", &g_floorWalls, "Decks and yards without a roof stay dark behind a wall", true);
+                ImGui::BeginDisabled(!g_floorWalls); // its floors rely on the walls' mask
+                ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
+                changed |= ApexUi::SwitchRow("Light through doors and windows", &g_realisticOpenings, "Lamps light walled yards only through openings or over the walls",
+                                             kRealisticOpeningsDefault);
+                ImGui::EndDisabled();
                 changed |= ApexUi::SwitchRow("Walls block light on objects", &g_objectWalls, "Furniture behind a wall gets no light from the lamp outside", true);
                 changed |= ApexUi::SwitchRow("Wall lamps at the right height", &g_foundationWalls, "Fixes a game bug: wall light too high on tall walls and foundations", true);
                 if (ApexUi::BeginAdvanced("StoryDetail", "Floor detail")) {

@@ -36,6 +36,12 @@ void SetAllLotsHighQuality(bool on);
 // outdoor lamps (relights every room when it changes); Active = installed, the game code matched and on
 void SetFloorWalls(bool on);
 bool FloorWallsActive();
+// Light through doors and windows (experimental, option "luzRealistaPorAberturas"): a walled roofless room (a yard, a light
+// well, a deck behind a half wall) takes the outdoor lamps of its own story that can reach it, each lit through doors,
+// windows and arches at their height or over walls lower than the lamp (every wall of the story counts); a closed one
+// takes none. Relights every room when changed. Active = on, installed, and "walls block light on floors" active too.
+void SetRealisticOpenings(bool on);
+bool RealisticOpeningsActive();
 // Walls block light on objects: true when an outside wall stands between the lamp and the point at the height the ray
 // crosses it (render thread; a copy of each story's outside walls taken when room 0 is solved)
 // A wall crossed within nearSkip metres of the point is the wall the object sits in and does not block (0.2 m; Windows

@@ -44,8 +44,8 @@ struct FloorPatch {
     DWORD atlasConst = 0;
     DWORD mapSampler = 0; // PatchSnowFloor: the sampler of the room light map it found
     int scaleConst = -1;  // K of the game's lamp scale cK.x applied to max(map, atlas), read by no other instruction; -1 unknown
-    int heightConst = -1; // PatchBakedAtlasPs: cH, the atlas weight saturate(map.a * cH.y + cH.x) ((1, 0) = always)
-    bool maskAlpha = false; // PatchBakedAtlasPs: map.a is still readable at the atlas (the floor visibility mask)
+    int heightConst = -1; // PatchBakedAtlasPs, PatchFloor, PatchSnowFloor: cH, the atlas weight saturate(map.a * cH.y + cH.x) ((1, 0) = always); -1 = none
+    bool maskAlpha = false; // map.a is readable at the atlas (the floor visibility mask; the winter floors copy it after the map's texld)
     bool loggedMask = false; // lot_light_bridge logged maskAlpha once
 };
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
