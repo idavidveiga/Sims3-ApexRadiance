@@ -465,3 +465,20 @@ soft mode shades rays passing near a wall's end.
 **Outcome:** for an outdoor lamp of a lower story, that test runs from where the ray reaches the lit story's lowest floor
 (`OutdoorEntry`), as for indoor rooms; a ray that comes up through a floor a player placed on that story keeps the
 whole ray. Released in 2.7.0.
+
+### 2026-10-07: avoid repeated exterior floor-link searches
+
+**Context:** exterior wall corrections applied slowly while placing or moving lamps in Build/Buy. Terrain batches in
+the reported scene completed roughly 100 ms after dispatch; baked wall solves involved substantially more work.
+
+**Finding:** the lower-wall pass's last-manager shortcut misses repeatedly when rays alternate stories. Each miss
+called `LevelFor` again, locking and walking the floor links even when `OutdoorEntry` or another lamp had already
+resolved the same floor at that sample. The existing `LevelForPoint` cache is bounded to eight slots and expires with
+the point generation; the original last-manager shortcut and owner checks remain.
+
+**Outcome:** reuse that per-point lookup in the exterior lower-wall pass. The maintainer confirmed faster updates in
+the reported gameplay scene. No lighting calculation, quality, gather wait, queue order or time budget changes.
+Released in 2.10.1; quantitative timing and wider-scene validation remain open.
+
+A preceding broad exterior-priority experiment did not improve the reported delay and is not included. Its initially
+reported colour concern was subsequently withdrawn; it is not recorded as a confirmed visual regression.

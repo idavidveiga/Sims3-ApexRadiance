@@ -47,10 +47,10 @@ and `windowscodecs.lib` through `#pragma comment`.
 
 In PowerShell use the call operator: `& "C:\Program Files (x86)\...\MSBuild.exe" ...`.
 
-- **One unified binary.** The ASI contains the optional developer tools. Developer mode is off by default and is read
-  from `[ui] developer_mode` at startup, before the features are created. It is turned on in Settings > Menu after a
-  confirmation and applies after a game restart. See [features/developer-mode.md](features/developer-mode.md).
-- **`ApexPublic` is a legacy no-op.** Never produce separate player and developer assets.
+- **Public release asset:** build with `/p:ApexFlavorDefines=APEX_NO_DEV_TOOLS`, a separate `Public` output and
+  intermediate directory. Publish that `ApexRadiance.asi`; it leaves out developer tools and cannot enable developer
+  mode (`build_flavor.h`). The normal `Release` build retains the maintainer's developer tools and stays local.
+- **`ApexPublic` is a legacy no-op.** The active public-build switch is `ApexFlavorDefines=APEX_NO_DEV_TOOLS`.
 - **Files on disk that are not in `ApexRadiance.vcxproj` are not built.** A new `.cpp` must be added to the project's
   `ClCompile` list.
 - The [apex-compile-project](../.agents/skills/apex-compile-project/SKILL.md) skill finds, runs and caches a verified
@@ -235,15 +235,14 @@ Every release follows [apex-review-pr-release](../.agents/skills/apex-review-pr-
 3. **Install and test** the build in game (section 2). Record results in the validation pages.
 4. **Documentation:** update the feature, validation and history pages, and write the release page in
    [releases/](releases/README.md) using its common layout.
-5. **Publish only after the maintainer's explicit approval.** The release asset is the unified `ApexRadiance.asi`
+5. **Publish only after the maintainer's explicit approval.** The release asset is the public `ApexRadiance.asi`
    built from the reviewed commit; verify after publication that the published asset matches the reviewed build.
    Repository: `loinyx/Sims3-ApexRadiance`.
 6. **Release notes:** a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`. The
    Nexus workflow derives its changelog from that body. Keep internal provenance notes out of Git and source archives.
    A documentation-only follow-up does not require rebuilding or replacing the published ASI.
 
-Published versions are listed in [releases/README.md](releases/README.md). The latest published version is 2.6.0
-(pull request #2); version 2.7.0 (pull request #4) is the release being prepared.
+Published versions are listed in [releases/README.md](releases/README.md).
 
 ---
 

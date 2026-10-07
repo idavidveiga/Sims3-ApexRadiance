@@ -1,4 +1,4 @@
-> Published version 2.5.6: Optimize rendering defaults on (`[ui] performance_mode`); explicit saved off choices remain off. Current development PR #2 removes that switch and its mode-dependent paths; the published binary is unchanged. World-owned type-11 lamp edits reconcile terrain and native rigs; the player confirmed the test-scene colour response, not a latency/FPS benchmark. Read docs/features/night-lighting/world-lamp-response.md and docs/features/performance/README.md before changing these paths. One unified ASI; optional developer mode; no Apex window/V-Sync/FPS controls.
+> Current release 2.10.1: exterior wall lighting reuses the existing per-point floor lookup. The reported Build/Buy scene updates faster; no numerical latency/FPS gain is claimed. Lighting parameters and solve policies are preserved. Release assets use `ApexFlavorDefines=APEX_NO_DEV_TOOLS`; developer builds remain local. Read the affected feature/validation/history pages before further lighting changes.
 
 # CLAUDE.md: Apex Radiance
 
@@ -46,13 +46,14 @@ were removed (see below).
 MSBuild: `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe`, v143,
 Release|Win32, C++20, static CRT, vcpkg triplet `x86-windows-static` (always `/p:VcpkgEnableManifest=false`).
 
-Apex Radiance has one unified binary from 2026-10-02 (user decision): `Release\ApexRadiance.asi`.
-Build once with `ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false`.
-`ApexPublic` is a legacy no-op; never produce separate player/developer assets.
-Developer mode is off by default, chosen from `[ui] developer_mode` at startup before feature construction.
+The public release is `Public\ApexRadiance.asi`, built with `ApexFlavorDefines=APEX_NO_DEV_TOOLS` and separate output
+and intermediate directories. The maintainer's `Release\ApexRadiance.asi` retains developer tools and stays local.
+Build with `ApexRadiance.sln /p:Configuration=Release /p:Platform=x86 /p:VcpkgEnableManifest=false` and the appropriate
+flavor/output arguments. `ApexPublic` is a legacy no-op; see `build_flavor.h` and `docs/workflow.md`.
+In the developer build, developer mode is off by default, chosen from `[ui] developer_mode` at startup before feature construction.
 It is enabled in Settings > Menu after an explicit confirmation. Restart required for both directions.
 The legacy `kPublicBuild` name now means normal runtime mode, not a compile-time flavor.
-Developer instruments/threads/checks remain gated; the unified ASI includes their code.
+Developer instruments/threads/checks remain gated in that build; the public release omits them and never activates developer mode.
 Profiles can optionally include Development. Show that save checkbox only when mode is requested/active;
 show it on import when the profile contains it. Importing activation requires the same confirmation.
 Profiles restore diagnostic preferences, never start recording/capture/profiling actions automatically.
@@ -118,12 +119,10 @@ the Frame Profiler / `ApexRadiance_Hitches.txt` for performance. The docs quote 
 
 ## Release
 - Every release requires `.agents/skills/apex-review-pr-release/SKILL.md` before publication: independent review of substantive code, evidence-based bug/regression debate, performance costs, preservation of intended visuals and documentation consistency. Record the exact reviewed/tested SHA; unresolved gameplay evidence remains unverified. Check changes added after the review before releasing. Publication is still explicitly authorized by the user.
-GitHub `loinyx/Sims3SettingsSetter-Apex` (combined build; releases `nightremake-v0.1.0-alpha`, `apex-v0.2.0-alpha`
-Latest). Push:
-`git -c credential.helper= -c 'credential.helper=!"/c/Program Files/GitHub CLI/gh.exe" auth git-credential' push fork night-remake:main`.
-Release asset = public `S3SSApex.asi`, English notes in the v0.2.0 shape. Details: `docs/workflow.md` section 5.
-Apex Radiance releases will ship `Public\ApexRadiance.asi`; its repository (and any GitHub repo rename) is not decided
-and needs the user's explicit OK.
+Publish `Public\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance`, with English player-facing notes and an Install section.
+Follow `docs/workflow.md` section 6 and the current release skill. The GitHub release triggers the Nexus upload workflow;
+verify the published artifact's identity and the workflow result. The previous combined-build repository and
+`S3SSApex.asi` releases are historical; see `docs/history/workflow.md`.
 
 ## Map of docs
 - `docs/architecture.md`: hooks, registry priorities and Skip, post-scene chain (Edge 20, DepthBlur 30), INTZ depth

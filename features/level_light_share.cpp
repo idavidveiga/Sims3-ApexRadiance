@@ -6408,7 +6408,10 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, voi
         IntVec kept{};
         if (floor < roomLevel) {
             const uintptr_t mgrNext = StoryManager(tracker, floor + 1);
-            if (mgrNext && (mgrNext != s_nextMgr || !s_nextLevel || LevelManager(s_nextLevel) != mgrNext)) s_nextMgr = mgrNext, s_nextLevel = LevelFor(mgrNext);
+            // The original last-manager shortcut stays; when a ray alternates stories, reuse the floor lookup already
+            // made for this point (OutdoorEntry/another lamp) instead of locking and walking the floor links again.
+            // LevelForPoint is discarded at the next point; the live LevelManager check above is unchanged.
+            if (mgrNext && (mgrNext != s_nextMgr || !s_nextLevel || LevelManager(s_nextLevel) != mgrNext)) s_nextMgr = mgrNext, s_nextLevel = LevelForPoint(mgrNext);
             const uintptr_t wb = *reinterpret_cast<const uintptr_t*>(room0 + 0x30), we = *reinterpret_cast<const uintptr_t*>(room0 + 0x34);
             const size_t walls = we > wb ? (we - wb) / 4 : 0;
             if (mgrNext && s_nextLevel && walls && walls <= 65536) {

@@ -1249,6 +1249,8 @@ const I18n::Table kRefreshLightingCardTable(kRefreshLightingCardEntries, std::si
 // The footer and What's new (apex_changelog.cpp)
 namespace {
 const I18n::Entry kWhatsNewEntries[] = {
+    {"Placing and moving outdoor lamps updates wall lighting faster, especially on multi-story lots", "Colocar e mover luminárias externas atualiza a luz nas paredes mais rápido, principalmente em lotes com vários andares", "Colocar y mover lámparas exteriores actualiza la luz de las paredes más rápido, especialmente en solares de varios pisos", "Placer et déplacer des lampes extérieures actualise plus vite la lumière des murs, surtout sur les terrains à plusieurs étages"},
+    {"Lighting colors, brightness, shadows and reach are unchanged", "As cores, o brilho, as sombras e o alcance da iluminação continuam iguais", "Los colores, el brillo, las sombras y el alcance de la iluminación no cambian", "Les couleurs, la luminosité, les ombres et la portée de l'éclairage restent identiques"},
     {"What's new", "Novidades", "Novedades", "Nouveautés"},
     {"What's new in {}", "Novidades da {}", "Novedades de la {}", "Nouveautés de la {}"},
     {"Version {}", "Versão {}", "Versión {}", "Version {}"},

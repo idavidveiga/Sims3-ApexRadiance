@@ -627,6 +627,13 @@ lighting, diagnostic arming, solves or budgets. An empty file means no qualifyin
 
 ### Cost
 
+The lower-wall pass reuses the existing per-point floor lookup.
+The last-manager shortcut and its live owner check remain. When successive rays alternate between stories, a floor
+already looked up by `OutdoorEntry` or another lamp at that same point need not lock and scan the links again. The
+existing point generation expires this cache at the next sample. This changes no ray, wall list, light parameter,
+gather delay, solve class, queue order or time budget. The lookup comparison and its limits are recorded in
+[validation](../../validation/night-lighting-level-light-share.md#exterior-floor-lookup-2026-10-07).
+
 The point solve runs for every texel of a room light map. The hooks read the thread id from the TEB and do nothing for
 rooms without borrowed lamps. Diagnostic sample recording exists only in developer mode and runs only while armed. Every
 floor in full detail adds solve work once when entering a lot. In-game cost has not been measured (see

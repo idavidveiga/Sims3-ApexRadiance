@@ -17,6 +17,7 @@ It must:
 
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
+| [`tools/exterior_lookup_test`](../../tools/exterior_lookup_test/README.md) | Extracted exterior floor lookup and per-point cache against the v2.10.0 implementation; alternating stories, replacement, missing data and eviction | `run.ps1 -ReferenceSource <v2.10.0-level_light_share.cpp>` | MSVC x86 |
 | [`tools/terrain_lighting_test/run_indoor_stories_checks.ps1`](../../tools/terrain_lighting_test/run_indoor_stories_checks.ps1) (`indoor_stories_fixture.cpp`) | Extracts the production `IndoorBoundaryPass`, `IndoorPassImpl` and `BasisLightHook` and runs them on mock game structures: all story pairs, open shafts, every solid intermediate floor, wall blocking, wall-mode restoration, tile heights, unavailable data, ghost rows and split-level crossings, the raised-room exterior wall veto, partial basis transmission. Optional `-ReferenceSource` compiles an older `IndoorPassImpl` to compare adjacent-story results | `run_indoor_stories_checks.ps1 [-OutDir ...] [-ReferenceSource ...]` | MSVC x86 |
 | [`tools/room_structure_test/run.ps1`](../../tools/room_structure_test/run.ps1) (`check.cpp`) | Extracts `NoteRoomStructure`: a new room schedules a refresh, LOD or repeated gathers do not, roof and wall changes do, repeated changes coalesce | `run.ps1` | MSVC x86 |
 | [`tools/room_ambient_test`](../../tools/room_ambient_test/README.md) (`room_ambient_test.cpp`) | Room ambient and scheduling policy (`room_ambient_policy.h`): group deadlines, first dispatch, overdue updates, tick wrap, window recheck timing (0 / 2 s / 6 s, bounded, wrap), lamp refresh delay (120 / 700 ms), gather ordering, floor priority, structure and floor-edit timing | `run.ps1` | MSVC x86 |
@@ -29,6 +30,7 @@ only the repository and print to the console.
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-07 | v2.10.1 | Extracted exterior floor lookup against v2.10.0 | 86,364 checks passed; 84,000 to 7,000 full link searches in the fixed multi-story fixture | None (native accesses mocked) |
 | 2026-10-05 | PR #2 (`2584e01`) | Indoor stories fixture, raised-room wall veto | 18,992 extracted checks passed; the raised-wall fixture failed twice before the guard and passes after | None (mocks) |
 | 2026-10-04 | PR #2, candidate `2.5.6-indoor-wall-guard-test` | Extracted indoor and basis tests | 30,890 passed | None |
 | 2026-10-04 | same | Resource restoration and lot UV fallback tests | 13,682 passed | Native D3D9 |
@@ -42,6 +44,35 @@ only the repository and print to the console.
 | 2026-09-30 | combined build | Directional-map shader cap | 4 captured indoor-object shaders patched and valid | d3dcompiler |
 
 ## In-game test plan
+
+### Exterior floor lookup (2026-10-07)
+
+Source base: tag `v2.10.0`, commit `676889b5b8567e791cb6655b3af62d0f1cadc7e2`; released change: v2.10.1.
+The exact reviewed/tested release SHA is recorded in the release PR and local artifact manifest.
+
+`tools/exterior_lookup_test/run.ps1 -ReferenceSource <pre-change level_light_share.cpp>` extracts the production
+lower-wall floor lookup and existing `LevelForPoint`, comparing them with the pre-change lookup. Result: **86,364 checks,
+0 failures**. It covers alternating floors/lamps, the single-floor warm shortcut, manager-address reuse with the old
+floor released, missing floors/managers, recovery, slot eviction across lots, next-point expiry and the existing
+read-only self-check. A fixed multi-story mock workload uses 7,000 full link searches instead of 84,000; this is an
+operation count, **not a measured gameplay speedup**. Geometry, shader output and end-to-end presentation latency are
+not validated by this fixture.
+
+No colour, intensity, falloff, occlusion, floor/wall geometry or rendering policy is changed. Source comparison against
+v2.10.0 shows only the `LevelFor` to `LevelForPoint` substitution and comments in the lighting module. The release also
+updates its version and translated What's new text. The earlier priority experiment is excluded; see
+[history](../history/night-lighting-level-light-share.md).
+
+**Confirmed in game:** the maintainer tested the lookup candidate and confirmed substantially faster exterior lighting
+updates in the reported Build/Buy scene, with the result accepted for release. This is qualitative gameplay evidence;
+no millisecond, frame-time or FPS improvement is claimed.
+
+**Open checks:** quantitative end-to-end timing and broader lots/backends; pixel-by-pixel visual equivalence on all
+scenes. The per-point cache assumes topology does not change inside a synchronous point evaluation, as do the existing
+lamp-position/room/floor caches. Manager replacement and recovery between points are covered by the fixture; concurrent
+topology mutation inside a point is not reproduced. This release does not promise instant updates on every lot.
+
+### Existing scenarios
 
 1. Two-story house at night with a wall sconce on the upper outside wall near a corner and garden lamps. **Expected:** the
    wall below the sconce is lit continuously across the floor line; the lower side wall around the corner is not
