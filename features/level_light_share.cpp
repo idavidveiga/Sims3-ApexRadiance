@@ -5236,11 +5236,33 @@ uint32_t GatherSerial(const BYTE* room) {
     }
     return GatherSerialImpl(room, mgr, id);
 }
+// A lot lamp sold or deleted in Build mode stays registered, lit (+0x100 bit 0x20) with its full colour and only disabled
+// (bit 0x40 clear), also after a save load (07/10 snapshots 14:07:58 and 14:21:45: lamp post L3BEA4030, type 11, flags B5,
+// still in 8 room lists). The game's gather (FUN_006c7820: lit, brightness, type) never reads 0x40, so its room solves kept
+// lighting the outside walls and the deck with it. Removed from the list the gather just built (a plain vector of light
+// pointers, room+0xC8..+0xCC, filled by FUN_006a2060); world lights (lot id 0) keep the game's behaviour.
+std::atomic<long> g_disabledDropped{0};
+int DropDisabledLotLights(BYTE* room) {
+    uintptr_t* b = *reinterpret_cast<uintptr_t**>(room + 0xC8);
+    uintptr_t* e = *reinterpret_cast<uintptr_t**>(room + 0xCC);
+    if (!b || e <= b || e - b > 4096) return 0;
+    uintptr_t* out = b;
+    for (uintptr_t* p = b; p < e; p++) {
+        const uintptr_t L = *p;
+        const bool drop = L && !(*reinterpret_cast<const BYTE*>(L + 0x100) & 0x40) &&
+                          (*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) != 0;
+        if (!drop) *out++ = L;
+    }
+    const int dropped = static_cast<int>(e - out);
+    if (dropped) *reinterpret_cast<uintptr_t**>(room + 0xCC) = out;
+    return dropped;
+}
 void __fastcall OutdoorGather(BYTE* treeLevel, void*, BYTE* room) {
     const DWORD started = GetTickCount();
     reinterpret_cast<AddWorldLights_t>(kAddWorldLights)(treeLevel, room);
     if (!g_installed.load(std::memory_order_relaxed) || !room) return;
     __try {
+        if (const int n = DropDisabledLotLights(room)) g_disabledDropped.fetch_add(n, std::memory_order_relaxed);
         NoteRoomStructure(room);
         ShareOutdoorLights(treeLevel, room);
         ShareIndoorLights(treeLevel, room);
