@@ -3060,6 +3060,10 @@ uint32_t CopyStoryCuts(uint64_t lot, int story, std::vector<std::pair<uint32_t, 
 
 // ---- The walls of a story, with their openings and tops (light tree thread) ----
 constexpr float kGridSoft = 0.04f;   // m: the soft rim of an opening and of a wall's top (no hard texel stairs on a floor)
+// The soft rim GridRamp uses (light tree thread): kGridSoft, or a wider penumbra while MidPass tests the stories in between
+// (07/10: the tower patch above a balcony parapet ended in a hard straight cut; a lantern about 0.3 m wide 5 m from the
+// parapet and 2 to 4 m from the wall casts a soft edge of a few tens of cm)
+thread_local float t_gridSoft = kGridSoft;
 constexpr float kGridLampSkip = 0.01f, kGridEndSkip = 0.01f; // m along the ray: a crossing this close to the lamp / the point is not one
 constexpr float kStoryWallH = 3.0f;  // [0x00FF37DC]: a wall's height over its base for the game's wall light
 constexpr float kHalfWallH = 1.0f;   // [0x0107A538]: a half wall's height in the game's own soft wall test (0x0069ACB9)
@@ -3407,7 +3411,7 @@ struct GridWhy {
     bool wall = false, opening = false, over = false, roof = false;
 };
 inline float GridRamp(float x) {
-    const float t = std::clamp(x / kGridSoft + 0.5f, 0.0f, 1.0f);
+    const float t = std::clamp(x / t_gridSoft + 0.5f, 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
 // The share of a ray crossing edge idx at u (0..1 from its low end) at lot height y
@@ -6633,12 +6637,16 @@ float MidPassImpl(const RoomInfo& info, int home, void* light, const float* samp
     return pass;
 }
 float MidPass(const RoomInfo& info, int home, void* light, const float* sample) {
+    t_gridSoft = 0.3f; // the penumbra of the walls in between
+    float pass = 1.0f;
     __try {
-        return MidPassImpl(info, home, light, sample);
+        pass = MidPassImpl(info, home, light, sample);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
-        return 1.0f; // as before
+        pass = 1.0f; // as before
     }
+    t_gridSoft = kGridSoft;
+    return pass;
 }
 std::atomic<long> g_aboveTests{0}, g_aboveBlocked{0}; // lower-story lamps above the story's floor, tested on its grid
 std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies: points given a share, game tests raised to it
