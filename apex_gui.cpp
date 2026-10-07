@@ -3978,6 +3978,8 @@ class GuiClient final : public Overlay::Client {
             Overlay::SetVisible(true);
         }
         Captures::SetScreenshots(ApexConfig::GetUi().captureScreenshot); // [ui] capture_screenshot
+        static bool s_pruned = false;
+        if (!s_pruned) { s_pruned = true; Captures::Prune(); } // game start: keep Captures\ within [ui] capture_max_mb / capture_max_folders
         bool noticeShown = false;
         const bool noticesAllowed = !BannerNeeded() && !Captures::ScreenshotPending();
         if (!Captures::ScreenshotPending()) {

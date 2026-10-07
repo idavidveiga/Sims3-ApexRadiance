@@ -3752,6 +3752,17 @@ void StartWriter() {
     if (g_writerThread) return;
     ApexPaths::EnsureApexDirectory();
     g_filePath = std::filesystem::path(ApexPaths::ApexDirectory()) / L"ApexRadiance_Hitches.txt";
+    {
+        // appended across sessions: past 16 MB it becomes ApexRadiance_Hitches.old.txt (replacing the previous one), 07/10
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(g_filePath, ec);
+        if (!ec && size > (16u << 20)) {
+            const auto old = std::filesystem::path(ApexPaths::ApexDirectory()) / L"ApexRadiance_Hitches.old.txt";
+            std::filesystem::remove(old, ec);
+            std::filesystem::rename(g_filePath, old, ec);
+            if (!ec) LOG_INFO(std::format("[FrameProfiler] ApexRadiance_Hitches.txt was {:.1f} MB: moved to ApexRadiance_Hitches.old.txt", size / 1048576.0));
+        }
+    }
     if (!g_wake) g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!g_wake) {
         LOG_ERROR("[FrameProfiler] CreateEvent failed, ApexRadiance_Hitches.txt will not be written");

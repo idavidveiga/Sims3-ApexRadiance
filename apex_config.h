@@ -33,6 +33,8 @@ struct UiSettings {
     bool recommendS3SS = true; // the "Recommended: Sims3SettingsSetter" card while S3SS is not loaded ([ui] recommend_s3ss)
     bool startNote = true;     // the "Apex Radiance is ready, press <key>" note at every start ([ui] start_note)
     bool captureScreenshot = true; // the Report a problem captures also save Screenshot.png ([ui] capture_screenshot)
+    int captureMaxMb = 2048;    // Captures\ is pruned (oldest capture folders first) above this size ([ui] capture_max_mb; 0 = no size limit)
+    int captureMaxFolders = 30; // ...and above this many capture folders ([ui] capture_max_folders; 0 = no count limit)
     bool welcomeDone = false;  // legacy welcome-tour flag, kept when reading and writing older configs
     bool keyChosen = false;    // legacy first-start key prompt flag; no longer gates the menu or startup hint
     bool startProfileDone = false; // the welcome page was shown ([ui] start_profile_done; false only for a new installation: a config without it counts as true)

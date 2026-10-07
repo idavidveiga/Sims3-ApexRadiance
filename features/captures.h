@@ -5,7 +5,8 @@
 // Every capture gets its own folder Documents\...\Apex Radiance\Captures\<YYYY-MM-DD HH-MM-SS> <kind>\ (never reused: a
 // second capture in the same second gets " (2)"), and when it is done the folder also gets a copy of ApexRadiance_LOG.txt,
 // ApexRadiance.toml, ApexRadiance_Crash.txt when there is one, and "About this capture.txt" (what it is, the version, how
-// to send it). Capture folders are never reused or deleted by themselves; menu removal is reversible. Each start and
+// to send it). Capture folders are never reused; the oldest are removed automatically only past the size / count limits
+// (Prune, [ui] capture_max_mb / capture_max_folders); menu removal is reversible. Each start and
 // completion shows a centered note on screen (Notify, drawn by the menu module).
 #include <cstdint>
 #include <filesystem>
@@ -39,7 +40,15 @@ struct SaveResult {
     bool failed = false;
 };
 SaveResult LastSave(); // thread-safe, no disk scan
-bool Saving(); // includes PNG encoding, unlike ScreenshotPending
+bool Saving(); // includes PNG encoding (screenshots and texture dumps), unlike ScreenshotPending
+// A lossless PNG written on a background worker (one at a time, in order): channels 1 = 8-bit grey, 3 = B G R bytes, rows
+// top-down, w*channels bytes each. The capture folder counts as saving until its PNGs are done (call before Finish).
+// The render thread waits only when the queued pixels pass a memory cap (32-bit game).
+void WritePngAsync(const std::filesystem::path& folder, const std::filesystem::path& file, std::vector<BYTE> pixels, UINT w, UINT h, int channels);
+// Keeps Captures\ within [ui] capture_max_mb and capture_max_folders on a background thread, removing the oldest capture
+// folders first ("YYYY-MM-DD HH-MM-SS <kind>" direct children only; never the open session or a capture still being
+// written). Runs at game start and after every capture.
+void Prune();
 void RetrySave(); // text and metadata retained; a failed screenshot is taken again
 // Every capture also gets Screenshot.png, the picture of the next frame (menu closed: as shown, Color filters included;
 // menu open: the picture before the Apex menu draws). On by default ([ui] capture_screenshot, set by the menu).

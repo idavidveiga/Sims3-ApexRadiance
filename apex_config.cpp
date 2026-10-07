@@ -348,6 +348,8 @@ void LoadSettings() {
         u.recommendS3SS = (*ui)["recommend_s3ss"].value_or(true);
         u.startNote = (*ui)["start_note"].value_or(true);
         u.captureScreenshot = (*ui)["capture_screenshot"].value_or(true);
+        u.captureMaxMb = static_cast<int>(std::clamp<int64_t>((*ui)["capture_max_mb"].value_or(int64_t{2048}), 0, 1000000));
+        u.captureMaxFolders = static_cast<int>(std::clamp<int64_t>((*ui)["capture_max_folders"].value_or(int64_t{30}), 0, 100000));
         u.developerMode = (*ui)["developer_mode"].value_or(false);
         kPublicBuild.store(!(kDevToolsBuild && u.developerMode), std::memory_order_relaxed);
         u.welcomeDone = (*ui)["welcome_done"].value_or(false); // retained for compatibility; no longer controls startup UI
@@ -430,6 +432,8 @@ bool Save(std::string* error) {
         ui.insert("recommend_s3ss", u.recommendS3SS);
         ui.insert("start_note", u.startNote);
         ui.insert("capture_screenshot", u.captureScreenshot);
+        ui.insert("capture_max_mb", static_cast<int64_t>(u.captureMaxMb));
+        ui.insert("capture_max_folders", static_cast<int64_t>(u.captureMaxFolders));
         ui.insert("developer_mode", u.developerMode);
         ui.insert("welcome_done", u.welcomeDone);
         ui.insert("key_chosen", u.keyChosen);

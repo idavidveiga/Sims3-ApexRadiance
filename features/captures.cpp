@@ -19,6 +19,8 @@
 #include <d3d9.h>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <format>
 #include <fstream>
 #include <mutex>
@@ -47,7 +49,8 @@ std::string g_retryTitle;
 std::filesystem::path g_retryFolder;
 std::map<std::filesystem::path, std::string> g_failedText;
 std::map<std::filesystem::path, bool> g_shotJobs; // pending PNGs; protected by g_lock
-bool g_copyFailed = false, g_shotFailed = false;
+std::map<std::filesystem::path, int> g_dumpJobs; // pending texture-dump PNGs per capture folder; protected by g_lock
+bool g_copyFailed = false, g_shotFailed = false, g_dumpFailed = false;
 bool g_notifyCompletion = false;
 CaptureKind g_retryKind = CaptureKind::Generic;
 std::vector<std::pair<std::filesystem::path, std::filesystem::path>> g_removed;
@@ -65,21 +68,100 @@ bool PlainDirectory(const std::filesystem::path& path) {
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT);
 }
 void UpdateResultLocked() {
-    g_result.saving = g_shotJobs.contains(g_retryFolder);
-    g_result.failed = g_copyFailed || g_shotFailed;
+    g_result.saving = g_shotJobs.contains(g_retryFolder) || g_dumpJobs.contains(g_retryFolder);
+    g_result.failed = g_copyFailed || g_shotFailed || g_dumpFailed;
     for (const auto& [file, text] : g_failedText) {
         (void)text;
         if (file.parent_path() == g_retryFolder) g_result.failed = true;
     }
 }
+void PruneLater();
 void CompleteShot(const std::filesystem::path& folder, bool ok) {
-    std::lock_guard<std::mutex> lk(g_lock);
-    g_shotJobs.erase(folder);
-    if (folder == g_retryFolder) {
-        g_shotFailed = !ok;
-        UpdateResultLocked();
-        g_notifyCompletion = true;
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        g_shotJobs.erase(folder);
+        if (folder == g_retryFolder) {
+            g_shotFailed = !ok;
+            UpdateResultLocked();
+            g_notifyCompletion = true;
+        }
     }
+    PruneLater();
+}
+void CompleteDump(const std::filesystem::path& folder, bool ok) {
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        auto it = g_dumpJobs.find(folder);
+        if (it != g_dumpJobs.end() && --it->second <= 0) g_dumpJobs.erase(it);
+        if (folder == g_retryFolder) {
+            if (!ok) g_dumpFailed = true;
+            UpdateResultLocked();
+            if (!g_result.saving) g_notifyCompletion = true;
+        }
+    }
+    if (!ok) LOG_WARNING("[Captures] A texture image could not be written in " + ApexUtil::ToUtf8(folder.wstring()));
+    PruneLater();
+}
+
+// One PNG through WIC (lossless). fmt: GUID_WICPixelFormat24bppBGR or GUID_WICPixelFormat8bppGray; the calling thread
+// must have COM initialised.
+bool EncodePng(const std::filesystem::path& file, const BYTE* pixels, size_t size, UINT w, UINT h, UINT bytesPerPixel, WICPixelFormatGUID want) {
+    IWICImagingFactory* factory = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapEncoder* enc = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+              SUCCEEDED(factory->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(file.c_str(), GENERIC_WRITE)) &&
+              SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) && SUCCEEDED(enc->Initialize(stream, WICBitmapEncoderNoCache)) &&
+              SUCCEEDED(enc->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(w, h));
+    WICPixelFormatGUID fmt = want;
+    ok = ok && SUCCEEDED(frame->SetPixelFormat(&fmt)) && IsEqualGUID(fmt, want) &&
+         SUCCEEDED(frame->WritePixels(h, w * bytesPerPixel, static_cast<UINT>(size), const_cast<BYTE*>(pixels))) && SUCCEEDED(frame->Commit()) &&
+         SUCCEEDED(enc->Commit());
+    if (frame) frame->Release();
+    if (enc) enc->Release();
+    if (stream) stream->Release();
+    if (factory) factory->Release();
+    return ok;
+}
+
+// ---- Texture-dump PNGs (Light capture, developer mode): one worker thread, in order, bounded memory ----
+struct DumpJob {
+    std::filesystem::path folder, file;
+    std::vector<BYTE> pixels;
+    UINT w = 0, h = 0;
+    int channels = 3;
+};
+std::mutex g_dumpLock;
+std::condition_variable g_dumpCv;
+std::deque<DumpJob> g_dumpQueue;
+size_t g_dumpQueuedBytes = 0;
+bool g_dumpWorker = false;
+constexpr size_t kDumpQueueCap = 320u << 20; // queued pixels above this make the render thread wait (32-bit address space)
+
+void DumpWorker() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    for (;;) {
+        DumpJob job;
+        {
+            std::lock_guard<std::mutex> lk(g_dumpLock);
+            if (g_dumpQueue.empty()) { g_dumpWorker = false; break; }
+            job = std::move(g_dumpQueue.front());
+            g_dumpQueue.pop_front();
+        }
+        const bool ok = EncodePng(job.file, job.pixels.data(), job.pixels.size(), job.w, job.h, static_cast<UINT>(job.channels),
+                                  job.channels == 1 ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat24bppBGR);
+        const size_t bytes = job.pixels.size();
+        std::vector<BYTE>().swap(job.pixels);
+        {
+            std::lock_guard<std::mutex> lk(g_dumpLock);
+            g_dumpQueuedBytes -= bytes;
+        }
+        g_dumpCv.notify_all();
+        CompleteDump(job.folder, ok);
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+    g_dumpCv.notify_all();
 }
 
 std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirectory()); }
@@ -157,22 +239,7 @@ void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
     HookGuard::StartDetached("Captures: screenshot writer", [job = std::move(job), bgr = std::move(bgr), w, h] {
         const auto& file = job.file;
         const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        IWICImagingFactory* factory = nullptr;
-        IWICStream* stream = nullptr;
-        IWICBitmapEncoder* enc = nullptr;
-        IWICBitmapFrameEncode* frame = nullptr;
-        bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
-                  SUCCEEDED(factory->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(file.c_str(), GENERIC_WRITE)) &&
-                  SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) && SUCCEEDED(enc->Initialize(stream, WICBitmapEncoderNoCache)) &&
-                  SUCCEEDED(enc->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->SetSize(w, h));
-        WICPixelFormatGUID fmt = GUID_WICPixelFormat24bppBGR;
-        ok = ok && SUCCEEDED(frame->SetPixelFormat(&fmt)) && IsEqualGUID(fmt, GUID_WICPixelFormat24bppBGR) &&
-             SUCCEEDED(frame->WritePixels(h, w * 3, static_cast<UINT>(bgr.size()), const_cast<BYTE*>(bgr.data()))) && SUCCEEDED(frame->Commit()) &&
-             SUCCEEDED(enc->Commit());
-        if (frame) frame->Release();
-        if (enc) enc->Release();
-        if (stream) stream->Release();
-        if (factory) factory->Release();
+        const bool ok = EncodePng(file, bgr.data(), bgr.size(), w, h, 3, GUID_WICPixelFormat24bppBGR);
         if (SUCCEEDED(com)) CoUninitialize();
         if (!ok) LOG_WARNING("[Captures] The screenshot could not be written: " + ApexUtil::ToUtf8(file.wstring()));
         if (job.report) CompleteShot(job.reportFolder, ok);
@@ -286,7 +353,112 @@ bool QueuePlayerPhoto(const std::filesystem::path& file, bool hideGameUi) {
     return true;
 }
 
+// ---- Automatic cleanup (07/10: Captures\ reached 19 GB in 3 days) ----
+// "YYYY-MM-DD HH-MM-SS <kind>": the names NewFolder / BeginSession make; nothing else in Captures\ is touched
+bool CaptureFolderName(const std::wstring& n) {
+    if (n.size() < 21 || n[20] == L' ') return false;
+    static const wchar_t kShape[] = L"dddd-dd-dd dd-dd-dd ";
+    for (size_t i = 0; i < 20; i++) {
+        if (kShape[i] == L'd' ? !(n[i] >= L'0' && n[i] <= L'9') : n[i] != kShape[i]) return false;
+    }
+    return ChildName(ApexUtil::ToUtf8(n));
+}
+std::atomic<bool> g_pruneRunning{false}, g_pruneAgain{false};
+
+void PruneOnce() {
+    namespace fs = std::filesystem;
+    const auto ui = ApexConfig::GetUi();
+    const uint64_t maxBytes = static_cast<uint64_t>(std::max(0, ui.captureMaxMb)) << 20;
+    const size_t maxFolders = static_cast<size_t>(std::max(0, ui.captureMaxFolders));
+    if (!maxBytes && !maxFolders) return;
+    const fs::path root = Root();
+    // protected: the open session and every capture still being written or the latest one (their direct child of Captures\)
+    std::vector<fs::path> keep;
+    {
+        std::lock_guard<std::mutex> lk(g_lock);
+        auto top = [&](fs::path p) {
+            while (!p.empty() && p.parent_path() != root && p.parent_path() != p) p = p.parent_path();
+            if (!p.empty() && p.parent_path() == root) keep.push_back(p.filename());
+        };
+        if (!g_session.empty()) top(g_session);
+        if (!g_retryFolder.empty()) top(g_retryFolder);
+        for (const auto& [f, pending] : g_shotJobs) { (void)pending; top(f); }
+        for (const auto& [f, n] : g_dumpJobs) { (void)n; top(f); }
+    }
+    struct Item { fs::path path; uint64_t bytes; bool kept; };
+    std::vector<Item> items;
+    uint64_t total = 0;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(root, fs::directory_options::skip_permission_denied, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const fs::path p = it->path();
+        if (!PlainDirectory(p) || !CaptureFolderName(p.filename().wstring())) continue;
+        const uint64_t bytes = FolderSize(p);
+        total += bytes;
+        items.push_back({p, bytes, std::find(keep.begin(), keep.end(), p.filename()) != keep.end()});
+    }
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.path.filename() < b.path.filename(); }); // date first: oldest first
+    size_t count = items.size();
+    int removed = 0;
+    uint64_t freed = 0;
+    for (const Item& i : items) {
+        const bool over = (maxFolders && count > maxFolders) || (maxBytes && total > maxBytes);
+        if (!over) break;
+        if (i.kept) continue;
+        std::error_code removeError;
+        fs::remove_all(i.path, removeError);
+        if (removeError) {
+            LOG_WARNING(std::format("[Captures] Cleanup could not remove Captures\\{} ({})", ApexUtil::ToUtf8(i.path.filename().wstring()), removeError.message()));
+            continue;
+        }
+        removed++;
+        freed += i.bytes;
+        total -= i.bytes;
+        count--;
+    }
+    if (removed)
+        LOG_INFO(std::format("[Captures] Cleanup: removed the {} oldest capture folders ({:.1f} MB); {} left, {:.1f} MB (limits: {} folders, {} MB)", removed,
+                             freed / 1048576.0, count, total / 1048576.0, maxFolders, maxBytes >> 20));
+}
+
+void PruneLater() {
+    g_pruneAgain.store(true);
+    if (g_pruneRunning.exchange(true)) return; // the running pass repeats once more
+    if (!HookGuard::StartDetached("Captures: cleanup", [] {
+            do {
+                while (g_pruneAgain.exchange(false)) PruneOnce();
+                g_pruneRunning.store(false);
+            } while (g_pruneAgain.load() && !g_pruneRunning.exchange(true)); // a request that arrived as this pass ended
+        }))
+        g_pruneRunning.store(false);
+}
+
 } // namespace
+
+void Prune() { PruneLater(); }
+
+void WritePngAsync(const std::filesystem::path& folder, const std::filesystem::path& file, std::vector<BYTE> pixels, UINT w, UINT h, int channels) {
+    if (pixels.size() < static_cast<size_t>(w) * h * channels || (channels != 1 && channels != 3)) return;
+    { std::lock_guard<std::mutex> lk(g_lock); g_dumpJobs[folder]++; }
+    bool start = false;
+    {
+        std::unique_lock<std::mutex> lk(g_dumpLock);
+        // bounded memory: wait while a running worker holds too much (never when nothing is queued)
+        g_dumpCv.wait(lk, [] { return !g_dumpWorker || g_dumpQueuedBytes < kDumpQueueCap; });
+        g_dumpQueuedBytes += pixels.size();
+        g_dumpQueue.push_back({folder, file, std::move(pixels), w, h, channels});
+        if (!g_dumpWorker) start = g_dumpWorker = true;
+    }
+    if (start && !HookGuard::StartDetached("Captures: texture PNG writer", [] { DumpWorker(); })) {
+        std::deque<DumpJob> failed;
+        {
+            std::lock_guard<std::mutex> lk(g_dumpLock);
+            failed.swap(g_dumpQueue);
+            g_dumpQueuedBytes = 0;
+            g_dumpWorker = false;
+        }
+        for (const auto& j : failed) CompleteDump(j.folder, false);
+    }
+}
 
 std::filesystem::path Root() { return Dir() / L"Captures"; }
 
@@ -412,7 +584,7 @@ void SetDescription(const std::string& text) {
     g_description = text;
 }
 SaveResult LastSave() { std::lock_guard<std::mutex> lk(g_lock); return g_result; }
-bool Saving() { std::lock_guard<std::mutex> lk(g_lock); return !g_shotJobs.empty(); }
+bool Saving() { std::lock_guard<std::mutex> lk(g_lock); return !g_shotJobs.empty() || !g_dumpJobs.empty(); }
 
 std::string SavedDescription() { std::lock_guard<std::mutex> lk(g_lock); return g_retryDescription; }
 std::string SavedDescriptionTitle() { std::lock_guard<std::mutex> lk(g_lock); return g_retryTitle; }
@@ -469,7 +641,7 @@ bool SaveFolderDescription(const std::string& folder, const std::string& title, 
 
 void Finish(const std::filesystem::path& folder, const std::string& what, CaptureKind kind) {
     std::string description, title;
-    bool retry = false, inSession = false;
+    bool retry = false, inSession = false, texturesPending = false;
     {
         std::lock_guard<std::mutex> lk(g_lock);
         retry = folder == g_retryFolder && g_result.failed;
@@ -494,6 +666,8 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
         g_retryDescription = description;
         g_retryTitle = title;
         g_shotFailed = false;
+        if (!retry) g_dumpFailed = false;
+        texturesPending = g_dumpJobs.contains(folder);
         g_notifyCompletion = false;
         g_result = {g_result.serial + 1, ApexUtil::ToUtf8(folder.filename().wstring()), false, false};
         if (folder.parent_path().parent_path() == Root()) g_result.folder = ApexUtil::ToUtf8(folder.parent_path().filename().wstring());
@@ -510,6 +684,9 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
              "To report a problem: compress this folder as ZIP and attach it to a Nexus Mods bug report or a GitHub issue "
              "(github.com/loinyx/Sims3-ApexRadiance/issues). Describe what happened and how to reproduce it. "
              "Nothing is uploaded automatically.\n";
+    if (texturesPending)
+        about << "\nThe texture images (T<n>_*.png, lossless) are still being written in the background when this note is saved; wait for the "
+                 "\"saved\" note in the game before zipping the folder.\n";
     WriteText(folder / L"About this capture.txt", about.str());
     if (!description.empty() || !title.empty()) WriteText(folder / L"User notes.txt", DescriptionText(title, description));
     // A failed text write is recoverable without measuring or recording the problem again.
@@ -538,6 +715,7 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
     else if (kind == CaptureKind::LightingSnapshot) message = "Lighting snapshot saved. Open Report a problem to find your files";
     Notify(I18n::Tr(message), 6, result.failed ? NoteKind::Warning : saving ? NoteKind::Saving : NoteKind::Success);
     (void)inSession;
+    PruneLater(); // the new capture itself is protected
 }
 
 void RetrySave() {

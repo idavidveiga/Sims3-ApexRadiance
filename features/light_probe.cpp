@@ -5,6 +5,7 @@
 #endif
 #include "light_probe.h"
 #include "captures.h"
+#include "build_flavor.h"
 #include "ui/i18n.h"
 #include "hotkeys.h"
 #include "lot_light_bridge.h"
@@ -327,31 +328,15 @@ std::vector<BYTE> DecodeDxt(D3DFORMAT f, const BYTE* bits, INT pitch, UINT w, UI
     return out;
 }
 
-void WriteBmp(const std::filesystem::path& path, UINT w, UINT h, const std::vector<uint32_t>& bgra) {
-    std::ofstream f(path, std::ios::binary);
-    const uint32_t dataSize = w * h * 4;
-    BITMAPFILEHEADER fh{};
-    BITMAPINFOHEADER ih{};
-    fh.bfType = 0x4D42;
-    fh.bfOffBits = sizeof(fh) + sizeof(ih);
-    fh.bfSize = fh.bfOffBits + dataSize;
-    ih.biSize = sizeof(ih);
-    ih.biWidth = static_cast<LONG>(w);
-    ih.biHeight = -static_cast<LONG>(h); // top-down
-    ih.biPlanes = 1;
-    ih.biBitCount = 32;
-    ih.biCompression = BI_RGB;
-    f.write(reinterpret_cast<const char*>(&fh), sizeof(fh));
-    f.write(reinterpret_cast<const char*>(&ih), sizeof(ih));
-    f.write(reinterpret_cast<const char*>(bgra.data()), dataSize);
-}
-
-// Saves level 0 of a 2D texture as BMP (RGB, scaled so the brightest channel is visible) and returns a stats line.
+// Saves level 0 of a 2D texture as a lossless PNG (RGB, scaled so the brightest channel is visible; the alpha as its own grey
+// PNG when it varies), encoded on the capture writer thread, and returns a stats line. Developer mode only (07/10: these
+// maps reach 5632x5632; for players F7 writes the text, the logs and the screenshot).
 std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, const std::string& name, std::string& fileOut) {
     if (base->GetType() != D3DRTYPE_TEXTURE) return "not a 2D texture (cube/volume), not saved";
     auto* tex = static_cast<IDirect3DTexture9*>(base);
     D3DSURFACE_DESC d{};
     if (FAILED(tex->GetLevelDesc(0, &d))) return "GetLevelDesc failed";
+    if (kPublicBuild.load(std::memory_order_relaxed)) return "image saved only in developer mode";
     const bool dxt = IsDxt(d.Format) && d.Pool != D3DPOOL_DEFAULT && d.Width <= 2048 && d.Height <= 2048;
     if (!dxt && (!FmtName(d.Format) || IsDxt(d.Format) || Bpp(d.Format) == 0 || d.Format == static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z')) ||
                  d.Format == static_cast<D3DFORMAT>(MAKEFOURCC('A', 'T', 'I', '2'))))
@@ -388,8 +373,7 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
     const BYTE* bits = dxt ? decoded.data() : static_cast<const BYTE*>(lr.pBits);
     const size_t pitch = dxt ? static_cast<size_t>(d.Width) * 4 : static_cast<size_t>(lr.Pitch);
     const UINT bpp = Bpp(fmt);
-    std::vector<float> rgb(static_cast<size_t>(d.Width) * d.Height * 3);
-    std::vector<float> alpha(static_cast<size_t>(d.Width) * d.Height); // saved as a second (grey) image when it varies
+    // pass 1: the stats (and the scale); pass 2 writes the 8-bit pixels directly (07/10: no float copies of a 5632x5632 map)
     double sum[4] = {};
     float mx[4] = {-1e30f, -1e30f, -1e30f, -1e30f}, mn[4] = {1e30f, 1e30f, 1e30f, 1e30f};
     for (UINT y = 0; y < d.Height; y++) {
@@ -403,35 +387,37 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
                 mx[c] = std::max(mx[c], t[c]);
                 mn[c] = std::min(mn[c], t[c]);
             }
-            float* o = &rgb[(static_cast<size_t>(y) * d.Width + x) * 3];
-            o[0] = t[0]; o[1] = t[1]; o[2] = t[2];
-            alpha[static_cast<size_t>(y) * d.Width + x] = t[3];
+        }
+    }
+    const float peak = std::max({mx[0], mx[1], mx[2], 1e-6f});
+    const float scale = peak > 1.0f ? 1.0f / peak : 1.0f;
+    const bool hasAlpha = mx[3] > mn[3]; // the alpha channel carries data (e.g. room light maps): T<n>_..._alpha.png, grey = alpha
+    const size_t px = static_cast<size_t>(d.Width) * d.Height;
+    std::vector<BYTE> bgr(px * 3), grey(hasAlpha ? px : 0);
+    auto q = [](float v) { return static_cast<BYTE>(std::clamp(std::isfinite(v) ? v : 0.f, 0.f, 1.f) * 255.f + 0.5f); };
+    for (UINT y = 0; y < d.Height; y++) {
+        const BYTE* row = bits + static_cast<size_t>(y) * pitch;
+        for (UINT x = 0; x < d.Width; x++) {
+            float t[4];
+            Texel(fmt, row + x * bpp, t);
+            const size_t i = static_cast<size_t>(y) * d.Width + x;
+            bgr[i * 3] = q(t[2] * scale);
+            bgr[i * 3 + 1] = q(t[1] * scale);
+            bgr[i * 3 + 2] = q(t[0] * scale);
+            if (hasAlpha) grey[i] = q(t[3]);
         }
     }
     readable->UnlockRect();
     if (sys) sys->Release();
     src->Release();
 
-    const float peak = std::max({mx[0], mx[1], mx[2], 1e-6f});
-    const float scale = peak > 1.0f ? 1.0f / peak : 1.0f;
-    std::vector<uint32_t> bgra(static_cast<size_t>(d.Width) * d.Height);
-    for (size_t i = 0; i < bgra.size(); i++) {
-        auto q = [&](float v) { return static_cast<uint32_t>(std::clamp(v * scale, 0.f, 1.f) * 255.f + 0.5f); };
-        bgra[i] = 0xFF000000u | (q(rgb[i * 3]) << 16) | (q(rgb[i * 3 + 1]) << 8) | q(rgb[i * 3 + 2]);
-    }
     std::error_code dirError; // (07/10: the throwing overload could end the game; a failed folder just fails the writes below)
     std::filesystem::create_directories(CapDir(), dirError);
-    const std::string file = std::format("{}_{}x{}_{}.bmp", name, d.Width, d.Height, FmtStr(d.Format));
-    WriteBmp(CapDir() / file, d.Width, d.Height, bgra);
+    const std::string file = std::format("{}_{}x{}_{}.png", name, d.Width, d.Height, FmtStr(d.Format));
+    // lossless PNG on the capture writer thread (07/10: the BMPs were ~121 MB each); the same 8-bit pixels the BMP had
+    Captures::WritePngAsync(CapDir(), CapDir() / file, std::move(bgr), d.Width, d.Height, 3);
     fileOut = file;
-    if (mx[3] > mn[3]) { // the alpha channel carries data (e.g. room light maps): T<n>_..._alpha.bmp, grey = alpha
-        std::vector<uint32_t> grey(alpha.size());
-        for (size_t i = 0; i < grey.size(); i++) {
-            const uint32_t a = static_cast<uint32_t>(std::clamp(alpha[i], 0.f, 1.f) * 255.f + 0.5f);
-            grey[i] = 0xFF000000u | (a << 16) | (a << 8) | a;
-        }
-        WriteBmp(CapDir() / (file.substr(0, file.size() - 4) + "_alpha.bmp"), d.Width, d.Height, grey);
-    }
+    if (hasAlpha) Captures::WritePngAsync(CapDir(), CapDir() / (file.substr(0, file.size() - 4) + "_alpha.png"), std::move(grey), d.Width, d.Height, 1);
     const double n = static_cast<double>(d.Width) * d.Height;
     return std::format("salva {}; media RGBA=({:.3f} {:.3f} {:.3f} {:.3f}) min=({:.3f} {:.3f} {:.3f}) max=({:.3f} {:.3f} {:.3f} {:.3f}){}", file, sum[0] / n, sum[1] / n,
         sum[2] / n, sum[3] / n, mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], mx[3], scale < 1.0f ? std::format(" (imagem escalada por 1/{:.2f})", peak) : "");
