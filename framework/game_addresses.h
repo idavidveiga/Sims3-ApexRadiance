@@ -279,6 +279,8 @@ enum class Id : uint16_t {
     CompTileFetch,    // FUN_005fdbf0 thiscall(builder; job), ret 4: readback, then LockRect of [b+0x20] and [b+0x1C] into the job
     LightObjectRemove, // FUN_006c7610 thiscall(levelLights; idLo, idHi), ret 8: an object's entries out of the five per-level light maps
     LotBuildBudgetLoad, // 0x00AEA6D8 in FUN_00aea680 (a lot's per-frame build slice): "mov eax,[0x011ECBC4]" right after its budget [esp+14h] (20 / 35 ms) is set
+    ProbeDiffuseWrite,  // 0x006B4720 thiscall(lightProbe), ret: writes the new diffuse cube (+0x2C60, or +0x2C50 when not double-buffered)
+    ProbeSpecularWrite, // 0x006B4B10 thiscall(lightProbe, rt), ret 4, al: writes the new specular cube and its mips (+0x2C64 / +0x2C5C)
     Count
 };
 

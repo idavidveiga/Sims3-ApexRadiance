@@ -140,6 +140,8 @@ const I18n::Entry kEntries[] = {
     {"Walls block light on floors", "Paredes bloqueiam a luz nos pisos", "Las paredes bloquean la luz en los suelos", "Les murs bloquent la lumière sur les sols"},
     {"Decks and yards without a roof stay dark behind a wall", "Decks e pátios sem telhado ficam escuros atrás de uma parede", "Las terrazas y patios sin techo quedan oscuros tras una pared", "Les terrasses et cours sans toit restent sombres derrière un mur"},
     {"Walls block light on objects", "Paredes bloqueiam a luz nos objetos", "Las paredes bloquean la luz en los objetos", "Les murs bloquent la lumière sur les objets"},
+    {"Lamp colors stay near lamps", "Cores das lâmpadas ficam perto delas", "Los colores de las lámparas quedan cerca", "Les couleurs des lampes restent locales"},
+    {"A colored lamp no longer tints far floors, roofs and shiny objects", "Uma lâmpada colorida não tinge mais pisos distantes, telhados e objetos brilhantes", "Una lámpara de color ya no tiñe suelos lejanos, tejados ni objetos brillantes", "Une lampe colorée ne teinte plus les sols lointains, les toits ni les objets brillants"},
     {"Wall lamps at the right height", "Luminárias de parede na altura certa", "Lámparas de pared a la altura correcta", "Appliques murales à la bonne hauteur"},
     {"Fixes a game bug: wall light too high on tall walls and foundations", "Corrige um bug do jogo: luz alta demais em paredes altas e com fundação", "Corrige un error del juego: luz demasiado alta en paredes altas y con cimientos", "Corrige un bug du jeu : lumière trop haute sur les murs hauts et les fondations"},
     // ---- Lighting > Buildings > Light detail ----

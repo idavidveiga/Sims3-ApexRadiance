@@ -44,11 +44,13 @@ enum class Site : int {
     ObjMapErase,         // 0x00938D00 thiscall(out, node, bucket), ret 0xC: its erase; prologue 8B 44 24 04 53 (mov eax,[esp+4]; push ebx)
     LightObjectRemove,   // 0x006C7610 thiscall(idLo, idHi), ret 8: an object out of a level's five light maps; prologue 53 8B 5C 24 08 56 57 (push ebx; mov ebx,[esp+8]; push esi; push edi)
     LotAddObjectsToScene, // Lot::AddLotObjectsToScene thiscall(lot, char, char), ret 8; prologue 83 EC 08 57 8B F9
+    ProbeDiffuseWrite,    // 0x006B4720 thiscall(probe), ret: the light probe's diffuse cube writer; prologue 83 EC 28 53 55 (sub esp,28h; push ebx; push ebp)
+    ProbeSpecularWrite,   // 0x006B4B10 thiscall(probe, rt), ret 4: its specular cube writer; prologue 81 EC F4 00 00 00 (sub esp,0F4h)
     Count
 };
 // lower = outer. FastDxt: the DXT sites only; ResourceCache: the DpfWriteDirect site only; ObjectIndex: the ObjectById
 // site only; SceneBudget: the three scene node sites only (features/scene_budget.h).
-enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, FastCas, FastCrc, ScriptMath, ObjectIdMap, RoomLightQueue, LotObjectThrottle, Count };
+enum class Layer : int { FrameProfiler, FastDxt, ResourceCache, ObjectIndex, SceneBudget, LevelLightShare, FastCas, FastCrc, ScriptMath, ObjectIdMap, RoomLightQueue, LotObjectThrottle, ProbeNeutral, Count };
 
 // Installs `hook` as `layer` of `site` (true when installed, or already installed). error: why not.
 bool Install(Site site, Layer layer, void* hook, std::string* error);

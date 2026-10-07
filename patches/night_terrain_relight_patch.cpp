@@ -46,6 +46,7 @@
 #include "level_light_share.h"
 #include "room_ambient_policy.h"
 #include "unlit_rooms.h"
+#include "probe_neutral.h"
 #include "lamp_mark_filter.h"
 #include "light_detail.h"
 #include "rig_tracker.h"
@@ -189,6 +190,8 @@ bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 0.75f;
 bool g_windowOutdoor = true;           // (on by default since 06/10, user approved) windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
+bool g_neutralProbe = true;            // (07/10) at night the game's sky light keeps its brightness, loses the lamps' colour (ProbeNeutral)
+float g_neutralProbeStrength = 1.0f;
 float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
 float g_wallStrength = 0.84f; // multiplier of baked wall lamp RGB, independent of the enabled state
@@ -1720,6 +1723,9 @@ class NightTerrainRelightPatch : public ApexPatch {
             "Indoor lamps light the story above or below through stairwells, atriums and removed floors (needs \"Outdoor light between floors\").");
         RegisterBoolSetting(&g_wallAlign, "paredesSemEmendaEntreAndares", true,
             "Walls are lit at the heights the game draws their light at, so the walls above and below a floor line meet on the same light (needs \"Outdoor light between floors\").");
+        RegisterBoolSetting(&g_neutralProbe, "reflexosNeutrosANoite", true,
+            "At night the game's sky light on outdoor floors, roofs and shiny objects keeps its brightness but loses the colour of the lamps it captured.");
+        RegisterFloatSetting(&g_neutralProbeStrength, "forcaReflexosNeutros", SettingWidget::Slider, 1.0f, 0.0f, 1.0f, "How much of the lamps' colour leaves the night sky light (1 = all).");
         RegisterBoolSetting(&g_foundationWalls, "paredesExternasNaAlturaDesenhada", true,
             "Fixes two game bugs that put wall lamp light at the wrong height: outside walls of houses on a foundation, and walls taller than a story (up to the roof).");
         RegisterBoolSetting(&g_floorWalls, "paredesBloqueiamLuzNosPisos", true,
@@ -1998,6 +2004,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             }
             LevelLightShare::OnPresent();
             LotLightBridge::SetNightLevel(g_level);
+            ProbeNeutral::SetNightLevel(g_level);
+            ProbeNeutral::Set(g_neutralProbe, g_neutralProbeStrength);
             LotLightBridge::SetRoofFix(g_roofs, g_roofStrengthSetting);
             // The lake pass draws the lamp glow AND the shore reflection: it runs while either is wanted. With the glow
             // switched off its lamp strength is 0, so the pass adds the reflection alone (menu: Water Reflections card);
@@ -2052,6 +2060,10 @@ class NightTerrainRelightPatch : public ApexPatch {
             std::string markErr;
             if (!LampMarkFilter::Install(markErr)) LOG_WARNING("[NightTerrainRelight] " + markErr);
         }
+        {
+            std::string probeErr;
+            if (!ProbeNeutral::Install(probeErr)) LOG_WARNING("[NightTerrainRelight] " + probeErr);
+        }
         // Light detail: once per session, before any lot is lit (a later change takes effect after a restart)
         LightDetail::ApplyAtStartup(g_lightDetail);
         if (g_levelShare && !LevelLightShare::IsInstalled()) {
@@ -2078,6 +2090,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ObjectLightBridge::Uninstall();
         if (!reinstalling) UnlitRooms::Uninstall(); // first: its last retint still queues rooms with the solve deferral (review M5)
         if (!reinstalling) LampMarkFilter::Uninstall();
+        if (!reinstalling) ProbeNeutral::Uninstall();
         if (!reinstalling) LevelLightShare::Uninstall();
         if (!reinstalling) RigTracker::Uninstall();
         if (!MemPatch::RestoreAll(patchedLocations)) return Fail(S3SS_TR("Falha ao restaurar os bytes originais", "Could not restore the original code"));
@@ -2198,6 +2211,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_floorWalls = true;
         g_objectWalls = true;
         g_foundationWalls = true;
+        g_neutralProbe = true;
+        g_neutralProbeStrength = 1.0f;
         g_lightDetail = 0;
         g_unlitOn = true;
         g_unlitLight = 0.35f;
@@ -2369,6 +2384,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
                 changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
+                changed |= ApexUi::SwitchRow("Lamp colors stay near lamps", &g_neutralProbe, "A colored lamp no longer tints far floors, roofs and shiny objects", true);
                 return changed;
             });
             // Smooth ground light only chooses which map the draws read (idavidveiga's fork, 04/10): no lighting refresh, no
