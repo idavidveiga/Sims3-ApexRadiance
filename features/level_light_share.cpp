@@ -2313,7 +2313,7 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     if (gather) g_piece = PieceNote{};
     // outside walls lit where they are drawn: only with the option (the first, unconditional version of 06/10 evening broke the
     // light between stories: indoor walls took wrong spans, and rooms were solved again over and over)
-    const float drop = g_foundationWallsOn.load(std::memory_order_relaxed) ? MeasuredDrop(reinterpret_cast<uintptr_t>(wall), cls, reinterpret_cast<uintptr_t>(batch)) : 0.0f;
+    const float drop = 0.0f; // the option fixes the base at its source now (OutdoorWallBase): no samples are moved here
     if (!g_alignOn.load(std::memory_order_relaxed)) {
         if (drop != 0.0f) {
             DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
@@ -3952,6 +3952,79 @@ __declspec(naked) void OutdoorAlphaThunk() {
     __asm {
         movss xmm1, dword ptr [esp + 30h] // out[3]: out is [esp+20h] in FUN_006a31d0, +4 for this call's return address
         cmp byte ptr [ebx + 18h], 0
+        ret
+    }
+}
+
+// ---- Outside walls: their base from the floor they stand on (06/10, reverse engineered after the F7 wall survey). The
+// game's wall setup FUN_006ab280 (called by FUN_006a23f0 for every wall of a room) takes a wall's height as follows
+// (0x006AB31D..0x006AB345): for a room that is not outdoors (FUN_0069e620 = room +0x18) the floor tile under the wall
+// (FUN_0069ef70: the tile at the room's cell, if it belongs to the room) and its height +0x78; for an outdoor room the
+// caller's story * 3.0 (FUN_006a23f0: cvtsi2ss mgr+0x88 * [0x00FF32C4]). On a house on a foundation the stories stand on
+// the foundation (story 1 at 0.977 m), and the wall mesh is drawn there, so every outside wall was lit from 2 m above its
+// drawn foot (an outside sconce lit its wall well below itself); indoor walls were right. With the option "Outside walls
+// on foundations" an outdoor room's wall takes, like an indoor one, the floor it stands on: the highest floor height of
+// the tiles at its cell and the cells before it on x and z (a wall lies on a tile edge) from 3.2 m under story * 3 to
+// 0.3 m over it (the story above never; pools and odd values never); none: story * 3 as before. The call replaces the
+// "movss xmm0,[ebp+10h]" of the outdoor branch; the parameter slot carries the result (it is read only there).
+constexpr uintptr_t kWallBaseSite = 0x006AB32C;
+const BYTE kWallBaseBytes[] = {0x84, 0xC0, 0x74, 0x07, 0xF3, 0x0F, 0x10, 0x45, 0x10, 0xEB, 0x12}; // test al,al; je +7; movss xmm0,[ebp+10h]; jmp +0x12
+bool g_wallBaseReady = false;
+std::atomic<long> g_wallBaseRaised{0}, g_wallBaseKept{0}, g_wallBaseLogged{0};
+struct WallBaseRead {
+    int story = -99;
+    float lotBase = 0;      // mgr +0xD4 (world)
+    float h[4] = {};        // the floor heights (+0x78, lot space) at the wall's cell and the cells before it on x, z, both
+    bool have[4] = {};
+};
+bool ReadWallBase(const BYTE* wall, int x, int z, WallBaseRead& r) { // POD only (SEH)
+    __try {
+        const BYTE* room = *reinterpret_cast<BYTE* const*>(wall);
+        if (!room) return false;
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr) return false;
+        r.story = *reinterpret_cast<const int*>(mgr + 0x88);
+        r.lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
+        const int cx = x + *reinterpret_cast<const int*>(room + 0x1C), cz = z + *reinterpret_cast<const int*>(room + 0x24);
+        const int dx[4] = {0, -1, 0, -1}, dz[4] = {0, 0, -1, -1};
+        for (int k = 0; k < 4; k++) {
+            const uintptr_t tile = LightTile(mgr, cx + dx[k], cz + dz[k]);
+            if (!tile) continue;
+            const float v = *reinterpret_cast<const float*>(tile + 0x78);
+            if (std::isfinite(v)) r.h[k] = v, r.have[k] = true;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal) {
+    if (!g_foundationWallsOn.load(std::memory_order_relaxed)) return nominal;
+    WallBaseRead r;
+    if (!ReadWallBase(wall, x, z, r) || r.story < 1) return nominal;
+    float best = nominal;
+    bool found = false;
+    for (int k = 0; k < 4; k++)
+        if (r.have[k] && r.h[k] >= nominal - 3.2f && r.h[k] <= nominal + 0.3f && (!found || r.h[k] > best)) best = r.h[k], found = true;
+    (found && std::fabs(best - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
+    if (g_wallBaseLogged.fetch_add(1, std::memory_order_relaxed) < 300)
+        LOG_INFO(std::format("[WallBase] story {} cell ({}, {}) nominal {:.3f}: floors {} {} {} {} -> {:.3f} (lot base {:.3f})", r.story, x, z, nominal,
+                             r.have[0] ? std::format("{:.3f}", r.h[0]) : "-", r.have[1] ? std::format("{:.3f}", r.h[1]) : "-", r.have[2] ? std::format("{:.3f}", r.h[2]) : "-",
+                             r.have[3] ? std::format("{:.3f}", r.h[3]) : "-", found ? best : nominal, r.lotBase));
+    return found ? best : nominal;
+}
+__declspec(naked) void OutdoorWallBaseThunk() {
+    __asm {
+        pushad
+        push dword ptr [ebp + 10h] // story * 3.0
+        push ebx                   // z
+        push edi                   // x
+        push esi                   // the wall
+        call OutdoorWallBase
+        add esp, 16
+        fstp dword ptr [ebp + 10h] // the parameter slot (read only by the replaced movss)
+        popad
+        movss xmm0, dword ptr [ebp + 10h]
         ret
     }
 }
@@ -6118,6 +6191,15 @@ bool Install(std::string& error) {
         g_floorMaskReady = MemPatch::WriteBytes(kOutdoorAlpha, std::vector<BYTE>(call, call + 7), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
+    // Outside walls on foundations: an outdoor room's walls take the floor they stand on (OutdoorWallBase); Steam bytes only
+    g_wallBaseReady = GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallBaseSite - 4), kWallBaseBytes, sizeof(kWallBaseBytes));
+    if (g_wallBaseReady) {
+        BYTE call[5] = {0xE8, 0, 0, 0, 0};
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&OutdoorWallBaseThunk) - (kWallBaseSite + 5));
+        std::memcpy(call + 1, &rel, 4);
+        g_wallBaseReady = MemPatch::WriteBytes(kWallBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
+    }
+    LOG_INFO(std::string("[LevelLightShare] Outside walls on foundations: ") + (g_wallBaseReady ? "ready (the walls of outdoor rooms can take the floor they stand on)" : "not available (code differs)"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
@@ -7109,11 +7191,8 @@ void RelightAllRooms(const char* why) {
 
 void SetFoundationWalls(bool on) {
     if (g_foundationWallsOn.exchange(on) == on) return;
-    if (on) WallHeights::Install();
-    else WallHeights::Uninstall();
     if (!g_installed.load(std::memory_order_relaxed)) return;
     RelightAllRooms(on ? "Outside walls where they are drawn on" : "Outside walls where they are drawn off");
-    if (on) g_relightAllAt.store((GetTickCount() + 2000) | 1, std::memory_order_relaxed); // the walls are measured as they are drawn: a moment first
 }
 
 void SetDiagArmed(bool on) { g_diagArmed = on; }
