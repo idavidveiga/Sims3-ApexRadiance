@@ -714,6 +714,7 @@ void MaybeClearRooms() {
     }
 }
 
+std::shared_ptr<const StoryGrid> EnsureStoryGrid(uintptr_t mgr); // below
 void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
     MaybeClearRooms();
     RoomInfo& info = g_rooms[reinterpret_cast<uintptr_t>(room)];
@@ -734,6 +735,13 @@ void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
         if (*reinterpret_cast<const uintptr_t*>(tl)) FloorOutdoorLights(tl, floor, info.cross);
     }
     std::sort(info.cross.begin(), info.cross.end());
+    // the grids of this story and the one above, for the lamps of a lower story whose bulb stands above this story's floor
+    // (CrossFloorShadow); room 0 is no roofless room, so YardShadow never reads them
+    if (roomLevel > 0 && !info.cross.empty()) {
+        info.grid[0] = EnsureStoryGrid(StoryManager(tracker, roomLevel));
+        if (info.grid[0] && roomLevel < 7)
+            if (const uintptr_t up = StoryManager(tracker, roomLevel + 1)) info.grid[1] = EnsureStoryGrid(up);
+    }
 }
 
 void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
@@ -6314,7 +6322,7 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
 // corner of the balcony below its floor was blocked by walls that stand above it. The game's test (GameWallTest) then runs
 // from where the ray reaches this story's lowest floor, as for indoor rooms (IndoorPassImpl's entry); the lamp's own story
 // is WallPass's. Where the ray comes up through a floor of this story (a deck, a balcony) the whole ray stays the game's.
-bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry) {
+bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above) {
     if (home < 0 || home >= info.level || info.level > 7) return false;
     const uintptr_t mgr = StoryManager(info.tracker, info.level);
     const uintptr_t level = mgr ? LevelFor(mgr) : 0;
@@ -6328,6 +6336,7 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     const float dy = Q[1] - P[1];
     const float h = *reinterpret_cast<const float*>(mgr + 0x98) - *reinterpret_cast<const float*>(mgr + 0xD4); // the story's lowest floor, lot space
     if (!(std::fabs(h) < 1000.0f) || dy < 1e-4f) return false; // the lamp below the point only
+    if (above && P[1] >= h) *above = true; // the bulb above this story's lowest floor (CrossFloorShadow tests the walls itself)
     float t = (h - P[1]) / dy;
     if (t >= 1.0f && std::fabs(Q[1] - h) < 0.02f) t = 0.9999f; // a point on that floor's plane: tested where it is
     if (!(t > 0.0f && t < 1.0f)) return false;                 // the lamp not below that floor, or the point not above it
@@ -6341,15 +6350,16 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     }
     return true;
 }
-bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry) {
+bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above) {
     __try {
-        return OutdoorEntryImpl(info, home, light, sample, entry);
+        return OutdoorEntryImpl(info, home, light, sample, entry, above);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
         return false; // the game's whole-ray test, as before
     }
 }
 
+std::atomic<long> g_aboveTests{0}, g_aboveBlocked{0}; // lower-story lamps above the story's floor, tested on its grid
 void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
     const Cross* cross = FindCross(info, reinterpret_cast<uintptr_t>(light));
     const int home = cross ? cross->floor : -1;
@@ -6365,12 +6375,32 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
         // a lamp of a lower story: this story's walls, tested next by the game, from where its ray enters this story
         RayEntry entry;
-        if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis && OutdoorEntry(info, home, light, sample, entry)) {
-            g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
-            std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
-            std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
-            g_ctx.enterHard = true; // and without a wall end's penumbra (WallTestHard)
-            g_outdoorEnters.fetch_add(1, std::memory_order_relaxed);
+        bool above = false;
+        if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis) {
+            if (OutdoorEntry(info, home, light, sample, entry, &above)) {
+                g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
+                std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
+                std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
+                g_ctx.enterHard = true; // and without a wall end's penumbra (WallTestHard)
+                g_outdoorEnters.fetch_add(1, std::memory_order_relaxed);
+            } else if (above && info.grid[0] && !info.yard) {
+                // (07/10, user's capture 15:14: the yard's lamp posts left the upper facade behind a balcony's parapet dark)
+                // A lamp of a lower story whose bulb stands above this story's lowest floor: the game's whole-ray 2D test,
+                // which has no wall base, shaded every point behind the parapet. This story's walls (and the story above's
+                // for a ray that high) are tested here at their real feet, tops (half walls, drawn heights) and openings
+                // (GridPass), so real shadows stay, and the game's test is skipped next (GameWallTest, as for the lamps of a
+                // roofless room's own story)
+                alignas(16) float pos[4] = {};
+                GridWhy why{};
+                const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
+                if (pass < 1.0f)
+                    for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, pass);
+                mine *= std::max(0.0f, pass);
+                g_ctx.yardLight = reinterpret_cast<uintptr_t>(light);
+                std::memcpy(g_ctx.yardLamp, pos, sizeof g_ctx.yardLamp);
+                g_aboveTests.fetch_add(1, std::memory_order_relaxed);
+                if (pass <= 0.0f) g_aboveBlocked.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     if (!kPublicBuild) {
