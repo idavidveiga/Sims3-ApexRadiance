@@ -75,7 +75,7 @@ dragging and save when released. Missing keys keep their defaults.
 | Detail > Clarity | `clarity` | float | 0 | -100 (Softer) to +100 (Crisper) | Local midtone contrast against a 1/8-size copy of the scene |
 | Detail > Vignette | `vignette` | float | 0% | 0 to 100% (stored 0 to 0.8) | Darker corners |
 | Detail > Vignette size | `vignette_size` | float | 50% | 0 to 95% | Radius (0 centre, 1 corner) where the darkening starts |
-| Banding Fix > Smooth gradients | `deband` | float | 0% (off) | 0 to 200% | Deband filter; follows the Banding Fix switch, not Picture's (see [banding-fix.md](banding-fix.md)) |
+| Banding Fix > Smooth gradients | `deband` | float | 8% | 0 to 200% | Deband filter; follows the Banding Fix switch, not Picture's (see [banding-fix.md](banding-fix.md)) |
 
 *Film tones* and *Color mixer* are collapsed *Advanced* groups.
 
