@@ -5810,10 +5810,56 @@ int ReadStoryWalls(const BYTE* room0, uintptr_t& mgr) {
     }
     return n;
 }
+// The sides of a foundation (07/10, user: doors and windows on a foundation took no light from a lamp on the terrain, only
+// from one on the same foundation). Story 0's outside walls under a foundation are its sides, drawn only up to the
+// foundation's top, but the copy made them 3 m tall like any wall: every ray from a lamp on the terrain to a door on the
+// foundation crossed one below its top and WallBlocks dropped the lamp. A story-0 wall with a placed floor of story 1 on
+// either side, that floor lower than 3 m over the wall's base, ends at that floor. POD only (SEH).
+std::atomic<long> g_foundationSides{0};
+bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q); // below
+int CapFoundationSides(uintptr_t mgr, uintptr_t tracker, WallSeg* segs, int n) {
+    int capped = 0;
+    __try {
+        if (!mgr || !tracker || *reinterpret_cast<const int*>(mgr + 0x88) != 0) return 0;
+        const uintptr_t m1 = StoryManager(tracker, 1);
+        if (!m1) return 0;
+        const uintptr_t l1 = LevelFor(m1);
+        if (!l1 || LevelManager(l1) != m1) return 0;
+        Xform xf;
+        if (!ReadXform(mgr, xf)) return 0;
+        const float h1 = *reinterpret_cast<const float*>(m1 + 0x98) - *reinterpret_cast<const float*>(m1 + 0xD4); // story 1's lowest floor, lot space
+        if (!(std::fabs(h1) < 1000.0f)) return 0;
+        for (int i = 0; i < n; i++) {
+            WallSeg& w = segs[i];
+            const float mid[3] = {(w.x0 + w.x1) * 0.5f, w.y0, (w.z0 + w.z1) * 0.5f};
+            float L[3];
+            ToLocal(xf, mid, L);
+            if (!(h1 > L[1] + 0.05f && h1 < L[1] + 2.9f)) continue;
+            const float dx = w.x1 - w.x0, dz = w.z1 - w.z0, len = std::sqrt(dx * dx + dz * dz);
+            if (!(len > 1e-3f)) continue;
+            bool floorBeside = false;
+            for (int side = -1; side <= 1 && !floorBeside; side += 2) {
+                const float pw[3] = {mid[0] - dz / len * 0.3f * side, mid[1], mid[2] + dx / len * 0.3f * side};
+                float pl[3];
+                ToLocal(xf, pw, pl);
+                const int ix = static_cast<int>(std::floor(pl[0])), iz = static_cast<int>(std::floor(pl[2]));
+                floorBeside = PlacedFloorAt(l1, ix, iz, Quadrant(pl[0] - ix, pl[2] - iz));
+            }
+            if (!floorBeside) continue;
+            w.y1 = w.y0 + (h1 - L[1]);
+            capped++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return capped;
+    }
+    return capped;
+}
 void CaptureStoryWalls(BYTE* room0) {
     uintptr_t mgr = 0;
     const int n = ReadStoryWalls(room0, mgr);
     if (n < 0) return;
+    if (const auto it = g_rooms.find(reinterpret_cast<uintptr_t>(room0)); it != g_rooms.end() && it->second.tracker)
+        if (const int c = CapFoundationSides(mgr, it->second.tracker, g_wallRead, n)) g_foundationSides.fetch_add(c, std::memory_order_relaxed);
     std::vector<WallSeg> segs(g_wallRead, g_wallRead + n);
     std::lock_guard<std::mutex> lk(g_wallSnapMx);
     auto& slot = g_wallSnap[mgr];
