@@ -6423,6 +6423,21 @@ bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* samp
 // story-3 wall from below the story-2 balcony's parapet: the lamp's story was WallPass's, this story's the game's, and the
 // parapet of the story between was tested by nobody). Each at its real heights (GridPass); 1 = nothing in the way.
 std::atomic<long> g_midTests{0}, g_midBlocked{0};
+// A lamp's light going steeply up (07/10, user's F7 16:41:47: a ground post 5.5 m below lit the tower's story-3 piers over
+// most of their height, 50 degrees above the lantern, nothing modelled in the way). A lamp post's lantern sends little light
+// up past its cap; the game's lamp has no such shape and its falloff over range 42.5 is nearly flat over a few metres. A ray
+// from a lamp of a lower story to a point of an upper story keeps all of it up to sin(elevation) 0.35 (20 degrees) and
+// fades smoothly to 15% at 0.85 (58 degrees). Only that direct light: the light behind balconies is left as it is.
+std::atomic<long> g_steepDimmed{0};
+float UpwardShare(void* light, const float* sample) {
+    alignas(16) float lampW[4];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(len > 1e-3f) || dy <= 0.0f) return 1.0f;
+    const float u = std::clamp((dy / len - 0.35f) / 0.5f, 0.0f, 1.0f);
+    return 1.0f - 0.85f * u * u * (3.0f - 2.0f * u);
+}
 float MidPassImpl(const RoomInfo& info, int home, void* light, const float* sample) {
     float pass = 1.0f;
     alignas(16) float lampW[4];
@@ -6455,10 +6470,10 @@ std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0}, g_fillLow
 std::string FillStatus() {
     return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, blocked on the lamp's story {}), "
                        "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
-                       "walls of the stories in between tested {} (blocked {}) | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
+                       "walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
                        g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
                        g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
-                       g_midTests.load(), g_midBlocked.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
+                       g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
 }
 // Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
 // the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
@@ -6574,6 +6589,11 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                         for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mid);
                     if (mid <= 0.0f) g_midBlocked.fetch_add(1, std::memory_order_relaxed);
                     mine *= std::max(0.0f, mid);
+                }
+                if (const float up = UpwardShare(light, sample); up < 1.0f) {
+                    for (int i = 0; i < 4; i++) colour[i] *= up;
+                    mine *= up;
+                    g_steepDimmed.fetch_add(1, std::memory_order_relaxed);
                 }
                 g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
                 std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
