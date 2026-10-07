@@ -719,6 +719,11 @@ void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
     info.tracker = tracker;
     info.level = roomLevel;
     info.id = 0;
+    info.yard = false; // a roofless room's record left at a reused address (review 07/10)
+    info.same.clear();
+    info.sameHomes.clear();
+    info.grid[0].reset();
+    info.grid[1].reset();
     info.indoor = false;
     info.cross.clear();
     for (int floor = 0; floor <= 7; floor++) {
@@ -773,6 +778,7 @@ struct SameLamp {
 bool GatherSameStory(uintptr_t tracker, int S, int id, BYTE* room, const std::vector<Cross>& cross, std::vector<SameLamp>& out,
                      std::shared_ptr<const StoryGrid>* grids); // below
 std::atomic<long> g_sameRooms{0}, g_sameAdded{0};
+std::atomic<bool> g_sameHeld{false}; // some room's game list took lamps of its own story (stays set: the records may still hold them)
 void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
     const int id = *reinterpret_cast<const int*>(room + 0xC);
     if (id <= 0 || !room[0x18] || !g_indoorReady || !kAddRoomLight) return;
@@ -835,6 +841,7 @@ void ShareRooflessLights(BYTE* treeLevel, BYTE* room) {
     if (added) g_shared.fetch_add(added, std::memory_order_relaxed);
     if (!same.empty()) {
         g_sameRooms.fetch_add(1, std::memory_order_relaxed);
+        g_sameHeld.store(true, std::memory_order_relaxed);
         g_sameAdded.fetch_add(static_cast<long>(same.size()), std::memory_order_relaxed);
     }
 }
@@ -3418,7 +3425,7 @@ void SameStoryYards(uintptr_t mgrL, int L, int changed, int change, const std::v
         const auto it = g_rooms.find(reinterpret_cast<uintptr_t>(room));
         bool send = it != g_rooms.end() && it->second.mgr == mgrL && it->second.id == id && it->second.yard &&
                     std::binary_search(it->second.sameHomes.begin(), it->second.sameHomes.end(), changed);
-        if (!send && change != 1) {
+        if (!send && change != 1 && OpeningsOn()) {
             const auto box = g_yardBoxes.find(YardKey(mgrL, id));
             send = box == g_yardBoxes.end() || !haveXf;
             for (size_t i = 0; i < at.size() && !send; i++) {
@@ -4883,7 +4890,7 @@ void AfterChangedWalk(BYTE* tl) {
     std::vector<std::pair<int, int>> outdoorRooms;
     // Light through doors and windows (08/10): this story's roofless rooms that take (or may now take) the changed outdoor
     // rooms' lamps (SameStoryYards); the sends below, which leave story L to the game's walk, let them through
-    const bool yards = OpeningsOn();
+    const bool yards = OpeningsOn() || g_sameHeld.load(std::memory_order_relaxed); // the sends protect lists that still hold such lamps, option on or not
     std::vector<std::pair<int, int>> sameL;
     const uintptr_t mgrL = *reinterpret_cast<const uintptr_t*>(tl);
     for (int S = 0; S <= 7; S++) {
