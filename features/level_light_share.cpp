@@ -93,6 +93,7 @@
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "light_detail.h"
@@ -3766,14 +3767,9 @@ void NoteWallLight(const BYTE* room, void* batch, void* atlas, uintptr_t wall) {
     if (g_wallLightLines.size() < 4096) g_wallLightLines.push_back(std::move(line));
 }
 
-void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char* flags, void* sampler, char ambient) {
+// The rows beyond a wall piece's edges, lit by the game's own solve into our buffer (WallSolveHook, light tree thread)
+void GhostSolve(BYTE* room, void* batch, char* flags, void* sampler, char ambient, const PieceNote& p) {
     const auto solve = reinterpret_cast<WallSolve_t>(kWallSolve);
-    solve(room, batch, atlas, flags, sampler, ambient);
-    if (g_recordWalls.load(std::memory_order_relaxed) && room && !g_ghostSolve) NoteWallLight(room, batch, atlas, t_lastWall);
-    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return;
-    const PieceNote p = g_piece;
-    g_piece = PieceNote{};
-    if (!p.wall || !room || !g_alignOn.load(std::memory_order_relaxed) || !GhostRoom(room) || !BlurPassesFor(room)) return;
     const int count = MakeGhosts(reinterpret_cast<uintptr_t>(batch), p, g_ghostSamples, kMaxGhosts);
     if (!count) return;
     const int n = p.block.x1 - p.block.x0 + 1;
@@ -3787,11 +3783,32 @@ void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char*
         uint32_t* base;
         int pitch;
     } desc{g.px.data(), n * 4};
-    g_ghostSolve = true;
-    solve(room, &vec, &desc, flags, sampler, ambient);
-    g_ghostSolve = false;
+    struct GhostSolveFlag { // cleared however the solve is left
+        GhostSolveFlag() { g_ghostSolve = true; }
+        ~GhostSolveFlag() { g_ghostSolve = false; }
+        GhostSolveFlag(const GhostSolveFlag&) = delete;
+        GhostSolveFlag& operator=(const GhostSolveFlag&) = delete;
+    };
+    {
+        GhostSolveFlag flag;
+        solve(room, &vec, &desc, flags, sampler, ambient);
+    }
     for (int s = 0; s < count; s += 2) g.filled[*reinterpret_cast<const uint16_t*>(g_ghostSamples + s * 0x30 + 0x22) >= 2]++;
     g_ghostPoints.fetch_add(count, std::memory_order_relaxed);
+}
+
+void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char* flags, void* sampler, char ambient) {
+    const auto solve = reinterpret_cast<WallSolve_t>(kWallSolve);
+    solve(room, batch, atlas, flags, sampler, ambient);
+    // 07/10, players' Runtime Error: Apex's part after the game's solve allocates (the recording's line, the ghost rows'
+    // buffers); a C++ exception there is caught (HookGuard) and that part stays off, the solve itself is never repeated or lost
+    if (g_recordWalls.load(std::memory_order_relaxed) && room && !g_ghostSolve)
+        HookGuard::Run("LevelLightShare wall light recording", [&] { NoteWallLight(room, batch, atlas, t_lastWall); });
+    if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return;
+    const PieceNote p = g_piece;
+    g_piece = PieceNote{};
+    if (!p.wall || !room || !g_alignOn.load(std::memory_order_relaxed) || !GhostRoom(room) || !BlurPassesFor(room)) return;
+    HookGuard::Run("LevelLightShare wall rows beyond the edges", [&] { GhostSolve(room, batch, flags, sampler, ambient, p); });
 }
 
 inline uint32_t Avg4(uint32_t a, uint32_t b) { return (a | b) - (((a ^ b) >> 1) & 0x7F7F7F7Fu); }
@@ -3859,23 +3876,26 @@ bool CopyRows(uintptr_t atlas, uint32_t pitch, const WallBlock& r, int first, in
 constexpr int kMaxWallJobs = 4096;
 WallJob g_wallJobs[kMaxWallJobs];
 std::mutex g_edgeMx; // g_wallJobs and the buffers of one blur at a time
-void BlurWalls(BYTE* room) {
-    const auto blur = reinterpret_cast<WallBlur_t>(kWallBlur);
-    const uint32_t passes = room && g_alignOn.load(std::memory_order_relaxed) ? BlurPassesFor(room) : 0;
-    if (!passes) return blur(room);
-    std::lock_guard<std::mutex> lk(g_edgeMx);
-    uintptr_t atlas = 0;
-    uint32_t pitch = 0;
-    const int jobs = ReadWallJobs(room, g_wallJobs, kMaxWallJobs, atlas, pitch);
-    // Before the game's blur: every block as the solve left it
-    std::vector<std::vector<uint32_t>> before(jobs);
+// 07/10, players' Runtime Error: BlurWalls runs inside the game's wall pass, so nothing in it may throw. Everything it
+// allocates is allocated before the game's blur, under a cap and inside a try; on failure the game's blur runs alone, as
+// without Apex. After the game's blur nothing allocates (one buffer reused), so the blur never runs twice or not at all.
+constexpr size_t kMaxBlurTexels = size_t{8} << 20; // the copies of one room's wall blocks (32 MB), beyond it the game's blur alone
+std::atomic<long> g_blurFallbacks{0};
+
+// Before the game's blur: every block as the solve left it, the rows lit beyond the edges in this wall pass (only walls
+// whose every column got them), and one buffer big enough for the largest block with those rows. Throws on no memory.
+void PrepareWallBlur(int jobs, uintptr_t atlas, uint32_t pitch, std::vector<std::vector<uint32_t>>& before, std::vector<GhostRows>& ghosts,
+                     std::vector<uint32_t>& ext) {
+    before.resize(jobs);
+    size_t largest = 0;
     for (int j = 0; j < jobs; j++) {
         const WallBlock& r = g_wallJobs[j].r;
         before[j].resize(static_cast<size_t>(r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1));
+        largest = std::max(largest, static_cast<size_t>(r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1 + 4));
         if (!CopyRows(atlas, pitch, r, 0, r.y1 - r.y0 + 1, before[j].data(), false)) before[j].clear();
     }
-    // The rows lit beyond the edges in this wall pass (only walls whose every column got them)
-    std::vector<GhostRows> ghosts(jobs);
+    ext.reserve(largest);
+    ghosts.resize(jobs);
     if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         std::lock_guard<std::mutex> gk(g_ghostMx);
         for (int j = 0; j < jobs; j++)
@@ -3883,6 +3903,40 @@ void BlurWalls(BYTE* room) {
                 ghosts[j] = std::move(it->second);
                 g_ghosts.erase(it);
             }
+    }
+}
+
+void BlurWalls(BYTE* room) {
+    const auto blur = reinterpret_cast<WallBlur_t>(kWallBlur);
+    const uint32_t passes = room && g_alignOn.load(std::memory_order_relaxed) ? BlurPassesFor(room) : 0;
+    if (!passes) return blur(room);
+    std::unique_lock<std::mutex> lk(g_edgeMx, std::defer_lock);
+    try {
+        lk.lock();
+    } catch (...) {
+        return blur(room);
+    }
+    uintptr_t atlas = 0;
+    uint32_t pitch = 0;
+    const int jobs = ReadWallJobs(room, g_wallJobs, kMaxWallJobs, atlas, pitch);
+    size_t texels = 0;
+    for (int j = 0; j < jobs; j++) {
+        const WallBlock& r = g_wallJobs[j].r;
+        texels += static_cast<size_t>(r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1);
+    }
+    if (texels > kMaxBlurTexels) {
+        g_blurFallbacks.fetch_add(1, std::memory_order_relaxed);
+        return blur(room);
+    }
+    std::vector<std::vector<uint32_t>> before;
+    std::vector<GhostRows> ghosts;
+    std::vector<uint32_t> ext;
+    try {
+        PrepareWallBlur(jobs, atlas, pitch, before, ghosts, ext);
+    } catch (...) {
+        g_blurFallbacks.fetch_add(1, std::memory_order_relaxed);
+        HookGuard::Note("LevelLightShare wall blur (copies before the game's blur)");
+        return blur(room);
     }
     blur(room);
     long edges = 0, crossed = 0;
@@ -3895,7 +3949,7 @@ void BlurWalls(BYTE* room) {
         const bool above = fits && g.filled[0] >= n, below = fits && g.filled[1] >= n;
         // The wall with the rows beyond it, blurred the game's way: the rows along, then the columns, each pass
         const int top = above ? 2 : 0, total = top + rows + (below ? 2 : 0);
-        std::vector<uint32_t> ext(static_cast<size_t>(total) * n);
+        ext.assign(static_cast<size_t>(total) * n, 0u); // within the capacity reserved above: no allocation
         if (above) std::memcpy(ext.data(), g.px.data(), static_cast<size_t>(n) * 2 * 4);
         std::memcpy(ext.data() + static_cast<size_t>(top) * n, before[j].data(), before[j].size() * 4);
         if (below) std::memcpy(ext.data() + static_cast<size_t>(top + rows) * n, g.px.data() + static_cast<size_t>(n) * 2, static_cast<size_t>(n) * 2 * 4);
@@ -3920,7 +3974,7 @@ void BlurWalls(BYTE* room) {
 void __fastcall WallBlurHook(BYTE* room) {
     BlurWalls(room);
     if (Recorder::Verbose())
-        if (room) NoteSolve(room, 'W');
+        if (room) HookGuard::Run("LevelLightShare solve note (wall blur)", [room] { NoteSolve(room, 'W'); });
 }
 
 // Development build: one note per solve step of a room that takes or gives light through an opening or is merged
@@ -5639,12 +5693,25 @@ void* MaskWallLists(int slot, BYTE* room) {
     uintptr_t lights[512];
     int n = 0;
     size_t walls = 0;
-    if (!kWallCull || !kLightPos || !ReadLightsAndWalls(room, lights, static_cast<int>(std::size(lights)), n, walls) || !n || walls > 8192) {
+    // 07/10, players' Runtime Error: this runs inside the game's room solve, where a bad_alloc would end the game. The pool is
+    // capped (512 lamps x 8192 walls asked for up to 16 MB at once) and its allocation caught; either way the batch tests every
+    // wall, as the game does without the lists.
+    constexpr size_t kMaxPoolEntries = size_t{2} << 20; // 8 MB of wall indices
+    if (!kWallCull || !kLightPos || !ReadLightsAndWalls(room, lights, static_cast<int>(std::size(lights)), n, walls) || !n || walls > 8192 ||
+        static_cast<size_t>(n) * (walls + 1) > kMaxPoolEntries) {
         g_maskListFallbacks.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
     }
-    L.pool.assign(static_cast<size_t>(n) * (walls + 1), 0);
-    L.lists.assign(static_cast<size_t>(n), WallList{});
+    try {
+        L.pool.assign(static_cast<size_t>(n) * (walls + 1), 0);
+        L.lists.assign(static_cast<size_t>(n), WallList{});
+    } catch (...) {
+        L.pool = {};
+        L.lists = {};
+        g_maskListFallbacks.fetch_add(1, std::memory_order_relaxed);
+        HookGuard::Note("LevelLightShare floor wall lists (allocation)");
+        return nullptr;
+    }
     for (int i = 0; i < n; i++)
         if (!CullForLight(room, lights[i], g_batch.c, L.pool.data() + static_cast<size_t>(i) * (walls + 1), walls + 1, L.lists[i])) {
             g_maskListFallbacks.fetch_add(1, std::memory_order_relaxed);
