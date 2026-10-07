@@ -6335,6 +6335,10 @@ bool PassesOverLowerWall(uintptr_t occ, int mode, uintptr_t mgrNext, uintptr_t l
     float Xl[3], ol[3];
     ToLocal(xf, X, Xl);
     ToLocal(xf, o, ol);
+    // (07/10, F7 point 1032.05 61.02 1273.70: a ground post left the tower's story-3 piers black; every sample had our share 0
+    // from this pass: the story-2 front wall's line was crossed 0.9 m over its top, and the game's 2D test knows no top) A ray
+    // crossing a lower story's wall above a full story's height over its base passes over it
+    if (Xl[1] > ol[1] + 3.0f + 0.02f) return true;
     float top = -1e30f;
     for (int side = -1; side <= 1; side += 2) {
         const float S[3] = {X[0] + side * nx, X[1], X[2] + side * nz};
