@@ -4,10 +4,12 @@
 #include "i18n.h"
 #include "imgui_internal.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ApexUi {
@@ -228,6 +230,73 @@ float CenteredTextY(std::string_view shown, float cy) {
     return std::round(inkBottom > inkTop ? cy - (inkTop + inkBottom) * 0.5f : cy - ImGui::GetTextLineHeight() * 0.5f);
 }
 
+// ---- text that may not fit (long translations: German compounds, Finnish, CJK without spaces) ----
+// Single-line texts in a box of fixed width (tabs, segments, buttons, sidebar items, group labels, slider end labels)
+// are drawn whole when they fit, which is always the case in English, so the English look does not change. A longer
+// translation is cut at a character boundary and ends with "…"; the caller shows the full text as a tooltip.
+
+// The widest a self-sized control may be here: the content region's free width, or no limit in a window that grows to
+// fit its content (popups, tooltips, auto-resizing children), whose free width only reflects the previous frame's size
+float FitLimit() {
+    const ImGuiWindow* w = ImGui::GetCurrentWindow();
+    if ((w->Flags & (ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_Tooltip)) || (w->ChildFlags & ImGuiChildFlags_AutoResizeX) || w->AutoFitFramesX > 0)
+        return FLT_MAX;
+    return ImGui::GetContentRegionAvail().x;
+}
+
+// The part of `text` to draw in maxW pixels with the current font: the text itself when it fits (returns false), else
+// its longest prefix that fits with "…" appended, into `cut` (returns true)
+bool FitText(std::string_view text, float maxW, std::string& cut) {
+    const char* b = text.data();
+    const char* e = b + text.size();
+    if (ImGui::CalcTextSize(b, e).x <= maxW + 0.5f) return false;
+    static constexpr const char kEllipsis[] = "\xE2\x80\xA6";
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const float scale = ImGui::GetFontSize() / baked->Size;
+    const float room = maxW - ImGui::CalcTextSize(kEllipsis).x;
+    float w = 0.0f;
+    const char* end = b;
+    for (const char* s = b; s < e;) {
+        unsigned c = 0;
+        const int n = ImTextCharFromUtf8(&c, s, e);
+        if (n <= 0) break;
+        w += baked->GetCharAdvance(static_cast<ImWchar>(c)) * scale;
+        if (w > room) break;
+        s += n;
+        end = s;
+    }
+    while (end > b && end[-1] == ' ') --end; // "Lumière au…", not "Lumière au …"
+    cut.assign(b, end);
+    cut += kEllipsis;
+    return true;
+}
+
+// Draws `text` at pos, fitted into maxW (see FitText); true when it was cut
+bool DrawFitted(ImDrawList* dl, ImVec2 pos, ImU32 col, std::string_view text, float maxW) {
+    std::string cut;
+    if (!FitText(text, maxW, cut)) {
+        dl->AddText(pos, col, text.data(), text.data() + text.size());
+        return false;
+    }
+    dl->AddText(pos, col, cut.c_str());
+    return true;
+}
+
+// The full text of a cut label, as a tooltip (appended to the item's own tooltip when it has one)
+void FullTextTooltip(std::string_view text) {
+    if (!ImGui::BeginTooltip()) return;
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+// For drawn text that is not an item: the full text while the mouse is over the cut text's box
+void FullTextTooltipAt(ImVec2 pos, float width, std::string_view text) {
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenDisabled) && ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + width, pos.y + ImGui::GetFontSize())))
+        FullTextTooltip(text);
+}
+
 float RowText(const char* label, const char* description, float wrapX, float labelWrapX = -1.0f, LabelInfo* info = nullptr, float minimumHeight = 0.0f) {
     const float top = ImGui::GetCursorScreenPos().y;
     const std::string_view shown = g_rowRaw ? std::string_view(label, VisibleEnd(label) - label) : I18n::TrLabel(label);
@@ -391,9 +460,11 @@ void SectionLabelText(const char* text, float indent, float extraBelow) {
     text = T(text);
     PushSized(VioletTheme::RegularFont(), 1.0f);
     const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float maxW = std::fmax(FitLimit() - indent, 1.0f);
     const ImVec2 size = ImGui::CalcTextSize(text);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + indent, p.y), U32(VioletTheme::kTextMuted), text);
-    ImGui::Dummy(ImVec2(indent + size.x, size.y + extraBelow));
+    const ImVec2 at(p.x + indent, p.y);
+    if (DrawFitted(ImGui::GetWindowDrawList(), at, U32(VioletTheme::kTextMuted), text, maxW)) FullTextTooltipAt(at, maxW, text);
+    ImGui::Dummy(ImVec2(indent + std::fmin(size.x, maxW), size.y + extraBelow));
     ImGui::PopFont();
 }
 
@@ -488,7 +559,7 @@ void PageTitle(const char* title, const char* subtitle) {
     // The spacing below an item is the one in effect when it is submitted: tight under the title only
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
     PushSized(VioletTheme::BoldFont(), kPageTitleScale);
-    ImGui::TextUnformatted(T(title));
+    ImGui::TextWrapped("%s", T(title)); // a long translated title wraps instead of running past the page
     ImGui::PopFont();
     ImGui::PopStyleVar();
     if (subtitle && *subtitle) MutedText(subtitle);
@@ -505,7 +576,7 @@ void MutedText(const char* text) {
 void SectionLabel(const char* text) {
     if (Hidden()) return;
     PushSized(VioletTheme::BoldFont(), 1.0f);
-    ImGui::TextUnformatted(T(text));
+    ImGui::TextWrapped("%s", T(text));
     ImGui::PopFont();
 }
 
@@ -662,10 +733,15 @@ namespace {
 constexpr float kChipPadX = 6.0f; // units
 }
 
+// A chip's text is at most this many em wide (far above any English chip); a longer translation is cut with "…"
+// so a badge cannot push a row's label or a card's title into a sliver
+constexpr float kChipMaxEm = 16.0f;
+
 ImVec2 ChipSize(const char* text) {
     const float u = Unit();
     PushSized(nullptr, kGroupScale);
-    const ImVec2 ts = ImGui::CalcTextSize(T(text));
+    ImVec2 ts = ImGui::CalcTextSize(T(text));
+    ts.x = std::fmin(ts.x, kChipMaxEm * ImGui::GetFontSize());
     const float h = ImGui::GetFontSize() + 4.0f * u;
     ImGui::PopFont();
     return ImVec2(ts.x + 2.0f * kChipPadX * u, h);
@@ -680,7 +756,11 @@ void ChipImpl(const char* text, unsigned rgb) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), U32(rgb, 0.14f), size.y * 0.5f);
     PushSized(nullptr, kGroupScale);
-    dl->AddText(ImVec2(p.x + kChipPadX * u, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), U32(rgb), T(text));
+    if (DrawFitted(dl, ImVec2(p.x + kChipPadX * u, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), U32(rgb), T(text), size.x - 2.0f * kChipPadX * u)) {
+        ImGui::PopFont();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(T(text));
+        return;
+    }
     ImGui::PopFont();
 }
 } // namespace
@@ -702,7 +782,7 @@ bool CostChipText(float ms, char* buf, int size) {
 ImVec2 PillSize(const char* text, bool withIcon) {
     const float u = Unit();
     PushSized(nullptr, kSmallScale);
-    float w = ImGui::CalcTextSize(T(text)).x;
+    float w = std::fmin(ImGui::CalcTextSize(T(text)).x, kChipMaxEm * ImGui::GetFontSize()); // same cap as chips
     if (withIcon) w += kIconSmall * u + kSpace1 * u;
     const float h = ImGui::GetFontSize() + 6.0f * u;
     ImGui::PopFont();
@@ -727,8 +807,9 @@ void Pill(const char* text, bool highlighted, IconId icon) {
         DrawIcon(dl, icon, ImVec2(x, p.y + (size.y - s) * 0.5f), s, textCol);
         x += s + kSpace1 * u;
     }
-    dl->AddText(ImVec2(x, y), textCol, T(text));
+    const bool fitted = DrawFitted(dl, ImVec2(x, y), textCol, T(text), p.x + size.x - 9.0f * u - x);
     ImGui::PopFont();
+    if (fitted && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(T(text));
 }
 
 bool IconButton(const char* id, IconId icon, const char* tooltip, bool active, float sizeUnits) {
@@ -795,13 +876,25 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
     PadAfterRow();
     const float u = Unit();
     const bool withIcon = icon != IconId::None;
-    const std::string_view shown = I18n::TrLabel(label);
-    const ImVec2 size(ButtonWidth(label, withIcon, minWidth), ImGui::GetFrameHeight());
+    std::string_view shown = I18n::TrLabel(label);
+    const float is = VioletTheme::kControlIcon * u, gap = VioletTheme::kControlIconGap * u;
+    const float padX = ImGui::GetStyle().FramePadding.x;
+    // A button never runs past the edge of its window: a translation wider than the free space is cut with "…"
+    // (callers lay buttons out with ButtonWidth, so this only happens when even the stacked control row is too narrow)
+    const float limit = FitLimit();
+    const float natural = ButtonWidth(label, withIcon, minWidth);
+    const float minimum = 2.0f * padX + (withIcon ? is + gap : 0.0f) + ImGui::GetFontSize() * 2.0f;
+    const ImVec2 size(natural > limit && limit >= minimum ? limit : natural, ImGui::GetFrameHeight());
+    std::string cut;
+    const bool fitted = size.x < natural && FitText(shown, size.x - 2.0f * padX - (withIcon ? is + gap : 0.0f), cut);
+    const std::string_view full = shown;
+    if (fitted) shown = cut;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushID(label);
     const bool clicked = ImGui::InvisibleButton("##Button", size, ImGuiButtonFlags_EnableNav);
     ImGui::PopID();
     const bool hovered = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+    if (fitted && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(full);
     Tooltip(tooltip);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -820,7 +913,6 @@ bool DrawButton(const char* label, IconId icon, const char* tooltip, ButtonKind 
         textCol = U32(VioletTheme::kText);
         iconCol = U32(VioletTheme::kAccent);
     }
-    const float is = VioletTheme::kControlIcon * u, gap = VioletTheme::kControlIconGap * u;
     const ImVec2 ts = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size());
     const float contentW = ts.x + (withIcon ? is + gap : 0.0f);
     float x = p.x + (size.x - contentW) * 0.5f;
@@ -884,7 +976,11 @@ bool SidebarItem(IconId icon, const char* label, bool selected, bool collapsed) 
         DrawIcon(dl, icon, ImVec2(x, p.y + (size.y - s) * 0.5f), s, selected ? U32(VioletTheme::kAccent) : textCol);
         x += s + 10.0f * u;
     }
-    dl->AddText(ImVec2(x, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), textCol, T(label));
+    // A label longer than the sidebar is cut with "…" (full name on hover) instead of running into the page
+    const char* shown = T(label);
+    if (DrawFitted(dl, ImVec2(x, p.y + (size.y - ImGui::GetFontSize()) * 0.5f), textCol, shown, q.x - kSpace2 * u - x) &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        FullTextTooltip(shown);
     return clicked;
 }
 
@@ -920,7 +1016,8 @@ bool TabBar(const char* id, int* current, const char* const* labels, int count, 
     int lines = 1;
     float x = 0.0f;
     for (int i = 0; i < count; i++) {
-        widths[i] = ImGui::CalcTextSize(T(labels[i])).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
+        // A tab wider than the whole line (a long translation) takes the line and cuts its label
+        widths[i] = std::fmin(ImGui::CalcTextSize(T(labels[i])).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f), std::fmax(avail, 1.0f));
         if (i > 0 && x + widths[i] <= avail + 0.5f) {
             sameLine[i] = true;
             x += widths[i];
@@ -956,7 +1053,7 @@ bool TabBar(const char* id, int* current, const char* const* labels, int count, 
             DrawIcon(dl, icons[i], ImVec2(tx, ty + (ImGui::GetTextLineHeight() - is) * 0.5f), is, selected ? U32(VioletTheme::kAccent) : col);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, ty), col, T(labels[i]));
+        if (DrawFitted(dl, ImVec2(tx, ty), col, T(labels[i]), b.x - padX - tx) && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(T(labels[i]));
         if (selected) dl->AddRectFilled(ImVec2(a.x + 4.0f * u, b.y - 2.0f * u), ImVec2(b.x - 4.0f * u, b.y), U32(VioletTheme::kAccent), 1.0f * u);
     }
     ImGui::PopID();
@@ -978,6 +1075,7 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
     for (int i = 0; i < count; i++) {
         widths[i] = ImGui::CalcTextSize(T(labels[i])).x + 2.0f * padX + (hasIcon(i) ? is + iconGap : 0.0f);
         natural += widths[i];
+        if (compact) widths[i] = std::fmin(widths[i], std::fmax(avail, 1.0f)); // a pill never wider than the line
     }
     const bool vertical = !compact && count > 1 && natural > avail + 0.5f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -999,14 +1097,23 @@ bool Segmented(const char* id, int* current, const char* const* labels, int coun
         if (selected) dl->AddRectFilled(ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset), U32(VioletTheme::kAccentDark), rounding);
         else if (hovered) dl->AddRectFilled(ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset), U32(VioletTheme::kHoverBg), rounding);
         const ImU32 textCol = selected ? U32(VioletTheme::kAccentLight) : hovered ? U32(VioletTheme::kText) : U32(VioletTheme::kTextMuted);
-        const ImVec2 ts = ImGui::CalcTextSize(T(labels[i]));
+        // A label longer than its segment (only possible one per line or as a lone pill wider than the line) is cut
+        // with "…" and shown whole on hover
+        std::string_view shown = T(labels[i]);
+        std::string cut;
+        const bool fitted = FitText(shown, b.x - a.x - 2.0f * padX - (hasIcon(i) ? is + iconGap : 0.0f), cut);
+        if (fitted) {
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(shown);
+            shown = cut;
+        }
+        const ImVec2 ts = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size());
         const float contentW = ts.x + (hasIcon(i) ? is + iconGap : 0.0f);
         float tx = vertical ? a.x + padX : a.x + (b.x - a.x - contentW) * 0.5f;
         if (hasIcon(i)) {
             DrawIcon(dl, icons[i], ImVec2(tx, a.y + (b.y - a.y - is) * 0.5f), is, textCol);
             tx += is + iconGap;
         }
-        dl->AddText(ImVec2(tx, CenteredTextY(T(labels[i]), (a.y + b.y) * 0.5f)), textCol, T(labels[i]));
+        dl->AddText(ImVec2(tx, CenteredTextY(shown, (a.y + b.y) * 0.5f)), textCol, shown.data(), shown.data() + shown.size());
     };
 
     if (compact) {
@@ -1076,8 +1183,15 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
     return changed;
 }
 
+namespace {
+bool g_selectOpen = false; // SelectRowOpen
+}
+
+bool SelectRowOpen() { return g_selectOpen; }
+
 bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
                float controlWidth, int defaultIndex) {
+    g_selectOpen = false;
     RowDecor d = TakeDecor();
     if (!RowVisible(label, description)) return false;
     if (!current || !labels || count <= 0) return false;
@@ -1101,9 +1215,17 @@ bool SelectRow(const char* label, const char* description, const char* id, int* 
     ImDrawList* const rowDrawList = ImGui::GetWindowDrawList();
     ImGui::PushID(label);
     bool changed = false;
-    const bool comboOpen = ImGui::BeginCombo(id, I18n::Tr(labels[*current]), ImGuiComboFlags_NoArrowButton);
-    const bool comboHovered = ImGui::IsItemHovered();
+    // The chosen item's text stops short of the chevron; a longer translation is cut with "…" (ImGui would only clip
+    // it under the chevron) and shown whole on hover
     const float arrowSize = 12.0f * u;
+    const char* preview = I18n::Tr(labels[*current]);
+    std::string cut;
+    const bool fitted = FitText(preview, comboWidth - ImGui::GetStyle().FramePadding.x - 9.0f * u - arrowSize - kSpace1 * u, cut);
+    // The list grows to its longest entry (and scrolls past eight); its width is at least the closed control's
+    const bool comboOpen = ImGui::BeginCombo(id, fitted ? cut.c_str() : preview, ImGuiComboFlags_NoArrowButton);
+    g_selectOpen = comboOpen;
+    const bool comboHovered = ImGui::IsItemHovered();
+    if (fitted && !comboOpen && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) FullTextTooltip(preview);
     DrawIcon(rowDrawList, IconId::ChevronDown,
              ImVec2(comboPos.x + comboWidth - 9.0f * u - arrowSize, comboPos.y + (comboHeight - arrowSize) * 0.5f),
              arrowSize, U32(comboOpen || comboHovered ? VioletTheme::kAccent : VioletTheme::kTextMuted));
@@ -1172,7 +1294,9 @@ bool BeginAdvanced(const char* id, const char* label) {
     const ImU32 col = U32(hovered ? VioletTheme::kAccentLight : VioletTheme::kAccent);
     DrawIcon(dl, open ? IconId::ChevronDown : IconId::ChevronRight, ImVec2(p.x, p.y + (lineH - is) * 0.5f), is, col);
     const std::string_view shown = I18n::TrLabel(label);
-    dl->AddText(ImVec2(p.x + is + gap, CenteredTextY(shown, p.y + lineH * 0.5f)), col, shown.data(), shown.data() + shown.size());
+    if (DrawFitted(dl, ImVec2(p.x + is + gap, CenteredTextY(shown, p.y + lineH * 0.5f)), col, shown, width - is - gap) &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        FullTextTooltip(shown);
     ImGui::RenderNavCursor(ImGui::GetCurrentContext()->LastItemData.Rect, ImGui::GetItemID());
     return open;
 }
@@ -1204,10 +1328,11 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
     const ImVec2 lineP = ImGui::GetCursorScreenPos();
     const float lineH = ImGui::GetTextLineHeight();
 
-    // The value (muted, right-aligned on the label's line; drawn, not an item) and its optional swatch
-    char value[48];
-    if (o.valueText) std::snprintf(value, sizeof value, "%s", T(o.valueText));
-    else std::snprintf(value, sizeof value, o.format ? o.format : "%.2f", *v * o.displayScale + o.displayOffset);
+    // The value (muted, right-aligned on the label's line; drawn, not an item) and its optional swatch. A translated
+    // value text is copied whole (a fixed buffer could cut a UTF-8 character of a long CJK or Greek name in half).
+    char number[48];
+    if (!o.valueText) std::snprintf(number, sizeof number, o.format ? o.format : "%.2f", *v * o.displayScale + o.displayOffset);
+    const char* value = o.valueText ? T(o.valueText) : number;
     const float valueW = ImGui::CalcTextSize(value).x;
     const float swatchS = o.swatch ? lineH * 0.7f : 0.0f;
     const float swatchW = o.swatch ? swatchS + 6.0f * u : 0.0f;
@@ -1294,8 +1419,27 @@ bool Slider(const char* label, float* v, float min, float max, const SliderOptio
         ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
         ImGui::Dummy(ImVec2(width, fs));
         const ImU32 col = U32(VioletTheme::kTextMuted);
-        if (o.leftLabel) dl->AddText(ImVec2(a.x, b.y), col, T(o.leftLabel));
-        if (o.rightLabel) dl->AddText(ImVec2(b.x - ImGui::CalcTextSize(T(o.rightLabel)).x, b.y), col, T(o.rightLabel));
+        // Long translations of the two end labels must not run into each other: when both do not fit with a gap,
+        // each gets half the track and is cut with "…" (full text on hover)
+        const char* left = o.leftLabel ? T(o.leftLabel) : nullptr;
+        const char* right = o.rightLabel ? T(o.rightLabel) : nullptr;
+        const float leftW = left ? ImGui::CalcTextSize(left).x : 0.0f, rightW = right ? ImGui::CalcTextSize(right).x : 0.0f;
+        const float gapW = kSpace3 * u, trackW = b.x - a.x;
+        const bool crowded = leftW + rightW + (left && right ? gapW : 0.0f) > trackW;
+        const float half = left && right ? (trackW - gapW) * 0.5f : trackW;
+        if (left) {
+            const float maxW = crowded ? half : leftW;
+            if (DrawFitted(dl, ImVec2(a.x, b.y), col, left, maxW)) FullTextTooltipAt(ImVec2(a.x, b.y), maxW, left);
+        }
+        if (right) {
+            std::string cut;
+            std::string_view shown = right;
+            const bool fitted = crowded && FitText(shown, half, cut);
+            if (fitted) shown = cut;
+            const ImVec2 at(b.x - ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x, b.y); // right-aligned
+            dl->AddText(at, col, shown.data(), shown.data() + shown.size());
+            if (fitted) FullTextTooltipAt(at, b.x - at.x, right);
+        }
         ImGui::PopFont();
     }
     const float bottom = LocalY(ImGui::GetItemRectMax().y);
@@ -1440,11 +1584,16 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
     }
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 1.0f * u);
+    // Title and subtitle wrap short of the right cluster (switch, badges, chips), so a long translated title takes a
+    // second line instead of running under the switch
+    const float textWrapX = std::fmax(startX + width - rightW, startX + iconBox + 60.0f * u);
     PushSized(VioletTheme::BoldFont(), kCardTitleScale);
+    ImGui::PushTextWrapPos(textWrapX);
     ImGui::TextUnformatted(T(title));
+    ImGui::PopTextWrapPos();
     ImGui::PopFont();
     if (subtitle && *subtitle) {
-        ImGui::PushTextWrapPos(std::fmax(startX + width - rightW, startX + iconBox + 60.0f * u));
+        ImGui::PushTextWrapPos(textWrapX);
         ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
         ImGui::TextWrapped("%s", T(subtitle));
         ImGui::PopStyleColor();
@@ -1582,7 +1731,9 @@ bool ProfileChoiceRow(const char* id, IconId icon, const char* name, const char*
     ImGui::SetCursorPos(ImVec2(textX, top));
     ImGui::BeginGroup();
     ImGui::PushStyleVarY(ImGuiStyleVar_ItemSpacing, 2.0f * u);
+    ImGui::PushTextWrapPos(startX + width - 32.0f * u - kSpace3 * u); // short of the radio circle, like the description
     ImGui::TextUnformatted(T(name));
+    ImGui::PopTextWrapPos();
     RowDescription(description, startX + width - 32.0f * u - kSpace3 * u);
     ImGui::PopStyleVar();
     ImGui::EndGroup();

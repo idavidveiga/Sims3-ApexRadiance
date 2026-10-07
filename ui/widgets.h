@@ -188,6 +188,8 @@ bool SegmentedRow(const char* label, const char* description, const char* id, in
 // marker, hover Reset and search behavior as other setting rows. defaultIndex = the default choice.
 bool SelectRow(const char* label, const char* description, const char* id, int* current, const char* const* labels, int count,
                float controlWidth = 220.0f, int defaultIndex = kNoDefaultIndex);
+// Whether the last SelectRow's dropdown list was open this frame (the language row merges every script's font then)
+bool SelectRowOpen();
 
 // "Advanced" section: a hairline, then a violet chevron row, collapsed by default (the state is kept per id while the
 // game runs). The contents are not indented and use the same rows. When it returns true, submit the contents and call

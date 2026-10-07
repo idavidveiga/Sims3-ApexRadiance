@@ -53,7 +53,7 @@ struct UiSettings {
     int minePresetBase = 0; // the preset the "mine" keys started from (its keys for the tools) ([ui] mine_base)
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
     std::string changelogSeen; // the newest What's new version opened; the version button shows a dot until then ([ui] changelog_seen)
-    int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" / "en" / "pt" / "es" / "fr")
+    int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" or I18n::Code: "en", "pt", ..., "zh_hant", "th")
 };
 
 std::string KeyChordText(const KeyChord& chord); // "Ctrl+Shift+F11"

@@ -165,7 +165,7 @@ keep in-game confirmation as a separate item.
 | `tools/cas_sort_test/` | Fast CAS triangle sort against the translation of `0x005D1960` |
 | `tools/developer_mode_check/` | Developer-mode persistence and profile handling (`prepare.py` builds the fixture) |
 | `tools/dxt_test/` | Fast DXT1 / DXT5 encoder against the translation of `0x006152F0` / `0x006154B0` |
-| `tools/i18n_check/` | Translation tables: conflicts, missing languages, placeholder mismatches |
+| `tools/i18n_check/` | Translation tables: conflicts, missing languages, placeholder and `##id` mismatches; coverage and stale keys of the other languages; `i18n/keys.tsv` up to date (`tools/i18n_keys.pl` writes it) |
 | `tools/loading_gate_test/` | Loaded-world reader and the extracted start-notice and Depth Blur loading guards (`run.ps1`) |
 | `tools/post_scene_test/` | Post-scene boundary on a native D3D9 device |
 | `tools/refpack_test/` | Fast RefPack compressor against the game's decompressor and compressor |

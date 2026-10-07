@@ -38,11 +38,6 @@ const I18n::Entry kEntries[] = {
     {"{} turned off", "{} desligado", "{} desactivado", "{} désactivé"},
     {"{} reset", "{} voltou ao padrão", "{} restablecido", "{} réinitialisé"},
     {"{} changed", "{} alterado", "{} cambiado", "{} modifié"},
-    // Language names are shown in their own language
-    {"English", "English", "English", "English"},
-    {"Português", "Português", "Português", "Português"},
-    {"Español", "Español", "Español", "Español"},
-    {"Français", "Français", "Français", "Français"},
     {"Automatic ({})", "Automático ({})", "Automático ({})", "Automatique ({})"},
     {"Language", "Idioma", "Idioma", "Langue"},
     {"The language of this menu", "O idioma deste menu", "El idioma de este menú", "La langue de ce menu"},

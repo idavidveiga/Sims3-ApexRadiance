@@ -277,6 +277,7 @@ void DrawFrame(IDirect3DDevice9* device) {
         io.ClearInputKeys();
         io.ClearInputMouse();
     }
+    VioletTheme::UpdateFonts(io); // another language may need another script's font (only between frames)
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     io.DeltaTime = frameDelta;

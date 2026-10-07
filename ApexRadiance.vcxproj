@@ -184,6 +184,23 @@
     <ClCompile Include="i18n\tr_image.cpp" />
     <ClCompile Include="i18n\tr_lighting.cpp" />
     <ClCompile Include="i18n\tr_features.cpp" />
+    <ClCompile Include="i18n\lang_de.cpp" />
+    <ClCompile Include="i18n\lang_it.cpp" />
+    <ClCompile Include="i18n\lang_nl.cpp" />
+    <ClCompile Include="i18n\lang_pl.cpp" />
+    <ClCompile Include="i18n\lang_ru.cpp" />
+    <ClCompile Include="i18n\lang_cs.cpp" />
+    <ClCompile Include="i18n\lang_hu.cpp" />
+    <ClCompile Include="i18n\lang_el.cpp" />
+    <ClCompile Include="i18n\lang_da.cpp" />
+    <ClCompile Include="i18n\lang_sv.cpp" />
+    <ClCompile Include="i18n\lang_no.cpp" />
+    <ClCompile Include="i18n\lang_fi.cpp" />
+    <ClCompile Include="i18n\lang_ja.cpp" />
+    <ClCompile Include="i18n\lang_ko.cpp" />
+    <ClCompile Include="i18n\lang_zh_hans.cpp" />
+    <ClCompile Include="i18n\lang_zh_hant.cpp" />
+    <ClCompile Include="i18n\lang_th.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ApexRadiance.rc" />

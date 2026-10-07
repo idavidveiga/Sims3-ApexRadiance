@@ -1674,18 +1674,31 @@ void TextSizeRow() {
     ApexUi::EndControlRow();
 }
 
-// Menu language: Automatic (Windows' display language), English, PortuguÃƒÂªs, EspaÃƒÂ±ol, FranÃƒÂ§ais (each in its own words)
+// Menu language: Automatic (Windows' display language), then every language by its own name in its own script
+// (English, Português, ..., 日本語, 한국어, 简体中文, 繁體中文, ไทย), in I18n::Lang order; the list scrolls
 void LanguageRow() {
     ApexConfig::UiSettings ui = ApexConfig::GetUi();
+    // Copies on the heap: the widget looks every label up, and a native name is never a key to translate (a literal
+    // without an entry would be listed as a missing translation in the development build)
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> v;
+        for (int l = 0; l < static_cast<int>(I18n::Lang::Count); l++) v.emplace_back(I18n::NativeName(static_cast<I18n::Lang>(l)));
+        return v;
+    }();
     const std::string automatic = I18n::Trf("Automatic ({})", I18n::NativeName(I18n::SystemLanguage()));
-    const char* labels[] = {automatic.c_str(), I18n::NativeName(I18n::Lang::English), I18n::NativeName(I18n::Lang::Portuguese),
-                            I18n::NativeName(I18n::Lang::Spanish), I18n::NativeName(I18n::Lang::French)};
-    int current = std::clamp(ui.language + 1, 0, IM_ARRAYSIZE(labels) - 1); // -1 automatic -> 0
+    std::vector<const char*> labels;
+    labels.reserve(names.size() + 1);
+    labels.push_back(automatic.c_str());
+    for (const std::string& n : names) labels.push_back(n.c_str());
+    const int count = static_cast<int>(labels.size());
+    int current = std::clamp(ui.language + 1, 0, count - 1); // -1 automatic -> 0
     ApexUi::SetChangeReporting(false); // a menu preference, not part of the undoable state
-    if (ApexUi::SelectRow("Language", "The language of this menu", "##Language", &current, labels, IM_ARRAYSIZE(labels), 220.0f, 0)) {
+    if (ApexUi::SelectRow("Language", "The language of this menu", "##Language", &current, labels.data(), count, 220.0f, 0)) {
         ui.language = current - 1;
         ApexConfig::SetUi(ui);
     }
+    // The open list shows Japanese, Korean, Chinese and Thai names: their fonts are merged while it is open
+    if (ApexUi::SelectRowOpen()) VioletTheme::RequestAllScripts();
     ApexUi::SetChangeReporting(true);
 }
 

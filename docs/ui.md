@@ -300,14 +300,48 @@ separator, a 14-unit gap and an 18-unit right inset. They enter over 140 ms with
 
 ## Languages
 
-English, Portuguese (Brazil), Spanish and French (Settings > Menu > Language; "Automatic (<language>)" follows Windows'
-display language; `[ui] language = "auto" / "en" / "pt" / "es" / "fr"`). `ui/i18n.h`: the English text is the key;
-translations are in `i18n/tr_widgets.cpp` (texts the widgets write), `tr_menu.cpp` (`apex_gui.cpp`), `tr_image.cpp`
-(Color, Edge Smoothing, Depth Blur), `tr_lighting.cpp` (Night Lights, Water & Snow), `tr_features.cpp` (performance
-features, framework notices) and `tr_developer.inc`. Widgets translate what they draw; raw ImGui text and run-time text
-use `I18n::Tr` / `Trf`. ImGui ids stay the English label, so switching languages keeps the menu state. A missing
-translation shows English; developer mode lists missing texts and placeholder mismatches on Developer > Translations.
-How to add texts: [`i18n/TRANSLATING.md`](../i18n/TRANSLATING.md). Logs and the Developer page stay English.
+Every language The Sims 3 ships in: English, Portuguese (Brazil), Spanish, French, German, Italian, Dutch, Polish,
+Russian, Czech, Hungarian, Greek, Danish, Swedish, Norwegian, Finnish, Japanese, Korean, Chinese (Simplified),
+Chinese (Traditional) and Thai (`I18n::Lang`; the first four keep their saved numbers). Settings > Menu > Language lists
+"Automatic (<language>)" and then each language by its own name in its own script (a scrolling dropdown).
+Automatic follows Windows' display language (`GetUserDefaultUILanguage`; Chinese is Traditional for Taiwan, Hong Kong
+and Macao, else Simplified; any other language is English). `[ui] language = "auto"` or the language's code: `en pt es
+fr de it nl pl ru cs hu el da sv no fi ja ko zh_hans zh_hant th` (an unknown code reads as automatic).
+
+`ui/i18n.h`: the English text is the key. Two kinds of tables:
+- `i18n/tr_*.cpp`: {English, Portuguese, Spanish, French} per entry, one table per part of the menu:
+  `tr_widgets.cpp` (texts the widgets write), `tr_menu.cpp` (`apex_gui.cpp`), `tr_image.cpp` (Color, Edge Smoothing,
+  Depth Blur), `tr_lighting.cpp` (Night Lights, Water & Snow), `tr_features.cpp` (performance features, framework
+  notices) and `tr_developer.inc`. They are the list of every key: each new text gets an entry here.
+- `i18n/lang_<code>.cpp`: {English, translation} pairs for one of the other seventeen languages, so a language is
+  added or updated without touching the four-language tables. `i18n/keys.tsv` (written by `perl tools/i18n_keys.pl`)
+  lists every key with its table, the pt/es/fr texts as hints and its placeholders, for the translators.
+
+Widgets translate what they draw; raw ImGui text and run-time text use `I18n::Tr` / `Trf`. ImGui ids stay the English
+label, so switching languages keeps the menu state. A missing translation shows English; developer mode lists missing
+texts and placeholder mismatches on Developer > Translations. `tools/i18n_check` (run by the release script) fails on
+conflicting duplicates, four-language entries missing a language, and translations whose `{}` placeholders or `##id`
+differ from the key; it also prints each other language's coverage, its stale keys (translations of English texts that
+changed) and whether `keys.tsv` is current. How to add texts: [`i18n/TRANSLATING.md`](../i18n/TRANSLATING.md). Logs and
+the Developer page stay English.
+
+Fonts (`ui/violet_theme.cpp`): Segoe UI covers Latin, Greek and Cyrillic. Japanese (Yu Gothic, else Meiryo or MS
+Gothic), Korean (Malgun Gothic), Chinese Simplified (Microsoft YaHei, else SimSun), Chinese Traditional (Microsoft
+JhengHei, else MingLiU) and Thai (Leelawadee UI, else Tahoma) come from the Windows fonts folder, merged into the regular
+and bold fonts (titles in those scripts use the regular weight). ImGui 1.92 rasterises glyphs on demand, but each merged
+file stays in memory (CJK: 10-21 MB), so only the scripts in use are merged: the current language's and Windows'
+language's, Thai (under 1 MB) always, and Microsoft YaHei plus Malgun Gothic while the language list is open (for the
+native names; dropped about two seconds after it closes). The fonts are rebuilt between frames when that set changes.
+The current language's font is merged first, so shared Han characters take its regional forms. Merged fonts are scaled
+to Segoe UI's em, which keeps CJK and Thai glyphs inside Segoe UI's line height. The log names the files used and any
+script without a font.
+
+Long translations (German or Finnish compounds, CJK without spaces): labels, descriptions, notes, page, section, card and
+profile titles wrap (ImGui breaks a run without spaces at the line's end). Texts in a box of fixed width (tabs,
+segments, pills, buttons, sidebar items, group labels, the Advanced row, chips, slider end labels, the dropdown's
+chosen item) are drawn whole when they fit, which is always the case in English, and otherwise end with "…" and show
+the full text on hover. A tab or pill is never wider than its line, a button never wider than its window, chips and
+pills at most 16 em.
 
 ## Copy guidelines
 
