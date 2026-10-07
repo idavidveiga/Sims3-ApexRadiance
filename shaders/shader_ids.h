@@ -55,6 +55,7 @@ constexpr ShaderId kLotLightVs = {680, 0x0C8CC5E8u}; // regular lot light pass: 
 constexpr ShaderId kRoofVs = {1192, 0x1F851ECBu};
 constexpr ShaderId kLakeVs = {1088, 0x23CCB61Bu};
 constexpr ShaderId kSeaNoReflVs = {1136, 0xA784C725u}; // the sea water drawn without the planar reflection (Twinbrook, F7 2026-10-06 00:56)
+constexpr ShaderId kWallVs = {1488, 0x1A921AE5u}; // the game's wall mesh (position = stored / 256 in lot space, world rows c8..c10; F7 2026-10-06 21:41, 22:02)
 constexpr ShaderId kLakeWeatherVs = {1208, 0x3123FF89u}; // the lake vertex shader of rain and snow (world-view-projection c4..c7, world c8..c10)
 constexpr ShaderId kSnowLotVs = {1400, 0x9256F0DFu};
 constexpr ShaderId kFloorVs = {1492, 0x2BC34FA8u};     // snowy floor tiles

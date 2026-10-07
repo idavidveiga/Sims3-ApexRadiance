@@ -114,6 +114,7 @@
     <ClCompile Include="features\address_space.cpp" />
     <ClCompile Include="features\frame_profiler.cpp" />
     <ClCompile Include="features\level_light_share.cpp" />
+    <ClCompile Include="features\wall_heights.cpp" />
     <ClCompile Include="features\light_diag.cpp" />
     <ClCompile Include="features\recorder.cpp" />
     <ClCompile Include="features\screen_watch.cpp" />
@@ -210,6 +211,7 @@
     <ClInclude Include="features\address_space.h" />
     <ClInclude Include="features\frame_profiler.h" />
     <ClInclude Include="features\level_light_share.h" />
+    <ClInclude Include="features\wall_heights.h" />
     <ClInclude Include="features\light_diag.h" />
     <ClInclude Include="features\light_probe.h" />
     <ClInclude Include="features\lightmap_smooth.h" />

@@ -83,6 +83,7 @@
 #define NOMINMAX
 #endif
 #include "level_light_share.h"
+#include "wall_heights.h"
 #include "apex_version.h"
 #include "room_ambient_policy.h"
 #include "unlit_rooms.h"
@@ -2186,6 +2187,8 @@ struct WallNote {
     uintptr_t wall = 0, room = 0;
     int cls = 0, piece = 0, rows = 0, cols = 0, colLo = 0, colHi = 0, roomId = -1, story = -99;
     bool outdoor = false; // room +0x18: room 0 or a roofless room
+    uintptr_t mgr = 0;    // the room's story manager
+    float dx = 0, dz = 0; // the wall's run (wall +0xF0, world xz)
     WallBlock block{};
     float oy = 0, litLo = 0, litHi = 0;
     float x0 = 0, z0 = 0, x1 = 0, z1 = 0; // the bottom row's first and last sample (world xz)
@@ -2201,6 +2204,8 @@ bool ReadWallPiece(uintptr_t wall, int cls, uintptr_t batch, WallNote& w) { // P
         w.cols = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x28);
         w.block = *reinterpret_cast<const WallBlock*>(wall + cls * 0x20 + 0x58);
         w.oy = *reinterpret_cast<const float*>(wall + 0x114);
+        w.dx = *reinterpret_cast<const float*>(wall + 0xF0);
+        w.dz = *reinterpret_cast<const float*>(wall + 0xF8);
         const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
         if (w.rows < 2 || w.rows > 4096 || !b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return false;
         int lo = 1 << 30, hi = -1;
@@ -2224,6 +2229,7 @@ bool ReadWallPiece(uintptr_t wall, int cls, uintptr_t batch, WallNote& w) { // P
             w.room = reinterpret_cast<uintptr_t>(room);
             w.roomId = *reinterpret_cast<const int*>(room + 0xC);
             w.outdoor = room[0x18] != 0;
+            w.mgr = *reinterpret_cast<const uintptr_t*>(room);
             const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
             if (mgr) w.story = *reinterpret_cast<const int*>(mgr + 0x88);
         }
@@ -2265,54 +2271,34 @@ uint32_t BlurPassesFor(const BYTE* room) {
     }
 }
 
-// ---- Outside walls of a house on a foundation (06/10, F7 22-02-24/26 with the wall notes). The outdoor rooms of
-// story s >= 1 lays its wall rows out from the lot's base + 3 s (wall +0x114: 63.325 for story 1 of a lot at 60.325), but
-// on a foundation every story stands on it (story 1's lowest floor, mgr+0x98: 61.315) and the wall mesh is drawn from
-// there: the block's rows are stretched between the drawn wall's foot and top (FUN_006a5600 -> FUN_006ac200, whatever its
-// height), so every row showed 2 m below where it was lit (an outside sconce lit its wall well below itself). Indoor rooms'
-// walls already start at their floor; without a foundation the two bases are the same. Every outdoor room (room 0 and the
-// roofless rooms with an id, room +0x18; F7 22-15-15: room 17 of story 2) moves its samples down by the lot's foundation:
-// story 1's floor - (lot base + 3), the same for every story (F7 22-16-15: story 3's lowest floor is a landing 4.74 m up, so
-// a story's own floor is no measure); only downwards and by less than a story.
-std::atomic<long> g_foundationPieces{0};
-struct DropInfo {
-    uintptr_t mgr = 0;
-    int story = 0;
-    float oy = 0;
-};
-bool ReadDropInfo(const BYTE* room, uintptr_t wall, DropInfo& d) { // POD only (SEH)
-    __try {
-        if (!room || !room[0x18]) return false; // indoor room: its walls start at its floor
-        d.mgr = *reinterpret_cast<const uintptr_t*>(room);
-        if (!d.mgr) return false;
-        d.story = *reinterpret_cast<const int*>(d.mgr + 0x88);
-        d.oy = *reinterpret_cast<const float*>(wall + 0x114);
-        return d.story >= 1 && d.story <= 7 && std::isfinite(d.oy);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+// ---- Wall light laid out where the wall is drawn (06/10, wall_heights.h). The game lays a wall's light rows out from wall
+// +0x114 and draws the wall mesh where its vertices say; on a house on a foundation the outside walls are drawn about 2 m
+// lower (the F7 whole-scene survey: -2.02 m for most outside pieces of stories 1..4, 0 for indoor walls, and a facade at its
+// base), so the light showed 2 m off. Each piece's samples move by the measured drawn foot - its base; a piece whose wall
+// was not drawn yet keeps its base and its room is solved again once the wall is measured away from it. Rules guessed
+// from the story floors (20e03ce, 70d6238) were right on some stories and wrong on others.
+std::atomic<long> g_foundationPieces{0}; // pieces moved to their drawn foot
+float MeasuredDrop(uintptr_t wall, int cls, uintptr_t batch) {
+    WallNote w;
+    if (!ReadWallPiece(wall, cls, batch, w)) return 0.0f;
+    float ax = w.x0, az = w.z0, bx = w.x1, bz = w.z1;
+    float ext = 0.05f;
+    const float L = std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
+    if (L < 0.05f || w.colHi <= w.colLo) { // one column: a short run along the wall
+        const float dl = std::sqrt(w.dx * w.dx + w.dz * w.dz);
+        if (!(dl > 1e-3f)) return 0.0f;
+        bx = ax + w.dx / dl * 0.1f;
+        bz = az + w.dz / dl * 0.1f;
+        ext = 0.15f;
+    } else
+        ext += 0.5f * L / static_cast<float>(w.colHi - w.colLo);
+    float foot = 0.0f;
+    if (WallHeights::DrawnFoot(ax, az, bx, bz, ext, w.oy, foot)) {
+        const float drop = foot - w.oy;
+        return std::isfinite(drop) && std::fabs(drop) > 0.02f && std::fabs(drop) < 4.0f ? drop : 0.0f;
     }
-}
-bool ReadFoundation(uintptr_t tracker, float& lotBase, float& floor1) { // POD only (SEH)
-    __try {
-        const uintptr_t mgr1 = StoryManager(tracker, 1);
-        if (!mgr1) return false;
-        lotBase = *reinterpret_cast<const float*>(mgr1 + 0xD4);
-        floor1 = *reinterpret_cast<const float*>(mgr1 + 0x98);
-        return std::isfinite(lotBase) && std::isfinite(floor1);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-float FoundationDrop(const BYTE* room, uintptr_t wall) {
-    DropInfo d;
-    if (!ReadDropInfo(room, wall, d)) return 0.0f;
-    const uintptr_t tracker = MgrTracker(d.mgr);
-    float lotBase = 0, floor1 = 0;
-    if (!tracker || !ReadFoundation(tracker, lotBase, floor1)) return 0.0f;
-    const float foundation = floor1 - lotBase; // 0.99 on a foundation, 3 without one
-    if (!(foundation > 0.05f && foundation < 2.95f)) return 0.0f;
-    const float drop = lotBase + foundation + 3.0f * static_cast<float>(d.story - 1) - d.oy;
-    return std::isfinite(drop) && drop < -0.05f && drop > -2.95f ? drop : 0.0f;
+    if (w.mgr) WallHeights::NotePending(MgrTracker(w.mgr), w.story, w.roomId, ax, az, bx, bz, ext, w.oy);
+    return 0.0f;
 }
 void DropWallSamples(uintptr_t batch, float dy) {
     __try {
@@ -2327,8 +2313,8 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
-    // outside walls on a foundation: lit where they are drawn (FoundationDrop), after the rows are lined up
-    const float drop = FoundationDrop(t_wallRoom, reinterpret_cast<uintptr_t>(wall));
+    // lit where the wall is drawn (MeasuredDrop, wall_heights.h), after the rows are lined up
+    const float drop = MeasuredDrop(reinterpret_cast<uintptr_t>(wall), cls, reinterpret_cast<uintptr_t>(batch));
     if (!g_alignOn.load(std::memory_order_relaxed)) {
         if (drop != 0.0f) {
             DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
@@ -4013,6 +3999,15 @@ void CaptureStoryWalls(BYTE* room0) {
     const int n = ReadStoryWalls(room0, mgr);
     if (n < 0) return;
     std::vector<WallSeg> segs(g_wallRead, g_wallRead + n);
+    // the wall tests at the heights the walls are drawn at (a house on a foundation: about 2 m under +0x114; a lamp outside
+    // lit a closed roofless room under walls tested 2 m too high, 06/10)
+    for (WallSeg& sg : segs) {
+        float foot = 0.0f;
+        if (WallHeights::DrawnFoot(sg.x0, sg.z0, sg.x1, sg.z1, 0.05f, sg.y0, foot) && std::fabs(foot - sg.y0) > 0.02f && std::fabs(foot - sg.y0) < 4.0f) {
+            sg.y1 += foot - sg.y0;
+            sg.y0 = foot;
+        }
+    }
     std::lock_guard<std::mutex> lk(g_wallSnapMx);
     auto& slot = g_wallSnap[mgr];
     const bool same = slot.size() == segs.size() && (segs.empty() || std::memcmp(slot.data(), segs.data(), segs.size() * sizeof(WallSeg)) == 0);
@@ -6135,6 +6130,7 @@ bool Install(std::string& error) {
     LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+    WallHeights::Install(); // where the walls are drawn: their light rows and the wall tests follow it
     g_installed = true;
     RefreshSoon();
     LOG_INFO(std::format("[LevelLightShare] Installed (walls of the light's story: {} of {} classes; indoor lamps through stair openings: {}; seamless walls between floors: {})",
@@ -6173,6 +6169,7 @@ void ClearLampEdits(bool requeue) {
 
 void Uninstall() {
     if (!g_installed) return;
+    WallHeights::Uninstall();
     g_rigWait.clear();
     ClearLampEdits(ThreadId() == g_renderThread.load());
     g_installed = false;
@@ -6220,6 +6217,13 @@ bool BasisFloorGuardReady() {
 }
 
 void OnPresent() {
+    // rooms solved before their walls were drawn, now measured away from their base: solved again (wall_heights.h)
+    if (g_installed.load(std::memory_order_relaxed)) {
+        const std::vector<WallHeights::RoomKey> again = WallHeights::TakeRequeue();
+        int sent = 0;
+        for (const WallHeights::RoomKey& r : again) sent += QueueRoomSafe(r.tracker, r.level, r.id) ? 1 : 0;
+        if (sent) LOG_INFO(std::format("[LevelLightShare] {} rooms light again: their walls are drawn away from the base their light used (wall heights measured)", sent));
+    }
     const DWORD structureNow = GetTickCount();
     if (g_structurePending.load(std::memory_order_acquire) && RoomAmbientPolicy::StructureRefreshDue(structureNow, g_structureRefreshAt)) {
         std::vector<uintptr_t> rooms;
@@ -7190,9 +7194,9 @@ std::string Status() {
                                                       g_auditChecks.load(), g_auditSent.load(), g_auditGaveUp.load(), g_enterTests.load(), g_enterReady ? "" : " (not installed)", g_outdoorEnters.load(), g_penumbraLifted.load(), g_editWaited.load()),
                        !g_alignReady ? std::string("not installed")
                                      : std::format("{} ({} wall samples moved to their drawn height, {} wall pieces left as the game has them, {} walls blurred across "
-                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur, {} outside wall pieces lit down to their foundation floor)",
+                                                   "their edges ({} points lit beyond them), {} edge rows kept out of the blur, {} wall pieces lit from their drawn foot)",
                                                    g_alignOn ? "on" : "off", g_alignRows.load(), g_alignOdd.load(), g_ghostWalls.load(), g_ghostPoints.load(),
-                                                   g_alignEdges.load(), g_foundationPieces.load()),
+                                                   g_alignEdges.load(), g_foundationPieces.load()) + " | wall heights: " + WallHeights::Status(),
                        g_otherThread.load() ? std::format(" | on another thread: {}", g_otherThread.load()) : "",
                        g_normCrossOnly.load() || g_normNotFinite.load()
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
