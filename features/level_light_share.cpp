@@ -4584,7 +4584,14 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
     // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
     const float* s = static_cast<const float*>(sample);
-    BYTE* room0 = g_floorMaskReady && room[0x18] && g_floorWallsOn.load(std::memory_order_relaxed) && s[5] >= 0.9f ? MaskedFloorRoom0(room) : nullptr;
+    // A closed yard (07/10, user screenshot: a sconce on a wall's outside face lit the floors of the two roofless rooms behind
+    // it): a roofless room with an id is walled all round (a gap in its walls would have made it part of room 0; doors and
+    // windows do not merge rooms), so no outside lamp reaches its floor. The ground light map drawn over outdoor floors
+    // knows no walls, and the mask below only knew room 0's walls and went stale when room 0's lamps moved (rooms of the
+    // lamp's own story are not solved again): the floor takes its own list only (wall-tested) and none of the map.
+    const bool masked = g_floorMaskReady && room[0x18] && g_floorWallsOn.load(std::memory_order_relaxed) && s[5] >= 0.9f;
+    const bool closedYard = masked && *reinterpret_cast<const int*>(room + 0xC) > 0;
+    BYTE* room0 = !masked ? nullptr : closedYard ? room : MaskedFloorRoom0(room);
     if (!room0) {
         float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
         if (g_floorMaskReady && room[0x18]) out[3] = 0.0f; // outdoor: the game's alpha 0
@@ -4609,6 +4616,10 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         }
     }
     float* r = SolvePoint(room, out, ownLists, list3D, walls, sample, true);
+    if (closedYard) {
+        out[3] = 1.0f; // none of the ground light map
+        return r;
+    }
     out[3] = 0.0f;
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);
