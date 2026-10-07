@@ -5786,6 +5786,67 @@ const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* 
 // excluded: the game tests it right after with its own lists).
 BYTE* g_swapAt = nullptr; // room+0x639 byte changed around the game's wall test (restored on a fault too)
 BYTE g_swapSaved = 0;
+bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q); // below
+// A wall of a lower story the ray passes over (07/10, capture 08-43-10: a lamp post on the grass 0.95 m from a foundation
+// deck, its head 1.6 m above it, left the deck grey, map and mask alike: the foundation's sides are outdoor walls of story
+// 0 along the deck's edge, drawn 60.55..61.30, and the game's 2D test, which knows no height for a full wall, blocked every
+// ray from the lamp to the deck there). A wall of story k with a placed floor of story k + 1 beside it, over its base and
+// lower than a story, ends at that floor: a ray crossing it higher passes over it. Walls with no such floor beside them
+// (garden walls, a garage, closed yards) and full-height ones keep the game's test. Occluder +0x40 / +0x60: the hard
+// segment's start (world, y = its base) and run, as 0x0069AA90 reads them (mode 0). POD only (SEH in the caller).
+bool PassesOverLowerWall(uintptr_t occ, uintptr_t mgrNext, uintptr_t levelNext, const Xform& xf, const float* A, const float* B) {
+    const float* o = reinterpret_cast<const float*>(occ + 0x40);
+    const float* r = reinterpret_cast<const float*>(occ + 0x60);
+    const float dx = B[0] - A[0], dy = B[1] - A[1], dz = B[2] - A[2];
+    const float den = dx * r[2] - dz * r[0];
+    if (!(std::fabs(den) > 1e-6f)) return false;
+    const float ex = o[0] - A[0], ez = o[2] - A[2];
+    const float t = (ex * r[2] - ez * r[0]) / den, u = (ex * dz - ez * dx) / den; // along the ray, along the wall
+    if (!(t > 0.0f && t < 1.0f && u > -0.05f && u < 1.05f)) return false;        // not crossed: the game passes it anyway
+    const float rl = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+    if (!(rl > 1e-4f)) return false;
+    const float nx = -r[2] / rl * 0.25f, nz = r[0] / rl * 0.25f; // 25 cm to each side of the wall
+    const float X[3] = {A[0] + t * dx, A[1] + t * dy, A[2] + t * dz};
+    float Xl[3], ol[3];
+    ToLocal(xf, X, Xl);
+    ToLocal(xf, o, ol);
+    float top = -1e30f;
+    for (int side = -1; side <= 1; side += 2) {
+        const float S[3] = {X[0] + side * nx, X[1], X[2] + side * nz};
+        float Sl[3];
+        ToLocal(xf, S, Sl);
+        const int ix = static_cast<int>(std::floor(Sl[0])), iz = static_cast<int>(std::floor(Sl[2]));
+        const uintptr_t tile = LightTile(mgrNext, ix, iz);
+        if (!tile || !PlacedFloorAt(levelNext, ix, iz, Quadrant(Sl[0] - ix, Sl[2] - iz))) continue;
+        const float fh = *reinterpret_cast<const float*>(tile + 0x78); // lot space
+        if (std::isfinite(fh)) top = std::max(top, fh);
+    }
+    if (!(top > ol[1] + 0.05f && top < ol[1] + 3.0f - 0.05f)) return false; // no floor it ends at
+    return Xl[1] > top - 0.02f;
+}
+// The game's list for this lamp (or every wall of the room, room+0x78) without the lower story's walls the ray passes over;
+// the walls kept, -1 = none left out or unreadable (the game's list stays). POD only.
+int KeepWallsNotPassedOver(const BYTE* room0, const IntVec* src, int* out, int cap, uintptr_t mgrNext, uintptr_t levelNext, const float* A, const float* B) {
+    __try {
+        const IntVec& v = src ? *src : *reinterpret_cast<const IntVec*>(room0 + 0x78);
+        const uintptr_t* occs = *reinterpret_cast<const uintptr_t* const*>(room0 + 0x30);
+        Xform xf;
+        if (!occs || !v.b || v.e < v.b || v.e - v.b > cap || !ReadXform(mgrNext, xf)) return -1;
+        int n = 0;
+        bool dropped = false;
+        for (const int* p = v.b; p < v.e; ++p) {
+            const uintptr_t occ = occs[*p];
+            if (occ && PassesOverLowerWall(occ, mgrNext, levelNext, xf, A, B)) {
+                dropped = true;
+                continue;
+            }
+            out[n++] = *p;
+        }
+        return dropped ? n : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1; // WallPass's own handler would pass the lamp: keep the game's list instead
+    }
+}
 
 // homeRoom: the lamp's room on its story (0, or a roofless room: its own walls close it, 05/10)
 float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, void* light, const void* sample, bool& culledList) {
@@ -5809,6 +5870,24 @@ float WallPassImpl(uintptr_t tracker, int roomLevel, int home, int homeRoom, voi
                 list = {d, d + c->n, d + c->n};
                 idx = &list;
                 culledList = true;
+            }
+        }
+        // a lamp of a lower story lighting a point above: the walls of its story the ray passes over leave the list
+        static std::vector<int> s_kept;             // gather thread only (CrossFloorShadow)
+        static uintptr_t s_nextMgr = 0, s_nextLevel = 0;
+        IntVec kept{};
+        if (floor < roomLevel) {
+            const uintptr_t mgrNext = StoryManager(tracker, floor + 1);
+            if (mgrNext && (mgrNext != s_nextMgr || !s_nextLevel || LevelManager(s_nextLevel) != mgrNext)) s_nextMgr = mgrNext, s_nextLevel = LevelFor(mgrNext);
+            const uintptr_t wb = *reinterpret_cast<const uintptr_t*>(room0 + 0x30), we = *reinterpret_cast<const uintptr_t*>(room0 + 0x34);
+            const size_t walls = we > wb ? (we - wb) / 4 : 0;
+            if (mgrNext && s_nextLevel && walls && walls <= 65536) {
+                if (s_kept.size() < walls + 1) s_kept.resize(walls + 1);
+                const int n = KeepWallsNotPassedOver(room0, static_cast<const IntVec*>(idx), s_kept.data(), static_cast<int>(s_kept.size()), mgrNext, s_nextLevel, pos, static_cast<const float*>(sample));
+                if (n >= 0) {
+                    kept = {s_kept.data(), s_kept.data() + n, s_kept.data() + n};
+                    idx = &kept; // (empty = nothing in the way: FUN_0069d4c0 tests no wall)
+                }
             }
         }
         float t = 1.0f;
