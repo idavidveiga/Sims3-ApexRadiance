@@ -4185,9 +4185,17 @@ void ClearChunks() {
 
 namespace LotLightBridge {
 
-// A C++ exception inside a hook would unwind into the game: turn the whole bridge off instead (review 25/09).
-void HookFailed() {
+// A C++ exception inside a hook would unwind into the game: turn the whole bridge off instead (review 25/09). Called from catch
+// blocks, so it only sets flags (07/10, players' Runtime Error: an allocation there, perhaps with no memory left, could throw
+// again and end the game); the status and the log line follow at the next Present (ReportHookFailure).
+void HookFailed() noexcept {
     g_hookFailed = true;
+}
+
+// Present: the status and the log line of a HookFailed, once
+void ReportHookFailure() {
+    static std::atomic<bool> reported{false};
+    if (!g_hookFailed || reported.exchange(true)) return;
     g_status = "Off after an internal error (see ApexRadiance_LOG.txt)";
     LOG_ERROR("[LotLightBridge] Exception inside the draw hook: fixes off until the game restarts");
 }
@@ -4217,24 +4225,32 @@ void UpdateHooks() {
         D3D9Hooks::RegisterDrawIndexedPrimitive(kHookName,
             [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
                 if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+                bool drawn = false; // the game's draw made by OnDraw: after an exception it is not made a second time (07/10)
                 try {
                     g_curPrims = prims;
-                    return OnDraw(ctx.device, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); });
+                    return OnDraw(ctx.device, [&]() {
+                        drawn = true;
+                        ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims);
+                    });
                 } catch (...) {
                     g_inOwnCall = false;
                     HookFailed();
-                    return D3D9Hooks::HookAction::Continue;
+                    return drawn ? D3D9Hooks::HookAction::Skip : D3D9Hooks::HookAction::Continue;
                 }
             });
         D3D9Hooks::RegisterDrawPrimitive(kHookName, [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT start, UINT prims) {
             if (g_hookFailed) return D3D9Hooks::HookAction::Continue;
+            bool drawn = false; // as above
             try {
                 g_curPrims = prims;
-                return OnDraw(ctx.device, [&]() { ctx.device->DrawPrimitive(type, start, prims); });
+                return OnDraw(ctx.device, [&]() {
+                    drawn = true;
+                    ctx.device->DrawPrimitive(type, start, prims);
+                });
             } catch (...) {
                 g_inOwnCall = false;
                 HookFailed();
-                return D3D9Hooks::HookAction::Continue;
+                return drawn ? D3D9Hooks::HookAction::Skip : D3D9Hooks::HookAction::Continue;
             }
         });
         g_hooksRegistered = true;
@@ -4409,6 +4425,7 @@ std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "captu
 
 void OnPresent() {
     g_lotDrawTick = GetTickCount();
+    ReportHookFailure();
     if (g_lotDrawSeen.size() > 1024) std::erase_if(g_lotDrawSeen, [](const auto& item) { return g_lotDrawTick - item.second > 10000; });
     if (g_censusPending && g_censusFrames.load() > 0 && --g_censusFrames == 0) {
         WriteCensus();

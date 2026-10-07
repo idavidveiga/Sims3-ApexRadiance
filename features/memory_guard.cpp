@@ -10,6 +10,7 @@
 #include "imgui.h"
 #include <windows.h>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -118,6 +119,15 @@ bool ShrinkNow(void* rs, uint64_t& freed) {
     return true;
 }
 
+// 07/10, players' Runtime Error: these lines are written when address space is short, inside the game's calls or on the watch
+// thread: built with snprintf in a stack buffer (std::format allocates), and a line that cannot reach the log is dropped.
+void LogLine(ApexLog::Level level, const char* text) noexcept {
+    try {
+        ApexLog::Write(level, text);
+    } catch (...) {
+    }
+}
+
 using Update_t = void(__thiscall*)(void* rs, int arg);
 void __fastcall UpdateHook(void* rs, void*, int arg) {
     reinterpret_cast<Update_t>(kUpdate)(rs, arg);
@@ -125,7 +135,12 @@ void __fastcall UpdateHook(void* rs, void*, int arg) {
     g_rsThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     if (g_shrinkWanted.exchange(false, std::memory_order_relaxed)) {
         uint64_t freed = 0;
-        if (ShrinkNow(rs, freed)) LOG_INFO(std::format("[MemoryGuard] Largest free block low: the game's resource cache emptied ({} MB of idle files)", freed >> 20));
+        if (ShrinkNow(rs, freed)) {
+            char line[160];
+            std::snprintf(line, sizeof line, "[MemoryGuard] Largest free block low: the game's resource cache emptied (%llu MB of idle files)",
+                          static_cast<unsigned long long>(freed >> 20));
+            LogLine(ApexLog::Level::Info, line);
+        }
     }
 }
 
@@ -140,9 +155,11 @@ bool __fastcall WorldSaveHook(void* wm, void*, void* a, void* b) {
     const bool ok = reinterpret_cast<WorldSave_t>(kWorldSave)(wm, a, b);
     g_saves.fetch_add(1, std::memory_order_relaxed);
     if (!ok) g_saveFails.fetch_add(1, std::memory_order_relaxed);
-    LOG_INFO(std::format("[MemoryGuard] World save {}: largest free block {} MB, {} MB for the save ({}{})", ok ? "done" : "FAILED (Error 12)", before >> 20,
-                         room >> 20, let ? "reserve let go" : "no reserve held",
-                         shrunk ? std::format(", resource cache emptied: {} MB of idle files", freed >> 20) : std::string()));
+    char line[256], extra[96] = "";
+    if (shrunk) std::snprintf(extra, sizeof extra, ", resource cache emptied: %llu MB of idle files", static_cast<unsigned long long>(freed >> 20));
+    std::snprintf(line, sizeof line, "[MemoryGuard] World save %s: largest free block %llu MB, %llu MB for the save (%s%s)", ok ? "done" : "FAILED (Error 12)",
+                  static_cast<unsigned long long>(before >> 20), static_cast<unsigned long long>(room >> 20), let ? "reserve let go" : "no reserve held", extra);
+    LogLine(ApexLog::Level::Info, line);
     return ok;
 }
 
@@ -155,7 +172,12 @@ DWORD WINAPI Watch(LPVOID) {
         if (largest < g_lowest.load(std::memory_order_relaxed)) g_lowest.store(largest, std::memory_order_relaxed);
         const DWORD now = GetTickCount();
         if (largest < kLowBytes) {
-            if (largest < kLetGoBytes && LetReserveGo()) LOG_WARNING(std::format("[MemoryGuard] Largest free block {} MB: the reserve of {} MB let go", largest >> 20, kReserveBytes >> 20));
+            if (largest < kLetGoBytes && LetReserveGo()) {
+                char line[128];
+                std::snprintf(line, sizeof line, "[MemoryGuard] Largest free block %llu MB: the reserve of %llu MB let go", static_cast<unsigned long long>(largest >> 20),
+                              static_cast<unsigned long long>(kReserveBytes >> 20));
+                LogLine(ApexLog::Level::Warning, line);
+            }
             if (!lastShrink || now - lastShrink >= kShrinkGapMs) {
                 lastShrink = now | 1;
                 g_shrinkWanted.store(true, std::memory_order_relaxed);
