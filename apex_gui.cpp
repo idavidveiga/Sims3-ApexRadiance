@@ -2845,15 +2845,10 @@ void VersionButton(float x, float y, float h) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * u, ApexUi::kSpace3 * u));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 12.0f * u);
     if (ImGui::BeginPopup("##WhatsNew")) {
-        const ApexChangelog::Release& r = ApexChangelog::Get(0);
-        ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * 1.1f);
-        ImGui::TextUnformatted(I18n::Trf("What's new in {}", r.version).c_str());
-        ImGui::PopFont();
-        if (r.date[0]) {
-            ImGui::SameLine(0.0f, ApexUi::kSpace2 * u);
-            ApexUi::MutedText(r.date);
-        }
-        const float wrap = ImGui::GetContentRegionAvail().x - ApexUi::kSpace4 * u;
+        // The last kShown versions, newest first, in a list that scrolls past kListH (07/10, user: "scroll, always the last 8")
+        constexpr int kShown = 8;
+        const float kListH = 520.0f * u;
+        const float wrap = ImGui::GetContentRegionAvail().x - ApexUi::kSpace4 * u - ImGui::GetStyle().ScrollbarSize;
         auto section = [&](const char* title, const char* const* lines) {
             if (!lines || !lines[0]) return;
             ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace1 * u));
@@ -2872,9 +2867,29 @@ void VersionButton(float x, float y, float h) {
                 ImGui::PopTextWrapPos();
             }
         };
-        section("NEW", r.added);
-        section("IMPROVEMENTS", r.improved);
-        section("FIXES", r.fixed);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, kListH));
+        if (ImGui::BeginChild("##WhatsNewList", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY, 0)) {
+            const int shown = std::min(kShown, ApexChangelog::Count());
+            for (int i = 0; i < shown; i++) {
+                const ApexChangelog::Release& r = ApexChangelog::Get(i);
+                if (i > 0) {
+                    ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace2 * u));
+                    ImGui::Separator();
+                    ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace1 * u));
+                }
+                ImGui::PushFont(VioletTheme::BoldFont(), VioletTheme::BaseFontSize() * (i == 0 ? 1.1f : 1.0f));
+                ImGui::TextUnformatted(i == 0 ? I18n::Trf("What's new in {}", r.version).c_str() : I18n::Trf("Version {}", r.version).c_str());
+                ImGui::PopFont();
+                if (r.date[0]) {
+                    ImGui::SameLine(0.0f, ApexUi::kSpace2 * u);
+                    ApexUi::MutedText(r.date);
+                }
+                section("NEW", r.added);
+                section("IMPROVEMENTS", r.improved);
+                section("FIXES", r.fixed);
+            }
+        }
+        ImGui::EndChild();
         ImGui::Dummy(ImVec2(0.0f, ApexUi::kSpace1 * u));
         ImGui::Separator();
         if (ApexUi::IconTextButton("See all versions", IconId::ExternalLink, "Opens the Apex Radiance releases page on GitHub in your browser", ButtonKind::Secondary))

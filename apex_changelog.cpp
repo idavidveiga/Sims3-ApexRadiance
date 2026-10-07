@@ -6,6 +6,12 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k282Added[] = {nullptr};
+constexpr const char* k282Improved[] = {
+    "What's new shows the last 8 versions, with a scroll bar",
+    nullptr};
+constexpr const char* k282Fixed[] = {nullptr};
+
 constexpr const char* k281Added[] = {nullptr};
 constexpr const char* k281Improved[] = {
     "Banding Fix on by default in every profile, with Smooth gradients at 8%",
@@ -119,6 +125,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.8.2", "2026-10-07", k282Added, k282Improved, k282Fixed},
     {"2.8.1", "2026-10-07", k281Added, k281Improved, k281Fixed},
     {"2.8.0", "2026-10-07", k280Added, k280Improved, k280Fixed},
     {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},

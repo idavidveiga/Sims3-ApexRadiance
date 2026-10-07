@@ -1251,6 +1251,7 @@ namespace {
 const I18n::Entry kWhatsNewEntries[] = {
     {"What's new", "Novidades", "Novedades", "Nouveautés"},
     {"What's new in {}", "Novidades da {}", "Novedades de la {}", "Nouveautés de la {}"},
+    {"Version {}", "Versão {}", "Versión {}", "Version {}"},
     {"NEW", "NOVO", "NUEVO", "NOUVEAU"},
     {"IMPROVEMENTS", "MELHORIAS", "MEJORAS", "AMÉLIORATIONS"},
     {"FIXES", "CORREÇÕES", "CORRECCIONES", "CORRECTIONS"},
@@ -1317,6 +1318,7 @@ const I18n::Entry kWhatsNewEntries[] = {
     {"Windows take outdoor light: their outer side lit by the lamps outside", "Janelas recebem a luz de fora: o lado de fora iluminado pelas lâmpadas externas", "Las ventanas reciben la luz exterior: su lado exterior iluminado por las lámparas de fuera", "Les fenêtres prennent la lumière extérieure : leur face extérieure éclairée par les lampes du dehors"},
     {"Lamp glow and shore reflections on lakes in rain and snow", "Brilho das lâmpadas e reflexo da margem nos lagos com chuva e neve", "Brillo de las lámparas y reflejo de la orilla en los lagos con lluvia y nieve", "Lueur des lampes et reflets de la rive sur les lacs sous la pluie et la neige"},
     {"Shore reflections on Twinbrook's sea in rain", "Reflexo da margem no mar de Twinbrook com chuva", "Reflejo de la orilla en el mar de Twinbrook con lluvia", "Reflets de la rive sur la mer de Twinbrook sous la pluie"},
+    {"What's new shows the last 8 versions, with a scroll bar", "As novidades mostram as últimas 8 versões, com barra de rolagem", "Las novedades muestran las últimas 8 versiones, con barra de desplazamiento", "Les nouveautés montrent les 8 dernières versions, avec une barre de défilement"},
     {"Banding Fix on by default in every profile, with Smooth gradients at 8%", "Correção de Faixas ligada por padrão em todos os perfis, com Gradientes suaves em 8%", "Corrección de bandas activada por defecto en todos los perfiles, con Degradados suaves al 8%", "Correction des bandes activée par défaut dans tous les profils, avec Dégradés doux à 8 %"},
     {"Doors no longer take the light of the room behind them", "Portas não pegam mais a luz do cômodo atrás delas", "Las puertas ya no toman la luz de la habitación de detrás", "Les portes ne prennent plus la lumière de la pièce derrière elles"},
     {"Snowy ground under rugs is no longer darker than the rest of the lot", "O chão com neve embaixo de tapetes não fica mais escuro que o resto do lote", "El suelo nevado bajo las alfombras ya no es más oscuro que el resto del solar", "Le sol enneigé sous les tapis n'est plus plus sombre que le reste du terrain"},
