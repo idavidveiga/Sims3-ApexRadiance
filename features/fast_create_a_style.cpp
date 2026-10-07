@@ -284,6 +284,13 @@ const GameAddress kLookupInternalCall{
 
 bool Start(std::string* error) {
     if (g_running.load(std::memory_order_acquire)) return true;
+    // A failed detach leaves the resolver hook in place but pass-through while off. Re-enable that existing layer
+    // instead of trying to attach a second Detours layer to the same entry.
+    if (g_hookInstalled) {
+        g_running.store(true, std::memory_order_release);
+        LOG_INFO("[FastCreateAStyle] Re-enabled with the existing internal-call resolver hook");
+        return true;
+    }
 
     const auto resolved = kLookupInternalCall.Resolve();
     if (!resolved) {
@@ -314,10 +321,14 @@ void Stop() {
 
     if (g_hookInstalled && g_lookupInternalCall) {
         std::lock_guard<std::recursive_mutex> transaction(DetourBatch::Lock());
-        if (!DetourBatch::RemoveHooks({{reinterpret_cast<void**>(&g_lookupInternalCall), reinterpret_cast<void*>(&Hook_LookupInternalCall)}}))
+        if (DetourBatch::RemoveHooks({{reinterpret_cast<void**>(&g_lookupInternalCall), reinterpret_cast<void*>(&Hook_LookupInternalCall)}})) {
+            g_hookInstalled = false;
+        } else {
+            // Keep this true: Detours left the layer installed. Hook_LookupInternalCall and any already-resolved
+            // thumbnail wrappers are gated by g_running and therefore pass straight through while the feature is off.
             LOG_WARNING("[FastCreateAStyle] mono_lookup_internal_call detour could not be removed; its wrapper remains pass-through");
+        }
     }
-    g_hookInstalled = false;
     LOG_INFO(std::format("[FastCreateAStyle] Stopped: {} calls, {} cache hits, {} misses, {} entries stored, {} bytes reused",
                          g_calls.load(), g_hits.load(), g_misses.load(), g_stores.load(), g_bytesReused.load()));
 }
