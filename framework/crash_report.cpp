@@ -5,6 +5,7 @@
 #include "build_flavor.h"
 #include <windows.h>
 #include <dbghelp.h>
+#include <intrin.h>
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -27,6 +28,17 @@ std::atomic<bool> g_installed{false};
 std::atomic<LONG> g_written{0};
 thread_local int t_depth = 0;
 constexpr DWORD kAbortCode = 0xE0415058; // 'APX' + E0: an abort reported by Apex's runtime (ReportAbort), not a hardware exception
+
+// Apex's own image (07/10, players' Runtime Error): tells whether a C++ exception was thrown by Apex's code
+uintptr_t g_selfBase = 0;
+uintptr_t g_selfEnd = 0;
+constexpr DWORD kCppExceptionCode = 0xE06D7363; // 'msc' + E0: an MSVC throw
+
+// The last C++ exception thrown on this thread, recorded first-chance by a vectored handler (no heap, plain stores). A
+// terminate()/abort() from an exception that left a noexcept function (a std::thread body, ...) never reaches the filter,
+// and by then the exception record is gone: this is what the report prints for those.
+thread_local ULONG_PTR t_lastThrowInfo = 0;
+thread_local char t_lastWhat[160] = {};
 
 // The feature line: two fixed buffers, the reader takes the last complete one
 char g_features[2][1024] = {};
@@ -71,6 +83,118 @@ bool Readable(uintptr_t addr, size_t n) {
     return addr + n <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
 }
 
+bool InSelf(uintptr_t addr) { return g_selfBase && addr >= g_selfBase && addr < g_selfEnd; }
+
+// MSVC x86 throw metadata (the pointers are absolute on x86): ThrowInfo -> CatchableTypeArray -> CatchableType ->
+// TypeDescriptor, whose name is the decorated type (".?AVbad_alloc@std@@").
+struct TypeDescriptorX86 {
+    const void* vftable;
+    void* spare;
+    char name[1];
+};
+struct CatchableTypeX86 {
+    unsigned properties;
+    const TypeDescriptorX86* type;
+};
+struct CatchableTypeArrayX86 {
+    int count;
+    const CatchableTypeX86* types[1];
+};
+struct ThrowInfoX86 {
+    unsigned attributes;
+    const void* unwind;
+    const void* forwardCompat;
+    const CatchableTypeArrayX86* catchables;
+};
+
+// The thrown type's decorated name (false when the metadata cannot be read) and whether std::exception is one of its
+// bases. Under SEH: the ThrowInfo pointer comes from a broken process.
+bool ReadThrowType(ULONG_PTR throwInfo, char* out, size_t size, bool* isStdException) {
+    out[0] = 0;
+    if (isStdException) *isStdException = false;
+    __try {
+        const auto* ti = reinterpret_cast<const ThrowInfoX86*>(throwInfo);
+        if (!ti || !ti->catchables || ti->catchables->count <= 0) return false;
+        const int n = ti->catchables->count < 32 ? ti->catchables->count : 32;
+        for (int i = 0; i < n; i++) {
+            const CatchableTypeX86* ct = ti->catchables->types[i];
+            if (!ct || !ct->type) continue;
+            if (i == 0) strncpy_s(out, size, ct->type->name, _TRUNCATE);
+            if (isStdException && std::strcmp(ct->type->name, ".?AVexception@std@@") == 0) *isStdException = true;
+        }
+        return out[0] != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+        return false;
+    }
+}
+
+// what() of a std::exception thrown by Apex's own runtime (same class layout as this module), copied under SEH
+void ReadWhat(ULONG_PTR object, char* out, size_t size) {
+    out[0] = 0;
+    __try {
+        const char* w = reinterpret_cast<const std::exception*>(object)->what();
+        if (w) strncpy_s(out, size, w, _TRUNCATE);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out[0] = 0;
+    }
+}
+
+// what() only when the exception is a std::exception thrown by Apex's code (another module's class layout is unknown)
+void ReadApexWhat(ULONG_PTR throwInfo, ULONG_PTR object, char* out, size_t size) {
+    out[0] = 0;
+    char raw[256];
+    bool isStd = false;
+    if (InSelf(throwInfo) && ReadThrowType(throwInfo, raw, sizeof raw, &isStd) && isStd) ReadWhat(object, out, size);
+}
+
+// "std::bad_alloc" from ".?AVbad_alloc@std@@" for plain names; anything fancier (templates) stays decorated
+void PrettyType(const char* decorated, char* out, size_t size) {
+    strncpy_s(out, size, decorated, _TRUNCATE);
+    if (std::strncmp(decorated, ".?AV", 4) != 0 && std::strncmp(decorated, ".?AU", 4) != 0) return;
+    const char* body = decorated + 4;
+    const char* end = std::strstr(body, "@@");
+    if (!end || end - body >= 200) return;
+    for (const char* p = body; p < end; ++p)
+        if (*p == '?' || *p == '$') return;
+    const char* parts[16];
+    size_t lens[16];
+    int count = 0;
+    for (const char* p = body; p < end;) {
+        if (count == 16) return;
+        const char* at = p;
+        while (at < end && *at != '@') at++;
+        parts[count] = p;
+        lens[count++] = static_cast<size_t>(at - p);
+        p = at + 1;
+    }
+    char buf[256] = {};
+    size_t len = 0;
+    for (int i = count - 1; i >= 0; i--) {
+        if (len + lens[i] + 3 >= sizeof buf) return;
+        std::memcpy(buf + len, parts[i], lens[i]);
+        len += lens[i];
+        if (i) {
+            std::memcpy(buf + len, "::", 2);
+            len += 2;
+        }
+    }
+    buf[len] = 0;
+    strncpy_s(out, size, buf, _TRUNCATE);
+}
+
+// "<label>: std::bad_alloc ("bad allocation"), type info at ApexRadiance.asi+0x..., thrown by Apex Radiance's code"
+void WriteCppException(Out& o, ULONG_PTR throwInfo, const char* what, const char* label) {
+    char line[900], raw[256], pretty[256], where[400];
+    if (!ReadThrowType(throwInfo, raw, sizeof raw, nullptr)) std::snprintf(raw, sizeof raw, "(type not readable)");
+    PrettyType(raw, pretty, sizeof pretty);
+    if (!Describe(throwInfo, where, sizeof where)) std::snprintf(where, sizeof where, "%08X (not mapped)", static_cast<unsigned>(throwInfo));
+    const bool hasWhat = what && what[0];
+    std::snprintf(line, sizeof line, "%s: %s%s%s%s, type info at %s (%s)\r\n", label, pretty, hasWhat ? " (\"" : "", hasWhat ? what : "", hasWhat ? "\")" : "", where,
+                  InSelf(throwInfo) ? "thrown by Apex Radiance's code" : "not Apex Radiance's code");
+    o.Write(line);
+}
+
 void WriteText(EXCEPTION_POINTERS* ep) {
     HANDLE f = CreateFileW(g_textPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
@@ -91,7 +215,8 @@ void WriteText(EXCEPTION_POINTERS* ep) {
     if (er->ExceptionCode == kAbortCode) {
         static const char* const kReasons[] = {"?", "C++ exception not caught (std::terminate)", "abort()", "pure virtual call", "invalid C runtime parameter"};
         const ULONG_PTR r = er->NumberParameters ? er->ExceptionInformation[0] : 0;
-        std::snprintf(line, sizeof line, " (Apex's runtime ended the game: %s; the \"Runtime Error!\" dialog follows)", kReasons[r < 5 ? r : 0]);
+        std::snprintf(line, sizeof line, " (Apex's runtime ended the game: %s; %s)", kReasons[r < 5 ? r : 0],
+                      r == 4 ? "Windows Error Reporting follows" : "the \"Runtime Error!\" dialog follows");
         o.Write(line);
     }
     if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
@@ -99,6 +224,14 @@ void WriteText(EXCEPTION_POINTERS* ep) {
                       static_cast<unsigned>(er->ExceptionInformation[1]));
     else std::snprintf(line, sizeof line, "\r\n");
     o.Write(line);
+    // 07/10, players' Runtime Error: name the C++ exception (the thrown type, and whether Apex's code threw it)
+    if (er->ExceptionCode == kCppExceptionCode && er->NumberParameters >= 3) {
+        char what[160];
+        ReadApexWhat(er->ExceptionInformation[2], er->ExceptionInformation[1], what, sizeof what);
+        WriteCppException(o, er->ExceptionInformation[2], what, "C++ exception");
+    } else if (er->ExceptionCode == kAbortCode && t_lastThrowInfo) {
+        WriteCppException(o, t_lastThrowInfo, t_lastWhat, "Last C++ exception thrown on this thread");
+    }
     std::snprintf(line, sizeof line, "EAX %08lX EBX %08lX ECX %08lX EDX %08lX ESI %08lX EDI %08lX EBP %08lX ESP %08lX EIP %08lX\r\n", c->Eax, c->Ebx, c->Ecx, c->Edx,
                   c->Esi, c->Edi, c->Ebp, c->Esp, c->Eip);
     o.Write(line);
@@ -195,7 +328,30 @@ void __cdecl OnPureCall() {
 }
 void __cdecl OnInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
     ReportAbort(4);
-    std::abort();
+    // End the way the runtime's default handler does (_invoke_watson: a fast fail into Windows Error Reporting), not
+    // abort(), which would add a "Runtime Error!" dialog this case never showed before (07/10)
+    __fastfail(FAST_FAIL_INVALID_ARG);
+}
+
+// First chance, every exception in the process: only C++ throws are recorded, with plain stores, then the search goes on
+// untouched. what() is copied only for std::exception types thrown by Apex's own runtime (same class layout).
+LONG CALLBACK RecordThrow(EXCEPTION_POINTERS* ep) {
+    const EXCEPTION_RECORD* er = ep ? ep->ExceptionRecord : nullptr;
+    if (!er || er->ExceptionCode != kCppExceptionCode || er->NumberParameters < 3) return EXCEPTION_CONTINUE_SEARCH;
+    t_lastThrowInfo = er->ExceptionInformation[2];
+    ReadApexWhat(er->ExceptionInformation[2], er->ExceptionInformation[1], t_lastWhat, sizeof t_lastWhat);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void FindSelf() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&FindSelf), &self) ||
+        !self)
+        return;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(self);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const BYTE*>(self) + dos->e_lfanew);
+    g_selfBase = reinterpret_cast<uintptr_t>(self);
+    g_selfEnd = g_selfBase + nt->OptionalHeader.SizeOfImage;
 }
 
 LONG WINAPI Filter(EXCEPTION_POINTERS* ep) {
@@ -218,12 +374,20 @@ void Install() {
     wcscpy_s(g_textPath, (dir + L"ApexRadiance_Crash.txt").c_str());
     wcscpy_s(g_dumpPath, (dir + L"ApexRadiance_Crash.dmp").c_str());
     if (HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll")) g_writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
+    FindSelf();
+    AddVectoredExceptionHandler(0, RecordThrow); // last in the chain, and it only records
     g_previous = SetUnhandledExceptionFilter(Filter);
     std::set_terminate(OnTerminate);
     std::signal(SIGABRT, OnAbortSignal);
     _set_purecall_handler(OnPureCall);
     _set_invalid_parameter_handler(OnInvalidParameter);
     g_installed.store(true);
+}
+
+void ThreadStart() {
+    // std::set_terminate is per thread in MSVC's runtime: each Apex thread sets it, so a terminate there is reported as one
+    // (07/10, players' Runtime Error) instead of as a plain abort(). Before Install it is set by Install's own thread only.
+    std::set_terminate(OnTerminate);
 }
 
 void Refresh() {
