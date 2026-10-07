@@ -12,8 +12,8 @@ frames while the camera moves.
 | | |
 |---|---|
 | Availability | Released. The individual switches were introduced between 2.1.0 and 2.7.0 (see the table below); the first twelve are on by default since 2.5.5. The single Overview switch for the group: Released in 2.6.0, covering fifteen switches since 2.7.0. Room to save, Lighter window updates and Faster scripts: Experimental, released in 2.7.0 |
-| Default | All fifteen on when no saved choice exists. An explicit saved off choice stays off. The Lot Streaming switches are off by default |
-| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
+| Default | All sixteen on when no saved choice exists. An explicit saved off choice stays off. The Lot Streaming switches are off by default |
+| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Create-a-Style*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
 | Configuration | One `[patches.<Name>]` table per switch in `ApexRadiance.toml` |
 | Developer mode | Switches: no. Counters, verification controls and tuning: Developer > Performance |
 | Source | [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp), [`patches/performance.h`](../../../patches/performance.h), the feature modules linked from each page |
@@ -69,6 +69,7 @@ Every switch works at the exact game function behind one measured cost, and foll
 | Faster texture compression (with *Use several cores*) | Textures and Sims | 2.1.0 or earlier | [fast-texture-compression.md](fast-texture-compression.md) |
 | Faster cache compression (includes record checksums) | Textures and Sims | 2.1.0 or earlier; checksums 2.4.0 | [fast-cache-compression.md](fast-cache-compression.md) |
 | Faster Sim building | Textures and Sims | 2.3.0 | [fast-cas-sort.md](fast-cas-sort.md) |
+| Faster Create-a-Style | Create-a-Style | Development | [fast-create-a-style.md](fast-create-a-style.md) |
 | Faster memory handling | Memory handling | 2.4.0 | [fast-memory.md](fast-memory.md) |
 | Room to save (Experimental) | Memory handling | 2.7.0 | [room-to-save.md](room-to-save.md) |
 | Lighter window updates (Experimental) | Game and scripts | 2.7.0 | [lighter-window-updates.md](lighter-window-updates.md) |
