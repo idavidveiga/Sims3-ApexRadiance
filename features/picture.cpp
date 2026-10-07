@@ -1386,8 +1386,36 @@ void Picture::BeforeOverlay(IDirect3DDevice9* dev) {
         CopyScene(dev);
 }
 
+// Diagnostics while Color is on (user 06/10: a friend's Edit in Game showed no Color until it was turned off and on, and
+// nothing in the code explained it): once per frame, every gate between Color and the screen. A line when one of them changes
+// (at most every 300 ms), and a full line every 10 s; at most 400 lines a session.
+static void LogGates(IDirect3DDevice9* dev, int skip) {
+    static std::string lastKey;
+    static unsigned long long lastLine = 0, lastFull = 0;
+    static int lines = 0;
+    if (lines >= 400) return;
+    const unsigned long long now = GetTickCount64();
+    const bool inWorld = WorldSession::InWorld();
+    const bool rtBack = gpu.curRT0 && gpu.curRT0 == gpu.backBuffer;
+    const int draws = gpu.sceneDraws;
+    const char* drawBand = draws == 0 ? "0" : draws < kMinSceneDraws ? "few" : "enough";
+    std::string key = std::format("world {} | applied at the scene end {} | scene copy {} | resources {} | frame {} | RT0 {} | hooks {} | shaders {} | skip {} | draws {} | device {:#x}",
+                                  inWorld ? "yes" : "no", g_boundaryDone ? "yes" : "no", gpu.sceneCopied ? "yes" : "no", gpu.ready ? "ready" : "no",
+                                  gpu.frameReady ? "ready" : "no", rtBack ? "back buffer" : gpu.curRT0 ? "other" : "unknown", gpu.hooks ? "on" : "off",
+                                  ShaderCache::PrecompileComplete() ? "ready" : "compiling", skip, drawBand, reinterpret_cast<uintptr_t>(dev));
+    const bool changed = key != lastKey;
+    if ((changed && now - lastLine >= 300) || now - lastFull >= 10000) {
+        lastKey = key;
+        lastLine = now;
+        if (now - lastFull >= 10000) lastFull = now;
+        lines++;
+        LOG_INFO("[Picture gates] " + key + " (" + std::to_string(draws) + ") || " + WorldSession::GateText() + " || " + PostScene::DiagText());
+    }
+}
+
 void Picture::OnEndScene(IDirect3DDevice9* dev) {
     const PictureParams raw = GetParams(), q = Effective(raw);
+    if (!g_atBoundary && raw.enabled) LogGates(dev, m_skip.load());
     if (!dev || !q.enabled) {
         m_gpuMs = -1.0f;
         RequestDepth(false);

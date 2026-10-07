@@ -3,6 +3,7 @@
 // Fields: docs/engine/lot-loading-and-streaming.md. Never latch across loads.
 #include "game_addresses.h"
 #include <Windows.h>
+#include <string>
 
 namespace WorldSession {
 struct Settled {
@@ -95,5 +96,14 @@ inline bool InWorld() {
     } else drawnSince = 0;
     open = drawnSince && now - drawnSince >= kDrawnMs && (!g_loadSettled || g_loadSettled());
     return open;
+}
+// Diagnostics: every input of the gate above, as one log fragment (render thread)
+inline std::string GateText() {
+    const bool known = GameAddr::Get(GameAddr::Id::WorldManagerPtr) != 0;
+    std::string s = std::string("world manager ") + (known ? "found" : "not found");
+    if (known) s += std::string(", active ") + (IsActive() ? "yes" : "no") + ", loading window " + (LoaderDismissed() ? "gone" : "up");
+    s += ", depth writes " + std::to_string(PostScene::DepthWritesLastFrame()) + " (needs " + std::to_string(kMinDepthWrites) + ")";
+    s += std::string(", lighting settled ") + (!g_loadSettled ? "n/a" : g_loadSettled() ? "yes" : "no");
+    return s;
 }
 }

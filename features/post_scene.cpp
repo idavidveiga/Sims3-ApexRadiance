@@ -280,6 +280,12 @@ float CameraNear() { return g_near; }
 int DepthWritesThisFrame() { return g_depthWrites; }
 int DepthWritesLastFrame() { return g_lastDepthWrites; }
 bool Counting() { return g_hooks; }
+std::string DiagText() {
+    return "scene draws " + std::to_string(g_sceneDraws) + " (depth writes " + std::to_string(g_depthWrites) + ", last frame " + std::to_string(g_lastDepthWrites) +
+           "), boundary " + (g_done ? "done" : "not yet") + (g_rejectedBoundary ? ", rejected" : "") + (g_uiDrawSeen ? ", UI seen" : "") +
+           ", RT0 " + (!g_curRT0 ? "unknown" : g_curRT0 == g_backBuffer ? "back buffer" : "other") + ", effects " + std::to_string(g_effects.size()) +
+           (g_hooks ? "" : ", hooks off");
+}
 // This frame's effects (ambient occlusion, edge smoothing, Depth Blur) will still run at a later scene boundary: Picture
 // does not copy the scene before them (06/10: since Picture took a depth test with ALWAYS and no depth write for the end of
 // the scene, it copied before these effects, which still count such draws as scene; every pixel they changed then differed

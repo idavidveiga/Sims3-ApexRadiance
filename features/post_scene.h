@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 // Shared trigger for effects that work on the finished 3D scene, before the game draws any UI: normally the first
 // backbuffer draw with ZENABLE = FALSE after at least 20 depth-tested draws. If hidden game UI means that boundary never
 // draws, EndSceneBeforeOverlay is the fallback. Effects run once in fixed order (ambient occlusion, edge smoothing,
@@ -30,6 +31,8 @@ int DepthWritesThisFrame();
 // at all (the draw hooks are registered while any post-scene effect is on)
 int DepthWritesLastFrame();
 bool Counting();
+// Diagnostics (render thread): this frame's scene count, its state and the effects registered, as one log fragment
+std::string DiagText();
 // This frame's effects have not run yet but will at a later scene boundary (Picture waits for them before its scene copy)
 bool EffectsPending();
 // The camera's view-projection of the current frame (world -> clip, rows = c40..c43), false when not seen this frame
