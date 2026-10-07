@@ -2615,15 +2615,25 @@ bool IndoorBasisScale(IDirect3DDevice9* dev, const ShaderPatches::IndoorBasisPat
     return true;
 }
 
+std::atomic<long> g_doorsKept{0}, g_doorsNoWorld{0}; // indoor smooth light: objects set in a wall left to the game's rig / no world triple
+std::atomic<bool> g_doorsLogged{false}, g_doorsNoWorldLogged{false};
+// An object set in a wall (DrawIndoorObject): unscaled, turned about y only, and its tile's centre (origin + (X - Z) / 2) on an
+// outside wall's line, or on a tile edge of the room map along one axis (uv rows 3..4 after the world triple, 0..1 over the
+// map, x its size: 1 texel per metre; F7 10-28-12: c195 / c196, the door's centre at texel (12.99, 20.99))
+bool SetInWall(const float (&m)[5][4], float sizeU, float sizeV) {
+    const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
+    const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
+    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return false;
+    const float c[3] = {m[0][3] + 0.5f * (xx - zx), m[1][3], m[2][3] + 0.5f * (xz - zz)};
+    if (LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) || LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f)) return true;
+    const float u = (m[3][0] * c[0] + m[3][1] * c[1] + m[3][2] * c[2] + m[3][3]) * sizeU;
+    const float v = (m[4][0] * c[0] + m[4][1] * c[1] + m[4][2] * c[2] + m[4][3]) * sizeV;
+    if (!std::isfinite(u) || !std::isfinite(v) || u < -1.0f || v < -1.0f || u > sizeU + 1.0f || v > sizeV + 1.0f) return false;
+    return std::fabs(u - std::round(u)) < 0.12f || std::fabs(v - std::round(v)) < 0.12f;
+}
+
 template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_indoorSmooth.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
-    // A door or window set in its wall spans two rooms: the smooth read (a B-spline over 4 texels, +-2 m) mixed the room
-    // behind the wall into the faces on this side (F7 10-28-12, 07/10: the red sconce's room at ~41% on the dark room's door
-    // frame). The game's rig (one room, the camera's side) lights it, as before Apex.
-    if (const int wk = g_curVsInfo->patched.worldK; wk >= 0) {
-        float wm[3][4], wc[3];
-        if (SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &wm[0][0], 3)) && WallLinePoint(wm, wc)) return false;
-    }
     IDirect3DTexture9* basis[4] = {};
     IDirect3DBaseTexture9* lightMap = nullptr; // held until the scale is read
     int lmS = -1;
@@ -2649,6 +2659,18 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
     const uintptr_t lightMapPtr = reinterpret_cast<uintptr_t>(lightMap);
     lightMap->Release();
     if (!scaled) return false;
+    // A door or window set in its wall spans two rooms: the smooth read (a B-spline over 4 texels, +-2 m) mixed the room
+    // behind the wall into the faces on this side (F7 10-28-12, 07/10: a sconce's room at ~41% on the dark room's door frame).
+    // The game's rig (one room, the camera's side) lights it, as before Apex.
+    if (const int wk = g_curVsInfo->patched.worldK; wk >= 0) {
+        float wm[5][4];
+        if (SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &wm[0][0], 5)) && SetInWall(wm, size[0], size[1])) {
+            if (g_doorsKept.fetch_add(1, std::memory_order_relaxed) == 0 && !g_doorsLogged.exchange(true))
+                LOG_INFO("[LotLightBridge] Indoor smooth light: doors and windows set in a wall keep the game's room light");
+            return false;
+        }
+    } else if (g_doorsNoWorld.fetch_add(1, std::memory_order_relaxed) == 0 && !g_doorsNoWorldLogged.exchange(true))
+        LOG_INFO("[LotLightBridge] Indoor smooth light: an object shader with no world triple (doors in it cannot be told apart)");
     // The rig's lights for the diffuse chain (ShaderPatches::PatchIndoorBasis diffuseConst): its unlit-room lights (fill,
     // [NoLight], as the furniture guard has just turned them with Brightness and Blue tint) and 0 for its lamps, which
     // the basis light holds per pixel (so a lamp never counts twice and its light stays smooth across the object). The
