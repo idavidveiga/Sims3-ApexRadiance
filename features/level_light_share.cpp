@@ -6420,12 +6420,12 @@ std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies:
 // light under balconies, where each lamp x point of an upper story's outdoor room went (FillStatus)
 std::atomic<long> g_fillSeen{0}, g_fillNoFlags{0}, g_fillWallZero{0}, g_fillEntered{0}, g_fillAbove{0}, g_fillSlab{0}, g_fillNoSlab{0}, g_fillNoGrid{0},
     g_fillGridZero{0}, g_fillMissed{0}, g_fillGameHigher{0};
-std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0};
+std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0}, g_fillLowerNoWalls{0};
 std::string FillStatus() {
-    return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, blocked on the lamp's story {}), "
+    return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, blocked on the lamp's story {}), "
                        "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
                        "shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
-                       g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillWallZero.load(),
+                       g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
                        g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
                        g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
 }
@@ -6442,11 +6442,12 @@ void FillShare(const RoomInfo& info, void* light, const float* sample, const Sla
     // it meets the direct light without a seam), how far it then runs under the slab (grazing rays from far along the wall
     // run deep), and a pool centred on the lamp as its own light on the facade (on top of the game's own falloff, kept in
     // the colour)
+    // (07/10, balcony4: the user found balcony2's even share almost right; balcony3's narrow pool and the ramp to full
+    // light at the edge made harsh streaks) The share is smooth everywhere: higher on the wall the ray passes closer under
+    // the slab's edge and keeps more (vertical miss, gentle), and it fades sideways from the point of the wall nearest the
+    // lamp over about 4.5 m. Nothing here changes sharply from one texel to the next.
     const float strength = g_fillStrength.load(std::memory_order_relaxed);
-    const float vert = std::exp(-std::max(slab.miss, 0.0f) / 0.9f);
-    const float under = std::exp(-std::max(slab.depth, 0.0f) / 2.0f);
-    // the pool's width: the offset along the wall from the point nearest the lamp (the sample's normal, world), tighter
-    // than the lamp's direct pool, plus a soft limit on the whole distance
+    const float vert = 0.55f + 0.45f * std::exp(-std::max(slab.miss, 0.0f) / 1.5f);
     const float wx = sample[0] - pos[0], wz = sample[2] - pos[2];
     float nx = sample[4], nz = sample[6];
     const float nl = std::sqrt(nx * nx + nz * nz);
@@ -6456,10 +6457,9 @@ void FillShare(const RoomInfo& info, void* light, const float* sample, const Sla
         const float along = wx * nx + wz * nz;
         lateral = std::sqrt(std::max(0.0f, wx * wx + wz * wz - along * along));
     }
-    const float lw = lateral / 2.5f, rw = slab.reach / 9.0f;
-    const float pool = (lw < 1.0f ? (1.0f - lw * lw) * (1.0f - lw * lw) : 0.0f) * (rw < 1.0f ? 1.0f - rw * rw : 0.0f);
-    const float graze = std::clamp(1.0f - slab.miss / 0.15f, 0.0f, 1.0f);
-    const float share = std::max(strength * vert * under, graze * graze * (3.0f - 2.0f * graze)) * pool;
+    const float lw = std::min(lateral / 4.5f, 1.0f);
+    const float side = (1.0f - lw * lw) * (1.0f - lw * lw);
+    const float share = strength * vert * side;
     const float keep = std::clamp(pass * share * std::min(seen, 1.0f), 0.0f, 1.0f);
     if (keep <= 0.0f) {
         g_fillGridZero.fetch_add(1, std::memory_order_relaxed);
@@ -6485,7 +6485,22 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
     const float before[3] = {colour[0], colour[1], colour[2]};
     if (home >= 0 && home < info.level && lit) {
         g_fillSeen.fetch_add(1, std::memory_order_relaxed);
-        if (!(g_ctx.flags && g_ctx.flags[0])) g_fillNoFlags.fetch_add(1, std::memory_order_relaxed);
+        if (!(g_ctx.flags && g_ctx.flags[0])) {
+            g_fillNoFlags.fetch_add(1, std::memory_order_relaxed);
+            // (07/10, balcony4: bands of a ground post on the tower's story 3, behind the balcony) A batch with no 2D wall
+            // test (the room's lighting detail class) skipped every test of ours, so the lamp lit points of an upper story
+            // through the floors in between. The floors still stop it here; walls stay as the game has them in that batch
+            if (g_enterReady && !g_ctx.basis) {
+                RayEntry e;
+                bool a = false;
+                SlabRay sr;
+                OutdoorEntry(info, home, light, sample, e, &a, &sr, nullptr);
+                if (sr.lower) {
+                    for (int i = 0; i < 4; i++) colour[i] = 0.0f;
+                    g_fillLowerNoWalls.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
     }
     if (home >= 0 && lit && g_ctx.flags && g_ctx.flags[0]) { // the game tests 2D walls in this batch: so do we, on the lamp's floor
         g_wallTests.fetch_add(1, std::memory_order_relaxed);
