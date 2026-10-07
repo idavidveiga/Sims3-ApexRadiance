@@ -5574,6 +5574,81 @@ void* MaskWallLists(int slot, BYTE* room) {
     return &L.head;
 }
 
+// ---- Upper outdoor floors: no ground light map from lamps under them (07/10; user: "not the roof, the floor of another room
+// under the roof"). F7 08:36:25, lot CF2DEA20 story-3 room-0 floor over the left wing: draw #142 = DrawFloorAtlas, its map T7
+// black there, the atlas T11 the red disc of wall sconce #4140 (story 2, 0.56 m UNDER that floor), T7 alpha 0..0.55 over the
+// wing and 1 along room 6 but for 4x4-texel holes of 0 at tile centres: pink, and red squares. The atlas is the terrain bake:
+// every lamp a point light stamped at the terrain, 2 w cos / d^2 with w = 0.2 x range x intensity (terrain-and-light-bake.md
+// "Stamp law"), no walls, cones or floors; the mask below weighs room 0's lamps with the game's law (k2 0.075, cone spill
+// 0.21, the 0.0118 drop: the sconce leaves both sums beyond ~8 m), so it cannot take that stamp away. A floor more than
+// kFloorGateHeight over its lot base now takes, as its alpha at least, the share of the atlas (that law, channels summed)
+// that room 0's baked lamps put there from under the floor's plane: a lamp under a deck lights the ground under it, never
+// the deck's top. Porches on a foundation (story 1, ~1 m) keep the mask as it was; lamps over the floor keep the walls' mask.
+constexpr float kFloorGateHeight = 2.0f; // metres over the lot base (mgr+0xD4)
+constexpr float kFloorGateEps = 0.02f;   // a head this close over the floor's plane counts as under it
+std::atomic<long> g_floorGateAll{0}, g_floorGateShare{0}; // texels under every lamp near them / given the share of those under them
+std::atomic<bool> g_floorGateLogged{false};
+// The lot base (world y) of the room's story. POD only (SEH)
+bool LotBaseY(const BYTE* room, float& base) {
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!mgr) return false;
+        base = *reinterpret_cast<const float*>(mgr + 0xD4);
+        return std::isfinite(base);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// A light the terrain bake stamps (night_terrain_relight_patch.cpp TerrainLightTest / IsOutdoorLotLamp): street lamps (world:
+// vfunc+0x20 always true; lot-owned: refused only when known outdoors and not alive+lit+enabled); lit outdoor lot lamps of the
+// lamp types (alive 0x01, room known 0x04, lit 0x20, enabled 0x40, room 0). The "lot lamps on the grass" switch is not read.
+bool InTerrainBake(const BYTE* L) {
+    const BYTE f = L[0x100];
+    const int type = *reinterpret_cast<const int*>(L + 0xB0);
+    const int room = *reinterpret_cast<const int*>(L + 0x08);
+    const bool lot = (*reinterpret_cast<const uint32_t*>(L + 0xC0) | *reinterpret_cast<const uint32_t*>(L + 0xC4)) != 0;
+    if (type == 11) return !(lot && (f & 0x04) && room == 0 && (f & 0x61) != 0x61);
+    return lot && type >= 3 && type <= 6 && (f & 0x65) == 0x65 && room == 0;
+}
+// The share (0..1) of the ground atlas at the floor point s that the baked lamps of room0's list put there from under the
+// point's plane; -1 when none of them reaches it or the list cannot be read. POD only (SEH)
+float UnderFloorShare(const BYTE* room0, const float* s, float base) {
+    __try {
+        const uintptr_t* lb = *reinterpret_cast<const uintptr_t* const*>(room0 + 0xC8);
+        const uintptr_t* le = *reinterpret_cast<const uintptr_t* const*>(room0 + 0xCC);
+        if (!lb || le < lb || le - lb > 4096) return -1.0f;
+        float all = 0.0f, under = 0.0f;
+        for (const uintptr_t* p = lb; p < le; p++) {
+            const BYTE* L = reinterpret_cast<const BYTE*>(*p);
+            if (!L || !InTerrainBake(L)) continue;
+            const float* head = reinterpret_cast<const float*>(L + 0x120);
+            const float h = head[1] - base; // the stamp is measured at the terrain under the point
+            if (!(h > 0.0f)) continue;      // cos <= 0: the lamp stamps nothing there
+            const float dx = head[0] - s[0], dz = head[2] - s[2];
+            const float d2 = dx * dx + h * h + dz * dz;
+            const float range = *reinterpret_cast<const float*>(L + 0x130), inten = *reinterpret_cast<const float*>(L + 0x10);
+            float stamp = 0.4f * range * inten * h / (d2 * std::sqrt(d2)); // 2 w cos / d^2, cos = h / d
+            if (!(stamp > 0.0f)) continue;
+            if (stamp > 1.0f) stamp = 1.0f; // saturated next to the lamp
+            const float* col = reinterpret_cast<const float*>(L + 0xF0);
+            const float v = stamp * (std::max(col[0], 0.0f) + std::max(col[1], 0.0f) + std::max(col[2], 0.0f));
+            if (!(v > 0.0f)) continue;
+            all += v;
+            if (head[1] <= s[1] + kFloorGateEps) under += v;
+        }
+        return all > 1e-4f ? std::clamp(under / all, 0.0f, 1.0f) : -1.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1.0f;
+    }
+}
+// Once per session, in the log (builds a string: kept out of the __try functions)
+void NoteFloorGate(const float* s, float base, float share) {
+    if (g_floorGateLogged.exchange(true)) return;
+    LOG_INFO(std::format("[LevelLightShare] Upper outdoor floors: lamps under a floor no longer light it through the ground light map (first texel at "
+                         "({:.1f}, {:.2f}, {:.1f}), {:.2f} m over its lot base, {:.0f}% of the map's lamp light there from under it)",
+                         s[0], s[1], s[2], s[1] - base, share * 100.0f));
+}
+
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     // The first sample of a batch (this call runs once per sample, in order; the batch vector is reused, so its address does
     // not tell batches apart): a new serial for the floor wall lists, and for room 0 its story's outside walls for
@@ -5628,6 +5703,16 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         out[3] = 1.0f; // none of the ground light map
         return r;
     }
+    // A floor well over the ground: the atlas share of the lamps under its plane goes (UnderFloorShare); a texel under every lamp
+    // near it takes none of the atlas, without the two solves of the walls' mask
+    float base = 0.0f, under = -1.0f;
+    if (LotBaseY(room, base) && s[1] - base > kFloorGateHeight) under = UnderFloorShare(room0, s, base);
+    if (under > 0.0f && !g_floorGateLogged.load(std::memory_order_relaxed)) NoteFloorGate(s, base, under);
+    if (under >= 0.999f) {
+        out[3] = 1.0f;
+        g_floorGateAll.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
     out[3] = 0.0f;
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);
@@ -5639,6 +5724,10 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     g_copyInBatch = false;
     const float total = Lum3(all);
     if (total > 1e-4f) out[3] = std::clamp(1.0f - Lum3(vis) / total, 0.0f, 1.0f);
+    if (under > out[3]) { // the lamps under the floor: their share at least
+        out[3] = under;
+        g_floorGateShare.fetch_add(1, std::memory_order_relaxed);
+    }
     return r;
 }
 float* __fastcall SolvePointSingle(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {

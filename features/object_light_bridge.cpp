@@ -385,14 +385,55 @@ constexpr int kClassTypes[] = {3, 11, 5, 7, 9, 10, 4, 8, 6};
 LightClass kClasses[std::size(kClassTypes)] = {}; // set by LoadAddresses; {0, 0} = class not found on this build
 constexpr int kStreetClass = 1; // vtable 0xFF42F8 (type 11)
 std::atomic<int> g_classesPatched{0};
+// Cone lamps brighten objects only where their cones reach (07/10; user: light reached the plants "unrealistically"). F7
+// 08:36:18 on the circled flower bed: instanced foliage (VS 285429B8, wrap-lit, per-instance lamp colours c54..c56), instance 0
+// c55 = (0.594, 0, 0) = the red wall sconce #4140 (type 5, cones of ~40 degrees around -Y and +Y, 6.4 m over the garden) boosted
+// below: 0.75 x (1 - d^2 / R^2)^2, R = half the light's rect = sqrt(range / 0.0392 [0x00FF45C4 via 0x011D1180]) = 34.6 m for
+// range 47, i.e. d = 11.5 m, far outside both cones. The game's own record has the cone (0x006C0690 -> FUN_006BC940); the flat
+// footprint replaced it (luma 0.21 x red, cut 0.1: kept up to ~15.6 m, HD objects ~30 m). The footprint is now scaled by the
+// cone's share towards the object, by the game's laws: type 5 FUN_006BC940 (t = (a . u - o) x s, s = [0x011D11A0]; 1 at t >= 1;
+// at t <= 0 only the spill, so no boost and the game's record stays) and type 4 FUN_006BDA10 (sat((a . u - o) x scale)); u = the
+// unit vector from the lamp's head to the object's centre.
+constexpr bool kBoostInsideCones = true;
+constexpr bool kBoostConeSpots = true; // type 4 too: objects beside a spot's beam lose the boost
+std::atomic<long> g_coneOutside{0}, g_coneEdge{0};
+bool g_coneLogged = false;    // render thread (OnPresent)
+uintptr_t kTypeFiveScale = 0; // 0x011D11A0 on fixed Steam addresses (5 in every F8), else 5
+float BoostConeShare(const BYTE* L, int type, const float* pos) { // reads the lamp: called inside BoostRec's __try
+    if (type != 5 && !(kBoostConeSpots && type == 4)) return 1.0f;
+    const float* head = reinterpret_cast<const float*>(L + 0x120);
+    float u[3] = {pos[0] - head[0], pos[1] - head[1], pos[2] - head[2]};
+    const float len = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!(len > 1e-3f)) return 1.0f;
+    u[0] /= len;
+    u[1] /= len;
+    u[2] /= len;
+    if (type == 4) {
+        const float* a = reinterpret_cast<const float*>(L + 0x170);
+        const float t = (a[0] * u[0] + a[1] * u[1] + a[2] * u[2] - *reinterpret_cast<const float*>(L + 0x158)) * *reinterpret_cast<const float*>(L + 0x154);
+        return std::clamp(t, 0.0f, 1.0f);
+    }
+    float k = 5.0f;
+    if (kTypeFiveScale) {
+        const float v = *reinterpret_cast<const float*>(kTypeFiveScale);
+        if (v > 0.0f && v < 100.0f) k = v;
+    }
+    const float* a1 = reinterpret_cast<const float*>(L + 0x1A0);
+    const float* a2 = reinterpret_cast<const float*>(L + 0x190);
+    const float t1 = (a1[0] * u[0] + a1[1] * u[1] + a1[2] * u[2] - *reinterpret_cast<const float*>(L + 0x174)) * k;
+    const float t2 = (a2[0] * u[0] + a2[1] * u[1] + a2[2] * u[2] - *reinterpret_cast<const float*>(L + 0x170)) * k;
+    if (t1 >= 1.0f || t2 >= 1.0f) return 1.0f;
+    if (t1 <= 0.0f && t2 <= 0.0f) return 0.0f;
+    return t1 > 0.0f ? t1 : t2; // FUN_006BC940's lerp parameter (it takes t1 when t1 is above 0)
+}
 
 void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
     __try {
         const BYTE f = L[0x100];
         if (!(f & 0x20)) return; // lamp off
+        const int type = *reinterpret_cast<const int*>(L + 0xB0);
         if (!street) {
             if (!(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0) return; // outdoor lamps only
-            const int type = *reinterpret_cast<const int*>(L + 0xB0);
             if (type < 3 || type > 6) return;
         }
         const float* head = reinterpret_cast<const float*>(L + 0x120);
@@ -403,6 +444,17 @@ void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
         float w = 1.0f - (dx * dx + dz * dz) / (radius * radius);
         if (w <= 0.0f) return;
         w *= w;
+        if (kBoostInsideCones && !street) { // a cone lamp brightens only what its cones reach (BoostConeShare)
+            const float cone = BoostConeShare(L, type, pos);
+            if (!(cone > 0.0f)) {
+                g_coneOutside.fetch_add(1, std::memory_order_relaxed);
+                return; // outside both cones: the game's own record (with its spill) stays
+            }
+            if (cone < 1.0f) {
+                w *= cone;
+                g_coneEdge.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         const float intensity = *reinterpret_cast<const float*>(L + 0x10);
         const float fade = *reinterpret_cast<const float*>(L + 0x20);
         const float s = g_strength * intensity * fade * w;
@@ -565,6 +617,7 @@ void LoadAddresses() {
     const uint32_t cap = static_cast<uint32_t>(kCapGlobal);
     kCapOrig = {0xB9, static_cast<BYTE>(cap), static_cast<BYTE>(cap >> 8), static_cast<BYTE>(cap >> 16), static_cast<BYTE>(cap >> 24)};
     kLumaWeights = Get(Id::LumaWeights);
+    kTypeFiveScale = GameAddr::IsFixed() ? 0x011D11A0 : 0; // the type-5 cone sharpness FUN_006BC940 reads
     kDirtyAllRigs = Get(Id::DirtyAllRigs);
     kRootPtr = Get(Id::RootPtr);
     kRigCtor = Get(Id::RigCtor);
@@ -757,6 +810,11 @@ void SetStrength(float s) {
     }
 }
 
+void LogConeOnce() {
+    g_coneLogged = true;
+    LOG_INFO(std::format("[ObjectLightBridge] Cone lamps: objects outside a lamp's cones keep the game's own colour (no boost; {} so far)", g_coneOutside.load()));
+}
+
 void OnPresent() {
     g_renderThread = GetCurrentThreadId();
     LoadAddresses();
@@ -774,6 +832,7 @@ void OnPresent() {
         RegatherCrossRigs();     // and those near a lamp of another story (the game never marks them for it)
     }
     UpdateRoomRigs();
+    if (kBoostInsideCones && !g_coneLogged && g_coneOutside.load(std::memory_order_relaxed) > 0) LogConeOnce(); // (a string: kept out of this __try function)
 }
 
 void SetAllObjects(bool on) { g_forceAll = on; }
