@@ -2371,6 +2371,27 @@ int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
     }
 }
 
+// The last decision per wall (the recording's wall light shows it next to where the wall is drawn)
+struct WallBaseDecision {
+    int orient = -1;
+    float nominal = 0, house = -1e9f, own = -1e9f, base = 0;
+    const char* from = "";
+};
+std::mutex g_wallDecisionMx;
+std::unordered_map<uintptr_t, WallBaseDecision> g_wallDecisions;
+void NoteWallDecision(const BYTE* wall, const WallBaseDecision& d) {
+    std::lock_guard<std::mutex> lk(g_wallDecisionMx);
+    if (g_wallDecisions.size() > 50000) g_wallDecisions.clear();
+    g_wallDecisions[reinterpret_cast<uintptr_t>(wall)] = d;
+}
+bool LookupWallDecision(uintptr_t wall, WallBaseDecision& out) {
+    std::lock_guard<std::mutex> lk(g_wallDecisionMx);
+    const auto it = g_wallDecisions.find(wall);
+    if (it == g_wallDecisions.end()) return false;
+    out = it->second;
+    return true;
+}
+
 // ---- The wall light in a recording (06/10, user: "improve the recording, then I show you recorded"): while a recording
 // runs, every wall piece the game lights (WallSolveHook, right after its solve) is read back from the atlas it just wrote:
 // for each column the brightest sample's height, and for the piece its brightest column with the nearest lamp of the room,
@@ -2382,7 +2403,8 @@ std::atomic<long> g_wallLightCount{0};
 struct WallPeak {
     float x = 0, y = 0, z = 0, lum = 0, base = 0, lampY = 0, lampD = 0, lampX = 0, lampZ = 0;
     int story = -99, roomId = -1, rows = 0;
-    bool outdoor = false, lamp = false;
+    bool outdoor = false, lamp = false, line = false;
+    float cx = 0, cz = 0, dx = 0, dz = 0; // the wall's run on its line (as ReadStoryWalls)
 };
 bool ReadWallPeak(const BYTE* room, uintptr_t batch, const void* atlas, uintptr_t wallBaseFrom, WallPeak& pk) { // POD only (SEH)
     __try {
@@ -2403,6 +2425,13 @@ bool ReadWallPeak(const BYTE* room, uintptr_t batch, const void* atlas, uintptr_
         pk.roomId = *reinterpret_cast<const int*>(room + 0xC);
         pk.outdoor = room[0x18] != 0;
         pk.base = wallBaseFrom ? *reinterpret_cast<const float*>(wallBaseFrom + 0x114) : 0.0f;
+        if (wallBaseFrom) {
+            pk.cx = *reinterpret_cast<const float*>(wallBaseFrom + 0x110) - *reinterpret_cast<const float*>(wallBaseFrom + 0x150) * 0.05f;
+            pk.cz = *reinterpret_cast<const float*>(wallBaseFrom + 0x118) - *reinterpret_cast<const float*>(wallBaseFrom + 0x158) * 0.05f;
+            pk.dx = *reinterpret_cast<const float*>(wallBaseFrom + 0xF0);
+            pk.dz = *reinterpret_cast<const float*>(wallBaseFrom + 0xF8);
+            pk.line = std::isfinite(pk.cx) && std::isfinite(pk.cz) && pk.dx * pk.dx + pk.dz * pk.dz > 1e-4f;
+        }
         // the nearest lamp of the room's list to the brightest sample (along the ground)
         const uintptr_t* lb = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
         const uintptr_t* le = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
@@ -2426,6 +2455,17 @@ void NoteWallLight(const BYTE* room, void* batch, void* atlas, uintptr_t wall) {
     std::string line = std::format("[wall light] story {} room {}{}: wall base {:.3f}; brightest point at y {:.3f} ({:+.3f} m over the base, light {:.0f}) at ({:.2f}, {:.2f}); "
                                    "nearest lamp at y {:.3f} ({:.2f} m away along the ground): peak {:+.3f} m from the lamp",
                                    pk.story, pk.roomId, pk.outdoor ? " (outdoor)" : "", pk.base, pk.y, pk.y - pk.base, pk.lum, pk.x, pk.z, pk.lampY, pk.lampD, pk.y - pk.lampY);
+    WallBaseDecision dec;
+    const bool haveDec = wall && LookupWallDecision(wall, dec);
+    if (haveDec)
+        line += std::format("; base chosen: orientation {} story x 3 = {:.3f}, across the edge {}, own cell {} -> {:.3f} ({})", dec.orient, dec.nominal,
+                            dec.house > -1e8f ? std::format("{:.3f}", dec.house) : "-", dec.own > -1e8f ? std::format("{:.3f}", dec.own) : "-", dec.base, dec.from);
+    float foot = 0.0f;
+    const float window = haveDec ? pk.base - dec.base + dec.nominal : pk.base; // lot vs world: the nominal base in world space
+    if (pk.line && WallHeights::DrawnFoot(pk.cx, pk.cz, pk.cx + pk.dx, pk.cz + pk.dz, 0.1f, window, foot))
+        line += std::format("; DRAWN from y {:.3f}: lit {:+.3f} m off where it is drawn", foot, pk.base - foot);
+    else
+        line += "; drawn height not measured yet";
     std::lock_guard<std::mutex> lk(g_wallLightMx);
     if (g_wallLightLines.size() < 4096) g_wallLightLines.push_back(std::move(line));
 }
@@ -4077,11 +4117,17 @@ bool ReadWallBase(const BYTE* wall, int x, int z, int len, int orient, WallBaseR
     }
 }
 extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float nominal, int len, int orient) {
-    if (!g_foundationWallsOn.load(std::memory_order_relaxed)) return nominal;
+    if (!g_foundationWallsOn.load(std::memory_order_relaxed)) {
+        NoteWallDecision(wall, {orient, nominal, -1e9f, -1e9f, nominal, "option off"});
+        return nominal;
+    }
     // diagonal walls (orientations 4..7) are drawn at story * 3 even on a foundation (the log of 23:21 against the F7 of
     // 23:23: a diagonal wall at the floor of 3.989 showed its light 2 m above the sconce; a diagonal facade of story 3
     // did the same earlier): their base was already where they are drawn
-    if (orient >= 4) return nominal;
+    if (orient >= 4) {
+        NoteWallDecision(wall, {orient, nominal, -1e9f, -1e9f, nominal, "diagonal, kept"});
+        return nominal;
+    }
     WallBaseRead r;
     if (!ReadWallBase(wall, x, z, len, orient, r) || r.story < 1) return nominal;
     auto usable = [&](float h) { return h >= nominal - 3.2f && h <= nominal + 0.3f; };
@@ -4091,6 +4137,7 @@ extern "C" float __cdecl OutdoorWallBase(const BYTE* wall, int x, int z, float n
     if (r.haveHouse && usable(r.house)) base = r.house, from = r.houseIsRoom ? "house side" : "across the edge";
     else if (r.haveOwn && usable(r.own)) base = r.own, from = "own cell";
     (std::fabs(base - nominal) > 0.02f ? g_wallBaseRaised : g_wallBaseKept).fetch_add(1, std::memory_order_relaxed);
+    NoteWallDecision(wall, {orient, nominal, r.haveHouse ? r.house : -1e9f, r.haveOwn ? r.own : -1e9f, base, from});
     if (g_wallBaseLogged.fetch_add(1, std::memory_order_relaxed) < 1500)
         LOG_INFO(std::format("[WallBase] story {} cell ({}, {}) len {} orient {} nominal {:.3f}: across ({}, {}) {}{}, own {} -> {:.3f} ({}) (lot base {:.3f})", r.story, x, z, len,
                              orient, nominal, r.hx, r.hz, r.haveHouse ? std::format("{:.3f}", r.house) : "-", r.houseIsRoom ? " (indoor)" : "",
@@ -6377,7 +6424,13 @@ void OnPresent() {
     // the wall light of a recording (NoteWallLight): its lines go in on this thread
     {
         const bool rec = Recorder::Active();
-        if (g_recordWalls.exchange(rec) != rec && rec) g_wallLightCount.store(0);
+        if (g_recordWalls.exchange(rec) != rec) {
+            if (rec) {
+                g_wallLightCount.store(0);
+                WallHeights::Install(); // where the walls are drawn, for the recording's wall light
+            } else
+                WallHeights::Uninstall();
+        }
         std::vector<std::string> lines;
         {
             std::lock_guard<std::mutex> lk(g_wallLightMx);
