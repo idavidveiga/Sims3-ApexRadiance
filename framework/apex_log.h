@@ -17,11 +17,19 @@ void Close();
 // Debug lines also go to the file.
 void SetVerbose(bool on);
 
-void Write(Level level, const std::string& text, const std::source_location& where = std::source_location::current());
+// Never throws (07/10, players' Runtime Error): a log line that cannot be built (no memory, ...) is dropped, it must not
+// take the game down from inside a hook
+void Write(Level level, const std::string& text, const std::source_location& where = std::source_location::current()) noexcept;
+// Debug lines are wanted: verbose logging is on, or a debugger listens to OutputDebugString
+bool DebugOn() noexcept;
 
 } // namespace ApexLog
 
-#define LOG_DEBUG(msg) ::ApexLog::Write(::ApexLog::Level::Debug, (msg))
+// The message is not even built when nobody reads debug lines (it runs in hot hooks; its allocation could throw)
+#define LOG_DEBUG(msg)                                                                                                                     \
+    do {                                                                                                                                   \
+        if (::ApexLog::DebugOn()) ::ApexLog::Write(::ApexLog::Level::Debug, (msg));                                                      \
+    } while (0)
 #define LOG_INFO(msg) ::ApexLog::Write(::ApexLog::Level::Info, (msg))
 #define LOG_WARNING(msg) ::ApexLog::Write(::ApexLog::Level::Warning, (msg))
 #define LOG_ERROR(msg) ::ApexLog::Write(::ApexLog::Level::Error, (msg))

@@ -19,6 +19,7 @@
 #include "ui/i18n.h"
 #include "hotkeys.h"
 #include "apex_log.h"
+#include "apex_util.h"
 #include "apex_paths.h"
 #include "level_light_share.h"
 #include "room_map_padding.h"
@@ -552,7 +553,7 @@ void Stop() {
     for (auto& l : logLines) all.emplace_back(l.first, "[log] " + l.second);
     std::stable_sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     const std::filesystem::path folder = Captures::NewFolder("Recording");
-    const std::string name = folder.filename().string();
+    const std::string name = ApexUtil::ToUtf8(folder.filename().wstring());
     std::ostringstream out;
     {
         out << std::format("Apex Radiance recording: {} to {} ({:.1f} s), {} lines\n", Clock(g_startTick), Clock(end), (end - g_startTick) / 1000.0, all.size());

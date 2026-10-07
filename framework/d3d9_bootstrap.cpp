@@ -2,6 +2,7 @@
 #include "apex_log.h"
 #include "d3d9_hooks.h"
 #include "hook_chain.h"
+#include "hook_guard.h"
 #include "memory_patch.h"
 #include "overlay.h"
 #include "render_callbacks.h"
@@ -71,6 +72,7 @@ bool Attach(void** target, void* detour, const char* what) {
 
 void OnPresent(IDirect3DDevice9*) {
     g_overlayDrawnThisFrame.store(false);
+    HookGuard::ReportPending(); // exceptions caught since the last frame reach the log here, outside any catch block
     if (g_presentSeen.exchange(true)) return;
     g_firstPresentTick.store(GetTickCount64());
     LOG_INFO("[D3D] First Present");
@@ -108,19 +110,22 @@ void FrameInit(IDirect3DDevice9* dev) {
 HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice9* dev) {
     if (t_inEndScene || !dev) return o_endScene(dev);
     t_inEndScene = true;
-    if (!g_frameInit.exchange(true)) FrameInit(dev);
+    // 07/10, players' Runtime Error: nothing Apex does here may throw into the game's EndScene. Each step is caught on its
+    // own (HookGuard: noted, then that step stays off), and the game's EndScene always runs, once.
+    if (!g_frameInit.exchange(true)) HookGuard::Try("D3D frame init", [dev] { FrameInit(dev); });
     if (SUCCEEDED(dev->TestCooperativeLevel())) {
+        const auto pictureEndScene = [dev] { Picture::Get().OnEndScene(dev); }; // one switch for both calls below
         RenderCallbacks::Fire(RenderCallbacks::endSceneBeforeOverlay, dev);
-        Picture::Get().BeforeOverlay(dev);
+        HookGuard::Run("Picture before the overlay", [dev] { Picture::Get().BeforeOverlay(dev); });
         if (Overlay::IsVisible() && Captures::ScreenshotPending()) {
             // A report photo needs the grade too, without photographing the Apex menu.
             // Picture consumes frameReady, so the normal call below will not grade twice.
-            Picture::Get().OnEndScene(dev);
+            HookGuard::Run("Picture at EndScene", pictureEndScene);
         }
         RenderCallbacks::Fire(RenderCallbacks::filteredSceneBeforeOverlay, dev);
         // once per frame (the Present hook clears the flag); every EndScene if the device hooks are missing
         if (!D3D9Hooks::IsInstalled() || !g_overlayDrawnThisFrame.exchange(true)) Overlay::Frame(dev);
-        Picture::Get().OnEndScene(dev);
+        HookGuard::Run("Picture at EndScene", pictureEndScene);
     }
     const HRESULT hr = o_endScene(dev);
     t_inEndScene = false;
@@ -128,15 +133,17 @@ HRESULT STDMETHODCALLTYPE Hooked_EndScene(IDirect3DDevice9* dev) {
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
-    Overlay::BeforeReset();
+    // 07/10, players' Runtime Error: each step around the game's Reset is caught on its own and runs again at the next
+    // Reset (a release skipped for good would make every later Reset fail); the game's Reset always runs, once
+    HookGuard::Try("Overlay before Reset", [] { Overlay::BeforeReset(); });
     RenderCallbacks::Fire(RenderCallbacks::preReset, dev);
-    Picture::Get().BeforeReset();
+    HookGuard::Try("Picture before Reset", [] { Picture::Get().BeforeReset(); });
     HRESULT hr = o_reset(dev, pp);
     if (SUCCEEDED(hr)) {
         LOG_INFO(std::format("[D3D] Device reset: {}x{}, {}", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
                              pp && pp->Windowed ? "windowed" : "exclusive fullscreen"));
         RenderCallbacks::Fire(RenderCallbacks::postReset, dev);
-        Overlay::AfterReset();
+        HookGuard::Try("Overlay after Reset", [] { Overlay::AfterReset(); });
     } else {
         LOG_WARNING(std::format("[D3D] Reset failed (0x{:08X})", static_cast<unsigned>(hr)));
     }

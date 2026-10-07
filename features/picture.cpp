@@ -19,6 +19,7 @@
 #include "picture.h"
 #include "apex_config.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "d3d9_hooks.h"
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
@@ -1147,11 +1148,12 @@ bool LoadLut(IDirect3DDevice9* dev, const std::string& file) {
 void ShowLutFolder() {
     const std::wstring folder = LutFolder();
     CreateDirectoryW(folder.c_str(), nullptr);
-    std::thread([folder] {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("Picture: open the LUTs folder", [folder] {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (SUCCEEDED(com)) CoUninitialize();
-    }).detach();
+    });
 }
 
 // Fully saturated colour of a hue (degrees), linear RGB

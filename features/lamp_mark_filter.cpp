@@ -24,6 +24,7 @@
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "level_light_share.h"
 #include "recorder.h"
@@ -216,7 +217,7 @@ uintptr_t TrackerOf(uintptr_t tl) {
 }
 
 // true = mark the room (the game's call), false = keep its solve
-bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
+bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
     uint64_t h = 0;
     int type = 0;
     bool on = false;
@@ -354,6 +355,12 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
     }
     if (edit) LevelLightShare::NoteLampMark(tl, room, user, stayed);
     return true;
+}
+
+// 07/10, players' Runtime Error: MarkDecideImpl allocates (its maps) inside the game's lamp code. A C++ exception is caught, the
+// room is marked as the game would mark it (true), and the filter stays off from then on (HookGuard).
+bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
+    return HookGuard::Run("LampMarkFilter room mark", true, [=] { return MarkDecideImpl(tl, room, entry, light); });
 }
 
 // At the call: ecx = the tree level, [esp+4] = the room, esi = the entry, edi = the light (the game's registers, kept

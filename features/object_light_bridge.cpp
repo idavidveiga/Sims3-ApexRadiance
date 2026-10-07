@@ -26,6 +26,7 @@
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -229,8 +230,8 @@ void CrossStoryLamps(BYTE* rig, void* a, void* b, void* c, void* d) {
 std::mutex g_rigRoomMx;
 std::unordered_map<uintptr_t, const void*> g_rigRoom;
 
-void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, void* d) {
-    reinterpret_cast<RoomGather_t>(kRoomGather)(rig, a, b, c, d);
+// Apex's part after the game's gather (RoomGatherThunk)
+void AfterRoomGather(BYTE* rig, void* a, void* b, void* c, void* d) {
     const int mode = *reinterpret_cast<const int*>(rig + 0x1D4);
     if (mode == 0 && a) {
         std::lock_guard<std::mutex> lk(g_rigRoomMx);
@@ -242,6 +243,13 @@ void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, voi
     CellGatherForRoomRig(rig);
     std::lock_guard<std::mutex> lk(g_roomRigMx);
     if (g_roomRigSet.size() < 8192) g_roomRigSet.insert(rig);
+}
+
+void __fastcall RoomGatherThunk(BYTE* rig, void*, void* a, void* b, void* c, void* d) {
+    reinterpret_cast<RoomGather_t>(kRoomGather)(rig, a, b, c, d);
+    // 07/10, players' Runtime Error: Apex's part allocates (maps, sets); a C++ exception there is caught and that part stays
+    // off (HookGuard), the game's gather has already run, once
+    HookGuard::Run("ObjectLightBridge room gather", [=] { AfterRoomGather(rig, a, b, c, d); });
 }
 
 // True when the rig is still a live room-mode rig and was updated.
@@ -578,18 +586,25 @@ void TintStockColour(void* light, float c[3], bool street) {
     g_tintedLights[key] = rec;
 }
 
+// 07/10, players' Runtime Error: the colour setters run inside the game's lamp code. A C++ exception in the tint (its map)
+// is caught, the game's own colour is kept and the tint stays off (HookGuard); the game's setter always runs, once.
+void TintOrKeep(void* light, float c[3], bool street) {
+    const float game[3] = {c[0], c[1], c[2]};
+    if (!HookGuard::Run("ObjectLightBridge lamp tint", [&] { TintStockColour(light, c, street); })) std::memcpy(c, game, sizeof game);
+}
+
 // Creation (one call site per light class): the class decides street or lot (site 1 = the street-lamp class 0xB; its
 // lot id may not be set yet, the lamp's script colour, which comes later, decides with the lot id)
 template <bool Street> void __fastcall LampColourSet(void* light, void*, const float* rgb) {
     float c[4] = {rgb[0], rgb[1], rgb[2], 0.0f}; // this setter reads only rgb
-    TintStockColour(light, c, Street);
+    TintOrKeep(light, c, Street);
     reinterpret_cast<SetColour_t>(kSetLightColour)(light, c);
 }
 
 void __fastcall LampColourSetScript(void* light, void*, const float* rgba) {
     // FUN_006bc3e0 reads its argument with MOVAPS: the buffer must be 16-byte aligned (the game's caller aligns its frame).
     alignas(16) float c[4] = {rgba[0], rgba[1], rgba[2], rgba[3]}; // w = r (FUN_006b0b50 passes r, g, b, r)
-    TintStockColour(light, c, IsStreetLight(static_cast<const BYTE*>(light)));
+    TintOrKeep(light, c, IsStreetLight(static_cast<const BYTE*>(light)));
     c[3] = c[0];
     reinterpret_cast<SetColour_t>(kScriptSetColour)(light, c);
 }

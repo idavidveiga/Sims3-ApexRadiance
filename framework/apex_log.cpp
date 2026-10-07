@@ -115,7 +115,10 @@ void Close() {
 
 void SetVerbose(bool on) { g_verbose.store(on, std::memory_order_relaxed); }
 
-void Write(Level level, const std::string& text, const std::source_location& where) {
+bool DebugOn() noexcept { return g_verbose.load(std::memory_order_relaxed) || IsDebuggerPresent(); }
+
+namespace {
+void WriteLine(Level level, const std::string& text, const std::source_location& where) {
     SYSTEMTIME t{};
     GetLocalTime(&t);
     char prefix[64];
@@ -139,6 +142,16 @@ void Write(Level level, const std::string& text, const std::source_location& whe
     if (g_file == INVALID_HANDLE_VALUE) return;
     g_queue += line;
     if (level >= Level::Warning || !g_wake || g_queue.size() >= kMaxQueuedBytes) WriteQueueLocked();
+}
+} // namespace
+
+void Write(Level level, const std::string& text, const std::source_location& where) noexcept {
+    // 07/10, players' Runtime Error: logging runs inside game hooks and when memory is low; a line that cannot be built or
+    // queued (bad_alloc, a mutex error) is dropped instead of escaping into the game
+    try {
+        WriteLine(level, text, where);
+    } catch (...) {
+    }
 }
 
 } // namespace ApexLog

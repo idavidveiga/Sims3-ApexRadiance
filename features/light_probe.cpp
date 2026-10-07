@@ -12,6 +12,7 @@
 #include "recorder.h"
 #include "d3d9_hooks.h"
 #include "apex_log.h"
+#include "apex_util.h"
 #include "apex_paths.h"
 #include "imgui.h"
 #include <windows.h>
@@ -177,7 +178,7 @@ std::filesystem::path CapDir() { return g_capDir.empty() ? Captures::Root() : g_
 void StartCaptureFolder() {
     const bool automatic = g_captureWhy.rfind("automatic", 0) == 0;
     g_capDir = Captures::NewFolder(automatic ? "Light capture (automatic)" : "Light capture");
-    g_capName = g_capDir.filename().string();
+    g_capName = ApexUtil::ToUtf8(g_capDir.filename().wstring());
 }
 
 const char* FmtName(D3DFORMAT f) {
@@ -418,7 +419,8 @@ std::string DumpTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* base, cons
         auto q = [&](float v) { return static_cast<uint32_t>(std::clamp(v * scale, 0.f, 1.f) * 255.f + 0.5f); };
         bgra[i] = 0xFF000000u | (q(rgb[i * 3]) << 16) | (q(rgb[i * 3 + 1]) << 8) | q(rgb[i * 3 + 2]);
     }
-    std::filesystem::create_directories(CapDir());
+    std::error_code dirError; // (07/10: the throwing overload could end the game; a failed folder just fails the writes below)
+    std::filesystem::create_directories(CapDir(), dirError);
     const std::string file = std::format("{}_{}x{}_{}.bmp", name, d.Width, d.Height, FmtStr(d.Format));
     WriteBmp(CapDir() / file, d.Width, d.Height, bgra);
     fileOut = file;
@@ -603,7 +605,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, c
                 dev->SetRenderState(D3DRS_COLORWRITEENABLE, cw0);
                 r.query = q;
             }
-            g_draws.push_back(r);
+            g_draws.push_back(std::move(r)); // reserved at capture start: never reallocates, cannot throw
         }
     }
 
@@ -687,7 +689,8 @@ template <typename S> std::string DumpShader(S* shader, const std::string& name)
     if (FAILED(shader->GetFunction(nullptr, &size)) || size == 0) return "GetFunction failed";
     std::vector<BYTE> code(size);
     if (FAILED(shader->GetFunction(code.data(), &size))) return "GetFunction failed";
-    std::filesystem::create_directories(CapDir());
+    std::error_code dirError; // (07/10: the throwing overload could end the game; a failed folder just fails the writes below)
+    std::filesystem::create_directories(CapDir(), dirError);
     {
         std::ofstream bin(CapDir() / (name + ".bin"), std::ios::binary);
         bin.write(reinterpret_cast<const char*>(code.data()), size);
@@ -1000,7 +1003,13 @@ void OnPresent(IDirect3DDevice9* dev) {
         FinishCapture(dev);
         if (!AnyBlank()) UnregisterHooks();
     } else if (g_state == State::Armed) {
-        g_state = State::Capturing; // draws of the next frame are recorded
+        // reserve up front so recording a draw (after its probe draw was issued) can never throw
+        try {
+            g_draws.reserve(kMaxDraws);
+            g_state = State::Capturing; // draws of the next frame are recorded
+        } catch (...) {
+            g_state = State::Idle; // no memory for the capture: skip it
+        }
     }
 
     // Its shortcut (Hotkeys: Ctrl+Shift+V, 4 or F7 by preset), eaten before the game sees it

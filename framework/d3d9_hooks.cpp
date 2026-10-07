@@ -4,11 +4,13 @@
 #include "hook_chain.h"
 #include "memory_patch.h"
 #include "frame_profiler.h"
+#include "hook_guard.h"
 #include <detours/detours.h>
 #include <intrin.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -30,6 +32,9 @@ template <typename Fn> struct Entry {
     Fn fn;
     int priority;
     uint64_t sequence;
+    // Set when the callback threw (07/10, players' Runtime Error): it is skipped from then on. Shared by every copy of the
+    // entry in later lists, so a re-published list keeps it off.
+    std::shared_ptr<std::atomic<bool>> off;
 };
 
 // Per-name timing of a chain's callbacks (Frame Profiler, development build)
@@ -38,6 +43,11 @@ enum class Timing : uint8_t {
     Option, // while Advanced > "Per-hook registry timing" is checked (draw chains)
     Always, // while the profiler is on (Present chain: a few callbacks once per frame)
 };
+
+// Device calls a callback made itself through CallOriginal* on this thread, by method. After a callback threw they tell
+// whether it had already issued the game's call itself; then the device call is not made a second time (07/10).
+enum OrigSlot : int { kOrigNone = -1, kOrigDIP, kOrigDP, kOrigSRT, kOrigSPS, kOrigSVS, kOrigSTex, kOrigCRT, kOrigSVP, kOrigCPS, kOrigCVS, kOrigPSC, kOrigVSC, kOrigSlots };
+thread_local uint32_t t_origCalls[kOrigSlots] = {};
 
 // A chain's list is immutable once published: registering builds a new list and publishes it through an atomic pointer.
 // Every list published is kept until a safe point (Present on the render thread outside any dispatch, or Uninstall), so
@@ -50,12 +60,14 @@ template <typename Fn> struct Chain {
     bool modTimed;            // its outermost dispatch is booked as "D3D hooks (mod)" (every chain but Present)
     Timing timing;
     const char* timingSuffix; // appended to the name for the per-name timing
+    int origSlot;             // its CallOriginal* counter (t_origCalls), kOrigNone when there is none
     std::atomic<const List*> list{nullptr};
     std::atomic<size_t> count{0};             // lock-free "nothing registered" test for the hot paths
     std::vector<std::unique_ptr<List>> lists; // every list published, the last one current (guarded by g_lock)
     std::atomic<bool> offThreadLogged{false};
 
-    Chain(const char* m, bool lf, bool mt, Timing t, const char* suffix) : method(m), lockFree(lf), modTimed(mt), timing(t), timingSuffix(suffix) {
+    Chain(const char* m, bool lf, bool mt, Timing t, const char* suffix, int slot = kOrigNone)
+        : method(m), lockFree(lf), modTimed(mt), timing(t), timingSuffix(suffix), origSlot(slot) {
         lists.push_back(std::make_unique<List>());
         list.store(lists.back().get());
     }
@@ -76,7 +88,8 @@ template <typename Fn> bool Add(Chain<Fn>& chain, const std::string& name, Fn fn
     if (!fn) return false;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     auto next = std::make_unique<typename Chain<Fn>::List>(*chain.list.load(std::memory_order_relaxed));
-    next->push_back({name, chain.timingSuffix ? name + chain.timingSuffix : name, std::move(fn), static_cast<int>(priority), ++g_sequence});
+    next->push_back({name, chain.timingSuffix ? name + chain.timingSuffix : name, std::move(fn), static_cast<int>(priority), ++g_sequence,
+                     std::make_shared<std::atomic<bool>>(false)});
     std::stable_sort(next->begin(), next->end(), [](const Entry<Fn>& a, const Entry<Fn>& b) {
         return a.priority != b.priority ? a.priority < b.priority : a.sequence < b.sequence;
     });
@@ -182,18 +195,40 @@ struct ModTimeGuard {
     ModTimeGuard& operator=(const ModTimeGuard&) = delete;
 };
 
+// From a catch block: names the callback without allocating
+void NoteCallbackThrew(const char* method, const char* name) noexcept {
+    char where[160];
+    std::snprintf(where, sizeof where, "D3D9 %s callback \"%s\"", method, name);
+    HookGuard::Note(where);
+}
+
 // Runs one list. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, const typename Chain<Fn>::List& list, DeviceContext& ctx, HRESULT& result, Args... args) {
     bool timed = false;
     if (!kPublicBuild)
         timed = chain.timing == Timing::Always ? FrameProfiler::PresentHookTimingActive() : (chain.timing == Timing::Option && FrameProfiler::RegistryHookTimingActive());
     for (const auto& e : list) {
-        const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
-        const HookAction r = e.fn(ctx, args...);
-        if (timed) {
-            const uint64_t dt = FrameProfiler::Ticks() - t0;
-            std::lock_guard<std::mutex> tl(g_timingLock);
-            FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+        if (e.off->load(std::memory_order_relaxed)) continue;
+        HookAction r = HookAction::Continue;
+        bool returned = false;
+        const uint32_t orig0 = chain.origSlot >= 0 ? t_origCalls[chain.origSlot] : 0;
+        // 07/10, players' Runtime Error: a callback's C++ exception would unwind into the game's device call and end the
+        // game. It is caught and that callback is skipped from now on. The chain goes on as if it had returned Continue,
+        // unless it had already made the game's call itself (CallOriginal*): then as if it had returned Skip. Either way the
+        // device call is made once.
+        try {
+            const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
+            r = e.fn(ctx, args...);
+            returned = true;
+            if (timed) {
+                const uint64_t dt = FrameProfiler::Ticks() - t0;
+                std::lock_guard<std::mutex> tl(g_timingLock);
+                FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+            }
+        } catch (...) {
+            e.off->store(true, std::memory_order_relaxed);
+            NoteCallbackThrew(chain.method, e.name.c_str());
+            if (!returned) r = chain.origSlot >= 0 && t_origCalls[chain.origSlot] != orig0 ? HookAction::Skip : HookAction::Continue;
         }
         if (r == HookAction::Skip) {
             result = S_OK;
@@ -210,6 +245,11 @@ template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, co
 // Runs the chain. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDevice9* device, HRESULT& result, Args... args) {
     if (chain.count.load(std::memory_order_relaxed) == 0) return true;
+    // a nested dispatch (a callback calling the hooked device) must not move the outer callback's CallOriginal* count
+    struct OrigScope {
+        int s; uint32_t v;
+        ~OrigScope() { if (s >= 0) t_origCalls[s] = v; }
+    } origScope{chain.origSlot, chain.origSlot >= 0 ? t_origCalls[chain.origSlot] : 0u};
     DeviceContext ctx{device};
     ModTimeGuard mod(chain.modTimed, &ctx);
     if (chain.lockFree) {
@@ -229,21 +269,21 @@ template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDev
     return RunList(chain, *list, ctx, result, args...);
 }
 
-Chain<DrawIndexedPrimitiveHook> g_dip("DrawIndexedPrimitive", true, true, Timing::Option, nullptr);
-Chain<DrawPrimitiveHook> g_dp("DrawPrimitive", true, true, Timing::Option, nullptr);
-Chain<SetRenderTargetHook> g_srt("SetRenderTarget", true, true, Timing::Option, " (SetRenderTarget)");
-Chain<SetPixelShaderHook> g_sps("SetPixelShader", true, true, Timing::Option, " (SetPixelShader)");
-Chain<SetVertexShaderHook> g_svs("SetVertexShader", true, true, Timing::Option, " (SetVertexShader)");
-Chain<SetTextureHook> g_stex("SetTexture", true, true, Timing::Option, " (SetTexture)");
+Chain<DrawIndexedPrimitiveHook> g_dip("DrawIndexedPrimitive", true, true, Timing::Option, nullptr, kOrigDIP);
+Chain<DrawPrimitiveHook> g_dp("DrawPrimitive", true, true, Timing::Option, nullptr, kOrigDP);
+Chain<SetRenderTargetHook> g_srt("SetRenderTarget", true, true, Timing::Option, " (SetRenderTarget)", kOrigSRT);
+Chain<SetPixelShaderHook> g_sps("SetPixelShader", true, true, Timing::Option, " (SetPixelShader)", kOrigSPS);
+Chain<SetVertexShaderHook> g_svs("SetVertexShader", true, true, Timing::Option, " (SetVertexShader)", kOrigSVS);
+Chain<SetTextureHook> g_stex("SetTexture", true, true, Timing::Option, " (SetTexture)", kOrigSTex);
 Chain<PresentHook> g_present("Present", false, false, Timing::Always, " (Present)");
 Chain<BeginSceneHook> g_begin("BeginScene", false, true, Timing::None, nullptr);
 Chain<CreateTextureHook> g_ctex("CreateTexture", false, true, Timing::None, nullptr);
-Chain<CreateRenderTargetHook> g_crt("CreateRenderTarget", false, true, Timing::None, nullptr);
-Chain<SetViewportHook> g_svp("SetViewport", true, true, Timing::Option, " (SetViewport)");
-Chain<CreatePixelShaderHook> g_cps("CreatePixelShader", false, true, Timing::None, nullptr);
-Chain<CreateVertexShaderHook> g_cvs("CreateVertexShader", false, true, Timing::None, nullptr);
-Chain<SetPixelShaderConstantFHook> g_psc("SetPixelShaderConstantF", true, true, Timing::Option, " (SetPixelShaderConstantF)");
-Chain<SetVertexShaderConstantFHook> g_vsc("SetVertexShaderConstantF", true, true, Timing::Option, " (SetVertexShaderConstantF)");
+Chain<CreateRenderTargetHook> g_crt("CreateRenderTarget", false, true, Timing::None, nullptr, kOrigCRT);
+Chain<SetViewportHook> g_svp("SetViewport", true, true, Timing::Option, " (SetViewport)", kOrigSVP);
+Chain<CreatePixelShaderHook> g_cps("CreatePixelShader", false, true, Timing::None, nullptr, kOrigCPS);
+Chain<CreateVertexShaderHook> g_cvs("CreateVertexShader", false, true, Timing::None, nullptr, kOrigCVS);
+Chain<SetPixelShaderConstantFHook> g_psc("SetPixelShaderConstantF", true, true, Timing::Option, " (SetPixelShaderConstantF)", kOrigPSC);
+Chain<SetVertexShaderConstantFHook> g_vsc("SetVertexShaderConstantF", true, true, Timing::Option, " (SetVertexShaderConstantF)", kOrigVSC);
 
 // Caller holds g_lock, at a safe point
 void FreeAllRetired() {
@@ -494,25 +534,53 @@ void UnregisterAll(const std::string& name) {
 
 // ---- originals ----
 HRESULT CallOriginalCreateRenderTarget(IDirect3DDevice9* d, UINT w, UINT h, D3DFORMAT f, D3DMULTISAMPLE_TYPE m, DWORD q, BOOL lk, IDirect3DSurface9** s, HANDLE* sh) {
+    ++t_origCalls[kOrigCRT];
     return o_crt ? o_crt(d, w, h, f, m, q, lk, s, sh) : d->CreateRenderTarget(w, h, f, m, q, lk, s, sh);
 }
-HRESULT CallOriginalSetRenderTarget(IDirect3DDevice9* d, DWORD i, IDirect3DSurface9* s) { return o_srt ? o_srt(d, i, s) : d->SetRenderTarget(i, s); }
-HRESULT CallOriginalSetViewport(IDirect3DDevice9* d, const D3DVIEWPORT9* v) { return o_svp ? o_svp(d, v) : d->SetViewport(v); }
+HRESULT CallOriginalSetRenderTarget(IDirect3DDevice9* d, DWORD i, IDirect3DSurface9* s) {
+    ++t_origCalls[kOrigSRT];
+    return o_srt ? o_srt(d, i, s) : d->SetRenderTarget(i, s);
+}
+HRESULT CallOriginalSetViewport(IDirect3DDevice9* d, const D3DVIEWPORT9* v) {
+    ++t_origCalls[kOrigSVP];
+    return o_svp ? o_svp(d, v) : d->SetViewport(v);
+}
 HRESULT CallOriginalDrawIndexedPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, INT bv, UINT mv, UINT nv, UINT si, UINT pc) {
+    ++t_origCalls[kOrigDIP];
     return o_dip ? o_dip(d, t, bv, mv, nv, si, pc) : d->DrawIndexedPrimitive(t, bv, mv, nv, si, pc);
 }
-HRESULT CallOriginalDrawPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT sv, UINT pc) { return o_dp ? o_dp(d, t, sv, pc) : d->DrawPrimitive(t, sv, pc); }
+HRESULT CallOriginalDrawPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT sv, UINT pc) {
+    ++t_origCalls[kOrigDP];
+    return o_dp ? o_dp(d, t, sv, pc) : d->DrawPrimitive(t, sv, pc);
+}
 HRESULT CallOriginalSetVertexShaderConstantF(IDirect3DDevice9* d, UINT r, const float* c, UINT n) {
+    ++t_origCalls[kOrigVSC];
     return o_vsc ? o_vsc(d, r, c, n) : d->SetVertexShaderConstantF(r, c, n);
 }
 HRESULT CallOriginalSetPixelShaderConstantF(IDirect3DDevice9* d, UINT r, const float* c, UINT n) {
+    ++t_origCalls[kOrigPSC];
     return o_psc ? o_psc(d, r, c, n) : d->SetPixelShaderConstantF(r, c, n);
 }
-HRESULT CallOriginalSetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* s) { return o_sps ? o_sps(d, s) : d->SetPixelShader(s); }
-HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DPixelShader9** s) { return o_cps ? o_cps(d, fn, s) : d->CreatePixelShader(fn, s); }
-HRESULT CallOriginalCreateVertexShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DVertexShader9** s) { return o_cvs ? o_cvs(d, fn, s) : d->CreateVertexShader(fn, s); }
-HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* d, IDirect3DVertexShader9* s) { return o_svs ? o_svs(d, s) : d->SetVertexShader(s); }
-HRESULT CallOriginalSetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DBaseTexture9* t) { return o_stex ? o_stex(d, st, t) : d->SetTexture(st, t); }
+HRESULT CallOriginalSetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* s) {
+    ++t_origCalls[kOrigSPS];
+    return o_sps ? o_sps(d, s) : d->SetPixelShader(s);
+}
+HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DPixelShader9** s) {
+    ++t_origCalls[kOrigCPS];
+    return o_cps ? o_cps(d, fn, s) : d->CreatePixelShader(fn, s);
+}
+HRESULT CallOriginalCreateVertexShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DVertexShader9** s) {
+    ++t_origCalls[kOrigCVS];
+    return o_cvs ? o_cvs(d, fn, s) : d->CreateVertexShader(fn, s);
+}
+HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* d, IDirect3DVertexShader9* s) {
+    ++t_origCalls[kOrigSVS];
+    return o_svs ? o_svs(d, s) : d->SetVertexShader(s);
+}
+HRESULT CallOriginalSetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DBaseTexture9* t) {
+    ++t_origCalls[kOrigSTex];
+    return o_stex ? o_stex(d, st, t) : d->SetTexture(st, t);
+}
 
 // ---- development build counters ----
 StateCallCounts ReadStateCallCounts() {

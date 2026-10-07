@@ -6,6 +6,7 @@
 // (research\perf2\plan.md, items 7 and C5). D3DCompile needs no device and is called here from one worker thread only.
 #include "shader_cache.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "apex_paths.h"
 #include <windows.h>
 #include <d3dcompiler.h>
@@ -220,7 +221,8 @@ Job* PickLocked(Registry& r) {
     return best;
 }
 
-DWORD WINAPI WorkerProc(LPVOID) {
+// The precompile loop (WorkerProc); `current` = the job it is compiling, for WorkerProc's clean-up after an exception
+DWORD WorkerBody(Job*& current) {
     Registry& r = R();
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); // the game is loading meanwhile
     const double t0 = NowMs();
@@ -233,12 +235,14 @@ DWORD WINAPI WorkerProc(LPVOID) {
             j = PickLocked(r);
             if (!j) break;
             j->state = Job::Compiling;
+            current = j;
         }
         Compile(*j);
         {
             std::lock_guard<std::mutex> lk(r.m);
             j->state = Job::Done;
             r.compiled++;
+            current = nullptr;
             if (j->ms > r.slowestMs) {
                 r.slowestMs = j->ms;
                 r.slowest = j->d.tag;
@@ -272,6 +276,29 @@ DWORD WINAPI WorkerProc(LPVOID) {
     if (n && !stopped) SaveDisk(r); // what compiled now starts the next session without the compiler
     SetEvent(r.workerLeft);
     return 0;
+}
+
+// 07/10, players' Runtime Error: an exception in the loop (a log line, the disk cache) ends this thread, not the game. The job it
+// was compiling goes back to the queue and the worker counts as gone, so a thread waiting in Ready compiles it itself
+// instead of waiting forever.
+DWORD WINAPI WorkerProc(LPVOID) {
+    CrashReport::ThreadStart();
+    Job* current = nullptr;
+    try {
+        return WorkerBody(current);
+    } catch (...) {
+        HookGuard::Note("ShaderCache precompile thread");
+    }
+    Registry& r = R();
+    try {
+        std::lock_guard<std::mutex> lk(r.m);
+        if (current && current->state == Job::Compiling) current->state = Job::Queued;
+        r.running = false;
+    } catch (...) {
+    }
+    r.cv.notify_all();
+    if (r.workerLeft) SetEvent(r.workerLeft);
+    return 1;
 }
 
 // Lock held

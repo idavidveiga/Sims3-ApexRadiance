@@ -3,6 +3,8 @@
 // Part of Apex Radiance. Credits: @loinyx
 #include "object_id_map.h"
 #include "apex_log.h"
+#include "apex_util.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "game_addresses.h"
@@ -128,9 +130,14 @@ bool Room() {
     return Rehash(slots);
 }
 
-void TurnOff(const std::string& why) {
+// 07/10, players' Runtime Error: this runs inside the game's object lookups, sometimes under g_lock. The index goes off first;
+// the reason's text is built here (why() returns it) and a failure to build or log it stays here.
+template <class Why> void TurnOff(Why&& why) noexcept {
     if (g_off.exchange(true)) return;
-    LOG_ERROR("[ObjectIdMap] " + why + ". Object lookups by ID go back to the game's own search for this session.");
+    try {
+        LOG_ERROR("[ObjectIdMap] " + std::string(why()) + ". Object lookups by ID go back to the game's own search for this session.");
+    } catch (...) {
+    }
 }
 
 // SEH only: every node of the game's map into the (fresh) table; -1 = unreadable / too many / a cycle
@@ -157,7 +164,7 @@ int64_t WalkMap(uint8_t* map, Slot* slots, uint32_t mask) {
 bool Build(uint8_t* map) {
     const uint32_t count = *reinterpret_cast<const uint32_t*>(map + kCountOff);
     if (count > kMaxNodes) {
-        TurnOff(std::format("The object map holds {} objects, more than the index takes", count));
+        TurnOff([&] { return std::format("The object map holds {} objects, more than the index takes", count); });
         return false;
     }
     uint32_t slots = kMinSlots;
@@ -165,21 +172,23 @@ bool Build(uint8_t* map) {
     FreeTable();
     g_slots = static_cast<Slot*>(VirtualAlloc(nullptr, sizeof(Slot) * slots, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     if (!g_slots) {
-        TurnOff("The index could not be allocated");
+        TurnOff([] { return "The index could not be allocated"; });
         return false;
     }
     g_mask = slots - 1;
     const int64_t n = WalkMap(map, g_slots, g_mask);
     if (n < 0 || static_cast<uint32_t>(n) != count) {
         FreeTable();
-        TurnOff(std::format("The object map could not be read as expected ({} nodes linked, count {})", n, count));
+        TurnOff([&] { return std::format("The object map could not be read as expected ({} nodes linked, count {})", n, count); });
         return false;
     }
     g_live = g_used = static_cast<uint32_t>(n);
     g_map = map;
     g_builtCount.store(static_cast<uint32_t>(n), std::memory_order_relaxed);
-    LOG_INFO(std::format("[ObjectIdMap] Indexed the object map {:#010x}: {} objects in {} slots ({} KB)", reinterpret_cast<uintptr_t>(map), n, slots,
-                         sizeof(Slot) * slots / 1024));
+    HookGuard::Try("ObjectIdMap index note", [&] { // under g_lock, inside the game's lookup: the line may not throw (07/10)
+        LOG_INFO(std::format("[ObjectIdMap] Indexed the object map {:#010x}: {} objects in {} slots ({} KB)", reinterpret_cast<uintptr_t>(map), n, slots,
+                             sizeof(Slot) * slots / 1024));
+    });
     return true;
 }
 
@@ -188,9 +197,8 @@ void __fastcall Hook_Find(uint8_t* map, void* edx, uint32_t* out, const uint32_t
     if (!g_on.load(std::memory_order_acquire) || g_off.load(std::memory_order_relaxed)) return next(map, edx, out, key);
     c_finds.fetch_add(1, std::memory_order_relaxed);
     if (!g_map) { // first use: index this map (the only one these functions serve)
-        AcquireSRWLockExclusive(&g_lock);
+        ApexUtil::SrwExclusive srw(g_lock);
         if (!g_map && !g_off.load()) Build(map);
-        ReleaseSRWLockExclusive(&g_lock);
     }
     if (!TryAcquireSRWLockShared(&g_lock)) {
         c_busy.fetch_add(1, std::memory_order_relaxed);
@@ -203,7 +211,7 @@ void __fastcall Hook_Find(uint8_t* map, void* edx, uint32_t* out, const uint32_t
     if (*reinterpret_cast<const uint32_t*>(map + kCountOff) != g_live) {
         const uint32_t theirs = *reinterpret_cast<const uint32_t*>(map + kCountOff), ours = g_live;
         ReleaseSRWLockShared(&g_lock);
-        TurnOff(std::format("The object map holds {} objects and the index {}: a change went past the hooks", theirs, ours));
+        TurnOff([&] { return std::format("The object map holds {} objects and the index {}: a change went past the hooks", theirs, ours); });
         return next(map, edx, out, key);
     }
     const uint32_t lo = key[0], hi = key[1];
@@ -224,7 +232,7 @@ void __fastcall Hook_Find(uint8_t* map, void* edx, uint32_t* out, const uint32_t
         c_checked.fetch_add(1, std::memory_order_relaxed);
         if (want[0] != got[0] || want[1] != got[1]) {
             ReleaseSRWLockShared(&g_lock);
-            TurnOff(std::format("An answer differed from the game's (ID {:08x}{:08x}: the index {:#010x}, the game {:#010x})", hi, lo, got[0], want[0]));
+            TurnOff([&] { return std::format("An answer differed from the game's (ID {:08x}{:08x}: the index {:#010x}, the game {:#010x})", hi, lo, got[0], want[0]); });
             out[0] = want[0];
             out[1] = want[1];
             return;
@@ -238,7 +246,7 @@ void __fastcall Hook_Find(uint8_t* map, void* edx, uint32_t* out, const uint32_t
 
 void __fastcall Hook_Insert(uint8_t* map, void* edx, uint32_t* out, uint8_t* node, uint32_t flag) {
     const auto next = reinterpret_cast<FnInsert>(EntryChain::Next(Site::ObjMapInsert, Layer::ObjectIdMap));
-    AcquireSRWLockExclusive(&g_lock); // the game's insert is a leaf: no game code waits on this lock inside it
+    ApexUtil::SrwExclusive srw(g_lock); // the game's insert is a leaf: no game code waits on this lock inside it
     next(map, edx, out, node, flag);
     if (map == g_map && g_slots && reinterpret_cast<const uint8_t*>(out)[8] == 1) {
         if (Room()) {
@@ -249,12 +257,11 @@ void __fastcall Hook_Insert(uint8_t* map, void* edx, uint32_t* out, uint8_t* nod
             g_off.store(true);
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
 }
 
 void __fastcall Hook_Erase(uint8_t* map, void* edx, uint32_t* out, uint8_t* node, uint32_t* bucket) {
     const auto next = reinterpret_cast<FnErase>(EntryChain::Next(Site::ObjMapErase, Layer::ObjectIdMap));
-    AcquireSRWLockExclusive(&g_lock);
+    ApexUtil::SrwExclusive srw(g_lock);
     const bool ours = map == g_map && g_slots && node;
     const uint32_t lo = ours ? *reinterpret_cast<const uint32_t*>(node + kIdLo) : 0, hi = ours ? *reinterpret_cast<const uint32_t*>(node + kIdHi) : 0;
     next(map, edx, out, node, bucket);
@@ -262,7 +269,6 @@ void __fastcall Hook_Erase(uint8_t* map, void* edx, uint32_t* out, uint8_t* node
         Drop(lo, hi);
         c_erases.fetch_add(1, std::memory_order_relaxed);
     }
-    ReleaseSRWLockExclusive(&g_lock);
 }
 
 } // namespace
@@ -292,9 +298,8 @@ bool Start(std::string* error) {
         }
     }
     {
-        AcquireSRWLockExclusive(&g_lock);
+        ApexUtil::SrwExclusive srw(g_lock);
         FreeTable(); // built again on the first find: changes made while off were not seen
-        ReleaseSRWLockExclusive(&g_lock);
     }
     g_answers.store(0);
     g_off.store(false);
@@ -312,9 +317,10 @@ void Stop() {
     if (!g_started) return;
     g_on.store(false, std::memory_order_release);
     for (Site s : {Site::ObjMapFind, Site::ObjMapInsert, Site::ObjMapErase}) EntryChain::Remove(s, Layer::ObjectIdMap);
-    AcquireSRWLockExclusive(&g_lock);
-    FreeTable();
-    ReleaseSRWLockExclusive(&g_lock);
+    {
+        ApexUtil::SrwExclusive srw(g_lock);
+        FreeTable();
+    }
     g_started = false;
     LOG_INFO(std::format("[ObjectIdMap] Off ({} lookups: {} found, {} not found, {} left to the game while busy, {} checked; {} inserts, {} erases, {} grows)",
                          c_finds.load(), c_hits.load(), c_misses.load(), c_busy.load(), c_checked.load(), c_inserts.load(), c_erases.load(), c_grows.load()));

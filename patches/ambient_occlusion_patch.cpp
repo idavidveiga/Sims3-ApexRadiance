@@ -38,6 +38,7 @@
 #include "patch_base.h"
 #include "apex_version.h"
 #include "apex_log.h"
+#include "apex_util.h"
 #include "d3d9_bootstrap.h"
 #include "d3d9_hooks.h"
 #include "d3d9_extra_hooks.h"
@@ -1094,8 +1095,10 @@ void ReadTimings() {
 int NextCaptureNumber(const std::filesystem::path& dir) {
     int best = 0;
     std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
-        const std::string n = e.path().filename().string();
+    // error_code increments and a UTF-8 name (07/10, players' Runtime Error: the range-for's ++ and path::string() can throw)
+    for (auto it = std::filesystem::directory_iterator(dir, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        const auto& e = *it;
+        const std::string n = ApexUtil::ToUtf8(e.path().filename().wstring());
         int k = 0;
         if (std::sscanf(n.c_str(), "info_%d.txt", &k) == 1) best = std::max(best, k);
     }

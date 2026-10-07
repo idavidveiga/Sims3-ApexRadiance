@@ -3,6 +3,7 @@
 // Part of Apex Radiance. Credits: @loinyx
 #include "captures.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "apex_paths.h"
 #include "apex_util.h"
 #include "apex_version.h"
@@ -86,12 +87,13 @@ std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirect
 // Explorer on a folder, on a short-lived thread with COM (30/09: called from the menu frame, ShellExecuteW pumped the
 // game window's messages, the overlay's window procedure ran again inside the frame and its mutex threw: a crash)
 void ShowInExplorer(const std::filesystem::path& folder) {
-    std::thread([folder] {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("Captures: open a folder in Explorer", [folder] {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         const HINSTANCE r = ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(r) <= 32) LOG_WARNING(std::format("[Captures] Could not open the folder ({})", reinterpret_cast<INT_PTR>(r)));
         if (SUCCEEDED(com)) CoUninitialize();
-    }).detach();
+    });
 }
 
 bool CopyIfThere(const std::filesystem::path& from, const std::filesystem::path& to) {
@@ -152,7 +154,7 @@ void RestorePlayerPhoto() {
 }
 
 void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
-    std::thread([job = std::move(job), bgr = std::move(bgr), w, h] {
+    HookGuard::StartDetached("Captures: screenshot writer", [job = std::move(job), bgr = std::move(bgr), w, h] {
         const auto& file = job.file;
         const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         IWICImagingFactory* factory = nullptr;
@@ -176,7 +178,7 @@ void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
         if (job.report) CompleteShot(job.reportFolder, ok);
         else Notify(I18n::Tr(ok ? "Screenshot saved" : "The screenshot could not be saved"), 4,
                     ok ? NoteKind::Screenshot : NoteKind::Warning);
-    }).detach();
+    });
 }
 
 // Render thread: the finished back buffer (including post-scene and Picture passes) -> queued PNGs.
@@ -323,7 +325,7 @@ void BeginSession() {
     g_sessionCount = 0;
     g_sessionStart = GetTickCount64();
     g_sessionItems.clear();
-    LOG_INFO("[Captures] Session started: Captures\\" + g_session.filename().string());
+    LOG_INFO("[Captures] Session started: Captures\\" + ApexUtil::ToUtf8(g_session.filename().wstring()));
 }
 
 void EndSession() {
@@ -348,9 +350,9 @@ void EndSession() {
                  "words what you saw and what you did just before.\n";
     }
     WriteText(s / L"About this session.txt", about.str());
-    const auto existingNote = ReadDescription(s.filename().string());
+    const auto existingNote = ReadDescription(ApexUtil::ToUtf8(s.filename().wstring()));
     if (!existingNote.Complete()) {
-        WriteText(s / L"User notes.txt", DescriptionText(s.filename().string(), about.str()));
+        WriteText(s / L"User notes.txt", DescriptionText(ApexUtil::ToUtf8(s.filename().wstring()), about.str()));
     }
     {
         std::lock_guard<std::mutex> lk(g_lock);
@@ -360,11 +362,11 @@ void EndSession() {
         g_retryKind = CaptureKind::Generic;
         g_copyFailed = !logOk || !configOk || !crashOk;
         g_shotFailed = false;
-        g_result = {g_result.serial + 1, s.filename().string(), false, false};
+        g_result = {g_result.serial + 1, ApexUtil::ToUtf8(s.filename().wstring()), false, false};
         UpdateResultLocked();
         if (!g_result.failed) g_session.clear();
     }
-    const std::string name = s.filename().string();
+    const std::string name = ApexUtil::ToUtf8(s.filename().wstring());
     LOG_INFO(std::format("[Captures] Session ended: Captures\\{} ({} captures)", name, items.size()));
     const bool failed = LastSave().failed;
     Notify(failed ? I18n::Tr("Some files could not be saved. Open Report a problem to retry") : I18n::Trf("Session saved in Captures \xE2\x80\xBA {}", name), 6,
@@ -381,7 +383,7 @@ int SessionCaptures() {
 }
 std::string SessionFolder() {
     std::lock_guard<std::mutex> lk(g_lock);
-    return g_session.empty() ? std::string() : g_session.filename().string();
+    return g_session.empty() ? std::string() : ApexUtil::ToUtf8(g_session.filename().wstring());
 }
 std::vector<std::string> SessionItems() {
     std::lock_guard<std::mutex> lk(g_lock);
@@ -435,7 +437,7 @@ bool SaveDescription(const std::string& title, const std::string& text) {
 Description ReadDescription(const std::string& folder) {
     Description note;
     if (!ChildName(folder)) return note;
-    const auto path = Root() / std::filesystem::path(folder);
+    const auto path = Root() / std::filesystem::path(ApexUtil::ToWide(folder));
     if (!PlainDirectory(path)) return note;
     const auto file = path / L"User notes.txt";
     const DWORD attrs = GetFileAttributesW(file.c_str());
@@ -455,7 +457,7 @@ Description ReadDescription(const std::string& folder) {
 }
 bool SaveFolderDescription(const std::string& folder, const std::string& title, const std::string& text) {
     if (!ChildName(folder) || text.find_first_not_of(" \t\r\n") == std::string::npos || Saving()) return false;
-    const auto path = Root() / std::filesystem::path(folder);
+    const auto path = Root() / std::filesystem::path(ApexUtil::ToWide(folder));
     if (!PlainDirectory(path)) return false;
     const auto file = path / L"User notes.txt";
     for (const auto& candidate : {file, std::filesystem::path(file.wstring() + L".tmp")}) {
@@ -481,10 +483,10 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
         description = retry ? g_retryDescription : g_description;
         title = retry ? g_retryTitle : std::string();
         // Optional player notes: fallback describes recorded evidence, never an inferred problem.
-        if (title.empty()) title = folder.filename().string();
+        if (title.empty()) title = ApexUtil::ToUtf8(folder.filename().wstring());
         if (description.find_first_not_of(" \t\r\n") == std::string::npos) {
             description = std::format("Diagnostic capture: {}.\nGame: {}.\nApex Radiance: {}.\nFolder: {}.\nAvailable logs, settings and capture details are stored alongside this note.",
-                what, GetGameVersionName(), APEX_VERSION_STRING, folder.filename().string());
+                what, GetGameVersionName(), APEX_VERSION_STRING, ApexUtil::ToUtf8(folder.filename().wstring()));
         }
         g_retryFolder = folder;
         g_retryWhat = what;
@@ -493,8 +495,8 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
         g_retryTitle = title;
         g_shotFailed = false;
         g_notifyCompletion = false;
-        g_result = {g_result.serial + 1, folder.filename().string(), false, false};
-        if (folder.parent_path().parent_path() == Root()) g_result.folder = folder.parent_path().filename().string();
+        g_result = {g_result.serial + 1, ApexUtil::ToUtf8(folder.filename().wstring()), false, false};
+        if (folder.parent_path().parent_path() == Root()) g_result.folder = ApexUtil::ToUtf8(folder.parent_path().filename().wstring());
     }
     const bool logOk = CopyIfThere(Dir() / L"ApexRadiance_LOG.txt", folder / L"ApexRadiance_LOG.txt");
     const bool configOk = CopyIfThere(Dir() / L"ApexRadiance.toml", folder / L"ApexRadiance.toml");
@@ -517,7 +519,7 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
         g_copyFailed = !logOk || !configOk || !crashOk;
         if (!g_session.empty() && folder.parent_path() == g_session) {
             inSession = true;
-            const std::string item = folder.filename().string() + ": " + what;
+            const std::string item = ApexUtil::ToUtf8(folder.filename().wstring()) + ": " + what;
             if (std::find(g_sessionItems.begin(), g_sessionItems.end(), item) == g_sessionItems.end()) {
                 g_sessionCount++;
                 g_sessionItems.push_back(item);
@@ -525,7 +527,7 @@ void Finish(const std::filesystem::path& folder, const std::string& what, Captur
         }
         UpdateResultLocked();
     }
-    LOG_INFO(std::format("[Captures] {}: {} ({})", LastSave().failed ? "Save incomplete" : "Capture written", folder.string(), what));
+    LOG_INFO(std::format("[Captures] {}: {} ({})", LastSave().failed ? "Save incomplete" : "Capture written", ApexUtil::ToUtf8(folder.wstring()), what));
     const SaveResult result = LastSave();
     const bool saving = Saving();
     const char* message = "Capture saved. Open Report a problem to find your files";
@@ -681,7 +683,7 @@ Summary Scan() {
         const auto wt = e.last_write_time(ec);
         if (s.newest.empty() || wt > newest) {
             newest = wt;
-            s.newest = e.path().filename().string();
+            s.newest = ApexUtil::ToUtf8(e.path().filename().wstring());
         }
         s.bytes += FolderSize(e.path());
     }
@@ -699,8 +701,14 @@ int DeleteAll() {
     std::error_code ec;
     int n = 0;
     const std::string open = SessionFolder();
-    for (const auto& e : fs::directory_iterator(Root(), ec))
-        if (PlainDirectory(e.path()) && e.path().filename() != L".Removed" && e.path().filename().string() != open && fs::remove_all(e.path(), ec) != static_cast<std::uintmax_t>(-1)) n++;
+    // error_code overloads only (07/10, players' Runtime Error): the range-for's ++ throws on a folder that cannot be read
+    for (auto it = fs::directory_iterator(Root(), fs::directory_options::skip_permission_denied, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const auto& e = *it;
+        std::error_code removeError;
+        if (PlainDirectory(e.path()) && e.path().filename() != L".Removed" && ApexUtil::ToUtf8(e.path().filename().wstring()) != open &&
+            fs::remove_all(e.path(), removeError) != static_cast<std::uintmax_t>(-1))
+            n++;
+    }
     LOG_INFO(std::format("[Captures] {} capture folders deleted from the menu", n));
     return n;
 }
@@ -714,7 +722,7 @@ std::vector<Entry> List() {
         const auto& e = *it;
         if (!PlainDirectory(e.path()) || e.path().filename() == L".Removed") continue;
         Entry x;
-        x.folder = e.path().filename().string();
+        x.folder = ApexUtil::ToUtf8(e.path().filename().wstring());
         // "YYYY-MM-DD HH-MM-SS kind": names made by NewFolder; other folders are listed by name only
         if (x.folder.size() > 20 && x.folder[4] == '-' && x.folder[10] == ' ' && x.folder[13] == '-') {
             x.date = x.folder.substr(0, 10);
@@ -740,7 +748,7 @@ std::vector<Entry> List() {
 
 void Open(const std::string& folder) {
     if (!ChildName(folder)) return;
-    const std::filesystem::path p = Root() / std::filesystem::path(folder);
+    const std::filesystem::path p = Root() / std::filesystem::path(ApexUtil::ToWide(folder));
     if (PlainDirectory(p)) ShowInExplorer(p);
 }
 
@@ -749,7 +757,7 @@ bool Delete(const std::string& folder) {
     if (!ChildName(folder) || Saving()) return false; // only a direct child of Captures\.
     if (folder == SessionFolder()) return false; // the open session: end it first
     std::error_code ec;
-    const fs::path p = Root() / fs::path(folder);
+    const fs::path p = Root() / fs::path(ApexUtil::ToWide(folder));
     if (!PlainDirectory(p)) return false;
     const bool ok = fs::remove_all(p, ec) != static_cast<std::uintmax_t>(-1) && !ec;
     LOG_INFO(std::format("[Captures] Deleted from the menu: Captures\\{}{}", folder, ok ? "" : " (failed: " + ec.message() + ")"));
@@ -760,12 +768,12 @@ namespace {
 bool MoveToRemoved(const std::string& folder) {
     namespace fs = std::filesystem;
     if (!ChildName(folder) || folder == SessionFolder() || Saving()) return false;
-    const fs::path from = Root() / fs::path(folder), area = Root() / L".Removed";
+    const fs::path from = Root() / fs::path(ApexUtil::ToWide(folder)), area = Root() / L".Removed";
     if (!PlainDirectory(from)) return false;
     std::error_code ec;
     fs::create_directories(area, ec);
     if (ec || !PlainDirectory(area)) return false;
-    fs::path to = area / fs::path(folder);
+    fs::path to = area / fs::path(ApexUtil::ToWide(folder));
     for (int n = 2; fs::exists(to, ec) && n < 1000; ++n) to = area / fs::path(std::format("{} ({})", folder, n));
     if (ec || fs::exists(to, ec)) return false;
     fs::rename(from, to, ec); // same root, no recursive move and no overwrite
@@ -816,13 +824,13 @@ int UndoRemoval() {
 std::vector<std::string> Files(const std::string& folder) {
     std::vector<std::string> files;
     if (!ChildName(folder)) return files;
-    const auto path = Root() / std::filesystem::path(folder);
+    const auto path = Root() / std::filesystem::path(ApexUtil::ToWide(folder));
     if (!PlainDirectory(path)) return files;
     std::error_code ec;
     auto it = std::filesystem::recursive_directory_iterator(path, std::filesystem::directory_options::skip_permission_denied, ec);
     for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
         if (it->is_directory(ec) && !PlainDirectory(it->path())) it.disable_recursion_pending();
-        if (it->is_regular_file(ec)) files.push_back(it->path().lexically_relative(path).string());
+        if (it->is_regular_file(ec)) files.push_back(ApexUtil::ToUtf8(it->path().lexically_relative(path).wstring()));
     }
     std::sort(files.begin(), files.end());
     return files;

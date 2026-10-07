@@ -82,6 +82,7 @@
 
 #include "scene_budget.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "call_chain.h"
 #include "entry_chain.h"
@@ -289,11 +290,16 @@ void DropHolder(void* holder) {
     DropHolderLocked(holder);
 }
 
-// Stops budgeting for the rest of the session after a failed safety check (logged once)
-void StopForCheck(const std::string& why) {
+// Stops budgeting for the rest of the session after a failed safety check (logged once). why() builds the reason, only for
+// the first failure; these run inside the game's scene code, so a failure to build or log it stays here (07/10, players'
+// Runtime Error).
+template <class Why> void StopForCheck(Why&& why) noexcept {
     if (g_stopped.exchange(true)) return;
-    LOG_ERROR("[SceneBudget] Safety check failed: " + why + ". Spreading new objects over frames is stopped until the game restarts; the game's "
+    try {
+        LOG_ERROR("[SceneBudget] Safety check failed: " + std::string(why()) + ". Spreading new objects over frames is stopped until the game restarts; the game's "
               "own drain runs from now on.");
+    } catch (...) {
+    }
 }
 
 // ---- the three lifetime hooks ----
@@ -326,17 +332,21 @@ void __fastcall Hook_NodeDtor(void* node, void* edx) {
             if (drainThread && GetCurrentThreadId() != drainThread) {
                 c_otherThread.Add();
                 if (!g_loggedThread.exchange(true))
-                    LOG_WARNING(std::format("[SceneBudget] A node this feature left queued was destroyed on thread {} (the drain runs on thread {}); "
+                    HookGuard::Try("SceneBudget note", [&] {
+                        LOG_WARNING(std::format("[SceneBudget] A node this feature left queued was destroyed on thread {} (the drain runs on thread {}); "
                                             "counted, not an error by itself", GetCurrentThreadId(), drainThread));
+                    });
             }
         }
         if (unlinked) {
             c_dtorUnlinked.Add();
             if (!g_loggedDtor.exchange(true))
-                LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was destroyed while still queued; unlinked before its destructor (the game's "
+                HookGuard::Try("SceneBudget note", [&] {
+                    LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was destroyed while still queued; unlinked before its destructor (the game's "
                                         "code was read not to do this: please report)", reinterpret_cast<uintptr_t>(node)));
+                });
         }
-        if (bad) StopForCheck(std::format("node {:#010x} is being destroyed while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)));
+        if (bad) StopForCheck([&] { return std::format("node {:#010x} is being destroyed while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)); });
     }
     next(node, edx);
 }
@@ -367,10 +377,12 @@ void __fastcall Hook_AddNode(void* holder, void* edx, void* node, int group) {
         if (unlinked) {
             c_addUnlinked.Add();
             if (!g_loggedAdd.exchange(true))
-                LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was added to a scene while still queued without an owner; unlinked first (the "
+                HookGuard::Try("SceneBudget note", [&] {
+                    LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was added to a scene while still queued without an owner; unlinked first (the "
                                         "game's code was read not to do this: please report)", reinterpret_cast<uintptr_t>(node)));
+                });
         }
-        if (bad) StopForCheck(std::format("node {:#010x} is added to a scene while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)));
+        if (bad) StopForCheck([&] { return std::format("node {:#010x} is added to a scene while queued, and its list neighbours do not point back at it", reinterpret_cast<uintptr_t>(node)); });
     }
     next(holder, edx, node, group);
 }
@@ -427,12 +439,43 @@ bool CheckRecords(void* holder) {
         g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
     }
     if (repairedNode && !g_loggedRepair.exchange(true))
-        LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued before a drain; unlinked (please report)", repairedNode));
+        HookGuard::Try("SceneBudget note", [&] {
+            LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued before a drain; unlinked (please report)", repairedNode));
+        });
     if (!failure.empty()) {
-        StopForCheck(failure);
+        StopForCheck([&] { return failure; });
         return false;
     }
     return true;
+}
+
+// One node of the drain: the tail of the local list out of it and updated, as the game's loop does
+void UpdateTail(Link* local, uint32_t* counter, float* bounds) {
+    Link* const l = local->prev;
+    Link* const p = l->prev;
+    uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
+    p->next = local;
+    local->prev = p;
+    l->prev = nullptr;
+    l->next = nullptr;
+    const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(node);
+    reinterpret_cast<FnUpdate>(*reinterpret_cast<const uintptr_t*>(vtable + kUpdateSlot))(node, nullptr);
+    void* const b = g_bounds(node, nullptr, bounds);
+    g_spatial(node, nullptr, b);
+    *counter += 1;
+}
+
+// Room for `count` more records, in the local list and in the registry; false (noted) when there is no memory for them
+bool ReserveRecords(std::vector<Link*>& rest, uint32_t count) {
+    try {
+        rest.reserve(count);
+        RegGuard lock;
+        g_deferred.reserve(g_deferred.size() + count);
+        return true;
+    } catch (...) {
+        HookGuard::Note("SceneBudget records of the nodes left (drained in full instead)");
+        return false;
+    }
 }
 
 // The budgeted copy of 0x006E4130 (see the header comment). Returns the nodes processed; *left = nodes still queued.
@@ -461,7 +504,6 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
     while (local.prev != &local) {
         if (done >= kMinNodes && (done >= cap || Qpc() >= deadline)) break;
         Link* const l = local.prev;
-        Link* const p = l->prev;
         uint8_t* const node = reinterpret_cast<uint8_t*>(l) - kLinkOff;
         if (!kPublicBuild) {
             uintptr_t vt = 0;
@@ -473,31 +515,36 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
                     UnlinkDead(l);
                     c_repaired.Add();
                     if (!g_loggedRepair.exchange(true))
-                        LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued in a drain; unlinked and skipped (please report)",
+                        HookGuard::Try("SceneBudget note", [&] {
+                            LOG_WARNING(std::format("[SceneBudget] Node {:#010x} was found destroyed but still queued in a drain; unlinked and skipped (please report)",
                                                 reinterpret_cast<uintptr_t>(node)));
+                        });
                     continue;
                 }
-                StopForCheck(std::format("before the update of node {:#010x} (vtable {:#010x}): {}", reinterpret_cast<uintptr_t>(node), vt,
-                                         linked ? "it is not a live scene node" : "its list neighbours do not point back at it"));
+                StopForCheck([&] { return std::format("before the update of node {:#010x} (vtable {:#010x}): {}", reinterpret_cast<uintptr_t>(node), vt,
+                                         linked ? "it is not a live scene node" : "its list neighbours do not point back at it"); });
                 break; // it stays in the list, untouched; the game's drain runs from the next frame on
             }
         }
-        p->next = &local;
-        local.prev = p;
-        l->prev = nullptr;
-        l->next = nullptr;
-        const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(node);
-        reinterpret_cast<FnUpdate>(*reinterpret_cast<const uintptr_t*>(vtable + kUpdateSlot))(node, nullptr);
-        void* const b = g_bounds(node, nullptr, bounds);
-        g_spatial(node, nullptr, b);
-        *counter += 1;
+        UpdateTail(&local, counter, bounds);
         done++;
     }
+    // 07/10, players' Runtime Error: the records of the nodes left need memory, taken before anything goes back to the
+    // holder. Without it this drain ends as the game's own does: every node processed, nothing left to record (after a
+    // failed safety check the nodes are not touched: they go back unrecorded, and the game's drain runs from now on).
+    std::vector<Link*> rest;
+    uint32_t leftCount = 0;
+    for (Link* x = local.next; x != &local && leftCount < kCountCap; x = x->next) leftCount++;
+    const bool record = !leftCount || ReserveRecords(rest, leftCount);
+    if (!record && !g_stopped.load(std::memory_order_acquire))
+        while (local.prev != &local) {
+            UpdateTail(&local, counter, bounds);
+            done++;
+        }
     // The rest goes back to the TAIL of the holder's list, in its order. The game queues at the tail (0x006E42E0) and the
     // drain takes from the tail (local.prev first), so the leftover, being newer in the list than anything queued
     // meanwhile, is processed first next frame; at the front it would be processed last and only cleared by the forced
     // full drain.
-    std::vector<Link*> rest;
     uint32_t n = 0, foreign = 0;
     bool capped = false;
     if (local.next != &local) {
@@ -508,9 +555,8 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         f->prev = tail;
         t->next = head;
         head->prev = t;
-        rest.reserve(256);
         for (Link* x = f;; x = x->next) { // recorded for the lifetime hooks, counted for the statistics
-            rest.push_back(x);
+            if (record) rest.push_back(x); // within the capacity ReserveRecords took: no allocation
             if (*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(x) - kLinkOff + kOwnerOff) != holder) foreign++;
             n++;
             if (x == t) break;
@@ -529,7 +575,7 @@ uint32_t BudgetedDrain(uint8_t* holder, uint32_t cap, int64_t deadline, uint32_t
         g_deferredCount.store(static_cast<uint32_t>(g_deferred.size()), std::memory_order_release);
     }
     if (foreign) c_foreignOwner.Add(foreign);
-    if (capped) StopForCheck(std::format("more than {} nodes left queued (a list that does not end?)", kCountCap));
+    if (capped) StopForCheck([&] { return std::format("more than {} nodes left queued (a list that does not end?)", kCountCap); });
     *left = n;
     return done;
 }
@@ -557,7 +603,7 @@ void __fastcall Hook_SceneDrain(void* holder, void* edx) {
     const bool waitedTooLong = waited >= maxDefer * kHardFactor;
     const uint32_t grow = waited >= maxDefer ? 1u << std::min<uint64_t>(6, 1 + (waited - maxDefer) / kGrowStepMs) : 1u;
     const bool stopped = g_stopped.load(std::memory_order_acquire);
-    if (!moving || waitedTooLong || !steady || stopped || !CheckRecords(holder)) {
+    if (!moving || waitedTooLong || !steady || stopped || !HookGuard::Run("SceneBudget record check", false, [holder] { return CheckRecords(holder); })) {
         (waitedTooLong && moving ? c_fullForced : c_fullStill).Add();
         next(holder, edx); // the game's drain: everything, the nodes we left included
         DropHolder(holder); // all processed: their links are 0 now (kept during the drain: see the header comment)

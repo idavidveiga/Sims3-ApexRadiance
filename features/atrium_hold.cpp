@@ -2,6 +2,7 @@
 #include "atrium_hold.h"
 #include "apex_log.h"
 #include "apex_util.h"
+#include "hook_guard.h"
 #include "lamp_mark_filter.h"
 #include "level_light_share.h"
 #include "room_light_queue.h"
@@ -134,9 +135,11 @@ bool WriteLatest(IDirect3DTexture9* tex, const Map& m) {
     return ok;
 }
 
-HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out, const RECT* rect, DWORD flags) {
-    if (t_own || level != 0 || (!g_active.load(std::memory_order_relaxed) && !g_count.load(std::memory_order_relaxed) && !SwitchPendingNow()))
-        return g_origLock(t, level, out, rect, flags);
+// 07/10, players' Runtime Error: g_mx is never held across the game's own LockRect (another layer's hook may call back into
+// this one on the same thread, and a std::mutex locked twice by one thread ends the game), and a new map's record is
+// created inside the try, before anything it owns (its reference, its bytes) is counted. `called` = the game's lock of this
+// call was made: LockHook never makes it twice.
+HRESULT LockHookBody(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out, const RECT* rect, DWORD flags, bool& called) {
     UINT w = 0, h = 0;
     const bool refining = RoomLightQueue::SolveRefiningUp();
     const void* solving = RoomLightQueue::SolvingRoom();
@@ -152,11 +155,13 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
             g_bytes + static_cast<size_t>(w) * h * 8 > kMaxBytes ||
             !(switchRoom || (g_active.load(std::memory_order_relaxed) && LevelLightShare::InAtrium(solving)))) {
             lk.unlock();
+            called = true;
             return g_origLock(t, level, out, rect, flags);
         }
+        lk.unlock();
         D3DLOCKED_RECT lr{};
         if (FAILED(g_origLock(t, 0, &lr, nullptr, D3DLOCK_READONLY))) {
-            lk.unlock();
+            called = true;
             return g_origLock(t, level, out, rect, flags);
         }
         Map m;
@@ -168,19 +173,40 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
             m.shown = m.latest;
         } catch (...) { // no memory for its copies: the game keeps the map as it writes it (a throw here would end the game)
             g_origUnlock(t, 0);
-            lk.unlock();
+            called = true;
             return g_origLock(t, level, out, rect, flags);
         }
         g_origUnlock(t, 0);
         m.last = GetTickCount();
-        t->AddRef();
-        g_bytes += static_cast<size_t>(w) * h * 8;
-        it = g_maps.emplace(t, std::move(m)).first;
-        g_count.store(g_maps.size(), std::memory_order_relaxed);
-        g_peak.store(std::max<long>(g_peak.load(), static_cast<long>(g_maps.size())), std::memory_order_relaxed);
+        lk.lock();
+        it = g_maps.find(t);
+        if (it == g_maps.end()) { // (another thread may have taken it meanwhile: then that record is used)
+            bool added = false;
+            if (g_maps.size() < kMaxMaps && g_bytes + static_cast<size_t>(w) * h * 8 <= kMaxBytes) {
+                try {
+                    it = g_maps.emplace(t, std::move(m)).first;
+                    added = true;
+                } catch (...) {
+                }
+            }
+            if (!added) {
+                lk.unlock();
+                called = true;
+                return g_origLock(t, level, out, rect, flags);
+            }
+            t->AddRef();
+            g_bytes += static_cast<size_t>(w) * h * 8;
+            g_count.store(g_maps.size(), std::memory_order_relaxed);
+            g_peak.store(std::max<long>(g_peak.load(), static_cast<long>(g_maps.size())), std::memory_order_relaxed);
+        }
     }
+    lk.unlock();
+    called = true;
     const HRESULT hr = g_origLock(t, level, out, rect, flags);
     if (FAILED(hr) || !out || !out->pBits) return hr;
+    lk.lock();
+    it = g_maps.find(t);
+    if (it == g_maps.end()) return hr; // released meanwhile: the game has its lock as without Apex
     Map& m = it->second;
     g_gameLocks.fetch_add(1, std::memory_order_relaxed);
     if (m.held || m.release) m.resume = true; // the screen shows "shown": the game gets its exact content
@@ -193,6 +219,23 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
     m.bits = static_cast<BYTE*>(out->pBits);
     m.pitch = out->Pitch;
     return hr;
+}
+
+std::atomic<bool> g_lockFailed{false}; // LockHookBody threw: the game's maps pass straight through from then on
+
+HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out, const RECT* rect, DWORD flags) {
+    if (t_own || level != 0 || g_lockFailed.load(std::memory_order_relaxed) ||
+        (!g_active.load(std::memory_order_relaxed) && !g_count.load(std::memory_order_relaxed) && !SwitchPendingNow()))
+        return g_origLock(t, level, out, rect, flags);
+    bool called = false;
+    try {
+        return LockHookBody(t, level, out, rect, flags, called);
+    } catch (...) {
+        g_lockFailed.store(true, std::memory_order_relaxed);
+        HookGuard::Note("AtriumHold map lock");
+    }
+    // once the game's lock is made, only its success is followed by code that can throw
+    return called ? D3D_OK : g_origLock(t, level, out, rect, flags);
 }
 
 HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {

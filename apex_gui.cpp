@@ -8,6 +8,7 @@
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "apex_util.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
@@ -280,12 +281,13 @@ bool AnythingRecommended() { return S3SSMissing() || DxvkMissing(); }
 // Opens a page in the default browser, on a short-lived thread (ShellExecute can take a moment and wants COM on its
 // thread; the render thread must not wait for it).
 void OpenPage(const wchar_t* url) {
-    std::thread([url] {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("Menu: open a page in the browser", [url] {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         const HINSTANCE r = ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(r) <= 32) LOG_WARNING(std::format("[Menu] Could not open {} ({})", ApexUtil::ToUtf8(url), reinterpret_cast<INT_PTR>(r)));
         if (SUCCEEDED(com)) CoUninitialize();
-    }).detach();
+    });
 }
 
 void DownloadS3SSButton() {
@@ -1963,13 +1965,13 @@ void ProfilePartChecks(const char* id, unsigned* parts, unsigned available) {
 // Opens the Profiles folder in Explorer (to copy profiles to another PC or share them), on a short-lived thread
 void OpenProfilesFolder() {
     ApexConfig::EnsureProfilesDirectory();
-    std::thread([] {
+    HookGuard::StartDetached("Menu: open the Profiles folder", [] {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         const std::wstring dir = ApexConfig::ProfilesFolder();
         const HINSTANCE r = ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(r) <= 32) LOG_WARNING(std::format("[Menu] Could not open the Profiles folder ({})", reinterpret_cast<INT_PTR>(r)));
         if (SUCCEEDED(com)) CoUninitialize();
-    }).detach();
+    });
 }
 
 void SaveProfileNow(const std::string& name) {

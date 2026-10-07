@@ -58,6 +58,7 @@
 #include "ui/widgets.h"
 #include "ui/i18n.h"
 #include "overlay.h"
+#include "hook_guard.h"
 #include <windows.h>
 #include <algorithm>
 #include <map>
@@ -1993,12 +1994,14 @@ class NightTerrainRelightPatch : public ApexPatch {
                     LOG_INFO(std::format("[NightTerrainRelight] Shader limits: PS 3.0 {} instruction slots, VS 3.0 {}, PS version {:X}", caps.MaxPixelShader30InstructionSlots,
                                          caps.MaxVertexShader30InstructionSlots, caps.PixelShaderVersion & 0xFFFF));
             }
-            OnPresent();
-            LightProbe::OnPresent(ctx.device); // the light capture (F7): the draws painting the pixel under the mouse
-            ScreenWatch::OnPresent(ctx.device); // the recording's screen pixels (light update trace)
+            // 07/10, players' Runtime Error: each part's frame update is caught on its own (HookGuard), so one that throws is
+            // turned off and the others keep running; the settings pushed in between are plain stores
+            HookGuard::Run("Night Lighting frame update", [] { OnPresent(); });
+            HookGuard::Run("Light Probe frame update", [&ctx] { LightProbe::OnPresent(ctx.device); }); // the light capture (F7): the draws painting the pixel under the mouse
+            HookGuard::Run("Screen watch frame update", [&ctx] { ScreenWatch::OnPresent(ctx.device); }); // the recording's screen pixels (light update trace)
             ObjectLightBridge::SetStrength(g_objStrength);
             ObjectLightBridge::SetAllObjects(g_objAll);
-            ObjectLightBridge::OnPresent();
+            HookGuard::Run("ObjectLightBridge frame update", [] { ObjectLightBridge::OnPresent(); });
             LevelLightShare::SetIndoor(g_indoorShare);
             LevelLightShare::SetWallAlign(g_wallAlign);
             LevelLightShare::SetAllFloors(g_allFloors);
@@ -2009,8 +2012,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             LevelLightShare::SetFoundationWalls(g_foundationWalls);
             UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);
             UnlitRooms::SetNightLevel(std::fmax(g_menuLevel.load(), 0.0f));
-            UnlitRooms::OnPresent();
-            LampMarkFilter::OnPresent(g_menuLevel.load());
+            HookGuard::Run("UnlitRooms frame update", [] { UnlitRooms::OnPresent(); });
+            HookGuard::Run("LampMarkFilter frame update", [] { LampMarkFilter::OnPresent(g_menuLevel.load()); });
             if (DWORD at = g_autoRefreshAt.load(); at && static_cast<int32_t>(GetTickCount() - at) >= 0 && !g_reinstallDue.load() &&
                 g_autoRefreshAt.compare_exchange_strong(at, 0)) {
                 const bool afterLoad = g_autoRefreshRoomsOnly.load();
@@ -2020,10 +2023,11 @@ class NightTerrainRelightPatch : public ApexPatch {
                 if (ready) {
                     if (afterLoad && !g_loadSettled.exchange(true)) LOG_INFO("[NightTerrainRelight] Load settled: the after-load refresh runs now");
                     g_autoRefreshRoomsOnly.store(false);
-                    NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad);
+                    HookGuard::Try("Night Lighting automatic refresh",
+                                   [afterLoad] { NightLighting::RefreshAll(afterLoad ? "after loading" : "a setting changed", !afterLoad); });
                 } else g_autoRefreshAt.store((tick + 200) | 1);
             }
-            LevelLightShare::OnPresent();
+            HookGuard::Run("LevelLightShare frame update", [] { LevelLightShare::OnPresent(); });
             LotLightBridge::SetNightLevel(g_level);
             ProbeNeutral::SetNightLevel(g_level);
             ProbeNeutral::Set(g_neutralProbe, g_neutralProbeStrength);
@@ -2033,13 +2037,13 @@ class NightTerrainRelightPatch : public ApexPatch {
             // the reflection alone needs the scene depth (Depth Blur), without it the pass would add nothing.
             const bool shoreOnly = !g_water && g_waterReflSetting > 0.0f && DepthShare::Texture() != nullptr;
             LotLightBridge::SetWaterFix(g_water || shoreOnly, g_water ? std::clamp(g_waterStrengthSetting, 0.1f, 0.4f) : 0.0f, g_waterReflSetting, g_waterFilter, g_waterColorCompression);
-            LotLightBridge::OnPresent();
+            HookGuard::Run("LotLightBridge frame update", [] { LotLightBridge::OnPresent(); });
             LightmapSmooth::SetEnabled(g_smoothMaps);
             LotLightBridge::SetSidewalkClear(g_sidewalkClear);
             LotLightBridge::SetGroundBrightness(g_groundBrightness, g_roadBrightness, g_lotLampGain);
             RoomMapPadding::SetEnabled(g_edgePad);
             LotLightBridge::SetIndoorSmooth(g_edgePad);
-            RoomMapPadding::OnPresent();
+            HookGuard::Run("RoomMapPadding frame update", [] { RoomMapPadding::OnPresent(); });
             // lamps created from now on take the new colour once the slider is let go (OnPresent re-colours the others)
             if (!MenuSliderHeld()) ObjectLightBridge::SetLampTint(g_lampTint, g_lotTintOwn ? g_lotLampTint : g_lampTint);
             LotLightBridge::SetFenceGroundLight(g_fenceGround, g_fenceGroundStrength);
@@ -2049,7 +2053,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LotLightBridge::SetWindowOutdoor(g_windowOutdoor);
             LightmapSmooth::SetGpuPreferred(g_smoothMapsGpu);
             LotLightBridge::SetSoftLotEdges(g_softLotEdges);
-            LightmapSmooth::OnPresent(ctx.device);
+            HookGuard::Run("LightmapSmooth frame update", [&ctx] { LightmapSmooth::OnPresent(ctx.device); });
             return D3D9Hooks::HookAction::Continue;
         }, D3D9Hooks::Priority::Last);
 

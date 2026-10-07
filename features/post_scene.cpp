@@ -8,6 +8,7 @@
 #include "depth_share.h"
 #include "d3d9_extra_hooks.h"
 #include "render_callbacks.h"
+#include "hook_guard.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -50,15 +51,30 @@ bool SceneDepthReady(IDirect3DDevice9* dev) {
 // The effects of this boundary: all of them, or with the scene drawn on another depth-stencil than the shared one (06/10: a
 // friend's Edit in Game; every boundary was rejected for it, so Color never ran until it was turned off and on, which dropped
 // its depth request and with it the swap) only the ones that need no depth. The others stay pending as before.
+// 07/10, players' Runtime Error: an effect that throws is caught (the game's draw or EndScene goes on), noted, and skipped
+// from then on; the others keep running
+HookGuard::OffList<16> g_failedEffects;
 void RunEffects(IDirect3DDevice9* dev, bool depthOk) {
     std::vector<std::pair<int, PostScene::Effect>> run;
-    {
+    try {
         std::lock_guard<std::mutex> lock(g_mutex);
         for (const auto& e : g_effects)
             if (depthOk || std::find(g_noDepth.begin(), g_noDepth.end(), e.second) != g_noDepth.end()) run.push_back(e);
+    } catch (...) {
+        HookGuard::Note("PostScene effect list");
+        return;
     }
     g_depthValid = depthOk;
-    for (const auto& e : run) e.second(dev);
+    for (const auto& e : run) {
+        const void* fn = reinterpret_cast<const void*>(e.second);
+        if (g_failedEffects.Has(fn)) continue;
+        try {
+            e.second(dev);
+        } catch (...) {
+            g_failedEffects.Add(fn);
+            HookGuard::NoteAt("PostScene effect", fn);
+        }
+    }
     g_depthValid = true;
 }
 

@@ -11,6 +11,8 @@
 #include "bloom_alpha_probe.h"
 #include "post_scene.h"
 #include "apex_log.h"
+#include "apex_util.h"
+#include "hook_guard.h"
 #include "apex_paths.h"
 #include "apex_version.h"
 #include "game_version.h"
@@ -233,7 +235,7 @@ void WriteReportAndPng(std::vector<BYTE> alpha, UINT w, UINT h, float night, D3D
 
     const bool pngOk = WriteGrayPng(png, alpha, w, h);
     if (txtOk && pngOk) {
-        SetStatus(std::format("saved {} mask: {} + {}", Phase(night), txt.filename().string(), png.filename().string()));
+        SetStatus(std::format("saved {} mask: {} + {}", Phase(night), ApexUtil::ToUtf8(txt.filename().wstring()), ApexUtil::ToUtf8(png.filename().wstring())));
         LOG_INFO(std::format("[BloomAlphaProbe] Saved {} raw scene alpha: {}x{}, non-zero {:.3f}%, mean {:.3f}",
                              Phase(night), w, h, pct(total - hist[0]), total ? static_cast<double>(sum) / static_cast<double>(total) : 0.0));
     } else {
@@ -260,9 +262,10 @@ void CaptureAtSceneEnd(IDirect3DDevice9* dev) {
     }
 
     SetStatus(std::format("captured {} mask; writing PNG/TXT...", Phase(night)));
-    std::thread([alpha = std::move(alpha), w, h, night, fmt, msaa]() mutable {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("BloomAlphaProbe: report writer", [alpha = std::move(alpha), w, h, night, fmt, msaa]() mutable {
         WriteReportAndPng(std::move(alpha), w, h, night, fmt, msaa);
-    }).detach();
+    });
 }
 
 } // namespace

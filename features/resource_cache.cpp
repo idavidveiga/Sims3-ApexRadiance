@@ -119,6 +119,8 @@
 
 #include "resource_cache.h"
 #include "apex_log.h"
+#include "apex_util.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "game_addresses.h"
@@ -463,10 +465,12 @@ void NoteUnhookedChange(uintptr_t mgr, const char* how) {
     BeginChange();
     EndChange();
     c_unhooked.Add();
-    if (!g_unhookedLogged.exchange(true))
-        LOG_WARNING(std::format("[ResourceCache] The package list of manager {:#010x} changed without RegisterDatabase / SetDatabasePriority ({}); every remembered answer "
-                                "was dropped. Further ones are only counted (Developer page).",
-                                mgr, how));
+    if (!g_unhookedLogged.exchange(true)) // inside the game's lookup: building the line may not throw into it (07/10)
+        HookGuard::Try("ResourceCache unhooked change note", [mgr, how] {
+            LOG_WARNING(std::format("[ResourceCache] The package list of manager {:#010x} changed without RegisterDatabase / SetDatabasePriority ({}); every "
+                                    "remembered answer was dropped. Further ones are only counted (Developer page).",
+                                    mgr, how));
+        });
 }
 
 // ---- table access (callers hold g_lock) ----
@@ -534,7 +538,7 @@ bool WritableAbove(const Snapshot& s, uint32_t index, Answer& a) {
 
 bool Find(uintptr_t mgr, const uint32_t* key, uint32_t gen, Answer& a) {
     bool found = false;
-    AcquireSRWLockShared(&g_lock);
+    ApexUtil::SrwShared srw(g_lock);
     if (g_table && g_stampGen == gen) {
         uint32_t slot = Hash(static_cast<uint32_t>(mgr), key) & kMask;
         for (int d = 0; d < kMaxProbe; d++, slot = (slot + 1) & kMask) {
@@ -555,7 +559,6 @@ bool Find(uintptr_t mgr, const uint32_t* key, uint32_t gen, Answer& a) {
             break;
         }
     }
-    ReleaseSRWLockShared(&g_lock);
     return found;
 }
 
@@ -578,7 +581,7 @@ bool StableEpochSum(const Answer& a, uint32_t& sum, uint32_t& seq) {
 
 // A new write-epoch sum for a live entry (after the probes passed with no write meanwhile)
 void RefreshSum(uintptr_t mgr, const uint32_t* key, uint32_t gen, const Answer& a, uint32_t sum) {
-    AcquireSRWLockExclusive(&g_lock);
+    ApexUtil::SrwExclusive srw(g_lock);
     if (g_table && g_stampGen == gen) {
         uint32_t slot = Hash(static_cast<uint32_t>(mgr), key) & kMask;
         for (int d = 0; d < kMaxProbe; d++, slot = (slot + 1) & kMask) {
@@ -592,7 +595,6 @@ void RefreshSum(uintptr_t mgr, const uint32_t* key, uint32_t gen, const Answer& 
             break;
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
 }
 
 // The stored answer still is what the game's lookup would return. probes = packages asked.
@@ -657,14 +659,15 @@ void Remember(uintptr_t mgr, const uint32_t* key, uint32_t provider, int32_t pri
     // The snapshot of this list under gen: build it when missing (outside the lock)
     Snapshot fresh;
     bool haveSnap = false, moved = false;
-    AcquireSRWLockShared(&g_lock);
-    if (const Snapshot* s = SnapFor(mgr, gen)) {
-        haveSnap = true;
-        uintptr_t begin = 0;
-        uint32_t count = 0;
-        moved = !ReadList(mgr, begin, count) || begin != s->begin || count != s->count;
+    {
+        ApexUtil::SrwShared srw(g_lock);
+        if (const Snapshot* s = SnapFor(mgr, gen)) {
+            haveSnap = true;
+            uintptr_t begin = 0;
+            uint32_t count = 0;
+            moved = !ReadList(mgr, begin, count) || begin != s->begin || count != s->count;
+        }
     }
-    ReleaseSRWLockShared(&g_lock);
     if (moved) {
         if (g_gen.load() == gen && g_mutating.load() == 0) NoteUnhookedChange(mgr, "list moved or resized");
         c_notCached.Add();
@@ -675,7 +678,7 @@ void Remember(uintptr_t mgr, const uint32_t* key, uint32_t provider, int32_t pri
         return;
     }
     const uint32_t tick = GetTickCount();
-    AcquireSRWLockExclusive(&g_lock);
+    ApexUtil::SrwExclusive srw(g_lock);
     bool stored = false;
     if (g_gen.load() == gen && g_mutating.load() == 0) {
         if (!haveSnap && !SnapFor(mgr, gen)) { // (another thread may have stored it meanwhile)
@@ -730,7 +733,6 @@ void Remember(uintptr_t mgr, const uint32_t* key, uint32_t provider, int32_t pri
             }
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
     if (provider) (stored ? c_inserted : c_notCached).Add();
     else if (stored) c_negInserted.Add();
     else c_notCached.Add();
@@ -745,9 +747,10 @@ void MaybeFingerprint(uintptr_t mgr, uint32_t gen) {
     uint32_t count = 0, fp = 0;
     if (!Fingerprint(mgr, begin, count, fp)) return;
     bool differs = false;
-    AcquireSRWLockShared(&g_lock);
-    if (const Snapshot* s = SnapFor(mgr, gen)) differs = s->begin != begin || s->count != count || s->fingerprint != fp;
-    ReleaseSRWLockShared(&g_lock);
+    {
+        ApexUtil::SrwShared srw(g_lock);
+        if (const Snapshot* s = SnapFor(mgr, gen)) differs = s->begin != begin || s->count != count || s->fingerprint != fp;
+    }
     if (differs && g_gen.load() == gen && g_mutating.load() == 0) NoteUnhookedChange(mgr, "list content differs");
 }
 
@@ -786,19 +789,22 @@ uint32_t Verify(FindFn next, void* self, void* edx, const uint32_t* key, int32_t
     }
     c_mismatches.Add();
     g_selfDisabled.store(true);
-    uint32_t gameIndex = 0xFFFFFFFF;
-    if (r) FindInList(reinterpret_cast<uintptr_t>(self), r, priority, gameIndex);
-    const std::string cacheSaid = a.provider ? std::format("package {:#010x} (vtable {:#010x}, priority {}, index {})", a.provider, VtableOf(a.provider), a.priority, a.index)
-                                             : std::string("no package holds it");
-    const std::string gameSays = r ? std::format("package {:#010x} (vtable {:#010x}, priority {}, index {})", r, VtableOf(r), priority, static_cast<int32_t>(gameIndex))
-                                   : std::string("no package holds it");
-    const std::string text = std::format("key {}: cache said {}{}, the game says {}{}", KeyText(keyBefore), cacheSaid, a.esum != kNoSum ? " (write epochs)" : "", gameSays,
-                                         keyChanged ? "; the game's lookup changed the key in place" : "");
-    {
-        std::lock_guard<std::mutex> lock(g_mismatchLock);
-        g_lastMismatch = text;
-    }
-    LOG_ERROR("[ResourceCache] Verification mismatch, the cache turned itself off for this session: " + text);
+    // the game's answer is returned whatever happens to the report (07/10, players' Runtime Error)
+    HookGuard::Try("ResourceCache verification report", [&] {
+        uint32_t gameIndex = 0xFFFFFFFF;
+        if (r) FindInList(reinterpret_cast<uintptr_t>(self), r, priority, gameIndex);
+        const std::string cacheSaid = a.provider ? std::format("package {:#010x} (vtable {:#010x}, priority {}, index {})", a.provider, VtableOf(a.provider), a.priority, a.index)
+                                                 : std::string("no package holds it");
+        const std::string gameSays = r ? std::format("package {:#010x} (vtable {:#010x}, priority {}, index {})", r, VtableOf(r), priority, static_cast<int32_t>(gameIndex))
+                                       : std::string("no package holds it");
+        const std::string text = std::format("key {}: cache said {}{}, the game says {}{}", KeyText(keyBefore), cacheSaid, a.esum != kNoSum ? " (write epochs)" : "", gameSays,
+                                             keyChanged ? "; the game's lookup changed the key in place" : "");
+        {
+            std::lock_guard<std::mutex> lock(g_mismatchLock);
+            g_lastMismatch = text;
+        }
+        LOG_ERROR("[ResourceCache] Verification mismatch, the cache turned itself off for this session: " + text);
+    });
     return r;
 }
 
@@ -856,7 +862,7 @@ uint32_t __fastcall Hook_FindProvider(void* self, void* edx, const uint32_t* key
     if (!r) c_notFound.Add();
     if (!r && !g_negOn.load(std::memory_order_acquire)) return r;
     if (m0 == 0 && g_mutating.load(std::memory_order_acquire) == 0 && g_gen.load(std::memory_order_acquire) == g0)
-        Remember(mgr, key, r, r ? *priorityOut : 0, g0, seqValid, seq0, roBefore);
+        HookGuard::Run("ResourceCache store (after the game's lookup)", [&] { Remember(mgr, key, r, r ? *priorityOut : 0, g0, seqValid, seq0, roBefore); });
     else c_notCached.Add();
     return r;
 }
@@ -1318,19 +1324,23 @@ Counter c_klCalls, c_klCached, c_klPassed, c_klFromMem, c_klAsked, c_klStored, c
 
 inline uint64_t KlKey(uint32_t db, uint32_t type) { return (static_cast<uint64_t>(db) << 32) | type; }
 
+// 07/10, players' Runtime Error: these run inside the game's GetKeyList on any thread. The locks are scoped and the copies
+// caught: a list that cannot be copied is simply not remembered / not found (the package is asked, as without the cache).
 bool KlFind(uint32_t db, uint32_t type, uint32_t gen, std::vector<uint32_t>& keys, int32_t& ret) {
-    bool found = false;
-    AcquireSRWLockShared(&g_klLock);
-    if (g_klGen == gen) {
-        const auto it = g_kl.find(KlKey(db, type));
-        if (it != g_kl.end() && GetTickCount() - it->second.tick <= kKlMaxAgeMs) {
-            keys = it->second.keys;
-            ret = it->second.ret;
-            found = true;
+    try {
+        ApexUtil::SrwShared srw(g_klLock);
+        if (g_klGen == gen) {
+            const auto it = g_kl.find(KlKey(db, type));
+            if (it != g_kl.end() && GetTickCount() - it->second.tick <= kKlMaxAgeMs) {
+                keys = it->second.keys;
+                ret = it->second.ret;
+                return true;
+            }
         }
+    } catch (...) {
+        keys.clear();
     }
-    ReleaseSRWLockShared(&g_klLock);
-    return found;
+    return false;
 }
 
 void KlStore(uint32_t db, uint32_t type, uint32_t gen, int32_t ret, const std::vector<uint32_t>& keys) {
@@ -1338,24 +1348,28 @@ void KlStore(uint32_t db, uint32_t type, uint32_t gen, int32_t ret, const std::v
         c_klNotStored.Add();
         return;
     }
-    AcquireSRWLockExclusive(&g_klLock);
-    if (g_gen.load() == gen && g_mutating.load() == 0) {
-        if (g_klGen != gen || g_klKeyCount + keys.size() / 4 > kKlMaxKeys) {
-            g_kl.clear();
-            g_klKeyCount = 0;
-            g_klGen = gen;
+    try {
+        std::vector<uint32_t> copy = keys; // outside the lock; moved in below, so a failure never leaves a half-updated entry
+        ApexUtil::SrwExclusive srw(g_klLock);
+        if (g_gen.load() == gen && g_mutating.load() == 0) {
+            if (g_klGen != gen || g_klKeyCount + keys.size() / 4 > kKlMaxKeys) {
+                g_kl.clear();
+                g_klKeyCount = 0;
+                g_klGen = gen;
+            }
+            KlEntry& e = g_kl[KlKey(db, type)]; // the only allocation under the lock: nothing changed yet if it throws
+            g_klKeyCount -= e.keys.size() / 4;
+            e.tick = GetTickCount();
+            e.ret = ret;
+            e.keys = std::move(copy);
+            g_klKeyCount += e.keys.size() / 4;
+            c_klStored.Add();
+        } else {
+            c_klNotStored.Add();
         }
-        KlEntry& e = g_kl[KlKey(db, type)];
-        g_klKeyCount -= e.keys.size() / 4;
-        e.tick = GetTickCount();
-        e.ret = ret;
-        e.keys = keys;
-        g_klKeyCount += keys.size() / 4;
-        c_klStored.Add();
-    } else {
+    } catch (...) {
         c_klNotStored.Add();
     }
-    ReleaseSRWLockExclusive(&g_klLock);
 }
 
 // The out vector {begin, end, capacity}: its size in keys (SEH: a bad vector is the game's fault too, but no C++ here)
@@ -1386,8 +1400,22 @@ void AppendKey(uint8_t* out, const uint32_t* key) {
 bool CapturedKeys(const void* out, uintptr_t fromBytes, std::vector<uint32_t>& keys) {
     uintptr_t b = 0, e = 0;
     if (!VecRange(out, b, e) || e - b < fromBytes) return false;
-    keys.resize((e - b - fromBytes) / 4);
+    try {
+        keys.resize((e - b - fromBytes) / 4);
+    } catch (...) { // no memory for the copy: not remembered (07/10)
+        keys.clear();
+        return false;
+    }
     return keys.empty() || MemPatch::ReadBytes(b + fromBytes, keys.data(), keys.size() * 4);
+}
+
+// The out vector back to `bytes` bytes (its keys are plain data): the game's own call then appends them again
+void TruncateVec(void* out, uintptr_t bytes) {
+    __try {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(out);
+        *reinterpret_cast<uintptr_t*>(static_cast<uint8_t*>(out) + 4) = b + bytes;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
 }
 
 // Same multiset of keys (the order inside one package differs between the game's two walks)
@@ -1489,6 +1517,24 @@ bool KlCacheable(void* out, void* filter, uint32_t unique, uint32_t& type) {
     return true;
 }
 
+// 07/10, players' Runtime Error: a C++ exception in the cache's loop (a copy, the verification's sort or text) must not
+// reach the game. The keys appended so far are dropped (the vector back to its size before the call), the cache turns
+// itself off for the session, and the game's own call answers.
+template <class Game>
+int32_t EmulateKeyListOrGame(uintptr_t begin, uintptr_t end, void* out, void* filter, uint32_t type, KeyListNote& note, Game&& game) {
+    uintptr_t b0 = 0, e0 = 0;
+    const bool rangeOk = VecRange(out, b0, e0);
+    try {
+        return EmulateKeyList(begin, end, static_cast<uint8_t*>(out), filter, type, note);
+    } catch (...) {
+        g_klSelfDisabled.store(true);
+        HookGuard::Note("FileListCache key list (the game's own call answered)");
+    }
+    if (rangeOk) TruncateVec(out, e0 - b0);
+    note.cachedPackages = 0;
+    return game();
+}
+
 int32_t __fastcall Hook_KeyListBase(void* self, void* edx, void* out, void* filter, uint32_t unique) {
     const MgrKeyListFn next = reinterpret_cast<MgrKeyListFn>(SlotChain::Next(Site::KeyListBase, Layer::ResourceCache));
     KeyListNote& note = t_klNote;
@@ -1503,7 +1549,7 @@ int32_t __fastcall Hook_KeyListBase(void* self, void* edx, void* out, void* filt
         return next(self, edx, out, filter, unique);
     }
     c_klCached.Add();
-    return EmulateKeyList(begin, end, static_cast<uint8_t*>(out), filter, type, note);
+    return EmulateKeyListOrGame(begin, end, out, filter, type, note, [&] { return next(self, edx, out, filter, unique); });
 }
 
 // ResourceSystem's override 0x00736660: the base's result, then sort + unique of the whole vector when count and out
@@ -1521,8 +1567,12 @@ int32_t __fastcall Hook_KeyListDerived(void* self, void* edx, void* out, void* f
         return next(self, edx, out, filter, unique);
     }
     c_klCached.Add();
-    int32_t r = EmulateKeyList(begin, end, static_cast<uint8_t*>(out), filter, type, note);
-    if (r && out) r = reinterpret_cast<SortUniqueFn>(g_sortUnique)(out);
+    bool byGame = false;
+    int32_t r = EmulateKeyListOrGame(begin, end, out, filter, type, note, [&] {
+        byGame = true;
+        return next(self, edx, out, filter, unique); // the whole override: its own sort + unique
+    });
+    if (r && out && !byGame) r = reinterpret_cast<SortUniqueFn>(g_sortUnique)(out);
     return r;
 }
 
@@ -1676,11 +1726,12 @@ void StopKeyLists() {
     SlotChain::Remove(Site::KeyListBase, Layer::ResourceCache);
     SlotChain::Remove(Site::KeyListDerived, Layer::ResourceCache);
     ReleaseWatchers();
-    AcquireSRWLockExclusive(&g_klLock);
-    g_kl.clear();
-    g_klKeyCount = 0;
-    g_klGen = 0;
-    ReleaseSRWLockExclusive(&g_klLock);
+    {
+        ApexUtil::SrwExclusive srw(g_klLock);
+        g_kl.clear();
+        g_klKeyCount = 0;
+        g_klGen = 0;
+    }
     g_listStarted = false;
     LOG_INFO(std::format("[FileListCache] Off ({} calls, {} answered by the cache, {} package lists from memory, {} packages asked, {} mismatches)", c_klCalls.Get(), c_klCached.Get(),
                          c_klFromMem.Get(), c_klAsked.Get(), c_klMismatches.Get()));
@@ -1733,17 +1784,18 @@ Stats GetStats() {
     s.capacity = kSlots;
     s.readOnlyClassOk = g_readOnlyOk;
     s.selfDisabled = g_selfDisabled.load();
-    AcquireSRWLockShared(&g_lock);
-    s.entries = g_stampGen == g_gen.load() ? g_count : 0;
-    uint32_t newest = 0;
-    for (const Snapshot& snap : g_snap)
-        if (snap.gen && snap.gen >= newest) {
-            newest = snap.gen;
-            s.listSize = static_cast<int>(snap.count);
-            s.writableProviders = snap.writable;
-            s.tracedProviders = snap.traced;
-        }
-    ReleaseSRWLockShared(&g_lock);
+    {
+        ApexUtil::SrwShared srw(g_lock);
+        s.entries = g_stampGen == g_gen.load() ? g_count : 0;
+        uint32_t newest = 0;
+        for (const Snapshot& snap : g_snap)
+            if (snap.gen && snap.gen >= newest) {
+                newest = snap.gen;
+                s.listSize = static_cast<int>(snap.count);
+                s.writableProviders = snap.writable;
+                s.tracedProviders = snap.traced;
+            }
+    }
     s.epochClasses = EpochsActive() ? EpochClassText() : std::string("off");
     s.klCalls = c_klCalls.Get();
     s.klCached = c_klCached.Get();
@@ -1756,10 +1808,11 @@ Stats GetStats() {
     s.klMismatches = c_klMismatches.Get();
     s.klInconclusive = c_klInconclusive.Get();
     s.klSelfDisabled = g_klSelfDisabled.load();
-    AcquireSRWLockShared(&g_klLock);
-    s.klEntries = static_cast<uint32_t>(g_kl.size());
-    s.klKeys = static_cast<uint32_t>(g_klKeyCount);
-    ReleaseSRWLockShared(&g_klLock);
+    {
+        ApexUtil::SrwShared srw(g_klLock);
+        s.klEntries = static_cast<uint32_t>(g_kl.size());
+        s.klKeys = static_cast<uint32_t>(g_klKeyCount);
+    }
     {
         std::lock_guard<std::mutex> lock(g_mismatchLock);
         s.lastMismatch = g_lastMismatch;

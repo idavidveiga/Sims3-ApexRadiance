@@ -27,6 +27,7 @@
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "level_light_share.h"
 #include "object_light_bridge.h"
 #include "room_ambient_policy.h"
@@ -231,7 +232,8 @@ template <int Which> float* __fastcall BaseHook(BYTE* room, void*, float* out, c
     if (!AddBase(room, r, slot, ce)) return r;
     if (g_probe) return r; // only read (LevelLightShare's atrium targets): the room's fields are put back
     g_baseAdded.fetch_add(1, std::memory_order_relaxed);
-    NoteBase(room, r, slot, ce, Which);
+    // 07/10, players' Runtime Error: the note allocates (its map) inside the game's solve: caught, then off (HookGuard)
+    HookGuard::Run("UnlitRooms base note", [&] { NoteBase(room, r, slot, ce, Which); });
     return r;
 }
 
