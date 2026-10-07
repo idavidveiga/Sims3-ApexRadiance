@@ -6562,13 +6562,11 @@ std::string WallSurvey(const std::vector<SurveyPoint>& pts) {
         for (const auto& [cm, count] : deltas) s += std::format(" {:+.2f} x{}", cm / 100.0f, count);
         s += "\n";
     }
-    s += "  what is left (drawn foot - bottom row as lit, after Apex; 0 = lit where drawn):
-";
+    s += "  what is left (drawn foot - bottom row as lit, after Apex; 0 = lit where drawn):\n";
     for (const auto& [key, deltas] : residual) {
         s += std::format("    story {} {}:", key.first, key.second ? "outdoor" : "indoor ");
         for (const auto& [cm, count] : deltas) s += std::format(" {:+.2f} x{}", cm / 100.0f, count);
-        s += "
-";
+        s += "\n";
     }
     s += "  pieces: story, room, class, wall / piece, lit base (wall +0x114), lit bottom row (after Apex), drawn spans [foot..top] per draw\n";
     int shown = 0;
