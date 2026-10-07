@@ -46,6 +46,7 @@ struct FloorPatch {
     int scaleConst = -1;  // K of the game's lamp scale cK.x applied to max(map, atlas), read by no other instruction; -1 unknown
     int heightConst = -1; // PatchBakedAtlasPs: cH, the atlas weight saturate(map.a * cH.y + cH.x) ((1, 0) = always)
     bool maskAlpha = false; // PatchBakedAtlasPs: map.a is still readable at the atlas (the floor visibility mask)
+    bool loggedMask = false; // lot_light_bridge logged maskAlpha once
 };
 bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
 // Snow lying on lot floor tiles (LightProbe-m69): the VS writes TEXCOORD7.xy = world xz / 2; the PS gets max(room map, atlas).

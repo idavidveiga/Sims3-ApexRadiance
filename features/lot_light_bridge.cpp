@@ -2864,6 +2864,10 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
     if (!fv.vs) return false;
     PatchedPs& p = PatchedFor(dev, g_floorAtlasPs[fv.tc], "Outdoor floor", [tc = fv.tc](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchBakedAtlasPs(t, tc, pp.floor); });
     if (!p.ps) return false;
+    if (!p.floor.loggedMask) {
+        p.floor.loggedMask = true;
+        LOG_INFO(std::format("[LotLightBridge] Outdoor floor: shader {:08X} {} the walls' mask (the floor map's alpha)", reinterpret_cast<uintptr_t>(g_curPs), p.floor.maskAlpha ? "reads" : "CANNOT READ"));
+    }
     // The atlas has no walls: it is weighted by 1 - the floor map's alpha, where level_light_share stores the share of the
     // lamps' light that walls block for the outdoor floor texels of upper stories (0 everywhere else, as the game has it:
     // the atlas stays whole). Without a readable alpha the weight constant is (1, 0): always 1.

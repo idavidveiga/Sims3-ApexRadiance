@@ -4567,6 +4567,26 @@ void* MaskWallLists(int slot, BYTE* room) {
     return &L.head;
 }
 
+// The closed yards whose floors were solved without the ground light map: one log line per room (07/10: the first version
+// changed nothing on screen; this tells whether their floors reach this solve at all)
+std::mutex g_closedYardMx;
+std::unordered_set<uintptr_t> g_closedYardSeen;
+void ReadRoomStory(const BYTE* room, int& story, int& id) { // POD only (SEH)
+    __try {
+        id = *reinterpret_cast<const int*>(room + 0xC);
+        story = *reinterpret_cast<const int*>(*reinterpret_cast<const uintptr_t*>(room) + 0x88);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+void NoteClosedYard(const BYTE* room) {
+    {
+        std::lock_guard<std::mutex> lk(g_closedYardMx);
+        if (g_closedYardSeen.size() >= 200 || !g_closedYardSeen.insert(reinterpret_cast<uintptr_t>(room)).second) return;
+    }
+    int story = -99, id = -1;
+    ReadRoomStory(room, story, id);
+    LOG_INFO(std::format("[ClosedYard] story {} room {} ({:08X}): its floor is solved without the ground light map (alpha 1)", story, id, reinterpret_cast<uintptr_t>(room)));
+}
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     // The first sample of a batch (this call runs once per sample, in order; the batch vector is reused, so its address does
     // not tell batches apart): a new serial for the floor wall lists, and for room 0 its story's outside walls for
@@ -4618,6 +4638,7 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     float* r = SolvePoint(room, out, ownLists, list3D, walls, sample, true);
     if (closedYard) {
         out[3] = 1.0f; // none of the ground light map
+        NoteClosedYard(room);
         return r;
     }
     out[3] = 0.0f;
@@ -6621,7 +6642,7 @@ bool Install(std::string& error) {
     }
     LOG_INFO(std::string("[LevelLightShare] Walls taller than a story: ") + (g_wallUvReady ? "ready (their light spreads over the drawn height)" : "not available (code differs)"));
     g_indoorGen.fetch_add(1);
-    FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+    FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
     RefreshSoon();
     LOG_INFO(std::format("[LevelLightShare] Installed (walls of the light's story: {} of {} classes; indoor lamps through stair openings: {}; seamless walls between floors: {})",
