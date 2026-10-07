@@ -65,6 +65,7 @@ inline bool IsActive() {
 // reset by every new world (the Twinbrook load screen passed only because that signal was stale after a travel).
 constexpr int kMinDepthWrites = 48;
 constexpr unsigned long long kDrawnMs = 500; // 1000 until 06/10 (user: effects too late)
+constexpr unsigned long long kSparseMs = 2000; // a sparse world (fewer than kMinDepthWrites a frame): drawn this long, all else ready
 // Night Lighting's "world live" (terrain drawn; true when it is off), registered by Depth Blur; null = not required. It was
 // the after-load refresh ("load settled") until 06/10: effects came 3 .. 10 s after the map showed
 inline bool (*g_loadSettled)() = nullptr;
@@ -74,12 +75,14 @@ namespace WorldSession {
 inline bool InWorld() {
     static bool open = false;
     static unsigned long long drawnSince = 0;
+    static unsigned long long sparseSince = 0; // a sparse world drawn (see below)
     // a game build where the world manager was not found: the drawn world alone decides, every frame (no latch, so the
     // main menu's few draws close it again); never off for good
     const bool worldKnown = GameAddr::Get(GameAddr::Id::WorldManagerPtr) != 0;
     if (worldKnown && !IsActive()) {
         open = false;
         drawnSince = 0;
+        sparseSince = 0;
         return false;
     }
     if (open && worldKnown) return true;
@@ -94,7 +97,14 @@ inline bool InWorld() {
     if (!PostScene::Counting() || writes >= kMinDepthWrites) {
         if (!drawnSince) drawnSince = now;
     } else drawnSince = 0;
-    open = drawnSince && now - drawnSince >= kDrawnMs && (!g_loadSettled || g_loadSettled());
+    // A sparse world (06/10, a friend's empty world in Edit in Game: 7 depth-writing draws a frame, bare terrain) never reaches
+    // kMinDepthWrites: with the world manager read, the world active, its loading window gone and Night Lighting's "world
+    // live", any drawn world counts once that lasted kSparseMs
+    const bool settled = !g_loadSettled || g_loadSettled();
+    if (worldKnown && settled && writes > 0) {
+        if (!sparseSince) sparseSince = now;
+    } else sparseSince = 0;
+    open = settled && ((drawnSince && now - drawnSince >= kDrawnMs) || (sparseSince && now - sparseSince >= kSparseMs));
     return open;
 }
 // Diagnostics: every input of the gate above, as one log fragment (render thread)

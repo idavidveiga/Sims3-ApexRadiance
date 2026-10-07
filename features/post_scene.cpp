@@ -19,7 +19,7 @@
 namespace {
 
 constexpr const char* kHookName = "PostScene";
-constexpr int kMinSceneDraws = 8; // backbuffer draws with depth test before the UI can start (20 until 06/10: a CAW world in edit-in-game mode draws 13 scene draws at some angles, so the effects never ran there and Color came and went with the camera; the UI glass passes no longer count, see OnGameDraw)
+constexpr int kMinSceneDraws = 4; // backbuffer draws with depth test before the UI can start (8 until 06/10 night: an empty Edit in Game world drew 7, the bare terrain; 20 until 06/10: a CAW world in edit-in-game mode draws 13 scene draws at some angles, so the effects never ran there and Color came and went with the camera; the UI glass passes no longer count, see OnGameDraw)
 constexpr float kDefaultDepthA = 1.00008f; // LightProbe-m80
 
 std::mutex g_mutex;

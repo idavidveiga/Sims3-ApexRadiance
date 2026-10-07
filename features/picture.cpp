@@ -56,7 +56,7 @@ enum Skip : int { kSkipNone, kSkipNoFrame, kSkipNoBackBuffer, kSkipNotBackBuffer
 constexpr unsigned long long kProblemAfterMs = 2000; // on, but not applied for this long: a problem
 // After PostScene (Priority::First = 0), before Early (25) and every feature that may skip a draw (Normal = 50).
 constexpr auto kDrawPriority = static_cast<D3D9Hooks::Priority>(10);
-constexpr int kMinSceneDraws = 8; // depth-tested back buffer draws before the UI can start (as PostScene; 20 until 06/10)
+constexpr int kMinSceneDraws = 4; // depth-tested back buffer draws before the UI can start (as PostScene; 20 until 06/10, 8 until 06/10 night)
 
 const char* kShaderSource = R"HLSL(
 sampler2D sFrame : register(s0); // the finished frame (scene + UI), point
