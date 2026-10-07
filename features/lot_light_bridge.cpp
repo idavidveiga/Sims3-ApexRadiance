@@ -2277,17 +2277,26 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
 // one side of the wall or the other as it is turned (F7 20-17-15 / 20-17-20, 06/10: the same window turned took other lamps
 // and another ground share, a slightly different tone); the tile's centre, origin + (local X - local Z) / 2, is on the
 // wall line both ways. Used only when an outside wall runs along one of the object's axes through that centre; else the origin.
+// true when an unscaled object turned about y has its centre on an outside wall's line (a door or a window set in its wall);
+// c = that centre
+bool WallLinePoint(const float (&m)[3][4], float (&c)[3]) {
+    const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
+    const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
+    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return false; // turned about y only, unscaled
+    c[0] = m[0][3] + 0.5f * (xx - zx);
+    c[1] = m[1][3];
+    c[2] = m[2][3] + 0.5f * (xz - zz);
+    return LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) || LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f);
+}
+
 // true when the point was moved onto an outside wall's line (the object is set in that wall: a window or a door)
 bool ObjectLampPoint(const float (&m)[3][4], float (&p)[3]) {
     p[0] = m[0][3];
     p[1] = m[1][3];
     p[2] = m[2][3];
     if (!g_windowOutdoor.load(std::memory_order_relaxed)) return false;
-    const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
-    const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
-    if (!(lx > 0.9f && lx < 1.1f && lz > 0.9f && lz < 1.1f) || std::fabs(m[1][0]) + std::fabs(m[1][2]) > 0.05f) return false; // turned about y only, unscaled
-    const float c[3] = {p[0] + 0.5f * (xx - zx), p[1], p[2] + 0.5f * (xz - zz)};
-    if (!LevelLightShare::OnWallLine(c, xx / lx, xz / lx, 0.15f) && !LevelLightShare::OnWallLine(c, zx / lz, zz / lz, 0.15f)) return false;
+    float c[3];
+    if (!WallLinePoint(m, c)) return false;
     p[0] = c[0];
     p[2] = c[2];
     return true;
@@ -2608,6 +2617,13 @@ bool IndoorBasisScale(IDirect3DDevice9* dev, const ShaderPatches::IndoorBasisPat
 
 template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_indoorSmooth.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
+    // A door or window set in its wall spans two rooms: the smooth read (a B-spline over 4 texels, +-2 m) mixed the room
+    // behind the wall into the faces on this side (F7 10-28-12, 07/10: the red sconce's room at ~41% on the dark room's door
+    // frame). The game's rig (one room, the camera's side) lights it, as before Apex.
+    if (const int wk = g_curVsInfo->patched.worldK; wk >= 0) {
+        float wm[3][4], wc[3];
+        if (SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &wm[0][0], 3)) && WallLinePoint(wm, wc)) return false;
+    }
     IDirect3DTexture9* basis[4] = {};
     IDirect3DBaseTexture9* lightMap = nullptr; // held until the scale is read
     int lmS = -1;
