@@ -5,7 +5,8 @@
 // with the resolution (1080p = 1, 4K = 2) and the user's text size.
 //
 // Fonts: Segoe UI (segoeui.ttf) and Segoe UI Bold (segoeuib.ttf) for titles; missing files fall back to ImGui's default
-// font. Icons are not a font: they are Lucide vector strokes drawn by ui/icons.h.
+// font. Segoe UI covers Latin, Greek and Cyrillic; the Japanese, Korean, Chinese and Thai menu languages merge a Windows
+// font into both (LoadFonts). Icons are not a font: they are Lucide vector strokes drawn by ui/icons.h.
 #include "imgui.h"
 
 namespace VioletTheme {
@@ -43,6 +44,12 @@ ImVec4 Col(unsigned rgb, float alpha = 1.0f);
 void ApplyStyle(ImGuiStyle& style);
 // Once, right after ImGui::CreateContext (overlay), before the first frame: adds the fonts to io.Fonts.
 void LoadFonts(ImGuiIO& io);
+// Before each NewFrame (overlay, outside a frame): rebuilds the fonts when the scripts in use changed (another menu
+// language, or the language list was opened or closed a while ago). Cheap when nothing changed.
+void UpdateFonts(ImGuiIO& io);
+// During a frame: the language list is open, so every language's native name must render (merges the CJK fonts for a
+// short while; violet_theme.cpp explains the memory trade-off)
+void RequestAllScripts();
 
 ImFont* RegularFont(); // nullptr = ImGui's default font
 ImFont* BoldFont();    // nullptr = same as the regular font
