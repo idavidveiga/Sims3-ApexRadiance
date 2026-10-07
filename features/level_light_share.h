@@ -170,6 +170,14 @@ std::string DiagText(); // F8: samples near the active lot's lights, the game's 
 void SetDiagArmed(bool on);
 bool DiagArmed();
 // On-demand recorder only: bounded raw wall-edge measurements, no lighting changes.
+// The ground light mask of a lot (lot id as mgr+0x90 / +0x94): w x h texels, 4 per metre, 255 outside, 0 inside a room of
+// the two lowest stories. True when it was read and differs from knownSig (px filled); false when unchanged or unknown.
+struct GroundMask {
+    int w = 0, h = 0;
+    uint64_t sig = 0;
+    std::vector<uint8_t> px;
+};
+bool LotGroundMask(uint64_t lot, uint64_t knownSig, GroundMask& out);
 void BeginSeamRecording();
 std::string EndSeamRecording(bool save);
 }

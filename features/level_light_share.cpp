@@ -9543,3 +9543,70 @@ std::string Status() {
 }
 
 } // namespace LevelLightShare
+
+// ---- Ground light mask of a lot (lot_light_bridge.cpp, 07/10: the terrain light of a lamp outside reached the grass inside
+// a walled room with no floor and no roof). 4 x 4 texels per 1 m tile, 255 where the quadrant is outside (room 0 of the
+// two lowest stories, the terrain story and the first storey), 0 inside a room (roofless walled rooms included). SEH
+// only: the tiles are read live; a torn read only gives a mask that the next check replaces.
+namespace {
+bool ReadGroundMaskImpl(uint64_t lot, uint64_t knownSig, int& w, int& h, uint64_t& sig, uint8_t* px, int maxPx, bool& same) {
+    LoadAddresses();
+    uintptr_t trackers[256];
+    const int n = AllTrackers(trackers, 256);
+    __try {
+        for (int i = 0; i < n; i++) {
+            const uintptr_t m0 = StoryManager(trackers[i], 0);
+            if (!m0) continue;
+            const uint64_t id = *reinterpret_cast<const uint32_t*>(m0 + 0x90) | static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(m0 + 0x94)) << 32;
+            if (id != lot) continue;
+            const uintptr_t m1 = StoryManager(trackers[i], 1);
+            w = *reinterpret_cast<const int*>(m0 + 0x264);
+            h = *reinterpret_cast<const int*>(m0 + 0x268);
+            if (w <= 0 || h <= 0 || w > 256 || h > 256 || w * 4 * h * 4 > maxPx) return false;
+            uint64_t s = 1469598103934665603ull;
+            const auto mix = [&s](uint64_t v) { s = (s ^ v) * 1099511628211ull; };
+            mix(static_cast<uint64_t>(w) << 32 | static_cast<uint32_t>(h));
+            for (uintptr_t mgr : {m0, m1}) {
+                if (!mgr) continue;
+                for (int iz = 0; iz < h; iz++)
+                    for (int ix = 0; ix < w; ix++)
+                        if (const uintptr_t tile = LightTile(mgr, ix, iz))
+                            for (int q = 0; q < 4; q++) mix(static_cast<uint32_t>(TileRoom(tile, q) > 0));
+                        else mix(0xFFu);
+            }
+            sig = s;
+            same = s == knownSig;
+            if (same) return true;
+            const int W = w * 4;
+            for (int z = 0; z < h * 4; z++)
+                for (int x = 0; x < W; x++) {
+                    const int ix = x >> 2, iz = z >> 2;
+                    const int q = Quadrant(((x & 3) + 0.5f) / 4.0f, ((z & 3) + 0.5f) / 4.0f);
+                    bool inside = false;
+                    for (uintptr_t mgr : {m0, m1})
+                        if (mgr)
+                            if (const uintptr_t tile = LightTile(mgr, ix, iz)) inside |= TileRoom(tile, q) > 0;
+                    px[static_cast<size_t>(z) * W + x] = inside ? 0 : 255;
+                }
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false;
+}
+} // namespace
+namespace LevelLightShare {
+bool LotGroundMask(uint64_t lot, uint64_t knownSig, GroundMask& out) {
+    static std::vector<uint8_t> buf(1024 * 1024);
+    int w = 0, h = 0;
+    uint64_t sig = 0;
+    bool same = false;
+    if (!ReadGroundMaskImpl(lot, knownSig, w, h, sig, buf.data(), static_cast<int>(buf.size()), same)) return false;
+    out.w = w * 4;
+    out.h = h * 4;
+    out.sig = sig;
+    if (!same) out.px.assign(buf.begin(), buf.begin() + static_cast<size_t>(out.w) * out.h);
+    return !same;
+}
+} // namespace LevelLightShare

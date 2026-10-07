@@ -88,8 +88,9 @@ The full table is in the [Night Lighting overview](README.md#settings).
 
 ## Limitations
 
-- The terrain stamp has no wall occlusion (inferred): near lamps, the max can show terrain light inside fenced or
-  walled lot areas.
+- The terrain stamp has no wall occlusion. Since 07/10 a per-lot room mask (4 texels a metre from the rooms of the two
+  lowest stories, `LevelLightShare::LotGroundMask`, s3 + PS c32/c33; the snowy passes s13/s14/s15 + PS c200/c201) keeps it
+  out of rooms, roofless walled yards included; fences still let it through.
 - The winter lot pass with VS 436BB272 (m58, "prefeitura") is not handled ([snow.md](snow.md)).
 - The snowy lot pass has no soft edge.
 - A porch lamp within 3 m of the edge fades towards the atlas near the edge (with *Lot lamps light the street* the atlas

@@ -63,6 +63,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -144,9 +145,12 @@ float4 cLotX : register(c28);
 float4 cLotZ : register(c29);
 float4 cEdge : register(c30);
 float4 cLotGain : register(c31);
+float4 cMaskX : register(c32);
+float4 cMaskZ : register(c33);
 samplerCUBE sSky : register(s0);
 sampler2D sLot : register(s1);
 sampler2D sTerrain : register(s2);
+sampler2D sMask : register(s3);
 sampler2D sShadow : register(s5);
 struct PSIn {
     float4 shadowPos : TEXCOORD2;
@@ -165,8 +169,10 @@ float4 main(PSIn i) : COLOR0 {
     float2 d = i.shadowPos.xy - 0.5;
     float edge = saturate(max(abs(d.x), abs(d.y)) * 8 - 3);
     float sun = lerp(avg, 1, edge) * saturate(dot(i.normal, c1.xyz));
-    float3 terrain = tex2D(sTerrain, i.terrainUv.xy).rgb * (c3.x + cLotGain.y);
     float3 uv1 = float3(i.terrainUv.xy, 1);
+    // the terrain light stays outside the lot's rooms (a walled yard with grass): 1 outside, 0 inside, soft at the walls
+    float mask = tex2D(sMask, float2(dot(uv1, cMaskX.xyz), dot(uv1, cMaskZ.xyz))).r;
+    float3 terrain = tex2D(sTerrain, i.terrainUv.xy).rgb * (c3.x + cLotGain.y) * mask;
     float2 lp = float2(dot(uv1, cLotX.xyz), dot(uv1, cLotZ.xyz)); // lot-local metres
     float2 e = min(lp, float2(cLotX.w, cLotZ.w) - lp);             // distance to the nearer edge on each axis
     float w = saturate(min(e.x, e.y) * cEdge.x + cEdge.y);
@@ -509,6 +515,84 @@ bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], c
     out[8] = 1.0f / kEdgeBand;
     out[9] = 0.0f;
     return true;
+}
+
+// ---- Room mask (07/10, user: "a luz do solo foi pra dentro de um comodo"): the terrain light (world atlas, lamp stamps with
+// no wall occlusion) reached the grass inside a walled room with no floor and no roof. Per lot, a texture of its rooms
+// (LevelLightShare::LotGroundMask, 4 texels a metre, bilinear: soft at the walls) multiplies the terrain term of the lot
+// light pass (and the snowy passes); 1 outside, 0 inside. Checked again every 500 ms per lot (walls placed or removed).
+// A draw with no known lot binds a white 1 x 1 texture: the pass as before.
+struct LotMask {
+    IDirect3DTexture9* tex = nullptr;
+    uint64_t sig = 0;
+    DWORD checked = 0;
+};
+std::unordered_map<uint64_t, LotMask> g_lotMasks;
+IDirect3DTexture9* g_whiteMask = nullptr;
+std::atomic<long> g_maskBuilds{0}, g_maskWhite{0};
+IDirect3DTexture9* WhiteMask(IDirect3DDevice9* dev) {
+    if (!g_whiteMask && SUCCEEDED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED, &g_whiteMask, nullptr))) {
+        D3DLOCKED_RECT lr;
+        if (SUCCEEDED(g_whiteMask->LockRect(0, &lr, nullptr, 0))) {
+            *static_cast<BYTE*>(lr.pBits) = 255;
+            g_whiteMask->UnlockRect(0);
+        }
+    }
+    return g_whiteMask;
+}
+void ReleaseLotMasks() {
+    for (auto& [lot, m] : g_lotMasks)
+        if (m.tex) m.tex->Release();
+    g_lotMasks.clear();
+    if (g_whiteMask) g_whiteMask->Release();
+    g_whiteMask = nullptr;
+}
+// rows = mask uv from the draw's terrain uv (as LotEdgeConstants, divided by the lot's size); the lot's texture or white
+IDirect3DTexture9* LotMaskForImpl(IDirect3DDevice9* dev, const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float rows[8]) {
+    for (int i = 0; i < 8; i++) rows[i] = 0.0f;
+    rows[2] = rows[6] = 0.5f;
+    if (!r) return WhiteMask(dev);
+    const double a = c8[0], b = c8[2], c = c10[0], d = c10[2];
+    const double det = a * d - b * c;
+    if (std::fabs(det) < 1e-4 || std::fabs(k[0]) < 1e-9f || std::fabs(k[1]) < 1e-9f || r->w <= 0 || r->d <= 0) return WhiteMask(dev);
+    const double sx = 1.0 / k[0], sz = 1.0 / k[1];
+    const double ox = c15[0] - k[2] * sx - c8[3], oz = c15[2] - k[3] * sz - c10[3];
+    rows[0] = static_cast<float>(d * sx / det / r->w);
+    rows[1] = static_cast<float>(-b * sz / det / r->w);
+    rows[2] = static_cast<float>((d * ox - b * oz) / det / r->w);
+    rows[4] = static_cast<float>(-c * sx / det / r->d);
+    rows[5] = static_cast<float>(a * sz / det / r->d);
+    rows[6] = static_cast<float>((-c * ox + a * oz) / det / r->d);
+    const uint64_t lot = (static_cast<uint64_t>(r->lotHi) << 32) | r->lotLo;
+    LotMask& m = g_lotMasks[lot];
+    const DWORD now = GetTickCount();
+    if (!m.tex || now - m.checked >= 500) {
+        m.checked = now;
+        LevelLightShare::GroundMask gm;
+        if (LevelLightShare::LotGroundMask(lot, m.tex ? m.sig : 0, gm) && gm.w > 0 && gm.h > 0) {
+            IDirect3DTexture9* tex = nullptr;
+            if (SUCCEEDED(dev->CreateTexture(gm.w, gm.h, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED, &tex, nullptr))) {
+                D3DLOCKED_RECT lr;
+                if (SUCCEEDED(tex->LockRect(0, &lr, nullptr, 0))) {
+                    for (int y = 0; y < gm.h; y++) std::memcpy(static_cast<BYTE*>(lr.pBits) + static_cast<size_t>(y) * lr.Pitch, gm.px.data() + static_cast<size_t>(y) * gm.w, gm.w);
+                    tex->UnlockRect(0);
+                    if (m.tex) m.tex->Release();
+                    m.tex = tex;
+                    m.sig = gm.sig;
+                    g_maskBuilds.fetch_add(1, std::memory_order_relaxed);
+                } else tex->Release();
+            }
+        }
+    }
+    if (!m.tex) {
+        g_maskWhite.fetch_add(1, std::memory_order_relaxed);
+        return WhiteMask(dev);
+    }
+    return m.tex;
+}
+IDirect3DTexture9* LotMaskFor(IDirect3DDevice9* dev, const float k[4], const float c15[4], const float c8[4], const float c10[4], const LotRect* r, float rows[8]) {
+    if (g_lotMasks.size() > 256) ReleaseLotMasks();
+    return LotMaskForImpl(dev, k, c15, c8, c10, r, rows);
 }
 
 // ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
@@ -1790,7 +1874,11 @@ std::atomic<int> g_snowDrawn{0};
 
 // The same patch for the snowy pass (last sampler s11, terrain light in s12) and the melting-snow pass (kMeltLotPs: last
 // sampler s13, terrain light in s14). r7, v7 and the new sampler must be unused (checked).
-bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampler) {
+// With mask (room mask, 07/10): also "mad r6.x/y" (mask uv from v7 with PS c200 / c201), "texld r6, r6, s<new+1>" and
+// "mul r7.xyz, r7, r6.x" before the max, so the terrain light stays outside the lot's rooms; r6, c200, c201 and that
+// sampler must be unused too.
+constexpr DWORD kMaskConst = 200;
+bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampler, bool mask = false) {
     auto regNum = [](DWORD r) { return r & 0x7FF; };
     auto regType = [](DWORD r) { return ((r >> 28) & 7) | (((r >> 11) & 3) << 3); };
     size_t dclEnd = 0, texldEnd = 0;
@@ -1808,6 +1896,7 @@ bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampl
             if (!(r & 0x80000000u)) continue;
             const DWORD ty = regType(r), n = regNum(r);
             if ((ty == 0 && n == 7) || (ty == 1 && n == 7) || (ty == 10 && n == newSampler)) return false; // r7 / v7 / new sampler taken
+            if (mask && ((ty == 0 && n == 6) || (ty == 2 && (n == kMaskConst || n == kMaskConst + 1)) || (ty == 10 && n == newSampler + 1))) return false;
         }
         if (op == 0x1F && regType(t[i + 2]) == 10 && regNum(t[i + 2]) == lastSampler) dclEnd = i + 1 + len;
         if (op == 0x42 && !texldEnd && regType(t[i + 1]) == 0 && regNum(t[i + 1]) == 0 && regType(t[i + 2]) == 1 && regNum(t[i + 2]) == 3 && regType(t[i + 3]) == 10 && regNum(t[i + 3]) == 2)
@@ -1823,6 +1912,18 @@ bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampl
                            0x03000002, 0x80270007, 0x80E40007, 0x80E40007,              // add_pp r7.xyz, r7, r7
                            0x0300000B, 0x80270000, 0x80E40000, 0x80E40007};             // max_pp r0.xyz, r0, r7
     t.insert(t.begin() + insertAt, std::begin(fetch), std::end(fetch));
+    if (mask) {
+        const DWORD m = newSampler + 1, c0 = 0xA0000000 | kMaskConst, c1 = 0xA0000000 | (kMaskConst + 1);
+        const DWORD ops[] = {0x04000004, 0x80010006, 0x90000007, c0,              c0 | 0x00AA0000, // mad r6.x, v7.x, c200.x, c200.z
+                             0x04000004, 0x80010006, 0x90550007, c0 | 0x00550000, 0x80000006,      // mad r6.x, v7.y, c200.y, r6.x
+                             0x04000004, 0x80020006, 0x90000007, c1,              c1 | 0x00AA0000, // mad r6.y, v7.x, c201.x, c201.z
+                             0x04000004, 0x80020006, 0x90550007, c1 | 0x00550000, 0x80550006,      // mad r6.y, v7.y, c201.y, r6.y
+                             0x03000042, 0x800F0006, 0x80E40006, 0xA0E40800 | m,                 // texld r6, r6, s<m>
+                             0x03000005, 0x80070007, 0x80E40007, 0x80000006};                    // mul r7.xyz, r7, r6.x
+        t.insert(t.begin() + insertAt + 12, std::begin(ops), std::end(ops)); // after the texld and the two adds, before the max
+        const DWORD mdecl[] = {0x0200001F, 0x90000000, 0xA00F0800 | m};
+        t.insert(t.begin() + dclEnd, std::begin(mdecl), std::end(mdecl));
+    }
     const DWORD decl[] = {0x0200001F, 0x80010005, 0x90230007, 0x0200001F, 0x90000000, 0xA00F0800 | newSampler}; // v7 = TEXCOORD1, s<new> 2D
     t.insert(t.begin() + dclEnd, std::begin(decl), std::end(decl));
     return true;
@@ -1832,6 +1933,31 @@ bool PatchSnowBytecode(std::vector<DWORD>& t) { return PatchLotTerrainMax(t, 11,
 // The cut variant (kSnowLotCutPs, the ground under a rug): its last sampler is s12, the terrain light goes in s13
 IDirect3DPixelShader9* g_snowCutPs = nullptr;
 bool g_snowCutTried = false;
+bool g_snowMasked = false, g_snowCutMasked = false, g_meltMasked = false; // the patched copies with the room mask
+// The room mask for a snowy pass: the lot found by the world matrix (VS c8 / c10, else c9 / c11), PS c200 / c201 and the
+// sampler set and put back (white, rows 0: mask 1, when the lot is unknown)
+struct MaskBind {
+    IDirect3DDevice9* dev;
+    bool on = false, saved = false;
+    float old[8] = {};
+    std::optional<SamplerBind> bind;
+    MaskBind(IDirect3DDevice9* d, bool masked, DWORD sampler, const float k[4], const float c15[4]) : dev(d), on(masked) {
+        if (!on) return;
+        float m[16] = {};
+        const LotRect* r = nullptr;
+        float rows[8];
+        if (SUCCEEDED(dev->GetVertexShaderConstantF(8, m, 4))) {
+            if ((r = FindLotRect(&m[0], &m[8]))) bind.emplace(dev, sampler, LotMaskFor(dev, k, c15, &m[0], &m[8], r, rows), D3DTEXF_NONE);
+            else if ((r = FindLotRect(&m[4], &m[12]))) bind.emplace(dev, sampler, LotMaskFor(dev, k, c15, &m[4], &m[12], r, rows), D3DTEXF_NONE);
+        }
+        if (!r) bind.emplace(dev, sampler, LotMaskFor(dev, k, c15, m, m, nullptr, rows), D3DTEXF_NONE);
+        saved = SUCCEEDED(dev->GetPixelShaderConstantF(kMaskConst, old, 2));
+        SetPsConst(dev, kMaskConst, rows, 2);
+    }
+    ~MaskBind() {
+        if (on && saved) SetPsConst(dev, kMaskConst, old, 2);
+    }
+};
 
 // Melting snow (kMeltLotPs): the patched copy, made once from the first such shader drawn
 IDirect3DPixelShader9* g_meltPs = nullptr;
@@ -1846,9 +1972,13 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw, 
         tried = true;
         // patched from the shader the game has bound (this runs only for PsClass::LotLightSnow, an exact match)
         std::vector<DWORD> t = ShaderCode(g_curPs);
-        const bool ok = !t.empty() && PatchLotTerrainMax(t, terrainSampler - 1, terrainSampler) && SUCCEEDED(dev->CreatePixelShader(t.data(), &snowPs));
+        std::vector<DWORD> plain = t;
+        bool& masked = cut ? g_snowCutMasked : g_snowMasked;
+        masked = !t.empty() && PatchLotTerrainMax(t, terrainSampler - 1, terrainSampler, true) && SUCCEEDED(dev->CreatePixelShader(t.data(), &snowPs));
+        if (!masked) snowPs = nullptr;
+        const bool ok = masked || (!plain.empty() && PatchLotTerrainMax(plain, terrainSampler - 1, terrainSampler) && SUCCEEDED(dev->CreatePixelShader(plain.data(), &snowPs)));
         if (!ok) snowPs = nullptr;
-        LOG_INFO(std::string("[LotLightBridge] Snow") + (cut ? " (ground under rugs)" : "") + ": " + (ok ? "active" : "failed"));
+        LOG_INFO(std::string("[LotLightBridge] Snow") + (cut ? " (ground under rugs)" : "") + ": " + (ok ? (masked ? "active (room mask)" : "active (no room mask)") : "failed"));
     }
     if (!snowPs) return false;
     float v[8];
@@ -1875,6 +2005,8 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw, 
     {
         // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
         SamplerBind terrainMap(dev, terrainSampler, terrain);
+        const bool masked = cut ? g_snowCutMasked : g_snowMasked;
+        MaskBind maskBind(dev, masked, terrainSampler + 1, atlas ? atlasMap : v, &v[4]);
         SetPs(dev, snowPs);
         if (atlas) SetVsConst(dev, 15, atlasMap, 1);
         // c4.x scales max(lot map, terrain) only. TerrainConst = the world terrain's LampScale (92582b6 gave terrain and dry lots
@@ -1897,7 +2029,10 @@ template <typename DrawFn> bool DrawLotMelt(IDirect3DDevice9* dev, DrawFn draw) 
     if (!g_meltPs && !g_meltTried) {
         g_meltTried = true;
         std::vector<DWORD> t = ShaderCode(g_curPs);
-        const bool ok = !t.empty() && PatchLotTerrainMax(t, 13, 14) && SUCCEEDED(dev->CreatePixelShader(t.data(), &g_meltPs));
+        std::vector<DWORD> plain = t;
+        g_meltMasked = !t.empty() && PatchLotTerrainMax(t, 13, 14, true) && SUCCEEDED(dev->CreatePixelShader(t.data(), &g_meltPs));
+        if (!g_meltMasked) g_meltPs = nullptr;
+        const bool ok = g_meltMasked || (!plain.empty() && PatchLotTerrainMax(plain, 13, 14) && SUCCEEDED(dev->CreatePixelShader(plain.data(), &g_meltPs)));
         if (!ok) g_meltPs = nullptr;
         LOG_INFO(std::string("[LotLightBridge] Melting snow (lot light pass): ") + (ok ? "active" : "failed, left as the game draws it"));
     }
@@ -1920,6 +2055,7 @@ template <typename DrawFn> bool DrawLotMelt(IDirect3DDevice9* dev, DrawFn draw) 
     g_inOwnCall = true;
     {
         SamplerBind terrainMap(dev, 14, terrain);
+        MaskBind maskBind(dev, g_meltMasked, 15, atlas ? atlasMap : v, &v[4]);
         SetPs(dev, g_meltPs);
         if (atlas) SetVsConst(dev, 14, atlasMap, 1);
         TerrainConst lampGain(dev, 4, false); // c4.x scales max(lot map, terrain), as in the snowy pass
@@ -3487,6 +3623,12 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     {
         // s2 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
         SamplerBind terrainMap(dev, 2, terrain);
+        float maskRows[8];
+        IDirect3DTexture9* const mask = LotMaskFor(dev, atlas ? atlasMap : v, &v[4], &lotM[0], &lotM[8], rect, maskRows);
+        SamplerBind maskMap(dev, 3, mask, D3DTEXF_NONE);
+        float savedMask[8];
+        const bool maskSaved = SUCCEEDED(dev->GetPixelShaderConstantF(32, savedMask, 2));
+        SetPsConst(dev, 32, maskRows, 2);
         SetPs(dev, replacement);
         if (atlas) SetVsConst(dev, 14, atlasMap, 1);
         SetPsConst(dev, 28, edge, 3);
@@ -3495,6 +3637,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         draw();
         if (atlas) SetVsConst(dev, 14, v, 1);
         SetPsConst(dev, 28, savedEdge, 4);
+        if (maskSaved) SetPsConst(dev, 32, savedMask, 2);
     }
     g_objDrawInfo.clear();
     SetPs(dev, original);
@@ -4742,6 +4885,7 @@ void Shutdown(bool keepChunkMaps) {
         g_replacementPs->Release();
         g_replacementPs = nullptr;
     }
+    ReleaseLotMasks();
     if (g_snowPs) {
         g_snowPs->Release();
         g_snowPs = nullptr;
