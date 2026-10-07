@@ -6684,13 +6684,14 @@ std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies:
 std::atomic<long> g_fillSeen{0}, g_fillNoFlags{0}, g_fillWallZero{0}, g_fillEntered{0}, g_fillAbove{0}, g_fillSlab{0}, g_fillNoSlab{0}, g_fillNoGrid{0},
     g_fillGridZero{0}, g_fillMissed{0}, g_fillGameHigher{0};
 std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0}, g_fillLowerNoWalls{0};
+std::atomic<long> g_farDimmed{0}, g_farDropped{0}; // UpperDistanceShare (below)
 std::string FillStatus() {
     return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, blocked on the lamp's story {}), "
                        "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
-                       "walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
+                       "far points dimmed {} (dropped {}), walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
                        g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
                        g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
-                       g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load()) +
+                       g_farDimmed.load(), g_farDropped.load(), g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load()) +
            " | " + TestTimeStatus();
 }
 // Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
@@ -6741,11 +6742,37 @@ void FillShare(const RoomInfo& info, void* light, const float* sample, const Sla
     g_ctx.fillExact = exact;
     g_fillTests.fetch_add(1, std::memory_order_relaxed);
 }
+// Distance falloff of a lower story's lamp on an upper story (07/10, doors6: once the false blocking of WallPass was gone,
+// the game's nearly flat falloff over range 42.5 lit every upper wall around a courtyard evenly, 25 to 35 m from one post).
+// Full up to 6 m, then (6 / d)^2, and a smooth end between 18 and 26 m: an upper wall never gets more than the game gives a
+// ground-floor wall at the same distance, and far ones get none. World metres, lamp head to point.
+float UpperDistanceShare(void* light, const float* sample) {
+    alignas(16) float lampW[4];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
+    const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(d > 6.0f)) return 1.0f;
+    const float u = std::clamp((d - 18.0f) / 8.0f, 0.0f, 1.0f);
+    return (36.0f / (d * d)) * (1.0f - u * u * (3.0f - 2.0f * u));
+}
 void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
     const Cross* cross = FindCross(info, reinterpret_cast<uintptr_t>(light));
     const int home = cross ? cross->floor : -1;
     float mine = -1.0f;
     bool culledList = false;
+    if (home >= 0 && home < info.level && (colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f)) {
+        const float farShare = UpperDistanceShare(light, sample);
+        if (farShare < 1.0f) {
+            for (int i = 0; i < 4; i++) colour[i] *= farShare;
+            g_farDimmed.fetch_add(1, std::memory_order_relaxed);
+            // exact early-out: the game drops a light under its threshold (0x69FE40, the same sums); ours only lower it
+            if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) {
+                for (int i = 0; i < 4; i++) colour[i] = 0.0f;
+                g_farDropped.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
     const bool lit = colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f;
     const float before[3] = {colour[0], colour[1], colour[2]};
     if (home >= 0 && home < info.level && lit) {
