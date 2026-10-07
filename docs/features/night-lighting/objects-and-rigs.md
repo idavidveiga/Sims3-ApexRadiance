@@ -58,7 +58,7 @@ objects*, see [level-light-share.md](level-light-share.md#walls-block-light-outd
 | Objects > Brightness | `forcaNosObjetos` | float | 75% | 25 to 300% | Scales the rig boost, raises the rig cap to `cap x max(1, s)`, and sets the ground-light strength on patched objects. A change re-gathers all rigs (`FUN_006b58f0`) |
 | Objects > Light stairs, railings, columns | `lampadasEmTodosObjetos` | bool | on | | Opens rigs the game created closed to lamps; applies to rigs created afterwards (world load; the row carries a reload badge). Also gates the fenced-yard gather |
 | Doors, counters and fences > Doors and windows stay lit | `objetosDeForaComLuzDoChao` | bool | on | | Installs `RigTracker` and enables the per-pixel object patch (`DrawObjectLamp`). Disabled unless *Street lamps light lots* and *Smooth ground light* are on (the card offers a button to turn them on) |
-| Doors, counters and fences > Windows take outdoor light | `janelasLuzDeFora` | bool | on (since 06/10; experimental before) | | Faces of a room-lit window part that look out of the house take the outdoor ground light and per-pixel lamps (`DrawWindowOutdoor`, `PatchWindowOutdoor`); outdoor objects also pass the wall they sit in (0.75 m instead of 0.2 m). Needs *Doors and windows stay lit*. Untested in game; see *Windows lit by the room* below |
+| Doors, counters and fences > Windows take outdoor light | `janelasLuzDeFora` | bool | on (since 06/10; experimental before) | | Faces of a room-lit window part that look out of the house take the outdoor ground light and per-pixel lamps (`DrawWindowOutdoor`, `PatchWindowOutdoor`); outdoor objects also pass the wall they sit in (0.75 m instead of 0.2 m). Needs *Doors and windows stay lit*. Released in 2.7.2; see *Windows lit by the room* below |
 | Doors, counters and fences > Seamless light on pieces | `luzPorPixelNosObjetos` | bool | on | | Per-pixel world lamps on objects (and on fences). Off: the lamp blocks are zero and only the ground term remains |
 | Doors, counters and fences > Seamless light brightness | `forcaLuzPorPixelNosObjetos` | float | 75% | 25 to 300% | Strength of the per-pixel lamps (`cS.y`) |
 
@@ -301,6 +301,13 @@ With `janelasLuzDeFora` on: `PickObjectLamps` passes a wall within 0.75 m of the
 No object catalog identifies windows: the rule is geometric, so any room-rig object drawn with a basis-reading object shader whose faces look
 out of the house plan is affected (in the captures only window parts were). The light in the shader's bloom alpha (`lum - c3.x`) can rise
 slightly with it. Offline: 1 of the 13 captured basis-reading pixel shaders is accepted (the window one), and native D3D9 creates it.
+
+Lamp choice point (`ObjectLampPoint`, 2.7.2): a window's origin is a corner of its tile, on one side of the wall or the other
+as it is turned, so the two orientations of the same window took other lamps and another ground share (F7 20-17-15 /
+20-17-20, ground share 0.45 / 0.41). With the option on, an outdoor object turned about y only and unscaled picks its lamps at
+the tile centre, origin + (local X - local Z) / 2, when an outside wall along one of its axes passes within 0.15 m of that
+point (`LevelLightShare::OnWallLine`); every other object keeps its origin. After it both orientations got the same 6 lamps
+and ground share 0.3717; what still differs is the model (its two faces use other parts of the texture).
 
 ### Furniture during a lamp switch
 

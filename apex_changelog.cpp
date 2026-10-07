@@ -6,6 +6,18 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k272Added[] = {
+    "Windows take outdoor light: their outer side lit by the lamps outside",
+    nullptr};
+constexpr const char* k272Improved[] = {
+    "Lamp glow and shore reflections on lakes in rain and snow",
+    "Shore reflections on Twinbrook's sea in rain",
+    nullptr};
+constexpr const char* k272Fixed[] = {
+    "Fence and curb tops no longer turn dark at night",
+    "Color and screen effects no longer come and go with the camera in small worlds",
+    nullptr};
+
 // 2.7.1: 2.7.0 with the build an antivirus engine flagged changed (many players never got 2.7.0: Nexus held it), so it lists
 // 2.7.0's lines too
 constexpr const char* k271Fixed[] = {
@@ -89,6 +101,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.7.2", "2026-10-06", k272Added, k272Improved, k272Fixed},
     {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},
     {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
     {"2.6.0", "2026-10-05", k260Added, k260Improved, k260Fixed},
