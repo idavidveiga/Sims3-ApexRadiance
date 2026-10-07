@@ -107,6 +107,8 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Indoor objects > Smooth indoor light (Experimental) | `bordasDosMapasDeLuz` | bool | on | | Indoor objects and stairs read the room's directional light maps smoothly (see *Smooth indoor light*) |
 | Buildings > Lamps light walls | `paredesComLuz` | bool | on | | Exterior wall lamp gain by day and night; off keeps the native draw ([walls](walls.md)) |
 | Buildings > Brightness (walls) | `forcaNasParedes` | float | 84% | 25 to 400% | Wall lamp RGB multiplier (`SetWallGain` clamps 0.25 to 8) |
+| Buildings > Light behind balconies | `luzSobSacadas` | bool | on | | Walls behind a balcony keep a soft share of a lower lamp's light (fades behind the slab edge; real walls still block; relights rooms) |
+| Buildings > Strength (balconies) | `forcaSobSacadas` | float | 45% | 10 to 100% | Share at the balcony edge (`LevelLightShare::SetBalconyFill`) |
 | Buildings > Lamps light roofs | `telhadosComLuz` | bool | on | | Roof lamp pass ([roofs](roofs.md)) |
 | Buildings > Brightness (roofs) | `forcaNosTelhados` | float | 45% | 5 to 200% | Roof lamp strength |
 | Light detail > Detail (Experimental) | `detalheDaLuz` | enum | Game | Game, High | High doubles the game's lighting texels per metre on walls and floors (`features/light_detail.cpp`: texels per tile `0x00FF36AC` {1, 2, 4} -> {2, 4, 8}, wall atlases `0x00FF36DC` / `0x00FF36E8` doubled per LOD class). Written once at startup before any lot is lit, Steam 1.67.2 only, left alone when another mod changed those tables; a change takes effect after a restart. Rooms take about four times longer to solve and their maps use four times the memory |

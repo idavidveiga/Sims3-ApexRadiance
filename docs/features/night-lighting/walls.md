@@ -49,6 +49,8 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
 |---|---|---|---|---|---|
 | Lamps light walls | `paredesComLuz` | bool | on | | Off keeps the game's walls, by day and night |
 | Brightness | `forcaNasParedes` | float | 84% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
+| Light behind balconies | `luzSobSacadas` | bool | on | | Walls behind a balcony get a soft share of the light of lamps below it (35 to 45% at the edge, less deeper in); real walls still block. Relights every room when changed |
+| Strength | `forcaSobSacadas` | float | 45% | 10 to 100% | The share at the balcony edge |
 
 Both apply live (pushed every frame). The lamps of every story are controlled by *Outdoor light between floors*
 (`luzExternaEntreAndares`), documented in [level-light-share.md](level-light-share.md). The wall gain works with

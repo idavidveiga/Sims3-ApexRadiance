@@ -42,6 +42,11 @@ bool FloorWallsActive();
 // takes none. Relights every room when changed. Active = on, installed, and "walls block light on floors" active too.
 void SetRealisticOpenings(bool on);
 bool RealisticOpeningsActive();
+// Light under balconies (option "luzSobSacadas", strength "forcaSobSacadas"): an outside wall of an upper story that a
+// lamp of a lower story sees only through a placed floor of that story (a balcony's slab) keeps a soft share of its light
+// (the light the slab and its parapet scatter), fading with how deep behind the slab's edge the ray comes up; real walls
+// still block. Relights every room when changed (call with the slider let go).
+void SetBalconyFill(bool on, float strength);
 // Walls block light on objects: true when an outside wall stands between the lamp and the point at the height the ray
 // crosses it (render thread; a copy of each story's outside walls taken when room 0 is solved)
 // A wall crossed within nearSkip metres of the point is the wall the object sits in and does not block (0.2 m; Windows
