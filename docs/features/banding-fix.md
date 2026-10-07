@@ -50,7 +50,7 @@ is fixed per pixel, so nothing flickers. The alpha channel, which the game uses 
 | Banding Fix (card switch) | `enabled` | bool | on | | Turns the grain on |
 | Strength | `forca` | float | 100% | 0 to 100% | Peak of the triangular grain in 8-bit steps (100% = plus or minus one step, the full TPDF). 0% adds nothing |
 | Moving grain | `graoEmMovimento` | bool | off | | A new grain pattern every frame. High frame rates average it away; at low frame rates it shows as a faint shimmer |
-| Smooth gradients | `[qol.picture] deband` | float | 0% (off) | 0 to 200% | Deband filter of the Picture pass (threshold `deband x 6/255`). Runs only while the Banding Fix is on |
+| Smooth gradients | `[qol.picture] deband` | float | 8% (since 07/10; also in every built-in profile) | 0 to 200% | Deband filter of the Picture pass (threshold `deband x 6/255`). Runs only while the Banding Fix is on |
 | Developer > Show covered surfaces | (not saved) | bool | off | | Replaces the grain with a coarse 24-step grain on every covered surface |
 
 Settings apply live. The Developer page also shows the shader coverage counters (under *Shader coverage*).
