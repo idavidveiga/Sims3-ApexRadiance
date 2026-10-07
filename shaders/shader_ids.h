@@ -39,6 +39,7 @@ constexpr ShaderId kLakeSnowPs = {2756, 0x8C1D384Bu};   // the same lake water w
 constexpr ShaderId kSeaNoReflPs = {1136, 0xC1F59F1Bu};  // sea water that never reads the planar reflection (s6 = the scene copy, sky cube s3):
                                                        // Twinbrook's sea; the reflecting ocean (Sunset Valley) is another shader
 constexpr ShaderId kSnowLotPs = {1852, 0x08DF01E8u};   // snowy lot light pass
+constexpr ShaderId kSnowLotCutPs = {1904, 0x998A6795u}; // the same pass on the ground under a rug (footprint texkill on s7, so s8..s12; F7 07/10 10:38)
 constexpr ShaderId kMeltLotPs = {2144, 0x69580706u};   // lot light pass while snow melts (puddles; F7 2026-10-06 00:21): the snowy
                                                        // pass's lamp term (s2 x basis, later x 0.25) with the dry pass's VS c14/c15 uv
 constexpr ShaderId kRoofSnowPs = {4992, 0x3CEB025Eu};  // snowy roofs
@@ -58,6 +59,7 @@ constexpr ShaderId kSeaNoReflVs = {1136, 0xA784C725u}; // the sea water drawn wi
 constexpr ShaderId kWallVs = {1488, 0x1A921AE5u}; // the game's wall mesh (position = stored / 256 in lot space, world rows c8..c10; F7 2026-10-06 21:41, 22:02)
 constexpr ShaderId kLakeWeatherVs = {1208, 0x3123FF89u}; // the lake vertex shader of rain and snow (world-view-projection c4..c7, world c8..c10)
 constexpr ShaderId kSnowLotVs = {1400, 0x9256F0DFu};
+constexpr ShaderId kSnowLotCutVs = {1440, 0xF45FE856u}; // kSnowLotVs + the footprint uv input (v2); its TEXCOORD1 is the same terrain uv (c15/c16)
 constexpr ShaderId kFloorVs = {1492, 0x2BC34FA8u};     // snowy floor tiles
 
 inline uint32_t ShaderHash(const void* code, size_t bytes) {

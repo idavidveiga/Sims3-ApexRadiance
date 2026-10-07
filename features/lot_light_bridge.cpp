@@ -265,7 +265,7 @@ const ShaderCache::Id kWaterWeatherPsId = [] { // the lake pass for the lake wat
 }();
 const ShaderCache::Id kRoofSnowPsId = AddLotShader("NightLighting snowy roofs", kRoofSnowLampsHlsl, "ps_3_0", 1);
 
-enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, Sea, LakeWeather, LotLightSnow, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
+enum class PsClass : uint8_t { Unknown, Other, WorldCandidate, WorldMultiLight, WorldCompact, LotLight, ObjectRig, Roof, Lake, Sea, LakeWeather, LotLightSnow, LotLightSnowCut, LotLightMelt, RoofSnow, WallGain, FloorAtlas };
 
 std::atomic<bool> g_enabled{false};
 bool g_hooksRegistered = false;
@@ -627,6 +627,7 @@ PsClass Classify(IDirect3DPixelShader9* ps) {
                 if (!logged) { logged = true; LOG_INFO("[LotLightBridge] Water: sea without the game's reflection seen (gets the shore reflection pass)"); }
             }
             else if (IsShader(kSnowLotPs, code.data(), size)) c = PsClass::LotLightSnow;
+            else if (IsShader(kSnowLotCutPs, code.data(), size)) c = PsClass::LotLightSnowCut;
             else if (IsShader(kMeltLotPs, code.data(), size)) c = PsClass::LotLightMelt;
             else if (IsShader(kRoofSnowPs, code.data(), size)) c = PsClass::RoofSnow;
             else if (const int k = WallLampConst(reinterpret_cast<const DWORD*>(code.data()), size); k >= 0) {
@@ -762,7 +763,7 @@ VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
             else if (is(kLakeVs)) cls = 2;
             else if (is(kSeaNoReflVs)) cls = 12;
             else if (is(kLakeWeatherVs)) cls = 13;
-            else if (is(kSnowLotVs)) cls = 3;
+            else if (is(kSnowLotVs) || is(kSnowLotCutVs)) cls = 3;
             else if (is(kFloorVs)) cls = 5;
             else {
                 std::vector<DWORD> t(size / 4);
@@ -1747,21 +1748,28 @@ bool PatchLotTerrainMax(std::vector<DWORD>& t, DWORD lastSampler, DWORD newSampl
 }
 bool PatchSnowBytecode(std::vector<DWORD>& t) { return PatchLotTerrainMax(t, 11, 12); }
 
+// The cut variant (kSnowLotCutPs, the ground under a rug): its last sampler is s12, the terrain light goes in s13
+IDirect3DPixelShader9* g_snowCutPs = nullptr;
+bool g_snowCutTried = false;
+
 // Melting snow (kMeltLotPs): the patched copy, made once from the first such shader drawn
 IDirect3DPixelShader9* g_meltPs = nullptr;
 bool g_meltTried = false;
 
-template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) {
+template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw, bool cut = false) {
     if (!g_curVsIsSnowLot) return false;
-    if (!g_snowPs && !g_snowTried) {
-        g_snowTried = true;
+    IDirect3DPixelShader9*& snowPs = cut ? g_snowCutPs : g_snowPs;
+    bool& tried = cut ? g_snowCutTried : g_snowTried;
+    const DWORD terrainSampler = cut ? 13 : 12;
+    if (!snowPs && !tried) {
+        tried = true;
         // patched from the shader the game has bound (this runs only for PsClass::LotLightSnow, an exact match)
         std::vector<DWORD> t = ShaderCode(g_curPs);
-        const bool ok = !t.empty() && PatchSnowBytecode(t) && SUCCEEDED(dev->CreatePixelShader(t.data(), &g_snowPs));
-        if (!ok) g_snowPs = nullptr;
-        LOG_INFO(std::string("[LotLightBridge] Snow: ") + (ok ? "active" : "failed"));
+        const bool ok = !t.empty() && PatchLotTerrainMax(t, terrainSampler - 1, terrainSampler) && SUCCEEDED(dev->CreatePixelShader(t.data(), &snowPs));
+        if (!ok) snowPs = nullptr;
+        LOG_INFO(std::string("[LotLightBridge] Snow") + (cut ? " (ground under rugs)" : "") + ": " + (ok ? "active" : "failed"));
     }
-    if (!g_snowPs) return false;
+    if (!snowPs) return false;
     float v[8];
     if (FAILED(dev->GetVertexShaderConstantF(15, v, 2)) || !Near(v[0], 1.0f / 256.0f) || !Near(v[1], 1.0f / 256.0f)) return false;
     // The terrain light the lot is compared with: the world atlas when it is ready (a lot can reach past its "home"
@@ -1785,8 +1793,8 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw) 
     g_inOwnCall = true;
     {
         // s12 = the terrain light (clamp, linear, linear mips, no sRGB): only the states that differ are set and restored
-        SamplerBind terrainMap(dev, 12, terrain);
-        SetPs(dev, g_snowPs);
+        SamplerBind terrainMap(dev, terrainSampler, terrain);
+        SetPs(dev, snowPs);
         if (atlas) SetVsConst(dev, 15, atlasMap, 1);
         // c4.x scales max(lot map, terrain) only. TerrainConst = the world terrain's LampScale (92582b6 gave terrain and dry lots
         // the daytime lamp term, not this pass: snowy lots lost the street-lamp pool at dusk, a cut at the lot edge, 06/10).
@@ -3244,7 +3252,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
     if (g_curVsIsObject && g_curPsBasis && DrawWindowOutdoor(dev, draw)) return NoteClaim(ClaimSource::WindowOutdoorLight); // experimental, off by default
     if (g_curVsIsObject && DrawIndoorObject(dev, draw)) return NoteClaim(ClaimSource::IndoorObjectSmooth);
     if (g_curVsIsObject && DrawObjectLamp(dev, draw)) return NoteClaim(ClaimSource::OutdoorObjectGroundLight);
-    if (g_curClass == PsClass::LotLightSnow) return DrawLotSnow(dev, draw) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue;
+    if (g_curClass == PsClass::LotLightSnow || g_curClass == PsClass::LotLightSnowCut)
+        return DrawLotSnow(dev, draw, g_curClass == PsClass::LotLightSnowCut) ? NoteClaim(ClaimSource::LotSnowLight) : kContinue;
     if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight || g_curClass == PsClass::WorldCompact) {
         const bool multi = g_curClass == PsClass::WorldMultiLight;
         if (multi && (!g_curVsInfo || !g_curVsInfo->worldMultiLight)) return kContinue;
@@ -3835,7 +3844,7 @@ const char* LightingBloomPath(int rig) {
     if (g_curVsIsSnowCover) return "SnowOnObject";
     if (g_curVsIsSnowRelief) return "SnowOnStair";
     if (g_curVsIsObject) return rig == 0 ? "IndoorObject" : "OutdoorObject";
-    if (g_curClass == PsClass::LotLightSnow) return "SnowLot";
+    if (g_curClass == PsClass::LotLightSnow || g_curClass == PsClass::LotLightSnowCut) return "SnowLot";
     if (g_curClass == PsClass::WorldCandidate || g_curClass == PsClass::WorldMultiLight) return "WorldCandidate";
     if (g_curClass == PsClass::LotLight) return "LotLight";
     return "Other";
@@ -4619,6 +4628,11 @@ void Shutdown(bool keepChunkMaps) {
         g_snowPs = nullptr;
     }
     g_snowTried = false;
+    if (g_snowCutPs) {
+        g_snowCutPs->Release();
+        g_snowCutPs = nullptr;
+    }
+    g_snowCutTried = false;
     if (g_meltPs) {
         g_meltPs->Release();
         g_meltPs = nullptr;
