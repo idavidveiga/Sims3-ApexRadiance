@@ -867,6 +867,7 @@ bool Performance::LotVisibilityOverrideHandledByS3SS() { return LotVisibilityOve
 bool Performance::LotVisibilityOverrideAlreadyExternal() { return LotVisibilityOverride::AlreadyPatchedExternally(); }
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
+std::string Performance::FastCreateAStyleStatus() { return FastCreateAStyle::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
 std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText(); }
 std::string Performance::WindowRepaintStatus() { return WindowRepaint::StatusText(); }
