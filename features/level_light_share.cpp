@@ -5312,6 +5312,7 @@ struct SolveCtx {
     uintptr_t fillLight = 0;
     float fillLamp[3] = {};
     float fillMin = 0.0f;
+    bool fillExact = false; // the game's result is replaced by fillMin (the direct ray was stopped on the lamp's story)
 };
 SolveCtx g_ctx;
 bool g_enterReady = false; // GameWallTest is in (Install)
@@ -6331,7 +6332,7 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
 // Light under balconies: on, and the share of the light at a slab's edge (SetBalconyFill)
 std::atomic<bool> g_fillOn{true};
 std::atomic<float> g_fillStrength{0.45f};
-bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab) {
+bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab, float* edgeW) {
     if (home < 0 || home >= info.level || info.level > 7) return false;
     const uintptr_t mgr = StoryManager(info.tracker, info.level);
     const uintptr_t level = mgr ? LevelFor(mgr) : 0;
@@ -6366,6 +6367,11 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
                     }
                 }
             *slab = depth;
+            if (edgeW) {
+                // the point of the ray just in front of the slab's edge, where the lamp's light meets the edge (world)
+                const float te = el > 1e-4f ? std::max(0.0f, t * (1.0f - std::min(el, depth + 0.05f) / el)) : 0.0f;
+                for (int k = 0; k < 3; ++k) edgeW[k] = pos[k] + te * (sample[k] - pos[k]);
+            }
         }
         return false;
     }
@@ -6376,9 +6382,9 @@ bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* 
     }
     return true;
 }
-bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab) {
+bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, float* slab, float* edgeW) {
     __try {
-        return OutdoorEntryImpl(info, home, light, sample, entry, above, slab);
+        return OutdoorEntryImpl(info, home, light, sample, entry, above, slab, edgeW);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
         return false; // the game's whole-ray test, as before
@@ -6387,6 +6393,43 @@ bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* samp
 
 std::atomic<long> g_aboveTests{0}, g_aboveBlocked{0}; // lower-story lamps above the story's floor, tested on its grid
 std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies: points given a share, game tests raised to it
+// light under balconies, where each lamp x point of an upper story's outdoor room went (FillStatus)
+std::atomic<long> g_fillSeen{0}, g_fillNoFlags{0}, g_fillWallZero{0}, g_fillEntered{0}, g_fillAbove{0}, g_fillSlab{0}, g_fillNoSlab{0}, g_fillNoGrid{0},
+    g_fillGridZero{0}, g_fillMissed{0}, g_fillGameHigher{0};
+std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0};
+std::string FillStatus() {
+    return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, blocked on the lamp's story {}), "
+                       "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), other {} | "
+                       "shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
+                       g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillWallZero.load(),
+                       g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillNoSlab.load(),
+                       g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
+}
+// Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
+// the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
+// (its colour was zeroed): the colour comes back and the game's test that follows ends exactly at the share (it would
+// otherwise let the direct ray through); else the game's test only never ends below it
+void FillShare(const RoomInfo& info, void* light, const float* sample, float slab, float seen, bool exact, float* colour, const float* before) {
+    alignas(16) float pos[4] = {};
+    GridWhy why{};
+    const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
+    const float share = g_fillStrength.load(std::memory_order_relaxed) * (0.55f + 0.45f * std::exp(-slab / 1.5f));
+    const float keep = std::clamp(pass * share * std::min(seen, 1.0f), 0.0f, 1.0f);
+    if (keep <= 0.0f) {
+        g_fillGridZero.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (exact) {
+        for (int i = 0; i < 3; i++) colour[i] = before[i];
+        colour[3] = std::max(colour[3], 0.0f);
+        g_fillExact.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_ctx.fillLight = reinterpret_cast<uintptr_t>(light);
+    std::memcpy(g_ctx.fillLamp, pos, sizeof g_ctx.fillLamp);
+    g_ctx.fillMin = keep;
+    g_ctx.fillExact = exact;
+    g_fillTests.fetch_add(1, std::memory_order_relaxed);
+}
 void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, float* colour) {
     const Cross* cross = FindCross(info, reinterpret_cast<uintptr_t>(light));
     const int home = cross ? cross->floor : -1;
@@ -6394,6 +6437,10 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
     bool culledList = false;
     const bool lit = colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f;
     const float before[3] = {colour[0], colour[1], colour[2]};
+    if (home >= 0 && home < info.level && lit) {
+        g_fillSeen.fetch_add(1, std::memory_order_relaxed);
+        if (!(g_ctx.flags && g_ctx.flags[0])) g_fillNoFlags.fetch_add(1, std::memory_order_relaxed);
+    }
     if (home >= 0 && lit && g_ctx.flags && g_ctx.flags[0]) { // the game tests 2D walls in this batch: so do we, on the lamp's floor
         g_wallTests.fetch_add(1, std::memory_order_relaxed);
         mine = WallPass(info.tracker, info.level, home, cross->outdoor ? cross->room : 0, light, sample, culledList);
@@ -6404,8 +6451,26 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         RayEntry entry;
         bool above = false;
         float slab = -1.0f;
+        if (home < info.level && mine <= 0.0f) g_fillWallZero.fetch_add(1, std::memory_order_relaxed);
+        alignas(16) float edge[8] = {};
+        if (mine <= 0.0f && home < info.level && g_enterReady && !g_ctx.basis && !info.yard && info.grid[0] && g_fillOn.load(std::memory_order_relaxed)) {
+            // Light under balconies, a ray the lamp's own story stops: the walls of that story may stand right under the
+            // balcony (an arcade's arches, its back wall), so the lamp is tested to the slab's edge instead: when it sees the
+            // edge, the edge scatters its share onto the point (FillShare); otherwise it stays dark
+            if (!OutdoorEntry(info, home, light, sample, entry, &above, &slab, edge) && slab >= 0.0f) {
+                std::memcpy(edge + 3, static_cast<const float*>(sample) + 3, 4 * sizeof(float));
+                bool culledEdge = false;
+                const float seen = WallPass(info.tracker, info.level, home, cross->outdoor ? cross->room : 0, light, edge, culledEdge);
+                if (seen > 0.0f) FillShare(info, light, sample, slab, seen, true, colour, before);
+                else g_fillEdgeHidden.fetch_add(1, std::memory_order_relaxed);
+            }
+            slab = -1.0f;
+        }
         if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis) {
-            if (OutdoorEntry(info, home, light, sample, entry, &above, &slab)) {
+            const bool entered = OutdoorEntry(info, home, light, sample, entry, &above, &slab, nullptr);
+            (entered ? g_fillEntered : above ? g_fillAbove : slab >= 0.0f ? g_fillSlab : g_fillNoSlab).fetch_add(1, std::memory_order_relaxed);
+            if (slab >= 0.0f && !info.grid[0]) g_fillNoGrid.fetch_add(1, std::memory_order_relaxed);
+            if (entered) {
                 g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
                 std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
                 std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
@@ -6434,17 +6499,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 // edge, underside and parapet scatter some onto the wall behind. A share of the light is kept, smaller the
                 // deeper behind the edge the ray comes up (smooth, no seam), times this story's walls at their real heights
                 // (GridPass: a real wall in the way still blocks); the game's test that follows never ends below it
-                alignas(16) float pos[4] = {};
-                GridWhy why{};
-                const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
-                const float share = g_fillStrength.load(std::memory_order_relaxed) * (0.55f + 0.45f * std::exp(-slab / 1.5f));
-                const float keep = std::clamp(pass * share, 0.0f, 1.0f);
-                if (keep > 0.0f) {
-                    g_ctx.fillLight = reinterpret_cast<uintptr_t>(light);
-                    std::memcpy(g_ctx.fillLamp, pos, sizeof g_ctx.fillLamp);
-                    g_ctx.fillMin = keep;
-                    g_fillTests.fetch_add(1, std::memory_order_relaxed);
-                }
+                FillShare(info, light, sample, slab, 1.0f, false, colour, before);
             }
         }
     }
@@ -6736,6 +6791,7 @@ template <int I> void __fastcall LightEvalHook(void* light, void*, const float* 
         const ApexCycles timed;
         g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
         g_ctx.yardLight = 0;  // and so does a lamp's skipped wall test (light through doors and windows)
+        if (g_ctx.fillLight) g_fillMissed.fetch_add(1, std::memory_order_relaxed); // the game made no wall test for it
         g_ctx.fillLight = 0;  // and a lamp's share under a balcony
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
@@ -6813,18 +6869,23 @@ bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos
         g_ctx.enterHard = false;
     }
     float fillMin = 0.0f; // light under balconies: the share this lamp keeps whatever the game's test says
+    bool fillExact = false;
     if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed) && g_ctx.fillLight) {
-        if (lightPos && lightPos[0] == g_ctx.fillLamp[0] && lightPos[1] == g_ctx.fillLamp[1] && lightPos[2] == g_ctx.fillLamp[2]) fillMin = g_ctx.fillMin;
+        if (lightPos && lightPos[0] == g_ctx.fillLamp[0] && lightPos[1] == g_ctx.fillLamp[1] && lightPos[2] == g_ctx.fillLamp[2]) fillMin = g_ctx.fillMin, fillExact = g_ctx.fillExact;
         g_ctx.fillLight = 0;
     }
     bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
     if (fillMin > 0.0f && t) {
         const float now = ok && std::isfinite(*t) ? *t : 0.0f;
-        if (now < fillMin) { // never darker than the game's own result
+        if (fillExact) {
             ok = true;
             *t = fillMin;
             g_fillRaised.fetch_add(1, std::memory_order_relaxed);
-        }
+        } else if (now < fillMin) { // never darker than the game's own result
+            ok = true;
+            *t = fillMin;
+            g_fillRaised.fetch_add(1, std::memory_order_relaxed);
+        } else g_fillGameHigher.fetch_add(1, std::memory_order_relaxed);
     }
     if (hard && t && (!ok || *t < 1.0f)) {
         // shaded: when the ray crosses no wall at its real ends (the hard test, no height test, so walls of any height
@@ -7186,6 +7247,7 @@ void RequeueAllRooms(const char* why) {
         for (int level = -4; level <= 7; level++) queued += RequeueStory(trackers[t], level, afterLoad ? live : 0, afterLoad ? &kept : nullptr);
     LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of {} lots light again{}", why, queued, lots,
                          afterLoad ? std::format(" ({} gathered again since the world went live keep their solve)", kept) : std::string()));
+    LOG_INFO("[LevelLightShare] " + FillStatus());
 }
 
 // Rooms at Night (unlit_rooms.cpp): every room (id > 0) of every loaded lot, stories -4..7. The list of (lot, story, id)
@@ -9385,7 +9447,7 @@ std::string DiagText() {
 }
 
 std::string Status() {
-    return std::format("Colour groups committed {} ({} native fallbacks) | ", g_groupCommits.load(), g_groupFallbacks.load()) + std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
+    return std::format("Colour groups committed {} ({} native fallbacks) | ", g_groupCommits.load(), g_groupFallbacks.load()) + FillStatus() + " | " + std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
                        "lamps through stair openings: {} | seamless walls between floors: {}{}{}{}{}",
                        g_installed ? "Active" : "Off", g_shared.load(), g_queued.load(), g_evalClasses.load(), std::size(kClasses), g_wallTests.load(), g_wallBlocked.load(),
                        !g_indoorReady ? std::string("not installed")
