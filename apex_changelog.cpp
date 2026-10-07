@@ -6,6 +6,15 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k281Added[] = {nullptr};
+constexpr const char* k281Improved[] = {
+    "Banding Fix on by default in every profile, with Smooth gradients at 8%",
+    nullptr};
+constexpr const char* k281Fixed[] = {
+    "Doors no longer take the light of the room behind them",
+    "Snowy ground under rugs is no longer darker than the rest of the lot",
+    nullptr};
+
 constexpr const char* k280Added[] = {
     "Light through doors and windows: walled yards without a roof lit only through their openings",
     "Lamp colors stay near lamps: a colored lamp no longer tints far floors and shiny objects",
@@ -110,6 +119,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.8.1", "2026-10-07", k281Added, k281Improved, k281Fixed},
     {"2.8.0", "2026-10-07", k280Added, k280Improved, k280Fixed},
     {"2.7.1", "2026-10-06", k270Added, k270Improved, k271Fixed},
     {"2.7.0", "2026-10-06", k270Added, k270Improved, k270Fixed},
