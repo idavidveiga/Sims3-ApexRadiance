@@ -5315,6 +5315,10 @@ struct Culled {
     size_t n;
 };
 std::vector<Culled> g_culled; // per batch: (light, floor) -> walls of that floor's room 0 between the batch centre and the light
+// The entries in use (07/10, wall-perf): a new batch only resets this count, so the walls' index buffers are reused instead
+// of freed and allocated again for every lamp of every batch; g_culledLast is the entry found last. The same lists in the
+// same order as before: bit-identical.
+size_t g_culledUsed = 0, g_culledLast = 0;
 
 // ---- diagnostics (F8): samples near each light of the active lot, with the game's wall test and ours ----
 // Development build only, and only while armed (2026-09-29; before, every lit cross-floor evaluation of every solve paid
@@ -5377,7 +5381,7 @@ bool BatchCentreFor(const void* sample) {
             for (int k = 0; k < 4; k++) g_batch.c[k] = sum[k] / cnt;
             g_batch.begin = b;
             g_batch.end = e;
-            g_culled.clear();
+            g_culledUsed = 0;
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -6073,19 +6077,27 @@ float CrossLampReachImpl(BYTE* room, void* light, const float* point) {
 
 // Walls of room 0 of `floor` that the game would test for this light in this batch (its own culling), or null = all.
 const Culled* CulledWalls(uintptr_t light, int floor, BYTE* room0, const float* pos) {
-    for (const Culled& c : g_culled)
-        if (c.light == light && c.floor == floor) return &c;
-    if (g_culled.size() > 256) g_culled.clear();
+    if (g_culledLast < g_culledUsed && g_culled[g_culledLast].light == light && g_culled[g_culledLast].floor == floor) return &g_culled[g_culledLast];
+    for (size_t i = 0; i < g_culledUsed; i++)
+        if (g_culled[i].light == light && g_culled[i].floor == floor) return &g_culled[g_culledLast = i];
+    if (g_culledUsed > 256) g_culledUsed = 0;
     const uintptr_t wb = *reinterpret_cast<const uintptr_t*>(room0 + 0x30), we = *reinterpret_cast<const uintptr_t*>(room0 + 0x34);
     const size_t walls = we > wb ? (we - wb) / 4 : 0;
     if (walls > 65536) return nullptr;
-    Culled c{light, floor, std::vector<int>(walls + 1), 0};
-    IntVec v{c.idx.data(), c.idx.data(), c.idx.data() + c.idx.size()}; // room for every wall: FUN_0069dff0 never grows it
+    if (g_culledUsed == g_culled.size()) g_culled.push_back(Culled{0, 0, {}, 0});
+    Culled& c = g_culled[g_culledUsed];
+    if (c.idx.size() < walls + 1) c.idx.resize(walls + 1);
+    IntVec v{c.idx.data(), c.idx.data(), c.idx.data() + walls + 1}; // room for every wall: FUN_0069dff0 never grows it
     reinterpret_cast<WallCull_t>(kWallCull)(room0 + 0x30, &v, g_batch.c, pos);
-    if (v.b != c.idx.data()) return nullptr; // cannot happen with that capacity; if it did, the game owns the memory now
+    if (v.b != c.idx.data()) { // cannot happen with that capacity; if it did, the game owns the memory now
+        new (&c.idx) std::vector<int>(); // forget the buffer without freeing it (as before, where it was dropped with the entry)
+        return nullptr;
+    }
+    c.light = light;
+    c.floor = floor;
     c.n = static_cast<size_t>(v.e - v.b);
-    g_culled.push_back(std::move(c));
-    return &g_culled.back();
+    g_culledLast = g_culledUsed;
+    return &g_culled[g_culledUsed++];
 }
 
 // Share of the light that passes the walls of the floors from the lamp's floor to the room's floor (room's floor
