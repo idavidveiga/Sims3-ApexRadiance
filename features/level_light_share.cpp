@@ -269,6 +269,7 @@ using LightEval_t = void(__thiscall*)(void* light, const float* sample, const fl
 using WallTest_t = bool(__thiscall*)(void* room, void* indexVec, const float* lightPos, const void* sample, float* transmission);
 using LightPos_t = void(__thiscall*)(void* light, float* out);
 thread_local BYTE* t_wallRoom = nullptr; // the room whose wall pass runs on this thread (WallPassHook; the F7 wall notes)
+thread_local uintptr_t t_lastWall = 0; // the wall whose samples were laid out last on this thread (the recording's wall light)
 using WallCull_t = void(__thiscall*)(void* walls, void* out, const float* from, const float* lightPos);
 using LightBright_t = char(__fastcall*)(void* light);
 using AddRoomLight_t = void(__thiscall*)(void* room, void* light);
@@ -2309,6 +2310,7 @@ void DropWallSamples(uintptr_t batch, float dy) {
 
 void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
+    t_lastWall = reinterpret_cast<uintptr_t>(wall);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
     // outside walls lit where they are drawn: only with the option (the first, unconditional version of 06/10 evening broke the
@@ -2369,9 +2371,69 @@ int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
     }
 }
 
+// ---- The wall light in a recording (06/10, user: "improve the recording, then I show you recorded"): while a recording
+// runs, every wall piece the game lights (WallSolveHook, right after its solve) is read back from the atlas it just wrote:
+// for each column the brightest sample's height, and for the piece its brightest column with the nearest lamp of the room,
+// so the recording shows where the light peaks on a wall against the lamp's height, story by story, outdoors and indoors.
+std::atomic<bool> g_recordWalls{false}; // mirrors Recorder::Active() (set on the render thread)
+std::mutex g_wallLightMx;
+std::vector<std::string> g_wallLightLines; // for the recording (render thread flushes them)
+std::atomic<long> g_wallLightCount{0};
+struct WallPeak {
+    float x = 0, y = 0, z = 0, lum = 0, base = 0, lampY = 0, lampD = 0, lampX = 0, lampZ = 0;
+    int story = -99, roomId = -1, rows = 0;
+    bool outdoor = false, lamp = false;
+};
+bool ReadWallPeak(const BYTE* room, uintptr_t batch, const void* atlas, uintptr_t wallBaseFrom, WallPeak& pk) { // POD only (SEH)
+    __try {
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 16) return false;
+        const BYTE* base = *reinterpret_cast<BYTE* const*>(atlas);
+        const int pitch = *reinterpret_cast<const int*>(reinterpret_cast<const BYTE*>(atlas) + 4);
+        if (!base || pitch <= 0 || pitch > 65536) return false;
+        for (uintptr_t p = b; p < e; p += 0x30) {
+            const float* s = reinterpret_cast<const float*>(p);
+            const int col = *reinterpret_cast<const uint16_t*>(p + 0x20), row = *reinterpret_cast<const uint16_t*>(p + 0x22);
+            const uint32_t c = *reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(row) * pitch + static_cast<size_t>(col) * 4);
+            const float lum = 0.2126f * ((c >> 16) & 255) + 0.7152f * ((c >> 8) & 255) + 0.0722f * (c & 255);
+            if (lum > pk.lum) pk.lum = lum, pk.x = s[0], pk.y = s[1], pk.z = s[2];
+            pk.rows++;
+        }
+        pk.story = *reinterpret_cast<const int*>(*reinterpret_cast<const uintptr_t*>(room) + 0x88);
+        pk.roomId = *reinterpret_cast<const int*>(room + 0xC);
+        pk.outdoor = room[0x18] != 0;
+        pk.base = wallBaseFrom ? *reinterpret_cast<const float*>(wallBaseFrom + 0x114) : 0.0f;
+        // the nearest lamp of the room's list to the brightest sample (along the ground)
+        const uintptr_t* lb = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
+        const uintptr_t* le = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+        if (lb && le > lb && le - lb < 512)
+            for (const uintptr_t* q = lb; q < le; q++) {
+                if (!*q) continue;
+                const float* lp = reinterpret_cast<const float*>(*q + 0x120);
+                const float dx = lp[0] - pk.x, dz = lp[2] - pk.z, d = std::sqrt(dx * dx + dz * dz);
+                if (!pk.lamp || d < pk.lampD) pk.lamp = true, pk.lampD = d, pk.lampX = lp[0], pk.lampY = lp[1], pk.lampZ = lp[2];
+            }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void NoteWallLight(const BYTE* room, void* batch, void* atlas, uintptr_t wall) {
+    if (g_wallLightCount.load(std::memory_order_relaxed) > 3000) return;
+    WallPeak pk;
+    if (!ReadWallPeak(room, reinterpret_cast<uintptr_t>(batch), atlas, wall, pk) || pk.lum < 30.0f || !pk.lamp || pk.lampD > 4.0f) return;
+    g_wallLightCount.fetch_add(1, std::memory_order_relaxed);
+    std::string line = std::format("[wall light] story {} room {}{}: wall base {:.3f}; brightest point at y {:.3f} ({:+.3f} m over the base, light {:.0f}) at ({:.2f}, {:.2f}); "
+                                   "nearest lamp at y {:.3f} ({:.2f} m away along the ground): peak {:+.3f} m from the lamp",
+                                   pk.story, pk.roomId, pk.outdoor ? " (outdoor)" : "", pk.base, pk.y, pk.y - pk.base, pk.lum, pk.x, pk.z, pk.lampY, pk.lampD, pk.y - pk.lampY);
+    std::lock_guard<std::mutex> lk(g_wallLightMx);
+    if (g_wallLightLines.size() < 4096) g_wallLightLines.push_back(std::move(line));
+}
+
 void __fastcall WallSolveHook(BYTE* room, void*, void* batch, void* atlas, char* flags, void* sampler, char ambient) {
     const auto solve = reinterpret_cast<WallSolve_t>(kWallSolve);
     solve(room, batch, atlas, flags, sampler, ambient);
+    if (g_recordWalls.load(std::memory_order_relaxed) && room && !g_ghostSolve) NoteWallLight(room, batch, atlas, t_lastWall);
     if (ThreadId() != g_gatherThread.load(std::memory_order_relaxed)) return;
     const PieceNote p = g_piece;
     g_piece = PieceNote{};
@@ -6312,6 +6374,17 @@ bool BasisFloorGuardReady() {
 }
 
 void OnPresent() {
+    // the wall light of a recording (NoteWallLight): its lines go in on this thread
+    {
+        const bool rec = Recorder::Active();
+        if (g_recordWalls.exchange(rec) != rec && rec) g_wallLightCount.store(0);
+        std::vector<std::string> lines;
+        {
+            std::lock_guard<std::mutex> lk(g_wallLightMx);
+            lines.swap(g_wallLightLines);
+        }
+        if (rec) for (const std::string& l : lines) Recorder::Note(l);
+    }
     const DWORD structureNow = GetTickCount();
     if (g_structurePending.load(std::memory_order_acquire) && RoomAmbientPolicy::StructureRefreshDue(structureNow, g_structureRefreshAt)) {
         std::vector<uintptr_t> rooms;
