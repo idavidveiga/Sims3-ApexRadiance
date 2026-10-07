@@ -743,6 +743,18 @@ float g_cam[3] = {};
 float g_lampData[33][4] = {}; // 16 x pos+radius, 16 x colour, params
 int g_lampCount = 0;
 int g_lampFrame = 0;
+// Lamp cones (07/10, user: the brick fence face and objects lit by a wall sconce they sit far off its axis; F8 10-57-41).
+// The game's cone laws: type 5 FUN_006BC940 (t = s (a.u - o) per cone, a1 +0x1A0 / o1 +0x174, a2 +0x190 / o2 +0x170,
+// s = [0x011D11A0] = 5 (static init 0x00F81EF0 from [0x00FBD498]), u = point - lamp normalised (0x006BE342); full at
+// t >= 1 on either cone, the spill S (+0x150, per channel) when both t <= 0, S (1 - t) + t between with t = the larger),
+// type 4 FUN_006BDA10 (sat(sc (a.u - o)), a +0x170, sc +0x154, o +0x158). Kept as c = (-s a, -s o):
+// t = dp3(l, c.xyz) + c.w, l = point -> lamp normalised. The default (t = 1, spill 1) is a lamp with no cone.
+struct LampCone {
+    float c1[4] = {0.0f, 0.0f, 0.0f, 1.0f}, c2[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float spill = 1.0f; // S as one value (its luminance) for the per-pixel lamps
+};
+LampCone g_lampCone[16];     // the cones of the lamps SelectLamps picked (as g_lampData[0..15])
+uintptr_t g_coneScaleAt = 0; // 0x011D11A0 on fixed Steam addresses, else s = 5 (the value the game sets)
 
 VsInfo* ClassifyVs(IDirect3DVertexShader9* vs) {
     if (!vs) return nullptr;
@@ -837,6 +849,7 @@ bool EnumerateLights() {
         g_enumFn = GameAddr::Get(GameAddr::Id::EnumLights);
         static const BYTE expect[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00}; // Steam (checked on Steam)
         g_enumOk = g_enumFn && (!GameAddr::IsFixed() || std::memcmp(reinterpret_cast<const void*>(g_enumFn), expect, sizeof(expect)) == 0);
+        g_coneScaleAt = GameAddr::IsFixed() ? 0x011D11A0 : 0; // the cone scale (LampCone), read where the Steam build keeps it
     }
     if (!g_enumOk) return false;
     g_enumLights.clear();
@@ -848,7 +861,7 @@ bool EnumerateLights() {
     }
 }
 
-bool ReadLamp(uintptr_t L, float out[8]) {
+bool ReadLamp(uintptr_t L, float out[8], LampCone& cone) { // POD only (SEH)
     __try {
         const BYTE f = *reinterpret_cast<const BYTE*>(L + 0x100);
         if (!(f & 0x01) || !(f & 0x20)) return false; // alive and lit
@@ -873,6 +886,28 @@ bool ReadLamp(uintptr_t L, float out[8]) {
         radius = radius < 2.0f ? 2.0f : (radius > 25.0f ? 25.0f : radius);
         out[0] = head[0]; out[1] = head[1]; out[2] = head[2]; out[3] = radius;
         out[4] = col[0] * inten * fade; out[5] = col[1] * inten * fade; out[6] = col[2] * inten * fade; out[7] = 0;
+        LampCone c;
+        if (type == 5) {
+            float k = 5.0f;
+            if (g_coneScaleAt) {
+                const float v = *reinterpret_cast<const float*>(g_coneScaleAt);
+                if (v > 0.0f && v < 100.0f) k = v;
+            }
+            const float *a1 = reinterpret_cast<const float*>(L + 0x1A0), *a2 = reinterpret_cast<const float*>(L + 0x190), *s = reinterpret_cast<const float*>(L + 0x150);
+            for (int i = 0; i < 3; i++) c.c1[i] = -k * a1[i], c.c2[i] = -k * a2[i];
+            c.c1[3] = -k * *reinterpret_cast<const float*>(L + 0x174);
+            c.c2[3] = -k * *reinterpret_cast<const float*>(L + 0x170);
+            c.spill = std::clamp(s[0] * 0.2126f + s[1] * 0.7152f + s[2] * 0.0722f, 0.0f, 1.0f);
+        } else if (type == 4) {
+            const float* a = reinterpret_cast<const float*>(L + 0x170);
+            const float sc = *reinterpret_cast<const float*>(L + 0x154), o = *reinterpret_cast<const float*>(L + 0x158);
+            for (int i = 0; i < 3; i++) c.c1[i] = c.c2[i] = -sc * a[i];
+            c.c1[3] = c.c2[3] = -sc * o;
+            c.spill = 0.0f;
+        }
+        bool finite = std::isfinite(c.spill);
+        for (int i = 0; i < 4; i++) finite = finite && std::isfinite(c.c1[i]) && std::isfinite(c.c2[i]);
+        cone = finite ? c : LampCone{};
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -883,6 +918,7 @@ bool ReadLamp(uintptr_t L, float out[8]) {
 // lamp tracking in one pass over the enumeration (ReadEnumeratedLamps, every 20 frames); a rebuild that changes it starts
 // a new generation of the SelectLamps memo.
 std::vector<std::array<float, 8>> g_allLamps;
+std::vector<LampCone> g_allCones; // the cone of each lamp of g_allLamps, at the same index
 uint32_t g_lampMemoGen = 1; // generation of the SelectLamps memo (see LampMemo); 0 marks an empty entry
 
 // ---- Changes of outdoor lot lamps (Build mode, lamps switching by themselves) and the snapshot of what the terrain
@@ -1116,15 +1152,22 @@ void TrackLampSwitches() {
 void ReadEnumeratedLamps(bool rebuildAll) {
     TrackLampSwitches();
     static std::vector<std::array<float, 8>> previous;
+    static std::vector<LampCone> previousCones;
     if (rebuildAll) {
         previous.swap(g_allLamps);
         g_allLamps.clear();
+        previousCones.swap(g_allCones);
+        g_allCones.clear();
     }
     g_lotLampCur.clear();
     for (uintptr_t L : g_enumLights) {
         if (rebuildAll) {
             std::array<float, 8> v;
-            if (ReadLamp(L, v.data())) g_allLamps.push_back(v);
+            LampCone cone;
+            if (ReadLamp(L, v.data(), cone)) {
+                g_allLamps.push_back(v);
+                g_allCones.push_back(cone);
+            }
         }
         LotLampState s;
         if (ReadLotLamp(L, s)) {
@@ -1134,8 +1177,9 @@ void ReadEnumeratedLamps(bool rebuildAll) {
     }
     if (rebuildAll) {
         g_lampCount = static_cast<int>(g_allLamps.size());
-        // the SelectLamps memo stays valid only while the list is the same, bit for bit and in the same order
-        if (g_allLamps.size() != previous.size() || (!g_allLamps.empty() && std::memcmp(g_allLamps.data(), previous.data(), g_allLamps.size() * sizeof(g_allLamps[0])) != 0))
+        // the SelectLamps memo stays valid only while the list (and its cones) is the same, bit for bit and in the same order
+        if (g_allLamps.size() != previous.size() || (!g_allLamps.empty() && std::memcmp(g_allLamps.data(), previous.data(), g_allLamps.size() * sizeof(g_allLamps[0])) != 0) ||
+            g_allCones.size() != previousCones.size() || (!g_allCones.empty() && std::memcmp(g_allCones.data(), previousCones.data(), g_allCones.size() * sizeof(LampCone)) != 0))
             g_lampMemoGen++;
     }
     std::stable_sort(g_lotLampCur.begin(), g_lotLampCur.end(), [](const LampSig& a, const LampSig& b) { return a.first < b.first; });
@@ -1410,9 +1454,11 @@ struct LampMemo {
     uint32_t x = 0, z = 0, maxScore = 0;
     int picked = 0, candidates = 0;
     float rows[32][4] = {}; // g_lampData[0..31] as SelectLamps leaves them
+    unsigned char cones[16 * sizeof(LampCone)] = {}; // g_lampCone as SelectLamps leaves it (bytes: LampCone's defaults would move the memo out of .bss)
 };
 constexpr uint32_t kLampMemoSize = 512; // direct-mapped, indexed by the top 9 bits of a hash
 static_assert(kLampMemoSize == (1u << (32 - 23)));
+static_assert(sizeof(LampMemo::cones) == sizeof(g_lampCone));
 LampMemo g_lampMemo[kLampMemoSize];
 uint32_t g_lampMemoHits = 0, g_lampMemoMisses = 0;
 
@@ -1431,6 +1477,7 @@ int SelectLamps(float x, float z, float maxScore) {
         g_lampMemoHits++;
         g_lastLampCandidates = e.candidates;
         std::memcpy(g_lampData, e.rows, sizeof(e.rows));
+        std::memcpy(g_lampCone, e.cones, sizeof(e.cones));
         return e.picked;
     }
     g_lampMemoMisses++;
@@ -1442,6 +1489,7 @@ int SelectLamps(float x, float z, float maxScore) {
     e.picked = m;
     e.candidates = g_lastLampCandidates;
     std::memcpy(e.rows, g_lampData, sizeof(e.rows));
+    std::memcpy(e.cones, g_lampCone, sizeof(e.cones));
     return m;
 }
 
@@ -1466,12 +1514,27 @@ int SelectLampsScan(float x, float z, float maxScore) {
     const int m = std::min(16, n);
     std::partial_sort(c, c + m, c + n, [](const Cand& a, const Cand& b) { return a.score < b.score; });
     std::memset(g_lampData, 0, sizeof(float) * 4 * 32);
+    for (LampCone& lc : g_lampCone) lc = LampCone{};
     for (int k = 0; k < m; k++) {
         std::memcpy(g_lampData[k], c[k].v->data(), 16);
         std::memcpy(g_lampData[16 + k], c[k].v->data() + 4, 16);
+        const size_t i = static_cast<size_t>(c[k].v - g_allLamps.data());
+        if (i < g_allCones.size()) g_lampCone[k] = g_allCones[i];
     }
     return m;
 }
+
+// The cone factor (LampCone) of a lamp at its head `head` for a point p: S + (1 - S) sat(max(t1, t2)); 1 for a lamp with no cone
+float LampConeAt(const LampCone& c, const float* head, const float* p) {
+    float l[3] = {head[0] - p[0], head[1] - p[1], head[2] - p[2]};
+    const float d = std::sqrt(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]);
+    if (!(d > 1e-3f)) return 1.0f;
+    for (float& v : l) v /= d;
+    const float t1 = l[0] * c.c1[0] + l[1] * c.c1[1] + l[2] * c.c1[2] + c.c1[3], t2 = l[0] * c.c2[0] + l[1] * c.c2[1] + l[2] * c.c2[2] + c.c2[3];
+    return c.spill + (1.0f - c.spill) * std::clamp(std::max(t1, t2), 0.0f, 1.0f);
+}
+bool HasCone(const LampCone& c) { return c.spill < 1.0f || c.c1[3] != 1.0f || c.c2[3] != 1.0f; }
+bool g_lampConeLogged = false, g_fenceConeLogged = false; // render thread
 
 template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw);
 
@@ -2085,10 +2148,14 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     // objects; the atlas then only on faces turned up. Without a readable centre: no lamps and the atlas on every face, as
     // before.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
-    float lamps[1 + 2 * N][4] = {}, oldLamps[1 + 2 * N][4] = {}, weight[4] = {0.0f, 1.0f, 1.0f, 0.0f}, oldWeight[4] = {};
+    // rows: (0, strength, 0, 1e-4), N x (pos, 1/R^2) (colour, spill), then N x the two cones (PatchInstancedLamps coneConst =
+    // lampConst + 2N: one upload covers both blocks)
+    constexpr unsigned kLampRows = 1 + 4 * N;
+    float lamps[kLampRows][4] = {}, oldLamps[kLampRows][4] = {}, weight[4] = {0.0f, 1.0f, 1.0f, 0.0f}, oldWeight[4] = {};
     if (p.inst.pixelLamps) {
         lamps[0][3] = 1e-4f;
         for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
+        for (unsigned k = 0; k < N; k++) lamps[2 + 2 * k][3] = lamps[1 + 2 * N + 2 * k][3] = lamps[2 + 2 * N + 2 * k][3] = 1.0f; // no cone
         const GroupCentre* g = g_objPixelLamps.load(std::memory_order_relaxed) ? InstancedGroupCentre(dev) : nullptr;
         if (g) {
             const int n = SelectLamps(g->x, g->z, 40.0f + std::min(g->ext, 60.0f));
@@ -2110,6 +2177,15 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
                 lamps[2 + 2 * used][0] = col[0];
                 lamps[2 + 2 * used][1] = col[1];
                 lamps[2 + 2 * used][2] = col[2];
+                // its cones (07/10): the fence face 47 deg or more off a sconce's axis takes only its spill, as in the game
+                const LampCone& cone = g_lampCone[k];
+                lamps[2 + 2 * used][3] = cone.spill;
+                std::memcpy(lamps[1 + 2 * N + 2 * used], cone.c1, 16);
+                std::memcpy(lamps[2 + 2 * N + 2 * used], cone.c2, 16);
+                if (!g_fenceConeLogged && HasCone(cone)) {
+                    g_fenceConeLogged = true;
+                    LOG_INFO(std::format("[LotLightBridge] Fence/stairs: per-pixel lamps follow their cones (first: the lamp at ({:.1f} {:.1f} {:.1f}), spill {:.3f})", pr[0], pr[1], pr[2], cone.spill));
+                }
                 used++;
             }
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed), g_objPixelLampStrength.load(std::memory_order_relaxed)) *
@@ -2123,7 +2199,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             weight[0] = 1.0f;
             weight[1] = 0.0f;
         }
-        dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+        dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], kLampRows);
         dev->GetPixelShaderConstantF(p.inst.groundWeightConst, oldWeight, 1);
     }
     IDirect3DPixelShader9* original = g_curPs;
@@ -2133,7 +2209,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPsConst(dev, p.inst.atlasConst, c, 1);
         SetPsConst(dev, p.inst.strengthConst, s, 1);
         if (p.inst.pixelLamps) {
-            SetPsConst(dev, p.inst.lampParamConst, &lamps[0][0], 1 + 2 * N);
+            SetPsConst(dev, p.inst.lampParamConst, &lamps[0][0], kLampRows);
             SetPsConst(dev, p.inst.groundWeightConst, weight, 1);
         }
         SetPs(dev, p.ps);
@@ -2141,7 +2217,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPs(dev, original);
         if (p.inst.pixelLamps) {
             SetPsConst(dev, p.inst.groundWeightConst, oldWeight, 1);
-            SetPsConst(dev, p.inst.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
+            SetPsConst(dev, p.inst.lampParamConst, &oldLamps[0][0], kLampRows);
         }
         SetPsConst(dev, p.inst.strengthConst, oldB, 1);
         SetPsConst(dev, p.inst.atlasConst, oldA, 1);
@@ -2251,7 +2327,7 @@ std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::Objec
 // (LevelLightShare::WallBlocks, user 05/10): a lamp with an outside wall between it and the object's middle (its origin +
 // 0.5 m) is left out, and the next one takes its slot. groundShare (left as it is when no lamp is near) = the share of
 // the nearby lamps' light that is not blocked: the ground light (the atlas, which has no walls) is scaled by it. Fills
-// lamps[1 + 2 k] = (pos, 1/R^2) and lamps[2 + 2 k] = (colour) for the lamps kept; returns how many.
+// lamps[1 + 2 k] = (pos, 1/R^2) and lamps[2 + 2 k] = (colour x its cone factor at the object) for the lamps kept; returns how many.
 int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundShare, float nearSkip) {
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
     int nLamps = 0;
@@ -2263,7 +2339,13 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
         const float* col = g_lampData[16 + k];
         const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
         const float dx = pr[0] - obj[0], dy = pr[1] - obj[1], dz = pr[2] - obj[2];
-        const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
+        // the lamp's cones at the object's middle (07/10): one factor per object, as the game's own rule gives it
+        const float cone = LampConeAt(g_lampCone[k], pr, obj);
+        if (cone < 0.999f && !g_lampConeLogged) {
+            g_lampConeLogged = true;
+            LOG_INFO(std::format("[LotLightBridge] Per-pixel lamps follow their cones (first: the lamp at ({:.1f} {:.1f} {:.1f}) gives {:.2f} at the object at ({:.1f} {:.1f} {:.1f}))", pr[0], pr[1], pr[2], cone, obj[0], obj[1], obj[2]));
+        }
+        const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) * cone / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
         all += w;
         if (LevelLightShare::WallBlocks(pr, obj, nearSkip)) continue;
         seen += w;
@@ -2273,9 +2355,9 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
         lamps[1 + 2 * slot][1] = pr[1];
         lamps[1 + 2 * slot][2] = pr[2];
         lamps[1 + 2 * slot][3] = 1.0f / (r * r);
-        lamps[2 + 2 * slot][0] = col[0];
-        lamps[2 + 2 * slot][1] = col[1];
-        lamps[2 + 2 * slot][2] = col[2];
+        lamps[2 + 2 * slot][0] = col[0] * cone;
+        lamps[2 + 2 * slot][1] = col[1] * cone;
+        lamps[2 + 2 * slot][2] = col[2] * cone;
     }
     if (all > 1e-5f) groundShare = std::clamp(seen / all, 0.0f, 1.0f);
     return nLamps;
@@ -4208,6 +4290,8 @@ void OnWorldChanged() {
     // A direct lamp pool/memo belongs to this world too. Never illuminate new
     // geometry with old-world rows while waiting for a successful enumeration.
     g_allLamps.clear();
+    g_allCones.clear();
+    for (LampCone& c : g_lampCone) c = LampCone{};
     g_lampCount = g_lastLampCandidates = 0;
     std::memset(g_lampData, 0, sizeof g_lampData);
     g_lampMemoGen = 1;

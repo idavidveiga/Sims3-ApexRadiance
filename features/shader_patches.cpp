@@ -896,6 +896,7 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
     out.atlasConst = cA;
     out.strengthConst = cB;
     out.pixelLamps = false;
+    out.coneConst = 0;
     t[tc1Dcl] = (t[tc1Dcl] & ~0x000F0000u) | 0x000F0000u; // vT.xy -> vT (zw = world xz)
     const Ins& A = ins[add];
     t[A.at + slot] = Src(kTemp, T); // add rD.xyz, rS, vC  ->  add rD.xyz, rS, rT
@@ -903,14 +904,15 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
     // height in TEXCOORD2, the same lamps as objects (PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2 at the
     // pixel), and the ground atlas only on faces turned up (the fence tops: x sat(N.y)), since the atlas is the light
     // lying on the ground and has no direction. T = max(vC + lamps x cS.y, atlas x sat(N.y) x cB.x).
-    if (tc2Reg >= 0 && u.maxConst + 4 + 2 * kObjectPixelLamps < 224 && u.maxTemp + 7 < 32) {
-        const DWORD cH = cA + 2, cS = cA + 3, cL = cA + 4;
+    if (tc2Reg >= 0 && u.maxConst + 4 + 4 * kObjectPixelLamps < 224 && u.maxTemp + 7 < 32) {
+        const DWORD cH = cA + 2, cS = cA + 3, cL = cA + 4, cK = cL + 2 * kObjectPixelLamps;
         const DWORD N = T + 1, G = T + 2, P = T + 3, LA = T + 4, LB = T + 5, Q = T + 6, V2 = static_cast<DWORD>(tc2Reg);
         constexpr DWORD kNeg = 0x01000000u, kNrmOp = 0x24;
         out.pixelLamps = true;
         out.lampParamConst = cS;
         out.lampConst = cL;
         out.groundWeightConst = cH;
+        out.coneConst = cK;
         t[tc2Dcl] = (t[tc2Dcl] & ~0x000F0000u) | 0x000F0000u; // vT2.xyz -> vT2 (w = world y)
         std::vector<DWORD> code = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                                    Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
@@ -921,7 +923,7 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
                                    Op(kMov, 2), Dst(kTemp, P, 0x5), Src(kInput, V, 0xFA /* zzww: x = world x, z = world z */),
                                    Op(kMov, 2), Dst(kTemp, P, 0x2), Src(kInput, V2, kSwzW)};
         for (DWORD k = 0; k < kObjectPixelLamps; k++) {
-            const DWORD cp = cL + 2 * k, cc = cp + 1;
+            const DWORD cp = cL + 2 * k, cc = cp + 1, k1 = cK + 2 * k, k2 = k1 + 1;
             code.insert(code.end(), {Op(kAdd, 3), Dst(kTemp, LA, 0x7), Src(kConst, cp), Src(kTemp, P) | kNeg,      // l = lamp - pixel
                                      Op(kDp3, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA), Src(kTemp, LA),             // d^2
                                      Op(kMax, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA, kSwzW), Src(kConst, cS, kSwzW),
@@ -931,7 +933,19 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
                                      Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LA, kSwzW), Src(kConst, cp, kSwzW),
                                      Op(kAdd, 3), Dst(kTemp, LB, 0x2, true), Src(kTemp, LB, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
                                      Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LB, kSwzY), Src(kTemp, LB, kSwzY),
-                                     Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, kSwzY)});
+                                     Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, kSwzY),
+                                     // the lamp's cones (07/10, user: the brick fence face lit by a sconce it sits 47 deg or more
+                                     // off; the game gives it only the spill there, FUN_006BC940): f = S + (1 - S) sat(max(t1, t2)),
+                                     // t = l.k.xyz + k.w (lot_light_bridge LampCone), S = cc.w. LB.z / LB.w are free after the
+                                     // normalize; each instruction reads one constant register.
+                                     Op(kDp3, 3), Dst(kTemp, LB, 0x4), Src(kTemp, LA), Src(kConst, k1),
+                                     Op(kAdd, 3), Dst(kTemp, LB, 0x4), Src(kTemp, LB, 0xAA /* z */), Src(kConst, k1, kSwzW),
+                                     Op(kDp3, 3), Dst(kTemp, LB, 0x8), Src(kTemp, LA), Src(kConst, k2),
+                                     Op(kAdd, 3), Dst(kTemp, LB, 0x8), Src(kTemp, LB, kSwzW), Src(kConst, k2, kSwzW),
+                                     Op(kMax, 3), Dst(kTemp, LB, 0x4, true), Src(kTemp, LB, 0xAA), Src(kTemp, LB, kSwzW),
+                                     Op(kMad, 4), Dst(kTemp, LB, 0x8), Src(kTemp, LB, 0xAA), Src(kConst, cc, kSwzW) | kNeg, Src(kTemp, LB, 0xAA), // t (1 - S)
+                                     Op(kAdd, 3), Dst(kTemp, LB, 0x4), Src(kTemp, LB, kSwzW), Src(kConst, cc, kSwzW),                            // S + t (1 - S)
+                                     Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, 0xAA)});
             if (k == 0) code.insert(code.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX)});
             else code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX), Src(kTemp, Q)});
         }
