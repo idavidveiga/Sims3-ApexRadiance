@@ -373,7 +373,7 @@ void LoadSettings() {
         u.sidebarCollapsed = (*ui)["sidebar_collapsed"].value_or(false);
         u.changelogSeen = (*ui)["changelog_seen"].value_or(std::string());
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
-        u.language = lang == "en" ? 0 : lang == "pt" ? 1 : lang == "es" ? 2 : lang == "fr" ? 3 : -1;
+        u.language = I18n::FromCode(lang); // "auto" or an unknown code = -1 (Windows' language)
         I18n::SetChoice(u.language);
         std::lock_guard<std::mutex> lock(g_uiLock);
         g_ui = u;
@@ -452,8 +452,7 @@ bool Save(std::string* error) {
         ui.insert("screenshot_folder", std::string(u.screenshotToApexFolder ? "apex" : "game"));
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
         if (!u.changelogSeen.empty()) ui.insert("changelog_seen", u.changelogSeen);
-        static constexpr const char* kLanguageKeys[] = {"en", "pt", "es", "fr"};
-        ui.insert("language", u.language >= 0 && u.language < 4 ? kLanguageKeys[u.language] : "auto");
+        ui.insert("language", u.language >= 0 && u.language < static_cast<int>(I18n::Lang::Count) ? I18n::Code(static_cast<I18n::Lang>(u.language)) : "auto");
         root.insert_or_assign("ui", std::move(ui));
 
 
