@@ -11,6 +11,8 @@ namespace CrashReport {
 // Sets the unhandled-exception filter (keeps the previous one and calls it after writing the report). Call it once the
 // game has started (after its own start-up code, which may set a filter too).
 void Install();
+// Sets Apex's terminate handler on the calling thread (MSVC keeps it per thread); first line of every Apex thread body
+void ThreadStart();
 // Takes the filter back when another module replaced it (that one then runs after the report); pump thread, every second
 void Refresh();
 // The Apex features on right now (one line); the pump thread refreshes it, the report copies it
