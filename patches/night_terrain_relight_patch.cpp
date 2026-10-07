@@ -414,6 +414,13 @@ alignas(16) float g_bakeStreetMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 alignas(16) float g_bakeLotMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 uintptr_t kBakeColourSite = 0; // 0x00C2950F
 const std::vector<BYTE> kBakeColourOrig = {0x0F, 0x28, 0x87, 0xF0, 0x00, 0x00, 0x00};
+// Lamps with cones in the bake (07/10, user: the lawn, the deck and the fence caps greened by a wall sconce aimed down the
+// wall; F8 10-57-41). The bake gives every light only its position, its colour and a weight (0xC294E6..0xC295B7), no
+// cone, so a type-5 sconce stamps its full colour all round. The game's own cone law (FUN_006BC940) gives the points off
+// its cones only the spill +0x150 (per channel; 16-byte aligned: the game reads it with movaps at 0x006BCA6B): the stub
+// stamps type-5 lot lamps at their spill. The pool right under the lamp comes from the room-solve map, which has the cones.
+// The upper-floor gate mirrors it (LevelLightShare::SetBakeConeSpill).
+volatile bool g_bakeConeSpill = true;
 bool g_bakeGainInstalled = false;
 float g_bakeGainSeen[2] = {1.0f, 1.0f}; // street / lot gains the multipliers hold
 float g_tintSeen[2] = {1.0f, 1.0f};     // street / lot lamp colours the stock lamps were last re-coloured with
@@ -428,6 +435,12 @@ __declspec(naked) void BakeColourStub() {
         ret
     lot:
         mulps xmm0, xmmword ptr [g_bakeLotMul]
+        cmp byte ptr [g_bakeConeSpill], 0
+        je done
+        cmp dword ptr [edi+0xB0], 5           // type 5: a lamp with cones
+        jne done
+        mulps xmm0, xmmword ptr [edi+0x150]   // its spill, per channel
+    done:
         ret
     }
 }
@@ -1937,6 +1950,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             g_bakeGainInstalled = MemPatch::WriteBytes(kBakeColourSite, bakeBytes, &patchedLocations, &kBakeColourOrig);
             if (g_bakeGainInstalled) FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(kBakeColourSite), kBakeColourOrig.size());
         }
+        LevelLightShare::SetBakeConeSpill(g_bakeGainInstalled && g_bakeConeSpill);
+        if (g_bakeGainInstalled && g_bakeConeSpill) LOG_INFO("[NightTerrainRelight] Terrain bake: lamps with cones (type 5) are stamped at their spill");
         if (!g_bakeGainInstalled) LOG_WARNING("[NightTerrainRelight] Terrain bake colour code differs or was not found: street / lot lamp brightness on the ground not available");
         g_lotLampsSeen = g_lotLamps; // installed with the current value: no "switch changed" rebuild for it
 
@@ -2104,6 +2119,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         patchedLocations.clear();
         g_chunkHookInstalled = false;
         g_bakeGainInstalled = false;
+        LevelLightShare::SetBakeConeSpill(false);
         // The chunk re-render call is the game's own again: a local relight in progress is dropped (the chunk in flight, if
         // any, is rendered by the game at its next update). Its lamps were never marked as baked: the change is decided
         // again (the diff against the snapshot still shows it). A paced sweep in progress is cut short: its snapshot was

@@ -5670,6 +5670,7 @@ constexpr float kFloorGateHeight = 2.0f; // metres over the lot base (mgr+0xD4)
 constexpr float kFloorGateEps = 0.02f;   // a head this close over the floor's plane counts as under it
 std::atomic<long> g_floorGateAll{0}, g_floorGateShare{0}; // texels under every lamp near them / given the share of those under them
 std::atomic<bool> g_floorGateLogged{false};
+std::atomic<bool> g_bakeConeSpill{false}; // the terrain bake stamps type-5 lamps at their spill (SetBakeConeSpill, 07/10)
 // The lot base (world y) of the room's story. POD only (SEH)
 bool LotBaseY(const BYTE* room, float& base) {
     __try {
@@ -5712,8 +5713,12 @@ float UnderFloorShare(const BYTE* room0, const float* s, float base) {
             float stamp = 0.4f * range * inten * h / (d2 * std::sqrt(d2)); // 2 w cos / d^2, cos = h / d
             if (!(stamp > 0.0f)) continue;
             if (stamp > 1.0f) stamp = 1.0f; // saturated next to the lamp
-            const float* col = reinterpret_cast<const float*>(L + 0xF0);
-            const float v = stamp * (std::max(col[0], 0.0f) + std::max(col[1], 0.0f) + std::max(col[2], 0.0f));
+            // a lamp with cones (type 5) is stamped at its spill +0x150 when the bake stub does it (SetBakeConeSpill, 07/10)
+            const float *col = reinterpret_cast<const float*>(L + 0xF0), *S = reinterpret_cast<const float*>(L + 0x150);
+            const bool spill = g_bakeConeSpill.load(std::memory_order_relaxed) && *reinterpret_cast<const int*>(L + 0xB0) == 5;
+            float v = 0.0f;
+            for (int i = 0; i < 3; i++) v += std::max(col[i], 0.0f) * (spill ? std::clamp(S[i], 0.0f, 1.0f) : 1.0f);
+            v *= stamp;
             if (!(v > 0.0f)) continue;
             all += v;
             if (head[1] <= s[1] + kFloorGateEps) under += v;
@@ -9069,6 +9074,7 @@ void SetFoundationWalls(bool on) {
     if (!g_installed.load(std::memory_order_relaxed)) return;
     RelightAllRooms(on ? "Outside walls where they are drawn on" : "Outside walls where they are drawn off");
 }
+void SetBakeConeSpill(bool on) { g_bakeConeSpill.store(on, std::memory_order_relaxed); }
 
 void SetDiagArmed(bool on) { g_diagArmed = on; }
 bool DiagArmed() { return g_diagArmed.load(); }
