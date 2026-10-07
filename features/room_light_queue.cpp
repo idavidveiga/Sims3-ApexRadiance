@@ -403,11 +403,12 @@ void Drain(BYTE* tree, BYTE* before) {
     if (room) {
         // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
         // a lamp switch whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
+        // a lamp edit once the lamp is let go: 20 ms (07/10, the stories of a lot lit one after another took too long at 12)
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         // a switch shown all at once waits for its rooms' final light: they take 16 ms a frame meanwhile (AtriumHold)
         const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
                              : AtriumHold::SwitchHolding() ? 16.0f
-                             : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
+                             : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 20.0f)
                                         : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
