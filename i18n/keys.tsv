@@ -30,10 +30,6 @@ Measured cost on your GPU per frame	tr_widgets.cpp:kEntries	Custo medido na sua 
 {} turned off	tr_widgets.cpp:kEntries	{} desligado	{} desactivado	{} désactivé	{}
 {} reset	tr_widgets.cpp:kEntries	{} voltou ao padrão	{} restablecido	{} réinitialisé	{}
 {} changed	tr_widgets.cpp:kEntries	{} alterado	{} cambiado	{} modifié	{}
-English	tr_widgets.cpp:kEntries	English	English	English	
-Português	tr_widgets.cpp:kEntries	Português	Português	Português	
-Español	tr_widgets.cpp:kEntries	Español	Español	Español	
-Français	tr_widgets.cpp:kEntries	Français	Français	Français	
 Automatic ({})	tr_widgets.cpp:kEntries	Automático ({})	Automático ({})	Automatique ({})	{}
 Language	tr_widgets.cpp:kEntries	Idioma	Idioma	Langue	
 The language of this menu	tr_widgets.cpp:kEntries	O idioma deste menu	El idioma de este menú	La langue de ce menu	
