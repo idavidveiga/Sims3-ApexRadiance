@@ -100,6 +100,7 @@ struct LotDue {
     DWORD due = 0, last = 0, changed = 0;
     bool switchOnly = false;
     bool allRooms = false; // a lamp into another room, a lamp moved and switched, or more than kLotLamps lamps: every room
+    bool relocated = false; // (07/10) a lamp into another room, or moved and switched: its rooms are sent (RelightLampSwitch), none kept
     int lampCount = 0;
     uintptr_t lamps[kLotLamps] = {};
     // lamps switched where they are (06/10): only the rooms they can reach (LevelLightShare::RelightLampSwitch)
@@ -298,17 +299,18 @@ bool __cdecl MarkDecide(uintptr_t tl, int room, uintptr_t entry, uintptr_t light
                 const bool switchOnly = was.on != on && !moved && was.room == room;
                 if (!pending.due) { // a new refresh: nothing collected yet
                     pending.allRooms = false;
+                    pending.relocated = false;
                     pending.lampCount = 0;
                     pending.switchCount = 0;
                 }
-                if (switchOnly) { // switched where it is: the rooms it can reach
+                if (switchOnly || !pure) { // switched, moved and switched, or into another room (07/10: those rooms, not the whole lot)
                     LevelLightShare::LampSwitch* end = pending.switched + pending.switchCount;
-                    if (std::find_if(pending.switched, end, [light](const LevelLightShare::LampSwitch& s) { return s.light == light; }) == end) {
-                        if (pending.switchCount < kLotLamps) pending.switched[pending.switchCount++] = LevelLightShare::LampSwitch{light, tl, room};
-                        else pending.allRooms = true;
-                    }
-                } else if (!pure) pending.allRooms = true; // into another room, or moved and switched: lists change
-                else if (!pending.allRooms && std::find(pending.lamps, pending.lamps + pending.lampCount, light) == pending.lamps + pending.lampCount) {
+                    LevelLightShare::LampSwitch* sw = std::find_if(pending.switched, end, [light](const LevelLightShare::LampSwitch& w) { return w.light == light; });
+                    if (sw != end) *sw = LevelLightShare::LampSwitch{light, tl, room}; // a drag: where it is now
+                    else if (pending.switchCount < kLotLamps) pending.switched[pending.switchCount++] = LevelLightShare::LampSwitch{light, tl, room};
+                    else pending.allRooms = true;
+                    if (!pure) pending.relocated = true;
+                } else if (!pending.allRooms && std::find(pending.lamps, pending.lamps + pending.lampCount, light) == pending.lamps + pending.lampCount) {
                     if (pending.lampCount < kLotLamps) pending.lamps[pending.lampCount++] = light;
                     else pending.allRooms = true;
                 }
@@ -465,7 +467,7 @@ void OnPresent(float nightLevel) {
     struct Run {
         uintptr_t tracker;
         DWORD changed;
-        bool switchOnly, allRooms;
+        bool switchOnly, allRooms, relocated;
         int lampCount;
         uintptr_t lamps[kLotLamps];
         int switchCount;
@@ -486,7 +488,7 @@ void OnPresent(float nightLevel) {
                 continue;
             }
             d.last = now | 1;
-            Run r{tracker, d.changed, d.switchOnly, d.allRooms || (d.lampCount == 0 && d.switchCount == 0), d.lampCount, {}, d.switchCount, {}};
+            Run r{tracker, d.changed, d.switchOnly, d.allRooms || (d.lampCount == 0 && d.switchCount == 0), d.relocated, d.lampCount, {}, d.switchCount, {}};
             std::copy(d.lamps, d.lamps + d.lampCount, r.lamps);
             std::copy(d.switched, d.switched + d.switchCount, r.switched);
             run.push_back(r);
@@ -498,7 +500,7 @@ void OnPresent(float nightLevel) {
     // (lamps switched where they are: only the rooms they can reach, LevelLightShare::RelightLampSwitch)
     for (const Run& r : run) {
         const int sent = !r.allRooms && r.switchCount > 0
-                             ? LevelLightShare::RelightLampSwitch(r.tracker, r.lampCount ? "a lamp switched or moved" : "a lamp switched", r.changed,
+                             ? LevelLightShare::RelightLampSwitch(r.tracker, r.relocated ? "a lamp moved into another room" : r.lampCount ? "a lamp switched or moved" : "a lamp switched", r.relocated ? 0 : r.changed,
                                                                   r.switched, r.switchCount, r.lamps, r.lampCount)
                              : LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
                                                            r.switchOnly || !r.allRooms ? r.changed : 0, r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount);

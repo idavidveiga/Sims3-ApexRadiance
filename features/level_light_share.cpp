@@ -4863,14 +4863,7 @@ void AfterChangedWalk(BYTE* tl) {
                 ++it;
     }
     if (!n) return;
-    // Room 0 of this story changed (07/10 review): this story's roofless rooms mask their floors with room 0's lamps
-    // (SolvePointBatch), which the game never solves again for that, so their masks went stale and the ground light map
-    // showed behind their walls
-    if (g_indoorReady && std::find(ids, ids + n, 0) != ids + n) {
-        int yards[256];
-        const int ny = RooflessRoomIds(*reinterpret_cast<const uintptr_t*>(tl), yards, static_cast<int>(std::size(yards)));
-        for (int k = 0; k < ny; k++) QueueRoom(tracker, L, yards[k], true);
-    }
+    bool room0Changed = false; // its lamps really changed (LampChange below): this story's roofless rooms mask with them
     const auto noteOf = [&](int id) -> const LampMarkNote* {
         for (int k = 0; k < noted; k++)
             if (notes[k].room == id) return &notes[k];
@@ -4926,6 +4919,7 @@ void AfterChangedWalk(BYTE* tl) {
                 if (ids[i] == 0) g_outdoorQuiet.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
+            if (ids[i] == 0) room0Changed = true;
             if (outdoor) own.push_back(ids[i]); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
             const bool soon = note && note->pure && change != 2; // a lamp registered in it changed, none added or removed
             if (change == 2) ownLate.push_back(ids[i]); // a lamp of it added or removed: its gather waits for the game
@@ -4993,6 +4987,13 @@ void AfterChangedWalk(BYTE* tl) {
             MarkUrgent(room, note || id == 0 ? 0 : 1, soon);
             if (soon) GatherSoon(room);
         }
+    // Room 0 of this story changed (07/10 review): this story's roofless rooms mask their floors with room 0's lamps
+    // (SolvePointBatch), which the game never solves again for that; only when its lamps really changed (not every mark)
+    if (room0Changed && g_indoorReady) {
+        int yards[256];
+        const int ny = RooflessRoomIds(mgrL, yards, static_cast<int>(std::size(yards)));
+        for (int k = 0; k < ny; k++) QueueRoom(tracker, L, yards[k], true);
+    }
     const int tier = own.empty() ? -1 : 1; // the rooms of other stories taking the edited lamps: right after the lamp's own
     const auto sameStory = [&sameL](int S, int r) { return std::binary_search(sameL.begin(), sameL.end(), std::make_pair(S, r)); };
     for (const auto& [S, r] : now)
@@ -6800,6 +6801,7 @@ bool HoldsAnyLamp(const BYTE* room, const uintptr_t* lamps, int count) {
     __try {
         const uintptr_t* b = *reinterpret_cast<const uintptr_t* const*>(room + 0xC8);
         const uintptr_t* e = *reinterpret_cast<const uintptr_t* const*>(room + 0xCC);
+        if (!b && !e) return false; // an empty list (no lamp reaches the room): holds none (07/10)
         if (!b || e < b || e - b > 4096) return true;
         for (const uintptr_t* p = b; p < e; p++)
             for (int k = 0; k < count; k++)
