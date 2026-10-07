@@ -11,6 +11,7 @@
 #include "bloom_alpha_probe.h"
 #include "post_scene.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "apex_paths.h"
 #include "apex_version.h"
 #include "game_version.h"
@@ -260,9 +261,10 @@ void CaptureAtSceneEnd(IDirect3DDevice9* dev) {
     }
 
     SetStatus(std::format("captured {} mask; writing PNG/TXT...", Phase(night)));
-    std::thread([alpha = std::move(alpha), w, h, night, fmt, msaa]() mutable {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("BloomAlphaProbe: report writer", [alpha = std::move(alpha), w, h, night, fmt, msaa]() mutable {
         WriteReportAndPng(std::move(alpha), w, h, night, fmt, msaa);
-    }).detach();
+    });
 }
 
 } // namespace

@@ -3,6 +3,7 @@
 // Part of Apex Radiance. Credits: @loinyx
 #include "captures.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "apex_paths.h"
 #include "apex_util.h"
 #include "apex_version.h"
@@ -86,12 +87,13 @@ std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirect
 // Explorer on a folder, on a short-lived thread with COM (30/09: called from the menu frame, ShellExecuteW pumped the
 // game window's messages, the overlay's window procedure ran again inside the frame and its mutex threw: a crash)
 void ShowInExplorer(const std::filesystem::path& folder) {
-    std::thread([folder] {
+    // (07/10, players' Runtime Error: started and run under HookGuard::StartDetached, so neither can end the game)
+    HookGuard::StartDetached("Captures: open a folder in Explorer", [folder] {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         const HINSTANCE r = ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(r) <= 32) LOG_WARNING(std::format("[Captures] Could not open the folder ({})", reinterpret_cast<INT_PTR>(r)));
         if (SUCCEEDED(com)) CoUninitialize();
-    }).detach();
+    });
 }
 
 bool CopyIfThere(const std::filesystem::path& from, const std::filesystem::path& to) {
@@ -152,7 +154,7 @@ void RestorePlayerPhoto() {
 }
 
 void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
-    std::thread([job = std::move(job), bgr = std::move(bgr), w, h] {
+    HookGuard::StartDetached("Captures: screenshot writer", [job = std::move(job), bgr = std::move(bgr), w, h] {
         const auto& file = job.file;
         const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         IWICImagingFactory* factory = nullptr;
@@ -176,7 +178,7 @@ void WritePng(ShotJob job, std::vector<BYTE> bgr, UINT w, UINT h) {
         if (job.report) CompleteShot(job.reportFolder, ok);
         else Notify(I18n::Tr(ok ? "Screenshot saved" : "The screenshot could not be saved"), 4,
                     ok ? NoteKind::Screenshot : NoteKind::Warning);
-    }).detach();
+    });
 }
 
 // Render thread: the finished back buffer (including post-scene and Picture passes) -> queued PNGs.

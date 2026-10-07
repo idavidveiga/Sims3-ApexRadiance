@@ -31,6 +31,7 @@
 #endif
 #include "lightmap_smooth.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "d3d9_extra_hooks.h"
 #include "lightmap_smooth_hlsl.h"
@@ -576,11 +577,8 @@ void WorkerMain() {
 
 void EnsureWorker() {
     if (g_workerStarted) return;
-    try {
-        std::thread(WorkerMain).detach();
-        g_workerStarted = true;
-    } catch (...) {
-    }
+    // its start and its body under HookGuard (07/10, players' Runtime Error): an exception ends the worker (noted), not the game
+    g_workerStarted = HookGuard::StartDetached("LightmapSmooth worker", [] { WorkerMain(); });
 }
 
 LightmapSmooth::Key Neighbour(const LightmapSmooth::Key& k, int dx, int dz) { return {k.first + dx * kChunkSize, k.second + dz * kChunkSize}; }

@@ -5,7 +5,9 @@
 // it, notes where without allocating (the catch may run with no memory left), lets the game do what it would have done
 // without Apex, and turns that one call site off so it does not throw again every frame. The notes reach the log later,
 // from Present (ReportPending), outside any catch block.
+#include "crash_report.h"
 #include <atomic>
+#include <thread>
 #include <utility>
 
 namespace HookGuard {
@@ -50,6 +52,26 @@ template <class F> bool Run(const char* where, F&& f) noexcept {
 template <class F> bool Try(const char* where, F&& f) noexcept {
     try {
         std::forward<F>(f)();
+        return true;
+    } catch (...) {
+        Note(where);
+        return false;
+    }
+}
+
+// Starts a detached std::thread running f(), with Apex's terminate handler set on it and a catch-all around f: a C++
+// exception in f, or a thread that cannot be created (std::system_error, bad_alloc), is noted at `where` (a string
+// literal) instead of ending the game. False when the thread did not start.
+template <class F> bool StartDetached(const char* where, F&& f) noexcept {
+    try {
+        std::thread([where, fn = std::forward<F>(f)]() mutable noexcept {
+            CrashReport::ThreadStart();
+            try {
+                fn();
+            } catch (...) {
+                Note(where);
+            }
+        }).detach();
         return true;
     } catch (...) {
         Note(where);

@@ -27,6 +27,7 @@
 #include "frame_profiler.h"
 #include "game_addresses.h"
 #include "game_version.h"
+#include "hook_guard.h"
 #include "overlay.h"
 #include "patch_base.h"
 #include "s3ss_detect.h"
@@ -144,7 +145,8 @@ bool WaitForSettle() {
     }
 }
 
-DWORD WINAPI InitThread(LPVOID) {
+// Start-up, then the pump (InitThread)
+DWORD InitBody() {
     OpenLog();
     LOG_INFO(std::format("[Main] {} {} ({}) in {}", APEX_PRODUCT_NAME, APEX_VERSION_STRING, "unified build",
                          ApexUtil::ToUtf8(ModuleName(nullptr))));
@@ -197,20 +199,34 @@ DWORD WINAPI InitThread(LPVOID) {
     // Pump: features' periodic work (deferred reinstalls, lamp scans scheduled off the render thread) and autosave.
     ULONGLONG lastGuardTick = 0;
     while (!Stopping(kPumpIntervalMs)) {
-        if (ApexGui::GetStartup() == ApexGui::Startup::Running) PatchManager::Get().UpdateAll();
-        ApexConfig::PumpAutosave();
+        // each step caught on its own (07/10, players' Runtime Error): one that throws is noted and the pump goes on
+        if (ApexGui::GetStartup() == ApexGui::Startup::Running) HookGuard::Try("Pump: features' periodic work", [] { PatchManager::Get().UpdateAll(); });
+        HookGuard::Try("Pump: settings autosave", [] { ApexConfig::PumpAutosave(); });
         const ULONGLONG now = GetTickCount64();
         if (now - lastGuardTick >= 1000) {
             lastGuardTick = now;
-            ConflictGuard::Tick(); // TODO(step 8): watchdog
+            HookGuard::Try("Pump: conflict guard", [] { ConflictGuard::Tick(); }); // TODO(step 8): watchdog
             CrashReport::Refresh();
-            std::string on;
-            for (const auto& p : PatchManager::Get().GetPatches())
-                if (p->IsEnabled()) on += (on.empty() ? "" : ", ") + p->GetName();
-            CrashReport::SetFeatureLine(on);
+            HookGuard::Try("Pump: crash report feature line", [] {
+                std::string on;
+                for (const auto& p : PatchManager::Get().GetPatches())
+                    if (p->IsEnabled()) on += (on.empty() ? "" : ", ") + p->GetName();
+                CrashReport::SetFeatureLine(on);
+            });
         }
     }
     return 0;
+}
+
+// 07/10, players' Runtime Error: a C++ exception left in start-up or in the pump ends this thread (noted), never the game
+DWORD WINAPI InitThread(LPVOID) {
+    CrashReport::ThreadStart();
+    try {
+        return InitBody();
+    } catch (...) {
+        HookGuard::Note("Start-up and pump thread");
+    }
+    return 1;
 }
 
 bool IsGameProcess() {

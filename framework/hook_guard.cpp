@@ -73,10 +73,10 @@ void ReportPending() noexcept {
         for (Slot& s : g_slots) {
             if (s.state.load(std::memory_order_acquire) != 2) continue;
             const long c = s.count.load(std::memory_order_relaxed);
-            if (c == s.logged) continue;
+            if (c == s.logged || (s.logged && c < s.logged * 2)) continue; // 1, 2, 4, 8 ... : a step caught every frame does not flood the log
             s.logged = c;
-            LOG_ERROR(std::format("[HookGuard] {} threw a C++ exception ({} so far): caught; the game went on as it does without Apex there, and that "
-                                  "step stays off until the game restarts",
+            LOG_ERROR(std::format("[HookGuard] {} threw a C++ exception ({} so far): caught; the game went on without that Apex step (most steps then stay "
+                                  "off until the game restarts)",
                                   s.where, c));
         }
         const long lost = g_lost.load(std::memory_order_relaxed);

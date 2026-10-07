@@ -211,6 +211,7 @@
 #include "apex_config.h"
 #include "apex_paths.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "imgui.h"
 #include "ui/widgets.h"
 #include <toml++/toml.hpp>
@@ -4171,7 +4172,7 @@ void SaveReport() {
     // profiler off: a one-shot thread, so the file I/O stays off the render thread
     ApexPaths::EnsureApexDirectory();
     std::filesystem::path path = std::filesystem::path(ApexPaths::ApexDirectory()) / L"ApexRadiance_Hitches.txt";
-    std::thread([path, t = std::move(text)] { AppendFile(path, t); }).detach();
+    HookGuard::StartDetached("FrameProfiler: hitch file writer", [path, t = std::move(text)] { AppendFile(path, t); }); // (07/10: cannot end the game)
 }
 
 void Clear() {
