@@ -330,6 +330,7 @@ struct RoomInfo {
     std::vector<uintptr_t> same;
     std::vector<int> sameHomes;
     std::shared_ptr<const StoryGrid> grid[2]; // [0] the room's story, [1] the story above (null: none)
+    std::shared_ptr<const StoryGrid> mid[8];  // room 0 of an upper story: the grids of stories 1..its story - 1 (MidPass)
 };
 std::unordered_map<uintptr_t, RoomInfo> g_rooms;
 uintptr_t g_evalOrig[std::size(kClasses)] = {};
@@ -726,6 +727,7 @@ void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
     info.same.clear();
     info.sameHomes.clear();
     info.grid[0].reset();
+    for (auto& m : info.mid) m.reset();
     info.grid[1].reset();
     info.indoor = false;
     info.cross.clear();
@@ -741,6 +743,8 @@ void RecordRoom(BYTE* room, uintptr_t mgr, uintptr_t tracker, int roomLevel) {
         info.grid[0] = EnsureStoryGrid(StoryManager(tracker, roomLevel));
         if (info.grid[0] && roomLevel < 7)
             if (const uintptr_t up = StoryManager(tracker, roomLevel + 1)) info.grid[1] = EnsureStoryGrid(up);
+        for (int k = 1; k < roomLevel && k < 8; k++)
+            if (const uintptr_t mk = StoryManager(tracker, k)) info.mid[k] = EnsureStoryGrid(mk);
     }
 }
 
@@ -6415,6 +6419,33 @@ bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* samp
     }
 }
 
+// The walls of the stories between a lamp's story and the point's (07/10, user's F7 16:34:27: a ground post lit the tower's
+// story-3 wall from below the story-2 balcony's parapet: the lamp's story was WallPass's, this story's the game's, and the
+// parapet of the story between was tested by nobody). Each at its real heights (GridPass); 1 = nothing in the way.
+std::atomic<long> g_midTests{0}, g_midBlocked{0};
+float MidPassImpl(const RoomInfo& info, int home, void* light, const float* sample) {
+    float pass = 1.0f;
+    alignas(16) float lampW[4];
+    reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
+    for (int k = std::max(home + 1, 1); k < info.level && k < 8 && pass > 0.0f; k++) {
+        const StoryGrid* g = info.mid[k].get();
+        if (!g) continue;
+        float A[3], B[3];
+        ToLocal(g->xf, lampW, A);
+        ToLocal(g->xf, sample, B);
+        GridWhy why{};
+        pass *= GridPassImpl(*g, A, B, why);
+    }
+    return pass;
+}
+float MidPass(const RoomInfo& info, int home, void* light, const float* sample) {
+    __try {
+        return MidPassImpl(info, home, light, sample);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return 1.0f; // as before
+    }
+}
 std::atomic<long> g_aboveTests{0}, g_aboveBlocked{0}; // lower-story lamps above the story's floor, tested on its grid
 std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies: points given a share, game tests raised to it
 // light under balconies, where each lamp x point of an upper story's outdoor room went (FillStatus)
@@ -6424,10 +6455,10 @@ std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0}, g_fillLow
 std::string FillStatus() {
     return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, blocked on the lamp's story {}), "
                        "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
-                       "shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
+                       "walls of the stories in between tested {} (blocked {}) | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
                        g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
                        g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
-                       g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
+                       g_midTests.load(), g_midBlocked.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load());
 }
 // Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
 // the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
@@ -6536,6 +6567,14 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 mine = 0.0f;
             }
             if (entered) {
+                if (home + 1 < info.level) { // the walls of the stories in between (a lower balcony's parapet)
+                    const float mid = MidPass(info, home, light, sample);
+                    g_midTests.fetch_add(1, std::memory_order_relaxed);
+                    if (mid < 1.0f)
+                        for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mid);
+                    if (mid <= 0.0f) g_midBlocked.fetch_add(1, std::memory_order_relaxed);
+                    mine *= std::max(0.0f, mid);
+                }
                 g_ctx.enterLight = reinterpret_cast<uintptr_t>(light);
                 std::memcpy(g_ctx.enterLamp, entry.lamp, sizeof g_ctx.enterLamp);
                 std::memcpy(g_ctx.enterAt, entry.at, sizeof g_ctx.enterAt);
