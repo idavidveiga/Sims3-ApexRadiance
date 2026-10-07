@@ -2308,6 +2308,172 @@ void DropWallSamples(uintptr_t batch, float dy) {
     }
 }
 
+// ---- Walls taller than a story (07/10, vanilla: the game lights every wall face over 3 m from its base, constant 3.0 at
+// 0x006ABE08, but draws the light block from the drawn foot to the drawn top. The light-UV writer 0x00C38530 can only
+// shorten it (top V = vT + (vB - vT) max(0, wallpaper V of the top vertex / 512 - 8), for walls cut lower), never lengthen
+// it: on a wall running up to its roof (5.7 m on the user's foundation house) the 3 m of light is pulled over the whole
+// wall, so a sconce at 2.4 m lit the wall at 4.6 m and the light drifted further the higher the lamp was moved.) The two
+// calls of the UV writer (0x00C387B5 / 0x00C387CC, one wall cell each: 6 vertices at geo +8, stride 0x2C, int16 x y z / 256
+// lot space at +0; 0 bottom-left, 2 bottom-right, 3 top-right, 4 top middle, 5 top-left) note each cell's drawn foot and
+// tops on the wall the game takes for it (tile +0x58 + edge * 4, edge = 0x006A43B0(dir)); the wall's samples then spread
+// its rows over the drawn height of their column, as the block is drawn (WallSamplesHook).
+constexpr uintptr_t kWallUv = 0x00C38530;
+constexpr uintptr_t kWallUvCalls[2] = {0x00C387B5, 0x00C387CC};
+const BYTE kWallUvCallBytes[2][5] = {{0xE8, 0x76, 0xFD, 0xFF, 0xFF}, {0xE8, 0x5F, 0xFD, 0xFF, 0xFF}};
+using WallUv_t = void(__thiscall*)(void* geo, uintptr_t mgr, int x, int z, int dir, int mode);
+bool g_wallUvReady = false;
+struct WallCellH {
+    float foot = 0, hl = 3, hm = 3, hr = 3;
+    bool set = false;
+};
+struct WallHeightRec {
+    std::vector<WallCellH> cells;
+    float maxH = 3;
+};
+std::mutex g_wallHMx;
+std::unordered_map<uintptr_t, WallHeightRec> g_wallH; // wall -> its cells as drawn
+std::unordered_map<uintptr_t, float> g_wallSolvedH;   // wall -> the tallest column its last solve spread to (3 = none)
+std::vector<uintptr_t> g_wallHRequeue;                // walls drawn taller (or shorter) than their last solve took
+std::atomic<long> g_wallUvSeen{0}, g_wallUvMatched{0}, g_wallTallCells{0}, g_wallStretched{0};
+std::atomic<int> g_wallTallLogged{0};
+struct WallCellRead {
+    uintptr_t wall = 0;
+    int len = 0, edge = -1, story = -99;
+    float tmid = 0, perp = 0, foot = 0, hl = 3, hm = 3, hr = 3, base = 0, lotBase = 0;
+};
+bool ReadWallCell(void* geo, uintptr_t mgr, int x, int z, int dir, WallCellRead& c) { // POD only (SEH)
+    __try {
+        const BYTE* v = *reinterpret_cast<BYTE* const*>(static_cast<BYTE*>(geo) + 8);
+        if (!v || !mgr) return false;
+        float P[6][3];
+        for (int i = 0; i < 6; i++)
+            for (int a = 0; a < 3; a++) P[i][a] = *reinterpret_cast<const int16_t*>(v + i * 0x2C + a * 2) / 256.0f;
+        c.edge = reinterpret_cast<int(__cdecl*)(int)>(0x006A43B0)(dir);
+        if (c.edge < 0 || c.edge > 7) return false;
+        const uintptr_t tile = LightTile(mgr, x, z);
+        if (!tile) return false;
+        c.wall = *reinterpret_cast<const uintptr_t*>(tile + 0x58 + c.edge * 4);
+        if (!c.wall) return false;
+        const float* o = reinterpret_cast<const float*>(c.wall + 0x100);
+        const float* r = reinterpret_cast<const float*>(c.wall + 0xE0);
+        c.len = *reinterpret_cast<const int*>(c.wall + 0x24);
+        c.base = o[1];
+        c.lotBase = *reinterpret_cast<const float*>(mgr + 0xD4);
+        c.story = *reinterpret_cast<const int*>(mgr + 0x88);
+        const float rr = r[0] * r[0] + r[2] * r[2];
+        if (c.len < 1 || c.len > 64 || rr < 1e-4f) return false;
+        const float t0 = ((P[0][0] - o[0]) * r[0] + (P[0][2] - o[2]) * r[2]) / rr;
+        const float t2 = ((P[2][0] - o[0]) * r[0] + (P[2][2] - o[2]) * r[2]) / rr;
+        c.perp = std::fabs((P[0][0] - o[0]) * r[2] - (P[0][2] - o[2]) * r[0]) / std::sqrt(rr);
+        c.tmid = 0.5f * (t0 + t2);
+        const float y0 = P[0][1], y2 = P[2][1];
+        c.foot = std::min(y0, y2);
+        float left = P[5][1] - y0, right = P[3][1] - y2;
+        if (t0 > t2) std::swap(left, right);
+        c.hl = left;
+        c.hr = right;
+        c.hm = P[4][1] - 0.5f * (y0 + y2);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
+    g_wallUvSeen.fetch_add(1, std::memory_order_relaxed);
+    WallCellRead c;
+    if (!ReadWallCell(geo, mgr, x, z, dir, c)) return;
+    const int cell = static_cast<int>(std::floor(c.tmid * static_cast<float>(c.len)));
+    const bool sane = c.perp < 0.35f && cell >= 0 && cell < c.len && c.hl > 0.2f && c.hr > 0.2f && c.hm > 0.2f && c.hl < 20.0f && c.hr < 20.0f && c.hm < 20.0f;
+    const bool tall = sane && std::max({c.hl, c.hm, c.hr}) > 3.02f;
+    if (sane) g_wallUvMatched.fetch_add(1, std::memory_order_relaxed);
+    if (tall) g_wallTallCells.fetch_add(1, std::memory_order_relaxed);
+    if ((!sane || tall || std::fabs(c.foot - c.base) > 0.05f) && g_wallTallLogged.fetch_add(1, std::memory_order_relaxed) < 300)
+        LOG_INFO(std::format("[WallTall] story {} wall {:08X} edge {} cell {} of {} ({}): foot {:.3f} (light base {:.3f}, lot base {:.3f}), drawn height left {:.3f} middle {:.3f} right {:.3f}, {:.2f} m off its line",
+                             c.story, c.wall, c.edge, cell, c.len, sane ? (tall ? "taller than 3 m" : "foot differs") : "NOT MATCHED", c.foot, c.base, c.lotBase, c.hl, c.hm,
+                             c.hr, c.perp));
+    if (!sane) return;
+    std::lock_guard<std::mutex> lk(g_wallHMx);
+    if (g_wallH.size() > 50000) g_wallH.clear(), g_wallSolvedH.clear();
+    WallHeightRec& rec = g_wallH[c.wall];
+    if (static_cast<int>(rec.cells.size()) != c.len) rec.cells.assign(c.len, WallCellH{});
+    rec.cells[cell] = WallCellH{c.foot, c.hl, c.hm, c.hr, true};
+    float maxH = 3.0f;
+    for (const WallCellH& h : rec.cells)
+        if (h.set) maxH = std::max({maxH, h.hl, h.hm, h.hr});
+    rec.maxH = maxH;
+    const auto it = g_wallSolvedH.find(c.wall);
+    if (it != g_wallSolvedH.end() && std::fabs(it->second - (maxH > 3.02f ? maxH : 3.0f)) > 0.05f &&
+        std::find(g_wallHRequeue.begin(), g_wallHRequeue.end(), c.wall) == g_wallHRequeue.end() && g_wallHRequeue.size() < 4096)
+        g_wallHRequeue.push_back(c.wall);
+}
+void __fastcall WallUvHook(void* geo, void*, uintptr_t mgr, int x, int z, int dir, int mode) {
+    reinterpret_cast<WallUv_t>(kWallUv)(geo, mgr, x, z, dir, mode);
+    if (mode == 0) NoteWallCell(geo, mgr, x, z, dir); // mode 1 writes the second UV set of the same vertices
+}
+// The drawn height at t (0..len cells along the wall) of a wall's cells; 0 = not known
+float CellHeightAt(const WallCellH* cells, int n, float t) {
+    const int cell = std::clamp(static_cast<int>(std::floor(t)), 0, n - 1);
+    const WallCellH& h = cells[cell];
+    if (!h.set) return 0.0f;
+    const float u = std::clamp(t - static_cast<float>(cell), 0.0f, 1.0f);
+    return u < 0.5f ? h.hl + (h.hm - h.hl) * u * 2.0f : h.hm + (h.hr - h.hm) * (u - 0.5f) * 2.0f;
+}
+// After AlignWallSamples (rows at oy + k 3/(N-1)): rows spread over their column's drawn height H, oy + k H/(N-1)
+long StretchWallSamples(uintptr_t wall, int cls, uintptr_t batch, const WallBlock& r, const WallCellH* cells, int n) { // POD only (SEH)
+    long moved = 0;
+    __try {
+        const int cols = *reinterpret_cast<const int*>(wall + cls * 0x10 + 0x28), len = *reinterpret_cast<const int*>(wall + 0x24);
+        if (cols < 1 || len != n) return 0;
+        const float oy = *reinterpret_cast<const float*>(wall + 0x114);
+        const uintptr_t b = *reinterpret_cast<const uintptr_t*>(batch), e = *reinterpret_cast<const uintptr_t*>(batch + 4);
+        if (!b || e <= b || (e - b) % 0x30 || (e - b) / 0x30 > 1u << 20) return 0;
+        for (uintptr_t p = b; p < e; p += 0x30) {
+            const int i = *reinterpret_cast<const uint16_t*>(p + 0x20) - r.x0;
+            const float H = CellHeightAt(cells, n, (static_cast<float>(i) + 0.5f) * static_cast<float>(len) / static_cast<float>(cols));
+            if (!(H > 3.02f && H < 20.0f)) continue;
+            float& y = *reinterpret_cast<float*>(p + 4);
+            y = oy + (y - oy) * H / 3.0f;
+            moved++;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return moved;
+}
+void StretchTallWall(uintptr_t wall, int cls, uintptr_t batch, const WallBlock& r) {
+    std::vector<WallCellH> cells;
+    float maxH = 3.0f;
+    {
+        std::lock_guard<std::mutex> lk(g_wallHMx);
+        const auto it = g_wallH.find(wall);
+        if (it != g_wallH.end()) cells = it->second.cells, maxH = it->second.maxH;
+        g_wallSolvedH[wall] = maxH > 3.02f ? maxH : 3.0f;
+    }
+    if (maxH <= 3.02f || cells.empty()) return;
+    if (StretchWallSamples(wall, cls, batch, r, cells.data(), static_cast<int>(cells.size()))) g_wallStretched.fetch_add(1, std::memory_order_relaxed);
+}
+// Render thread: the rooms of the walls drawn taller than their last solve took are solved again (each wall once per change)
+void RequeueTallWalls() {
+    std::vector<uintptr_t> walls;
+    {
+        std::lock_guard<std::mutex> lk(g_wallHMx);
+        walls.swap(g_wallHRequeue);
+    }
+    if (walls.empty()) return;
+    std::vector<std::tuple<uintptr_t, int, int>> rooms; // (manager, story, room id)
+    {
+        std::lock_guard<std::mutex> lk(g_wallNoteMx);
+        for (const auto& [k, w] : g_wallNotes)
+            if (w.mgr && w.story >= -4 && w.story <= 7 && w.roomId >= 0 && std::find(walls.begin(), walls.end(), w.wall) != walls.end()) {
+                const auto key = std::make_tuple(w.mgr, w.story, w.roomId);
+                if (std::find(rooms.begin(), rooms.end(), key) == rooms.end()) rooms.push_back(key);
+            }
+    }
+    int queued = 0;
+    for (const auto& [mgr, story, id] : rooms)
+        if (const uintptr_t tracker = MgrTracker(mgr)) queued += QueueRoom(tracker, story, id, true);
+    if (queued) LOG_INFO(std::format("[WallTall] {} walls drawn taller than lit: {} rooms solved again", walls.size(), queued));
+}
+
 void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* batch) {
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     t_lastWall = reinterpret_cast<uintptr_t>(wall);
@@ -2326,6 +2492,7 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     }
     PieceNote note{reinterpret_cast<uintptr_t>(wall)};
     const bool aligned = AlignWallSamples(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block, note.rows);
+    if (aligned && g_wallUvReady && g_foundationWallsOn.load(std::memory_order_relaxed)) StretchTallWall(note.wall, cls, reinterpret_cast<uintptr_t>(batch), note.block);
     if (drop != 0.0f) {
         DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
         g_foundationPieces.fetch_add(1, std::memory_order_relaxed);
@@ -6432,6 +6599,16 @@ bool Install(std::string& error) {
         g_indoorBaseReady = MemPatch::WriteBytes(kIndoorBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Indoor faces of diagonal walls on foundations: ") + (g_indoorBaseReady ? "ready" : "not available"));
+    // Walls taller than a story: the light-UV writer's two calls note each drawn wall cell (WallUvHook); Steam bytes only
+    g_wallUvReady = g_alignReady && GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[0]), kWallUvCallBytes[0], 5) &&
+                    MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[1]), kWallUvCallBytes[1], 5);
+    for (int k = 0; k < 2 && g_wallUvReady; k++) {
+        BYTE call[5] = {0xE8, 0, 0, 0, 0};
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&WallUvHook) - (kWallUvCalls[k] + 5));
+        std::memcpy(call + 1, &rel, 4);
+        g_wallUvReady = MemPatch::WriteBytes(kWallUvCalls[k], std::vector<BYTE>(call, call + 5), &g_patches);
+    }
+    LOG_INFO(std::string("[LevelLightShare] Walls taller than a story: ") + (g_wallUvReady ? "ready (their light spreads over the drawn height)" : "not available (code differs)"));
     g_indoorGen.fetch_add(1);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
@@ -6534,6 +6711,7 @@ void OnPresent() {
             else WallHeights::Uninstall();
         }
         if (g_foundationWallsOn.load(std::memory_order_relaxed)) WallSelfCheck();
+        if (g_foundationWallsOn.load(std::memory_order_relaxed)) RequeueTallWalls();
         std::vector<std::string> lines;
         {
             std::lock_guard<std::mutex> lk(g_wallLightMx);
