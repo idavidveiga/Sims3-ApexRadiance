@@ -3894,6 +3894,14 @@ void AfterChangedWalk(BYTE* tl) {
                 ++it;
     }
     if (!n) return;
+    // Room 0 of this story changed (07/10 review): this story's roofless rooms mask their floors with room 0's lamps
+    // (SolvePointBatch), which the game never solves again for that, so their masks went stale and the ground light map
+    // showed behind their walls
+    if (g_indoorReady && std::find(ids, ids + n, 0) != ids + n) {
+        int yards[256];
+        const int ny = RooflessRoomIds(*reinterpret_cast<const uintptr_t*>(tl), yards, static_cast<int>(std::size(yards)));
+        for (int k = 0; k < ny; k++) QueueRoom(tracker, L, yards[k], true);
+    }
     const auto noteOf = [&](int id) -> const LampMarkNote* {
         for (int k = 0; k < noted; k++)
             if (notes[k].room == id) return &notes[k];
@@ -4569,26 +4577,6 @@ void* MaskWallLists(int slot, BYTE* room) {
     return &L.head;
 }
 
-// The closed yards whose floors were solved without the ground light map: one log line per room (07/10: the first version
-// changed nothing on screen; this tells whether their floors reach this solve at all)
-std::mutex g_closedYardMx;
-std::unordered_set<uintptr_t> g_closedYardSeen;
-void ReadRoomStory(const BYTE* room, int& story, int& id) { // POD only (SEH)
-    __try {
-        id = *reinterpret_cast<const int*>(room + 0xC);
-        story = *reinterpret_cast<const int*>(*reinterpret_cast<const uintptr_t*>(room) + 0x88);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-void NoteClosedYard(const BYTE* room) {
-    {
-        std::lock_guard<std::mutex> lk(g_closedYardMx);
-        if (g_closedYardSeen.size() >= 200 || !g_closedYardSeen.insert(reinterpret_cast<uintptr_t>(room)).second) return;
-    }
-    int story = -99, id = -1;
-    ReadRoomStory(room, story, id);
-    LOG_INFO(std::format("[ClosedYard] story {} room {} ({:08X}): its floor is solved without the ground light map (alpha 1)", story, id, reinterpret_cast<uintptr_t>(room)));
-}
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     // The first sample of a batch (this call runs once per sample, in order; the batch vector is reused, so its address does
     // not tell batches apart): a new serial for the floor wall lists, and for room 0 its story's outside walls for
@@ -4606,14 +4594,11 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
     // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
     const float* s = static_cast<const float*>(sample);
-    // A closed yard (07/10, user screenshot: a sconce on a wall's outside face lit the floors of the two roofless rooms behind
-    // it): a roofless room with an id is walled all round (a gap in its walls would have made it part of room 0; doors and
-    // windows do not merge rooms), so no outside lamp reaches its floor. The ground light map drawn over outdoor floors
-    // knows no walls, and the mask below only knew room 0's walls and went stale when room 0's lamps moved (rooms of the
-    // lamp's own story are not solved again): the floor takes its own list only (wall-tested) and none of the map.
+    // Roofless rooms (07/10 review: a railed deck, a half-walled terrace and a closed yard are all rooms with an id) keep the
+    // mask below, which tests room 0's lamps against walls up to their tops; their masks are refreshed when room 0's lamps
+    // change (AfterChangedWalk), where they went stale before
     const bool masked = g_floorMaskReady && room[0x18] && g_floorWallsOn.load(std::memory_order_relaxed) && s[5] >= 0.9f;
-    const bool closedYard = masked && *reinterpret_cast<const int*>(room + 0xC) > 0;
-    BYTE* room0 = !masked ? nullptr : closedYard ? room : MaskedFloorRoom0(room);
+    BYTE* room0 = masked ? MaskedFloorRoom0(room) : nullptr;
     if (!room0) {
         float* r = SolvePoint(room, out, list2D, list3D, flags, sample, true);
         if (g_floorMaskReady && room[0x18]) out[3] = 0.0f; // outdoor: the game's alpha 0
@@ -4638,11 +4623,6 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         }
     }
     float* r = SolvePoint(room, out, ownLists, list3D, walls, sample, true);
-    if (closedYard) {
-        out[3] = 1.0f; // none of the ground light map
-        NoteClosedYard(room);
-        return r;
-    }
     out[3] = 0.0f;
     alignas(16) float vis[4] = {}, all[4] = {}, wrapped[12];
     std::memcpy(wrapped, s, sizeof wrapped);

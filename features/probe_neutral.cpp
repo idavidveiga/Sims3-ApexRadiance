@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <format>
+#include <algorithm>
 #include <mutex>
 
 namespace ProbeNeutral {
@@ -46,15 +47,19 @@ int Amount256() {
     return static_cast<int>(w * g_strength.load(std::memory_order_relaxed) * 256.0f + 0.5f);
 }
 
-// rgb -> lerp(rgb, luma, a/256), alpha kept; Rec.709 weights on the stored 8-bit values (54 + 183 + 19 = 256)
-void NeutralRows(uint8_t* bits, int pitch, uint32_t w, uint32_t h, int a) {
+// rgb -> lerp(rgb, luma x tint, a/256), alpha kept; Rec.709 weights on the stored 8-bit values (54 + 183 + 19 = 256).
+// tint (x256, luma 256) is the colour of the cube's top face: the night sky for the exterior probe (its blue stays, the
+// lamps' pools on the ground and walls lose their hue), the ceiling for a room probe (a room keeps its own lamps' colour;
+// 07/10 review: a plain grey also took the moonlight blue away)
+void NeutralRows(uint8_t* bits, int pitch, uint32_t w, uint32_t h, int a, const int* tint) {
     for (uint32_t y = 0; y < h; y++) {
         uint32_t* p = reinterpret_cast<uint32_t*>(bits + static_cast<intptr_t>(y) * pitch);
         for (uint32_t x = 0; x < w; x++) {
             const uint32_t c = p[x];
             const int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
             const int l = (54 * r + 183 * g + 19 * b + 128) >> 8;
-            const int r2 = r + (((l - r) * a) >> 8), g2 = g + (((l - g) * a) >> 8), b2 = b + (((l - b) * a) >> 8);
+            const int tr = std::min(255, (l * tint[0]) >> 8), tg = std::min(255, (l * tint[1]) >> 8), tb = std::min(255, (l * tint[2]) >> 8);
+            const int r2 = r + (((tr - r) * a) >> 8), g2 = g + (((tg - g) * a) >> 8), b2 = b + (((tb - b) * a) >> 8);
             p[x] = (c & 0xFF000000u) | (static_cast<uint32_t>(r2) << 16) | (static_cast<uint32_t>(g2) << 8) | static_cast<uint32_t>(b2);
         }
     }
@@ -72,6 +77,28 @@ int NeutralProbeCube(uint8_t* probe, uintptr_t single, uintptr_t buffered, int a
         if (!cube || cube->GetType() != D3DRTYPE_CUBETEXTURE) return kNotCube;
         const DWORD levels = cube->GetLevelCount();
         st->levels = levels;
+        // the top face's mean colour (level 0) as the tint, luma 256; too dark to tell: grey
+        int tint[3] = {256, 256, 256};
+        {
+            D3DSURFACE_DESC d0;
+            D3DLOCKED_RECT lr;
+            if (SUCCEEDED(cube->GetLevelDesc(0, &d0)) && (d0.Format == D3DFMT_A8R8G8B8 || d0.Format == D3DFMT_X8R8G8B8) &&
+                SUCCEEDED(cube->LockRect(D3DCUBEMAP_FACE_POSITIVE_Y, 0, &lr, nullptr, D3DLOCK_READONLY))) {
+                uint64_t sr = 0, sg = 0, sb = 0;
+                for (uint32_t y = 0; y < d0.Height; y++) {
+                    const uint32_t* p = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(lr.pBits) + static_cast<intptr_t>(y) * lr.Pitch);
+                    for (uint32_t x = 0; x < d0.Width; x++) sr += (p[x] >> 16) & 0xFF, sg += (p[x] >> 8) & 0xFF, sb += p[x] & 0xFF;
+                }
+                cube->UnlockRect(D3DCUBEMAP_FACE_POSITIVE_Y, 0);
+                const uint64_t lum = (54 * sr + 183 * sg + 19 * sb) >> 8;
+                const uint64_t n = static_cast<uint64_t>(d0.Width) * d0.Height;
+                if (n && lum >= 2 * n) { // mean luma >= 2 of 255
+                    tint[0] = static_cast<int>(std::min<uint64_t>(512, sr * 256 / lum));
+                    tint[1] = static_cast<int>(std::min<uint64_t>(512, sg * 256 / lum));
+                    tint[2] = static_cast<int>(std::min<uint64_t>(512, sb * 256 / lum));
+                }
+            }
+        }
         for (DWORD lv = 0; lv < levels; lv++) {
             D3DSURFACE_DESC d;
             if (FAILED(cube->GetLevelDesc(lv, &d))) return kLockFailed;
@@ -81,7 +108,7 @@ int NeutralProbeCube(uint8_t* probe, uintptr_t single, uintptr_t buffered, int a
                 D3DLOCKED_RECT lr;
                 const D3DCUBEMAP_FACES face = static_cast<D3DCUBEMAP_FACES>(f);
                 if (FAILED(cube->LockRect(face, lv, &lr, nullptr, 0))) return kLockFailed; // as the game locks them
-                NeutralRows(static_cast<uint8_t*>(lr.pBits), lr.Pitch, d.Width, d.Height, a);
+                NeutralRows(static_cast<uint8_t*>(lr.pBits), lr.Pitch, d.Width, d.Height, a, tint);
                 cube->UnlockRect(face, lv);
                 st->texels += d.Width * d.Height;
             }
