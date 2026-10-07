@@ -101,6 +101,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <map>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -2184,6 +2185,7 @@ PieceNote g_piece;            // the piece WallSamplesHook just lined up, lit ne
 struct WallNote {
     uintptr_t wall = 0, room = 0;
     int cls = 0, piece = 0, rows = 0, cols = 0, colLo = 0, colHi = 0, roomId = -1, story = -99;
+    bool outdoor = false; // room +0x18: room 0 or a roofless room
     WallBlock block{};
     float oy = 0, litLo = 0, litHi = 0;
     float x0 = 0, z0 = 0, x1 = 0, z1 = 0; // the bottom row's first and last sample (world xz)
@@ -2221,6 +2223,7 @@ bool ReadWallPiece(uintptr_t wall, int cls, uintptr_t batch, WallNote& w) { // P
         if (BYTE* room = t_wallRoom) {
             w.room = reinterpret_cast<uintptr_t>(room);
             w.roomId = *reinterpret_cast<const int*>(room + 0xC);
+            w.outdoor = room[0x18] != 0;
             const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
             if (mgr) w.story = *reinterpret_cast<const int*>(mgr + 0x88);
         }
@@ -6487,6 +6490,89 @@ int ReadNoteLamps(uintptr_t room, NoteLamp* out, int max) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;
     }
+}
+std::string WallSurvey(const std::vector<SurveyPoint>& pts) {
+    std::vector<WallNote> notes;
+    {
+        std::lock_guard<std::mutex> lk(g_wallNoteMx);
+        notes.reserve(g_wallNotes.size());
+        for (const auto& [k, w] : g_wallNotes) notes.push_back(w);
+    }
+    if (notes.empty()) return "no wall piece noted yet (the walls are noted when they are solved: refresh the lighting, then capture)\n";
+    // the points on a 1 m grid (world xz)
+    std::unordered_map<int64_t, std::vector<int>> grid;
+    auto cell = [](float x, float z) { return (static_cast<int64_t>(std::floor(x)) << 32) ^ static_cast<int64_t>(static_cast<uint32_t>(static_cast<int32_t>(std::floor(z)))); };
+    for (int i = 0; i < static_cast<int>(pts.size()); i++) grid[cell(pts[i].x, pts[i].z)].push_back(i);
+    struct Span {
+        int draw = -1, count = 0;
+        float lo = 1e30f, hi = -1e30f;
+    };
+    struct Row {
+        const WallNote* w;
+        std::vector<Span> spans;
+    };
+    std::vector<Row> rows;
+    std::map<std::pair<int, int>, std::map<int, int>> summary; // (story, outdoor) -> (drawn foot - lit base, cm) -> pieces
+    for (const WallNote& w : notes) {
+        const float ux = w.x1 - w.x0, uz = w.z1 - w.z0, L = std::sqrt(ux * ux + uz * uz);
+        if (L < 0.05f || w.colHi <= w.colLo) continue;
+        const float cw = L / static_cast<float>(w.colHi - w.colLo), ex = 0.5f * cw + 0.05f;
+        const float minX = std::min(w.x0, w.x1) - ex - 0.3f, maxX = std::max(w.x0, w.x1) + ex + 0.3f;
+        const float minZ = std::min(w.z0, w.z1) - ex - 0.3f, maxZ = std::max(w.z0, w.z1) + ex + 0.3f;
+        std::map<int, Span> byDraw;
+        for (int cx = static_cast<int>(std::floor(minX)); cx <= static_cast<int>(std::floor(maxX)); cx++)
+            for (int cz = static_cast<int>(std::floor(minZ)); cz <= static_cast<int>(std::floor(maxZ)); cz++) {
+                const auto it = grid.find((static_cast<int64_t>(cx) << 32) ^ static_cast<int64_t>(static_cast<uint32_t>(cz)));
+                if (it == grid.end()) continue;
+                for (int i : it->second) {
+                    const SurveyPoint& p = pts[i];
+                    const float dx = p.x - w.x0, dz = p.z - w.z0;
+                    const float along = (dx * ux + dz * uz) / L, across = std::fabs(dx * uz - dz * ux) / L;
+                    if (across > 0.3f || along < -ex || along > L + ex) continue;
+                    Span& sp = byDraw[p.draw];
+                    sp.draw = p.draw;
+                    sp.count++;
+                    sp.lo = std::min(sp.lo, p.y);
+                    sp.hi = std::max(sp.hi, p.y);
+                }
+            }
+        if (byDraw.empty()) continue;
+        Row r{&w, {}};
+        for (const auto& [d, sp] : byDraw) r.spans.push_back(sp);
+        // the span that best covers the lit wall (overlap with [oy - 3, oy + 3]) is this piece's drawn wall
+        const Span* best = nullptr;
+        float bestOverlap = -1e30f;
+        for (const Span& sp : r.spans) {
+            const float ov = std::min(sp.hi, w.oy + 3.0f) - std::max(sp.lo, w.oy - 3.0f);
+            if (ov > bestOverlap) bestOverlap = ov, best = &sp;
+        }
+        if (best) summary[{w.story, w.outdoor ? 1 : 0}][static_cast<int>(std::lround((best->lo - w.oy) * 100.0f))]++;
+        rows.push_back(std::move(r));
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        return a.w->story != b.w->story ? a.w->story < b.w->story : a.w->outdoor != b.w->outdoor ? a.w->outdoor > b.w->outdoor : a.w->roomId < b.w->roomId;
+    });
+    std::string s = std::format("{} wall pieces noted, {} of them with drawn vertices on their line ({} wall vertices on screen)\n", notes.size(), rows.size(), pts.size());
+    s += "  summary per story (outdoor = room 0 and roofless rooms): drawn foot - lit base (m) x pieces\n";
+    for (const auto& [key, deltas] : summary) {
+        s += std::format("    story {} {}:", key.first, key.second ? "outdoor" : "indoor ");
+        for (const auto& [cm, count] : deltas) s += std::format(" {:+.2f} x{}", cm / 100.0f, count);
+        s += "\n";
+    }
+    s += "  pieces: story, room, class, wall / piece, lit base (wall +0x114), lit bottom row (after Apex), drawn spans [foot..top] per draw\n";
+    int shown = 0;
+    for (const Row& r : rows) {
+        if (++shown > 400) {
+            s += std::format("    ... {} more\n", rows.size() - 400);
+            break;
+        }
+        const WallNote& w = *r.w;
+        s += std::format("    story {} room {}{} class {} wall {:08X}/{}: lit base {:.3f}, bottom row lit at {:.3f}; drawn", w.story, w.roomId, w.outdoor ? " (outdoor)" : "", w.cls,
+                         w.wall, w.piece, w.oy, w.litLo);
+        for (const Span& sp : r.spans) s += std::format(" [#{} {:.3f}..{:.3f}, {} vertices]", sp.draw, sp.lo, sp.hi, sp.count);
+        s += "\n";
+    }
+    return s;
 }
 std::string WallNotesOnRay(const float o[3], const float d[3], float* hitOut) {
     std::vector<WallNote> notes;

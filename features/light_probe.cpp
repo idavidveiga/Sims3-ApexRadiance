@@ -934,6 +934,30 @@ void FinishCapture(IDirect3DDevice9* dev) {
         out << std::format("== PAREDE (desenho #{}): ", it->index) << wall << "\n";
         break;
     }
+    // the whole scene: every wall draw's vertices (the wall shader: lot space = stored / 256, local -> world rows c8..c10)
+    {
+        std::vector<LevelLightShare::SurveyPoint> pts;
+        for (const auto& d : g_draws) {
+            if (d.verts.empty()) continue;
+            float m[3][4] = {};
+            int have = 0;
+            for (const auto& [i, v] : d.vsc)
+                if (i >= 8 && i <= 10) {
+                    std::memcpy(m[i - 8], v.data(), sizeof m[0]);
+                    have++;
+                }
+            if (have < 2) continue; // c9 may be (0 1 0 y) only: a row is never all zero, but two are enough to know it was set
+            for (const auto& v : d.verts) {
+                const float l[3] = {v[0] / 256.0f, v[1] / 256.0f, v[2] / 256.0f};
+                LevelLightShare::SurveyPoint p{d.index, 0, 0, 0};
+                p.x = m[0][0] * l[0] + m[0][1] * l[1] + m[0][2] * l[2] + m[0][3];
+                p.y = m[1][0] * l[0] + m[1][1] * l[1] + m[1][2] * l[2] + m[1][3];
+                p.z = m[2][0] * l[0] + m[2][1] * l[1] + m[2][2] * l[2] + m[2][3];
+                pts.push_back(p);
+            }
+        }
+        out << "== PAREDES DA CENA (todas as paredes na tela: a base que a luz usa x onde a parede e desenhada): " << LevelLightShare::WallSurvey(pts) << "\n";
+    }
     if (g_prevPick.valid && now.valid) WriteComparison(out, g_prevPick, now);
     if (now.valid) g_prevPick = std::move(now);
     out << "== TEXTURAS DOS DESENHOS QUE PINTAM O PIXEL ==\n";

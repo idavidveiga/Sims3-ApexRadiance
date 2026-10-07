@@ -47,6 +47,13 @@ bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist);
 // F7 light capture: the wall piece a screen ray (world origin, direction) meets, as the solve laid it out (base, rows, the
 // heights its rows were lit at, the atlas texel the pixel reads) and the lamps of its room; a note when none
 std::string WallNotesOnRay(const float origin[3], const float dir[3], float* hitOut = nullptr);
+// F7 light capture, the whole scene: every noted wall piece with the wall-shader vertices on its line (world positions of the
+// frame's wall draws): the base its light uses against where it is drawn, per draw, and a summary per story
+struct SurveyPoint {
+    int draw;
+    float x, y, z;
+};
+std::string WallSurvey(const std::vector<SurveyPoint>& points);
 void SetObjectWalls(bool on);
 bool AllFloorsDetailed(); // current full-detail policy, shared with the room scheduler
 // Render thread: every room of every loaded lot lights again (options that change how rooms are lit); why = log text
