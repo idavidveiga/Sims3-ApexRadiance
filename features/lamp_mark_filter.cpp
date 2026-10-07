@@ -92,16 +92,12 @@ std::unordered_map<uintptr_t, uintptr_t> g_lampStory; // light -> tree level (un
 // so this is the safety net: rooms gathered after the change keep their solve, and for lamps that only moved (same room, on
 // or off as before) only the rooms whose list holds them are sent.
 constexpr DWORD kLotGap = 2000;
-constexpr DWORD kSettleMs = 3000; // after the last targeted refresh of a lot: its full refresh
 constexpr float kMoveMin = 0.10f; // m: animated lamps wobble less
 constexpr DWORD kSelfWindow = 10000; // ms
 constexpr int kSelfMax = 3;          // more switches on or off than this within kSelfWindow: a light switching itself, left out
 constexpr int kLotLamps = 8;         // lamps that moved, per lot refresh (more: every room of the lot)
 struct LotDue {
     DWORD due = 0, last = 0, changed = 0;
-    // a targeted refresh ran (only the rooms the edit can reach): every room of the lot once the edits settled (06/10, user: a
-    // closed room kept a corridor sconce's light after lamp edits until "Indoor light between floors" was turned off and on)
-    DWORD settle = 0;
     bool switchOnly = false;
     bool allRooms = false; // a lamp into another room, a lamp moved and switched, or more than kLotLamps lamps: every room
     int lampCount = 0;
@@ -470,7 +466,6 @@ void OnPresent(float nightLevel) {
         uintptr_t tracker;
         DWORD changed;
         bool switchOnly, allRooms;
-        bool settled; // the full refresh once the edits settled
         int lampCount;
         uintptr_t lamps[kLotLamps];
         int switchCount;
@@ -479,17 +474,7 @@ void OnPresent(float nightLevel) {
     std::vector<Run> run;
     {
         std::lock_guard<std::mutex> lk(g_mx);
-        const bool editing = LevelLightShare::LampDragging() || SwitchActive();
         for (auto& [tracker, d] : g_lotDue) {
-            if (!d.due && d.settle && static_cast<int32_t>(now - d.settle) >= 0 && !editing) {
-                d.settle = 0;
-                if (nightLevel >= 0.0f && !(nightLevel > 0.02f && nightLevel < 0.98f)) {
-                    d.last = now | 1;
-                    Run r{tracker, 0, false, true, true, 0, {}, 0, {}};
-                    run.push_back(r);
-                }
-                continue;
-            }
             if (!d.due || static_cast<int32_t>(now - d.due) < 0) continue;
             if (d.last && now - d.last < kLotGap) { // refreshed a moment ago: once more when the gap is over
                 d.due = (d.last + kLotGap) | 1;
@@ -501,8 +486,7 @@ void OnPresent(float nightLevel) {
                 continue;
             }
             d.last = now | 1;
-            Run r{tracker, d.changed, d.switchOnly, d.allRooms || (d.lampCount == 0 && d.switchCount == 0), false, d.lampCount, {}, d.switchCount, {}};
-            d.settle = r.allRooms ? 0 : (now + kSettleMs) | 1;
+            Run r{tracker, d.changed, d.switchOnly, d.allRooms || (d.lampCount == 0 && d.switchCount == 0), d.lampCount, {}, d.switchCount, {}};
             std::copy(d.lamps, d.lamps + d.lampCount, r.lamps);
             std::copy(d.switched, d.switched + d.switchCount, r.switched);
             run.push_back(r);
@@ -513,22 +497,10 @@ void OnPresent(float nightLevel) {
     // every room again: a gather made while the game was still registering it missed it (F8 19:22)
     // (lamps switched where they are: only the rooms they can reach, LevelLightShare::RelightLampSwitch)
     for (const Run& r : run) {
-        // lamps that reach indoor rooms of other stories through a stair opening: every room of the lot at once (a targeted
-        // refresh left a closed room lit for seconds, recording 22:09:14); the settled refresh still follows
-        if (!r.allRooms && !r.settled) {
-            uintptr_t edited[2 * kLotLamps];
-            int ne = 0;
-            for (int i = 0; i < r.lampCount; i++) edited[ne++] = r.lamps[i];
-            for (int i = 0; i < r.switchCount; i++) edited[ne++] = r.switched[i].light;
-            if (LevelLightShare::LampsCrossStories(r.tracker, edited, ne)) {
-                if (LevelLightShare::RelightLot(r.tracker, "a lamp reaching other stories", 0) >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
-        }
         const int sent = !r.allRooms && r.switchCount > 0
                              ? LevelLightShare::RelightLampSwitch(r.tracker, r.lampCount ? "a lamp switched or moved" : "a lamp switched", r.changed,
                                                                   r.switched, r.switchCount, r.lamps, r.lampCount)
-                             : LevelLightShare::RelightLot(r.tracker, r.settled ? "lamp edits settled" : r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
+                             : LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
                                                            r.switchOnly || !r.allRooms ? r.changed : 0, r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount);
         if (sent >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
     }

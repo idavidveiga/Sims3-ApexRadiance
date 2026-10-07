@@ -2310,8 +2310,8 @@ void __fastcall WallSamplesHook(void* wall, void*, int piece, int cls, void* bat
     reinterpret_cast<WallSamples_t>(kWallSamples)(wall, piece, cls, batch);
     const bool gather = ThreadId() == g_gatherThread.load(std::memory_order_relaxed); // g_piece and g_ghosts: that thread only
     if (gather) g_piece = PieceNote{};
-    // lit where the wall is drawn (MeasuredDrop, wall_heights.h), after the rows are lined up
-    const float drop = MeasuredDrop(reinterpret_cast<uintptr_t>(wall), cls, reinterpret_cast<uintptr_t>(batch));
+    // wall heights: measured for the F7 capture only (the drops of 06/10 evening broke the light between stories; reverted)
+    const float drop = 0.0f;
     if (!g_alignOn.load(std::memory_order_relaxed)) {
         if (drop != 0.0f) {
             DropWallSamples(reinterpret_cast<uintptr_t>(batch), drop);
@@ -3996,15 +3996,6 @@ void CaptureStoryWalls(BYTE* room0) {
     const int n = ReadStoryWalls(room0, mgr);
     if (n < 0) return;
     std::vector<WallSeg> segs(g_wallRead, g_wallRead + n);
-    // the wall tests at the heights the walls are drawn at (a house on a foundation: about 2 m under +0x114; a lamp outside
-    // lit a closed roofless room under walls tested 2 m too high, 06/10)
-    for (WallSeg& sg : segs) {
-        float foot = 0.0f;
-        if (WallHeights::DrawnFoot(sg.x0, sg.z0, sg.x1, sg.z1, 0.05f, sg.y0, foot) && std::fabs(foot - sg.y0) > 0.02f && std::fabs(foot - sg.y0) < 4.0f) {
-            sg.y1 += foot - sg.y0;
-            sg.y0 = foot;
-        }
-    }
     std::lock_guard<std::mutex> lk(g_wallSnapMx);
     auto& slot = g_wallSnap[mgr];
     const bool same = slot.size() == segs.size() && (segs.empty() || std::memcmp(slot.data(), segs.data(), segs.size() * sizeof(WallSeg)) == 0);
@@ -6126,8 +6117,7 @@ bool Install(std::string& error) {
     }
     LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
     g_indoorGen.fetch_add(1);
-    FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
-    WallHeights::Install(); // where the walls are drawn: their light rows and the wall tests follow it
+    FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     g_installed = true;
     RefreshSoon();
     LOG_INFO(std::format("[LevelLightShare] Installed (walls of the light's story: {} of {} classes; indoor lamps through stair openings: {}; seamless walls between floors: {})",
@@ -6214,13 +6204,6 @@ bool BasisFloorGuardReady() {
 }
 
 void OnPresent() {
-    // rooms solved before their walls were drawn, now measured away from their base: solved again (wall_heights.h)
-    if (g_installed.load(std::memory_order_relaxed)) {
-        const std::vector<WallHeights::RoomKey> again = WallHeights::TakeRequeue();
-        int sent = 0;
-        for (const WallHeights::RoomKey& r : again) sent += QueueRoomSafe(r.tracker, r.level, r.id) ? 1 : 0;
-        if (sent) LOG_INFO(std::format("[LevelLightShare] {} rooms light again: their walls are drawn away from the base their light used (wall heights measured)", sent));
-    }
     const DWORD structureNow = GetTickCount();
     if (g_structurePending.load(std::memory_order_acquire) && RoomAmbientPolicy::StructureRefreshDue(structureNow, g_structureRefreshAt)) {
         std::vector<uintptr_t> rooms;
