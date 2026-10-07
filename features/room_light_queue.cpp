@@ -38,6 +38,7 @@
 // Every write goes through MemPatch::WriteCodeSuspended (no thread inside the bytes) and is put back by Stop.
 #include "room_light_queue.h"
 #include "apex_log.h"
+#include "hook_guard.h"
 #include "build_flavor.h"
 #include "d3d9_hooks.h"
 #include "entry_chain.h"
@@ -266,10 +267,8 @@ void QuickPassRoom(BYTE* room) {
     }
 }
 
-float __fastcall PriorityHook(BYTE* room) {
-    if (room && g_prioOn) QuickPassRoom(room);
-    const float p = reinterpret_cast<Priority_t>(kPriority)(room);
-    if (!room || !g_prioOn) return p;
+// The priority Apex gives a room the game scored p (PriorityHook)
+float Prioritise(BYTE* room, float p) {
     if (!(p > 0.0f)) return Stranded(room) ? 1.0f : p;
     g_prioCalls.fetch_add(1, std::memory_order_relaxed);
     // a lamp edit's rooms (moved, switched, recoloured) before any other room: the lamp's own, then the stories taking it
@@ -282,6 +281,15 @@ float __fastcall PriorityHook(BYTE* room) {
         return p * 4000.0f * 4.0e6f;
     }
     return p * Factor(room) * urgency;
+}
+
+// 07/10, players' Runtime Error: Apex's parts around the game's priority call are caught on their own (HookGuard); on a C++
+// exception the room keeps the game's own priority and that part stays off
+float __fastcall PriorityHook(BYTE* room) {
+    if (room && g_prioOn) HookGuard::Run("RoomLightQueue quick pass", [room] { QuickPassRoom(room); });
+    const float p = reinterpret_cast<Priority_t>(kPriority)(room);
+    if (!room || !g_prioOn) return p;
+    return HookGuard::Run("RoomLightQueue room priority", p, [room, p] { return Prioritise(room, p); });
 }
 
 // The current room, when it is a room of the priority lot in state 3 (picked, not started or budget left), else null
@@ -362,13 +370,9 @@ int StateOf(const BYTE* room) {
     }
 }
 
-void __fastcall PickHook(BYTE* tree) {
-    if (tree) g_tree.store(tree, std::memory_order_relaxed);
+// After the game's pick (PickHook): more solve steps of the priority lot's rooms within a time budget
+void Drain(BYTE* tree, BYTE* before) {
     const auto pick = reinterpret_cast<Pick_t>(kPick);
-    BYTE* before = tree ? CurrentRoom(tree) : nullptr;
-    g_editNow = g_prioOn && LevelLightShare::LampEditPending(); // for the priority calls of this pick
-    pick(tree);
-    if (!g_drainOn || !tree || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
     // Drain only when the room that was current last time is done (so the lot pass of its lot ran: that lot is not paused,
     // 0x00ADB8F0 checks +0x18 / +0x4E) and the new current room is of that same lot and is the priority lot's
     const uint64_t finishedLot = g_lastLot;
@@ -411,6 +415,18 @@ void __fastcall PickHook(BYTE* tree) {
         g_drainMicros.fetch_add(static_cast<long long>(elapsed(sw) * 1000.0f), std::memory_order_relaxed);
     }
     g_lastLot = LotOf(CurrentRoom(tree));
+}
+
+// 07/10, players' Runtime Error: Apex's parts around the game's pick are caught (HookGuard): on a C++ exception the edit
+// check reads "no edit" and the drain stops where it was (every game step it made is complete) and stays off
+void __fastcall PickHook(BYTE* tree) {
+    if (tree) g_tree.store(tree, std::memory_order_relaxed);
+    const auto pick = reinterpret_cast<Pick_t>(kPick);
+    BYTE* before = tree ? CurrentRoom(tree) : nullptr;
+    g_editNow = g_prioOn && HookGuard::Run("RoomLightQueue edit check", false, [] { return LevelLightShare::LampEditPending(); }); // for the priority calls of this pick
+    pick(tree);
+    if (!g_drainOn || !tree || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
+    HookGuard::Run("RoomLightQueue drain", [tree, before] { Drain(tree, before); });
 }
 
 bool Bytes(uintptr_t at, const char* expect, size_t n) {

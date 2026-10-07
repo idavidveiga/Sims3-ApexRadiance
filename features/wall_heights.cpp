@@ -102,9 +102,17 @@ bool ReadRawPositions(IDirect3DDevice9* dev, UINT first, UINT count, std::vector
     const UINT begin = off + first * stride, bytes = count * stride;
     void* p = nullptr;
     bool ok = false;
-    if (stride >= 8 && d.Pool != D3DPOOL_DEFAULT && begin + bytes <= d.Size && SUCCEEDED(vb->Lock(begin, bytes, &p, D3DLOCK_READONLY)) && p) {
+    bool readable = stride >= 8 && d.Pool != D3DPOOL_DEFAULT && begin + bytes <= d.Size;
+    if (readable) {
+        // the memory first (07/10, players' Runtime Error): a throw while the game's buffer is locked would leave it locked
+        try {
+            out.reserve(static_cast<size_t>(count) * 3);
+        } catch (...) {
+            readable = false;
+        }
+    }
+    if (readable && SUCCEEDED(vb->Lock(begin, bytes, &p, D3DLOCK_READONLY)) && p) {
         const BYTE* b = static_cast<const BYTE*>(p);
-        out.reserve(static_cast<size_t>(count) * 3);
         ok = true;
         for (UINT i = 0; i < count && ok; i++) {
             const BYTE* v = b + static_cast<size_t>(i) * stride + pos->Offset;
@@ -292,7 +300,13 @@ void Install() {
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT bvi, UINT minV, UINT numV, UINT, UINT) {
         IDirect3DVertexShader9* vs = nullptr;
         if (SUCCEEDED(ctx.device->GetVertexShader(&vs)) && vs) {
-            const bool wall = IsWallVs(vs);
+            bool wall = false;
+            try {
+                wall = IsWallVs(vs);
+            } catch (...) { // the shader's reference is given back before the dispatch's safety net takes the exception (07/10)
+                vs->Release();
+                throw;
+            }
             vs->Release();
             if (wall) OnWallDraw(ctx.device, static_cast<UINT>(bvi + static_cast<INT>(minV)), numV);
         }
