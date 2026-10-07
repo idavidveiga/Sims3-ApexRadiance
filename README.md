@@ -116,7 +116,7 @@ Open it with **Ctrl+Shift+F11** (a note shows the key when the game starts).
 - **Shortcuts:** pick a set (letters, numbers or F keys) and change any shortcut.
 - **Hold Alt** over the menu to hide it and look at the game.
 - **What's new:** click the version at the bottom of the menu to see what changed.
-- Search, Undo after any change, a reset for each setting, adjustable text size, and four languages: English, Portuguese, Spanish and French.
+- Search, Undo after any change, a reset for each setting, adjustable text size, and 21 languages (every language The Sims 3 ships in), detected automatically from your Windows language.
 
 ## Requirements
 

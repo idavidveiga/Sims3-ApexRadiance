@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Writes i18n/keys.tsv: every English key of the four-language tables (i18n/tr_*.cpp and the .inc files they include),
+# Writes i18n/keys.tsv: every English key of the four-column (EN/PT/ES/FR) tables (i18n/tr_*.cpp and the .inc files they include),
 # once each, for the people and agents translating the menu into the languages of i18n/lang_<code>.cpp.
 # Run from anywhere: perl tools/i18n_keys.pl   (tools/i18n_check reports when keys.tsv no longer matches the tables)
 #

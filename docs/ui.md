@@ -3,7 +3,7 @@
 Apex Radiance has one in-game menu: a dark Violet window with a grouped sidebar on the left, one page at a time on the
 right, a search field in the header and a save-status footer. Every feature is a card; main controls are visible and
 rare knobs sit in a collapsed **Advanced** section. The menu opens with Ctrl+Shift+F11 by default (other presets
-below), only once a world is loaded. It is translated into English, Portuguese (Brazil), Spanish and French. This page
+below), only once a world is loaded. It is translated into 21 languages, chosen automatically from the Windows language (see Languages). This page
 is the reference for its pages, widgets, shortcuts, profiles and notices; dated design decisions are in
 [history/ui.md](history/ui.md) and test evidence in [validation/ui.md](validation/ui.md).
 

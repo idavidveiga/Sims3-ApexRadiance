@@ -83,8 +83,8 @@ See `docs/features/developer-mode.md` for persistence and verification details.
   constants, patch by pattern, test offline over all captured shaders, adversarial review. Mark unverified facts as
   unverified.
 - **English is the source language** of UI, tooltips and status text; logs, the Developer page and file names stay
-  English only. Since 1.4.1 the menu is translated into Portuguese (Brazil), Spanish and French (Settings > Menu >
-  Language; automatic = Windows' language): write new texts in English and add their translations to the tables in
+  English only. The menu is translated into 21 languages (PT/ES/FR in `i18n/tr_*.cpp`, the rest in `i18n/lang_<code>.cpp`; Settings > Menu >
+  Language; automatic detection from the Windows language): write new texts in English and add their translations to the tables in
   `i18n/tr_*.cpp` (how: `i18n/TRANSLATING.md`; the widgets translate what they draw, raw ImGui text and run-time text
   need `I18n::Tr` / `Trf`). **The user chats in Portuguese; reply in Portuguese.**
 - **Credits:** "Credits: @loinyx" only at the end of each feature description shown on hover; no visible credit lines
