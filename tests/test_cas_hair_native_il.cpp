@@ -40,7 +40,7 @@ static void TestSHA256() {
 static void TestFinallyAndBranchRelocation() {
     const auto il=ToyIL(),eh=ToyEH();
     std::vector<D::Op> before,after;
-    assert(D::Decode(il,before) && before.size()==9);
+    assert(D::Decode(il,before) && before.size()==12);
     const std::uint8_t yield[]{0x16,0x28,0x23,0,0,0x0a};
     Rewritten patched;
     std::string error;
@@ -58,7 +58,7 @@ static void TestFinallyAndBranchRelocation() {
         return op.code==0x2a;
     });
     assert(ret!=after.end() && ret->start==29);
-    assert(!patched.sourceDigest.empty());
+    assert(patched.sourceDigest==D::SHA256(il));
 }
 static void TestFailClosedOnMalformedILAndEH() {
     std::vector<D::Op> ops;
