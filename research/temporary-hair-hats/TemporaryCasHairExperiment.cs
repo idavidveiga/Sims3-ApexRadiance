@@ -3,8 +3,6 @@
 // WARNING: Simulator.Sleep(0) in CAS has not yet been proven safe.
 using System;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text;
 using MonoPatcherLib;
 using Sims3.SimIFace;
 using Sims3.SimIFace.CAS;
@@ -23,12 +21,6 @@ namespace ApexHairTemporaryResearch
         private static MethodInfo sGetPartName;
         private static ConstructorInfo sThumbnailCtor;
 
-        [DllImport("kernel32.dll", EntryPoint = "GetFileAttributesW", CharSet = CharSet.Unicode)]
-        private static extern uint GetFileAttributesW(string path);
-
-        [DllImport("kernel32.dll", EntryPoint = "GetModuleFileNameW", CharSet = CharSet.Unicode)]
-        private static extern uint GetModuleFileNameW(IntPtr module, StringBuilder buffer, uint length);
-
         private static void RegisterStatusCommand(object sender, EventArgs e)
         {
             CommandSystem.RegisterCommand("apexhair_status",
@@ -40,38 +32,16 @@ namespace ApexHairTemporaryResearch
                 });
         }
 
-        private static string FindOptInMarker()
-        {
-            StringBuilder exe = new StringBuilder(1024);
-            uint n = GetModuleFileNameW(IntPtr.Zero, exe, (uint)exe.Capacity);
-            if (n == 0 || n >= (uint)exe.Capacity) return null;
-            string location = exe.ToString();
-            int cut = location.LastIndexOf('\\');
-            if (cut < 0) return null;
-            return location.Substring(0, cut + 1) +
-                @"MonoPatcher\EnableApexHairResearch.txt";
-        }
-
         public TemporaryCasHairExperiment()
         {
             // The command remains available even when the patch is disabled.
             World.sOnStartupAppEventHandler += RegisterStatusCommand;
-            sStatus = "Research package loaded; resolving activation file";
+            // Installing this disposable research package is the opt-in.
+            // Avoid unsupported Win32 P/Invoke from EA's embedded Mono.
+            // Replacements remain guarded by exact method/IL checks.
+            sStatus = "Research package loaded; verifying original game method";
             try
             {
-                string marker = FindOptInMarker();
-                if (marker == null)
-                {
-                    sStatus = "BLOCKED: could not locate executable directory";
-                    return;
-                }
-                uint attr = GetFileAttributesW(marker);
-                if (attr == 0xFFFFFFFFu || (attr & 0x10u) != 0)
-                {
-                    sStatus = "DISABLED: activation file not found at " + marker;
-                    return;
-                }
-                sStatus = "Activation file found; checking original game method";
                 Type originalType = typeof(CASHair);
                 BindingFlags privateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
                 MethodInfo original = originalType.GetMethod("AddHairTypeGridItem", privateInstance);
