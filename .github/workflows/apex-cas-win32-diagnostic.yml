@@ -7,6 +7,9 @@ on:
       - feature/cas-performance-native-only
     paths:
       - "ApexRadiance.vcxproj"
+      - "features/cas_hair_population_plan.h"
+      - "features/cas_hair_grid_session.h"
+      - "features/cas_catalog_scheduler.h"
       - "apex_gui.cpp"
       - "features/ts3_mono_runtime_probe.cpp"
       - "features/ts3_mono_runtime_probe.h"
