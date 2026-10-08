@@ -4,6 +4,7 @@
 // No hooks, no writes, no method swapping, no external modding libraries.
 #include "ts3_mono_runtime_probe.h"
 #include "apex_log.h"
+#include "apex_paths.h"
 #include "game_version.h"
 #include "memory_patch.h"
 #include "imgui.h"
@@ -23,6 +24,7 @@ namespace Ts3MonoRuntimeProbe {
 namespace {
 std::string g_status =
     "Not inspected. Run this only after the world has finished loading.";
+std::string g_liveLogStatus;
 constexpr size_t kSampleBytes = 65536;
 // Historical Steam 1.67 fingerprint, checked only inside the first bounded
 // copy of the loaded .text section. A match is never treated as hook validation.
@@ -343,6 +345,22 @@ void RenderDeveloperUI() {
     }
     if (!g_scan.status.empty())
         ImGui::TextWrapped("%s", g_scan.status.c_str());
+    ImGui::Separator();
+    if (ImGui::Button("Save live log copy (keep game open)")) {
+        if (ApexPaths::EnsureApexDirectory() &&
+            ApexLog::SaveSnapshot(ApexPaths::ApexDirectory() +
+                                  L"ApexRadiance_LOG_LIVE.txt")) {
+            g_liveLogStatus =
+                "Saved ApexRadiance_LOG_LIVE.txt to your Apex Radiance folder. "
+                "Upload this copy; you may keep the game running.";
+        } else {
+            g_liveLogStatus =
+                "Could not export the live log. Close the game to collect the "
+                "normal log, or check folder permissions.";
+        }
+    }
+    if (!g_liveLogStatus.empty())
+        ImGui::TextWrapped("%s", g_liveLogStatus.c_str());
     ImGui::TextDisabled("Signatures are observations only; no native JIT method or ABI is validated.");
 }
 } // namespace Ts3MonoRuntimeProbe
