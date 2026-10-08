@@ -258,14 +258,16 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
 // All four callers pass one pointer and cache EAX at [pointer + 0x20],
 // consistent with a method-header loader, not proof of an ICall resolver.
 // Never attach a Detours hook to those bytes by pattern matching.
-// Retain only the previously identified Steam address behind the existing
-// disabled-by-default experimental ABI gate; EA/unknown builds fail closed.
+// The same byte signature and the old Steam fixed address have NOT been
+// independently proven to implement mono_lookup_internal_call. An opt-in
+// developer macro must never override a known identity uncertainty. Fail
+// closed on every build until we independently validate a new target.
 const GameAddress kLookupInternalCall{
-    "mono_lookup_internal_call",
-    {{GameVersion::Steam, 0x00E82680}},
+    "mono_lookup_internal_call (unverified)",
+    {},
     nullptr,
     0,
-    {0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53, 0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08}
+    {}
 };
 
 } // namespace
