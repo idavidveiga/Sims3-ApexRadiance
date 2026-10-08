@@ -28,9 +28,14 @@ std::string g_status =
     "Not inspected. Run this only after the world has finished loading.";
 std::string g_liveLogStatus;
 constexpr size_t kSampleBytes = 65536;
-// Historical Steam 1.67 fingerprint, checked only inside the first bounded
-// copy of the loaded .text section. A match is never treated as hook validation.
-constexpr std::array<BYTE, 13> kPriorSteamResolver{
+// Previously labeled a Steam-like resolver candidate. The user's EA 1.69
+// read-only four-caller xref capture (2026-10-08 03:49) shows each caller
+// passing ONE pointer and caching EAX into [pointer + 0x20]. This matches
+// the likely MonoMethod.header field pattern in public research headers,
+// NOT the upstream mono_generate_code signature (four parameters).
+// Treat as a possible method-header loader; its identity remains unproven.
+// Retained for backward-compatible diagnostics, NEVER a hooking target.
+constexpr std::array<BYTE, 13> kHistoricalMonoHeaderCandidate{
     0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53,
     0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08
 };
@@ -107,8 +112,8 @@ std::string InspectLoadedExe() {
     // Inspect the bytes we already safely copied. Do not synchronously scan
     // megabytes of live, potentially guarded/protected code from an ImGui click.
     const auto match = std::search(bytes.begin(), bytes.end(),
-                                   kPriorSteamResolver.begin(),
-                                   kPriorSteamResolver.end());
+                                   kHistoricalMonoHeaderCandidate.begin(),
+                                   kHistoricalMonoHeaderCandidate.end());
     if (match != bytes.end()) {
         const auto offset = static_cast<std::size_t>(
             std::distance(bytes.begin(), match));
@@ -143,7 +148,7 @@ struct ExtendedScan {
     std::size_t matches = 0;
     std::vector<uint32_t> candidateRvas;
     std::vector<std::string> candidateWindows; // bounded nearby byte context, read from existing copy
-    std::array<BYTE, kPriorSteamResolver.size() - 1> tail{};
+    std::array<BYTE, kHistoricalMonoHeaderCandidate.size() - 1> tail{};
     std::size_t tailLength = 0;
     std::string status;
 };
@@ -446,12 +451,12 @@ void StepExtendedScan() {
     }
     g_scan.readable += take;
     for (auto it = std::search(copied.begin(), copied.end(),
-                               kPriorSteamResolver.begin(),
-                               kPriorSteamResolver.end());
+                               kHistoricalMonoHeaderCandidate.begin(),
+                               kHistoricalMonoHeaderCandidate.end());
          it != copied.end();
          it = std::search(std::next(it), copied.end(),
-                          kPriorSteamResolver.begin(),
-                          kPriorSteamResolver.end())) {
+                          kHistoricalMonoHeaderCandidate.begin(),
+                          kHistoricalMonoHeaderCandidate.end())) {
         ++g_scan.matches;
         if (g_scan.candidateRvas.size() < kMaxReportedMatches) {
             const std::size_t at = g_scan.next - g_scan.tailLength +
@@ -466,11 +471,11 @@ void StepExtendedScan() {
                 static_cast<std::size_t>(std::distance(copied.begin(), it));
             const std::size_t start = index > 16 ? index - 16 : 0;
             const std::size_t end = std::min(copied.size(),
-                index + kPriorSteamResolver.size() + kCandidateBytesAfter);
+                index + kHistoricalMonoHeaderCandidate.size() + kCandidateBytesAfter);
             std::string context = std::format("RVA {:#x}; -{} / +{} bytes: ",
                 rva, index - start, end - index);
             for (std::size_t j = start; j < end; ++j) {
-                if (j == index || j == index + kPriorSteamResolver.size())
+                if (j == index || j == index + kHistoricalMonoHeaderCandidate.size())
                     context += " |";
                 context += std::format(" {:02X}", static_cast<unsigned>(copied[j]));
             }
@@ -540,6 +545,12 @@ void RenderDeveloperUI() {
     }
     if (!g_liveLogStatus.empty())
         ImGui::TextWrapped("%s", g_liveLogStatus.c_str());
-    ImGui::TextDisabled("Signatures are observations only; no native JIT method or ABI is validated.");
+    ImGui::TextWrapped(
+        "EA 1.69 research result: the 0xA826A0 candidate has four "
+        "one-argument callers that cache its return at object+0x20. "
+        "It resembles a Mono method-header helper, NOT a verified JIT compiler. "
+        "Do not use that address as a hook.");
+    ImGui::TextDisabled(
+        "Read-only diagnostics; native JIT identity and ABI remain unverified.");
 }
 } // namespace Ts3MonoRuntimeProbe
