@@ -41,6 +41,22 @@ class MonoResolverSafetyTests(unittest.TestCase):
         self.assertIn("kFastCasCatalogSupportedVersions", registration)
         self.assertIn(".enabledByDefault = false", registration)
 
+    def test_cas_toggle_is_clickable_only_in_the_pilot(self):
+        gui = (ROOT / "apex_gui.cpp").read_text(encoding="utf-8")
+        cas = gui.split('ImGui::PushID("PerformanceCreateASim");', 1)[1].split(
+            'ImGui::PushID("PerformanceCreateAStyle");', 1
+        )[0]
+        self.assertIn("#ifndef APEX_CAS_PRESET_CACHE_PILOT", cas)
+        self.assertIn("#ifdef APEX_CAS_PRESET_CACHE_PILOT", cas)
+        self.assertIn('FeatureSwitchRow(Performance::kFastCasCatalogName,', cas)
+        self.assertEqual(cas.count("ImGui::BeginDisabled()"), 1)
+        self.assertEqual(cas.count("ImGui::EndDisabled()"), 1)
+        self.assertNotIn("#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS", cas)
+        cast = gui.split('ImGui::PushID("PerformanceCreateAStyle");', 1)[1].split(
+            'ImGui::PopID();', 1
+        )[0]
+        self.assertIn("#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS", cast)
+
     def test_known_runtime_anchors_accept_only_apex_owned_hook_trampolines(self):
         source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
         block = source.split("std::string InspectMonoRuntimeAnchors() {", 1)[1].split(
