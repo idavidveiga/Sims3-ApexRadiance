@@ -85,6 +85,52 @@ must reproduce both enumerators, Store/CC filtering, default/preset
 selection and final UI updates before the gameplay prototype is enabled.
 No improvement is yet claimed.
 
+## Narrower candidate seam: item-by-item insertion
+
+The original `CASHair.AddHairTypeGridItem` is only **292 IL bytes**
+(MethodDef `0x0600191B`), without an exception/finally section.
+This makes it a substantially smaller candidate for a short-lived
+MonoPatcher-managed replacement than the entire 1,621-byte grid method.
+
+Its actual behavior, recovered from the user's UI.dll, is:
+
+1. `UIManager.LoadLayout` loads a `GenericCasItem` layout.
+2. Retrieves exported window #1, updates custom content icon #23,
+   then calls `CatalogProductFilter.ObjectMatchesFilter(preset, ref flag)`.
+   An excluded item is not appended and the method returns false.
+3. Retrieves child window #20, constructs a `ThumbnailKey` from the
+   part's key/preset/body/age-gender-species, assigns the resulting
+   `UIImage` and invalidates the image window.
+4. Optionally shows badge/window #29 for active-wardrobe items and
+   sets the debug tooltip through `GetPartName`.
+5. Appends `new ItemGridCellItem(window, preset)` to the passed
+   `ItemGrid` and returns true.
+
+The signature is an instance method returning bool and accepting
+`(ItemGrid, ResourceKey, CASPartPreset, bool, ref bool)`. The
+`CASPartPreset.mPart` and `CASPartPreset.mPresetId` fields are
+public in the exact user-supplied UI.dll, but the
+`CASHair.mContentTypeFilter` field is private. Any temporary
+managed replacement must preserve its filter contract exactly.
+
+**Experimental hypothesis, not validated:** inserting a cooperative
+`Simulator.Sleep(0)` **only after a successfully appended item**
+could yield between Hair/Hats thumbnails while leaving the two
+original parent loops and their try/finally clauses intact.
+This requires proving that `PopulateTypesGrid` is called from a
+simulator task that supports yielding. If not, this idea must be
+abandoned; `Sleep(0)` must never be inserted blindly into a UI event
+handler. It is a *responsiveness* hypothesis, not a guaranteed
+reduction in total loading time. Invalid or filtered items still
+need the original return value and must not yield.
+
+**Preflight for a temporary replacement:** validate MethodDef identity,
+parameter signature and the exact unmodified IL digest before applying
+a replacement; refuse to install if another CAS/core mod changed the
+method. The exact original `AddHairTypeGridItem` IL SHA-256 is
+`17a3648b46d839af579a406c81367e40cb1822bc0f04723858a7b3e92b32b365`.
+Keep the experiment opt-in and fully removable.
+
 ## Prerequisites for a functional prototype
 
 1. Extract the original, user-owned `UI.dll` from the user's
