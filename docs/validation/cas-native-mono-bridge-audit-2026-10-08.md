@@ -1,3 +1,14 @@
+> **2026-10-08 CORRECTION:** Later independent TS3 Mono 1.2.3.1 research
+> identifies the exact Steam-shaped entry bytes at EA RVA `0xA826A0`
+> as **`mono_lookup_internal_call` (internal-call resolver)**, not a
+> `mono_generate_code` JIT entry. Its return being cached at
+> `MonoMethod+0x20` is compatible with an ICALL pointer union, not
+> sufficient proof of a method-header helper. Earlier descriptions below
+> are kept as historical observations, not current conclusions.
+> Current architecture decision:
+> [CAS interpreter native bridge conclusion](cas-interpreter-native-bridge-conclusion-2026-10-08.md).
+> This does not authorize an EA hook or mean Hair/Hats is optimized.
+
 # CAS Hair/Hats native Mono bridge — validation boundary (2026-10-08)
 
 **Conclusion: source contract VERIFIED, C++ plan tests PASSED, Windows x86
