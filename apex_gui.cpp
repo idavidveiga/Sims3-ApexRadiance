@@ -355,7 +355,8 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
 constexpr const char* kOverviewPerformancePatches[] = {
     Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName,
     Performance::kRoomLightQueueName, Performance::kLotLightingName, Performance::kWallShadingName,
-    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName, Performance::kFastCreateAStyleName, Performance::kFastCasCatalogName,
+    // CAS/CASt are development-only and off by default: do not include in the Overview bulk switch.
+    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName,
     Performance::kFastMemoryName, Performance::kSceneBudgetName, Performance::kObjectIndexName,
     Performance::kMemoryGuardName, Performance::kWindowRepaintName, Performance::kScriptMathName,
 };
