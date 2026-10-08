@@ -1,6 +1,6 @@
 # Create-a-Sim category switching and grid scheduling
 
-**Status:** Apex-native C++ scheduling core implemented in `features/cas_catalog_scheduler.h` with standalone tests in `tests/test_cas_catalog_scheduler.cpp`; **not connected to UI.dll or a playable hook yet**.  No external method-patching libraries or additional script packages are permitted. The previous managed experiment was withdrawn. Native CAS metadata caching remains experimental and off by default; incremental Hair/Hats and visible-first loading are not yet implemented in a playable build.
+**Status:** Apex-native C++ scheduling core implemented in `features/cas_catalog_scheduler.h` with standalone tests in `tests/test_cas_catalog_scheduler.cpp`; **not connected to UI.dll or a playable hook yet**.  No external method-patching libraries or additional script packages are permitted. The previous managed experiment was withdrawn. Native CAS metadata caching remains experimental and off by default. The **append-only Hair/Hats scheduling core** (`ApexCasSchedule::OrderedAppend`) now has standalone tests, but the bridge to `CASHair.PopulateTypesGrid(bool)` is **not yet implemented**, so no playable incremental Hair/Hats optimization exists. Visible-first loading remains a separate research target.
 
 ## Verified code paths
 
@@ -50,6 +50,20 @@ with a small per-tick budget. The existing UI must remain responsible for `Objec
 - On completion, send the same terminal grid/filter update as the original method.
 
 This approach limits a long contiguous pause without changing item indices.
+
+**Native implementation staged:** `OrderedAppend` in `features/cas_catalog_scheduler.h` takes
+the immutable item count and invokes a caller-supplied append callback strictly in
+original order, with a per-tick time/item budget. Every category/context change
+calls `Begin` or `Cancel` and invalidates prior generation work; a failed append
+retries the same logical item on the next tick. It does not access UI.dll or
+create background threads. Seven standalone scheduler test groups cover both
+queue policies, including cancellation, retry and zero-budget behavior.
+
+**Still blocked:** `CASHair.PopulateTypesGrid(bool)` is a managed method and
+the native callback is **not wired into the game's UI thread**. Its verified
+invocation/continuation mechanism, the actual count/list lifetime, selection
+updates and final grid notifications must be checked before shipping. Do not
+interpret the tests as evidence of in-game speedup.
 
 ### 3. True visible-first loading (separate, more invasive patch)
 
