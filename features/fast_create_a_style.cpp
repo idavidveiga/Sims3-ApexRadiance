@@ -253,15 +253,14 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
     return native;
 }
 
-// The old cross-build signature was NOT mono_lookup_internal_call.
-// The user's EA 1.69 live xrefs resolve the same bytes at RVA 0xA826A0.
-// All four callers pass one pointer and cache EAX at [pointer + 0x20],
-// consistent with a method-header loader, not proof of an ICall resolver.
-// Never attach a Detours hook to those bytes by pattern matching.
-// The same byte signature and the old Steam fixed address have NOT been
-// independently proven to implement mono_lookup_internal_call. An opt-in
-// developer macro must never override a known identity uncertainty. Fail
-// closed on every build until we independently validate a new target.
+// Research correction: independent TS3 Mono 1.2.3.1 investigation
+// identifies these same historical bytes as mono_lookup_internal_call,
+// consistent with the user's EA 1.69 four one-argument callers storing
+// the native ICall result into MonoMethod+0x20. It is NOT a Mono JIT
+// compiler. This supports the routine's identity but cannot independently
+// verify the game-specific native calling convention and hook coexistence.
+// All experimental resolver detours remain fail-closed on every build
+// (including with the developer macro) pending that validation.
 const GameAddress kLookupInternalCall{
     "mono_lookup_internal_call (unverified)",
     {},
