@@ -90,8 +90,13 @@ public:
         for (std::size_t k=0; k<kSiteCount; ++k) {
             const auto& pattern = kBridgePatterns[k];
             if (chunk.size() < pattern.length) continue;
+            // Cheap first-byte gate: avoid parsing long masked patterns at
+            // every byte of the 12 MiB TS3 .text image on the render thread.
+            const int hi = Hex(pattern.bytes[0]), lo = Hex(pattern.bytes[1]);
+            if (hi < 0 || lo < 0) continue;
+            const auto first = static_cast<std::uint8_t>((hi << 4) | lo);
             for (std::size_t i=0; i <= chunk.size()-pattern.length; ++i) {
-                if (i + pattern.length <= prefixBytes) continue;
+                if (i + pattern.length <= prefixBytes || chunk[i] != first) continue;
                 if (!MatchesPattern(chunk, i, pattern)) continue;
                 auto& hit = hits_[k];
                 if (hit.count++ == 0) {
