@@ -124,3 +124,48 @@ be blindly detoured.
 - Do not ask the user to repeat previous xref logs. Actual in-game
   execution/visual checks cannot be simulated by GitHub CI; a single
   final game test remains necessary to claim any real speedup.
+
+
+## Smooth Patch comparison — why it is useful and where it stops
+
+Primary developer description and public release:
+https://modthesims.info/d/658759/smooth-patch-2-1.html
+https://www.patreon.com/lazyduchess/posts/ts3-smooth-patch-67835239
+https://www.patreon.com/lazyduchess/posts/ts3-smooth-patch-72964777
+
+**Two different components must not be conflated:**
+
+- Native TS3Patch.asi (historically TS3FrameratePatch): changes simulation
+  timing / sleeps (TPS), general UI responsiveness and frame pacing.
+  It does **not** identify or split the managed CASHair.PopulateTypesGrid
+  loop. The Apex reference `docs/engine/timers-and-sleeps.md` already
+  documents the shared sleep wrapper and overlapping locations. Apex
+  must NOT install a second competing timer/TPS patch.
+- `ld_SmoothPatch.package` (2.x): a managed CAS behavior modification.
+  The author's description states that **clothes** populate on scroll
+  instead of staggered; it also unlocks CASt pattern controls while
+  loading. In released notes it does not establish the same behavior
+  specifically for `CASHair.PopulateTypesGrid(bool)` / Hair/Hats.
+  Prior compatibility defects included absent hairstyles with NRaas
+  MasterController; subsequent fixes and limitations were published.
+  This is important negative evidence: do not assume a clothing
+  optimization can simply be applied to hair/preset groups.
+
+**Lesson for our method, not copied code:** Prefer the original
+`ItemGrid.BeginPopulating` / `OnPopulateTick` lifecycle already used by
+clothing; determine whether Hair/Hats can schedule its **original
+complete part+presets operation** as a grid task on the verified
+simulation/UI thread. Do not reorder hair entries or make
+`AddHairTypeGridItem` yield; that broke Hair/Hats in the earlier
+experiment. Preserve MasterController overrides and vanilla fallback.
+
+A native-only Apex still needs a verified managed-method bridge and
+an independently written adapter. The Smooth Patch 2.x package is NOT
+a drop-in Apex ASI library. Study its user-visible behavior and
+compatibility reports as a reference, not an assumption that
+Hair/Hats is already solved.
+
+As of 2026-01-26 the MTS listing marks Smooth Patch 2.1
+unsupported and suggests Sims3SettingsSetter for supported native TPS
+features. S3SS offers its own Smooth Patch variants; this also argues
+against layering another global tick-rate hook in Apex.
