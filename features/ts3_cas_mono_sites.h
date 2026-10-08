@@ -33,13 +33,13 @@ inline constexpr std::array<BridgePattern, kSiteCount> kBridgePatterns{{
     {BridgeSite::ScriptHostFindClass, "MonoScriptHost::FindClass",
      "83 EC 1C 53 8B 5C 24 24 33 C0 55 56 89 44", 14},
     {BridgeSite::MonoClassGetMethods, "mono_class_get_methods",
-     "57 8B 7C 24 0C 85 FF 75 ?? 33 C0 5F C3 56 8B 74 24 0C F6 46 14 01 75 ?? 56 E8 ?? ?? ?? ?? 83 C4 04 8B 07 85 C0 75 ?? 56 E8 ?? ?? ?? ?? 83 C4 04 83 7E 70", 49},
+     "57 8B 7C 24 0C 85 FF 75 ?? 33 C0 5F C3 56 8B 74 24 0C F6 46 14 01 75 ?? 56 E8 ?? ?? ?? ?? 83 C4 04 8B 07 85 C0 75 ?? 56 E8 ?? ?? ?? ?? 83 C4 04 83 7E 70", 51},
     {BridgeSite::ScriptHostProcessTasks, "MonoScriptHost::ProcessTasks",
-     "55 8B EC 83 E4 F8 83 EC 50 53 55 56 8B D9 8B 83 ?? ?? ?? ?? 8D B3 ?? ?? ?? ?? 57 50 8B CE", 28},
+     "55 8B EC 83 E4 F8 83 EC 50 53 55 56 8B D9 8B 83 ?? ?? ?? ?? 8D B3 ?? ?? ?? ?? 57 50 8B CE", 30},
     {BridgeSite::ScriptHostInitHeap, "MonoScriptHost::InitHeap",
      "83 3D ?? ?? ?? ?? 00 74 ?? B0 01 C3 57 8B 3D", 15}
 }};
-inline constexpr std::size_t kMaxBridgePatternLength = 49;
+inline constexpr std::size_t kMaxBridgePatternLength = 51;
 
 inline int Hex(char c) noexcept {
     if (c >= '0' && c <= '9') return c - '0';
