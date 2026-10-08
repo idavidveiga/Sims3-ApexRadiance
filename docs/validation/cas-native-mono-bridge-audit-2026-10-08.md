@@ -243,11 +243,11 @@ been used as a cross-version fallback in `fast_create_a_style.cpp` for
 `mono_lookup_internal_call`. The player's fourth live log associates these
 bytes with RVA `0xA826A0`, whose four callers pass one argument and cache
 the returned EAX at `[pointer + 0x20]`. **That is not verified as an ICall
-resolver.** Its cross-version pattern fallback has been removed; EA 1.69
-and unknown builds can no longer enable the experimental resolver via that
-guess. The separately researched Steam address is retained behind the
-existing off-by-default experimental ABI gate, not promoted as proof of
-EA compatibility.
+resolver.** The cross-version signature AND historical Steam fixed address have
+now both been removed from the experimental resolver. No game build can
+resolve this ICall entry by the discredited bytes, even when the optional
+developer ABI macro is present. A verified, independently identified
+resolver would require a new review; ordinary Apex operation is unchanged.
 
 Important distinction: standard Mono documents
 `mono_compile_method(MonoMethod*)` as a one-argument interface that returns
@@ -299,3 +299,22 @@ The new source-only CI regression checks that the invalid EA signature is
 not restored as an ICall resolver and that the focused anchor inspector
 contains no writes or Detours install call. Source-level checks and an
 x86 build are not live-game hook validation.
+
+
+### Native export-availability check (read-only)
+
+The focused developer inspector now calls Windows `GetProcAddress` on
+already loaded `TS3.exe` and possible Mono module handles (without calling
+`LoadLibrary`). It looks for seven precisely named Mono APIs, including
+`mono_compile_method`, `mono_jit_info_table_find`,
+`mono_method_get_token`, and `mono_method_desc_search_in_image`.
+It logs the actual exported addresses if present; no native function is
+invoked. Absence of exports only means these functions are not exposed by
+the checked modules, NOT that the embedded runtime is absent.
+
+An export match **does not establish the embedded Mono ABI** or validate
+a method hook. It is a safer first discriminator: if none is exported,
+future identity research requires a separate verified code-graph method
+rather than guessing from one-argument CALL sites or reusing Steam
+addresses. The target remains UI.dll `CASHair.PopulateTypesGrid(bool)`,
+token `0x06001918`. Never patch `AddHairTypeGridItem` to yield.
