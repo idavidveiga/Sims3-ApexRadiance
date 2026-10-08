@@ -2,7 +2,7 @@
 
 Performance reduces the stutters (single long frames, also called hitches) that The Sims 3 produces while lots stream
 in, the camera pans over a neighbourhood, Sims are built in Create a Sim, textures and caches are written, and rooms
-relight. It is a group of fifteen independent switches, plus the separate [Lot Streaming](lot-streaming.md) page. Each
+relight. The released Overview group controls fifteen independent switches; two extra, opt-in experimental switches cover CAS and Create-a-Style, plus the separate [Lot Streaming](lot-streaming.md) page. Each
 one replaces or reschedules one specific piece of game work; none of them changes what the game draws once its work is
 done. Most of them produce exactly the game's own result faster; the scheduling switches spread the same work over more
 frames while the camera moves.
@@ -12,8 +12,8 @@ frames while the camera moves.
 | | |
 |---|---|
 | Availability | Released. The individual switches were introduced between 2.1.0 and 2.7.0 (see the table below); the first twelve are on by default since 2.5.5. The single Overview switch for the group: Released in 2.6.0, covering fifteen switches since 2.7.0. Room to save, Lighter window updates and Faster scripts: Experimental, released in 2.7.0 |
-| Default | All sixteen on when no saved choice exists. An explicit saved off choice stays off. The Lot Streaming switches are off by default |
-| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Create-a-Style*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
+| Default | The fifteen released Performance switches follow their existing defaults. Create-a-Sim and Create-a-Style experiments are **off** by default and excluded from the Overview bulk switch. An explicit saved choice stays respected. Lot Streaming switches are off by default |
+| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Create-a-Sim*, *Create-a-Style*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
 | Configuration | One `[patches.<Name>]` table per switch in `ApexRadiance.toml` |
 | Developer mode | Switches: no. Counters, verification controls and tuning: Developer > Performance |
 | Source | [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp), [`patches/performance.h`](../../../patches/performance.h), the feature modules linked from each page |
