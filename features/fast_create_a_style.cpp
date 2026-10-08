@@ -313,6 +313,12 @@ void ReleaseResolver() {
 }
 
 bool Start(std::string* error) {
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+    // The original game's embedded Mono InternalCall x86 ABI has not been verified against TS3W.exe.
+    // Prevent even manual enabling from installing an untested native detour in a regular build.
+    if (error) *error = "CASt thumbnail profiling unavailable until the native TS3 Mono ABI is verified";
+    return false;
+#endif
     if (g_running.load(std::memory_order_acquire)) return true;
     if (!AcquireResolver(error)) return false;
     g_running.store(true, std::memory_order_release);
