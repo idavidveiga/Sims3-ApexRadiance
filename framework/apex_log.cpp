@@ -25,8 +25,9 @@ std::atomic<bool> g_verbose{false};
 void WriteQueueLocked() {
     if (g_queue.empty() || g_file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
-    WriteFile(g_file, g_queue.data(), static_cast<DWORD>(g_queue.size()), &written, nullptr);
-    g_queue.clear();
+    if (!WriteFile(g_file, g_queue.data(), static_cast<DWORD>(g_queue.size()),
+                   &written, nullptr)) return; // retain queued entries for retry
+    if (written) g_queue.erase(0, written); // keep any unwritten suffix
 }
 
 DWORD WINAPI WriterThread(LPVOID param) {
@@ -121,26 +122,21 @@ bool SaveSnapshot(const std::wstring& destination) {
     std::lock_guard<std::mutex> lock(g_lock);
     if (g_file == INVALID_HANDLE_VALUE || destination.empty()) return false;
     WriteQueueLocked();
+    if (!g_queue.empty()) return false; // do not export an incomplete flush
     // Ensure metadata/content is visible to other processes even when the
     // regular logging handle remains open for the lifetime of the game.
     if (!FlushFileBuffers(g_file)) return false;
-
-    HANDLE input = CreateFileW(destination.c_str(), 0, FILE_SHARE_READ,
-                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    // Do not overwrite the currently opened log by accident. The destination
-    // should be a distinct snapshot path; this check has no side effects.
-    if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
 
     // Reopen the existing log handle without needing its original path.
     // DuplicateHandle gives us a new writable-only handle, not a readable one,
     // so retrieve its path and open it for read with sharing compatible with
     // the original writer.
     wchar_t sourcePath[32768] = {};
+    constexpr DWORD kPathChars =
+        static_cast<DWORD>(sizeof(sourcePath) / sizeof(sourcePath[0]));
     const DWORD pathLen = GetFinalPathNameByHandleW(
-        g_file, sourcePath, static_cast<DWORD>(std::size(sourcePath)),
-        FILE_NAME_NORMALIZED);
-    if (!pathLen || pathLen >= std::size(sourcePath) ||
-        destination == sourcePath) return false;
+        g_file, sourcePath, kPathChars, FILE_NAME_NORMALIZED);
+    if (!pathLen || pathLen >= kPathChars) return false;
 
     HANDLE source = CreateFileW(sourcePath, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
