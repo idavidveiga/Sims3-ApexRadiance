@@ -131,4 +131,77 @@ private:
     std::size_t columns_ = 1, prefetchRows_ = 2;
     int direction_ = 1;
 };
+
+// Ordered append scheduler for Hair/Hats category grids that do not have
+// verified support for sparse slot insertion. Unlike Scheduler, this class
+// NEVER changes the order of calls to the caller's original append action.
+// The callback is restricted to the game's own UI/simulator thread and must
+// complete one logical item before returning true. On failure the same item
+// is retried in a later tick without skipping its original position.
+// No managed object, UIImage, game pointer or global thread is retained here.
+class OrderedAppend {
+public:
+    using Generation = std::uint64_t;
+    struct WorkItem { Generation generation; std::size_t index; };
+    struct SliceResult {
+        std::size_t processed = 0;
+        bool generationChanged = false;
+        bool completed = false;
+        bool blocked = false;
+    };
+
+    Generation Begin(std::size_t itemCount) noexcept {
+        AdvanceGeneration();
+        count_ = itemCount;
+        next_ = 0;
+        return generation_;
+    }
+    Generation Cancel() noexcept {
+        AdvanceGeneration();
+        count_ = next_ = 0;
+        return generation_;
+    }
+    Generation CurrentGeneration() const noexcept { return generation_; }
+    std::size_t ItemCount() const noexcept { return count_; }
+    std::size_t NextIndex() const noexcept { return next_; }
+    std::size_t Remaining() const noexcept { return count_ - next_; }
+    bool IsComplete() const noexcept { return next_ == count_; }
+    bool IsCurrent(Generation g) const noexcept { return g == generation_; }
+
+    template<class AppendFn, class Clock = std::chrono::steady_clock>
+    SliceResult RunSlice(Generation expected, std::chrono::nanoseconds budget,
+                         std::size_t maxItems, AppendFn&& append) {
+        SliceResult result;
+        if (!IsCurrent(expected)) {
+            result.generationChanged = true;
+            return result;
+        }
+        const auto start = Clock::now();
+        while (result.processed < maxItems && next_ < count_ && IsCurrent(expected)) {
+            // One item is allowed even with a zero budget, exactly as with
+            // the existing scheduler. Subsequent items obey the time limit.
+            if (result.processed && Clock::now() - start >= budget) break;
+            const WorkItem work{expected, next_};
+            const bool ok = append(work);
+            if (!IsCurrent(expected)) break;
+            if (!ok) {
+                result.blocked = true;
+                break; // append did not commit; retry this same index later
+            }
+            ++next_;
+            ++result.processed;
+        }
+        result.generationChanged = !IsCurrent(expected);
+        result.completed = IsCurrent(expected) && IsComplete();
+        return result;
+    }
+
+private:
+    void AdvanceGeneration() noexcept {
+        if (++generation_ == 0) ++generation_;
+    }
+    Generation generation_ = 0;
+    std::size_t count_ = 0;
+    std::size_t next_ = 0;
+};
 } // namespace ApexCasSchedule
