@@ -19,6 +19,7 @@
 #include "fast_refpack.h"
 #include "fast_cas.h"
 #include "fast_create_a_style.h"
+#include "fast_cas_catalog.h"
 #include "compositor_readback.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
@@ -519,6 +520,28 @@ class FastCacheCompressionPatch : public ApexPatch {
     void RenderDeveloperUI() override { FastRefPack::RenderDeveloperUI(); }
 };
 
+class FastCasCatalogPatch : public ApexPatch {
+  public:
+    FastCasCatalogPatch() : ApexPatch(Performance::kFastCasCatalogName, nullptr) {}
+    bool Install() override {
+        if (isEnabled) return true;
+        lastError.clear();
+        std::string error;
+        if (!FastCasCatalog::Start(&error)) return Fail(error);
+        isEnabled = true;
+        return true;
+    }
+    bool Uninstall() override {
+        if (!isEnabled) return true;
+        FastCasCatalog::Stop();
+        isEnabled = false;
+        lastError.clear();
+        return true;
+    }
+    void RenderCustomUI() override {}
+    void RenderDeveloperUI() override {}
+};
+
 class FastCreateAStylePatch : public ApexPatch {
   public:
     FastCreateAStylePatch() : ApexPatch(Performance::kFastCreateAStyleName, nullptr) {}
@@ -868,6 +891,7 @@ bool Performance::LotVisibilityOverrideAlreadyExternal() { return LotVisibilityO
 std::string Performance::FastTextureStatus() { return FastDxt::StatusText(); }
 std::string Performance::FastCacheStatus() { return FastRefPack::StatusText() + "; " + FastCrc::StatusText(); }
 std::string Performance::FastCreateAStyleStatus() { return FastCreateAStyle::StatusText(); }
+std::string Performance::FastCasCatalogStatus() { return FastCasCatalog::StatusText(); }
 std::string Performance::FastMemoryStatus() { return FastMemory::StatusText(); }
 std::string Performance::MemoryGuardStatus() { return MemoryGuard::StatusText(); }
 std::string Performance::WindowRepaintStatus() { return WindowRepaint::StatusText(); }
@@ -1064,6 +1088,19 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
                                             "The texture compositor cache's record checksum (CRC-32, 0x4FA4C0) is computed eight bytes per step with tables derived from "
                                             "the game's own table; its first 16 values of each session are compared with the game's."},
                        .gameCodeGroup = "FastCacheCompression"});
+
+APEX_REGISTER_FEATURE(FastCasCatalogPatch,
+                      {.displayName = "Faster CAS catalog",
+                       .description = "Experimental cache for repeated Create-a-Sim preset counts and IDs while changing clothing and hair categories. "
+                                      "Does not cache image handles or alter the visible grid. Research: @idavidveiga.",
+                       .category = "Performance",
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
+                       .technicalDetails = {"Uses the Mono internal-call resolver shared with Faster Create-a-Style.",
+                                            "Caches CAS preset metadata for up to 30 seconds and validates every 32nd hit.",
+                                            "Invalidates cached entries after preset additions or removals.",
+                                            "Experimental: ABI and in-game performance require validation before general release."}});
 
 APEX_REGISTER_FEATURE(FastCreateAStylePatch,
                       {.displayName = "Faster Create-a-Style",
