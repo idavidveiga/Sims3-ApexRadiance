@@ -13,6 +13,8 @@ on:
       - "tests/test_ts3_mono_method_identity.cpp"
       - "tests/test_ts3_mono_xref.cpp"
       - "features/ts3_mono_runtime_probe.cpp"
+      - "framework/entry_chain.cpp"
+      - "framework/entry_chain.h"
       - "features/fast_create_a_style.cpp"
       - "tests/test_mono_resolver_fails_closed.py"
       - "tests/test_cas_catalog_scheduler.cpp"
