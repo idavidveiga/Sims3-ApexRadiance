@@ -104,6 +104,7 @@
     <ClCompile Include="features\fast_cas.cpp" />
     <ClCompile Include="features\fast_create_a_style.cpp" />
     <ClCompile Include="features\fast_cas_catalog.cpp" />
+    <ClCompile Include="features\ts3_mono_runtime_probe.cpp" />
     <ClCompile Include="features\compositor_readback.cpp" />
     <ClCompile Include="features\fast_crc.cpp" />
     <ClCompile Include="features\fast_memory.cpp" />
@@ -223,6 +224,7 @@
     <ClInclude Include="features\fast_cas.h" />
     <ClInclude Include="features\fast_create_a_style.h" />
     <ClInclude Include="features\fast_cas_catalog.h" />
+    <ClInclude Include="features\ts3_mono_runtime_probe.h" />
     <ClInclude Include="features\cas_catalog_scheduler.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
