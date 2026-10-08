@@ -169,3 +169,58 @@ As of 2026-01-26 the MTS listing marks Smooth Patch 2.1
 unsupported and suggests Sims3SettingsSetter for supported native TPS
 features. S3SS offers its own Smooth Patch variants; this also argues
 against layering another global tick-rate hook in Apex.
+
+
+## New: strict native discovery adapter and corrected signature
+
+The native-only research branch adds:
+- `features/ts3_cas_mono_discovery.h`: original `FindClass` and
+  `mono_class_get_methods` adapter expressed as injected callbacks,
+  with explicit enabled/simulation-thread/ABI/UI-assembly gates,
+  bounded enumeration, duplicate-token detection and exact method
+  ownership check. Opaque iterator cookies are not treated as sorted
+  integers. The adapter's output is a **MonoMethod pointer**; it
+  neither invokes that method nor assumes a callable JIT entry.
+- `features/ts3_mono_method_identity.h`: corrected
+  `MonoMethodSignature.param_count` width from uint32 to **uint16**
+  at `+0x04`, and now validates the actual managed signature
+  **instance void(bool)** via return MonoType `0x01`, parameter
+  MonoType `0x02`, and a non-static method attribute check.
+  The shorter, NUL-terminated strings are read byte-by-byte instead of
+  requiring a completely accessible 256-byte page span.
+- `tests/test_ts3_cas_mono_discovery.cpp`: synthetic successes,
+  negative gates, wrong ABI metadata, foreign declaring class, duplicate
+  method, malformed iterator, opaque nonmonotonic iterator and bound
+  exhaustion. Neither those fixtures nor GitHub CI prove EA 1.69
+  runtime behavior.
+
+Do not present this as a live bridge yet: the adapter is deliberately
+NOT wired to unverified Mono entry points. To attach it in production,
+first establish trustworthy EA 1.69 native ABI and lifetime for
+`MonoScriptHost::FindClass` and `mono_class_get_methods`, and a
+simulation-thread dispatch; only then consider an independently
+written Hair/Hats parent-method adapter.
+
+## S3IO research, user-suggested 2026-10-08
+
+- Official mod page:
+  https://modthesims.info/d/700387/s3io-in-game-file-access-api-for-script-modders.html
+- Public source:
+  https://github.com/brando130/S3IO
+
+S3IO uses two explicit components: managed `S3IO.package` and native
+`S3IO.asi`, handshaking through a `S3IO_IPC` buffer placed via
+`Marshal.AllocHGlobal`. The native module uses `VirtualQuery`
+to locate the buffer; managed callers use `Simulator.Sleep` while
+waiting for filesystem operations, not during synchronous CAS grid
+construction. This is evidence for robust cross-component IPC and
+late-start handling, **not** for a MonoMethod resolver or an
+incremental `CASHair.PopulateTypesGrid` replacement. No `System.IO`
+is needed by the Apex native module, which already has Win32 filesystem
+APIs.
+
+The user requires one final `ApexRadiance.asi` with NO mandatory
+`.package`; therefore no S3IO runtime dependency or S3IO-derived
+IPC is installed. Do not copy S3IO's `Simulator.Sleep(0)` into
+`AddHairTypeGridItem`: this caused disappearing Hair/Hats in
+the earlier managed experiment.
