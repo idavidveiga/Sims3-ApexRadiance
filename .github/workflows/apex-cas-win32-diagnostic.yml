@@ -30,6 +30,8 @@ on:
       - "features/ts3_mono_xref.h"
       - "features/ts3_mono_runtime_probe.h"
       - "patches/performance_patches.cpp"
+      - "features/fast_cas_catalog.cpp"
+      - "features/fast_create_a_style.cpp"
       - ".github/workflows/apex-cas-win32-diagnostic.yml"
 
 permissions:
