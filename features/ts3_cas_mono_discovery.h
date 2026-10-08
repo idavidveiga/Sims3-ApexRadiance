@@ -70,10 +70,12 @@ Discovery DiscoverHairPopulate(DiscoveryGate gate, FindClass&& findClass,
     }
 
     constexpr std::size_t kMaximumClassMethods = 2048;
-    std::int32_t cursor = 0;
+    // In old Mono the iterator is an OPAQUE cookie: its numeric value
+    // need not increase, even though each call must make progress.
+    std::uint32_t cursor = 0;
     bool found = false;
     for (std::size_t i = 0; i < kMaximumClassMethods; ++i) {
-        const std::int32_t previous = cursor;
+        const std::uint32_t previous = cursor;
         const std::uint32_t candidate = nextMethod(owner, &cursor);
         if (!candidate) {
             result.status = found ? DiscoveryStatus::Ready :
@@ -81,7 +83,7 @@ Discovery DiscoverHairPopulate(DiscoveryGate gate, FindClass&& findClass,
             return result;
         }
         ++result.methodsVisited;
-        if (cursor <= previous) {
+        if (cursor == previous) {
             result.status = DiscoveryStatus::BadEnumeration;
             result.method = result.runtimeMethod = 0;
             return result;
