@@ -22,6 +22,11 @@ const I18n::Entry kEntries[] = {
     {"DXVK or driver settings may override V-Sync; this cannot guarantee flicker-free output", "O DXVK ou o driver pode sobrescrever o V-Sync; isso não garante eliminar cintilações", "DXVK o el controlador puede sobrescribir V-Sync; esto no garantiza eliminar el parpadeo", "DXVK ou le pilote peut remplacer V-Sync ; cela ne garantit pas l’absence de scintillement"},
     {"Restore synchronization", "Restaurar sincronização", "Restaurar sincronización", "Rétablir la synchronisation"},
     {"V-Sync", "V-Sync", "V-Sync", "V-Sync"},
+    // ---- Create-a-Sim performance ----
+    {"Create-a-Sim", "Criar um Sim", "Crear un Sim", "Créer un Sim"},
+    {"Experimental category preset metadata cache", "Cache experimental de metadados dos presets das categorias", "Caché experimental de metadatos de los preajustes por categoría", "Cache expérimental des métadonnées des préréglages par catégorie"},
+    {"Faster CAS catalog", "Catálogo do CAS mais rápido", "Catálogo del CAS más rápido", "Catalogue CAS plus rapide"},
+    {"Caches repeated clothing and hair preset metadata; does not cache image handles", "Armazena metadados repetidos de presets de roupas e cabelos; não armazena identificadores de imagens", "Almacena metadatos repetidos de preajustes de ropa y cabello; no almacena identificadores de imagen", "Mémorise les métadonnées répétées des préréglages de vêtements et cheveux ; ne conserve pas les handles d'images"},
     // ---- Create-a-Style performance ----
     {"Create-a-Style", "Criar um Estilo", "Crear un Estilo", "Créer un style"},
     {"Faster pattern thumbnails and smoother browsing", "Miniaturas de padrões mais rápidas e navegação mais fluida", "Miniaturas de patrones más rápidas y navegación más fluida", "Miniatures de motifs plus rapides et navigation plus fluide"},
