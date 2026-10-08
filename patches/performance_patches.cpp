@@ -38,6 +38,16 @@
 
 namespace {
 
+// Production keeps the existing support information; only the isolated
+// EA 1.69 preset-cache pilot advertises this experimental feature there.
+// All builds still require the explicit feature toggle.
+#if defined(APEX_CAS_PRESET_CACHE_PILOT)
+constexpr GameVersionMask kFastCasCatalogSupportedVersions =
+    VersionBit(GameVersion::EA);
+#else
+constexpr GameVersionMask kFastCasCatalogSupportedVersions = VERSION_STEAM;
+#endif
+
 class ResourceLookupCachePatch : public ApexPatch {
   public:
     ResourceLookupCachePatch() : ApexPatch(Performance::kResourceCacheName, nullptr) {}
@@ -1097,7 +1107,7 @@ APEX_REGISTER_FEATURE(FastCasCatalogPatch,
                        .category = "Performance",
                        .experimental = true,
                        .enabledByDefault = false,
-                       .supportedVersions = VERSION_STEAM,
+                       .supportedVersions = kFastCasCatalogSupportedVersions,
                        .technicalDetails = {"Uses the Mono internal-call resolver shared with Faster Create-a-Style.",
                                             "CAS metadata cache is unvalidated, gated behind an explicit developer build flag, and disabled by default.",
                                             "Invalidates cached entries after preset additions or removals.",
