@@ -152,6 +152,21 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         return plan_.CurrentGeneration();
     }
+    // A C++ exception escaped a native CAS work callback. The engine may
+    // already have received partial UI mutations; never retry that unit.
+    // Call only on the registered simulation thread, after unwinding the
+    // callback. The verified managed bridge must rebuild the original grid.
+    bool AbortAndRequestOriginalRebuild() noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (owner_ != std::this_thread::get_id()) return false;
+        if (active_) {
+            if (!plan_.Cancel()) return false;
+            active_ = false;
+            callbacks_ = {};
+            rebuildRequired_ = true;
+        }
+        return true;
+    }
     bool NeedsOriginalRebuild() const {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         return rebuildRequired_;
