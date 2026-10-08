@@ -944,6 +944,11 @@ void PerformanceCard() {
 #endif
 #ifndef APEX_CAS_PRESET_CACHE_PILOT
         ImGui::EndDisabled();
+#else
+        if (ApexPatch* catalog = Find(Performance::kFastCasCatalogName);
+            catalog && catalog->IsEnabled()) {
+            CardNote(Performance::FastCasCatalogStatus().c_str());
+        }
 #endif
     }
     ApexUi::EndCard();
