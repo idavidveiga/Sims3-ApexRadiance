@@ -3,6 +3,7 @@
 // WARNING: Simulator.Sleep(0) in CAS has not yet been proven safe.
 using System;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using MonoPatcherLib;
 using Sims3.SimIFace;
 using Sims3.SimIFace.CAS;
@@ -20,12 +21,17 @@ namespace ApexHairTemporaryResearch
         private static MethodInfo sGetPartName;
         private static ConstructorInfo sThumbnailCtor;
 
+        [DllImport("kernel32.dll", EntryPoint = "GetFileAttributesW", CharSet = CharSet.Unicode)]
+        private static extern uint GetFileAttributesW(string path);
+
         public TemporaryCasHairExperiment()
         {
-            // Never patch unless the test process opts in explicitly.
-            // Keep the normal game and Apex release entirely unaffected.
-            if (System.Environment.GetEnvironmentVariable(
-                    "APEX_HAIR_MONO_RESEARCH") != "1") return;
+            // No game mscorlib Environment.GetEnvironmentVariable API.
+            // Win32 marker file is opt-in, and avoids changing the user's
+            // normal game environment or installing another library.
+            if (GetFileAttributesW(
+                    @"MonoPatcher\EnableApexHairResearch.txt") == 0xFFFFFFFFu)
+                return;
             try
             {
                 Type originalType = typeof(CASHair);
