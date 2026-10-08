@@ -226,6 +226,7 @@
     <ClInclude Include="features\fast_cas_catalog.h" />
     <ClInclude Include="features\ts3_mono_runtime_probe.h" />
     <ClInclude Include="features\cas_catalog_scheduler.h" />
+    <ClInclude Include="features\cas_hair_grid_session.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
