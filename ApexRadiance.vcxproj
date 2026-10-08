@@ -232,6 +232,7 @@
     <ClInclude Include="features\cas_hair_population_plan.h" />
     <ClInclude Include="features\cas_hair_native_bridge.h" />
     <ClInclude Include="features\cas_hair_sim_pump.h" />
+    <ClInclude Include="features\cas_hair_native_il.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
