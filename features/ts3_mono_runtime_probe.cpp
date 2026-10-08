@@ -123,6 +123,9 @@ std::string InspectLoadedExe() {
 
 constexpr std::size_t kScanStepBytes = 65536;
 constexpr std::size_t kMaxReportedMatches = 8;
+// Bounded candidate code sample for independent offline x86 instruction review.
+// Extracted from the existing 64-KiB read buffer: no additional process reads.
+constexpr std::size_t kCandidateBytesAfter = 512;
 
 // UI-thread-only state: at most 64 KiB of the loaded executable is inspected
 // each frame while this developer page is open. No background access, hooks,
@@ -304,7 +307,7 @@ void StepExtendedScan() {
                 static_cast<std::size_t>(std::distance(copied.begin(), it));
             const std::size_t start = index > 16 ? index - 16 : 0;
             const std::size_t end = std::min(copied.size(),
-                index + kPriorSteamResolver.size() + 48);
+                index + kPriorSteamResolver.size() + kCandidateBytesAfter);
             std::string context = std::format("RVA {:#x}; -{} / +{} bytes: ",
                 rva, index - start, end - index);
             for (std::size_t j = start; j < end; ++j) {
