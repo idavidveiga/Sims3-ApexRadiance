@@ -134,6 +134,7 @@ struct ExtendedScan {
     std::size_t skipped = 0;
     std::size_t matches = 0;
     std::vector<uint32_t> candidateRvas;
+    std::vector<std::string> candidateWindows; // bounded nearby byte context, read from existing copy
     std::array<BYTE, kPriorSteamResolver.size() - 1> tail{};
     std::size_t tailLength = 0;
     std::string status;
@@ -230,6 +231,8 @@ void FinishExtendedScan() {
         g_scan.readable, g_scan.length, g_scan.skipped,
         g_scan.matches, examples);
     LOG_INFO(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
+    for (const auto& context : g_scan.candidateWindows)
+        LOG_INFO(std::format("[TS3 Mono Extended Probe] Candidate bytes: {}", context));
 }
 
 void StepExtendedScan() {
@@ -288,8 +291,25 @@ void StepExtendedScan() {
         if (g_scan.candidateRvas.size() < kMaxReportedMatches) {
             const std::size_t at = g_scan.next - g_scan.tailLength +
                 static_cast<std::size_t>(std::distance(copied.begin(), it));
-            g_scan.candidateRvas.push_back(static_cast<uint32_t>(
-                g_scan.textBase - g_scan.moduleBase + at));
+            const auto rva = static_cast<uint32_t>(
+                g_scan.textBase - g_scan.moduleBase + at);
+            g_scan.candidateRvas.push_back(rva);
+            // Record at most eight small neighborhoods around exact matches.
+            // This consumes bytes already copied from the user's own loaded game;
+            // it never reads additional memory, installs hooks or patches any code.
+            const std::size_t index =
+                static_cast<std::size_t>(std::distance(copied.begin(), it));
+            const std::size_t start = index > 16 ? index - 16 : 0;
+            const std::size_t end = std::min(copied.size(),
+                index + kPriorSteamResolver.size() + 48);
+            std::string context = std::format("RVA {:#x}; -{} / +{} bytes: ",
+                rva, index - start, end - index);
+            for (std::size_t j = start; j < end; ++j) {
+                if (j == index || j == index + kPriorSteamResolver.size())
+                    context += " |";
+                context += std::format(" {:02X}", static_cast<unsigned>(copied[j]));
+            }
+            g_scan.candidateWindows.push_back(std::move(context));
         }
     }
     g_scan.tailLength = std::min(g_scan.tail.size(), copied.size());
