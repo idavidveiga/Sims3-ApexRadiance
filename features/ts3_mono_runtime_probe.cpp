@@ -30,14 +30,14 @@ std::string g_status =
 std::string g_liveLogStatus;
 std::string g_monoAnchorsStatus = "Mono runtime anchors not inspected.";
 constexpr size_t kSampleBytes = 65536;
-// Previously labeled a Steam-like resolver candidate. The user's EA 1.69
-// read-only four-caller xref capture (2026-10-08 03:49) shows each caller
-// passing ONE pointer and caching EAX into [pointer + 0x20]. This matches
-// the likely MonoMethod.header field pattern in public research headers,
-// NOT the upstream mono_generate_code signature (four parameters).
-// Treat as a possible method-header loader; its identity remains unproven.
-// Retained for backward-compatible diagnostics, NEVER a hooking target.
-constexpr std::array<BYTE, 13> kHistoricalMonoHeaderCandidate{
+// Evidence correction (2026-10-08): public independent TS3 Mono 1.2.3.1
+// research identifies these EXACT bytes on Steam as mono_lookup_internal_call.
+// The user's EA 1.69 xrefs all pass one MonoMethod-like argument and cache
+// its EAX result in the +0x20 union, where ICALL native pointers can live.
+// These facts support an INTERNAL-CALL RESOLVER, not a JIT compiler or
+// method-header helper. They do not validate EA native hook safety.
+// The probe remains read-only; NEVER treat a byte match as hook approval.
+constexpr std::array<BYTE, 13> kHistoricalMonoIcallCandidate{
     0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53,
     0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08
 };
@@ -212,14 +212,14 @@ std::string InspectLoadedExe() {
     // Inspect the bytes we already safely copied. Do not synchronously scan
     // megabytes of live, potentially guarded/protected code from an ImGui click.
     const auto match = std::search(bytes.begin(), bytes.end(),
-                                   kHistoricalMonoHeaderCandidate.begin(),
-                                   kHistoricalMonoHeaderCandidate.end());
+                                   kHistoricalMonoIcallCandidate.begin(),
+                                   kHistoricalMonoIcallCandidate.end());
     if (match != bytes.end()) {
         const auto offset = static_cast<std::size_t>(
             std::distance(bytes.begin(), match));
         return std::format(
             "Loaded .text sample entropy {:.3f}; historical Steam-like bytes "
-            "at sample RVA {:#x}; page protect={:#x}. Candidate UNVERIFIED; no hooks installed.",
+            "at sample RVA {:#x}; page protect={:#x}. Resolver candidate UNVERIFIED on EA; no hooks installed.",
             bits, text.VirtualAddress + offset, page.Protect);
     }
     return std::format(
@@ -248,7 +248,7 @@ struct ExtendedScan {
     std::size_t matches = 0;
     std::vector<uint32_t> candidateRvas;
     std::vector<std::string> candidateWindows; // bounded nearby byte context, read from existing copy
-    std::array<BYTE, kHistoricalMonoHeaderCandidate.size() - 1> tail{};
+    std::array<BYTE, kHistoricalMonoIcallCandidate.size() - 1> tail{};
     std::size_t tailLength = 0;
     std::string status;
 };
@@ -493,8 +493,8 @@ void FinishExtendedScan() {
     for (const uint32_t rva : g_scan.candidateRvas)
         examples += std::format(" {:#x}", rva);
     g_scan.status = std::format(
-        "Complete: {}/{} bytes read, {} skipped; historical Steam-shaped "
-        "signature: {} match(es){}; ABI and JIT method UNVERIFIED",
+        "Complete: {}/{} bytes read, {} skipped; historical ICall resolver "
+        "signature: {} match(es){}; resolver ABI UNVERIFIED; no JIT inference",
         g_scan.readable, g_scan.length, g_scan.skipped,
         g_scan.matches, examples);
     LOG_INFO(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
@@ -551,12 +551,12 @@ void StepExtendedScan() {
     }
     g_scan.readable += take;
     for (auto it = std::search(copied.begin(), copied.end(),
-                               kHistoricalMonoHeaderCandidate.begin(),
-                               kHistoricalMonoHeaderCandidate.end());
+                               kHistoricalMonoIcallCandidate.begin(),
+                               kHistoricalMonoIcallCandidate.end());
          it != copied.end();
          it = std::search(std::next(it), copied.end(),
-                          kHistoricalMonoHeaderCandidate.begin(),
-                          kHistoricalMonoHeaderCandidate.end())) {
+                          kHistoricalMonoIcallCandidate.begin(),
+                          kHistoricalMonoIcallCandidate.end())) {
         ++g_scan.matches;
         if (g_scan.candidateRvas.size() < kMaxReportedMatches) {
             const std::size_t at = g_scan.next - g_scan.tailLength +
@@ -571,11 +571,11 @@ void StepExtendedScan() {
                 static_cast<std::size_t>(std::distance(copied.begin(), it));
             const std::size_t start = index > 16 ? index - 16 : 0;
             const std::size_t end = std::min(copied.size(),
-                index + kHistoricalMonoHeaderCandidate.size() + kCandidateBytesAfter);
+                index + kHistoricalMonoIcallCandidate.size() + kCandidateBytesAfter);
             std::string context = std::format("RVA {:#x}; -{} / +{} bytes: ",
                 rva, index - start, end - index);
             for (std::size_t j = start; j < end; ++j) {
-                if (j == index || j == index + kHistoricalMonoHeaderCandidate.size())
+                if (j == index || j == index + kHistoricalMonoIcallCandidate.size())
                     context += " |";
                 context += std::format(" {:02X}", static_cast<unsigned>(copied[j]));
             }
@@ -634,7 +634,7 @@ void RenderDeveloperUI() {
             ImGui::TextDisabled("Candidate RVA %#x: %zu raw E8 references",
                 g_scan.candidateRvas[i], g_refs.counts[i]);
         }
-        ImGui::TextDisabled("Raw byte matches do NOT verify JIT identity or native ABI.");
+        ImGui::TextDisabled("Raw byte matches do NOT verify ICall ABI or managed-method identity.");
     }
     ImGui::Separator();
     if (ImGui::Button("Save live log copy (keep game open)")) {
@@ -653,11 +653,12 @@ void RenderDeveloperUI() {
     if (!g_liveLogStatus.empty())
         ImGui::TextWrapped("%s", g_liveLogStatus.c_str());
     ImGui::TextWrapped(
-        "EA 1.69 research result: the 0xA826A0 candidate has four "
-        "one-argument callers that cache its return at object+0x20. "
-        "It resembles a Mono method-header helper, NOT a verified JIT compiler. "
-        "Do not use that address as a hook.");
+        "EA 1.69 research result: RVA 0xA826A0 has four one-argument "
+        "callers caching EAX at MonoMethod-like object+0x20. Independent "
+        "TS3 Mono research identifies these bytes as mono_lookup_internal_call "
+        "(native ICall resolver), NOT a JIT compiler. Identity/ABI must "
+        "still be independently verified before any hook.");
     ImGui::TextDisabled(
-        "Read-only diagnostics; native JIT identity and ABI remain unverified.");
+        "Read-only diagnostics; interpreter method identity and ABI remain unverified.");
 }
 } // namespace Ts3MonoRuntimeProbe
