@@ -355,7 +355,7 @@ void OverviewPatchRow(const char* patchName, IconId icon, const char* name, cons
 constexpr const char* kOverviewPerformancePatches[] = {
     Performance::kResourceCacheName, Performance::kLookupMissesName, Performance::kFileListName,
     Performance::kRoomLightQueueName, Performance::kLotLightingName, Performance::kWallShadingName,
-    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName, Performance::kFastCreateAStyleName,
+    Performance::kFastTextureName, Performance::kFastCacheName, Performance::kFastCasName, Performance::kFastCreateAStyleName, Performance::kFastCasCatalogName,
     Performance::kFastMemoryName, Performance::kSceneBudgetName, Performance::kObjectIndexName,
     Performance::kMemoryGuardName, Performance::kWindowRepaintName, Performance::kScriptMathName,
 };
@@ -923,6 +923,16 @@ void PerformanceCard() {
         }
         FeatureSwitchRow(Performance::kFastCacheName, "Faster cache compression", "Fewer hitches when the game stores Sims and objects in its caches");
         FeatureSwitchRow(Performance::kFastCasName, "Faster Sim building", "Fewer hitches when Sims are edited or change outfits");
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+
+    ImGui::PushID("PerformanceCreateASim");
+    if (ApexUi::BeginCard("##Card")) {
+        ApexUi::CardHeader(IconId::Shirt, "Create-a-Sim", "Experimental category preset metadata cache", nullptr, nullptr);
+        ApexUi::CardDivider();
+        FeatureSwitchRow(Performance::kFastCasCatalogName, "Faster CAS catalog",
+                         "Caches repeated clothing and hair preset metadata; does not cache image handles", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
