@@ -237,7 +237,7 @@ template<typename F> void* Bind(std::atomic<F>& slot, F target, void* wrapper, c
 } // namespace
 
 bool Start(std::string* error) {
-#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+#ifndef APEX_CAS_PRESET_CACHE_PILOT
     // The original game's embedded Mono InternalCall x86 ABI has not been verified against TS3W.exe.
     // Prevent even manual enabling from installing an untested native detour in a regular build.
     if (error) *error = "CAS preset profiling unavailable until the native TS3 Mono ABI is verified";
