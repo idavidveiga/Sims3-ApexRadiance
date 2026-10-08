@@ -13,6 +13,9 @@
 
 namespace FastCreateAStyle {
 
+// Shared resolver: a second client may monitor additional Mono internal calls without detouring twice.
+bool AcquireResolver(std::string* error);
+void ReleaseResolver();
 bool Start(std::string* error);
 void Stop();
 bool Running();
