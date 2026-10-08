@@ -43,8 +43,3 @@ jobs:
             research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll
             research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.package
           if-no-files-found: error
-        uses: actions/upload-artifact@v4
-        with:
-          name: RESEARCH_ONLY_ApexHairMonoPatcher_DLL
-          path: research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll
-          if-no-files-found: error
