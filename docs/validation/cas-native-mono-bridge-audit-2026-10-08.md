@@ -131,3 +131,26 @@ Windows x86 compilation for this probe change runs independently in
 `apex-cas-win32-diagnostic.yml`; its result must be checked rather
 than inferred from the Linux unit tests. Do not install or test a live
 CAS patch from this read-only instrumentation.
+
+## External ABI hypothesis reviewed (not copied into Apex)
+
+For research only, the published MonoPatcher 0.3.0 sources at
+`LazyDuchess/MonoPatcher`, pinned commit
+`2fa43bf18e4bbc43620f2d3275ad1ad27109877c`,
+were inspected (especially `MonoPatcher.CPP/src/Addresses.cpp` and
+`MonoPatcher.CPP/src/MonoHooks.cpp`). They declare a
+`__cdecl` `GenerateCode(MonoMethod*, void*, void*, void*)` detour
+and maintain a per-`MonoMethod` IL replacement map. Those declarations
+explain the **upstream experimental design**, not the verified ABI of
+this user's EA executable or a safe call site for Apex.
+
+The existing live scan's candidate prologue
+`81 EC 08 08 00 00 ...` is **not the upstream declared
+`MonoGenerateCodeLookup` entry prologue**, so finding references to
+the historical candidate cannot identify it as Mono's JIT compiler.
+The new read-only `E8 rel32` reference pass is only a preparatory
+observation; do not present it as successful JIT validation.
+
+No MonoPatcher source, headers, libraries, copy of its signatures,
+IL patchers or generated artifacts were imported into the Apex native
+implementation. Final builds must be entirely independent.
