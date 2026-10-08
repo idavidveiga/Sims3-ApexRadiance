@@ -5,6 +5,7 @@
 #include "ts3_mono_runtime_probe.h"
 #include "ts3_mono_xref.h"
 #include "ts3_cas_mono_sites.h"
+#include "ts3_mono_host_snapshot.h"
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "game_version.h"
@@ -272,6 +273,7 @@ struct ExtendedScan {
     bool active = false;
     uintptr_t moduleBase = 0;
     uintptr_t textBase = 0;
+    std::uint32_t imageSize = 0;
     std::size_t length = 0;
     std::size_t next = 0;
     std::size_t readable = 0;
@@ -307,7 +309,8 @@ ReferenceScan g_refs;
 constexpr std::size_t kMaxReferenceSamples = 24;
 
 bool ReadLiveTextBounds(uintptr_t& base, uintptr_t& imageBase,
-                        std::size_t& length, std::string& why) {
+                        std::size_t& length, std::uint32_t& imageSize,
+                        std::string& why) {
     const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     if (!image) { why = "Main module unavailable"; return false; }
     IMAGE_DOS_HEADER dos{};
@@ -348,6 +351,7 @@ bool ReadLiveTextBounds(uintptr_t& base, uintptr_t& imageBase,
             why = "Loaded .text section exceeds 64 MiB safety limit"; return false;
         }
         imageBase = image;
+        imageSize = nt.OptionalHeader.SizeOfImage;
         base = image + section.VirtualAddress;
         return true;
     }
@@ -510,7 +514,7 @@ void StartExtendedScan() {
     g_refs = {};
     std::string problem;
     if (!ReadLiveTextBounds(g_scan.textBase, g_scan.moduleBase,
-                            g_scan.length, problem)) {
+                            g_scan.length, g_scan.imageSize, problem)) {
         g_scan.status = problem;
         LOG_WARNING(std::format("[TS3 Mono Extended Probe] {}", problem));
         return;
@@ -548,6 +552,35 @@ void FinishExtendedScan() {
         "[TS3 CAS Mono Bridge] {}/{} unique structural entries. "
         "No native function was invoked and NO Hair/Hats hook is installed.",
         unique, ApexCasMono::kSiteCount));
+
+    // Optional READ-ONLY snapshot: derive the ScriptHost global from the
+    // exact InitHeap CMP instruction, then read its host/domain pointers.
+    // No Mono API is called; no pointer is retained after this function.
+    const auto& initHeap = g_scan.bridgeEvidence.Get(
+        ApexCasMono::BridgeSite::ScriptHostInitHeap);
+    if (initHeap.Unique() && g_scan.imageSize &&
+        g_scan.moduleBase <= UINT32_MAX &&
+        initHeap.firstRva < g_scan.imageSize &&
+        g_scan.moduleBase + initHeap.firstRva <= UINT32_MAX) {
+        const auto snapshot = ApexCasMono::InspectMonoHost(
+            static_cast<std::uint32_t>(g_scan.moduleBase),
+            g_scan.imageSize,
+            static_cast<std::uint32_t>(g_scan.moduleBase + initHeap.firstRva),
+            [](std::uint32_t address, void* destination, std::size_t length) {
+                return MemPatch::ReadBytes(address, destination, length);
+            });
+        LOG_INFO(std::format(
+            "[TS3 CAS Mono Bridge] ScriptHost snapshot: {}{}; "
+            "does NOT verify Mono function ABIs or safe managed continuation",
+            ApexCasMono::HostStatusName(snapshot.status),
+            snapshot.globalRva
+                ? std::format(" (global RVA {:#x})", snapshot.globalRva)
+                : std::string{}));
+    } else {
+        LOG_INFO(
+            "[TS3 CAS Mono Bridge] ScriptHost snapshot unavailable: "
+            "InitHeap entry absent/ambiguous, or executable bounds invalid.");
+    }
     // Automatically follow a completed signature pass with a read-only
     // reference pass; no extra user click and no additional hooks needed.
     StartReferenceScan();
