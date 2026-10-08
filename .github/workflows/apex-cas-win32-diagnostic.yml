@@ -13,6 +13,8 @@ on:
       - "apex_gui.cpp"
       - "features/ts3_mono_runtime_probe.cpp"
       - "features/ts3_cas_mono_sites.h"
+      - "features/ts3_mono_host_snapshot.h"
+      - "tests/test_ts3_mono_host_snapshot.cpp"
       - "tests/test_ts3_cas_mono_sites.cpp"
       - "features/ts3_mono_xref.h"
       - "features/ts3_mono_runtime_probe.h"
