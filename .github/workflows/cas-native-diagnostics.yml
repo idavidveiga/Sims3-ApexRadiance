@@ -16,6 +16,8 @@ on:
       - "features/cas_hair_native_bridge.h"
       - "features/cas_hair_sim_pump.h"
       - "features/cas_hair_native_il.h"
+      - "features/cas_hair_il_runtime.h"
+      - "features/cas_hair_il_runtime.cpp"
       - "tests/test_cas_hair_native_il.cpp"
       - "features/cas_hair_sim_pump.cpp"
       - "tests/test_cas_hair_native_bridge.cpp"
