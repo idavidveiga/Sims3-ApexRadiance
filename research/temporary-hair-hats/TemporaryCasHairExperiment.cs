@@ -2,7 +2,6 @@
 // Reconstructed from the player's original UI.dll. Opt-in and IL-guarded.
 // WARNING: Simulator.Sleep(0) in CAS has not yet been proven safe.
 using System;
-using System.IO;
 using System.Reflection;
 using MonoPatcherLib;
 using Sims3.SimIFace;
@@ -19,13 +18,14 @@ namespace ApexHairTemporaryResearch
         private const ulong ExpectedFnv64 = 0x931FAD6E160F56CBUL;
         private static FieldInfo sFilter;
         private static MethodInfo sGetPartName;
+        private static ConstructorInfo sThumbnailCtor;
 
         public TemporaryCasHairExperiment()
         {
-            // Never patch the game unless the player explicitly places this marker.
-            string gate = Path.Combine(Environment.CurrentDirectory,
-                @"MonoPatcher\EnableApexHairResearch.txt");
-            if (!File.Exists(gate)) return;
+            // Never patch unless the test process opts in explicitly.
+            // Keep the normal game and Apex release entirely unaffected.
+            if (System.Environment.GetEnvironmentVariable(
+                    "APEX_HAIR_MONO_RESEARCH") != "1") return;
             try
             {
                 Type originalType = typeof(CASHair);
@@ -33,7 +33,15 @@ namespace ApexHairTemporaryResearch
                 MethodInfo original = originalType.GetMethod("AddHairTypeGridItem", privateInstance);
                 sFilter = originalType.GetField("mContentTypeFilter", privateInstance);
                 sGetPartName = originalType.GetMethod("GetPartName", privateInstance);
-                if (original == null || sFilter == null || sGetPartName == null)
+                // Official 1.69 UI.dll invokes the five-parameter ThumbnailKey
+                // constructor with ResourceKey/int/uint/uint/ThumbnailSize.
+                // MonoPatcher public reference DLLs may expose a different
+                // overload: inspect the installed game, never trust that ABI.
+                sThumbnailCtor = typeof(ThumbnailKey).GetConstructor(new Type[] {
+                    typeof(ResourceKey), typeof(int), typeof(uint),
+                    typeof(uint), typeof(ThumbnailSize) });
+                if (original == null || sFilter == null || sGetPartName == null ||
+                    sThumbnailCtor == null)
                     return;
                 ParameterInfo[] args = original.GetParameters();
                 if (args.Length != 5 ||
@@ -96,10 +104,12 @@ namespace ApexHairTemporaryResearch
                         ImageDrawable image = preview.Drawable as ImageDrawable;
                         if (image != null)
                         {
-                            ThumbnailKey key = new ThumbnailKey(
-                                preset.mPart.Key, unchecked((int)preset.mPresetId),
-                                preset.mPart.BodyType, preset.mPart.AgeGenderSpecies,
-                                (ThumbnailSize)2);
+                            ThumbnailKey key = (ThumbnailKey)sThumbnailCtor.Invoke(
+                                new object[] { preset.mPart.Key,
+                                    unchecked((int)preset.mPresetId),
+                                    unchecked((uint)preset.mPart.BodyType),
+                                    unchecked((uint)preset.mPart.AgeGenderSpecies),
+                                    (ThumbnailSize)2 });
                             image.Image = UIManager.GetCASThumbnailImage(key);
                             preview.Invalidate();
                         }
