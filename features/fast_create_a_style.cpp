@@ -83,6 +83,12 @@ std::unordered_set<Key, KeyHash> g_cache;
 
 std::atomic<uint64_t> g_calls{0}, g_hits{0}, g_stores{0}, g_clears{0};
 std::atomic<uint64_t> g_resolverMatches{0};
+std::atomic<uint64_t> g_resolverCalls{0};
+std::atomic<uint64_t> g_resolverNative{0};
+std::atomic<uint64_t> g_resolverIdentified{0};
+std::atomic<uint64_t> g_casMethodsObserved{0};
+std::atomic<uint64_t> g_casMethodsWrapped{0};
+
 
 // Do not send raw Mono pointers to strcmp(): corrupt/unknown runtime layouts may not
 // reference a NUL-terminated string. Copy small printable identifiers under SEH first.
@@ -216,14 +222,24 @@ void __cdecl Hook_ClearLargePatternThumbnail(void* self) {
 }
 
 void* __cdecl Hook_LookupInternalCall(void* method) {
+    g_resolverCalls.fetch_add(1, std::memory_order_relaxed);
     void* const native = g_lookupInternalCall ? g_lookupInternalCall(method) : nullptr;
     if (!native) return native;
+    g_resolverNative.fetch_add(1, std::memory_order_relaxed);
 
     char ns[96], klass[96], name[96];
     if (!ReadMethodIdentity(method, ns, klass, name, sizeof(ns))) return native;
+    g_resolverIdentified.fetch_add(1, std::memory_order_relaxed);
+    // Distinguish a resolver hook installed after CAS has already cached its
+    // internal calls from a Mono method layout that we failed to identify.
+    if (std::strcmp(ns, "Sims3.SimIFace.CAS") == 0 &&
+        std::strcmp(klass, "ICASUtils") == 0)
+        g_casMethodsObserved.fetch_add(1, std::memory_order_relaxed);
     // Another Performance feature can use the same resolver; never chain a second Detours layer on this entry.
-    if (void* replacement = FastCasCatalog::MaybeWrap(ns, klass, name, native); replacement != native)
+    if (void* replacement = FastCasCatalog::MaybeWrap(ns, klass, name, native); replacement != native) {
+        g_casMethodsWrapped.fetch_add(1, std::memory_order_relaxed);
         return replacement;
+    }
     if (!g_running.load(std::memory_order_acquire)) return native;
     if (std::strcmp(ns, "Sims3.SimIFace") != 0 || std::strcmp(klass, "IWorld") != 0) return native;
 
@@ -357,7 +373,9 @@ bool AcquireResolver(std::string* error) {
 
     g_hookInstalled = true;
     g_resolverClients = 1;
-    LOG_INFO(std::format("[FastCreateAStyle] Started: mono_lookup_internal_call at {:#010x}; waiting for UI.dll to request pattern thumbnails",
+    LOG_INFO(std::format("[CAS ICall Pilot] Shared Mono resolver hook attached at {:#010x}; "
+                         "actual ICASUtils bindings are NOT confirmed yet. "
+                         "For a meaningful CAS test, enable this before CAS loads or restart with the option saved.",
                          *resolved));
     return true;
 }
@@ -398,6 +416,15 @@ void Stop() {
 }
 
 bool Running() { return g_running.load(std::memory_order_acquire); }
+
+std::string ResolverStatusText() {
+    return std::format("resolver calls={} native={} names={} ICASUtils seen={} wrapped={}",
+                       g_resolverCalls.load(std::memory_order_relaxed),
+                       g_resolverNative.load(std::memory_order_relaxed),
+                       g_resolverIdentified.load(std::memory_order_relaxed),
+                       g_casMethodsObserved.load(std::memory_order_relaxed),
+                       g_casMethodsWrapped.load(std::memory_order_relaxed));
+}
 
 std::string StatusText() {
     if (!Running()) return "off";
