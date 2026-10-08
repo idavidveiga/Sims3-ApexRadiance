@@ -117,6 +117,187 @@ std::string InspectLoadedExe() {
         "prologue absent from sample; page protect={:#x}. Native Mono ABI unverified; no hooks installed.",
         bits, sample, page.Protect);
 }
+
+constexpr std::size_t kScanStepBytes = 65536;
+constexpr std::size_t kMaxReportedMatches = 8;
+
+// UI-thread-only state: at most 64 KiB of the loaded executable is inspected
+// each frame while this developer page is open. No background access, hooks,
+// writes, or attempt to bypass the game's activation/DRM is made.
+struct ExtendedScan {
+    bool active = false;
+    uintptr_t moduleBase = 0;
+    uintptr_t textBase = 0;
+    std::size_t length = 0;
+    std::size_t next = 0;
+    std::size_t readable = 0;
+    std::size_t skipped = 0;
+    std::size_t matches = 0;
+    std::vector<uint32_t> candidateRvas;
+    std::array<BYTE, kPriorSteamResolver.size() - 1> tail{};
+    std::size_t tailLength = 0;
+    std::string status;
+};
+ExtendedScan g_scan;
+
+bool ReadLiveTextBounds(uintptr_t& base, uintptr_t& imageBase,
+                        std::size_t& length, std::string& why) {
+    const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!image) { why = "Main module unavailable"; return false; }
+    IMAGE_DOS_HEADER dos{};
+    if (!MemPatch::ReadBytes(image, &dos, sizeof(dos)) ||
+        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0 ||
+        dos.e_lfanew > 0x4000) {
+        why = "Loaded DOS header invalid"; return false;
+    }
+    const uintptr_t ntAt = image + static_cast<uint32_t>(dos.e_lfanew);
+    IMAGE_NT_HEADERS32 nt{};
+    if (!MemPatch::ReadBytes(ntAt, &nt, sizeof(nt)) ||
+        nt.Signature != IMAGE_NT_SIGNATURE ||
+        nt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+        nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        nt.FileHeader.NumberOfSections == 0 ||
+        nt.FileHeader.NumberOfSections > 32 ||
+        nt.FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER32)) {
+        why = "Loaded PE32 headers invalid"; return false;
+    }
+    const uintptr_t sectionAt =
+        ntAt + offsetof(IMAGE_NT_HEADERS32, OptionalHeader) +
+        nt.FileHeader.SizeOfOptionalHeader;
+    for (WORD i = 0; i < nt.FileHeader.NumberOfSections; ++i) {
+        IMAGE_SECTION_HEADER section{};
+        if (!MemPatch::ReadBytes(sectionAt + i * sizeof(section),
+                                 &section, sizeof(section))) {
+            why = "Could not read section headers"; return false;
+        }
+        if (std::memcmp(section.Name, ".text", 5) != 0) continue;
+        if (!section.Misc.VirtualSize ||
+            section.VirtualAddress >= nt.OptionalHeader.SizeOfImage) {
+            why = "Loaded .text section has invalid bounds"; return false;
+        }
+        length = std::min<std::size_t>(
+            section.Misc.VirtualSize,
+            nt.OptionalHeader.SizeOfImage - section.VirtualAddress);
+        if (length > 64u * 1024u * 1024u) {
+            why = "Loaded .text section exceeds 64 MiB safety limit"; return false;
+        }
+        imageBase = image;
+        base = image + section.VirtualAddress;
+        return true;
+    }
+    why = "No loaded .text section"; return false;
+}
+
+bool IsReadable(const MEMORY_BASIC_INFORMATION& page) {
+    if (page.State != MEM_COMMIT || (page.Protect & PAGE_GUARD) ||
+        (page.Protect & PAGE_NOACCESS)) return false;
+    switch (page.Protect & 0xff) {
+    case PAGE_READONLY:
+    case PAGE_READWRITE:
+    case PAGE_WRITECOPY:
+    case PAGE_EXECUTE_READ:
+    case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE_WRITECOPY:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void StartExtendedScan() {
+    g_scan = {};
+    std::string problem;
+    if (!ReadLiveTextBounds(g_scan.textBase, g_scan.moduleBase,
+                            g_scan.length, problem)) {
+        g_scan.status = problem;
+        LOG_WARNING(std::format("[TS3 Mono Extended Probe] {}", problem));
+        return;
+    }
+    g_scan.active = true;
+    g_scan.status = "Scanning loaded .text in 64 KiB steps (read-only)";
+    LOG_INFO(std::format("[TS3 Mono Extended Probe] Started: .text RVA {:#x}, {} bytes",
+                         g_scan.textBase - g_scan.moduleBase, g_scan.length));
+}
+
+void FinishExtendedScan() {
+    g_scan.active = false;
+    std::string examples;
+    for (const uint32_t rva : g_scan.candidateRvas)
+        examples += std::format(" {:#x}", rva);
+    g_scan.status = std::format(
+        "Complete: {}/{} bytes read, {} skipped; historical Steam-shaped "
+        "signature: {} match(es){}; ABI and JIT method UNVERIFIED",
+        g_scan.readable, g_scan.length, g_scan.skipped,
+        g_scan.matches, examples);
+    LOG_INFO(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
+}
+
+void StepExtendedScan() {
+    if (!g_scan.active) return;
+    if (g_scan.next >= g_scan.length) { FinishExtendedScan(); return; }
+    const uintptr_t address = g_scan.textBase + g_scan.next;
+    MEMORY_BASIC_INFORMATION page{};
+    if (!VirtualQuery(reinterpret_cast<LPCVOID>(address), &page, sizeof(page)) ||
+        !page.RegionSize) {
+        g_scan.active = false;
+        g_scan.status = "Stopped: VirtualQuery failed on loaded .text";
+        LOG_WARNING(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
+        return;
+    }
+    const auto pageStart = reinterpret_cast<uintptr_t>(page.BaseAddress);
+    if (pageStart > address || page.RegionSize > UINTPTR_MAX - pageStart) {
+        g_scan.active = false;
+        g_scan.status = "Stopped: unexpected virtual memory region bounds";
+        LOG_WARNING(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
+        return;
+    }
+    const uintptr_t regionEnd = pageStart + page.RegionSize;
+    const std::size_t remaining = g_scan.length - g_scan.next;
+    const std::size_t take = std::min({
+        remaining, kScanStepBytes, static_cast<std::size_t>(regionEnd - address)
+    });
+    if (!take) {
+        g_scan.active = false;
+        g_scan.status = "Stopped: zero-length virtual memory region";
+        LOG_WARNING(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
+        return;
+    }
+    if (!IsReadable(page)) {
+        g_scan.skipped += take;
+        g_scan.next += take;
+        g_scan.tailLength = 0;
+        return;
+    }
+    std::vector<BYTE> copied(g_scan.tailLength + take);
+    std::copy_n(g_scan.tail.begin(), g_scan.tailLength, copied.begin());
+    if (!MemPatch::ReadBytes(address, copied.data() + g_scan.tailLength, take)) {
+        g_scan.skipped += take;
+        g_scan.next += take;
+        g_scan.tailLength = 0;
+        return;
+    }
+    g_scan.readable += take;
+    for (auto it = std::search(copied.begin(), copied.end(),
+                               kPriorSteamResolver.begin(),
+                               kPriorSteamResolver.end());
+         it != copied.end();
+         it = std::search(std::next(it), copied.end(),
+                          kPriorSteamResolver.begin(),
+                          kPriorSteamResolver.end())) {
+        ++g_scan.matches;
+        if (g_scan.candidateRvas.size() < kMaxReportedMatches) {
+            const std::size_t at = g_scan.next - g_scan.tailLength +
+                static_cast<std::size_t>(std::distance(copied.begin(), it));
+            g_scan.candidateRvas.push_back(static_cast<uint32_t>(
+                g_scan.textBase - g_scan.moduleBase + at));
+        }
+    }
+    g_scan.tailLength = std::min(g_scan.tail.size(), copied.size());
+    std::copy(copied.end() - g_scan.tailLength, copied.end(), g_scan.tail.begin());
+    g_scan.next += take;
+    if (g_scan.next >= g_scan.length) FinishExtendedScan();
+}
+
 } // namespace
 
 void RenderDeveloperUI() {
@@ -128,6 +309,19 @@ void RenderDeveloperUI() {
         LOG_INFO(std::format("[TS3 Mono Runtime Probe] {}", g_status));
     }
     ImGui::TextWrapped("%s", g_status.c_str());
-    ImGui::TextDisabled("A matching signature alone never validates a JIT hook or its x86 ABI.");
+    ImGui::Separator();
+    if (ImGui::Button("Scan entire loaded .text (read-only, incremental)"))
+        StartExtendedScan();
+    // Exactly one bounded chunk per render frame, only while the developer
+    // performance page is visible. A repeated click restarts the scan safely.
+    StepExtendedScan();
+    if (g_scan.active && g_scan.length) {
+        ImGui::ProgressBar(static_cast<float>(g_scan.next) /
+                               static_cast<float>(g_scan.length),
+                           ImVec2(-1.0f, 0.0f));
+    }
+    if (!g_scan.status.empty())
+        ImGui::TextWrapped("%s", g_scan.status.c_str());
+    ImGui::TextDisabled("Signatures are observations only; no native JIT method or ABI is validated.");
 }
 } // namespace Ts3MonoRuntimeProbe
