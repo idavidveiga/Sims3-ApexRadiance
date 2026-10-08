@@ -13,6 +13,7 @@
 #include "d3d9_bootstrap.h"
 #include "frame_profiler.h"
 #include "game_version.h"
+#include "ts3_mono_runtime_probe.h"
 #include "game_addresses.h"
 #include "world_session.h"
 #include "night_lighting.h"
@@ -1522,6 +1523,11 @@ void DevProfilerTab() {
     inspect(Performance::kSceneBudgetName, "Objects spread across frames", "Inspect pending work and object lifetime checks", "DevSceneObjects");
     inspect(Performance::kFastTextureName, "Texture compression and processor cores", "Compare texture output and processor worker use", "DevTextures");
     inspect(Performance::kFastCacheName, "Compressed game data", "Verify decompressed data matches the original", "DevCompression");
+    // This read-only probe is available even while all experimental CAS/CASt
+    // hooks are OFF (their regular-build startup is deliberately blocked).
+    DevCard("DevCasMonoReadonlyProbe", IconId::Shirt,
+            "CAS native runtime inspection", "EA executable observations — no hooks or memory writes",
+            true, [] { Ts3MonoRuntimeProbe::RenderDeveloperUI(); });
 }
 
 void DevDebugViewsTab() {
