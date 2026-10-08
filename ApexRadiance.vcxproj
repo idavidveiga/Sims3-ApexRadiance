@@ -103,6 +103,7 @@
     <ClCompile Include="features\cas_tri_sort.cpp" />
     <ClCompile Include="features\fast_cas.cpp" />
     <ClCompile Include="features\fast_create_a_style.cpp" />
+    <ClCompile Include="features\fast_cas_catalog.cpp" />
     <ClCompile Include="features\compositor_readback.cpp" />
     <ClCompile Include="features\fast_crc.cpp" />
     <ClCompile Include="features\fast_memory.cpp" />
@@ -221,6 +222,7 @@
     <ClInclude Include="features\cas_tri_sort.h" />
     <ClInclude Include="features\fast_cas.h" />
     <ClInclude Include="features\fast_create_a_style.h" />
+    <ClInclude Include="features\fast_cas_catalog.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
