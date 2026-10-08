@@ -46,7 +46,9 @@ constexpr size_t kMethodKlass = 0x08;
 constexpr size_t kMethodName = 0x18;
 constexpr size_t kClassName = 0x34;
 constexpr size_t kClassNamespace = 0x38;
-constexpr size_t kArrayLength = 0x08;
+// MonoArray on a 32-bit Mono runtime: MonoObject (8), bounds ptr (4), max_length (4), vector (offset 16).
+// The previous offset 0x08 incorrectly read the bounds pointer as the length.
+constexpr size_t kArrayLength = 0x0C;
 constexpr size_t kArrayData = 0x10;
 
 constexpr size_t kMaxEntries = 2048;
@@ -86,20 +88,41 @@ size_t g_cacheBytes = 0;
 std::atomic<uint64_t> g_calls{0}, g_hits{0}, g_misses{0}, g_stores{0}, g_clears{0}, g_bytesReused{0};
 std::atomic<uint64_t> g_resolverMatches{0};
 
-bool ReadMethodIdentity(void* method, const char*& nameSpace, const char*& className, const char*& methodName) {
-    nameSpace = className = methodName = nullptr;
-    if (!method) return false;
+// Do not send raw Mono pointers to strcmp(): corrupt/unknown runtime layouts may not
+// reference a NUL-terminated string. Copy small printable identifiers under SEH first.
+bool CopyIdentifier(const char* src, char* dest, size_t capacity) {
+    if (!src || !dest || capacity < 2) return false;
+    __try {
+        for (size_t i = 0; i + 1 < capacity; ++i) {
+            const unsigned char c = static_cast<unsigned char>(src[i]);
+            if (c == 0) { dest[i] = '\0'; return i > 0; }
+            if (c < 0x20 || c > 0x7e) return false;
+            dest[i] = static_cast<char>(c);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false; // oversized identifiers are not trustworthy
+}
+
+bool ReadMethodIdentity(void* method, char* nameSpace, char* className, char* methodName, size_t capacity) {
+    if (!method || !nameSpace || !className || !methodName || capacity < 2) return false;
+    nameSpace[0] = className[0] = methodName[0] = '\0';
+    const char* ns = nullptr;
+    const char* klassName = nullptr;
+    const char* methodText = nullptr;
     __try {
         void* const klass = *reinterpret_cast<void**>(static_cast<uint8_t*>(method) + kMethodKlass);
         if (!klass) return false;
-        methodName = *reinterpret_cast<const char**>(static_cast<uint8_t*>(method) + kMethodName);
-        className = *reinterpret_cast<const char**>(static_cast<uint8_t*>(klass) + kClassName);
-        nameSpace = *reinterpret_cast<const char**>(static_cast<uint8_t*>(klass) + kClassNamespace);
-        return methodName && className && nameSpace;
+        methodText = *reinterpret_cast<const char**>(static_cast<uint8_t*>(method) + kMethodName);
+        klassName = *reinterpret_cast<const char**>(static_cast<uint8_t*>(klass) + kClassName);
+        ns = *reinterpret_cast<const char**>(static_cast<uint8_t*>(klass) + kClassNamespace);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        nameSpace = className = methodName = nullptr;
         return false;
     }
+    return CopyIdentifier(ns, nameSpace, capacity) &&
+           CopyIdentifier(klassName, className, capacity) &&
+           CopyIdentifier(methodText, methodName, capacity);
 }
 
 bool ArrayInfo(void* array, uint32_t& length, uint8_t*& bytes) {
@@ -240,8 +263,8 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
     void* const native = g_lookupInternalCall ? g_lookupInternalCall(method) : nullptr;
     if (!native) return native;
 
-    const char *ns = nullptr, *klass = nullptr, *name = nullptr;
-    if (!ReadMethodIdentity(method, ns, klass, name)) return native;
+    char ns[96], klass[96], name[96];
+    if (!ReadMethodIdentity(method, ns, klass, name, sizeof(ns))) return native;
     // Another Performance feature can use the same resolver; never chain a second Detours layer on this entry.
     if (void* replacement = FastCasCatalog::MaybeWrap(ns, klass, name, native); replacement != native)
         return replacement;
