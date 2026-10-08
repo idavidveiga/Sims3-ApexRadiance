@@ -1,6 +1,6 @@
 # Create-a-Sim category switching and grid scheduling
 
-**Status:** native-only planning within Apex Radiance. No external method-patching libraries or additional script packages are permitted. The previous managed experiment was withdrawn. Native CAS metadata caching remains experimental and off by default; incremental Hair/Hats and visible-first loading are not yet implemented in a playable build.
+**Status:** Apex-native C++ scheduling core implemented in `features/cas_catalog_scheduler.h` with standalone tests in `tests/test_cas_catalog_scheduler.cpp`; **not connected to UI.dll or a playable hook yet**.  No external method-patching libraries or additional script packages are permitted. The previous managed experiment was withdrawn. Native CAS metadata caching remains experimental and off by default; incremental Hair/Hats and visible-first loading are not yet implemented in a playable build.
 
 ## Verified code paths
 
