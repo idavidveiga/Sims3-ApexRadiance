@@ -39,9 +39,9 @@ The native `IUIManager.GetCASThumbnailImage` returns an image/drawable handle. T
 
 Run `python tests/verify_sims3_cas_signatures.py --ui <path-to-extracted-UI.dll> --simiface <path-to-extracted-SimIFace.dll>` on your own game files. This checks managed signatures and `ResourceKey` fields only, **not** the x86 native calling convention.
 
-### Hair-grid prototype
+### Native-only Hair/Hats optimization
 
-An opt-in managed source prototype for incremental hair/hat loading is in `experiments/cas-hair-incremental`. It is not built, not validated in-game, and not connected to this native CAS cache toggle.
+The future incremental hair/hat scheduler must be implemented in Apex's native C++ code, without additional script packages or third-party method-patching libraries. This remains pending a verified hook and in-game compatibility checks.
 
 ### Risks / next steps
 
