@@ -933,8 +933,14 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Shirt, "Create-a-Sim", "CAS catalog research (native ABI validation pending)", nullptr, nullptr);
         ApexUi::CardDivider();
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+        ImGui::BeginDisabled(); // No regular build may invoke an ABI-unverified Mono detour.
+#endif
         FeatureSwitchRow(Performance::kFastCasCatalogName, "Faster CAS catalog",
                          "Not available in regular builds; requires a verified native TS3 Mono ABI", true);
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+        ImGui::EndDisabled();
+#endif
     }
     ApexUi::EndCard();
     ImGui::PopID();
@@ -943,8 +949,14 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Palette, "Create-a-Style", "Create-a-Style thumbnail research (not yet optimized)", nullptr, nullptr);
         ApexUi::CardDivider();
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+        ImGui::BeginDisabled();
+#endif
         FeatureSwitchRow(Performance::kFastCreateAStyleName, "Faster Create-a-Style",
                          "Profiler-only experiment; never reuses native thumbnail handles");
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+        ImGui::EndDisabled();
+#endif
     }
     ApexUi::EndCard();
     ImGui::PopID();
