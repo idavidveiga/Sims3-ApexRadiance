@@ -1,6 +1,6 @@
 # Native CAS viewport scheduler — implementation and integration
 
-**Status:** independent C++20 scheduling core implemented and unit-tested. The native method bridge to the game's
+**Status:** independent C++20 scheduling core implemented and unit-tested. The EA 1.69 Win32 Apex diagnostic build is compiled separately; use [the read-only in-game smoke test](../../validation/cas-ea-169-diagnostic-smoke-test.md) to collect native runtime evidence. The native method bridge to the game's
 `UI.dll` is **not implemented or validated**. This is not a ready-to-install optimization.
 
 ## Source and tests
