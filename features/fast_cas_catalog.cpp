@@ -237,6 +237,12 @@ template<typename F> void* Bind(std::atomic<F>& slot, F target, void* wrapper, c
 } // namespace
 
 bool Start(std::string* error) {
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+    // The original game's embedded Mono InternalCall x86 ABI has not been verified against TS3W.exe.
+    // Prevent even manual enabling from installing an untested native detour in a regular build.
+    if (error) *error = "CAS preset profiling unavailable until the native TS3 Mono ABI is verified";
+    return false;
+#endif
     if(g_enabled.load(std::memory_order_acquire)) return true;
     // Resolver is shared with Faster Create-a-Style to prevent a competing Detours hook on the same Mono entry.
     if(!FastCreateAStyle::AcquireResolver(error)) return false;
