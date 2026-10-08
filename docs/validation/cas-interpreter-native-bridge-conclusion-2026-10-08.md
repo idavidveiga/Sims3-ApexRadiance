@@ -261,3 +261,39 @@ simulation-thread `ProcessTasks` adapter and a managed-state-safe
 `PopulateTypesGrid` replacement. The native-only integration must
 preserve the two finally/enumerator regions and Store/preset logic.
 If either piece cannot be safely proven, leave the original CAS active.
+
+
+## Read-only ScriptHost/domain readiness from verified InitHeap structure
+
+New independent Apex-only header:
+`features/ts3_mono_host_snapshot.h`. Invoked by the existing optional
+`features/ts3_mono_runtime_probe.cpp` after its read-only, chunked
+scan completes and only if exactly one `MonoScriptHost::InitHeap`
+entry matches.
+
+The original x86 entry `83 3D <imm32> 00` compares a global pointer
+(`g_ScriptVM`) to zero. The snapshot reads `imm32` at +2 and
+requires it to be aligned and **inside the actual loaded executable
+image**. It then reads the global and the host's Mono domain pointer
+at `MonoScriptHost+0xACC`, accepting only readable, aligned,
+non-null pointers with overflow protection. A null host is reported
+as `not initialized`, not a crash or a failed CAS optimization.
+It calls no Mono functions, makes no hooks or writes, and does not
+store runtime pointers across update ticks. It is not a GC ownership
+proof or function-ABI verification.
+
+`tests/test_ts3_mono_host_snapshot.cpp` uses synthetic x86 memory to
+cover present/missing host, invalid module bounds, ambiguous or wrong
+code, invalid script-host global location, truncated reads, unaligned
+pointers, pointer arithmetic overflow and missing Mono domain.
+GitHub CI tests cover the gate but do **not** show the user's EA 1.69
+runtime passed this new check.
+
+This is the final *read-only structural bridge* component currently
+justified by available independent source data. Continuing to add
+matching signatures without obtaining a safe managed continuation
+would not make Hair/Hats faster. The outstanding blockers are
+**verified on-thread native ABI** for real `FindClass` / method
+enumeration, and especially the managed lifetime-safe continuation
+of the original `PopulateTypesGrid(bool)` loops. Do not install
+MonoPatcher or ship a claimed gameplay speedup until those are proven.
