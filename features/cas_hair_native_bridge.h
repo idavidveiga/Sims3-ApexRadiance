@@ -148,6 +148,10 @@ public:
         rebuildRequired_ = false;
         return true;
     }
+    Generation CurrentGeneration() const {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return plan_.CurrentGeneration();
+    }
     bool NeedsOriginalRebuild() const {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         return rebuildRequired_;
