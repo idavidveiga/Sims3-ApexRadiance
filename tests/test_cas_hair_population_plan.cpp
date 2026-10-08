@@ -183,6 +183,74 @@ static void TestForeignBeginRejectedAndExistingWorkPreserved() {
     assert(driver.CurrentPhase() == Plan::Phase::FeaturedStore);
 }
 
+
+static void TestNestedSliceCannotDuplicateStoreOrPart() {
+    Plan driver;
+    const auto g = driver.Begin(1, 2);
+    std::vector<int> record;
+    int nestedRejected = 0;
+    auto store = [&](Plan::Work w) -> Plan::Outcome {
+        record.push_back(100 + static_cast<int>(w.index));
+        const auto nested = driver.RunSlice(g, 1s, 10,
+            [](auto) { assert(false && "nested Store must not run"); return Plan::Outcome::Committed; },
+            [](auto) { assert(false && "nested Part must not run"); return Plan::Outcome::Committed; },
+            [](auto) { assert(false && "nested Finalize must not run"); return Plan::Outcome::Committed; });
+        nestedRejected += nested.reentrant ? 1 : 0;
+        return Plan::Outcome::Committed;
+    };
+    auto part = [&](Plan::Work w) -> Plan::Outcome {
+        record.push_back(200 + static_cast<int>(w.index));
+        const auto nested = driver.RunSlice(g, 1s, 10,
+            [](auto) { assert(false); return Plan::Outcome::Committed; },
+            [](auto) { assert(false); return Plan::Outcome::Committed; },
+            [](auto) { assert(false); return Plan::Outcome::Committed; });
+        nestedRejected += nested.reentrant ? 1 : 0;
+        return Plan::Outcome::Committed;
+    };
+    auto finish = [&](Plan::Generation) -> Plan::Outcome {
+        record.push_back(300);
+        const auto nested = driver.RunSlice(g, 1s, 10,
+            [](auto) { assert(false); return Plan::Outcome::Committed; },
+            [](auto) { assert(false); return Plan::Outcome::Committed; },
+            [](auto) { assert(false); return Plan::Outcome::Committed; });
+        nestedRejected += nested.reentrant ? 1 : 0;
+        return Plan::Outcome::Committed;
+    };
+    const auto done = driver.RunSlice(g, 1s, 8, store, part, finish);
+    assert(done.completed && nestedRejected == 4);
+    assert(record == std::vector<int>({100,200,201,300}));
+}
+
+static void TestReentrantCategoryBeginsOnlyAfterOldSliceUnwinds() {
+    Plan driver;
+    const auto old = driver.Begin(2, 1);
+    Plan::Generation next = 0;
+    bool nestedRejected = false;
+    const auto oldResult = driver.RunSlice(old, 1s, 10,
+        [&](Plan::Work) -> Plan::Outcome {
+            next = driver.Begin(0, 2);
+            assert(next != 0 && next != old);
+            const auto nested = driver.RunSlice(next, 1s, 10,
+                [](auto) { assert(false); return Plan::Outcome::Committed; },
+                [](auto) { assert(false); return Plan::Outcome::Committed; },
+                [](auto) { assert(false); return Plan::Outcome::Committed; });
+            nestedRejected = nested.reentrant;
+            return Plan::Outcome::Committed;
+        },
+        [](auto) { assert(false); return Plan::Outcome::Committed; },
+        [](auto) { assert(false); return Plan::Outcome::Committed; });
+    assert(oldResult.stale && nestedRejected);
+    int parts = 0;
+    const auto newResult = driver.RunSlice(next, 1s, 10,
+        [](auto) { assert(false); return Plan::Outcome::Committed; },
+        [&](Plan::Work w) {
+            assert(w.index == static_cast<std::size_t>(parts++));
+            return Plan::Outcome::Committed;
+        },
+        [](auto) { return Plan::Outcome::Committed; });
+    assert(newResult.completed && parts == 2);
+}
+
 int main() {
     TestStorePrecedesAtomicPartGroups();
     TestNoSplitWithinPartGroup();
@@ -192,5 +260,7 @@ int main() {
     TestOwnerThreadAndCancel();
     TestFinishRetryAndEmptyCategory();
     TestForeignBeginRejectedAndExistingWorkPreserved();
-    std::cout << "PASS: 8 original-order Hair/Hats population plan groups\n";
+    TestNestedSliceCannotDuplicateStoreOrPart();
+    TestReentrantCategoryBeginsOnlyAfterOldSliceUnwinds();
+    std::cout << "PASS: 10 original-order Hair/Hats population plan groups\n";
 }
