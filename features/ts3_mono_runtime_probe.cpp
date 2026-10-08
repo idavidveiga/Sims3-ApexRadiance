@@ -42,6 +42,54 @@ constexpr std::array<BYTE, 13> kHistoricalMonoHeaderCandidate{
     0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08
 };
 
+// Query only the already loaded modules' Windows export directories.
+// This is much stronger than a guessed signature *if* a relevant Mono API
+// is exported, but a name by itself is not a validated calling convention.
+// GetProcAddress is used strictly as a lookup: none of these addresses are
+// invoked, patched, or cached for use by game-facing features.
+std::string InspectMonoExports() {
+    struct Module {
+        const char* label;
+        HMODULE handle;
+    };
+    const std::array<Module, 4> modules{{
+        {"TS3 main executable", GetModuleHandleW(nullptr)},
+        {"mono.dll", GetModuleHandleW(L"mono.dll")},
+        {"mono-2.0-bdwgc.dll", GetModuleHandleW(L"mono-2.0-bdwgc.dll")},
+        {"mono-2.0-sgen.dll", GetModuleHandleW(L"mono-2.0-sgen.dll")}
+    }};
+    constexpr std::array<const char*, 7> names{{
+        "mono_compile_method",
+        "mono_jit_info_table_find",
+        "mono_jit_info_get_method",
+        "mono_method_get_token",
+        "mono_method_get_name",
+        "mono_method_desc_search_in_image",
+        "mono_domain_get"
+    }};
+    unsigned found = 0;
+    unsigned loaded = 0;
+    for (const Module& m : modules) {
+        if (!m.handle) continue;
+        ++loaded;
+        for (const char* name : names) {
+            const FARPROC symbol = GetProcAddress(m.handle, name);
+            if (!symbol) continue;
+            ++found;
+            LOG_INFO(std::format(
+                "[TS3 Mono Export Probe] {} exports {} at {:#010x} (lookup only)",
+                m.label, name, reinterpret_cast<uintptr_t>(symbol)));
+        }
+    }
+    const std::string status = std::format(
+        "{} loaded module(s), {} matching Mono export(s). "
+        "No exports does not mean Mono is absent: the runtime may be "
+        "statically embedded. No function was called or hooked.",
+        loaded, found);
+    LOG_INFO(std::format("[TS3 Mono Export Probe] {}", status));
+    return status;
+}
+
 // Focused, non-invasive baseline for later Mono JIT identification.
 // These signatures come from independent existing ScriptTypeCache research.
 // A known Mono runtime function is an anchor, NOT a JIT compiler or an
@@ -551,8 +599,10 @@ void RenderDeveloperUI() {
         LOG_INFO(std::format("[TS3 Mono Runtime Probe] {}", g_status));
     }
     ImGui::TextWrapped("%s", g_status.c_str());
-    if (ImGui::Button("Inspect known Mono runtime anchors (read-only)"))
+    if (ImGui::Button("Inspect known Mono runtime anchors (read-only)")) {
         g_monoAnchorsStatus = InspectMonoRuntimeAnchors();
+        g_monoAnchorsStatus += " " + InspectMonoExports();
+    }
     ImGui::TextWrapped("%s", g_monoAnchorsStatus.c_str());
     ImGui::TextDisabled(
         "These known functions are only starting anchors; never use them as a JIT hook.");
