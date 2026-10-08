@@ -61,6 +61,9 @@ bool Installed(Site site, Layer layer);
 uintptr_t GameFunction(Site site);
 // A callable copy of the game's function (the trampoline), or nullptr before the first Install
 void* Original(Site site);
+// Read-only check: true only when a registered Apex hook still owns the site's
+// live JMP target. Detects other mods replacing the entry after our install.
+bool OwnsEntry(Site site);
 
 // What `layer`'s hook must call: never null while the layer is installed (and afterwards, for threads still inside it).
 extern std::atomic<void*> g_next[static_cast<int>(Site::Count)][static_cast<int>(Layer::Count)];
