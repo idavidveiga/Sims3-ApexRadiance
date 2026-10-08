@@ -1,14 +1,9 @@
 #pragma once
-// Faster Create-a-Style: caches the native pattern thumbnails requested by UI.dll's CASt browser.
-//
-// UI.dll -> CompositorUtil.GetPatternThumbnail -> SimIFace.ObjectDesigner.GetPatternThumbnail ->
-// IWorld.ObjectDesigner_GetPatternThumbnail (Mono internal call). The managed CASt grid can request the same pattern
-// preview repeatedly while it is populated, scrolled or reopened. This module remembers the finished byte[] result for
-// an identical request and copies it back instead of rebuilding the thumbnail.
-//
-// The hook is installed at mono_lookup_internal_call, not in UI.dll: the official game assemblies stay untouched.
-// Existing methods that already resolved to our wrapper remain safe when the switch is turned off; the wrapper then
-// passes straight through to the game's native function.
+// Native CASt thumbnail request diagnostics: metadata-only signature tracking.
+// Does NOT replay image handles or thumbnail bytes: the game owns native resource lifetimes.
+// The embedded x86 Mono InternalCall ABI is unverified. Starts only in explicit developer builds
+// compiled with APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS, and is off by default.
+// Official UI.dll and game script assemblies remain untouched.
 #include <string>
 
 namespace FastCreateAStyle {
