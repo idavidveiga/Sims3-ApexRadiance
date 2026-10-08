@@ -8,6 +8,7 @@ on:
       - feature/cas-performance-native-only
     paths:
       - "features/fast_create_a_style.cpp"
+      - "features/fast_create_a_style.h"
       - "features/fast_cas_catalog.cpp"
       - "features/fast_cas_catalog.h"
       - "patches/performance_patches.cpp"
