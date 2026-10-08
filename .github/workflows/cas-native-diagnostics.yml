@@ -1,5 +1,10 @@
 name: CAS native diagnostics
 
+# Changes to this research branch are frequent: only build/test its latest head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
