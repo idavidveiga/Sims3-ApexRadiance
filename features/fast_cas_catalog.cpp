@@ -280,7 +280,8 @@ std::string StatusText() {
     if(!g_cacheHealthy.load(std::memory_order_acquire))
         return "Self-disabled: metadata mismatch; native pass-through (restart or toggle off/on to retest)";
     if(!g_count.load(std::memory_order_acquire) && !g_id.load(std::memory_order_acquire))
-        return "Waiting for CAS preset lookups";
+        return "No CAS preset methods bound yet; enable before CAS is loaded or restart with the setting saved. " +
+            FastCreateAStyle::ResolverStatusText();
     size_t counts=0,ids=0;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
