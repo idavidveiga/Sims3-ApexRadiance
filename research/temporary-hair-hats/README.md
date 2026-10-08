@@ -46,16 +46,18 @@ CI workflow:
    already uses a loader and Apex alongside DXVK); verify whether the
    current loader can load `MonoPatcher.asi`. Stop if it conflicts.
 3. Place only `ApexHairTemporaryResearch.package` in Mods/Packages.
-4. The activation marker is searched **relative to the running TS3.exe/TS3W.exe**, not to the process working directory:
-   `Game/Bin/MonoPatcher/EnableApexHairResearch.txt`. The prototype stays disabled if it is absent.
-   The status command is always registered when this experiment's script
-   assembly has actually been loaded: open the in-game command console and
-   run `apexhair_status`. It will explain whether the marker
-   is missing, a signature or IL comparison rejected the replacement, an
-   exception occurred, or the method was successfully patched. If the
-   command is unknown, **first verify the experimental .package is installed
-   and loaded as a script assembly**; MonoPatcher alone being active does
-   not show the experiment loaded.
+4. The test `.package` itself is the explicit opt-in: installing it in
+   Mods/Packages enables a guarded replacement attempt. The previous activation
+   marker `Game/Bin/MonoPatcher/EnableApexHairResearch.txt` is **no longer
+   needed or checked**. You may delete the old marker. This change avoids the
+   observed `EntryPointNotFoundException: GetModuleFileNameW` from the game's
+   embedded Mono runtime.
+   The status command is registered whenever the research script assembly loads.
+   Enter `apexhair_status` in the cheat console to see whether the original
+   method passed the exact signature/IL checks, was patched, or was rejected.
+   The standard MonoPatcher `monopatcher_log` command reports replacements.
+   If `apexhair_status` is unknown, verify the experiment `.package` is
+   actually installed; MonoPatcher loading is not evidence that this script loaded.
 5. Compare Hair→Hats→Hair, empty categories, fast switching, CC thumbnail
    identity, active wardrobe, selected preset and scrolling against an
    unmodified launch. Avoid saving any Sims until comparisons succeed.
