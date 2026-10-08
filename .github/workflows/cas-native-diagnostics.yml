@@ -36,6 +36,8 @@ on:
       - "tests/test_cas_hair_grid_session.cpp"
       - "tests/test_cas_hair_population_plan.cpp"
       - "tools/verify_hair_ui_contract.py"
+      - "tools/cas_hair_il_relocation.py"
+      - "tests/test_cas_hair_il_relocation.py"
       - "tests/test_verify_hair_ui_contract.py"
       - "research/temporary-hair-hats/TemporaryCasHairExperiment.cs"
       - "ApexRadiance.vcxproj"
@@ -127,6 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tests -p 'test_verify_hair_ui_contract.py' -v
+      - name: Test original-parent IL and exception-handler relocation (synthetic only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_cas_hair_il_relocation.py' -v
       - name: Confirm EA 1.69 ICall signature rejection and read-only anchor inspection
         shell: bash
         run: |
