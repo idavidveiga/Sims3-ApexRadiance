@@ -23,8 +23,8 @@ struct FakeMemory {
             bytes[address + static_cast<std::uint32_t>(i)] =
                 static_cast<std::uint8_t>(value[i]);
         bytes[address + static_cast<std::uint32_t>(value.size())] = 0;
-        for (std::size_t i = value.size() + 1; i < 256; ++i)
-            bytes[address + static_cast<std::uint32_t>(i)] = 0;
+        // The following page may be unreadable: validator must not demand
+        // a full 256-byte span once the string has terminated.
     }
     bool Read(std::uint32_t address, void* output, std::size_t count) const {
         auto* out = static_cast<std::uint8_t*>(output);
@@ -41,6 +41,7 @@ static FakeMemory Fixture() {
     FakeMemory m;
     constexpr std::uint32_t method = 0x1000, klass = 0x2000,
                             image = 0x3000, signature = 0x4000;
+    m.Word(method + 0x00, 0x0006); // public instance method, not static
     m.Word(method + 0x04, ApexCasMono::kHairPopulateToken);
     m.Word(method + 0x08, klass);
     m.Word(method + 0x0c, signature);
@@ -50,7 +51,11 @@ static FakeMemory Fixture() {
     m.Word(klass + 0x34, 0x6000);
     m.Word(klass + 0x38, 0x7000);
     m.Word(image + 0x14, 0x8000);
-    m.Word(signature + 0x04, 1);
+    m.Word(signature + 0x04, 0xABCD0001u); // param_count is uint16; adjacent flags are nonzero
+    m.Word(signature + 0x0C, 0x9000); // return MonoType*
+    m.Word(signature + 0x10, 0xA000); // parameter MonoType*
+    m.bytes[0x9006] = 0x01; // ELEMENT_TYPE_VOID
+    m.bytes[0xA006] = 0x02; // ELEMENT_TYPE_BOOLEAN
     m.String(0x5000, "PopulateTypesGrid");
     m.String(0x6000, "CASHair");
     m.String(0x7000, "Sims3.UI.CAS");
@@ -86,6 +91,16 @@ int main() {
     assert(Status(m) == Identity::WrongAssembly);
     m = Fixture(); m.Word(0x4004, 2);
     assert(Status(m) == Identity::WrongParameterCount);
+    m = Fixture(); m.Word(0x1000, 0x0016); // ECMA Static flag
+    assert(Status(m) == Identity::WrongStaticMethod);
+    m = Fixture(); m.bytes[0x9006] = 0x02;
+    assert(Status(m) == Identity::WrongReturnType);
+    m = Fixture(); m.bytes[0xA006] = 0x08;
+    assert(Status(m) == Identity::WrongParameterType);
+    m = Fixture(); m.bytes.erase(0x9006);
+    assert(Status(m) == Identity::WrongSignature);
+    m = Fixture(); m.Word(0x4010, 0);
+    assert(Status(m) == Identity::WrongSignature);
     m = Fixture(); m.Word(0x100c, 0);
     assert(Status(m) == Identity::InvalidMethod);
     m = Fixture(); m.bytes.erase(0x1008);
@@ -93,5 +108,5 @@ int main() {
     m = Fixture(); m.bytes.erase(0x6001);
     assert(Status(m) == Identity::WrongClass);
 
-    std::cout << "PASS: 11 read-only x86 CAS method identity scenarios\n";
+    std::cout << "PASS: 16 read-only x86 CAS method identity scenarios\n";
 }
