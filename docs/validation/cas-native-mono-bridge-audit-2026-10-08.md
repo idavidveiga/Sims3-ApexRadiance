@@ -190,3 +190,47 @@ function identity, `MonoMethod` argument semantics and stack cleanup
 before considering any Apex-native runtime hook. Once the research
 phase is complete, remove temporary MonoPatcher installation;
 it must never be shipped with Apex.
+
+## Fourth live log: caller cache semantics established (03:49 game time)
+
+Player-supplied `ApexRadiance_LOG_LIVE(4).txt` contains **all four
+caller instruction windows** from the upgraded read-only probe.
+Both full `.text` passes completed, each **12,441,402/12,441,402 bytes
+and 0 skipped**. The four E8 rel32 offsets and destinations were
+recomputed offline from the exact emitted bytes (all matched).
+
+| Caller RVA | Argument and stack cleanup | EAX return cached into |
+|---|---|---|
+| `0x98A28C` | `PUSH ESI; CALL 0xA826A0; ADD ESP,4` | `[ESI+0x20]` |
+| `0xA6454C` | `PUSH EDI; CALL 0xA826A0; ADD ESP,4` | `[EDI+0x20]` |
+| `0xA84DDF` | `PUSH ESI; CALL 0xA826A0; ADD ESP,4` | `[ESI+0x20]` |
+| `0xA9931E` | `PUSH EBP; CALL 0xA826A0; ADD ESP,4` | `[EBP+0x20]` |
+
+Each call site is a credible instruction boundary because the
+preceding byte is `PUSH r32`, immediately followed by a complete
+`E8 rel32`; each has caller-side cleanup and cached return.
+The first two also test their `[object+0x20]` pointer for null
+before calling the candidate.
+
+These observations support a **single-argument lazy helper** that
+initializes/caches metadata rather than a four-argument JIT compiler.
+In the pinned **public** MonoPatcher `include/mono.h` research
+declaration, `MonoMethod.header` is at offset `0x20`, whereas the
+separate `MonoHooks.cpp` research declaration says
+`mono_generate_code(MonoMethod*, void*, void*, void*)`, four arguments
+on `__cdecl`. The layout is suggestive, **not an EA 1.69 validated
+struct declaration or proof of exact function identity**.
+
+**Decision: DO NOT use `RVA 0xA826A0` as the native
+`mono_generate_code` hook.** Its observed call semantics do not
+match that API. The current research has answered the question it
+was designed to answer; **do not ask the user for another repeat of
+the same scan**. The native probe's labels were updated to explicitly
+describe this candidate as a probable method-header cache helper.
+A real speedup still requires a separately verified safe CAS integration
+point; unit tests and byte scans alone are not sufficient.
+
+The user log also lists `MonoPatcher.asi` among Game/Bin wrappers.
+This verifies *file presence in the startup inventory only*, not that
+it installed an active hook. The final native Apex build must not
+depend on this temporary research component.
