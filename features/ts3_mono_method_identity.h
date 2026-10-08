@@ -16,7 +16,8 @@ namespace ApexCasMono {
 
 enum class Identity : std::uint8_t {
     Match, NullCandidate, InvalidMethod, WrongToken, WrongClass,
-    WrongNamespace, WrongAssembly, WrongSignature, WrongParameterCount
+    WrongNamespace, WrongAssembly, WrongSignature, WrongParameterCount,
+    WrongReturnType, WrongParameterType, WrongStaticMethod
 };
 
 struct Snapshot {
@@ -61,24 +62,39 @@ Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read) {
             return false;
         return read(address, &result, sizeof(result));
     };
+    auto u16 = [&](std::uint32_t address, std::uint16_t& result) {
+        return address && address <= UINT32_MAX - 2 &&
+               read(address, &result, sizeof(result));
+    };
+    auto u8 = [&](std::uint32_t address, std::uint8_t& result) {
+        return address && read(address, &result, sizeof(result));
+    };
     auto getField = [&](std::uint32_t base, std::uint32_t offset,
                         std::uint32_t& result) {
         return base && base <= UINT32_MAX - offset &&
                u32(base + offset, result);
     };
+    // Read only through the terminating NUL. A short string near a
+    // committed-page boundary is valid even when its next 255 bytes are not.
     auto text = [&](std::uint32_t pointer, std::array<char, 256>& target,
                     std::string_view& value) {
-        if (!pointer || pointer > UINT32_MAX - target.size() ||
-            !read(pointer, target.data(), target.size())) return false;
-        std::size_t len = 0;
-        while (len < target.size() && target[len]) ++len;
-        if (len == target.size()) return false;
-        value = std::string_view(target.data(), len);
-        return true;
+        if (!pointer || pointer > UINT32_MAX - target.size()) return false;
+        for (std::size_t i = 0; i < target.size(); ++i) {
+            std::uint8_t ch = 0;
+            if (!u8(pointer + static_cast<std::uint32_t>(i), ch)) return false;
+            target[i] = static_cast<char>(ch);
+            if (ch == 0) {
+                if (i == 0) return false;
+                value = std::string_view(target.data(), i);
+                return true;
+            }
+        }
+        return false;
     };
 
-    std::uint32_t klass = 0, methodName = 0, signature = 0;
-    if (!getField(candidate, 0x04, out.token) ||
+    std::uint32_t klass = 0, methodName = 0, signature = 0, methodFlags = 0;
+    if (!getField(candidate, 0x00, methodFlags) ||
+        !getField(candidate, 0x04, out.token) ||
         !getField(candidate, 0x08, klass) ||
         !getField(candidate, 0x0C, signature) ||
         !getField(candidate, 0x14, out.runtimeMethod) ||
@@ -88,6 +104,12 @@ Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read) {
     }
     if (out.token != kHairPopulateToken) {
         out.status = Identity::WrongToken;
+        return out;
+    }
+    // CASHair.PopulateTypesGrid is an instance method. Reject any
+    // candidate with ECMA MethodAttributes.Static (0x0010) set.
+    if ((methodFlags & 0x0010u) != 0) {
+        out.status = Identity::WrongStaticMethod;
         return out;
     }
     std::array<char, 256> buffer{};
@@ -117,13 +139,39 @@ Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read) {
         out.status = Identity::WrongAssembly;
         return out;
     }
-    std::uint32_t params = 0;
-    if (!getField(signature, 0x04, params)) {
+    // Mono 1.2.x MonoMethodSignature+0x04 stores uint16 param_count,
+    // NOT uint32: the adjacent two bytes contain independent flags.
+    // A 32-bit read here rejects valid methods with populated flags.
+    std::uint16_t params = 0;
+    if (signature > UINT32_MAX - 0x12 || !u16(signature + 0x04, params)) {
         out.status = Identity::WrongSignature;
         return out;
     }
     if (params != 1) {
         out.status = Identity::WrongParameterCount;
+        return out;
+    }
+    std::uint32_t returnType = 0, paramType = 0;
+    if (!getField(signature, 0x0C, returnType) ||
+        !getField(signature, 0x10, paramType) ||
+        !returnType || !paramType ||
+        returnType > UINT32_MAX - 0x06 ||
+        paramType > UINT32_MAX - 0x06) {
+        out.status = Identity::WrongSignature;
+        return out;
+    }
+    std::uint8_t retCode = 0, paramCode = 0;
+    if (!u8(returnType + 0x06, retCode) ||
+        !u8(paramType + 0x06, paramCode)) {
+        out.status = Identity::WrongSignature;
+        return out;
+    }
+    if (retCode != 0x01u) {
+        out.status = Identity::WrongReturnType;
+        return out;
+    }
+    if (paramCode != 0x02u) {
+        out.status = Identity::WrongParameterType;
         return out;
     }
     out.status = Identity::Match;
