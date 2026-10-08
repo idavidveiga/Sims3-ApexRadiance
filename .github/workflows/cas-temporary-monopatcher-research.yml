@@ -1,4 +1,4 @@
-name: Temporary Hair/Hats MonoPatcher Research (NOT Apex Release)
+name: Withdrawn Hair/Hats Research Diagnostic (NO CAS PATCH)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
       - name: Upload strictly temporary managed test package
         uses: actions/upload-artifact@v4
         with:
-          name: RESEARCH_ONLY_ApexHairMonoPatcher_Package
+          name: WITHDRAWN_RESEARCH_ONLY_NO_CAS_PATCH
           path: |
             research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll
             research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.package
