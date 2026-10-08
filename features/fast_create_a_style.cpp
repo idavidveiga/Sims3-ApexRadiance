@@ -265,7 +265,7 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
 // The native ICASUtils *callee* ABI is separately experimental, so normal
 // builds cannot install this hook.
 std::optional<uintptr_t> VerifiedExperimentalResolver(std::string* error) {
-#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+#ifndef APEX_CAS_PRESET_CACHE_PILOT
     if (error) *error = "Native CAS ICall pilot is not compiled in this build";
     return std::nullopt;
 #else
