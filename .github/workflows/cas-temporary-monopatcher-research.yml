@@ -31,7 +31,18 @@ jobs:
         shell: pwsh
         run: |
           msbuild research/temporary-hair-hats/ApexHairTemporaryResearch.csproj /m:1 /p:Configuration=Release /p:Platform=AnyCPU /v:minimal
-      - name: Upload research-only DLL (requires packaging before game test)
+      - name: Package temporary script as standalone S3SA (no game binaries copied)
+        shell: pwsh
+        run: |
+          python research/temporary-hair-hats/make_research_package.py research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.package
+      - name: Upload strictly temporary managed test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: RESEARCH_ONLY_ApexHairMonoPatcher_Package
+          path: |
+            research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll
+            research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.package
+          if-no-files-found: error
         uses: actions/upload-artifact@v4
         with:
           name: RESEARCH_ONLY_ApexHairMonoPatcher_DLL
