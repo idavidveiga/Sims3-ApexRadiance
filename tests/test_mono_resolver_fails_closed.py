@@ -1,4 +1,4 @@
-"""Protect the retired Mono ICall resolver on every game build in CI."""
+"""Keep production Mono hooks disabled while testing isolated EA169 pilot gates."""
 from pathlib import Path
 import unittest
 
@@ -6,15 +6,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MonoResolverSafetyTests(unittest.TestCase):
-    def test_historical_header_signature_and_steam_target_are_disabled(self):
+    def test_production_rejects_icall_hook_and_pilot_requires_exact_ea_169(self):
         source = (ROOT / "features" / "fast_create_a_style.cpp").read_text(encoding="utf-8")
-        definition = source.split("const GameAddress kLookupInternalCall{", 1)[1].split("};", 1)[0]
-        self.assertIn("{}", definition)
-        self.assertNotIn("0x00E82680", definition)
-        self.assertIn("nullptr", definition)
-        self.assertNotIn("81 EC 08 08 00 00", definition)
-        self.assertNotIn("0x81", definition)
+        cache = (ROOT / "features" / "fast_cas_catalog.cpp").read_text(encoding="utf-8")
+        # In ALL ordinary Win32 builds there is no native resolver hook:
+        # only a dedicated pilot with an explicitly named compiler macro
+        # can pass the Start gate. Faster Create-a-Style remains disabled.
+        self.assertIn("#ifndef APEX_CAS_PRESET_CACHE_PILOT", cache)
+        self.assertIn("#ifndef APEX_CAS_PRESET_CACHE_PILOT", source)
         self.assertIn("#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS", source)
+        self.assertIn("VerifiedExperimentalResolver(error)", source)
+        guard = source.split("std::optional<uintptr_t> VerifiedExperimentalResolver(", 1)[1].split(
+            "} // namespace", 1)[0]
+        self.assertIn("g_gameVersion != GameVersion::EA", guard)
+        self.assertIn("g_exeTimestamp != 0x6707155Cu", guard)
+        self.assertIn("0xA826A0u", guard)
+        for site in ("0x98A28Cu", "0xA6454Cu", "0xA84DDFu", "0xA9931Eu"):
+            self.assertIn(site, guard)
+        self.assertIn("GetModuleHandleW(L\"MonoPatcher.asi\")", guard)
+        self.assertIn("GetModuleHandleW(L\"Sims3MonoModder.asi\")", guard)
+        self.assertIn("MemPatch::ValidateBytes", guard)
+        self.assertIn("MemPatch::ReadBytes", guard)
+        self.assertIn("call[0]!=0xE8", guard)
+        self.assertIn("std::nullopt", guard)
 
     def test_known_runtime_anchors_accept_only_apex_owned_hook_trampolines(self):
         source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
