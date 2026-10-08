@@ -1,179 +1,36 @@
-// TEMPORARY RESEARCH ONLY. Never include in ApexRadiance.asi or final release.
-// Reconstructed from the player's original UI.dll. Opt-in and IL-guarded.
-// WARNING: Simulator.Sleep(0) in CAS has not yet been proven safe.
+// RETIRED RESEARCH PROTOTYPE. Hair/Hats replacement was activated in a
+// user test but prevented hairs and hats from appearing in Create a Sim.
+// Never put the discarded full-method replacement in ApexRadiance.asi,
+// an installable package, or any public release. See Git history for
+// the experiment and docs/research/temporary-monopatcher-hair-hats.md.
+// This safe diagnostic no longer changes any game methods.
 using System;
-using System.Reflection;
 using MonoPatcherLib;
 using Sims3.SimIFace;
-using Sims3.SimIFace.CAS;
 using Sims3.UI;
-using Sims3.UI.CAS;
 
 namespace ApexHairTemporaryResearch
 {
     [Plugin(false)]
     public sealed class TemporaryCasHairExperiment
     {
-        private const int ExpectedILLength = 292;
-        private static string sStatus = "Research package not yet initialized";
-        private const ulong ExpectedFnv64 = 0x931FAD6E160F56CBUL;
-        private static FieldInfo sFilter;
-        private static MethodInfo sGetPartName;
-        private static ConstructorInfo sThumbnailCtor;
+        public TemporaryCasHairExperiment()
+        {
+            World.sOnStartupAppEventHandler += RegisterStatusCommand;
+        }
 
         private static void RegisterStatusCommand(object sender, EventArgs e)
         {
             CommandSystem.RegisterCommand("apexhair_status",
-                "Show temporary Apex Hair/Hats experiment status",
+                "Show temporary Apex Hair/Hats research status",
                 (object[] args) =>
                 {
-                    SimpleMessageDialog.Show("Apex Hair Research", sStatus);
+                    SimpleMessageDialog.Show("Apex Hair Research",
+                        "DISABLED: unsafe Hair/Hats method replacement withdrawn. " +
+                        "Please remove ApexHairTemporaryResearch.package and " +
+                        "restart the game. No game method is patched by this build.");
                     return 1;
                 });
-        }
-
-        public TemporaryCasHairExperiment()
-        {
-            // The command remains available even when the patch is disabled.
-            World.sOnStartupAppEventHandler += RegisterStatusCommand;
-            // Installing this disposable research package is the opt-in.
-            // Avoid unsupported Win32 P/Invoke from EA's embedded Mono.
-            // Replacements remain guarded by exact method/IL checks.
-            sStatus = "Research package loaded; verifying original game method";
-            try
-            {
-                Type originalType = typeof(CASHair);
-                BindingFlags privateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
-                MethodInfo original = originalType.GetMethod("AddHairTypeGridItem", privateInstance);
-                sFilter = originalType.GetField("mContentTypeFilter", privateInstance);
-                sGetPartName = originalType.GetMethod("GetPartName", privateInstance);
-                // Official 1.69 UI.dll invokes the five-parameter ThumbnailKey
-                // constructor with ResourceKey/int/uint/uint/ThumbnailSize.
-                // MonoPatcher public reference DLLs may expose a different
-                // overload: inspect the installed game, never trust that ABI.
-                sThumbnailCtor = typeof(ThumbnailKey).GetConstructor(new Type[] {
-                    typeof(ResourceKey), typeof(int), typeof(uint),
-                    typeof(uint), typeof(ThumbnailSize) });
-                if (original == null || sFilter == null || sGetPartName == null ||
-                    sThumbnailCtor == null)
-                {
-                    sStatus = "BLOCKED: original method/field/constructor missing (method=" +
-                        (original != null) + ", filter=" + (sFilter != null) +
-                        ", tooltip=" + (sGetPartName != null) +
-                        ", thumbnail ctor=" + (sThumbnailCtor != null) + ")";
-                    return;
-                }
-                ParameterInfo[] args = original.GetParameters();
-                if (args.Length != 5 ||
-                    args[0].ParameterType != typeof(ItemGrid) ||
-                    args[1].ParameterType != typeof(ResourceKey) ||
-                    args[2].ParameterType != typeof(CASPartPreset) ||
-                    args[3].ParameterType != typeof(bool) ||
-                    args[4].ParameterType != typeof(bool).MakeByRefType() ||
-                    original.ReturnType != typeof(bool) ||
-                    original.MetadataToken != 0x0600191B)
-                {
-                    sStatus = "BLOCKED: unexpected signature or token " +
-                        original.MetadataToken.ToString("X8");
-                    return;
-                }
-                MethodBody body = original.GetMethodBody();
-                if (body == null)
-                {
-                    sStatus = "BLOCKED: original method body missing";
-                    return;
-                }
-                byte[] il = body.GetILAsByteArray();
-                if (il == null)
-                {
-                    sStatus = "BLOCKED: original IL unreadable";
-                    return;
-                }
-                ulong actual = Fnv1a(il);
-                if (il.Length != ExpectedILLength || actual != ExpectedFnv64)
-                {
-                    sStatus = "BLOCKED: IL mismatch, bytes=" + il.Length +
-                        ", fingerprint=" + actual.ToString("X16");
-                    return;
-                }
-                int previous = MonoPatcher.ReplacementCount;
-                MonoPatcher.PatchAll(typeof(TemporaryCasHairExperiment).Assembly);
-                int replacements = MonoPatcher.ReplacementCount - previous;
-                sStatus = replacements > 0
-                    ? "APPLIED: " + replacements + " Hair/Hats replacement(s)"
-                    : "BLOCKED: no replacements registered";
-            }
-            catch (Exception ex)
-            {
-                sStatus = "BLOCKED: " + ex.GetType().Name + " - " + ex.Message;
-            }
-        }
-
-        private static ulong Fnv1a(byte[] data)
-        {
-            ulong h = 0xCBF29CE484222325UL;
-            for (int i = 0; i < data.Length; ++i)
-            {
-                h ^= data[i];
-                h = unchecked(h * 0x100000001B3UL);
-            }
-            return h;
-        }
-
-        [ReplaceMethod(typeof(CASHair), "AddHairTypeGridItem")]
-        private bool AppendHairItemTimesliced(
-            ItemGrid grid, ResourceKey layoutKey, CASPartPreset preset,
-            bool inActiveWardrobe, ref bool filterFlag)
-        {
-            // MonoPatcher swaps this replacement's code onto an existing
-            // CASHair instance, following its documented instance-patch model.
-            CASHair owner = (CASHair)(this as object);
-            Layout layout = UIManager.LoadLayout(layoutKey);
-            WindowBase root = layout.GetWindowByExportID(1);
-            if (root != null)
-            {
-                CustomContentIcon icon =
-                    root.GetChildByID(23, true) as CustomContentIcon;
-                icon.ContentType = UIUtils.GetCustomContentType(
-                    preset.mPart.Key, preset.mPresetId);
-                CatalogProductFilter filter =
-                    (CatalogProductFilter)sFilter.GetValue(owner);
-                if (filter.ObjectMatchesFilter(preset, ref filterFlag))
-                {
-                    Window preview = root.GetChildByID(20, true) as Window;
-                    if (preview != null)
-                    {
-                        ImageDrawable image = preview.Drawable as ImageDrawable;
-                        if (image != null)
-                        {
-                            ThumbnailKey key = (ThumbnailKey)sThumbnailCtor.Invoke(
-                                new object[] { preset.mPart.Key,
-                                    unchecked((int)preset.mPresetId),
-                                    unchecked((uint)preset.mPart.BodyType),
-                                    unchecked((uint)preset.mPart.AgeGenderSpecies),
-                                    (ThumbnailSize)2 });
-                            image.Image = UIManager.GetCASThumbnailImage(key);
-                            preview.Invalidate();
-                        }
-                    }
-                    if (inActiveWardrobe)
-                    {
-                        Window badge = root.GetChildByID(29, true) as Window;
-                        if (badge != null) badge.Visible = true;
-                    }
-                    if (CASController.Singleton.DebugTooltips)
-                        root.TooltipText = (string)sGetPartName.Invoke(
-                            owner, new object[] { preset.mPart });
-                    grid.AddItem(new ItemGridCellItem(root, preset));
-
-                    // Only experimental change: yield AFTER a successful
-                    // row insertion, preserving the original Boolean result.
-                    // Safe simulator-task context must be proven in-game.
-                    Simulator.Sleep(0);
-                    return true;
-                }
-            }
-            return false;
         }
     }
 }
