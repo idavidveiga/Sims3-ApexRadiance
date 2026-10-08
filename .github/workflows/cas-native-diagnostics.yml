@@ -9,6 +9,10 @@ on:
       - "features/cas_hair_grid_session.h"
       - "tests/test_cas_catalog_scheduler.cpp"
       - "tests/test_cas_hair_grid_session.cpp"
+      - "tools/verify_hair_ui_contract.py"
+      - "tests/test_verify_hair_ui_contract.py"
+      - "research/temporary-hair-hats/TemporaryCasHairExperiment.cs"
+      - "ApexRadiance.vcxproj"
       - "tools/inspect_ts3_executable.py"
       - "tests/test_inspect_ts3_executable.py"
       - ".github/workflows/cas-native-diagnostics.yml"
@@ -43,6 +47,11 @@ jobs:
           set -euo pipefail
           python3 -m py_compile tools/inspect_ts3_executable.py tests/test_inspect_ts3_executable.py
           python3 -m unittest discover -s tests -p 'test_inspect_ts3_executable.py' -v
+      - name: Test exact original Hair/Hats contract verifier and safe research gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_verify_hair_ui_contract.py' -v
       - name: Confirm no original EA executables are required
         shell: bash
         run: |
