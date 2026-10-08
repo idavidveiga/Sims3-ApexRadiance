@@ -16,6 +16,32 @@ class MonoResolverSafetyTests(unittest.TestCase):
         self.assertNotIn("0x81", definition)
         self.assertIn("#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS", source)
 
+    def test_known_runtime_anchors_accept_only_apex_owned_hook_trampolines(self):
+        source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
+        block = source.split("std::string InspectMonoRuntimeAnchors() {", 1)[1].split(
+            "std::string InspectLoadedExe() {", 1
+        )[0]
+        self.assertIn("EntryChain::Installed(", block)
+        self.assertIn("EntryChain::Layer::ScriptMath", block)
+        self.assertIn("EntryChain::OwnsEntry(a.site)", block)
+        self.assertIn("EntryChain::Original(a.site)", block)
+        self.assertIn("savedOriginal", block)
+        self.assertIn("scriptMathLayer && ownEntry && savedOriginal", block)
+        self.assertIn("entry ownership lost (possible conflict)", block)
+        for forbidden in ("MemPatch::Write", "DetourBatch::InstallHooks"):
+            self.assertNotIn(forbidden, block)
+
+        header = (ROOT / "framework" / "entry_chain.h").read_text(encoding="utf-8")
+        chain = (ROOT / "framework" / "entry_chain.cpp").read_text(encoding="utf-8")
+        self.assertIn("bool OwnsEntry(Site site);", header)
+        own = chain.split("bool OwnsEntry(Site site) {", 1)[1].split(
+            "bool Installed(Site site, Layer layer)", 1
+        )[0]
+        self.assertIn("Outermost(state)", own)
+        self.assertIn("MakeJmp(expected, state.fn, target)", own)
+        self.assertIn("MemPatch::ReadBytes", own)
+        self.assertNotIn("MemPatch::Write", own)
+
     def test_mono_export_lookup_is_read_only(self):
         source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
         function = source.split("std::string InspectMonoExports() {", 1)[1].split(
