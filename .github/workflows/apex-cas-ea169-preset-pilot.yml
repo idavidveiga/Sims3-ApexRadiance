@@ -11,6 +11,7 @@ on:
       - "features/fast_cas_catalog.cpp"
       - "features/fast_cas_catalog.h"
       - "patches/performance_patches.cpp"
+      - "apex_gui.cpp"
       - "ApexRadiance.vcxproj"
       - ".github/workflows/apex-cas-ea169-preset-pilot.yml"
 
