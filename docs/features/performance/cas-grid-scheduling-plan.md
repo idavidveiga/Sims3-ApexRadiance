@@ -18,7 +18,7 @@ The following methods exist in the supplied original TS3 `UI.dll`:
 | Thumbnail | `UIUtils.GetUIImageFromThumbnailKey`, `UIManager.GetCASThumbnailImage` |
 | Native metadata | `ICASUtils.PartDataNumPresets`, `PartDataGetPresetId`, `PartDataGetPreset` |
 
-Ropa/accessory item grids already use an incremental `ItemGrid.BeginPopulating` path with a small row batch.
+Clothing/accessory item grids already use an incremental `ItemGrid.BeginPopulating` path with a small row batch.
 Hair presets have a more sequential per-part construction path (including design preset extraction and layout creation).
 Consequently the same optimization is **not** appropriate for all categories.
 
