@@ -1,6 +1,6 @@
 # Native CAS viewport scheduler — implementation and integration
 
-**Status:** native C++20 scheduling core **and** the thread-bound Hair/Hats task lifecycle (`HairGridSession`) are implemented and tested. The latter supports ordered incremental append, category cancellation, delayed selection, terminal grid callbacks and rejection of wrong-thread ticks. **Neither is connected to `CASHair.PopulateTypesGrid(bool)` or the game's `ItemGrid`.** A safe Mono JIT method bridge has not been identified and the feature is **not yet a playable optimization**.
+**Status:** native C++20 scheduling core **and** the thread-bound Hair/Hats task lifecycle (`HairGridSession`) are implemented and tested. The latter supports ordered incremental append, category cancellation, delayed selection, terminal grid callbacks and rejection of wrong-thread ticks. **Neither is connected to `CASHair.PopulateTypesGrid(bool)` or the game's `ItemGrid`.** A safe native Mono interpreter and managed-method continuation bridge has not been validated and the feature is **not yet a playable optimization**.
 
 ## Source and tests
 
@@ -119,9 +119,13 @@ on-disk encrypted/obfuscated executable limitation.
 
 ## Blocking runtime integration
 
-Apex must still independently discover and validate the target managed method's native JIT entry point on the
-user's TS3 executable; the source packages alone do not disclose its runtime address or calling convention.
-A `GameAddress` signature for the interpreter/JIT mechanism is **not** a verified per-method hook.
+Apex must still independently validate the EA 1.69 native Mono class/method-lookup ABI,
+simulator-thread task dispatch and an actual method-level managed continuation. The method is
+interpreted as Mono MINT; it must **not** be treated as an x86 native JIT entrypoint.
+The branch now includes an offline-tested strict method-discovery adapter and a read-only
+incremental finder for `MonoScriptHost::FindClass`, `mono_class_get_methods`, `ProcessTasks`
+and `InitHeap` patterns. They are **not wired to a playable hook or a managed replacement**.
+A unique entry pattern does not prove calling convention, ownership or safety.
 
 True visible-first also needs a proven stable-slot / placeholder mechanism for `ItemGrid`: appending a part out
 of order would shift selections and break rows. In particular, a C++ queue must not call
