@@ -79,7 +79,13 @@ void __fastcall HookProcessTasks(void* host, void*) {
             g_refused.fetch_add(1, std::memory_order_relaxed);
     });
     inSlice = false;
-    if (!safe) g_armed.store(0, std::memory_order_release);
+    if (!safe) {
+        // A callback may have appended a partial cell before throwing.
+        // Never retry it: a verified parent-method adapter must perform a
+        // clean original-grid rebuild on the simulator thread.
+        g_session.AbortAndRequestOriginalRebuild();
+        g_armed.store(0, std::memory_order_release);
+    }
 }
 #endif
 
