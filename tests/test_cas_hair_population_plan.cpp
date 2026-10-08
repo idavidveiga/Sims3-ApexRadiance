@@ -168,6 +168,21 @@ static void TestFinishRetryAndEmptyCategory() {
     assert(tick.completed && ends == 2);
 }
 
+static void TestForeignBeginRejectedAndExistingWorkPreserved() {
+    Plan driver;
+    const auto original = driver.Begin(1, 3);
+    assert(original != 0);
+    Plan::Generation rejected = original;
+    std::thread other([&] {
+        rejected = driver.Begin(200, 100);
+    });
+    other.join();
+    assert(rejected == 0);
+    assert(driver.CurrentGeneration() == original);
+    assert(driver.StoreRemaining() == 1 && driver.PartRemaining() == 3);
+    assert(driver.CurrentPhase() == Plan::Phase::FeaturedStore);
+}
+
 int main() {
     TestStorePrecedesAtomicPartGroups();
     TestNoSplitWithinPartGroup();
@@ -176,5 +191,6 @@ int main() {
     TestAbortNeverRetriesPartialUiMutation();
     TestOwnerThreadAndCancel();
     TestFinishRetryAndEmptyCategory();
-    std::cout << "PASS: 7 original-order Hair/Hats population plan groups\n";
+    TestForeignBeginRejectedAndExistingWorkPreserved();
+    std::cout << "PASS: 8 original-order Hair/Hats population plan groups\n";
 }
