@@ -105,3 +105,59 @@ additional test package must **not** be issued until it can preserve
 the original method and the design can fail closed on incompatible
 runtime conditions. Permanent Apex builds remain native-only, with no
 MonoPatcher dependency or binary.
+
+## Native integration finding from the user's TS3.exe
+
+The user also provided `TS3.exe` (EA 1.69; SHA-256
+`7352dd6e599f4475f812bbca19bbc7e5d8e84bbd5b6d21acaac9b1c5236adfe4`).
+An offline, read-only inspection of its PE sections found:
+
+- Image base `0x00400000`, x86 PE32, `.text` RVA `0x1000`,
+  virtual size `0xBDD73A` = **12,441,402 bytes**.
+- The on-disk `.text` has approximately **8.000 bits/byte**
+  Shannon entropy (a strong sign of packed/obfuscated/encrypted
+  code rather than readable original instructions). Representative
+  entries at the MonoPatcher upstream EA 1.69 JIT RVA `0xF04B0`
+  and the in-memory candidate `0xA826A0` both decode to
+  implausible x86 instructions in the **disk file**.
+- The upstream `mono_generate_code` and JIT check byte
+  signatures from MonoPatcher's `Addresses.cpp` have **no
+  corresponding matches in the on-disk executable**.
+- An earlier **live memory** log from the user's running game
+  reported a unique, plausible function prologue at
+  `RVA 0xA826A0`, but it was **not identified as the Mono JIT
+  method compiler** and its calling convention remains unverified.
+
+**Implication:** do not extrapolate JIT function entry points or
+vtable layouts from this obfuscated on-disk file. Any native JIT
+integration must verify the actual loaded/deobfuscated image,
+method identity, ABI and lifecycle, and must decline to hook when
+not proven. On-disk signatures for upstream 1.69 builds are not
+automatically valid for this player's executable. This is a
+technical block, not grounds to force-enable the unsafe Mono ICall
+switches or ask for repetitive log captures.
+
+## C++ phase-level implementation added
+
+`features/cas_hair_population_plan.h` now implements a staged,
+original-order native **planning core**:
+`FeaturedStore → PartGroups → Finalize → Finished`. A whole CAS
+part (default hair plus its optional saved presets and selection
+side effects) is one indivisible work unit: it avoids invalidating
+`ObjectDesigner.SetCASPart` state midway through a group.
+
+The game UI bridge is **not implemented**. The driver retains only
+count/index and generation, never managed objects; rejects calls
+from a different thread, prevents duplicate retries after possible
+partial mutation, and cancels obsolete work when the Sim/category
+context changes. It does not call `Simulator.Sleep` anywhere. A
+time limit applies **between** completed part groups, not inside
+the original game UI operations. Because one very expensive part
+can still exceed the time budget, there is no guaranteed per-frame
+latency limit yet.
+
+`tests/test_cas_hair_population_plan.cpp` tests store-before-parts
+ordering, atomic preset groups, no-commit retry, partial-commit
+abort, stale generation cancellation, thread ownership and terminal
+updates. These tests validate *only the C++ task state machine*,
+not its eventual game integration or actual speedup.
