@@ -15,6 +15,8 @@ on:
       - "features/cas_hair_population_plan.h"
       - "features/cas_hair_native_bridge.h"
       - "features/cas_hair_sim_pump.h"
+      - "features/cas_hair_native_il.h"
+      - "tests/test_cas_hair_native_il.cpp"
       - "features/cas_hair_sim_pump.cpp"
       - "tests/test_cas_hair_native_bridge.cpp"
       - "features/ts3_mono_xref.h"
@@ -83,6 +85,13 @@ jobs:
           clang++ -std=c++20 -Wall -Wextra -Werror -pedantic -pthread \
             -Ifeatures tests/test_cas_hair_native_bridge.cpp -o "${RUNNER_TEMP}/cas_hair_native_bridge_test"
           "${RUNNER_TEMP}/cas_hair_native_bridge_test"
+      - name: Test native original-parent Hair/Hats IL rewrite and SHA gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -Wall -Wextra -Werror -pedantic \
+            -Ifeatures tests/test_cas_hair_native_il.cpp -o "${RUNNER_TEMP}/cas_native_il"
+          "${RUNNER_TEMP}/cas_native_il"
       - name: Test strict x86 MonoMethod identity gate
         shell: bash
         run: |
