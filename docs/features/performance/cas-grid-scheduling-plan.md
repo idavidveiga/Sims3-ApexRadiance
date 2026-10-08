@@ -1,6 +1,6 @@
 # Create-a-Sim category switching and grid scheduling
 
-**Status:** a source-only managed incremental Hair/Hats prototype is available under `experiments/cas-hair-incremental`. It needs MonoPatcher and an independently built script package; it has not been compiled or tested in-game. The native CAS cache remains experimental and off by default. Visible-first loading is not implemented.
+**Status:** native-only planning within Apex Radiance. No external method-patching libraries or additional script packages are permitted. The previous managed experiment was withdrawn. Native CAS metadata caching remains experimental and off by default; incremental Hair/Hats and visible-first loading are not yet implemented in a playable build.
 
 ## Verified code paths
 
@@ -78,8 +78,7 @@ selection/linkage belong to the game's UI.
 
 ## Runtime patching boundary
 
-Changing the scheduler requires a **managed method-level patch** in `UI.dll` (e.g. IL replacement before Mono first
-JITs the target method), or a verified native equivalent, rather than only the existing InternalCall lookup hook.
+Changing the scheduler requires a **native Apex-owned hook** on a verified game/Mono method entry point (or an Apex-owned, independently developed IL patcher) rather than only the existing InternalCall lookup hook. We will not import or depend on external runtime patchers.
 Modifying only `PartDataNumPresets` or `GetCASThumbnailImage` cannot reorder the grid or make its managed loop yield.
 
 Do not ship a whole replacement `UI.dll`; this can conflict with UI core mods and NRaas MasterController CAS changes.
