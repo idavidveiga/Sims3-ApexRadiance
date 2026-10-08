@@ -10,6 +10,7 @@
 
 using ApexCasMono::Identity;
 using ApexCasMono::InspectHairPopulate;
+using ApexCasMono::UIVariant;
 
 struct FakeMemory {
     std::unordered_map<std::uint32_t, std::uint8_t> bytes;
@@ -63,19 +64,30 @@ static FakeMemory Fixture() {
     return m;
 }
 
-static Identity Status(FakeMemory& m, std::uint32_t candidate = 0x1000) {
+static Identity Status(FakeMemory& m, std::uint32_t candidate = 0x1000,
+                       UIVariant variant = UIVariant::EaApp169) {
     return InspectHairPopulate(candidate, [&](std::uint32_t addr,
                                      void* out, std::size_t len) {
         return m.Read(addr, out, len);
-    }).status;
+    }, variant).status;
 }
 
 int main() {
     auto m = Fixture();
     const auto baseline = InspectHairPopulate(0x1000,
-        [&](std::uint32_t a, void* b, std::size_t n) { return m.Read(a, b, n); });
+        [&](std::uint32_t a, void* b, std::size_t n) { return m.Read(a, b, n); }, UIVariant::EaApp169);
     assert(baseline.Matches() && baseline.token == 0x06001918);
     assert(baseline.runtimeMethod == 0xDEADBEEFu);
+    // A matching name/signature from a different known UI.dll is not enough.
+    // The parent MethodDef is distinct, and no unverified image is allowed.
+    assert(Status(m, 0x1000, UIVariant::Unverified) == Identity::WrongAssembly);
+    assert(Status(m, 0x1000, UIVariant::AlternateUserUI) == Identity::WrongToken);
+    assert(ApexCasMono::HairPopulateToken(UIVariant::Unverified) == 0);
+    assert(ApexCasMono::HairPopulateToken(UIVariant::AlternateUserUI) == 0x0600124A);
+    m.Word(0x1004, ApexCasMono::kAlternateHairPopulateToken);
+    assert(Status(m, 0x1000, UIVariant::AlternateUserUI) == Identity::Match);
+    assert(Status(m, 0x1000, UIVariant::EaApp169) == Identity::WrongToken);
+
     assert(Status(m, 0) == Identity::NullCandidate);
     assert(Status(m, 0xFFFFFFFEu) == Identity::InvalidMethod);
 
@@ -108,5 +120,5 @@ int main() {
     m = Fixture(); m.bytes.erase(0x6001);
     assert(Status(m) == Identity::WrongClass);
 
-    std::cout << "PASS: 16 read-only x86 CAS method identity scenarios\n";
+    std::cout << "PASS: native x86 CAS method identity, including both gated UI.dll variants\n";
 }
