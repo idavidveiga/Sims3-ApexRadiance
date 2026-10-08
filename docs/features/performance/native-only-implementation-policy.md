@@ -46,6 +46,7 @@ The native calling conventions and lifecycle must be confirmed before activating
 
 - Experimental Apex-native CAS metadata/CASt thumbnail hooks exist but remain **off by default**.
 - Both are excluded from the global Overview Performance switch.
+- The native-only viewport scheduler core and its standalone tests exist, but its game-facing UI/JIT bridge is not yet implemented.
 - A signature test and a detailed CAS grid scheduling plan exist.
 - **No incremental Hair/Hats method patch or visible-first implementation is active.**
 - No MonoPatcher code or artifacts are part of this branch's tree or new branch history.
