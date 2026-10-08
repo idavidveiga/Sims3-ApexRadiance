@@ -1,12 +1,20 @@
 # Temporary managed Hair/Hats responsiveness prototype (RESEARCH ONLY)
 
+**WITHDRAWN — NOT A FUNCTIONAL MOD.** The controlled 2026-10-08 in-game
+test showed that applying the full-method replacement made Hair and Hats
+disappear. The replacement is removed from the current source. The package
+built from the old commits MUST be removed from Mods/Packages before the
+next game launch; no save should be made while it is active. No new
+installable experiment is authorized until the original method's behavior
+is preserved and reviewed.
+
 **DO NOT PUBLISH OR INCLUDE THIS IN APEX RADIANCE RELEASES.**
 
 This disposable MonoPatcher 0.3.0 experiment was independently reconstructed
 from the player's original `gameplay.package` EA 1.69 UI.dll. It is **not**
 a native optimization and **has not yet been tested in-game**.
 
-It attempts only one change: after each successfully appended Hair/Hats
+The **withdrawn implementation attempted** one change: after each successfully appended Hair/Hats
 `ItemGrid` row, ask `Simulator.Sleep(0)` to yield the simulator task.
 The exact original content filtering, thumbnail creation, wardrobe badge,
 tooltip and Boolean return behavior are preserved in the source as closely
@@ -38,7 +46,17 @@ passed and the tester can safely undo the changes.
 CI workflow:
 `.github/workflows/cas-temporary-monopatcher-research.yml`.
 
-## Installation for a future controlled smoke test — NOT YET VALIDATED
+## Withdrawal and recovery
+
+Close The Sims 3 **without saving** and remove
+`Mods/Packages/ApexHairTemporaryResearch.package`. Restart the game
+without that test package and confirm Hair/Hats appear. Keep the original
+ApexRadiance.asi and CC packages unchanged. If the game's original CAS still
+misbehaves, verify the temporary package is not present twice before any
+further investigation. MonoPatcher can be removed later after the native
+implementation is independent.
+
+## Historical test procedure (DO NOT FOLLOW — withdrawn)
 
 1. Back up the game configuration and use a disposable save.
 2. Install MonoPatcher 0.3.0 according to the official instructions.
