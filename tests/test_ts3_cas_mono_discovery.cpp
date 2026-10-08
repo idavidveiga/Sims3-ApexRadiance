@@ -63,7 +63,7 @@ struct Fixture {
         memory.String(0x7000, "Sims3.UI.CAS");
         memory.String(0x8000, "C:\\Game\\Bin\\UI.dll");
     }
-    Discovery Run(DiscoveryGate gate = {true,true,true,true}) {
+    Discovery Run(DiscoveryGate gate = {true,true,true,true,UIVariant::EaApp169}) {
         return DiscoverHairPopulate(gate,
             [&](const char* ns, const char* name) -> std::uint32_t {
                 ++lookupCalls;
@@ -91,6 +91,19 @@ struct Fixture {
     }
 };
 
+void TestAlternateVariantDiscovery() {
+    Fixture f;
+    // Exact whole-file hash was verified by the caller: test only the
+    // metadata selection, not verification of actual external file bytes.
+    f.memory.Word(0x1004, kAlternateHairPopulateToken);
+    const DiscoveryGate alternate{true,true,true,true,UIVariant::AlternateUserUI};
+    const auto accepted = f.Run(alternate);
+    assert(accepted.status == DiscoveryStatus::Ready);
+    assert(accepted.method == 0x1000);
+    const auto denied = f.Run();
+    assert(denied.status == DiscoveryStatus::NotFound);
+    assert(denied.method == 0);
+}
 void TestStrictDiscovery() {
     Fixture f;
     const auto r=f.Run();
@@ -110,10 +123,11 @@ void TestNonmonotonicMonoIteratorCookie() {
 void TestFailClosedGates() {
     Fixture f;
     for (DiscoveryGate g : {
-        DiscoveryGate{false,true,true,true},
-        DiscoveryGate{true,false,true,true},
-        DiscoveryGate{true,true,false,true},
-        DiscoveryGate{true,true,true,false}
+        DiscoveryGate{false,true,true,true,UIVariant::EaApp169},
+        DiscoveryGate{true,false,true,true,UIVariant::EaApp169},
+        DiscoveryGate{true,true,false,true,UIVariant::EaApp169},
+        DiscoveryGate{true,true,true,false,UIVariant::EaApp169},
+        DiscoveryGate{true,true,true,true,UIVariant::Unverified}
     }) {
         const auto r=f.Run(g);
         assert(r.method == 0 && r.runtimeMethod == 0);
@@ -167,6 +181,7 @@ void TestRejectUnboundedMetadata() {
 
 int main() {
     TestStrictDiscovery();
+    TestAlternateVariantDiscovery();
     TestNonmonotonicMonoIteratorCookie();
     TestFailClosedGates();
     TestNotFoundAndUnknownClass();
@@ -174,5 +189,5 @@ int main() {
     TestRejectDuplicates();
     TestStopUnprogressingAndUnreadableEnumerators();
     TestRejectUnboundedMetadata();
-    std::cout << "PASS: 8 gated native CAS method-discovery test groups\n";
+    std::cout << "PASS: 9 gated native CAS method-discovery test groups\n";
 }
