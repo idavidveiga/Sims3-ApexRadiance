@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -119,6 +120,29 @@ static void TestReentrantChangeBlocksOldCommit() {
     assert(r.slice.stale && r.canceled && !bridge.Active());
     assert(s.work.size()==1);
 }
+static void TestThrowAfterPartialAppendForcesRebuild() {
+    Bridge bridge; State s;
+    Bridge::Callbacks callbacks = Callbacks(s);
+    callbacks.part = [](void* p, Plan::Work work) -> Plan::Outcome {
+        auto& state = *static_cast<State*>(p);
+        state.work.push_back(200 + static_cast<int>(work.index));
+        throw std::runtime_error("synthetic partial CAS append");
+    };
+    const auto generation = bridge.Begin(1, 0, 3, Safe(), callbacks);
+    assert(generation);
+    bool caught = false;
+    try {
+        (void)bridge.OnSimulationTick(generation, 1s, 5);
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+    assert(caught);
+    assert(bridge.AbortAndRequestOriginalRebuild());
+    assert(bridge.NeedsOriginalRebuild() && !bridge.Active());
+    assert(bridge.OnSimulationTick(generation).refused);
+    assert(s.work.size() == 1 && s.finishCount == 0);
+}
+
 int main() {
     TestRejectIncompleteGate();
     TestOrderedGroupsAndFinishOnce();
@@ -126,5 +150,6 @@ int main() {
     TestAbortRequiresExternalRebuild();
     TestForeignThreadCannotDispatchOrStealSession();
     TestReentrantChangeBlocksOldCommit();
-    std::cout<<"PASS: 6 Hair/Hats native bridge test groups\n";
+    TestThrowAfterPartialAppendForcesRebuild();
+    std::cout<<"PASS: 7 Hair/Hats native bridge test groups\n";
 }
