@@ -49,6 +49,7 @@ public:
         bool aborted = false;
         bool stale = false;
         bool wrongThread = false;
+        bool reentrant = false; // recursive UI ticks must not replay an unfinished part group
         Phase phase = Phase::Inactive;
     };
 
@@ -133,6 +134,16 @@ public:
             result.wrongThread = true;
             return Snapshot(result);
         }
+        // Managed UI events may synchronously trigger another grid tick from
+        // within storeItem, partGroup or finalize. Do not let a nested RunSlice
+        // use the same cursor before the outer call commits it: that could
+        // append the same thumbnail twice or skip an entire preset group.
+        // Begin/Cancel remain allowed for category changes, but processing of
+        // the new generation must wait until the outer slice unwinds.
+        if (executing_) {
+            result.reentrant = true;
+            return Snapshot(result);
+        }
         if (expected != generation_ || !Active()) {
             result.stale = true;
             return Snapshot(result);
@@ -141,6 +152,16 @@ public:
             result.completed = true;
             return Snapshot(result);
         }
+
+        // RAII clears this even if a test callback throws, and crucially
+        // after any reentrant Begin/Cancel invalidates the old generation.
+        struct ExecutionGuard {
+            bool& running;
+            explicit ExecutionGuard(bool& value) noexcept : running(value) { running = true; }
+            ~ExecutionGuard() noexcept { running = false; }
+            ExecutionGuard(const ExecutionGuard&) = delete;
+            ExecutionGuard& operator=(const ExecutionGuard&) = delete;
+        } guard(executing_);
 
         const auto started = Clock::now();
         std::size_t units = 0;
@@ -227,6 +248,7 @@ private:
     // The lock protects *all* state and prevents any cross-thread data races.
     // It never permits callbacks to run on any thread but owner_.
     mutable std::recursive_mutex mutex_;
+    bool executing_ = false; // permits Begin/Cancel reentry, never overlapping RunSlice
     std::thread::id owner_{};
     Generation generation_ = 0;
     Phase phase_ = Phase::Inactive;
