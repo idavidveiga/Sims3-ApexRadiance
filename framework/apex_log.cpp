@@ -1,6 +1,7 @@
 #include "apex_log.h"
 #include "apex_version.h"
 #include <windows.h>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <mutex>
@@ -111,6 +112,72 @@ void Close() {
         CloseHandle(g_file);
         g_file = INVALID_HANDLE_VALUE;
     }
+}
+
+// The background writer is deliberately not stopped. This operation runs only
+// when a developer explicitly requests a snapshot, never on a game hook.
+// The mutex prevents concurrent writes while a bounded buffer is copied.
+bool SaveSnapshot(const std::wstring& destination) {
+    std::lock_guard<std::mutex> lock(g_lock);
+    if (g_file == INVALID_HANDLE_VALUE || destination.empty()) return false;
+    WriteQueueLocked();
+    // Ensure metadata/content is visible to other processes even when the
+    // regular logging handle remains open for the lifetime of the game.
+    if (!FlushFileBuffers(g_file)) return false;
+
+    HANDLE input = CreateFileW(destination.c_str(), 0, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Do not overwrite the currently opened log by accident. The destination
+    // should be a distinct snapshot path; this check has no side effects.
+    if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+
+    // Reopen the existing log handle without needing its original path.
+    // DuplicateHandle gives us a new writable-only handle, not a readable one,
+    // so retrieve its path and open it for read with sharing compatible with
+    // the original writer.
+    wchar_t sourcePath[32768] = {};
+    const DWORD pathLen = GetFinalPathNameByHandleW(
+        g_file, sourcePath, static_cast<DWORD>(std::size(sourcePath)),
+        FILE_NAME_NORMALIZED);
+    if (!pathLen || pathLen >= std::size(sourcePath) ||
+        destination == sourcePath) return false;
+
+    HANDLE source = CreateFileW(sourcePath, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (source == INVALID_HANDLE_VALUE) return false;
+    HANDLE output = CreateFileW(destination.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (output == INVALID_HANDLE_VALUE) {
+        CloseHandle(source);
+        return false;
+    }
+
+    bool ok = true;
+    std::array<char, 64 * 1024> buffer{};
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(source, buffer.data(), static_cast<DWORD>(buffer.size()),
+                      &got, nullptr)) { ok = false; break; }
+        if (got == 0) break;
+        DWORD offset = 0;
+        while (offset < got) {
+            DWORD written = 0;
+            if (!WriteFile(output, buffer.data() + offset, got - offset,
+                           &written, nullptr) || written == 0) {
+                ok = false;
+                break;
+            }
+            offset += written;
+        }
+        if (!ok) break;
+    }
+    if (ok && !FlushFileBuffers(output)) ok = false;
+    CloseHandle(output);
+    CloseHandle(source);
+    if (!ok) DeleteFileW(destination.c_str());
+    return ok;
 }
 
 void SetVerbose(bool on) { g_verbose.store(on, std::memory_order_relaxed); }
