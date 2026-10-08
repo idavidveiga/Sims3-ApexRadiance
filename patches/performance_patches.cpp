@@ -20,6 +20,7 @@
 #include "fast_cas.h"
 #include "fast_create_a_style.h"
 #include "fast_cas_catalog.h"
+#include "ts3_mono_runtime_probe.h"
 #include "compositor_readback.h"
 #include "fast_crc.h"
 #include "fast_memory.h"
@@ -539,7 +540,7 @@ class FastCasCatalogPatch : public ApexPatch {
         return true;
     }
     void RenderCustomUI() override {}
-    void RenderDeveloperUI() override {}
+    void RenderDeveloperUI() override { Ts3MonoRuntimeProbe::RenderDeveloperUI(); }
 };
 
 class FastCreateAStylePatch : public ApexPatch {
