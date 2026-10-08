@@ -16,6 +16,8 @@ on:
       - "tests/test_ts3_mono_xref.cpp"
       - "features/ts3_mono_runtime_probe.cpp"
       - "features/ts3_cas_mono_sites.h"
+      - "features/ts3_mono_host_snapshot.h"
+      - "tests/test_ts3_mono_host_snapshot.cpp"
       - "tests/test_ts3_cas_mono_sites.cpp"
       - "framework/entry_chain.cpp"
       - "framework/entry_chain.h"
@@ -84,6 +86,13 @@ jobs:
           clang++ -std=c++20 -Wall -Wextra -Werror -pedantic \
             -Ifeatures tests/test_ts3_cas_mono_sites.cpp -o "${RUNNER_TEMP}/ts3_cas_mono_sites_test"
           "${RUNNER_TEMP}/ts3_cas_mono_sites_test"
+      - name: Test read-only Mono ScriptHost readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -Wall -Wextra -Werror -pedantic \
+            -Ifeatures tests/test_ts3_mono_host_snapshot.cpp -o "${RUNNER_TEMP}/ts3_mono_host_snapshot_test"
+          "${RUNNER_TEMP}/ts3_mono_host_snapshot_test"
       - name: Test read-only x86 Mono candidate reference scanner
         shell: bash
         run: |
