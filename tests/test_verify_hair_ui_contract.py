@@ -7,7 +7,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from verify_hair_ui_contract import ContractError, call_count, il_bytes_at, verify
+from verify_hair_ui_contract import (ContractError, call_count, il_bytes_at, verify,
+                                     identify_variant, UI_VARIANTS, ORIGINAL_UI_SHA256,
+                                     ALTERNATE_UI_SHA256)
 
 
 def fake_pe() -> bytearray:
@@ -59,6 +61,38 @@ class HairILContractTests(unittest.TestCase):
         il = b"\x00\x28" + token.to_bytes(4, "little") + b"\x6F" + token.to_bytes(4, "little")
         self.assertEqual(call_count(il, token), 2)
         self.assertEqual(call_count(il, 0x0600191B), 0)
+
+    def test_variants_have_unique_full_image_hashes_and_tokens(self):
+        self.assertEqual(len(UI_VARIANTS), 2)
+        self.assertNotEqual(ORIGINAL_UI_SHA256, ALTERNATE_UI_SHA256)
+        self.assertEqual({v.digest for v in UI_VARIANTS},
+                         {ORIGINAL_UI_SHA256, ALTERNATE_UI_SHA256})
+        first, second = UI_VARIANTS
+        self.assertEqual([m.name for m in first.methods],
+                         [m.name for m in second.methods])
+        self.assertEqual([m.length for m in first.methods],
+                         [m.length for m in second.methods])
+        for variant in UI_VARIANTS:
+            self.assertEqual(len(variant.methods), 8)
+            parent = variant.methods[6]
+            child = variant.methods[7]
+            self.assertEqual(parent.callee, child.token)
+            self.assertEqual(parent.expected_calls, 2)
+            self.assertEqual(parent.length, 1621)
+        self.assertEqual(first.methods[6].token, 0x06001918)
+        self.assertEqual(second.methods[6].token, 0x0600124A)
+        self.assertEqual(first.sleep_memberref, 0x0A000023)
+        self.assertEqual(second.sleep_memberref, 0x0A00001D)
+
+    def test_digest_selector_is_exact_and_does_not_guess(self):
+        from unittest.mock import patch
+        with patch("verify_hair_ui_contract.hashlib.sha256") as digest:
+            for variant in UI_VARIANTS:
+                digest.return_value.hexdigest.return_value = variant.digest
+                self.assertIs(identify_variant(b"synthetic"), variant)
+            digest.return_value.hexdigest.return_value = "0" * 64
+            with self.assertRaisesRegex(ContractError, "unknown or modified"):
+                identify_variant(b"synthetic")
 
     def test_withdrawn_research_has_no_active_replacement(self):
         root = Path(__file__).resolve().parents[1]
