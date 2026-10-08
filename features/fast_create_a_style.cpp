@@ -253,12 +253,17 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
     return native;
 }
 
-// Steam 1.67.2 address and an address-independent signature for the same old-Mono routine. On EA/unknown builds
-// GameAddress uses the pattern and then validates the exact prologue before any write.
+// The old cross-build signature was NOT mono_lookup_internal_call.
+// The user's EA 1.69 live xrefs resolve the same bytes at RVA 0xA826A0.
+// All four callers pass one pointer and cache EAX at [pointer + 0x20],
+// consistent with a method-header loader, not proof of an ICall resolver.
+// Never attach a Detours hook to those bytes by pattern matching.
+// Retain only the previously identified Steam address behind the existing
+// disabled-by-default experimental ABI gate; EA/unknown builds fail closed.
 const GameAddress kLookupInternalCall{
     "mono_lookup_internal_call",
     {{GameVersion::Steam, 0x00E82680}},
-    "81 EC 08 08 00 00 53 55 8B AC 24 14 08",
+    nullptr,
     0,
     {0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53, 0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08}
 };
