@@ -14,8 +14,11 @@
 #include "fast_cas_catalog.h"
 #include "apex_log.h"
 #include "memory_patch.h"
+#include "game_version.h"
 #include <windows.h>
 #include <atomic>
+#include <array>
+#include <optional>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -253,21 +256,79 @@ void* __cdecl Hook_LookupInternalCall(void* method) {
     return native;
 }
 
-// Research correction: independent TS3 Mono 1.2.3.1 investigation
-// identifies these same historical bytes as mono_lookup_internal_call,
-// consistent with the user's EA 1.69 four one-argument callers storing
-// the native ICall result into MonoMethod+0x20. It is NOT a Mono JIT
-// compiler. This supports the routine's identity but cannot independently
-// verify the game-specific native calling convention and hook coexistence.
-// All experimental resolver detours remain fail-closed on every build
-// (including with the developer macro) pending that validation.
-const GameAddress kLookupInternalCall{
-    "mono_lookup_internal_call (unverified)",
-    {},
-    nullptr,
-    0,
-    {}
-};
+// Experimental EA 1.69 resolver gate. The player's live TS3.exe log from
+// 2026-10-08 established exactly one mono_lookup_internal_call candidate:
+// loaded-image RVA 0xA826A0, including its 13-byte original prologue and
+// FOUR real x86 CALL rel32 references. The callers each push a MonoMethod*
+// and restore ESP by 4 bytes, which establishes the resolver's cdecl shape.
+// This is specifically NOT a JIT method compiler or a Hair UI hook.
+// The native ICASUtils *callee* ABI is separately experimental, so normal
+// builds cannot install this hook.
+std::optional<uintptr_t> VerifiedExperimentalResolver(std::string* error) {
+#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+    if (error) *error = "Native CAS ICall pilot is not compiled in this build";
+    return std::nullopt;
+#else
+    if (g_gameVersion != GameVersion::EA || g_exeTimestamp != 0x6707155Cu) {
+        if (error) *error = "Native CAS ICall pilot accepts EA 1.69.47 only";
+        return std::nullopt;
+    }
+    // Other Mono method replacers alter the call chain and method state.
+    // Do not attach a competing detour or silently promise interoperability.
+    if (GetModuleHandleW(L"MonoPatcher.asi") ||
+        GetModuleHandleW(L"Sims3MonoModder.asi")) {
+        if (error) *error =
+            "Remove MonoPatcher.asi / Sims3MonoModder.asi for the isolated "
+            "experimental CAS preset cache (no change installed)";
+        return std::nullopt;
+    }
+    const HMODULE module = GetModuleHandleW(nullptr);
+    if (!module) return std::nullopt;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    constexpr uintptr_t kEntryRva = 0xA826A0u;
+    constexpr std::array<BYTE,13> kPrologue{{
+        0x81,0xEC,0x08,0x08,0x00,0x00,0x53,0x55,
+        0x8B,0xAC,0x24,0x14,0x08
+    }};
+    BYTE* image = nullptr;
+    size_t imageSize = 0;
+    if (!MemPatch::GetModuleInfo(module, &image, &imageSize) ||
+        kEntryRva > imageSize || kPrologue.size() > imageSize-kEntryRva ||
+        base != reinterpret_cast<uintptr_t>(image) ||
+        !MemPatch::ValidateBytes(
+            reinterpret_cast<const void*>(base+kEntryRva),
+            kPrologue.data(),kPrologue.size())) {
+        if (error) *error = "EA 1.69 ICall resolver prologue differs; original unchanged";
+        return std::nullopt;
+    }
+    // Exact EA 1.69 caller RVAs from the user-provided in-game native log.
+    // Check true x86 CALL targets, not random byte-pattern coincidences.
+    constexpr std::array<uintptr_t,4> kCallRvas{{
+        0x98A28Cu,0xA6454Cu,0xA84DDFu,0xA9931Eu
+    }};
+    for (uintptr_t rva : kCallRvas) {
+        if (rva>imageSize || 5>imageSize-rva) return std::nullopt;
+        std::array<BYTE,5> call{};
+        if (!MemPatch::ReadBytes(base+rva,call.data(),call.size()) ||
+            call[0]!=0xE8) {
+            if (error) *error = "EA 1.69 ICall resolver caller bytes differ";
+            return std::nullopt;
+        }
+        int32_t rel=0;
+        std::memcpy(&rel,call.data()+1,sizeof(rel));
+        if (static_cast<intptr_t>(rva+5)+static_cast<intptr_t>(rel) !=
+            static_cast<intptr_t>(kEntryRva)) {
+            if (error) *error = "EA 1.69 ICall resolver caller target differs";
+            return std::nullopt;
+        }
+    }
+    LOG_INFO(std::format(
+        "[CAS ICall Pilot] EA169 resolver checked: RVA {:#x}, 13 original "
+        "bytes, 4 independent caller targets. Experimental callee ABI.",
+        kEntryRva));
+    return base+kEntryRva;
+#endif
+}
 
 } // namespace
 
@@ -281,11 +342,8 @@ bool AcquireResolver(std::string* error) {
     // instead of trying to attach a second Detours layer to the same entry.
     if (g_hookInstalled) { g_resolverClients = 1; return true; }
 
-    const auto resolved = kLookupInternalCall.Resolve();
-    if (!resolved) {
-        if (error) *error = "Create-a-Style internal-call resolver was not found on this game build";
-        return false;
-    }
+    const auto resolved = VerifiedExperimentalResolver(error);
+    if (!resolved) return false;
 
     g_lookupInternalCall = reinterpret_cast<LookupInternalCall_t>(*resolved);
     {
