@@ -230,6 +230,21 @@ bool Remove(Site site, Layer layer) {
     return true;
 }
 
+bool OwnsEntry(Site site) {
+    const int si = static_cast<int>(site);
+    if (si < 0 || si >= kSites) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const SiteState& state = g_state[si];
+    if (!state.fn || !state.tramp) return false;
+    const uintptr_t target = Outermost(state);
+    if (!target) return false;
+    uint8_t expected[kJmpLen] = {};
+    uint8_t current[kJmpLen] = {};
+    MakeJmp(expected, state.fn, target);
+    return MemPatch::ReadBytes(state.fn, current, sizeof(current)) &&
+           std::memcmp(current, expected, sizeof(current)) == 0;
+}
+
 bool Installed(Site site, Layer layer) {
     const int si = static_cast<int>(site), li = static_cast<int>(layer);
     if (si < 0 || si >= kSites || li < 0 || li >= kLayers) return false;
