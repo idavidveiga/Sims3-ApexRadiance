@@ -98,3 +98,36 @@ is active.
 **Disposition: fail closed.** Do not enable either native ICall cache
 or a new managed-method detour, and do not deliver a new installable
 Hair/Hats optimization on the evidence available here.
+
+## Continued validation: read-only native reference evidence
+
+A second, **fully read-only** loaded-memory scan is implemented:
+
+- `features/ts3_mono_xref.h`: standalone x86 `E8 rel32` byte-target
+  observer, with negative displacements, unsigned wrapping and
+  four-byte chunk-tail support.
+- `features/ts3_mono_runtime_probe.cpp`: after the existing loaded
+  `.text` signature scan finds a bounded set of historical candidates,
+  it automatically performs a separate reference pass. At most 64 KiB
+  of executable pages are read per rendered developer frame.
+- Output reports the number of raw `CALL` byte patterns whose rel32
+  target equals each candidate RVA, plus at most 24 caller RVAs.
+  There are **no page protection changes, detours, hooks or game writes**.
+- Unreadable/guarded pages are skipped and the four-byte tail is
+  cleared to avoid incorrectly combining noncontiguous bytes.
+  Candidate lists truncated by the match cap are rejected instead
+  of reporting misleading partial reference counts.
+- Tests `tests/test_ts3_mono_xref.cpp` (6 synthetic groups) passed in
+  [CAS native diagnostics run 37734957700](https://github.com/idavidveiga/Sims3-ApexRadiance/actions/runs/37734957700).
+
+**Crucial limit:** `E8` byte observations are not an instruction
+disassembly. A reference to a candidate is **not evidence that the
+candidate is the correct JIT entry**, and is not an ABI proof.
+Only a later, independently verified live code identity and managed
+`MonoMethod` association can lift the hook safety gate. The older
+Hair/Hats MonoPatcher replacement remains withdrawn.
+
+Windows x86 compilation for this probe change runs independently in
+`apex-cas-win32-diagnostic.yml`; its result must be checked rather
+than inferred from the Linux unit tests. Do not install or test a live
+CAS patch from this read-only instrumentation.
