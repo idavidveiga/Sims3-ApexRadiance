@@ -18,6 +18,42 @@ it does not include the player's private Windows path or full game log.
 - The game also lists Sims3Performance.asi beside Apex. Compatibility checks will
   be required before any new CAS hook is enabled.
 
+## Follow-up live snapshot (00:38:40 local)
+
+The player exported `ApexRadiance_LOG_LIVE(1).txt` without closing the
+game, using the new manual log snapshot action. The repeated full scan
+reported **12,441,402/12,441,402 bytes read, 0 skipped, exactly one match
+at RVA 0x00A826A0** and recorded the candidate neighborhood:
+
+```text
+preceding: 04 28 00 5D C3 CC CC CC CC CC CC CC CC CC CC CC
+signature: 81 EC 08 08 00 00 53 55 8B AC 24 14 08
+next:      00 00 85 ED 56 57 75 1C 68 BC 16 10 01 68 D7 1A 00 00
+```
+
+The contiguous `CC` bytes immediately preceding the signature are
+consistent with alignment/fill between x86 functions, but are not proof
+of the target function's identity.
+
+Under the assumption that RVA 0x00A826A0 is a genuine function entry,
+`sub esp, 0x808; push ebx; push ebp; mov ebp, [esp+0x814]`
+loads the value at **entry ESP+4**, consistent with a pointer passed
+as the first stack argument in 32-bit x86. This does **not** tell us
+whether the callee or caller cleans the arguments, identify Mono
+method structures, or establish that hooking is safe.
+
+The snapshot contains no logged ERROR/CRITICAL events, but has seven
+WARN entries, mostly slow overlay frames and one late Present notice.
+Apex CAS and CASt hooks were not installed by this diagnostic.
+
+## Next evidence needed
+
+Capture a longer **read-only** region after the candidate prologue to
+inspect branch/call patterns and eventual return conventions. Keep
+function identity and calling convention explicitly unverified until
+corroborated; do not activate any hooks. The existing test only logs a
+short neighborhood and cannot establish how the function returns.
+
 ## Interpretation
 
 The on-disk EA executable was previously observed to contain high-entropy .text
