@@ -14,6 +14,9 @@ enum class Level { Debug, Info, Warning, Error, Critical };
 bool Open(const std::wstring& path);
 // Writes what is queued and stops the writer thread (FreeLibrary only; process exit flushes by itself).
 void Close();
+// Copies the current file into a separate, closed, readable snapshot while the
+// game is running. Flushes queued lines first; the regular log stays open.
+bool SaveSnapshot(const std::wstring& destination);
 // Debug lines also go to the file.
 void SetVerbose(bool on);
 
