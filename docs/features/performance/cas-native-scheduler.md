@@ -76,6 +76,47 @@ This is a **compile-time integration contract**, not a method hook. The three
 callbacks are not implemented on EA 1.69. Their correct behavior, managed
 object lifetimes and tick scheduling must be validated before calling Begin.
 
+## EA 1.69 Hair/Hats original-order scheduling (phased, not per-preset)
+
+**New candidate for the eventual live Hair/Hats bridge:** 
+`features/cas_hair_population_plan.h` (`HairPopulationPlan`).
+The game's *original* `CASHair.PopulateTypesGrid(bool)` has two
+exception-protected enumerations: featured Store items first; then
+`mPartsList`, where `ObjectDesigner.SetCASPart` is followed by
+default/preset processing, possible selection changes and per-part
+button updates. Its original terminal UI work updates the grid
+`Tag`, sort/save/filter state and `mUndoOnDelete`.
+
+The new driver therefore schedules **three phases in original order**:
+
+1. Featured Store items, with the existing Store layout/filter logic
+   retained by the future caller.
+2. Complete **part groups**, each including the default hair item,
+   any extra presets and their associated selection/wardrobe logic.
+   No pause is permitted inside the original `AddHairTypeGridItem`
+   or between `SetCASPart` and the associated presets.
+3. Exactly one finalization step, preserving the original end-of-grid
+   tags and buttons; never mark complete before this step succeeds.
+
+The C++ driver uses a bounded number of *groups* per slice, not
+per-preset `HairGridSession` work. This is intentional: retaining
+`ObjectDesigner` state across unrelated simulator ticks could
+corrupt thumbnails or link the wrong preset to an item. The older
+`HairGridSession` remains a standalone-tested item scheduler, **not
+the chosen canonical Hair/Hats integration approach**.
+
+All work runs on the original simulator thread; generation changes
+cancel obsolete work, and a failed group with possible UI changes
+aborts the generation rather than duplicating items. Tests:
+`tests/test_cas_hair_population_plan.cpp`. The first unit in a
+slice may exceed the time budget; smoothness in the game remains
+unproven. These operations are callbacks, **not wired into UI.dll**.
+
+The exact original method metadata and hashes are covered by
+`tools/verify_hair_ui_contract.py` and documented in
+`docs/research/cas-hair-regression-2026-10-08.md`, including the
+on-disk encrypted/obfuscated executable limitation.
+
 ## Blocking runtime integration
 
 Apex must still independently discover and validate the target managed method's native JIT entry point on the
