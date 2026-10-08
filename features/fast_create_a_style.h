@@ -15,5 +15,7 @@ bool Start(std::string* error);
 void Stop();
 bool Running();
 std::string StatusText();
+// Read-only counters for the shared CAS ICall resolver pilot.
+std::string ResolverStatusText();
 
 } // namespace FastCreateAStyle
