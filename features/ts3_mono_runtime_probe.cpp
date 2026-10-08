@@ -4,6 +4,7 @@
 // No hooks, no writes, no method swapping, no external modding libraries.
 #include "ts3_mono_runtime_probe.h"
 #include "ts3_mono_xref.h"
+#include "ts3_cas_mono_sites.h"
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "game_version.h"
@@ -278,7 +279,10 @@ struct ExtendedScan {
     std::size_t matches = 0;
     std::vector<uint32_t> candidateRvas;
     std::vector<std::string> candidateWindows; // bounded nearby byte context, read from existing copy
-    std::array<BYTE, kHistoricalMonoIcallCandidate.size() - 1> tail{};
+    ApexCasMono::BridgeSignatureEvidence bridgeEvidence{};
+    // Tail covers the longest bridge signature. Discard fully prefixed
+    // ICall occurrences so they are not counted twice.
+    std::array<BYTE, ApexCasMono::kMaxBridgePatternLength - 1> tail{};
     std::size_t tailLength = 0;
     std::string status;
 };
@@ -530,6 +534,20 @@ void FinishExtendedScan() {
     LOG_INFO(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
     for (const auto& context : g_scan.candidateWindows)
         LOG_INFO(std::format("[TS3 Mono Extended Probe] Candidate bytes: {}", context));
+    unsigned unique = 0;
+    for (const auto& p : ApexCasMono::kBridgePatterns) {
+        const auto& m = g_scan.bridgeEvidence.Get(p.site);
+        if (m.Unique()) ++unique;
+        LOG_INFO(std::format(
+            "[TS3 CAS Mono Bridge] {}: {} independent entry pattern match(es){} "
+            "(read-only, ABI NOT verified)",
+            p.name, m.count,
+            m.Unique() ? std::format(", candidate RVA {:#x}", m.firstRva) : std::string{}));
+    }
+    LOG_INFO(std::format(
+        "[TS3 CAS Mono Bridge] {}/{} unique structural entries. "
+        "No native function was invoked and NO Hair/Hats hook is installed.",
+        unique, ApexCasMono::kSiteCount));
     // Automatically follow a completed signature pass with a read-only
     // reference pass; no extra user click and no additional hooks needed.
     StartReferenceScan();
@@ -580,6 +598,12 @@ void StepExtendedScan() {
         return;
     }
     g_scan.readable += take;
+    const std::size_t scannedOffset = g_scan.next - g_scan.tailLength;
+    // Reuse the same bounded, read-only memory block for Mono bridge sites.
+    g_scan.bridgeEvidence.Observe(
+        std::span<const std::uint8_t>(copied.data(), copied.size()),
+        static_cast<std::uint32_t>(g_scan.textBase - g_scan.moduleBase + scannedOffset),
+        g_scan.tailLength);
     for (auto it = std::search(copied.begin(), copied.end(),
                                kHistoricalMonoIcallCandidate.begin(),
                                kHistoricalMonoIcallCandidate.end());
@@ -587,6 +611,10 @@ void StepExtendedScan() {
          it = std::search(std::next(it), copied.end(),
                           kHistoricalMonoIcallCandidate.begin(),
                           kHistoricalMonoIcallCandidate.end())) {
+        const std::size_t indexFound =
+            static_cast<std::size_t>(std::distance(copied.begin(), it));
+        if (indexFound + kHistoricalMonoIcallCandidate.size() <=
+            g_scan.tailLength) continue;
         ++g_scan.matches;
         if (g_scan.candidateRvas.size() < kMaxReportedMatches) {
             const std::size_t at = g_scan.next - g_scan.tailLength +
