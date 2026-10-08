@@ -154,3 +154,39 @@ observation; do not present it as successful JIT validation.
 No MonoPatcher source, headers, libraries, copy of its signatures,
 IL patchers or generated artifacts were imported into the Apex native
 implementation. Final builds must be entirely independent.
+
+## Second user live log — 2026-10-08 03:14 game-local
+
+The user ran the new read-only diagnostic with
+`ApexRadiance_LOG_LIVE(2).txt`. The scan conclusively **completed**,
+but did **not** establish JIT identity:
+
+- Game `EA 1.69.47.024017`; `ApexRadiance.asi` v2.10.1,
+  `MonoPatcher.asi` still present as a **temporary research tool**.
+- Initial signature pass: full loaded `.text` scanned
+  **12,441,402 / 12,441,402 bytes**, **0 skipped**;
+  **one historical-signature candidate** at RVA `0xA826A0`.
+- Cross-reference pass: full loaded `.text` scanned
+  **12,441,402 / 12,441,402 bytes**, **0 skipped**.
+- Four raw x86 E8 rel32 byte sequences targeted that same RVA:
+  `0x98A28C`, `0xA6454C`, `0xA84DDF`,
+  `0xA9931E`. These are **byte-level observations**, not
+  authenticated CALL instruction boundaries or verified callers.
+- No `[ERROR]` entries in the supplied log.
+- **No CAS hook installed. No speedup demonstrated.**
+
+These four caller locations offer an offline next step. The existing
+record did not capture the caller instruction windows, so an
+independent argument/stack analysis cannot yet be performed.
+The scanner was updated (commit `c16d24f`) to attach at most
+**24 samples**, each with at most **24 bytes before and 96 after**
+a raw E8 rel32 sequence, obtained exclusively from the 64-KiB memory
+block already read during its bounded reference pass. No additional
+memory read or writable page permission is introduced.
+
+**Do not use `0xA826A0` as a Mono JIT hook** merely because it has
+four incoming raw-E8 matches. Prove real instruction boundaries,
+function identity, `MonoMethod` argument semantics and stack cleanup
+before considering any Apex-native runtime hook. Once the research
+phase is complete, remove temporary MonoPatcher installation;
+it must never be shipped with Apex.
