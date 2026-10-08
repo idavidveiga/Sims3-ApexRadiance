@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -55,6 +56,10 @@ public:
     // the caller invalidates pending work by calling Begin/Cancel on the
     // SAME simulator/UI thread. Rebuild source snapshots before Begin.
     Generation Begin(std::size_t storeCount, std::size_t partCount) noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        // Never permit a worker to steal an active CAS session's thread
+        // ownership. Generation 0 is reserved as a failed Begin result.
+        if (ActiveUnlocked() && !OnOwnerThread()) return 0;
         owner_ = std::this_thread::get_id();
         NextGeneration();
         storeCount_ = storeCount;
@@ -67,7 +72,8 @@ public:
 
     // Reject off-thread cancellation while active. Never race callbacks.
     bool Cancel() noexcept {
-        if (Active() && !OnOwnerThread()) return false;
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (owner_ != std::thread::id{} && !OnOwnerThread()) return false;
         NextGeneration();
         storeCount_ = partCount_ = 0;
         storeIndex_ = partIndex_ = 0;
@@ -75,12 +81,30 @@ public:
         return true;
     }
 
-    Generation CurrentGeneration() const noexcept { return generation_; }
-    Phase CurrentPhase() const noexcept { return phase_; }
-    bool Active() const noexcept { return phase_ != Phase::Inactive; }
-    bool Finished() const noexcept { return phase_ == Phase::Finished; }
-    std::size_t StoreRemaining() const noexcept { return storeCount_ - storeIndex_; }
-    std::size_t PartRemaining() const noexcept { return partCount_ - partIndex_; }
+    Generation CurrentGeneration() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return generation_;
+    }
+    Phase CurrentPhase() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return phase_;
+    }
+    bool Active() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return ActiveUnlocked();
+    }
+    bool Finished() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return phase_ == Phase::Finished;
+    }
+    std::size_t StoreRemaining() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return storeCount_ - storeIndex_;
+    }
+    std::size_t PartRemaining() const noexcept {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return partCount_ - partIndex_;
+    }
 
     // The callbacks are called ON THE OWNER SIMULATOR THREAD ONLY:
     //
@@ -103,6 +127,7 @@ public:
     Slice RunSlice(Generation expected, std::chrono::nanoseconds budget,
                    std::size_t maxUnits, StoreFn&& storeItem,
                    PartFn&& partGroup, FinishFn&& finalize) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         Slice result;
         if (!OnOwnerThread()) {
             result.wrongThread = true;
@@ -191,11 +216,17 @@ private:
         result.partsRemaining = PartRemaining();
         return result;
     }
+    bool ActiveUnlocked() const noexcept { return phase_ != Phase::Inactive; }
     bool OnOwnerThread() const noexcept {
         return owner_ == std::this_thread::get_id();
     }
     void NextGeneration() noexcept { if (++generation_ == 0) ++generation_; }
 
+    // Use a recursive mutex because an original simulator callback may
+    // synchronously reenter Begin/Cancel via category-switch UI events.
+    // The lock protects *all* state and prevents any cross-thread data races.
+    // It never permits callbacks to run on any thread but owner_.
+    mutable std::recursive_mutex mutex_;
     std::thread::id owner_{};
     Generation generation_ = 0;
     Phase phase_ = Phase::Inactive;
