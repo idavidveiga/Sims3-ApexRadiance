@@ -32,20 +32,36 @@ def analyze(path):
     data = Path(path).read_bytes()
     if len(data) < 0x200 or data[:2] != b"MZ":
         raise ValueError("Not a DOS/PE executable")
-    u16 = lambda p: struct.unpack_from("<H", data, p)[0]
-    u32 = lambda p: struct.unpack_from("<I", data, p)[0]
+    def read_number(fmt, offset):
+        size = struct.calcsize(fmt)
+        if offset < 0 or offset + size > len(data):
+            raise ValueError(f"PE field outside file at offset 0x{offset:X}")
+        return struct.unpack_from(fmt, data, offset)[0]
+
+    def u16(offset):
+        return read_number("<H", offset)
+
+    def u32(offset):
+        return read_number("<I", offset)
+
     pe = u32(0x3C)
-    if pe + 24 >= len(data) or data[pe:pe+4] != b"PE\0\0":
-        raise ValueError("Invalid PE signature")
+    if pe > len(data) - 24 or data[pe:pe+4] != b"PE\0\0":
+        raise ValueError("Invalid or truncated PE signature")
     machine, count = u16(pe+4), u16(pe+6)
     stamp, opt_size = u32(pe+8), u16(pe+20)
     opt = pe+24
+    if opt_size < 32 or opt > len(data) - opt_size:
+        raise ValueError("Truncated PE optional header")
     if u16(opt) != 0x10B or machine != 0x14C:
         raise ValueError("Expected a 32-bit x86 PE (PE32, I386)")
+    if not 1 <= count <= 96:
+        raise ValueError("Invalid PE section count")
     entry_rva = u32(opt+16)
     image_base = u32(opt+28)
     sections = []
     header_end = opt + opt_size
+    if header_end > len(data) - count*40:
+        raise ValueError("Truncated PE section table")
     for i in range(count):
         pos = header_end + i*40
         if pos+40 > len(data):
@@ -53,7 +69,7 @@ def analyze(path):
         name = data[pos:pos+8].split(b"\0")[0].decode("ascii", "replace")
         virtual_size, rva, size, raw = (u32(pos+8), u32(pos+12),
                                        u32(pos+16), u32(pos+20))
-        if raw+size > len(data):
+        if raw > len(data) or size > len(data) - raw:
             raise ValueError(f"Truncated {name} section")
         contents = data[raw:raw+size]
         sections.append({"name": name, "rva": rva, "size": size,
@@ -63,8 +79,8 @@ def analyze(path):
                   if s["rva"] <= entry_rva <
                   s["rva"] + max(s["virtual_size"], s["size"])), None)
     text_section = next((s for s in sections if s["name"] == ".text"), None)
-    if not text_section:
-        raise ValueError("Missing .text section")
+    if not text_section or text_section["size"] == 0:
+        raise ValueError("Missing or empty .text section")
     executable_code = data[text_section["raw_offset"]:
                            text_section["raw_offset"]+text_section["size"]]
     protected = owner == ".ooa" and text_section["entropy"] >= 7.95
