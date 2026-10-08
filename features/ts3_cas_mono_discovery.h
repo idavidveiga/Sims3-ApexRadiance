@@ -33,6 +33,9 @@ struct DiscoveryGate {
     bool onSimulationThread = false;    // independently verified caller context
     bool runtimeAbiVerified = false;    // native FindClass/EnumerateMethod ABI
     bool uiAssemblyVerified = false;    // original UI.dll ownership/integrity
+    // Exact full-image UI.dll SHA-256 check must happen OUTSIDE this adapter,
+    // before selecting a known variant. Unknown means original CAS untouched.
+    UIVariant uiVariant = UIVariant::Unverified;
 };
 
 struct Discovery {
@@ -58,7 +61,8 @@ Discovery DiscoverHairPopulate(DiscoveryGate gate, FindClass&& findClass,
         result.status = DiscoveryStatus::WrongThread;
         return result;
     }
-    if (!gate.runtimeAbiVerified || !gate.uiAssemblyVerified) {
+    if (!gate.runtimeAbiVerified || !gate.uiAssemblyVerified ||
+        !HairPopulateToken(gate.uiVariant)) {
         result.status = DiscoveryStatus::UnverifiedRuntime;
         return result;
     }
@@ -96,7 +100,7 @@ Discovery DiscoverHairPopulate(DiscoveryGate gate, FindClass&& findClass,
             result.method = result.runtimeMethod = 0;
             return result;
         }
-        if (token != kHairPopulateToken) continue;
+        if (token != HairPopulateToken(gate.uiVariant)) continue;
         if (found) {
             result.status = DiscoveryStatus::DuplicateTarget;
             result.method = result.runtimeMethod = 0;
@@ -110,7 +114,7 @@ Discovery DiscoverHairPopulate(DiscoveryGate gate, FindClass&& findClass,
             result.status = DiscoveryStatus::ForeignClass;
             return result;
         }
-        auto inspected = InspectHairPopulate(candidate, read);
+        auto inspected = InspectHairPopulate(candidate, read, gate.uiVariant);
         if (!inspected.Matches()) {
             result.status = DiscoveryStatus::IdentityMismatch;
             return result;
