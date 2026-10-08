@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -280,10 +281,10 @@ inline bool Relocate(std::span<const std::uint8_t> original,
         auto handler=c.handler, handlerEnd=std::size_t(c.handler)+c.handlerLen;
         const auto boundary=[&](std::size_t pos) {
             return pos==original.size()||
-                   std::binary_search(ops.begin(),ops.end(),pos,
-                                      [](const Detail::Op& op,std::size_t pc){
-                                          return op.start<pc;
-                                      });
+                   std::any_of(ops.begin(),ops.end(),
+                               [pos](const Detail::Op& op){
+                                   return op.start==pos;
+                               });
         };
         if(!boundary(start)||!boundary(tryEnd)||!boundary(handler)||!boundary(handlerEnd)){
             Detail::Error(error,"finally boundary not at instruction");return false;
@@ -301,6 +302,28 @@ inline bool Relocate(std::span<const std::uint8_t> original,
     std::array<Detail::Clause,2> clausesAgain{};
     if(!Detail::Clauses(eh,buf.size(),clausesAgain)){
         Detail::Error(error,"relocated finally clauses invalid");return false;
+    }
+    // A well-formed rewritten byte stream is not enough: prove every
+    // original branch still targets its original *instruction identity*,
+    // including the original branches which skip the injected call.
+    for(const auto& originalOp:ops) {
+        const auto expectedPc=newPc[originalOp.start];
+        const auto after=std::find_if(patched.begin(),patched.end(),
+            [expectedPc](const Detail::Op& op){return op.start==expectedPc;});
+        if(after==patched.end()) {
+            Detail::Error(error,"an original instruction disappeared");return false;
+        }
+        const auto wanted=Detail::Short(originalOp.code)
+                          ?Detail::Wide(originalOp.code):originalOp.code;
+        if(after->code!=wanted ||
+           after->targets.size()!=originalOp.targets.size()) {
+            Detail::Error(error,"an original opcode changed");return false;
+        }
+        for(std::size_t j=0;j<originalOp.targets.size();++j) {
+            if(after->targets[j]!=newPc[originalOp.targets[j]]) {
+                Detail::Error(error,"an original branch was redirected");return false;
+            }
+        }
     }
     const auto source=Detail::SHA256(original);
     out.il=std::move(buf);out.eh=std::move(eh);
