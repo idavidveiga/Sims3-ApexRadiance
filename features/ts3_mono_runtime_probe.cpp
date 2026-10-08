@@ -7,6 +7,7 @@
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "game_version.h"
+#include "game_addresses.h"
 #include "memory_patch.h"
 #include "imgui.h"
 #include <windows.h>
@@ -27,6 +28,7 @@ namespace {
 std::string g_status =
     "Not inspected. Run this only after the world has finished loading.";
 std::string g_liveLogStatus;
+std::string g_monoAnchorsStatus = "Mono runtime anchors not inspected.";
 constexpr size_t kSampleBytes = 65536;
 // Previously labeled a Steam-like resolver candidate. The user's EA 1.69
 // read-only four-caller xref capture (2026-10-08 03:49) shows each caller
@@ -39,6 +41,56 @@ constexpr std::array<BYTE, 13> kHistoricalMonoHeaderCandidate{
     0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53,
     0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08
 };
+
+// Focused, non-invasive baseline for later Mono JIT identification.
+// These signatures come from independent existing ScriptTypeCache research.
+// A known Mono runtime function is an anchor, NOT a JIT compiler or an
+// authorization to install a hook. Never invoke the address or change pages.
+std::string InspectMonoRuntimeAnchors() {
+    if (!GameAddr::Scanned())
+        return "GameAddress initialization not finished. Open this page after world load.";
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!base) return "Main TS3 executable is unavailable";
+    struct Anchor {
+        GameAddr::Id id;
+        std::array<BYTE, 8> expected;
+        std::size_t length;
+    };
+    constexpr Anchor anchors[] = {
+        {GameAddr::Id::MonoTypeGetObject,
+         {0x53,0x8B,0x5C,0x24,0x0C,0x55,0x56,0x57}, 8},
+        {GameAddr::Id::MonoDomainFree,
+         {0x55,0x56,0x8B,0x74,0x24,0x0C,0x00,0x00}, 6}
+    };
+    std::string status;
+    unsigned accepted = 0;
+    for (const Anchor& a : anchors) {
+        const uintptr_t found = GameAddr::Get(a.id);
+        std::array<BYTE, 8> bytes{};
+        const bool readable = found && found >= base &&
+            MemPatch::ReadBytes(found, bytes.data(), a.length);
+        const bool original = readable &&
+            std::memcmp(bytes.data(), a.expected.data(), a.length) == 0;
+        const char* state = !found ? "not resolved" :
+                            !readable ? "unreadable" :
+                            !original ? "changed from known prologue" :
+                                        "known prologue matches";
+        const std::string entry = std::format(
+            "{}: {}{}",
+            GameAddr::Name(a.id), state,
+            found && found >= base
+                ? std::format(" (RVA {:#x})", found - base)
+                : std::string{});
+        LOG_INFO(std::format("[TS3 Mono Anchors] {}", entry));
+        if (!status.empty()) status += " | ";
+        status += entry;
+        if (original) ++accepted;
+    }
+    LOG_INFO(std::format(
+        "[TS3 Mono Anchors] {}/2 independent native entry prologues matched; "
+        "does NOT identify Mono JIT or validate method hook ABI", accepted));
+    return status + ". No JIT candidate or hook inferred.";
+}
 
 std::string InspectLoadedExe() {
     auto* image = reinterpret_cast<const BYTE*>(GetModuleHandleW(nullptr));
@@ -499,6 +551,11 @@ void RenderDeveloperUI() {
         LOG_INFO(std::format("[TS3 Mono Runtime Probe] {}", g_status));
     }
     ImGui::TextWrapped("%s", g_status.c_str());
+    if (ImGui::Button("Inspect known Mono runtime anchors (read-only)"))
+        g_monoAnchorsStatus = InspectMonoRuntimeAnchors();
+    ImGui::TextWrapped("%s", g_monoAnchorsStatus.c_str());
+    ImGui::TextDisabled(
+        "These known functions are only starting anchors; never use them as a JIT hook.");
     ImGui::Separator();
     if (ImGui::Button("Scan entire loaded .text (read-only, incremental)"))
         StartExtendedScan();
