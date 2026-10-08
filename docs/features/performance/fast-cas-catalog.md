@@ -32,6 +32,7 @@ The native `IUIManager.GetCASThumbnailImage` returns an image/drawable handle. T
 - Limit to 4,096 counts and 16,384 preset IDs; entries expire after 30 seconds.
 - The first repeat is verified against the game's native result before the entry may serve cache hits; then every 32nd repeat is checked again.
 - Native call count and elapsed time are recorded to determine whether the cache is worth keeping.
+- On any count/ID discrepancy, all CAS metadata cache hits are disabled immediately (native pass-through); the status and log report why.
 - Turning the feature off clears the cache; previously-resolved wrappers remain pass-through.
 
 ### Offline signature check
