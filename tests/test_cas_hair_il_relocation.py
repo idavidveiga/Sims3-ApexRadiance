@@ -71,7 +71,7 @@ class HairILRelocationTests(unittest.TestCase):
             bytes([0x45, 1, 0, 0, 0, 0, 0, 0, 0, 0x2A]))[0].destinations,
             (9,))
         with self.assertRaises(RelocationError):
-            disassemble(bytes([0x45, 1, 0, 0, 0, 1, 0, 0, 0, 0x2A]))
+            disassemble(bytes([0x45, 1, 0, 0, 0, 2, 0, 0, 0, 0x2A]))
 
     def test_exception_metadata_fails_closed(self):
         il, eh = toy()
