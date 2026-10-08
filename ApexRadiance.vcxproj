@@ -105,6 +105,7 @@
     <ClCompile Include="features\fast_create_a_style.cpp" />
     <ClCompile Include="features\fast_cas_catalog.cpp" />
     <ClCompile Include="features\ts3_mono_runtime_probe.cpp" />
+    <ClCompile Include="features\cas_hair_sim_pump.cpp" />
     <ClCompile Include="features\compositor_readback.cpp" />
     <ClCompile Include="features\fast_crc.cpp" />
     <ClCompile Include="features\fast_memory.cpp" />
@@ -230,6 +231,7 @@
     <ClInclude Include="features\cas_hair_grid_session.h" />
     <ClInclude Include="features\cas_hair_population_plan.h" />
     <ClInclude Include="features\cas_hair_native_bridge.h" />
+    <ClInclude Include="features\cas_hair_sim_pump.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
