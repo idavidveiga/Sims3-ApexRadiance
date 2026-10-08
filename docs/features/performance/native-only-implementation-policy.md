@@ -42,6 +42,22 @@ Possible Apex-only implementation route, subject to reverse-engineering validati
 **Important:** The JIT-entry approach is a feasibility path, not an implementation or proof of safety.
 The native calling conventions and lifecycle must be confirmed before activating any such hook.
 
+## User-provided EA App 1.69.47 executable (verified static analysis)
+
+The supplied TS3.exe has PE timestamp 0x6707155C, a .ooa entry section,
+and approximately 8.0 bits/byte entropy in on-disk .text; the prior Steam
+Mono resolver signature is absent from the disk image. Static bytes cannot
+verify EA's runtime Mono entrypoints or x86 ABI.
+
+- Offline verifier: tools/inspect_ts3_executable.py
+- Read-only in-game diagnostic: features/ts3_mono_runtime_probe.cpp
+- Diagnostic UI: Developer > Performance > CAS native runtime inspection
+- Evidence: docs/validation/ea-16947-ts3-exe-static-audit.md
+
+The diagnostic is read-only, independent of either experimental switch, and
+does not install hooks. It must be run after normal game startup. Its findings
+are inputs to later manual ABI verification, never automatic approval.
+
 ## Current branch status
 
 - Experimental Apex-native CAS metadata/CASt thumbnail hooks exist but remain **off by default**.
