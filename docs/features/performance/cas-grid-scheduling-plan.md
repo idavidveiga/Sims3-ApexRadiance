@@ -65,6 +65,19 @@ invocation/continuation mechanism, the actual count/list lifetime, selection
 updates and final grid notifications must be checked before shipping. Do not
 interpret the tests as evidence of in-game speedup.
 
+**Updated implementation decision:** `features/cas_hair_population_plan.h`
+implements the native original-order orchestration: Store → complete
+hair part groups (default + optional presets + associated selection) →
+terminal grid updates. It runs only synthetic tests and has **no game
+bridge yet**. A whole part group is atomic because `ObjectDesigner`
+state cannot be presumed stable if execution yields after
+`SetCASPart` but before its remaining presets. The older per-item
+`HairGridSession` remains tested but is **not** the live Hair/Hats
+integration candidate. The new plan enforces original order and
+reentry cancellation; it can still exceed a frame's budget on a
+single expensive part group, so we will only claim improvement
+after actual in-game measurements.
+
 ### 3. True visible-first loading (separate, more invasive patch)
 
 Simply inserting the currently visible parts *before* earlier rows would shift indices and break scrolling or selection.
