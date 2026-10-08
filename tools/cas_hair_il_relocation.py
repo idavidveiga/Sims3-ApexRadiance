@@ -168,11 +168,30 @@ def relocate_parent_loop(il: bytes, eh: bytes, sleep_token: int,
     if incoming != {0x2AC, 0x2F5, 0x421}:
         raise RelocationError("loop-entry/filtered-item branch layout changed")
     # A 0 call argument is an immediate, not a managed pointer.
-    insertion = b"\x16\x28" + struct.pack("<I", sleep_token)
+    insertion = b"\\x16\\x28" + struct.pack("<I", sleep_token)
+    return relocate_control_flow(il, eh, YIELD_PC, insertion)
+
+
+def relocate_control_flow(il: bytes, eh: bytes, insertion_pc: int,
+                          insertion: bytes) -> tuple[bytes, bytes, dict[int,int]]:
+    """Generic branch/EH relocation, independently testable on fake IL.
+
+    The CAS-only wrapper above enforces real EA method identity and exact
+    loop-site shape; never call this directly on unknown game methods.
+    """
+    ops = disassemble(il)
+    clauses = parse_finally(eh, len(il))
+    if not insertion or insertion_pc not in {x.pc for x in ops}:
+        raise RelocationError("insertion is not at an instruction boundary")
+    # Decode inserted code independently: no control flow may branch inside
+    # a runtime-added callback or access original locals by accident.
+    generated = disassemble(insertion)
+    if any(x.destinations for x in generated):
+        raise RelocationError("insertion may not contain control flow")
     positions: dict[int, int] = {}
     offset = 0
     for ins in ops:
-        if ins.pc == YIELD_PC:
+        if ins.pc == insertion_pc:
             offset += len(insertion)
         positions[ins.pc] = offset
         offset += 5 if ins.op in SHORT else len(ins.raw)
@@ -180,7 +199,7 @@ def relocate_parent_loop(il: bytes, eh: bytes, sleep_token: int,
 
     relocated = bytearray()
     for ins in ops:
-        if ins.pc == YIELD_PC:
+        if ins.pc == insertion_pc:
             relocated += insertion
         now = len(relocated)
         if positions[ins.pc] != now:
@@ -208,21 +227,30 @@ def relocate_parent_loop(il: bytes, eh: bytes, sleep_token: int,
         a,b,c,d = (positions[p] for p in boundaries)
         rebuilt_eh += struct.pack("<6I", flags,a,b-a,c,d-c,reserved)
     relocated_ops = disassemble(bytes(relocated))
-    if len(relocated_ops) != len(ops) + 2:
+    if len(relocated_ops) != len(ops) + len(generated):
         raise RelocationError("unexpected patched opcode count")
-    if len(parse_finally(bytes(rebuilt_eh), len(relocated))) != 2:
+    if len(parse_finally(bytes(rebuilt_eh), len(relocated))) != len(clauses):
         raise RelocationError("incorrect relocated exception handlers")
     # Every original branch must still reach the same ORIGINAL instruction.
-    # The newly inserted Sleep is reached only by fall-through after a
-    # fully processed part, never by a branch into a different state.
-    for before, after in zip(ops, (x for x in relocated_ops if x.pc !=
-                                  positions.get(YIELD_PC, -1) - 6 and x.pc !=
-                                  positions.get(YIELD_PC, -1) - 5)):
+    # The inserted callback is reached only from fall-through: all other
+    # branches skip it instead of unexpectedly adding a yield.
+    inserted_positions = set()
+    inserted_start = positions[insertion_pc] - len(insertion)
+    for item in generated:
+        inserted_positions.add(inserted_start + item.pc)
+    old_ops = (op for op in relocated_ops if op.pc not in inserted_positions)
+    for before, after in zip(ops, old_ops, strict=True):
+        if before.op in SHORT or before.op in LONG:
+            wanted = before.op + 0x0D if before.op in SHORT and before.op != 0xDE else (
+                0xDD if before.op == 0xDE else before.op)
+            if after.op != wanted:
+                raise RelocationError("branch opcode changed unexpectedly")
+        elif after.op != before.op:
+            raise RelocationError("non-branch opcode changed unexpectedly")
         if before.destinations and after.destinations != tuple(
                 positions[target] for target in before.destinations):
             raise RelocationError("relocated control-flow target changed")
     return bytes(relocated), bytes(rebuilt_eh), positions
-
 
 def inspect_approved_file(path: Path) -> dict[str, object]:
     data = path.read_bytes()
