@@ -168,7 +168,7 @@ def relocate_parent_loop(il: bytes, eh: bytes, sleep_token: int,
     if incoming != {0x2AC, 0x2F5, 0x421}:
         raise RelocationError("loop-entry/filtered-item branch layout changed")
     # A 0 call argument is an immediate, not a managed pointer.
-    insertion = b"\\x16\\x28" + struct.pack("<I", sleep_token)
+    insertion = b"\x16\x28" + struct.pack("<I", sleep_token)
     return relocate_control_flow(il, eh, YIELD_PC, insertion)
 
 
