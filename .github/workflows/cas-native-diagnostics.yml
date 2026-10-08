@@ -8,6 +8,8 @@ on:
       - "features/cas_catalog_scheduler.h"
       - "features/cas_hair_grid_session.h"
       - "features/cas_hair_population_plan.h"
+      - "features/cas_hair_native_bridge.h"
+      - "tests/test_cas_hair_native_bridge.cpp"
       - "features/ts3_mono_xref.h"
       - "features/ts3_mono_method_identity.h"
       - "features/ts3_cas_mono_discovery.h"
@@ -65,6 +67,13 @@ jobs:
           clang++ -std=c++20 -Wall -Wextra -Werror -pedantic -pthread \
             -Ifeatures tests/test_cas_hair_population_plan.cpp -o "${RUNNER_TEMP}/cas_hair_population_plan_test"
           "${RUNNER_TEMP}/cas_hair_population_plan_test"
+      - name: Test native Hair/Hats game-thread callback adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang++ -std=c++20 -Wall -Wextra -Werror -pedantic -pthread \
+            -Ifeatures tests/test_cas_hair_native_bridge.cpp -o "${RUNNER_TEMP}/cas_hair_native_bridge_test"
+          "${RUNNER_TEMP}/cas_hair_native_bridge_test"
       - name: Test strict x86 MonoMethod identity gate
         shell: bash
         run: |
