@@ -23,8 +23,12 @@ namespace {
 std::string g_status =
     "Not inspected. Run this only after the world has finished loading.";
 constexpr size_t kSampleBytes = 65536;
-constexpr char kPriorSteamResolver[] =
-    "81 EC 08 08 00 00 53 55 8B AC 24 14 08";
+// Historical Steam 1.67 fingerprint, checked only inside the first bounded
+// copy of the loaded .text section. A match is never treated as hook validation.
+constexpr std::array<BYTE, 13> kPriorSteamResolver{
+    0x81, 0xEC, 0x08, 0x08, 0x00, 0x00, 0x53,
+    0x55, 0x8B, 0xAC, 0x24, 0x14, 0x08
+};
 
 std::string InspectLoadedExe() {
     auto* image = reinterpret_cast<const BYTE*>(GetModuleHandleW(nullptr));
@@ -72,6 +76,11 @@ std::string InspectLoadedExe() {
     if (!MemPatch::ReadBytes(textAt, bytes.data(), bytes.size()))
         return "Could not safely read loaded .text memory";
 
+    // Report page protection as observed by Windows, not as an ABI inference.
+    MEMORY_BASIC_INFORMATION page{};
+    if (!VirtualQuery(reinterpret_cast<LPCVOID>(textAt), &page, sizeof(page)))
+        return "Could not query live .text page protection";
+
     std::array<size_t, 256> frequencies{};
     for (const auto byte : bytes) ++frequencies[byte];
     double bits = 0.0;
@@ -87,23 +96,26 @@ std::string InspectLoadedExe() {
         return std::format(
             "Loaded .text remains high-entropy ({:.3f} bits/byte; sampled {} bytes). "
             "A native Mono resolver/JIT entry cannot be verified from this observation. "
-            "No hooks installed.", bits, sample);
+            "No hooks installed (page protect={:#x}).", bits, sample, page.Protect);
     }
 
-    // Observation only. A matching historical Steam prologue is NOT evidence
-    // of method identity, calling convention, JIT state, or compatibility.
-    const uintptr_t match = MemPatch::ScanPattern(
-        image + text.VirtualAddress, length, kPriorSteamResolver);
-    if (match) {
+    // Inspect the bytes we already safely copied. Do not synchronously scan
+    // megabytes of live, potentially guarded/protected code from an ImGui click.
+    const auto match = std::search(bytes.begin(), bytes.end(),
+                                   kPriorSteamResolver.begin(),
+                                   kPriorSteamResolver.end());
+    if (match != bytes.end()) {
+        const auto offset = static_cast<std::size_t>(
+            std::distance(bytes.begin(), match));
         return std::format(
-            "Loaded .text entropy {:.3f}; historical Steam-shaped prologue at RVA {:#x}. "
-            "Candidate UNVERIFIED: no native hook installed or approved.", bits,
-            match - module);
+            "Loaded .text sample entropy {:.3f}; historical Steam-like bytes "
+            "at sample RVA {:#x}; page protect={:#x}. Candidate UNVERIFIED; no hooks installed.",
+            bits, text.VirtualAddress + offset, page.Protect);
     }
     return std::format(
-        "Loaded .text entropy {:.3f} ({}-byte sample); historical Steam prologue "
-        "not found. Native EA Mono API/ABI remain unverified. No hooks installed.",
-        bits, sample);
+        "Loaded .text sample entropy {:.3f} ({} bytes); historical Steam-like "
+        "prologue absent from sample; page protect={:#x}. Native Mono ABI unverified; no hooks installed.",
+        bits, sample, page.Protect);
 }
 } // namespace
 
