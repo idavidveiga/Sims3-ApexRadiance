@@ -1104,13 +1104,13 @@ APEX_REGISTER_FEATURE(FastCasCatalogPatch,
 
 APEX_REGISTER_FEATURE(FastCreateAStylePatch,
                       {.displayName = "Faster Create-a-Style",
-                       .description = "Keeps finished Create-a-Style pattern thumbnails in memory so repeated requests while browsing, scrolling or reopening the "
-                                      "pattern list do not rebuild the same preview again. The game still generates every thumbnail on the first request. Part of "
+                       .description = "Experimental: attempts to reuse finished Create-a-Style pattern thumbnails in memory so repeated requests while browsing, scrolling or reopening the "
+                                      "pattern list do not rebuild the same preview again. Not yet validated on real game builds; use only in controlled tests. Part of "
                                       APEX_PRODUCT_NAME ". Research and code: @idavidveiga",
                        .category = "Performance",
-                       .experimental = false,
-                       .enabledByDefault = true,
-                       .supportedVersions = VERSION_ALL,
+                       .experimental = true,
+                       .enabledByDefault = false,
+                       .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Hooks Mono's internal-call resolver and substitutes only IWorld.ObjectDesigner_GetPatternThumbnail plus its create/clear invalidation calls.",
                                             "The cache key includes compositor ID, pattern hash, byte-array length and a hash of the caller-provided buffer; a hit copies the exact finished byte array back.",
                                             "The game's native function remains the source of truth on every miss; the cache is bounded to 2048 entries / 64 MB and fails closed if the Mono resolver differs."}});
