@@ -1,5 +1,10 @@
 name: Apex Win32 CAS diagnostic build
 
+# Changes to this research branch are frequent: only build/test its latest head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
