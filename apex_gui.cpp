@@ -14,6 +14,9 @@
 #include "frame_profiler.h"
 #include "game_version.h"
 #include "ts3_mono_runtime_probe.h"
+#include "fast_cas.h"
+#include "fast_cas_catalog.h"
+#include "fast_create_a_style.h"
 #include "game_addresses.h"
 #include "world_session.h"
 #include "night_lighting.h"
@@ -1508,6 +1511,91 @@ void DevLightingTab() {
     }
 }
 
+// CAS Hair/Hats passive in-game timeline. Never replaces MINT methods, changes UI
+// input, touches game memory, or installs a new detour. The existing Apex hooks
+// may already be active; these are observations of their atomic counters only.
+// Developer-only manual capture: a 90s bounded trace with mouse-click anchors.
+struct CasHairTimeline {
+    bool recording = false;            // overlay/render thread only
+    ULONGLONG startMs = 0, lastSampleMs = 0;
+    unsigned long long lastMouseSequence = 0;
+    FastCas::Stats previous{};
+};
+CasHairTimeline g_casHairTimeline;
+std::atomic<bool> g_casHairTimelineArmed{false};
+std::atomic<unsigned long long> g_casHairMouseSequence{0};
+std::atomic<ULONGLONG> g_casHairMouseTime{0};
+std::atomic<int> g_casHairMouseX{0}, g_casHairMouseY{0};
+
+void StopCasHairTimeline(const char* why) {
+    if (!g_casHairTimeline.recording) return;
+    g_casHairTimelineArmed.store(false, std::memory_order_release);
+    LOG_INFO(std::format("[CAS Hair Timeline] END reason={} elapsed={}ms clicks={} (passive counters only; Hair/Hats method times NOT measured)",
+                         why, GetTickCount64() - g_casHairTimeline.startMs,
+                         g_casHairMouseSequence.load(std::memory_order_acquire)));
+    g_casHairTimeline.recording = false;
+}
+
+void StartCasHairTimeline() {
+    StopCasHairTimeline("restarted");
+    g_casHairTimeline = {};
+    g_casHairTimeline.recording = true;
+    g_casHairTimeline.startMs = GetTickCount64();
+    g_casHairTimeline.lastSampleMs = 0;
+    g_casHairTimeline.previous = FastCas::GetStats();
+    g_casHairMouseSequence.store(0, std::memory_order_relaxed);
+    g_casHairTimelineArmed.store(true, std::memory_order_release);
+    LOG_INFO(std::format("[CAS Hair Timeline] START duration=90s; FastCasSort={} FastCasCatalog={} current resolver: {}",
+                         FastCas::Running(), FastCasCatalog::Running(), FastCreateAStyle::ResolverStatusText()));
+    LOG_INFO("[CAS Hair Timeline] Close the Apex overlay; click Hair, Hats, Hair, Hats. LEFT-CLICK events are automatic markers.");
+}
+
+void UpdateCasHairTimeline() {
+    if (!g_casHairTimeline.recording) return;
+    const ULONGLONG now = GetTickCount64();
+    const auto elapsed = now - g_casHairTimeline.startMs;
+    const auto clickCount = g_casHairMouseSequence.load(std::memory_order_acquire);
+    if (clickCount != g_casHairTimeline.lastMouseSequence) {
+        LOG_INFO(std::format("[CAS Hair Timeline] CLICK seq={} t={}ms x={} y={} (category not identified)",
+                             clickCount,
+                             g_casHairMouseTime.load(std::memory_order_relaxed) - g_casHairTimeline.startMs,
+                             g_casHairMouseX.load(std::memory_order_relaxed),
+                             g_casHairMouseY.load(std::memory_order_relaxed)));
+        g_casHairTimeline.lastMouseSequence = clickCount;
+    }
+    if (now - g_casHairTimeline.lastSampleMs >= 500) {
+        const auto s = FastCas::GetStats();
+        const auto& prev = g_casHairTimeline.previous;
+        LOG_INFO(std::format(
+            "[CAS Hair Timeline] SAMPLE t={}ms sort_delta_calls={} sort_delta_ms={:.3f} sort_max_ms={:.3f} sort_checked_delta={} sort_pass_delta={} "
+            "| mono_resolver={} | cas_presets={}",
+            elapsed, s.calls - prev.calls, s.fastMs - prev.fastMs, s.maxMs,
+            s.checked - prev.checked, s.passedThrough - prev.passedThrough,
+            FastCreateAStyle::ResolverStatusText(), FastCasCatalog::StatusText()));
+        g_casHairTimeline.previous = s;
+        g_casHairTimeline.lastSampleMs = now;
+    }
+    if (elapsed >= 90000) StopCasHairTimeline("90s completed");
+}
+
+void CasHairTimelineCard() {
+    DevCard("CasHairTimeline", IconId::Shirt,
+            "Hair / Hats - click-to-grid timeline (90s)",
+            "Passive mouse click markers + triangle-sort and Mono resolver counters",
+            true, [] {
+                if (!g_casHairTimeline.recording) {
+                    if (ImGui::Button("Start 90-second Hair/Hats recording")) StartCasHairTimeline();
+                    ApexUi::MutedText("Close this menu and open Hair, Hats, Hair, Hats. The trace ends automatically.");
+                } else {
+                    ImGui::Text("Recording for %llu seconds...", static_cast<unsigned long long>(
+                        (GetTickCount64() - g_casHairTimeline.startMs) / 1000));
+                    if (ImGui::Button("Stop and save trace in ApexRadiance_LOG.txt"))
+                        StopCasHairTimeline("manual stop");
+                }
+                ApexUi::MutedText("This does not measure managed PopulateTypesGrid durations or detect grid visibility.");
+            });
+}
+
 void DevProfilerTab() {
     ApexUi::MutedText("Clear old data, reproduce the pause, then stop and save the measurement.");
     ImGui::PushID("FrameProfiler");
@@ -1549,6 +1637,7 @@ void DevProfilerTab() {
     DevCard("DevCasMonoReadonlyProbe", IconId::Shirt,
             "CAS native runtime inspection", "EA executable observations — no hooks or memory writes",
             true, [] { Ts3MonoRuntimeProbe::RenderDeveloperUI(); });
+    CasHairTimelineCard();
 }
 
 void DevDebugViewsTab() {
@@ -4048,6 +4137,7 @@ class GuiClient final : public Overlay::Client {
     }
 
     bool AlwaysDraw() override {
+        UpdateCasHairTimeline(); // keep sampling while the Apex menu is closed
         UpdateMenuAvailability();
         UpdateHint();
         if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return HintVisible(); }
@@ -4070,6 +4160,14 @@ class GuiClient final : public Overlay::Client {
     bool CanOpen() override { return g_menuAvailable.load(); }
 
     bool OnWindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT* result) override {
+        if (msg == WM_LBUTTONDOWN && !Overlay::IsVisible() &&
+            g_casHairTimelineArmed.load(std::memory_order_acquire)) {
+            // Only observe the event. Never consume input or infer a Hair/Hats category.
+            g_casHairMouseX.store(static_cast<short>(LOWORD(lp)), std::memory_order_relaxed);
+            g_casHairMouseY.store(static_cast<short>(HIWORD(lp)), std::memory_order_relaxed);
+            g_casHairMouseTime.store(GetTickCount64(), std::memory_order_relaxed);
+            g_casHairMouseSequence.fetch_add(1, std::memory_order_release);
+        }
         if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) {
             eatProbeMouseUp = false;
             cheatConsoleGuess = false;
