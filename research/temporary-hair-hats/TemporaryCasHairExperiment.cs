@@ -4,6 +4,7 @@
 using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using MonoPatcherLib;
 using Sims3.SimIFace;
 using Sims3.SimIFace.CAS;
@@ -16,6 +17,7 @@ namespace ApexHairTemporaryResearch
     public sealed class TemporaryCasHairExperiment
     {
         private const int ExpectedILLength = 292;
+        private static string sStatus = "Research package not yet initialized";
         private const ulong ExpectedFnv64 = 0x931FAD6E160F56CBUL;
         private static FieldInfo sFilter;
         private static MethodInfo sGetPartName;
@@ -24,16 +26,52 @@ namespace ApexHairTemporaryResearch
         [DllImport("kernel32.dll", EntryPoint = "GetFileAttributesW", CharSet = CharSet.Unicode)]
         private static extern uint GetFileAttributesW(string path);
 
+        [DllImport("kernel32.dll", EntryPoint = "GetModuleFileNameW", CharSet = CharSet.Unicode)]
+        private static extern uint GetModuleFileNameW(IntPtr module, StringBuilder buffer, uint length);
+
+        private static void RegisterStatusCommand(object sender, EventArgs e)
+        {
+            CommandSystem.RegisterCommand("apexhair_status",
+                "Show temporary Apex Hair/Hats experiment status",
+                (object[] args) =>
+                {
+                    SimpleMessageDialog.Show("Apex Hair Research", sStatus);
+                    return 1;
+                });
+        }
+
+        private static string FindOptInMarker()
+        {
+            StringBuilder exe = new StringBuilder(1024);
+            uint n = GetModuleFileNameW(IntPtr.Zero, exe, (uint)exe.Capacity);
+            if (n == 0 || n >= (uint)exe.Capacity) return null;
+            string location = exe.ToString();
+            int cut = location.LastIndexOf('\\');
+            if (cut < 0) return null;
+            return location.Substring(0, cut + 1) +
+                @"MonoPatcher\EnableApexHairResearch.txt";
+        }
+
         public TemporaryCasHairExperiment()
         {
-            // No game mscorlib Environment.GetEnvironmentVariable API.
-            // Win32 marker file is opt-in, and avoids changing the user's
-            // normal game environment or installing another library.
-            if (GetFileAttributesW(
-                    @"MonoPatcher\EnableApexHairResearch.txt") == 0xFFFFFFFFu)
-                return;
+            // The command remains available even when the patch is disabled.
+            World.sOnStartupAppEventHandler += RegisterStatusCommand;
+            sStatus = "Research package loaded; resolving activation file";
             try
             {
+                string marker = FindOptInMarker();
+                if (marker == null)
+                {
+                    sStatus = "BLOCKED: could not locate executable directory";
+                    return;
+                }
+                uint attr = GetFileAttributesW(marker);
+                if (attr == 0xFFFFFFFFu || (attr & 0x10u) != 0)
+                {
+                    sStatus = "DISABLED: activation file not found at " + marker;
+                    return;
+                }
+                sStatus = "Activation file found; checking original game method";
                 Type originalType = typeof(CASHair);
                 BindingFlags privateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
                 MethodInfo original = originalType.GetMethod("AddHairTypeGridItem", privateInstance);
@@ -48,7 +86,13 @@ namespace ApexHairTemporaryResearch
                     typeof(uint), typeof(ThumbnailSize) });
                 if (original == null || sFilter == null || sGetPartName == null ||
                     sThumbnailCtor == null)
+                {
+                    sStatus = "BLOCKED: original method/field/constructor missing (method=" +
+                        (original != null) + ", filter=" + (sFilter != null) +
+                        ", tooltip=" + (sGetPartName != null) +
+                        ", thumbnail ctor=" + (sThumbnailCtor != null) + ")";
                     return;
+                }
                 ParameterInfo[] args = original.GetParameters();
                 if (args.Length != 5 ||
                     args[0].ParameterType != typeof(ItemGrid) ||
@@ -58,18 +102,40 @@ namespace ApexHairTemporaryResearch
                     args[4].ParameterType != typeof(bool).MakeByRefType() ||
                     original.ReturnType != typeof(bool) ||
                     original.MetadataToken != 0x0600191B)
+                {
+                    sStatus = "BLOCKED: unexpected signature or token " +
+                        original.MetadataToken.ToString("X8");
                     return;
+                }
                 MethodBody body = original.GetMethodBody();
-                if (body == null) return;
-                byte[] il = body.GetILAsByteArray();
-                if (il == null || il.Length != ExpectedILLength ||
-                    Fnv1a(il) != ExpectedFnv64)
+                if (body == null)
+                {
+                    sStatus = "BLOCKED: original method body missing";
                     return;
+                }
+                byte[] il = body.GetILAsByteArray();
+                if (il == null)
+                {
+                    sStatus = "BLOCKED: original IL unreadable";
+                    return;
+                }
+                ulong actual = Fnv1a(il);
+                if (il.Length != ExpectedILLength || actual != ExpectedFnv64)
+                {
+                    sStatus = "BLOCKED: IL mismatch, bytes=" + il.Length +
+                        ", fingerprint=" + actual.ToString("X16");
+                    return;
+                }
+                int previous = MonoPatcher.ReplacementCount;
                 MonoPatcher.PatchAll(typeof(TemporaryCasHairExperiment).Assembly);
+                int replacements = MonoPatcher.ReplacementCount - previous;
+                sStatus = replacements > 0
+                    ? "APPLIED: " + replacements + " Hair/Hats replacement(s)"
+                    : "BLOCKED: no replacements registered";
             }
-            catch
+            catch (Exception ex)
             {
-                // Incompatible runtime/assembly: never force a replacement.
+                sStatus = "BLOCKED: " + ex.GetType().Name + " - " + ex.Message;
             }
         }
 
