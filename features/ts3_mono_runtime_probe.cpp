@@ -8,6 +8,7 @@
 #include "apex_paths.h"
 #include "game_version.h"
 #include "game_addresses.h"
+#include "entry_chain.h"
 #include "memory_patch.h"
 #include "imgui.h"
 #include <windows.h>
@@ -101,13 +102,14 @@ std::string InspectMonoRuntimeAnchors() {
     if (!base) return "Main TS3 executable is unavailable";
     struct Anchor {
         GameAddr::Id id;
+        EntryChain::Site site;
         std::array<BYTE, 8> expected;
         std::size_t length;
     };
     constexpr Anchor anchors[] = {
-        {GameAddr::Id::MonoTypeGetObject,
+        {GameAddr::Id::MonoTypeGetObject, EntryChain::Site::MonoTypeGetObject,
          {0x53,0x8B,0x5C,0x24,0x0C,0x55,0x56,0x57}, 8},
-        {GameAddr::Id::MonoDomainFree,
+        {GameAddr::Id::MonoDomainFree, EntryChain::Site::MonoDomainFree,
          {0x55,0x56,0x8B,0x74,0x24,0x0C,0x00,0x00}, 6}
     };
     std::string status;
@@ -119,10 +121,37 @@ std::string InspectMonoRuntimeAnchors() {
             MemPatch::ReadBytes(found, bytes.data(), a.length);
         const bool original = readable &&
             std::memcmp(bytes.data(), a.expected.data(), a.length) == 0;
+
+        // An active ScriptMath EntryChain layer replaces the first five
+        // original bytes with an Apex-owned JMP. Inspect its saved game
+        // prologue in the trampoline, but only if the live JMP STILL points
+        // to the Apex-registered hook. Otherwise report a potential conflict.
+        const bool scriptMathLayer = EntryChain::Installed(
+            a.site, EntryChain::Layer::ScriptMath);
+        const bool ownEntry = scriptMathLayer &&
+            EntryChain::GameFunction(a.site) == found &&
+            EntryChain::OwnsEntry(a.site);
+        const uintptr_t trampoline = reinterpret_cast<uintptr_t>(
+            EntryChain::Original(a.site));
+        std::array<BYTE, 8> saved{};
+        const bool savedOriginal = ownEntry && trampoline &&
+            MemPatch::ReadBytes(trampoline, saved.data(), a.length) &&
+            std::memcmp(saved.data(), a.expected.data(), a.length) == 0;
+
+        // A registered hook plus a pristine entry is not a valid coherent
+        // state; a matching unpatched prologue counts only with no layer.
+        const bool acceptedEntry = (!scriptMathLayer && original) ||
+                                   (scriptMathLayer && ownEntry && savedOriginal);
         const char* state = !found ? "not resolved" :
                             !readable ? "unreadable" :
-                            !original ? "changed from known prologue" :
-                                        "known prologue matches";
+                            scriptMathLayer && !ownEntry
+                                ? "Apex hook registered, but entry ownership lost (possible conflict)" :
+                            scriptMathLayer && !savedOriginal
+                                ? "Apex hook active; original trampoline prologue mismatch" :
+                            scriptMathLayer
+                                ? "Apex ScriptMath hook active; original prologue verified in trampoline" :
+                            original ? "known original prologue matches" :
+                                       "modified from known prologue (unknown owner)";
         const std::string entry = std::format(
             "{}: {}{}",
             GameAddr::Name(a.id), state,
@@ -132,12 +161,13 @@ std::string InspectMonoRuntimeAnchors() {
         LOG_INFO(std::format("[TS3 Mono Anchors] {}", entry));
         if (!status.empty()) status += " | ";
         status += entry;
-        if (original) ++accepted;
+        if (acceptedEntry) ++accepted;
     }
     LOG_INFO(std::format(
-        "[TS3 Mono Anchors] {}/2 independent native entry prologues matched; "
-        "does NOT identify Mono JIT or validate method hook ABI", accepted));
-    return status + ". No JIT candidate or hook inferred.";
+        "[TS3 Mono Anchors] {}/2 known Mono entry points validated "
+        "(including intact Apex-owned trampolines); does NOT identify "
+        "the CAS method or authorize a new hook", accepted));
+    return status + ". Read-only checks; no managed method inferred.";
 }
 
 std::string InspectLoadedExe() {
