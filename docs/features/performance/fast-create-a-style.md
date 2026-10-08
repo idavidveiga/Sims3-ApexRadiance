@@ -1,6 +1,6 @@
 # Faster Create-a-Style
 
-Reduces repeated work while browsing patterns in Build/Buy Create-a-Style. The stock UI populates the complete pattern
+Experimental attempt to reduce repeated work while browsing patterns in Build/Buy Create-a-Style. The stock UI populates the complete pattern
 grid in a simulator task and asks the native ObjectDesigner for thumbnails as it goes. Apex keeps a bounded in-memory
 copy of finished native pattern thumbnails, so an identical request can reuse the exact bytes instead of rebuilding the
 same preview again.
@@ -10,7 +10,7 @@ same preview again.
 | | |
 |---|---|
 | Availability | Development branch; needs in-game validation before release |
-| Default | On in the development branch |
+| Default | Off in the development branch (unvalidated native hook) |
 | Menu | System > Performance > Create-a-Style > *Faster Create-a-Style* |
 | Configuration | `[patches.FastCreateAStyle] enabled` in `ApexRadiance.toml` |
 | Source | [`features/fast_create_a_style.{h,cpp}`](../../../features/fast_create_a_style.cpp), [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp) |
@@ -52,9 +52,12 @@ The cache is bounded to 2,048 entries and 64 MiB. Reaching either limit clears i
 
 ## Compatibility and safety
 
+**Not yet tested in-game.** The native function returns a thumbnail handle; its lifetime/invalidation semantics and the
+meaning of the managed input byte array still require validation. Cache hits must be verified against the game before
+this switch is considered safe for public use. Do not assume the feature accelerates first-time thumbnails.
+
 - The official `UI.dll`, `SimIFace.dll` and `Sims3Metadata.dll` are not modified.
-- Steam 1.67.2 uses the validated `mono_lookup_internal_call` address; other builds use the routine's byte signature and
-  validate the exact prologue before Detours writes anything.
+- Only Steam 1.67.2 is eligible in this development branch; the resolver's prologue is checked byte-for-byte before the hook is installed. Other builds stay unsupported pending ABI verification.
 - If the resolver is not found or differs, the feature stays off and writes nothing.
 - Turning the feature off is safe even if Mono already cached Apex's wrapper: the wrapper checks the live switch and
   passes directly to the original native call.
