@@ -4,8 +4,9 @@
 // A caller may supply a candidate only after independently obtaining it
 // through a verified native runtime path. No speculative pointer scans.
 //
-// Layout facts are compared against the user's original UI.dll metadata
-// (MethodDef 0x06001918) and historical The Sims 3 Mono x86 research.
+// MethodDef tokens differ across two independently SHA-256-verified user UI.dll
+// binaries. The caller MUST identify the full UI.dll image before discovery:
+// metadata token alone is never sufficient to select a variant.
 // Unknown layouts fail closed. No pointers/objects survive this call.
 #include <array>
 #include <cstddef>
@@ -28,7 +29,23 @@ struct Snapshot {
     bool Matches() const noexcept { return status == Identity::Match; }
 };
 
+// These enum values are NOT evidence of a verified loaded assembly. The
+// caller must compute and check its exact original on-disk/loaded image hash
+// with the offline verifier before selecting a non-Unverified value.
+enum class UIVariant : std::uint8_t {
+    Unverified,
+    EaApp169,
+    AlternateUserUI
+};
 inline constexpr std::uint32_t kHairPopulateToken = 0x06001918;
+inline constexpr std::uint32_t kAlternateHairPopulateToken = 0x0600124A;
+inline constexpr std::uint32_t HairPopulateToken(UIVariant variant) noexcept {
+    switch (variant) {
+        case UIVariant::EaApp169: return kHairPopulateToken;
+        case UIVariant::AlternateUserUI: return kAlternateHairPopulateToken;
+        default: return 0; // never guess by method name or a matching token
+    }
+}
 inline constexpr std::string_view kHairClass = "CASHair";
 inline constexpr std::string_view kHairNamespace = "Sims3.UI.CAS";
 inline constexpr std::string_view kHairMethod = "PopulateTypesGrid";
@@ -54,9 +71,12 @@ inline std::string_view BaseName(std::string_view path) noexcept {
 // span cannot be safely read. In production use MemPatch::ReadBytes; NEVER
 // dereference a candidate pointer or invoke a Mono function here.
 template<class Read>
-Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read) {
+Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read,
+                             UIVariant verifiedUi = UIVariant::Unverified) {
     Snapshot out;
     if (!candidate) return out;
+    const std::uint32_t expectedToken = HairPopulateToken(verifiedUi);
+    if (!expectedToken) { out.status = Identity::WrongAssembly; return out; }
     auto u32 = [&](std::uint32_t address, std::uint32_t& result) {
         if (!address || address > UINT32_MAX - 4)
             return false;
@@ -102,7 +122,7 @@ Snapshot InspectHairPopulate(std::uint32_t candidate, Read&& read) {
         out.status = Identity::InvalidMethod;
         return out;
     }
-    if (out.token != kHairPopulateToken) {
+    if (out.token != expectedToken) {
         out.status = Identity::WrongToken;
         return out;
     }
