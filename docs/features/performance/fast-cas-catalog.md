@@ -39,6 +39,10 @@ The native `IUIManager.GetCASThumbnailImage` returns an image/drawable handle. T
 
 Run `python tests/verify_sims3_cas_signatures.py --ui <path-to-extracted-UI.dll> --simiface <path-to-extracted-SimIFace.dll>` on your own game files. This checks managed signatures and `ResourceKey` fields only, **not** the x86 native calling convention.
 
+### Hair-grid prototype
+
+An opt-in managed source prototype for incremental hair/hat loading is in `experiments/cas-hair-incremental`. It is not built, not validated in-game, and not connected to this native CAS cache toggle.
+
 ### Risks / next steps
 
 **Native ABI remains unverified:** the game uses an old embedded x86 Mono. The `ResourceKey` blittable layout was checked in `SimIFace.dll` (32-bit type ID, 32-bit group ID, 64-bit instance ID), but the exact native ICall calling convention and marshaling must be established on the target executable before enabling this switch.
