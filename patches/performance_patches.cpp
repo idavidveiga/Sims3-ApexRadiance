@@ -1091,29 +1091,29 @@ APEX_REGISTER_FEATURE(FastCacheCompressionPatch,
 
 APEX_REGISTER_FEATURE(FastCasCatalogPatch,
                       {.displayName = "Faster CAS catalog",
-                       .description = "Experimental cache for repeated Create-a-Sim preset counts and IDs while changing clothing and hair categories. "
+                       .description = "Unvalidated native CAS metadata experiment. Disabled in regular builds pending TS3 Mono x86 ABI verification. "
                                       "Does not cache image handles or alter the visible grid. Research: @idavidveiga.",
                        .category = "Performance",
                        .experimental = true,
                        .enabledByDefault = false,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Uses the Mono internal-call resolver shared with Faster Create-a-Style.",
-                                            "Caches CAS preset metadata for up to 30 seconds and validates every 32nd hit.",
+                                            "CAS metadata cache is unvalidated, gated behind an explicit developer build flag, and disabled by default.",
                                             "Invalidates cached entries after preset additions or removals.",
                                             "Experimental: ABI and in-game performance require validation before general release."}});
 
 APEX_REGISTER_FEATURE(FastCreateAStylePatch,
                       {.displayName = "Faster Create-a-Style",
-                       .description = "Experimental: attempts to reuse finished Create-a-Style pattern thumbnails in memory so repeated requests while browsing, scrolling or reopening the "
-                                      "pattern list do not rebuild the same preview again. Not yet validated on real game builds; use only in controlled tests. Part of "
+                       .description = "Development-only Create-a-Style request profiler. Native thumbnail handles are never reused. The ABI must be validated before enabling this on the "
+                                      "game's x86 Mono runtime. Not enabled in regular builds. Part of "
                                       APEX_PRODUCT_NAME ". Research and code: @idavidveiga",
                        .category = "Performance",
                        .experimental = true,
                        .enabledByDefault = false,
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"Hooks Mono's internal-call resolver and substitutes only IWorld.ObjectDesigner_GetPatternThumbnail plus its create/clear invalidation calls.",
-                                            "The cache key includes compositor ID, pattern hash, byte-array length and a hash of the caller-provided buffer; a hit copies the exact finished byte array back.",
-                                            "The game's native function remains the source of truth on every miss; the cache is bounded to 2048 entries / 64 MB and fails closed if the Mono resolver differs."}});
+                                            "Only identical input signatures are counted. The game's original native thumbnail function is called on every request; handles are never replayed.",
+                                            "This is profiling only, not a performance gain. A developer build flag is required, and runtime ABI validation remains mandatory."}});
 
 APEX_REGISTER_FEATURE(FastCasSortPatch,
                       {.displayName = "Faster Sim Building",
