@@ -933,12 +933,16 @@ void PerformanceCard() {
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Shirt, "Create-a-Sim", "CAS catalog research (native ABI validation pending)", nullptr, nullptr);
         ApexUi::CardDivider();
-#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
-        ImGui::BeginDisabled(); // No regular build may invoke an ABI-unverified Mono detour.
+#ifndef APEX_CAS_PRESET_CACHE_PILOT
+        ImGui::BeginDisabled(); // Ordinary builds: Mono x86 ICall ABI remains unverified.
 #endif
         FeatureSwitchRow(Performance::kFastCasCatalogName, "Faster CAS catalog",
-                         "Not available in regular builds; requires a verified native TS3 Mono ABI", true);
-#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS
+#ifdef APEX_CAS_PRESET_CACHE_PILOT
+                         "Experimental EA 1.69 preset metadata cache; measure repeat visits to Hair/Hats", true);
+#else
+                         "Unavailable in regular builds: experimental native Mono ABI not enabled", true);
+#endif
+#ifndef APEX_CAS_PRESET_CACHE_PILOT
         ImGui::EndDisabled();
 #endif
     }
