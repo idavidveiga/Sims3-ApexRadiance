@@ -38,6 +38,7 @@ struct Fixture {
     std::uint32_t classResult = 0x2000;
     int lookupCalls = 0, enumerateCalls = 0;
     bool freezeEnumerator = false;
+    bool useOpaqueDecreasingCookie = false;
     Fixture() {
         const auto& m = methods;
         (void)m;
@@ -70,10 +71,16 @@ struct Fixture {
                 assert(std::string_view(name) == "CASHair");
                 return classResult;
             },
-            [&](std::uint32_t owner, std::int32_t* iter) -> std::uint32_t {
+            [&](std::uint32_t owner, std::uint32_t* iter) -> std::uint32_t {
                 ++enumerateCalls;
                 assert(owner == classResult);
-                if (*iter < 0 || static_cast<std::size_t>(*iter) >= methods.size()) return 0;
+                // Mono's iterator is an opaque cookie, not a counter.
+                if (useOpaqueDecreasingCookie) {
+                    if (*iter == 0) { *iter = 0xDEADC0DEu; return methods[0]; }
+                    if (*iter == 0xDEADC0DEu) { *iter = 5u; return methods[1]; }
+                    return 0;
+                }
+                if (static_cast<std::size_t>(*iter) >= methods.size()) return 0;
                 const auto value = methods[static_cast<std::size_t>(*iter)];
                 if (!freezeEnumerator) ++*iter;
                 return value;
@@ -90,6 +97,14 @@ void TestStrictDiscovery() {
     assert(r.status == DiscoveryStatus::Ready);
     assert(r.method == 0x1000 && r.runtimeMethod == 0);
     assert(r.methodsVisited == 2 && f.lookupCalls == 1 && f.enumerateCalls == 3);
+}
+
+void TestNonmonotonicMonoIteratorCookie() {
+    Fixture f;
+    f.useOpaqueDecreasingCookie = true;
+    const auto r = f.Run();
+    assert(r.status == DiscoveryStatus::Ready && r.method == 0x1000);
+    assert(r.methodsVisited == 2);
 }
 
 void TestFailClosedGates() {
@@ -152,11 +167,12 @@ void TestRejectUnboundedMetadata() {
 
 int main() {
     TestStrictDiscovery();
+    TestNonmonotonicMonoIteratorCookie();
     TestFailClosedGates();
     TestNotFoundAndUnknownClass();
     TestRejectWrongSignatureOrOwner();
     TestRejectDuplicates();
     TestStopUnprogressingAndUnreadableEnumerators();
     TestRejectUnboundedMetadata();
-    std::cout << "PASS: 7 gated native CAS method-discovery test groups\n";
+    std::cout << "PASS: 8 gated native CAS method-discovery test groups\n";
 }
