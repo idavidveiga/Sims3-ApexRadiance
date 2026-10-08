@@ -3,6 +3,7 @@
 // This is a manual, read-only in-process diagnostic run after normal game startup.
 // No hooks, no writes, no method swapping, no external modding libraries.
 #include "ts3_mono_runtime_probe.h"
+#include "ts3_mono_xref.h"
 #include "apex_log.h"
 #include "apex_paths.h"
 #include "game_version.h"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -147,6 +149,24 @@ struct ExtendedScan {
 };
 ExtendedScan g_scan;
 
+// A second *read-only* pass checks byte-level x86 CALL rel32 references
+// to candidates found during the historical-signature scan. CALL bytes
+// inside data can be false positives; no signature or reference proves
+// a Mono JIT entry point, native calling convention or viable hook.
+struct ReferenceScan {
+    bool active = false;
+    std::size_t next = 0;
+    std::size_t readable = 0;
+    std::size_t skipped = 0;
+    std::array<BYTE, 4> tail{};
+    std::size_t tailLength = 0;
+    std::vector<std::size_t> counts;
+    std::vector<std::string> samples;
+    std::string status;
+};
+ReferenceScan g_refs;
+constexpr std::size_t kMaxReferenceSamples = 24;
+
 bool ReadLiveTextBounds(uintptr_t& base, uintptr_t& imageBase,
                         std::size_t& length, std::string& why) {
     const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
@@ -211,8 +231,124 @@ bool IsReadable(const MEMORY_BASIC_INFORMATION& page) {
     }
 }
 
+void StartReferenceScan() {
+    g_refs = {};
+    if (g_scan.candidateRvas.empty()) {
+        g_refs.status = "No candidates: direct-call reference pass not applicable.";
+        return;
+    }
+    // Do not make claims about an arbitrary subset when there were more
+    // historical-signature matches than our bounded candidate capacity.
+    if (g_scan.matches != g_scan.candidateRvas.size()) {
+        g_refs.status =
+            "Too many ambiguous signature matches; reference pass skipped.";
+        LOG_WARNING(std::format("[TS3 Mono Reference Probe] {}", g_refs.status));
+        return;
+    }
+    g_refs.counts.assign(g_scan.candidateRvas.size(), 0);
+    g_refs.active = true;
+    g_refs.status = "Inspecting loaded .text for raw E8 CALL references (read-only)";
+    LOG_INFO(std::format(
+        "[TS3 Mono Reference Probe] Started read-only CALL reference pass for {} candidate(s)",
+        g_scan.candidateRvas.size()));
+}
+
+void FinishReferenceScan() {
+    g_refs.active = false;
+    g_refs.status = std::format(
+        "Complete: {}/{} bytes checked, {} skipped. Raw CALL-byte references "
+        "are only clues, NOT method or ABI proof.",
+        g_refs.readable, g_scan.length, g_refs.skipped);
+    LOG_INFO(std::format("[TS3 Mono Reference Probe] {}", g_refs.status));
+    for (std::size_t i = 0; i < g_refs.counts.size(); ++i) {
+        LOG_INFO(std::format(
+            "[TS3 Mono Reference Probe] Candidate RVA {:#x}: {} raw E8 rel32 references",
+            g_scan.candidateRvas[i], g_refs.counts[i]));
+    }
+    for (const auto& sample : g_refs.samples)
+        LOG_INFO(std::format("[TS3 Mono Reference Probe] {}", sample));
+}
+
+void StepReferenceScan() {
+    if (!g_refs.active) return;
+    if (g_refs.next >= g_scan.length) { FinishReferenceScan(); return; }
+
+    const uintptr_t address = g_scan.textBase + g_refs.next;
+    MEMORY_BASIC_INFORMATION page{};
+    if (!VirtualQuery(reinterpret_cast<LPCVOID>(address), &page, sizeof(page)) ||
+        !page.RegionSize) {
+        g_refs.active = false;
+        g_refs.status = "Stopped: VirtualQuery failed during reference scan";
+        LOG_WARNING(std::format("[TS3 Mono Reference Probe] {}", g_refs.status));
+        return;
+    }
+    const uintptr_t pageStart = reinterpret_cast<uintptr_t>(page.BaseAddress);
+    if (pageStart > address || page.RegionSize > UINTPTR_MAX - pageStart) {
+        g_refs.active = false;
+        g_refs.status = "Stopped: unexpected reference scan page bounds";
+        LOG_WARNING(std::format("[TS3 Mono Reference Probe] {}", g_refs.status));
+        return;
+    }
+    const uintptr_t end = pageStart + page.RegionSize;
+    const std::size_t take = std::min({
+        g_scan.length - g_refs.next, kScanStepBytes,
+        static_cast<std::size_t>(end - address)
+    });
+    if (!take) {
+        g_refs.active = false;
+        g_refs.status = "Stopped: zero-length reference scan page";
+        LOG_WARNING(std::format("[TS3 Mono Reference Probe] {}", g_refs.status));
+        return;
+    }
+    if (!IsReadable(page)) {
+        g_refs.skipped += take;
+        g_refs.next += take;
+        g_refs.tailLength = 0;
+        return;
+    }
+
+    std::vector<BYTE> copied(g_refs.tailLength + take);
+    std::copy_n(g_refs.tail.begin(), g_refs.tailLength, copied.begin());
+    if (!MemPatch::ReadBytes(address, copied.data() + g_refs.tailLength, take)) {
+        g_refs.skipped += take;
+        g_refs.next += take;
+        g_refs.tailLength = 0;
+        return;
+    }
+    g_refs.readable += take;
+    // Cross-chunk E8 opcode + rel32 may straddle a 64-KiB boundary.
+    // Carry only the previous four contiguous readable bytes.
+    const uint32_t blockRva = static_cast<uint32_t>(
+        g_scan.textBase - g_scan.moduleBase +
+        g_refs.next - g_refs.tailLength);
+    Ts3MonoXref::VisitDirectCallsToCandidates(
+        std::span<const BYTE>(copied.data(), copied.size()), blockRva,
+        std::span<const uint32_t>(g_scan.candidateRvas.data(),
+                                  g_scan.candidateRvas.size()),
+        [&](Ts3MonoXref::Reference ref) {
+            const auto it = std::find(g_scan.candidateRvas.begin(),
+                                      g_scan.candidateRvas.end(),
+                                      ref.candidateRva);
+            if (it == g_scan.candidateRvas.end()) return;
+            const std::size_t index = static_cast<std::size_t>(
+                std::distance(g_scan.candidateRvas.begin(), it));
+            ++g_refs.counts[index];
+            if (g_refs.samples.size() < kMaxReferenceSamples) {
+                g_refs.samples.push_back(std::format(
+                    "Raw E8 at RVA {:#x} points to candidate RVA {:#x} "
+                    "(instruction boundary unverified)",
+                    ref.callerRva, ref.candidateRva));
+            }
+        });
+    g_refs.tailLength = std::min(g_refs.tail.size(), copied.size());
+    std::copy(copied.end() - g_refs.tailLength, copied.end(), g_refs.tail.begin());
+    g_refs.next += take;
+    if (g_refs.next >= g_scan.length) FinishReferenceScan();
+}
+
 void StartExtendedScan() {
     g_scan = {};
+    g_refs = {};
     std::string problem;
     if (!ReadLiveTextBounds(g_scan.textBase, g_scan.moduleBase,
                             g_scan.length, problem)) {
@@ -239,6 +375,9 @@ void FinishExtendedScan() {
     LOG_INFO(std::format("[TS3 Mono Extended Probe] {}", g_scan.status));
     for (const auto& context : g_scan.candidateWindows)
         LOG_INFO(std::format("[TS3 Mono Extended Probe] Candidate bytes: {}", context));
+    // Automatically follow a completed signature pass with a read-only
+    // reference pass; no extra user click and no additional hooks needed.
+    StartReferenceScan();
 }
 
 void StepExtendedScan() {
@@ -340,7 +479,11 @@ void RenderDeveloperUI() {
         StartExtendedScan();
     // Exactly one bounded chunk per render frame, only while the developer
     // performance page is visible. A repeated click restarts the scan safely.
+    // Each frame reads at most one 64-KiB chunk, including on the frame
+    // when the signature scan completes and activates the reference pass.
+    const bool signatureWasActive = g_scan.active;
     StepExtendedScan();
+    if (!signatureWasActive) StepReferenceScan();
     if (g_scan.active && g_scan.length) {
         ImGui::ProgressBar(static_cast<float>(g_scan.next) /
                                static_cast<float>(g_scan.length),
@@ -348,6 +491,19 @@ void RenderDeveloperUI() {
     }
     if (!g_scan.status.empty())
         ImGui::TextWrapped("%s", g_scan.status.c_str());
+    if (g_refs.active && g_scan.length) {
+        ImGui::ProgressBar(static_cast<float>(g_refs.next) /
+                               static_cast<float>(g_scan.length),
+                           ImVec2(-1.0f, 0.0f));
+    }
+    if (!g_refs.status.empty()) {
+        ImGui::TextWrapped("%s", g_refs.status.c_str());
+        for (std::size_t i = 0; i < g_refs.counts.size(); ++i) {
+            ImGui::TextDisabled("Candidate RVA %#x: %zu raw E8 references",
+                g_scan.candidateRvas[i], g_refs.counts[i]);
+        }
+        ImGui::TextDisabled("Raw byte matches do NOT verify JIT identity or native ABI.");
+    }
     ImGui::Separator();
     if (ImGui::Button("Save live log copy (keep game open)")) {
         if (ApexPaths::EnsureApexDirectory() &&
