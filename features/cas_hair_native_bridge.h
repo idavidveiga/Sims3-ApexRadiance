@@ -102,11 +102,20 @@ public:
             out.canceled = true;
             return out;
         }
+        // Capture the callback table for THIS generation. A managed UI
+        // callback may synchronously Begin a new session or Stop this one;
+        // reading callbacks_ again afterward would call into the NEW session
+        // with the OLD generation's Work.
+        const Callbacks sessionCallbacks = callbacks_;
         out.slice = plan_.RunSlice(generation, budget, maxUnits,
-            [this](Work w) { return callbacks_.store(callbacks_.context, w); },
-            [this](Work w) { return callbacks_.part(callbacks_.context, w); },
-            [this](Generation g) {
-                return callbacks_.finish(callbacks_.context, g);
+            [sessionCallbacks](Work w) {
+                return sessionCallbacks.store(sessionCallbacks.context, w);
+            },
+            [sessionCallbacks](Work w) {
+                return sessionCallbacks.part(sessionCallbacks.context, w);
+            },
+            [sessionCallbacks](Generation g) {
+                return sessionCallbacks.finish(sessionCallbacks.context, g);
             });
         out.dispatched = true;
         if (out.slice.aborted) {
