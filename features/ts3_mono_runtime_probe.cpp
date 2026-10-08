@@ -334,10 +334,30 @@ void StepReferenceScan() {
                 std::distance(g_scan.candidateRvas.begin(), it));
             ++g_refs.counts[index];
             if (g_refs.samples.size() < kMaxReferenceSamples) {
-                g_refs.samples.push_back(std::format(
-                    "Raw E8 at RVA {:#x} points to candidate RVA {:#x} "
-                    "(instruction boundary unverified)",
-                    ref.callerRva, ref.candidateRva));
+                // Capture a bounded neighborhood from the buffer that
+                // was ALREADY copied for this scan. No extra process read.
+                // Bytes preceding a chunk edge can be shorter than requested;
+                // the opcode location is always explicitly marked.
+                constexpr std::size_t kBefore = 24;
+                constexpr std::size_t kAfter = 96;
+                const std::size_t index = static_cast<std::size_t>(
+                    ref.callerRva - blockRva);
+                const std::size_t begin = index > kBefore ? index - kBefore : 0;
+                const std::size_t end = std::min(copied.size(),
+                    index + std::size_t{5} + kAfter);
+                std::string sample = std::format(
+                    "Caller RVA {:#x} -> target RVA {:#x}; -{} / +{} bytes; "
+                    "raw E8 offset marked by | : ",
+                    ref.callerRva, ref.candidateRva,
+                    index - begin, end - (index + 5));
+                for (std::size_t j = begin; j < end; ++j) {
+                    if (j == index || j == index + 5)
+                        sample += " |";
+                    sample += std::format(" {:02X}",
+                        static_cast<unsigned>(copied[j]));
+                }
+                sample += " [instruction boundary and JIT identity unverified]";
+                g_refs.samples.push_back(std::move(sample));
             }
         });
     g_refs.tailLength = std::min(g_refs.tail.size(), copied.size());
