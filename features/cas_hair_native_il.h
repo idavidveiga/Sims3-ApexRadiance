@@ -277,8 +277,8 @@ inline bool Relocate(std::span<const std::uint8_t> original,
     if(buf.size()!=len){Detail::Error(error,"relocated size mismatch");return false;}
     std::vector<std::uint8_t> eh{0x41,52,0,0};
     for(const auto& c:clauses) {
-        auto start=c.start, tryEnd=std::size_t(c.start)+c.len;
-        auto handler=c.handler, handlerEnd=std::size_t(c.handler)+c.handlerLen;
+        const std::size_t start=c.start, tryEnd=std::size_t(c.start)+c.len;
+        const std::size_t handler=c.handler, handlerEnd=std::size_t(c.handler)+c.handlerLen;
         const auto boundary=[&](std::size_t pos) {
             return pos==original.size()||
                    std::any_of(ops.begin(),ops.end(),
