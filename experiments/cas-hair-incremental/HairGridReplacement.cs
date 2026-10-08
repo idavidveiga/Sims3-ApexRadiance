@@ -14,6 +14,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Threading;
 using MonoPatcherLib;
 using Sims3.SimIFace;
 using Sims3.SimIFace.CAS;
@@ -48,12 +49,17 @@ namespace VeigaApexCasHairExperimental
 
                 byte[] il = original.GetMethodBody().GetILAsByteArray();
                 if (il == null || !Sha256Equals(il, MethodSha256))
+                {
+                    Diagnostics.Write("UI.dll method fingerprint differs; no replacement installed");
                     return; // Unknown/modified UI.dll: deliberately fail closed.
+                }
 
                 MonoPatcher.PatchAll(typeof(EntryPoint).Assembly);
+                Diagnostics.Write("Managed hair-grid patch installed; this is an unvalidated developer experiment");
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Diagnostics.Write("Activation failed: " + ex);
                 // A failed guard must never install a partial method replacement.
             }
         }
@@ -74,6 +80,22 @@ namespace VeigaApexCasHairExperimental
         }
     }
 
+    internal static class Diagnostics
+    {
+        public static void Write(string message)
+        {
+            try
+            {
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    @"Electronic Arts\The Sims 3\Apex Radiance");
+                if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
+                File.AppendAllText(Path.Combine(folder, "cas-hair-experiment.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine);
+            }
+            catch (Exception) { }
+        }
+    }
+
     public sealed class HairGridReplacement
     {
         private static int sGeneration;
@@ -86,16 +108,16 @@ namespace VeigaApexCasHairExperimental
             CASHair ui = (CASHair)(this as object);
             if (ui == null) return;
             // Increment even if the old task has not yet yielded: it must not touch the next category.
-            unchecked { ++sGeneration; }
-            int ticket = sGeneration;
+            int ticket = Interlocked.Increment(ref sGeneration);
 
             try
             {
                 HairJob job = new HairJob(ui, ticket);
                 job.Begin();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Diagnostics.Write("Could not create hair job: " + ex);
                 // This experimental replacement cannot call the old method once patched.
                 // Do not expose this prototype to an ordinary game installation.
             }
@@ -125,6 +147,7 @@ namespace VeigaApexCasHairExperimental
 
             private int storePosition;
             private int partPosition;
+            private int yields;
             private int presetPosition;
             private bool processingHatPresets;
             private CASPart activePart;
@@ -155,7 +178,8 @@ namespace VeigaApexCasHairExperimental
 
             private bool Current()
             {
-                if (sGeneration != generation || CASHair.gSingleton != ui || ui.mHairType != category)
+                if (Interlocked.CompareExchange(ref sGeneration, 0, 0) != generation ||
+                    CASHair.gSingleton != ui || ui.mHairType != category)
                     return false;
                 if (Responder.Instance == null || Responder.Instance.CASModel != model)
                     return false;
@@ -203,6 +227,7 @@ namespace VeigaApexCasHairExperimental
                         AddStoreRow(storeParts[storePosition++]);
                         if (++processed >= MaxEntriesBetweenYields || watch.ElapsedMilliseconds >= BudgetMilliseconds)
                         {
+                            ++yields;
                             Simulator.Sleep(0); // cooperative yield on a simulator task, not a UI callback
                             if (!Current()) return;
                             watch.Reset();
@@ -233,6 +258,7 @@ namespace VeigaApexCasHairExperimental
 
                         if (++processed >= MaxEntriesBetweenYields || watch.ElapsedMilliseconds >= BudgetMilliseconds)
                         {
+                            ++yields;
                             Simulator.Sleep(0);
                             if (!Current()) return;
                             watch.Reset();
@@ -242,11 +268,11 @@ namespace VeigaApexCasHairExperimental
                     }
 
                     if (Current()) Finish();
+                    else Diagnostics.Write("Discarded stale hair job " + generation);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    // The opt-in prototype requires in-game logging and compatibility validation
-                    // before it can be promoted into Apex's normal feature lifecycle.
+                    Diagnostics.Write("Hair job failed after " + partPosition + " parts: " + ex);
                 }
             }
 
@@ -397,6 +423,8 @@ namespace VeigaApexCasHairExperimental
                 // Repeat it after the last async row to restore the final displayed selection.
                 if (category == CASHair.HairType.Hair)
                     ui.ReselectCurrentHairPresetItem();
+                Diagnostics.Write("Hair job completed category=" + category +
+                    " parts=" + partPosition + " store=" + storePosition + " yields=" + yields);
             }
         }
     }
