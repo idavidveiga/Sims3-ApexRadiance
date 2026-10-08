@@ -44,7 +44,7 @@ Sims 3"); internal names keep "Apex". Visible text uses `APEX_PRODUCT_NAME`, nev
 | IMAGE > Ambient Occlusion (contrast) | Scene AO card and Sim Occlusion card. See [ambient-occlusion.md](features/ambient-occlusion.md), [sim-occlusion.md](features/sim-occlusion.md) |
 | IMAGE > Depth Blur (aperture) | Depth Blur card; mode-specific rows are drawn and searchable only in their mode. See [depth-blur.md](features/depth-blur.md) |
 | SYSTEM > Edge Smoothing (spline) | FXAA / SMAA controls and the game-MSAA notice. See [edge-smoothing.md](features/edge-smoothing.md) |
-| SYSTEM > Performance (gauge) | Six cards with the 16 performance switches: Camera and lighting, Files and objects, Textures and Sims, Create-a-Style, Memory handling, Game and scripts. See [Performance](features/performance/README.md) |
+| SYSTEM > Performance (gauge) | Seven cards with the 17 performance switches: Camera and lighting, Files and objects, Textures and Sims, Create-a-Sim, Create-a-Style, Memory handling, Game and scripts. See [Performance](features/performance/README.md) |
 | SYSTEM > Lot Streaming (layers) | Cards Lot detail streaming (Extended lot detail with its distance and lot count, Smooth lot streaming, Keep lot visibility stable, Pause lot streaming in map view) and Object streaming (Spread lot objects while loading). See [lot-streaming.md](features/performance/lot-streaming.md) |
 | SYSTEM > Attention (triangle-alert) | Only while something outside Apex blocks an effect (the game's own anti-aliasing with an affected feature enabled, a room colour saved in Sims3SettingsSetter) |
 | SYSTEM > Report a problem (bug) | Capture session, Save a capture, Your captures, How to report a problem. See [bug-reports.md](features/bug-reports.md) |
