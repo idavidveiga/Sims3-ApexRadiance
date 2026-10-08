@@ -67,6 +67,7 @@ std::atomic<GetIdFn> g_id{nullptr};
 std::atomic<AddFn> g_add{nullptr};
 std::atomic<RemoveFn> g_remove{nullptr};
 std::atomic<bool> g_enabled{false};
+std::atomic<bool> g_cacheHealthy{false}; // one mismatch shuts off reuse for the rest of the session
 std::atomic<uint64_t> g_countCalls{0}, g_idCalls{0}, g_hits{0}, g_validationFailures{0}, g_invalidations{0};
 std::atomic<uint64_t> g_nativeCalls{0}, g_nativeNanoseconds{0}, g_firstHitChecks{0};
 constexpr size_t kMaxCountEntries = 4096;
@@ -94,6 +95,16 @@ uint32_t MeasureNative(F&& f) {
     return result;
 }
 
+void DisableCacheOnMismatch(const char* method) {
+    if (!g_cacheHealthy.exchange(false, std::memory_order_acq_rel)) return;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_counts.clear();
+        g_ids.clear();
+    }
+    LOG_WARNING(std::format("[FastCasCatalog] {} produced inconsistent metadata; all CAS cache hits disabled (native pass-through)", method));
+}
+
 void Invalidate(ResourceKey key) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_counts.erase(key);
@@ -107,7 +118,8 @@ void Invalidate(ResourceKey key) {
 uint32_t __cdecl HookCount(void* self, ResourceKey key) {
     const CountFn original = g_count.load(std::memory_order_acquire);
     if (!original) return 0;
-    if (!g_enabled.load(std::memory_order_acquire)) return original(self,key);
+    if (!g_enabled.load(std::memory_order_acquire) || !g_cacheHealthy.load(std::memory_order_acquire))
+        return original(self,key);
     g_countCalls.fetch_add(1,std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
     uint32_t result=0;
@@ -138,8 +150,7 @@ uint32_t __cdecl HookCount(void* self, ResourceKey key) {
             return result;
         }
         g_validationFailures.fetch_add(1,std::memory_order_relaxed);
-        Invalidate(key);
-        LOG_WARNING("[FastCasCatalog] Preset count changed behind cache; entry invalidated");
+        DisableCacheOnMismatch("PartDataNumPresets");
         return actual;
     }
     result=MeasureNative([&] { return original(self,key); });
@@ -154,7 +165,8 @@ uint32_t __cdecl HookCount(void* self, ResourceKey key) {
 uint32_t __cdecl HookId(void* self, ResourceKey key, uint32_t index) {
     const GetIdFn original=g_id.load(std::memory_order_acquire);
     if(!original) return 0;
-    if(!g_enabled.load(std::memory_order_acquire)) return original(self,key,index);
+    if(!g_enabled.load(std::memory_order_acquire) || !g_cacheHealthy.load(std::memory_order_acquire))
+        return original(self,key,index);
     g_idCalls.fetch_add(1,std::memory_order_relaxed);
     const PresetIdKey cacheKey{key,index};
     const auto now=std::chrono::steady_clock::now();
@@ -186,8 +198,7 @@ uint32_t __cdecl HookId(void* self, ResourceKey key, uint32_t index) {
             return result;
         }
         g_validationFailures.fetch_add(1,std::memory_order_relaxed);
-        Invalidate(key);
-        LOG_WARNING("[FastCasCatalog] Preset ID changed behind cache; entries invalidated");
+        DisableCacheOnMismatch("PartDataGetPresetId");
         return actual;
     }
     result=MeasureNative([&] { return original(self,key,index); });
@@ -229,12 +240,14 @@ bool Start(std::string* error) {
     if(g_enabled.load(std::memory_order_acquire)) return true;
     // Resolver is shared with Faster Create-a-Style to prevent a competing Detours hook on the same Mono entry.
     if(!FastCreateAStyle::AcquireResolver(error)) return false;
+    g_cacheHealthy.store(true,std::memory_order_release);
     g_enabled.store(true,std::memory_order_release);
     LOG_INFO("[FastCasCatalog] Experimental preset metadata cache enabled; awaiting ICASUtils resolution");
     return true;
 }
 void Stop() {
     if(!g_enabled.exchange(false,std::memory_order_acq_rel)) return;
+    g_cacheHealthy.store(false,std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_counts.clear();
@@ -258,6 +271,8 @@ void* MaybeWrap(const char* ns,const char* klass,const char* name,void* native) 
 }
 std::string StatusText() {
     if(!Running()) return "Off";
+    if(!g_cacheHealthy.load(std::memory_order_acquire))
+        return "Self-disabled: metadata mismatch; native pass-through (restart or toggle off/on to retest)";
     if(!g_count.load(std::memory_order_acquire) && !g_id.load(std::memory_order_acquire))
         return "Waiting for CAS preset lookups";
     size_t counts=0,ids=0;
