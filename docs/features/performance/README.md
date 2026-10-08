@@ -70,6 +70,7 @@ Every switch works at the exact game function behind one measured cost, and foll
 | Faster cache compression (includes record checksums) | Textures and Sims | 2.1.0 or earlier; checksums 2.4.0 | [fast-cache-compression.md](fast-cache-compression.md) |
 | Faster Sim building | Textures and Sims | 2.3.0 | [fast-cas-sort.md](fast-cas-sort.md) |
 | Faster Create-a-Style | Create-a-Style | Development | [fast-create-a-style.md](fast-create-a-style.md) |
+| Faster CAS catalog (experimental) | Create-a-Sim | Development | [fast-cas-catalog.md](fast-cas-catalog.md) |
 | Faster memory handling | Memory handling | 2.4.0 | [fast-memory.md](fast-memory.md) |
 | Room to save (Experimental) | Memory handling | 2.7.0 | [room-to-save.md](room-to-save.md) |
 | Lighter window updates (Experimental) | Game and scripts | 2.7.0 | [lighter-window-updates.md](lighter-window-updates.md) |
