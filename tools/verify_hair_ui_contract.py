@@ -50,6 +50,55 @@ METHODS = (
 )
 
 
+
+# A second complete user-supplied UI.dll has the same CASHair loop shape
+# (1,621 IL bytes, 528 instructions, two finally handlers) but DIFFERENT
+# MethodDef/MemberRef tokens. Never mix the variants. Exact whole-file
+# hashes are required before any original RVA/token is considered.
+ALTERNATE_UI_SHA256 = "91a2ed9815ca2f42af19f7f680b8a6c206e65e0ce23494ed210fb74658b89e79"
+ALTERNATE_METHODS = (
+    Method("CASHair.SetHairTypeCategory", 0x06001216, 0x4C3D4, 215,
+           "523fcf89999927405e13a4ca4cc8656003c026567744addf98d0c299737d20c0", 1, 0x0600124A),
+    Method("CASHair.RefreshHairGrid", 0x0600121C, 0x4CC51, 14,
+           "b35bf8e7c5a976788eeaad4b7535dd32f99b2d1af9545724ffd3f9d587c984fa", 1, 0x0600124A),
+    Method("CASHair.OnTrashButtonClick", 0x0600121F, 0x4CCDC, 127,
+           "e9782667ab56c80e1bec273bf65fb49fc1cafd7f9b65ad5a54fee378e534a5bb", 1, 0x0600124A),
+    Method("CASHair.OnSaveButtonClick", 0x06001222, 0x4CDA8, 353,
+           "346da0fc81044ad10b04b69c058785e5a26ae1be08cad7e963c283f05d39c8aa", 1, 0x0600124A),
+    Method("CASHair.OnUndo", 0x0600122B, 0x4D247, 14,
+           "c1c8f659beaf3ec61fffe49d42c893e26d67eb7d7fb75b76d404932e696b7412", 1, 0x0600124A),
+    Method("CASHair.OnRedo", 0x0600122C, 0x4D256, 14,
+           "c1c8f659beaf3ec61fffe49d42c893e26d67eb7d7fb75b76d404932e696b7412", 1, 0x0600124A),
+    Method("CASHair.PopulateTypesGrid", 0x0600124A, 0x4DDC4, 1621,
+           "020e281cc6f834ad0d58dfa26dfb8244245dd749224be19bb8504485a04c54c4", 2, 0x0600124D),
+    Method("CASHair.AddHairTypeGridItem", 0x0600124D, 0x4E610, 292,
+           "a6a823ba9853484b362200ad6be1d5c6e9994424b3edaf985026d2e7d883d964"),
+)
+
+@dataclass(frozen=True)
+class UIVariant:
+    name: str
+    digest: str
+    methods: tuple[Method, ...]
+    sleep_memberref: int
+
+UI_VARIANTS = (
+    UIVariant("EA App 1.69 package", ORIGINAL_UI_SHA256, METHODS, 0x0A000023),
+    UIVariant("user-supplied alternate UI.dll", ALTERNATE_UI_SHA256,
+              ALTERNATE_METHODS, 0x0A00001D),
+)
+
+def identify_variant(data: bytes) -> UIVariant:
+    digest = hashlib.sha256(data).hexdigest()
+    for variant in UI_VARIANTS:
+        if digest == variant.digest:
+            return variant
+    raise ContractError(
+        "unknown or modified UI.dll; expected a known whole-file SHA256 "
+        "and version-specific tokens, got " + digest +
+        ". Do not use EA 1.69 or alternate RVAs on this image.")
+
+
 class ContractError(ValueError):
     pass
 
@@ -122,13 +171,12 @@ def call_count(il: bytes, method_token: int) -> int:
 
 
 def verify(data: bytes) -> list[str]:
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != ORIGINAL_UI_SHA256:
-        raise ContractError(
-            "unknown or modified UI.dll; expected SHA256 " + ORIGINAL_UI_SHA256 +
-            ", got " + digest + ". Do not use these EA 1.69 RVAs.")
-    results = []
-    for method in METHODS:
+    variant = identify_variant(data)
+    results = [
+        "PASS: recognized " + variant.name +
+        "; Sleep(uint32) MemberRef=" + f"{variant.sleep_memberref:#010x}"
+    ]
+    for method in variant.methods:
         body = il_bytes_at(data, method.rva)
         actual = hashlib.sha256(body).hexdigest()
         if len(body) != method.length or actual != method.digest:
@@ -157,7 +205,7 @@ def main() -> None:
     except (OSError, ContractError) as ex:
         parser.exit(2, "FAIL: " + str(ex) + "\n")
     print("\n".join(reports))
-    print("PASS: EA 1.69 original Hair/Hats method contract verified. "
+    print("PASS: identified original Hair/Hats method contract verified. "
           "This does NOT validate a runtime hook or a speedup.")
 
 
