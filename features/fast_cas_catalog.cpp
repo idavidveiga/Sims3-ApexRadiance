@@ -13,6 +13,7 @@
 #include "apex_log.h"
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -28,6 +29,11 @@ struct ResourceKey {
     uint64_t instanceId;
 };
 static_assert(sizeof(ResourceKey) == 16);
+// The assembly's sequential ResourceKey fields are TypeId:uint32, GroupId:uint32, InstanceId:uint64.
+// This verifies only the C++ layout, not how TS3's embedded Mono marshals value types into native ICalls.
+static_assert(offsetof(ResourceKey, typeId) == 0);
+static_assert(offsetof(ResourceKey, groupId) == 4);
+static_assert(offsetof(ResourceKey, instanceId) == 8);
 
 struct PresetIdKey {
     ResourceKey resource;
@@ -62,6 +68,7 @@ std::atomic<AddFn> g_add{nullptr};
 std::atomic<RemoveFn> g_remove{nullptr};
 std::atomic<bool> g_enabled{false};
 std::atomic<uint64_t> g_countCalls{0}, g_idCalls{0}, g_hits{0}, g_validationFailures{0}, g_invalidations{0};
+std::atomic<uint64_t> g_nativeCalls{0}, g_nativeNanoseconds{0}, g_firstHitChecks{0};
 constexpr size_t kMaxCountEntries = 4096;
 constexpr size_t kMaxIdEntries = 16384;
 constexpr auto kTTL = std::chrono::seconds(30);
@@ -70,10 +77,22 @@ constexpr uint64_t kCheckEveryHits = 32;
 template<class T> struct Cached {
     T result;
     std::chrono::steady_clock::time_point stored;
+    bool verified = false; // require two equal real results before skipping any native calls
 };
 std::mutex g_mutex;
 std::unordered_map<ResourceKey, Cached<uint32_t>, KeyHash, KeyEqual> g_counts;
 std::unordered_map<PresetIdKey, Cached<uint32_t>, KeyHash, KeyEqual> g_ids;
+
+template<class F>
+uint32_t MeasureNative(F&& f) {
+    const auto start = std::chrono::steady_clock::now();
+    const uint32_t result = f();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    g_nativeCalls.fetch_add(1, std::memory_order_relaxed);
+    g_nativeNanoseconds.fetch_add(static_cast<uint64_t>(elapsed), std::memory_order_relaxed);
+    return result;
+}
 
 void Invalidate(ResourceKey key) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -92,27 +111,38 @@ uint32_t __cdecl HookCount(void* self, ResourceKey key) {
     g_countCalls.fetch_add(1,std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
     uint32_t result=0;
-    bool hit=false;
+    bool hit=false, verified=false;
+    std::chrono::steady_clock::time_point cachedAt{};
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it=g_counts.find(key);
         if(it!=g_counts.end() && (now-it->second.stored)<kTTL) {
             result=it->second.result;
             hit=true;
+            verified=it->second.verified;
+            cachedAt=it->second.stored;
         }
     }
     if(hit) {
         const auto n=g_hits.fetch_add(1,std::memory_order_relaxed)+1;
-        // Compare periodically against the original. Never silently preserve stale metadata.
-        if(n % kCheckEveryHits) return result;
-        const uint32_t actual=original(self,key);
-        if(actual==result) return result;
+        if(verified && n % kCheckEveryHits) return result;
+        if(!verified) g_firstHitChecks.fetch_add(1,std::memory_order_relaxed);
+        const uint32_t actual=MeasureNative([&] { return original(self,key); });
+        if(actual==result) {
+            if(!verified) {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                auto it=g_counts.find(key);
+                if(it!=g_counts.end() && it->second.result==result && it->second.stored==cachedAt)
+                    it->second.verified=true;
+            }
+            return result;
+        }
         g_validationFailures.fetch_add(1,std::memory_order_relaxed);
         Invalidate(key);
         LOG_WARNING("[FastCasCatalog] Preset count changed behind cache; entry invalidated");
         return actual;
     }
-    result=original(self,key);
+    result=MeasureNative([&] { return original(self,key); });
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if(g_counts.size()>=kMaxCountEntries) g_counts.clear();
@@ -129,26 +159,38 @@ uint32_t __cdecl HookId(void* self, ResourceKey key, uint32_t index) {
     const PresetIdKey cacheKey{key,index};
     const auto now=std::chrono::steady_clock::now();
     uint32_t result=0;
-    bool hit=false;
+    bool hit=false, verified=false;
+    std::chrono::steady_clock::time_point cachedAt{};
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it=g_ids.find(cacheKey);
         if(it!=g_ids.end() && (now-it->second.stored)<kTTL) {
             result=it->second.result;
             hit=true;
+            verified=it->second.verified;
+            cachedAt=it->second.stored;
         }
     }
     if(hit) {
         const auto n=g_hits.fetch_add(1,std::memory_order_relaxed)+1;
-        if(n%kCheckEveryHits) return result;
-        const uint32_t actual=original(self,key,index);
-        if(actual==result) return result;
+        if(verified && n % kCheckEveryHits) return result;
+        if(!verified) g_firstHitChecks.fetch_add(1,std::memory_order_relaxed);
+        const uint32_t actual=MeasureNative([&] { return original(self,key,index); });
+        if(actual==result) {
+            if(!verified) {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                auto it=g_ids.find(cacheKey);
+                if(it!=g_ids.end() && it->second.result==result && it->second.stored==cachedAt)
+                    it->second.verified=true;
+            }
+            return result;
+        }
         g_validationFailures.fetch_add(1,std::memory_order_relaxed);
         Invalidate(key);
         LOG_WARNING("[FastCasCatalog] Preset ID changed behind cache; entries invalidated");
         return actual;
     }
-    result=original(self,key,index);
+    result=MeasureNative([&] { return original(self,key,index); });
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if(g_ids.size()>=kMaxIdEntries) g_ids.clear();
@@ -199,8 +241,10 @@ void Stop() {
         g_ids.clear();
     }
     FastCreateAStyle::ReleaseResolver();
-    LOG_INFO(std::format("[FastCasCatalog] Off. count calls={} id calls={} hits={} mutations={} discrepancies={}",
-        g_countCalls.load(),g_idCalls.load(),g_hits.load(),g_invalidations.load(),g_validationFailures.load()));
+    LOG_INFO(std::format("[FastCasCatalog] Off: count={} id={} repeated={} firstHitVerified={} nativeCalls={} nativeTime={:.3f}ms invalidations={} discrepancies={}",
+        g_countCalls.load(),g_idCalls.load(),g_hits.load(),g_firstHitChecks.load(),g_nativeCalls.load(),
+        static_cast<double>(g_nativeNanoseconds.load()) / 1'000'000.0,
+        g_invalidations.load(),g_validationFailures.load()));
 }
 bool Running() { return g_enabled.load(std::memory_order_acquire); }
 void* MaybeWrap(const char* ns,const char* klass,const char* name,void* native) {
@@ -221,7 +265,9 @@ std::string StatusText() {
         std::lock_guard<std::mutex> lock(g_mutex);
         counts=g_counts.size(); ids=g_ids.size();
     }
-    return std::format("{} repeated preset lookups skipped; {} counts, {} IDs cached; {} checks disagreed",
-        g_hits.load(),counts,ids,g_validationFailures.load());
+    return std::format("count={} id={} repeats={} native={:.2f}ms; cache: {} counts / {} IDs; mismatches={}",
+        g_countCalls.load(),g_idCalls.load(),g_hits.load(),
+        static_cast<double>(g_nativeNanoseconds.load()) / 1'000'000.0,
+        counts,ids,g_validationFailures.load());
 }
 } // namespace FastCasCatalog
