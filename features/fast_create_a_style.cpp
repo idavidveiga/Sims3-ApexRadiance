@@ -21,7 +21,7 @@
 #include <format>
 #include <mutex>
 #include <string_view>
-#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace FastCreateAStyle {
@@ -52,7 +52,6 @@ constexpr size_t kArrayLength = 0x0C;
 constexpr size_t kArrayData = 0x10;
 
 constexpr size_t kMaxEntries = 2048;
-constexpr size_t kMaxBytes = 64u * 1024u * 1024u;
 constexpr uint32_t kMaxArrayBytes = 4u * 1024u * 1024u; // a CASt thumbnail should be far smaller; corrupt layouts fail closed.
 
 struct Key {
@@ -76,16 +75,10 @@ struct KeyHash {
     }
 };
 
-struct Entry {
-    uint32_t result = 0;
-    std::vector<uint8_t> bytes;
-};
-
 std::mutex g_cacheMutex;
-std::unordered_map<Key, Entry, KeyHash> g_cache;
-size_t g_cacheBytes = 0;
+std::unordered_set<Key, KeyHash> g_cache;
 
-std::atomic<uint64_t> g_calls{0}, g_hits{0}, g_misses{0}, g_stores{0}, g_clears{0}, g_bytesReused{0};
+std::atomic<uint64_t> g_calls{0}, g_hits{0}, g_stores{0}, g_clears{0};
 std::atomic<uint64_t> g_resolverMatches{0};
 
 // Do not send raw Mono pointers to strcmp(): corrupt/unknown runtime layouts may not
@@ -140,26 +133,6 @@ bool ArrayInfo(void* array, uint32_t& length, uint8_t*& bytes) {
     }
 }
 
-bool CopyFromGame(const uint8_t* src, uint8_t* dst, uint32_t n) {
-    if (!n) return true;
-    __try {
-        std::memcpy(dst, src, n);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-bool CopyToGame(uint8_t* dst, const uint8_t* src, uint32_t n) {
-    if (!n) return true;
-    __try {
-        std::memcpy(dst, src, n);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 uint64_t HashBytes(const uint8_t* p, uint32_t n, bool& ok) {
     // FNV-1a 64. The hash is of the caller-provided buffer before the game touches it: two calls with the same IDs but
     // materially different request data cannot share an entry.
@@ -180,70 +153,50 @@ uint64_t HashBytes(const uint8_t* p, uint32_t n, bool& ok) {
 void ClearCache() {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache.clear();
-    g_cacheBytes = 0;
     g_clears.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Invalidate(uint64_t compositorId, uint64_t patternHashId) {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     for (auto it = g_cache.begin(); it != g_cache.end();) {
-        if (it->first.compositorId == compositorId && it->first.patternHashId == patternHashId) {
-            g_cacheBytes -= it->second.bytes.size();
+        if (it->compositorId == compositorId && it->patternHashId == patternHashId)
             it = g_cache.erase(it);
-        } else {
-            ++it;
-        }
+        else ++it;
     }
 }
 
-uint32_t __cdecl Hook_GetPatternThumbnail(void* self, uint64_t compositorId, uint64_t patternHashId, void* data) {
-    GetPatternThumbnail_t const original = g_getOriginal.load(std::memory_order_acquire);
-    if (!original) return 0;
-    if (!g_running.load(std::memory_order_acquire)) return original(self, compositorId, patternHashId, data);
-
-    g_calls.fetch_add(1, std::memory_order_relaxed);
-    uint32_t length = 0;
-    uint8_t* bytes = nullptr;
-    if (!ArrayInfo(data, length, bytes)) return original(self, compositorId, patternHashId, data);
-
-    bool hashOk = false;
-    const uint64_t inputHash = HashBytes(bytes, length, hashOk);
-    if (!hashOk) return original(self, compositorId, patternHashId, data);
-    const Key key{compositorId, patternHashId, inputHash, length};
-
-    {
-        std::lock_guard<std::mutex> lock(g_cacheMutex);
-        const auto it = g_cache.find(key);
-        if (it != g_cache.end() && it->second.bytes.size() == length &&
-            CopyToGame(bytes, it->second.bytes.data(), length)) {
-            g_hits.fetch_add(1, std::memory_order_relaxed);
-            g_bytesReused.fetch_add(length, std::memory_order_relaxed);
-            return it->second.result;
-        }
-    }
-
-    g_misses.fetch_add(1, std::memory_order_relaxed);
-    const uint32_t result = original(self, compositorId, patternHashId, data);
-
-    // Snapshot only successful calls. Copy outside the cache lock: touching Mono memory while holding our mutex could
-    // stall another thumbnail request for no reason.
-    if (result && length) {
-        std::vector<uint8_t> snapshot(length);
-        if (CopyFromGame(bytes, snapshot.data(), length)) {
-            std::lock_guard<std::mutex> lock(g_cacheMutex);
-            if (g_cache.size() >= kMaxEntries || g_cacheBytes + snapshot.size() > kMaxBytes) {
-                g_cache.clear();
-                g_cacheBytes = 0;
-                g_clears.fetch_add(1, std::memory_order_relaxed);
-            }
-            auto [it, inserted] = g_cache.emplace(key, Entry{result, std::move(snapshot)});
-            if (inserted) {
-                g_cacheBytes += it->second.bytes.size();
-                g_stores.fetch_add(1, std::memory_order_relaxed);
+uint32_t __cdecl Hook_GetPatternThumbnail(void* self, uint64_t compositorId,
+                                          uint64_t patternHashId, void* data) {
+    const GetPatternThumbnail_t original = g_getOriginal.load(std::memory_order_acquire);
+    if (!original) return 0; // unreachable unless the embedded runtime changes unexpectedly
+    if (g_running.load(std::memory_order_acquire)) {
+        g_calls.fetch_add(1, std::memory_order_relaxed);
+        uint32_t length = 0;
+        uint8_t* bytes = nullptr;
+        if (ArrayInfo(data, length, bytes)) {
+            bool hashOk = false;
+            const uint64_t inputHash = HashBytes(bytes, length, hashOk);
+            if (hashOk) {
+                const Key key{compositorId, patternHashId, inputHash, length};
+                std::lock_guard<std::mutex> lock(g_cacheMutex);
+                if (g_cache.find(key) != g_cache.end()) {
+                    // Observe duplicates only. The returned uint32 is a native thumbnail
+                    // handle, whose ownership/lifetime is not verified: NEVER replay it.
+                    g_hits.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    if (g_cache.size() >= kMaxEntries) {
+                        g_cache.clear();
+                        g_clears.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    g_cache.insert(key);
+                    g_stores.fetch_add(1, std::memory_order_relaxed);
+                }
             }
         }
     }
-    return result;
+    // Always call the game. Profiling-only until native handle lifetime and
+    // the exact TS3 Mono x86 InternalCall ABI have been independently validated.
+    return original(self, compositorId, patternHashId, data);
 }
 
 void __cdecl Hook_CreateLargePatternThumbnail(void* self, uint64_t compositorId, uint64_t patternHashId, void* data) {
@@ -370,8 +323,8 @@ void Stop() {
     if (!g_running.exchange(false, std::memory_order_acq_rel)) return;
     ClearCache();
     ReleaseResolver();
-    LOG_INFO(std::format("[FastCreateAStyle] Stopped: {} calls, {} cache hits, {} misses, {} entries stored, {} bytes reused",
-                         g_calls.load(), g_hits.load(), g_misses.load(), g_stores.load(), g_bytesReused.load()));
+    LOG_INFO(std::format("[FastCreateAStyle] Profiling stopped: {} requests, {} repeated inputs, {} distinct inputs (no native thumbnail handles reused)",
+                         g_calls.load(), g_hits.load(), g_stores.load()));
 }
 
 bool Running() { return g_running.load(std::memory_order_acquire); }
@@ -379,18 +332,14 @@ bool Running() { return g_running.load(std::memory_order_acquire); }
 std::string StatusText() {
     if (!Running()) return "off";
     if (!g_getOriginal.load(std::memory_order_acquire))
-        return "waiting for Create-a-Style to request a pattern thumbnail";
-
-    size_t entries = 0, bytes = 0;
+        return "waiting for CASt native thumbnail requests";
+    size_t entries = 0;
     {
         std::lock_guard<std::mutex> lock(g_cacheMutex);
         entries = g_cache.size();
-        bytes = g_cacheBytes;
     }
-    const uint64_t calls = g_calls.load(std::memory_order_relaxed);
-    const uint64_t hits = g_hits.load(std::memory_order_relaxed);
-    return std::format("{} of {} pattern thumbnails reused; {} cached ({:.1f} MB)", hits, calls, entries,
-                       static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return std::format("profiling only: {} of {} requests repeated; {} signatures observed; thumbnails not replayed",
+                       g_hits.load(), g_calls.load(), entries);
 }
 
 } // namespace FastCreateAStyle
