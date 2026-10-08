@@ -349,6 +349,16 @@ inline bool BuildHairParent(std::span<const std::uint8_t> original,
         Detail::Error(error,"unknown or modified CASHair.PopulateTypesGrid original IL");
         return false;
     }
+    // Independently validated against both user-owned UI.dll originals.
+    // The exception table must match byte-for-byte as well as the CIL.
+    // A structurally valid but different EH table is not allowed to
+    // change enumerator cleanup or active try scopes at runtime.
+    constexpr char kOriginalEhSha[]=
+        "7cdf3887087becf04e80d5e4c305445014767ff0c418f76d9271add4dbea2013";
+    if(eh.size()!=52||!Detail::DigestEquals(eh,kOriginalEhSha)) {
+        Detail::Error(error,"original Hair/Hats EH SHA-256 mismatch");
+        return false;
+    }
     std::vector<Detail::Op> ops;
     std::array<Detail::Clause,2> clauses{};
     if(!Detail::Decode(original,ops)||ops.size()!=528||
@@ -390,8 +400,20 @@ inline bool BuildHairParent(std::span<const std::uint8_t> original,
         std::uint8_t(sleep),std::uint8_t(sleep>>8),
         std::uint8_t(sleep>>16),std::uint8_t(sleep>>24)};
     if(!Relocate(original,eh,0x514,insertion,out,error))return false;
-    if(out.il.size()!=1705||out.eh.size()!=52) {
-        out={};Detail::Error(error,"unexpected CIL rewriter output size");return false;
+    // Golden output computed independently from the user's own original
+    // assemblies with the offline Python IL/EH relocation verifier.
+    // No game CIL is committed; only the SHA-256 of the expected result.
+    const char* expectedRewritten = variant==Variant::Ea169
+        ? "23cdd7d6cbccb958a2573ec677fc0d96bb635fac0d4c19067adc8966e4075bf2"
+        : "230517f3d064510cb80c0b8a3b69aeae9e54618055c086bfc1b2b54696fe8e6e";
+    constexpr char kRewrittenEhSha[]=
+        "b9db5ae212e25883342f7d55cba0817b40e3057ed066d6d9339cc85b84bbf33b";
+    if(out.il.size()!=1705||out.eh.size()!=52||
+       !Detail::DigestEquals(out.il,expectedRewritten)||
+       !Detail::DigestEquals(out.eh,kRewrittenEhSha)) {
+        out={};
+        Detail::Error(error,"native CIL output differs from verified Python result");
+        return false;
     }
     return true;
 }
