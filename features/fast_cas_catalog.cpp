@@ -55,7 +55,7 @@ struct KeyEqual {
 using CountFn = uint32_t(__cdecl*)(void*, ResourceKey);
 using GetIdFn = uint32_t(__cdecl*)(void*, ResourceKey, uint32_t);
 using AddFn = uint32_t(__cdecl*)(void*, ResourceKey, void*);
-using RemoveFn = bool(__cdecl*)(void*, ResourceKey, uint32_t);
+using RemoveFn = void(__cdecl*)(void*, ResourceKey, uint32_t);
 std::atomic<CountFn> g_count{nullptr};
 std::atomic<GetIdFn> g_id{nullptr};
 std::atomic<AddFn> g_add{nullptr};
@@ -164,12 +164,11 @@ uint32_t __cdecl HookAdd(void* self, ResourceKey key, void* preset) {
     if(g_enabled.load(std::memory_order_acquire)) Invalidate(key);
     return result;
 }
-bool __cdecl HookRemove(void* self, ResourceKey key, uint32_t index) {
+void __cdecl HookRemove(void* self, ResourceKey key, uint32_t index) {
     const RemoveFn original=g_remove.load(std::memory_order_acquire);
-    if (!original) return false;
-    const bool result=original(self,key,index);
-    if(result && g_enabled.load(std::memory_order_acquire)) Invalidate(key);
-    return result;
+    if (!original) return;
+    original(self,key,index);
+    if(g_enabled.load(std::memory_order_acquire)) Invalidate(key);
 }
 
 template<typename F> void* Bind(std::atomic<F>& slot, F target, void* wrapper, const char* name) {
