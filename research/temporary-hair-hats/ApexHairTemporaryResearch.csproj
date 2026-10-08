@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{9C17EF36-AEA9-4323-A421-BF89580DB29D}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ApexHairTemporaryResearch</RootNamespace>
+    <AssemblyName>ApexHairTemporaryResearch</AssemblyName>
+    <TargetFrameworkVersion>v2.0</TargetFrameworkVersion>
+    <NoStdLib>True</NoStdLib>
+    <PlatformTarget>x86</PlatformTarget>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <IntermediateOutputPath>obj\Release\</IntermediateOutputPath>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="TemporaryCasHairExperiment.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="mscorlib"><HintPath>..\..\external\MonoPatcher\libs\Sims3\mscorlib.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="System"><HintPath>..\..\external\MonoPatcher\libs\Sims3\System.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="SimIFace"><HintPath>..\..\external\MonoPatcher\libs\Sims3\SimIFace.dll</HintPath><Private>False</Private></Reference>
+    <Reference Include="UI"><HintPath>..\..\external\MonoPatcher\libs\Sims3\UI.dll</HintPath><Private>False</Private></Reference>
+    <ProjectReference Include="..\..\external\MonoPatcher\MonoPatcher\MonoPatcher.csproj">
+      <Project>{91460F7B-9C23-4A43-AB52-95EAC8D52D93}</Project>
+      <Name>MonoPatcher</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
