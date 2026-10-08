@@ -25,6 +25,38 @@ class StaticInspectorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 analyze(invalid)
 
+    def test_rejects_bad_pe_pointer(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "out_of_bounds.exe"
+            data = bytearray(0x200)
+            data[:2] = b"MZ"
+            data[0x3C:0x40] = (0xFFFFFF00).to_bytes(4, "little")
+            path.write_bytes(data)
+            with self.assertRaises(ValueError):
+                analyze(path)
+
+    def test_rejects_missing_optional_header(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "no_optional.exe"
+            data = bytearray(0x200)
+            data[:2] = b"MZ"
+            data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+            data[0x80:0x84] = bytes((80, 69, 0, 0))  # exact PE signature
+            data[0x84:0x86] = (0x14C).to_bytes(2, "little")
+            data[0x86:0x88] = (1).to_bytes(2, "little")
+            path.write_bytes(data)
+            with self.assertRaises(ValueError):
+                analyze(path)
+
+    def test_unchanged_input_file(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "invalid.exe"
+            payload = b"MZ" + b"X" * 0x200
+            path.write_bytes(payload)
+            with self.assertRaises(ValueError):
+                analyze(path)
+            self.assertEqual(path.read_bytes(), payload)
+
 
 if __name__ == "__main__":
     unittest.main()
