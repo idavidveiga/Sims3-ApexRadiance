@@ -30,14 +30,19 @@ The native `IUIManager.GetCASThumbnailImage` returns an image/drawable handle. T
 - On `ICASUtils.PartDataGetPresetId`, additionally include preset index in the key.
 - On `PartDataAddDesignPreset` / `PartDataRemoveDesignPreset`, invalidate all related entries.
 - Limit to 4,096 counts and 16,384 preset IDs; entries expire after 30 seconds.
-- Every 32nd hit re-queries the game's native result and invalidates entries if they disagree.
+- The first repeat is verified against the game's native result before the entry may serve cache hits; then every 32nd repeat is checked again.
+- Native call count and elapsed time are recorded to determine whether the cache is worth keeping.
 - Turning the feature off clears the cache; previously-resolved wrappers remain pass-through.
+
+### Offline signature check
+
+Run `python tests/verify_sims3_cas_signatures.py --ui <path-to-extracted-UI.dll> --simiface <path-to-extracted-SimIFace.dll>` on your own game files. This checks managed signatures and `ResourceKey` fields only, **not** the x86 native calling convention.
 
 ### Risks / next steps
 
 **Native ABI remains unverified:** the game uses an old embedded x86 Mono. The `ResourceKey` blittable layout was checked in `SimIFace.dll` (32-bit type ID, 32-bit group ID, 64-bit instance ID), but the exact native ICall calling convention and marshaling must be established on the target executable before enabling this switch.
 
-**No game or CI build has been run.** The feature must stay off by default pending ABI verification.
+**No game or CI build has been run.** The Overview bulk Performance switch intentionally excludes this experimental option. The feature must stay off by default pending ABI verification.
 
 Before release:
 1. Verify call ABI and method dispatch on TS3W.exe Steam 1.67.2 with a debugger, then repeat validation for other builds.
