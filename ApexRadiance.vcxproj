@@ -223,6 +223,7 @@
     <ClInclude Include="features\fast_cas.h" />
     <ClInclude Include="features\fast_create_a_style.h" />
     <ClInclude Include="features\fast_cas_catalog.h" />
+    <ClInclude Include="features\cas_catalog_scheduler.h" />
     <ClInclude Include="features\compositor_readback.h" />
     <ClInclude Include="features\fast_crc.h" />
     <ClInclude Include="features\fast_memory.h" />
