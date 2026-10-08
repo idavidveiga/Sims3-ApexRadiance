@@ -1,0 +1,60 @@
+name: Apex Win32 CAS diagnostic build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/cas-performance-native-only
+    paths:
+      - "ApexRadiance.vcxproj"
+      - "apex_gui.cpp"
+      - "features/ts3_mono_runtime_probe.cpp"
+      - "features/ts3_mono_runtime_probe.h"
+      - "patches/performance_patches.cpp"
+      - ".github/workflows/apex-cas-win32-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-win32:
+    name: Build ApexRadiance.asi (Win32 diagnostic)
+    runs-on: windows-2022
+    timeout-minutes: 50
+    steps:
+      - name: Checkout native code
+        uses: actions/checkout@v4
+      - name: Install x86 static dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          if (-not (Test-Path $vcpkg)) { $vcpkg = 'C:\vcpkg\vcpkg.exe' }
+          if (-not (Test-Path $vcpkg)) { throw 'Windows runner vcpkg.exe not found' }
+          & $vcpkg install '--triplet=x86-windows-static' '--x-manifest-root=.' '--x-install-root=vcpkg_installed'
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg failed: $LASTEXITCODE" }
+      - name: Build Release Win32 with normal ABI safety gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe'
+          if (-not (Test-Path $msbuild)) { throw 'MSBuild v143 not found' }
+          & $msbuild ApexRadiance.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:VcpkgEnableManifest=false /m /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "Win32 build failed: $LASTEXITCODE" }
+      - name: Collect diagnostic ASI
+        shell: pwsh
+        run: |
+          $asi = Get-ChildItem -Path . -Recurse -Filter ApexRadiance.asi |
+                 Where-Object { $_.FullName -notlike '*vcpkg_installed*' } |
+                 Select-Object -First 1
+          if (-not $asi) { throw 'No ApexRadiance.asi built' }
+          New-Item -ItemType Directory -Force -Path cas-diagnostic | Out-Null
+          Copy-Item $asi.FullName cas-diagnostic/ApexRadiance.asi
+          Get-FileHash -Algorithm SHA256 $asi.FullName | Format-List
+      - name: Upload diagnostic build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ApexRadiance-CAS-Diagnostic-Win32
+          path: cas-diagnostic/ApexRadiance.asi
+          if-no-files-found: error
+          retention-days: 7
