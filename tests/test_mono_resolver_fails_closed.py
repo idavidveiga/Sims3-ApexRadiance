@@ -57,6 +57,22 @@ class MonoResolverSafetyTests(unittest.TestCase):
         )[0]
         self.assertIn("#ifndef APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS", cast)
 
+    def test_shared_resolver_reports_real_callbacks_not_just_enabled_state(self):
+        source = (ROOT / "features" / "fast_create_a_style.cpp").read_text(encoding="utf-8")
+        cache = (ROOT / "features" / "fast_cas_catalog.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "features" / "fast_create_a_style.h").read_text(encoding="utf-8")
+        gui = (ROOT / "apex_gui.cpp").read_text(encoding="utf-8")
+        self.assertIn("g_resolverCalls.fetch_add(1", source)
+        self.assertIn("g_resolverIdentified.fetch_add(1", source)
+        self.assertIn("g_casMethodsObserved.fetch_add(1", source)
+        self.assertIn("g_casMethodsWrapped.fetch_add(1", source)
+        self.assertIn("std::string ResolverStatusText()", source)
+        self.assertIn("std::string ResolverStatusText();", header)
+        self.assertIn("FastCreateAStyle::ResolverStatusText()", cache)
+        self.assertIn("No CAS preset methods bound yet", cache)
+        self.assertIn("CardNote(Performance::FastCasCatalogStatus().c_str())", gui)
+        self.assertIn("#ifdef APEX_CAS_PRESET_CACHE_PILOT", gui)
+
     def test_known_runtime_anchors_accept_only_apex_owned_hook_trampolines(self):
         source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
         block = source.split("std::string InspectMonoRuntimeAnchors() {", 1)[1].split(
