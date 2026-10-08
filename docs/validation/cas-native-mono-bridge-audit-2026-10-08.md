@@ -1,0 +1,100 @@
+# CAS Hair/Hats native Mono bridge — validation boundary (2026-10-08)
+
+**Conclusion: source contract VERIFIED, C++ plan tests PASSED, Windows x86
+build PASSED; native JIT bridge NOT VALIDATED, NOT ENABLED.**
+
+Do not claim a playable Hair/Hats improvement. This report separates
+offline facts from runtime assumptions. Input binaries remain user-owned,
+are never committed, and the original game files have not been modified.
+
+## Inputs verified offline
+
+- Original player-supplied `gameplay.package`: extracted S3SA
+  `UI.dll`, Instance `0xF7C3ADE896D4E765`.
+- `UI.dll` SHA-256:
+  `c78716f1eb0191f35b12eb8dfa4b47ef1bc1e22edcf88234eb633569074dec10`.
+- Original player-supplied `TS3.exe` SHA-256:
+  `7352dd6e599f4475f812bbca19bbc7e5d8e84bbd5b6d21acaac9b1c5236adfe4`.
+- `TS3.exe` x86 PE32 `.text`: RVA `0x1000`, virtual length
+  **12,441,402 bytes**, on-disk length **12,443,648 bytes**,
+  on-disk Shannon entropy approximately **8.0000 bits/byte**.
+- Loaded-memory evidence from a **previous** game session:
+  extended `.text` scan completed with no unreadable sections,
+  one historical signature candidate at `RVA 0xA826A0`.
+  Candidate bytes begin `81 EC 08 08 00 00 53 55 8B AC 24 14 08`.
+  That prologue does **not** appear in the on-disk `.text`.
+  These facts do not establish what native function it is.
+
+## Original UI.dll method validation: **8 of 8 pass**
+
+All eight names, MethodDef indexes, IL lengths, exact SHA-256 digests
+and known CALL/CALLVIRT edges were checked independently against the
+actual extracted `UI.dll` using the private offline metadata parser.
+The equivalent public repeatable check is
+`tools/verify_hair_ui_contract.py` applied to the user's original
+decoded DLL. No EA game assembly is bundled with the verifier.
+
+| Original CASHair method | Token | IL length | Original call edge |
+|---|---|---:|---|
+| SetHairTypeCategory | `0x060018E4` | 215 | 1× PopulateTypesGrid |
+| RefreshHairGrid | `0x060018EA` | 14 | 1× PopulateTypesGrid |
+| OnTrashButtonClick | `0x060018ED` | 127 | 1× PopulateTypesGrid |
+| OnSaveButtonClick | `0x060018F0` | 353 | 1× PopulateTypesGrid |
+| OnUndo | `0x060018F9` | 14 | 1× PopulateTypesGrid |
+| OnRedo | `0x060018FA` | 14 | 1× PopulateTypesGrid |
+| PopulateTypesGrid | `0x06001918` | 1,621 | 2× AddHairTypeGridItem |
+| AddHairTypeGridItem | `0x0600191B` | 292 | original ItemGrid append |
+
+This shows the *managed method identity and calling graph*, **not**
+a native method address or per-method JIT trampoline. In the original
+method, the two `AddHairTypeGridItem` calls belong to default/extra
+preset branches; each part group must remain atomic. The 2026-10-08
+MonoPatcher full-method prototype was **withdrawn** after game hair
+and hats vanished; removing it restored the catalogue. No replacement
+is active.
+
+## Native code readiness checks
+
+- `features/cas_hair_population_plan.h` uses original-order
+  `FeaturedStore → PartGroups → Finalize` logic and keeps entire
+  default/extra-preset groups together.
+- A recursive mutex now protects plan state from cross-thread access
+  and permits game-thread reentrant category changes; foreign-thread
+  `Begin` is rejected without altering the active generation.
+- Regression tests:
+  `tests/test_cas_hair_population_plan.cpp` (8 groups).
+- CAS native CI successful:
+  `https://github.com/idavidveiga/Sims3-ApexRadiance/actions/runs/37734353459`.
+- Win32 Apex build successful on the immediately previous project head:
+  `https://github.com/idavidveiga/Sims3-ApexRadiance/actions/runs/37733737832`.
+  The later mutex change touches only the header, which is registered
+  as a project include; the **new head's Win32 build has not been
+  independently completed by this report**.
+- The game bridge and runtime callbacks to `CASHair.PopulateTypesGrid`
+  remain **unimplemented**. The header's successful tests cannot
+  measure Hair/Hats performance.
+- The experimental native Mono ICall caches still explicitly return
+  `false` unless `APEX_ENABLE_UNVERIFIED_TS3_MONO_ICALLS` is
+  deliberately enabled at compile time. Leave this macro **OFF**.
+- The production `ApexRadiance.vcxproj` does not compile or link the
+  withdrawn MonoPatcher-managed test project.
+
+## Remaining blockers before enabling a native live hook
+
+1. Observe the **loaded** native Mono runtime code in the actual game
+   process and identify a specific `mono_generate_code`/JIT entry by
+   actual caller/callee and `MonoMethod` identity, not merely by bytes.
+2. Prove the x86 calling convention, argument/stack layout, original
+   trampoline lifetime and detour coexistence with the installed
+   mod/ASI stack. Do not infer the ABI from a Steam signature.
+3. Prove an Apex-owned simulator/UI-thread continuation that preserves
+   both original managed enumerator/finally regions, their selections,
+   Store/CC filters and final UI notifications.
+4. Test that all native gates fail closed when these facts are absent,
+   then compare game behaviour and performance with/without the patch.
+5. Repeat tests with the temporary patching framework fully removed;
+   **zero dependency on MonoPatcher** in the final ASI/ZIP.
+
+**Disposition: fail closed.** Do not enable either native ICall cache
+or a new managed-method detour, and do not deliver a new installable
+Hair/Hats optimization on the evidence available here.
