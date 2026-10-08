@@ -1,7 +1,6 @@
 # Create-a-Sim category switching and grid scheduling
 
-**Status:** design for the next managed-UI patch. The current native `FastCasCatalog` feature is experimental and
-disabled by default. This page does **not** claim that viewport-first loading is already implemented.
+**Status:** a source-only managed incremental Hair/Hats prototype is available under `experiments/cas-hair-incremental`. It needs MonoPatcher and an independently built script package; it has not been compiled or tested in-game. The native CAS cache remains experimental and off by default. Visible-first loading is not implemented.
 
 ## Verified code paths
 
