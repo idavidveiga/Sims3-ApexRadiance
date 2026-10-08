@@ -30,6 +30,17 @@ class MonoResolverSafetyTests(unittest.TestCase):
         self.assertIn("call[0]!=0xE8", guard)
         self.assertIn("std::nullopt", guard)
 
+    def test_experimental_feature_is_available_only_on_ea169(self):
+        source = (ROOT / "patches" / "performance_patches.cpp").read_text(encoding="utf-8")
+        block = source.split("#if defined(APEX_CAS_PRESET_CACHE_PILOT)", 1)[1].split(
+            "#endif", 1)[0]
+        self.assertIn("VersionBit(GameVersion::EA)", block)
+        self.assertIn("VERSION_STEAM", block)
+        registration = source.split("APEX_REGISTER_FEATURE(FastCasCatalogPatch,", 1)[1].split(
+            "APEX_REGISTER_FEATURE(FastCreateAStylePatch,", 1)[0]
+        self.assertIn("kFastCasCatalogSupportedVersions", registration)
+        self.assertIn(".enabledByDefault = false", registration)
+
     def test_known_runtime_anchors_accept_only_apex_owned_hook_trampolines(self):
         source = (ROOT / "features" / "ts3_mono_runtime_probe.cpp").read_text(encoding="utf-8")
         block = source.split("std::string InspectMonoRuntimeAnchors() {", 1)[1].split(
