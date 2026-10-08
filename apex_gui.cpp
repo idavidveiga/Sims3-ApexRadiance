@@ -930,20 +930,20 @@ void PerformanceCard() {
 
     ImGui::PushID("PerformanceCreateASim");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Shirt, "Create-a-Sim", "Experimental category preset metadata cache", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Shirt, "Create-a-Sim", "CAS catalog research (native ABI validation pending)", nullptr, nullptr);
         ApexUi::CardDivider();
         FeatureSwitchRow(Performance::kFastCasCatalogName, "Faster CAS catalog",
-                         "Caches repeated clothing and hair preset metadata; does not cache image handles", true);
+                         "Not available in regular builds; requires a verified native TS3 Mono ABI", true);
     }
     ApexUi::EndCard();
     ImGui::PopID();
 
     ImGui::PushID("PerformanceCreateAStyle");
     if (ApexUi::BeginCard("##Card")) {
-        ApexUi::CardHeader(IconId::Palette, "Create-a-Style", "Faster pattern thumbnails and smoother browsing", nullptr, nullptr);
+        ApexUi::CardHeader(IconId::Palette, "Create-a-Style", "Create-a-Style thumbnail research (not yet optimized)", nullptr, nullptr);
         ApexUi::CardDivider();
         FeatureSwitchRow(Performance::kFastCreateAStyleName, "Faster Create-a-Style",
-                         "Reuses finished pattern thumbnails so scrolling and reopening pattern lists need less work");
+                         "Profiler-only experiment; never reuses native thumbnail handles");
     }
     ApexUi::EndCard();
     ImGui::PopID();
