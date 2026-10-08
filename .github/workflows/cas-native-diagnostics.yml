@@ -9,6 +9,8 @@ on:
       - "features/cas_hair_grid_session.h"
       - "features/cas_hair_population_plan.h"
       - "features/cas_hair_native_bridge.h"
+      - "features/cas_hair_sim_pump.h"
+      - "features/cas_hair_sim_pump.cpp"
       - "tests/test_cas_hair_native_bridge.cpp"
       - "features/ts3_mono_xref.h"
       - "features/ts3_mono_method_identity.h"
