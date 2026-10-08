@@ -1,6 +1,17 @@
 # Temporary MonoPatcher Hair/Hats proof of concept (EA App 1.69)
 
-**Status: research protocol only. No MonoPatcher package or dependency has
+**USER TEST FAILED, 2026-10-08:** the managed full-method
+replacement registered successfully (`APPLIED: 1`), but in game the
+Hair/Hats catalog displayed no items. This invalidates the hypothesis
+that the reconstructed replacement safely preserves the original method.
+`research/temporary-hair-hats/TemporaryCasHairExperiment.cs` has been
+replaced with a no-patch diagnostic class. Old builds/artefacts MUST NOT
+be reused. Remove `ApexHairTemporaryResearch.package` and restart
+the game without saving. Do not attempt another full-method replacement
+without a faithful comparison and concrete evidence about simulator
+task ownership and cancellation.
+
+**Original status (superseded): research protocol only. No MonoPatcher package or dependency has
 been added to Apex, and no playable patch has been implemented.**
 
 ## Goal
