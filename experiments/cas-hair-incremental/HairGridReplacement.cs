@@ -1,6 +1,7 @@
 // Experimental, opt-in managed UI patch for the TS3 hair/hat catalogue.
 // Not a replacement UI.dll and not enabled by the ApexRadiance.asi performance toggle.
-// License: MIT. Original implementation by @idavidveiga.
+// Experimental implementation for @idavidveiga's Apex fork; follows the repository license.
+// API behavior cross-checked against original UI.dll metadata and public NRaas CAS references.
 //
 // Requires MonoPatcher by LazyDuchess for method replacement, and references to the user's own EA assemblies.
 // Target: Sims3.UI.CAS.CASHair.PopulateTypesGrid(bool) in the supplied original UI.dll.
