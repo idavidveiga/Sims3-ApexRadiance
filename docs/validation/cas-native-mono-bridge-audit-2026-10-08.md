@@ -234,3 +234,68 @@ The user log also lists `MonoPatcher.asi` among Game/Bin wrappers.
 This verifies *file presence in the startup inventory only*, not that
 it installed an active hook. The final native Apex build must not
 depend on this temporary research component.
+
+
+## Follow-up: rejecting the stale ICall resolver guess and identifying a viable bridge
+
+The signature `81 EC 08 08 00 00 53 55 8B AC 24 14 08` had also
+been used as a cross-version fallback in `fast_create_a_style.cpp` for
+`mono_lookup_internal_call`. The player's fourth live log associates these
+bytes with RVA `0xA826A0`, whose four callers pass one argument and cache
+the returned EAX at `[pointer + 0x20]`. **That is not verified as an ICall
+resolver.** Its cross-version pattern fallback has been removed; EA 1.69
+and unknown builds can no longer enable the experimental resolver via that
+guess. The separately researched Steam address is retained behind the
+existing off-by-default experimental ABI gate, not promoted as proof of
+EA compatibility.
+
+Important distinction: standard Mono documents
+`mono_compile_method(MonoMethod*)` as a one-argument interface that returns
+native code (see `mono/mono/metadata/object.c`). Therefore argument count
+alone does **not** exclude every possible compilation-related API. What
+the player's observation excludes is claiming the four-argument
+`mono_generate_code` entry from those bytes. The cache-at-offset-`0x20`
+behavior makes a method-header helper plausible, but exact identity still
+requires independent proof.
+
+### Focused read-only baseline, not another signature sweep
+
+Developer > Performance > CAS native runtime inspection now exposes
+`Inspect known Mono runtime anchors (read-only)`. It checks the already
+resolved GameAddress entries `MonoTypeGetObject` and `MonoDomainFree`,
+verifies their known entry bytes and logs their executable RVAs.
+It does **not** scan the full image again, invoke Mono, read arbitrary
+`MonoMethod` objects, hook a function or alter a game page.
+
+These are **independent known-runtime anchors**, not candidates for the
+JIT or a proof of the Mono method ABI. If either appears unavailable or
+modified by another hook, the inspector records that and does not
+extrapolate from the entry bytes.
+
+### Exact evidence needed for a future native Hair/Hats bridge
+
+1. Establish a loaded-image call graph from independently verified Mono
+   APIs, using real x86 instruction boundaries, not only raw `E8`
+   offsets or a Steam address transplanted into EA 1.69.
+2. Identify the *specific* runtime `MonoMethod` for
+   `UI.dll :: Sims3.UI.CAS.CASHair.PopulateTypesGrid(bool)`, whose
+   original MethodDef is `0x06001918`, and cross-check owning assembly,
+   class, signature, and original IL hash. No blind pointers are callable.
+3. Determine how that method's compiled entry is obtained and remains
+   valid across JIT, domain and CAS lifecycle changes. Verify executable
+   ownership and each native x86 parameter, register, calling convention,
+   stack cleanup and trampoline boundary independently.
+4. Establish a safe same-simulator-thread continuation for the parent
+   enumerations and preserve original Store, presets, selection, grid
+   finalization and thumbnail ownership. The current
+   `HairPopulationPlan` is *only* the offline ordering core.
+5. Enable an opt-in experimental hook **only after** independent
+   identity/ABI proof and explicit compatibility checks. Otherwise
+   decline installation and run the original CAS. Compare cold/warm
+   category and scrolling timings, verify visual completeness, and
+   remove all temporary research tools from the final release.
+
+The new source-only CI regression checks that the invalid EA signature is
+not restored as an ICall resolver and that the focused anchor inspector
+contains no writes or Detours install call. Source-level checks and an
+x86 build are not live-game hook validation.
