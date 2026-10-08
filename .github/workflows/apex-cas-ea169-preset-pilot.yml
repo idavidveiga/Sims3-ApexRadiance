@@ -1,0 +1,90 @@
+name: Apex CAS EA169 preset-cache pilot (isolated Win32)
+# This is a separate experimental ASI build. Never merge its opt-in define
+# into production. The normal Win32 build still has no Mono ICall hooks.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/cas-performance-native-only
+    paths:
+      - "features/fast_create_a_style.cpp"
+      - "features/fast_cas_catalog.cpp"
+      - "features/fast_cas_catalog.h"
+      - "ApexRadiance.vcxproj"
+      - ".github/workflows/apex-cas-ea169-preset-pilot.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    name: Build EA169 x86 CAS preset-cache experimental ASI
+    runs-on: windows-2022
+    timeout-minutes: 50
+    steps:
+      - name: Checkout native Apex
+        uses: actions/checkout@v4
+      - name: Install x86 static dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $vcpkg=Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          if (!(Test-Path $vcpkg)) { $vcpkg='C:\vcpkg\vcpkg.exe' }
+          if (!(Test-Path $vcpkg)) { throw 'vcpkg missing' }
+          & $vcpkg install '--triplet=x86-windows-static' '--x-manifest-root=.' '--x-install-root=vcpkg_installed'
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg failed' }
+      - name: Compile isolated EA169 native preset-cache pilot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $msbuild='C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe'
+          if (!(Test-Path $msbuild)) { throw 'MSBuild missing' }
+          & $msbuild ApexRadiance.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:VcpkgEnableManifest=false /p:ApexFlavorDefines=APEX_CAS_PRESET_CACHE_PILOT /m /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "Experimental x86 ASI build failed: $LASTEXITCODE" }
+      - name: Package single-ASl experiment and explicit usage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $asi=Get-ChildItem -Path . -Recurse -Filter ApexRadiance.asi |
+            Where-Object { $_.FullName -notlike '*vcpkg_installed*' } |
+            Select-Object -First 1
+          if (!$asi) { throw 'No ApexRadiance.asi produced' }
+          New-Item -ItemType Directory -Force -Path cas-ea169-experimental | Out-Null
+          Copy-Item $asi.FullName cas-ea169-experimental/ApexRadiance.asi
+          @'
+          APEX CAS PRESET CACHE / EA 1.69.47.024017 ONLY
+          EXPERIMENTAL - NOT A RELEASE; NOT A PROVEN HAIR/HATS LOADING SPEEDUP.
+
+          Only native resource-preset metadata cache is enabled at compile time.
+          CASHair.PopulateTypesGrid(bool) and its IL are NOT modified.
+          No MonoPatcher libraries or third-party C# plugins are included.
+
+          Install only in an isolated game test setup, with a backup of the
+          current ApexRadiance.asi. Remove MonoPatcher.asi and
+          Sims3MonoModder.asi first: this pilot deliberately refuses
+          to install an ICall resolver hook if either loader is present.
+          Enable the Fast CAS Catalog / preset cache option under the
+          Apex Performance settings and reopen the Hair/Hats catalog.
+          Use the Apex log to check for "[CAS ICall Pilot]" and
+          "[FastCasCatalog] Resolved" and review cache hits.
+
+          If the feature refuses to start, it leaves the original CAS code
+          untouched. If Hair/Hats is missing, unstable, or the game crashes,
+          remove the experimental ASI and restore the previous one; do not
+          save a game while investigating such a failure.
+
+          This build cannot prove an acceleration before testing.
+          '@ | Set-Content -Path cas-ea169-experimental/EXPERIMENT.txt -Encoding UTF8
+          $hash=(Get-FileHash cas-ea169-experimental/ApexRadiance.asi -Algorithm SHA256).Hash.ToLower()
+          "$hash  ApexRadiance.asi" | Set-Content -Path cas-ea169-experimental/SHA256SUMS.txt
+          Get-FileHash cas-ea169-experimental/ApexRadiance.asi -Algorithm SHA256 | Format-List
+      - name: Upload isolated EA169 CAS preset-cache experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: ApexRadiance-EA169-CAS-PresetCache-Experimental-Win32
+          path: cas-ea169-experimental/
+          if-no-files-found: error
+          retention-days: 14
