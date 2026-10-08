@@ -1,0 +1,39 @@
+name: Temporary Hair/Hats MonoPatcher Research (NOT Apex Release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/cas-performance-native-only]
+    paths:
+      - "research/temporary-hair-hats/**"
+      - ".github/workflows/cas-temporary-monopatcher-research.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-disposable-managed-prototype:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout independent Apex research sources
+        uses: actions/checkout@v4
+      - name: Checkout temporary MonoPatcher 0.3.0 reference only
+        uses: actions/checkout@v4
+        with:
+          repository: LazyDuchess/MonoPatcher
+          ref: 2fa43bf18e4bbc43620f2d3275ad1ad27109877c
+          path: external/MonoPatcher
+          persist-credentials: false
+      - name: Install MSBuild
+        uses: microsoft/setup-msbuild@v2
+      - name: Compile managed proof (never linked into ApexRadiance.asi)
+        shell: pwsh
+        run: |
+          msbuild research/temporary-hair-hats/ApexHairTemporaryResearch.csproj /m:1 /p:Configuration=Release /p:Platform=AnyCPU /v:minimal
+      - name: Upload research-only DLL (requires packaging before game test)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RESEARCH_ONLY_ApexHairMonoPatcher_DLL
+          path: research/temporary-hair-hats/bin/Release/ApexHairTemporaryResearch.dll
+          if-no-files-found: error
