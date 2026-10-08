@@ -224,3 +224,40 @@ The user requires one final `ApexRadiance.asi` with NO mandatory
 IPC is installed. Do not copy S3IO's `Simulator.Sleep(0)` into
 `AddHairTypeGridItem`: this caused disappearing Hair/Hats in
 the earlier managed experiment.
+
+
+## Read-only bridge entrypoint evidence in the Apex ASI (current progress)
+
+Added in `features/ts3_cas_mono_sites.h` and integrated into the
+existing bounded, optional developer `ts3_mono_runtime_probe.cpp`
+`Scan entire loaded .text` reader:
+
+- `MonoScriptHost::FindClass`: independent TS3 1.2.3.1 entry signature;
+- `mono_class_get_methods`: native MonoClass method enumeration;
+- `MonoScriptHost::ProcessTasks`: simulation-thread task pump;
+- `MonoScriptHost::InitHeap`: contains an absolute pointer to the
+  process's `g_ScriptVM` host global near entry +2.
+
+The four masked patterns are checked in the very same 64-KiB copied
+blocks used by the existing developer scanner. A bounded 50-byte tail
+handles chunk-crossing patterns; duplicates are counted, and matches
+entirely inside a prefix are excluded to prevent double-counting.
+Each pattern is prefixed by an efficient first-byte rejection to avoid
+wasting render-frame time. Unreadable pages reset contiguous state.
+Candidate RVAs are logged only as READ-ONLY structural evidence;
+a unique byte pattern neither proves ABI nor allows executing it.
+
+The new pure C++ unit tests
+`tests/test_ts3_cas_mono_sites.cpp` replay synthetic full-length
+patterns across 1-, 7-, 16- and 37-byte chunk boundaries, reject
+mismatches, tolerate masked bytes and refuse ambiguous duplicates.
+These are synthetic tests, not evidence the EA 1.69 addresses actually
+match. No new .asi gameplay bridge, method invocation, or CAS speedup
+is claimed. No additional user-side logs or tests are requested.
+
+If all four sites are uniquely identified in an actual EA build, the
+next technical hurdle is STILL an independently verified
+simulation-thread `ProcessTasks` adapter and a managed-state-safe
+`PopulateTypesGrid` replacement. The native-only integration must
+preserve the two finally/enumerator regions and Store/preset logic.
+If either piece cannot be safely proven, leave the original CAS active.
