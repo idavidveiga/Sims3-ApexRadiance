@@ -302,7 +302,7 @@ namespace VeigaApexCasHairExperimental
                 // ObjectDesigner is a global native state machine: don't retain its state across yields.
                 ObjectDesigner.SetCASPart(part.Key);
                 activeWardrobe = model.ActiveWardrobeContains(part);
-                int selectedPresetIndex = ObjectDesigner.GetDesignPresetIndexFromId(ObjectDesigner.DefaultPresetId);
+                uint selectedPresetIndex = ObjectDesigner.GetDesignPresetIndexFromId(ObjectDesigner.DefaultPresetId);
                 string xml = ObjectDesigner.GetDesignPreset(selectedPresetIndex);
                 if (String.IsNullOrEmpty(xml))
                 {
