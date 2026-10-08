@@ -225,6 +225,7 @@
     <ClInclude Include="features\fast_create_a_style.h" />
     <ClInclude Include="features\fast_cas_catalog.h" />
     <ClInclude Include="features\ts3_mono_runtime_probe.h" />
+    <ClInclude Include="features\ts3_mono_xref.h" />
     <ClInclude Include="features\cas_catalog_scheduler.h" />
     <ClInclude Include="features\cas_hair_grid_session.h" />
     <ClInclude Include="features\cas_hair_population_plan.h" />
