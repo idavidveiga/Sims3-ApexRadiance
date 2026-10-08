@@ -16,6 +16,7 @@
 #include <cstring>
 #include <format>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Ts3MonoRuntimeProbe {
