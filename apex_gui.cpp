@@ -1550,6 +1550,26 @@ void StartCasHairTimeline() {
     LOG_INFO("[CAS Hair Timeline] Close the Apex overlay; click Hair, Hats, Hair, Hats. LEFT-CLICK events are automatic markers.");
 }
 
+// The user's earlier test was missing resolver counters because the manual 90s
+// recorder was not started. Automatically capture them in the isolated pilot
+// build, even while the Apex overlay is closed and without any extra user step.
+// This only reads existing atomics; it does not install hooks or modify CAS.
+void AutoReportCasPilot() {
+#if defined(APEX_CAS_PRESET_CACHE_PILOT)
+    static ULONGLONG nextSampleMs = 0;
+    if (!FastCasCatalog::Running()) {
+        nextSampleMs = 0;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (nextSampleMs && now < nextSampleMs) return;
+    nextSampleMs = now + 15000;
+    LOG_INFO(std::format("[CAS Pilot Evidence] {} | {}", 
+                         FastCreateAStyle::ResolverStatusText(),
+                         FastCasCatalog::StatusText()));
+#endif
+}
+
 void UpdateCasHairTimeline() {
     if (!g_casHairTimeline.recording) return;
     const ULONGLONG now = GetTickCount64();
@@ -4137,6 +4157,7 @@ class GuiClient final : public Overlay::Client {
     }
 
     bool AlwaysDraw() override {
+        AutoReportCasPilot(); // passive, automatic every 15s in EA169 pilot builds
         UpdateCasHairTimeline(); // keep sampling while the Apex menu is closed
         UpdateMenuAvailability();
         UpdateHint();
