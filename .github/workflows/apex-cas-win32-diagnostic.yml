@@ -9,6 +9,8 @@ on:
       - "ApexRadiance.vcxproj"
       - "features/cas_hair_population_plan.h"
       - "features/cas_hair_native_bridge.h"
+      - "features/cas_hair_sim_pump.h"
+      - "features/cas_hair_sim_pump.cpp"
       - "features/cas_hair_grid_session.h"
       - "features/cas_catalog_scheduler.h"
       - "apex_gui.cpp"
