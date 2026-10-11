@@ -91,6 +91,7 @@
 #include "object_light_bridge.h"
 #include "recorder.h"
 #include "game_addresses.h"
+#include "game_version.h"
 #include "memory_patch.h"
 #include "apex_log.h"
 #include "hook_guard.h"
@@ -2538,8 +2539,12 @@ void DropWallSamples(uintptr_t batch, float dy) {
 // lot space at +0; 0 bottom-left, 2 bottom-right, 3 top-right, 4 top middle, 5 top-left) note each cell's drawn foot and
 // tops on the wall the game takes for it (tile +0x58 + edge * 4, edge = 0x006A43B0(dir)); the wall's samples then spread
 // its rows over the drawn height of their column, as the block is drawn (WallSamplesHook).
-constexpr uintptr_t kWallUv = 0x00C38530;
+constexpr uintptr_t kWallUv = 0x00C38530; // Steam 1.67
 constexpr uintptr_t kWallUvCalls[2] = {0x00C387B5, 0x00C387CC};
+constexpr uintptr_t kWallUvEa169 = 0x00C369B0; // EA 1.69.47, verified in a read-only process capture
+constexpr uintptr_t kWallUvCallsEa169[2] = {0x00C36C35, 0x00C36C4C};
+const BYTE kWallUvEa169Prologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0xA8, 0x00, 0x00, 0x00};
+uintptr_t g_wallUvWriter = kWallUv;
 const BYTE kWallUvCallBytes[2][5] = {{0xE8, 0x76, 0xFD, 0xFF, 0xFF}, {0xE8, 0x5F, 0xFD, 0xFF, 0xFF}};
 using WallUv_t = void(__thiscall*)(void* geo, uintptr_t mgr, int x, int z, int dir, int mode);
 bool g_wallUvReady = false;
@@ -2735,7 +2740,7 @@ void __fastcall WallUvHook(void* geo, void*, uintptr_t mgr, int x, int z, int di
             recut = off > 0.02f && WriteCellCrop(geo, 0x1000, 0x1000); // (0 + 8) x 512: f = 0
         }
     }
-    reinterpret_cast<WallUv_t>(kWallUv)(geo, mgr, x, z, dir, mode);
+    reinterpret_cast<WallUv_t>(g_wallUvWriter)(geo, mgr, x, z, dir, mode);
     if (recut) {
         WriteCellCrop(geo, k.w3, k.w5);
         int16_t vb = 0, vt = 0;
@@ -5681,6 +5686,7 @@ bool OpeningsOn() {
 // 0.3 m over it (the story above never; pools and odd values never); none: story * 3 as before. The call replaces the
 // "movss xmm0,[ebp+10h]" of the outdoor branch; the parameter slot carries the result (it is read only there).
 constexpr uintptr_t kWallBaseSite = 0x006AB32C;
+constexpr uintptr_t kWallBaseSiteEa169 = 0x006AC4DC;
 const BYTE kWallBaseBytes[] = {0x84, 0xC0, 0x74, 0x07, 0xF3, 0x0F, 0x10, 0x45, 0x10, 0xEB, 0x12}; // test al,al; je +7; movss xmm0,[ebp+10h]; jmp +0x12
 bool g_wallBaseReady = false;
 std::atomic<long> g_wallBaseRaised{0}, g_wallBaseKept{0}, g_wallBaseLogged{0};
@@ -5747,6 +5753,7 @@ extern "C" float __cdecl IndoorWallBase(const BYTE* wall, float tile) {
 // of one diagonal were lit from 63.325 outside and 61.314 inside, 2 m apart; the floor for the outside face lifted its
 // light above the sconce). With the option, a diagonal's indoor face takes story * 3 ([ebp+10h]) as its outdoor face does.
 constexpr uintptr_t kIndoorBaseSite = 0x006AB340;
+constexpr uintptr_t kIndoorBaseSiteEa169 = 0x006AC4F0;
 const BYTE kIndoorBaseBytes[] = {0xF3, 0x0F, 0x10, 0x40, 0x78}; // movss xmm0,[eax+78h]
 volatile bool g_wallBaseFlag = false; // g_foundationWallsOn as a plain byte for the thunk
 bool g_indoorBaseReady = false;
@@ -8696,31 +8703,68 @@ bool Install(std::string& error) {
         g_floorMaskReady = MemPatch::WriteBytes(kOutdoorAlpha, std::vector<BYTE>(call, call + 7), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
-    // Outside walls on foundations: an outdoor room's walls take the floor they stand on (OutdoorWallBase); Steam bytes only
-    g_wallBaseReady = GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallBaseSite - 4), kWallBaseBytes, sizeof(kWallBaseBytes));
+    // Verified EA App 1.69.47 memory mapping (live, read-only TS3.exe probe of 2026-10-08).
+    // These hook sites have the same opcodes/register layout as Steam 1.67, but different addresses.
+    // Do not opt-in EA 1.69.43 or unknown builds without separate instruction verification.
+    const bool steamWallHooks = GameAddr::IsFixed();
+    const bool ea169WallHooks = g_gameVersion == GameVersion::EA && g_exeTimestamp == 0x6707155Cu &&
+                                reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) == 0x00400000;
+    const uintptr_t wallBaseSite = steamWallHooks ? kWallBaseSite : (ea169WallHooks ? kWallBaseSiteEa169 : 0);
+    const uintptr_t indoorBaseSite = steamWallHooks ? kIndoorBaseSite : (ea169WallHooks ? kIndoorBaseSiteEa169 : 0);
+    const uintptr_t* uvCalls = steamWallHooks ? kWallUvCalls : (ea169WallHooks ? kWallUvCallsEa169 : nullptr);
+    const uintptr_t uvWriter = steamWallHooks ? kWallUv : kWallUvEa169;
+    if (ea169WallHooks)
+        LOG_INFO("[LevelLightShare] EA 1.69.47 wall hooks: mapped; validating live instructions and UV call targets");
+
+    g_wallBaseReady = wallBaseSite &&
+        MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(wallBaseSite - 4), kWallBaseBytes, sizeof(kWallBaseBytes));
     if (g_wallBaseReady) {
         BYTE call[5] = {0xE8, 0, 0, 0, 0};
-        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&OutdoorWallBaseThunk) - (kWallBaseSite + 5));
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&OutdoorWallBaseThunk) - (wallBaseSite + 5));
         std::memcpy(call + 1, &rel, 4);
-        g_wallBaseReady = MemPatch::WriteBytes(kWallBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
+        g_wallBaseReady = MemPatch::WriteBytes(wallBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Outside walls on foundations: ") + (g_wallBaseReady ? "ready (the walls of outdoor rooms can take the floor they stand on)" : "not available (code differs)"));
-    g_indoorBaseReady = g_wallBaseReady && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kIndoorBaseSite), kIndoorBaseBytes, sizeof(kIndoorBaseBytes));
+    g_indoorBaseReady = g_wallBaseReady && indoorBaseSite &&
+        MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(indoorBaseSite), kIndoorBaseBytes, sizeof(kIndoorBaseBytes));
     if (g_indoorBaseReady) {
         BYTE call[5] = {0xE8, 0, 0, 0, 0};
-        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&IndoorWallBaseThunk) - (kIndoorBaseSite + 5));
+        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&IndoorWallBaseThunk) - (indoorBaseSite + 5));
         std::memcpy(call + 1, &rel, 4);
-        g_indoorBaseReady = MemPatch::WriteBytes(kIndoorBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
+        g_indoorBaseReady = MemPatch::WriteBytes(indoorBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Indoor faces of diagonal walls on foundations: ") + (g_indoorBaseReady ? "ready" : "not available"));
-    // Walls taller than a story: the light-UV writer's two calls note each drawn wall cell (WallUvHook); Steam bytes only
-    g_wallUvReady = g_alignReady && GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[0]), kWallUvCallBytes[0], 5) &&
-                    MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[1]), kWallUvCallBytes[1], 5);
-    for (int k = 0; k < 2 && g_wallUvReady; k++) {
-        BYTE call[5] = {0xE8, 0, 0, 0, 0};
-        const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&WallUvHook) - (kWallUvCalls[k] + 5));
-        std::memcpy(call + 1, &rel, 4);
-        g_wallUvReady = MemPatch::WriteBytes(kWallUvCalls[k], std::vector<BYTE>(call, call + 5), &g_patches);
+
+    // Both original CALL rel32 instructions must resolve to the per-build wall UV writer.
+    // The hook must call that EA writer, not the Steam function at 0x00C38530.
+    bool uvValidated = g_alignReady && uvCalls &&
+        (!ea169WallHooks || MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(uvWriter), kWallUvEa169Prologue, sizeof(kWallUvEa169Prologue)));
+    for (int k = 0; k < 2 && uvValidated; ++k) {
+        const uintptr_t site = uvCalls[k];
+        uvValidated = MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(site), kWallUvCallBytes[k], 5);
+        if (!uvValidated) break;
+        int32_t originalRel = 0;
+        std::memcpy(&originalRel, reinterpret_cast<const void*>(site + 1), sizeof(originalRel));
+        const auto originalTarget = static_cast<uintptr_t>(static_cast<intptr_t>(site + 5) + originalRel);
+        uvValidated = originalTarget == uvWriter;
+    }
+    g_wallUvReady = uvValidated;
+    if (g_wallUvReady) {
+        g_wallUvWriter = uvWriter; // set before hooking either caller
+        std::vector<MemPatch::PatchLocation> uvPatches;
+        for (int k = 0; k < 2 && g_wallUvReady; ++k) {
+            const uintptr_t site = uvCalls[k];
+            BYTE call[5] = {0xE8, 0, 0, 0, 0};
+            const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&WallUvHook) - (site + 5));
+            std::memcpy(call + 1, &rel, 4);
+            g_wallUvReady = MemPatch::WriteBytes(site, std::vector<BYTE>(call, call + 5), &uvPatches);
+        }
+        if (!g_wallUvReady) {
+            if (!MemPatch::RestoreAll(uvPatches))
+                LOG_WARNING("[LevelLightShare] Could not fully restore a failed wall UV hook installation");
+        } else {
+            g_patches.insert(g_patches.end(), std::make_move_iterator(uvPatches.begin()), std::make_move_iterator(uvPatches.end()));
+        }
     }
     LOG_INFO(std::string("[LevelLightShare] Walls taller than a story: ") + (g_wallUvReady ? "ready (their light spreads over the drawn height)" : "not available (code differs)"));
     // Light through doors and windows: the wall cutouts posted from now on (doors, windows, arches; lot loads included),
