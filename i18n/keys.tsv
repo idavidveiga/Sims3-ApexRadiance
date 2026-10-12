@@ -1251,11 +1251,10 @@ Clarity and darker corners	tr_image.cpp:kEntries	Clareza e cantos mais escuros	C
 Film looks, light, camera and retro effects	tr_image.cpp:kEntries	Visuais de filme, luz, câmera e efeitos retrô	Estilos de película, luz, cámara y efectos retro	Styles de film, lumière, caméra et effets rétro	
 Color is off; your adjustments are kept	tr_image.cpp:kEntries	Cor está desligada; seus ajustes são mantidos	Color está desactivado; se conservan tus ajustes	Couleur est désactivée ; vos réglages sont conservés	
 Adjust this filter	tr_image.cpp:kEntries	Ajustar este filtro	Ajustar este filtro	Régler ce filtre	
-Filter shortcuts	tr_image.cpp:kEntries	Atalhos do filtro	Atajos del filtro	Raccourcis du filtre	
 Assign shortcut	tr_image.cpp:kEntries	Definir atalho	Asignar atajo	Définir un raccourci	
 Change shortcut	tr_image.cpp:kEntries	Alterar atalho	Cambiar atajo	Modifier le raccourci	
 Remove shortcut	tr_image.cpp:kEntries	Remover atalho	Eliminar atajo	Supprimer le raccourci	
-Filter shortcut	tr_image.cpp:kEntries	Atalho do filtro	Atajo del filtro	Raccourci du filtre	
+Preset shortcut	tr_image.cpp:kEntries	Atalho do preset	Atajo del preajuste	Raccourci du préréglage	
 Press the keys together, then choose Save	tr_image.cpp:kEntries	Pressione as teclas juntas e escolha Salvar	Pulsa las teclas juntas y elige Guardar	Appuyez sur les touches ensemble, puis choisissez Enregistrer	
 Waiting for keys	tr_image.cpp:kEntries	Aguardando teclas	Esperando teclas	En attente des touches	
 This shortcut is already in use	tr_image.cpp:kEntries	Este atalho já está em uso	Este atajo ya está en uso	Ce raccourci est déjà utilisé	

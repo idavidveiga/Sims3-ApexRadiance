@@ -1,10 +1,10 @@
 #pragma once
-// Allocation-free chords, including simultaneous letter keys. No binding is assigned by default.
+// A shortcut made of keys held together (preset shortcuts): allocation-free chords, including simultaneous letter keys.
 #include <array>
 #include <cstdint>
 #include <bit>
 
-struct FilterShortcut {
+struct KeyCombo {
     std::array<std::uint64_t, 4> keys{};
     static unsigned Normalize(unsigned vk) {
         if (vk == 0xA0 || vk == 0xA1) return 0x10; // Shift
@@ -27,5 +27,5 @@ struct FilterShortcut {
         for (unsigned k = 7; k < 256; ++k) if (Has(k) && !down(k)) return false;
         return true;
     }
-    bool operator==(const FilterShortcut&) const = default;
+    bool operator==(const KeyCombo&) const = default;
 };

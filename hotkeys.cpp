@@ -100,4 +100,43 @@ bool OnKeyDown(WPARAM vk, bool repeat) {
 
 bool Take(Action a) { return g_pending[static_cast<int>(a)].exchange(false); }
 
+KeyCombo HeldCombo() {
+    KeyCombo c;
+    for (unsigned k = 7; k < 256; ++k) {
+        if (k >= VK_LSHIFT && k <= VK_RMENU) continue; // VK_SHIFT, VK_CONTROL and VK_MENU stand for both sides
+        if (GetKeyState(static_cast<int>(k)) < 0) c.Add(k);
+    }
+    return c;
+}
+
+KeyCombo ComboOf(const KeyChord& chord) {
+    KeyCombo c;
+    if (!chord.vk) return c;
+    c.Add(chord.vk);
+    if (chord.ctrl) c.Add(VK_CONTROL);
+    if (chord.shift) c.Add(VK_SHIFT);
+    if (chord.alt) c.Add(VK_MENU);
+    return c;
+}
+
+std::string ComboText(const KeyCombo& c) {
+    std::string text;
+    auto append = [&](unsigned k) { if (!text.empty()) text += "+"; text += ApexConfig::KeyName(k); };
+    for (unsigned k : {unsigned(VK_CONTROL), unsigned(VK_SHIFT), unsigned(VK_MENU)}) if (c.Has(k)) append(k);
+    for (unsigned k = 7; k < 256; ++k) if (k != VK_CONTROL && k != VK_SHIFT && k != VK_MENU && c.Has(k)) append(k);
+    return text;
+}
+
+bool ComboReserved(const KeyCombo& c) {
+    if (c.Empty()) return false;
+    const ApexConfig::UiSettings ui = ApexConfig::GetUi();
+    if (c == ComboOf(ui.toggle) || c == ComboOf(ui.searchKey) || c == ComboOf(ui.peekKey) ||
+        c == ComboOf(ui.pictureCompareKey) || c == ComboOf({VK_F10, false, false, false})) return true;
+    for (int i = 0; i < kActions; ++i) {
+        if (i == static_cast<int>(Action::Screenshot) && !ui.screenshotShortcutEnabled) continue;
+        if (c == ComboOf(Key(static_cast<Action>(i)))) return true;
+    }
+    return false;
+}
+
 } // namespace Hotkeys

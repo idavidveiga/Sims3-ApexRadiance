@@ -377,6 +377,20 @@ void LoadSettings() {
         u.changelogSeen = (*ui)["changelog_seen"].value_or(std::string());
         const std::string lang = (*ui)["language"].value_or(std::string("auto"));
         u.language = I18n::FromCode(lang); // "auto" or an unknown code = -1 (Windows' language)
+        if (const toml::table* shortcuts = (*ui)["profile_shortcuts"].as_table()) {
+            for (const auto& [preset, node] : *shortcuts) {
+                const toml::array* keys = node.as_array();
+                if (!keys || preset.str().empty()) continue;
+                ProfileShortcut shortcut{std::string(preset.str()), {}};
+                bool valid = true;
+                for (const auto& key : *keys) {
+                    const auto vk = key.value<int64_t>();
+                    if (!vk || *vk < 7 || *vk > 255) { valid = false; break; }
+                    shortcut.keys.Add(static_cast<unsigned>(*vk));
+                }
+                if (valid && shortcut.keys.HasMainKey()) u.profileShortcuts.push_back(std::move(shortcut));
+            }
+        }
         I18n::SetChoice(u.language);
         std::lock_guard<std::mutex> lock(g_uiLock);
         g_ui = u;
@@ -458,6 +472,14 @@ bool Save(std::string* error) {
         ui.insert("sidebar_collapsed", u.sidebarCollapsed);
         if (!u.changelogSeen.empty()) ui.insert("changelog_seen", u.changelogSeen);
         ui.insert("language", u.language >= 0 && u.language < static_cast<int>(I18n::Lang::Count) ? I18n::Code(static_cast<I18n::Lang>(u.language)) : "auto");
+        toml::table profileShortcuts;
+        for (const ProfileShortcut& shortcut : u.profileShortcuts) {
+            if (shortcut.keys.Empty()) continue;
+            toml::array keys;
+            for (unsigned k = 7; k < 256; ++k) if (shortcut.keys.Has(k)) keys.push_back(static_cast<int64_t>(k));
+            profileShortcuts.insert_or_assign(shortcut.preset, std::move(keys));
+        }
+        if (!profileShortcuts.empty()) ui.insert("profile_shortcuts", std::move(profileShortcuts));
         root.insert_or_assign("ui", std::move(ui));
 
 

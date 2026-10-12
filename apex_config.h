@@ -1,7 +1,7 @@
 #pragma once
 // ApexRadiance.toml: Apex Radiance's own configuration, in Documents\...\Apex Radiance\ (never S3SS.toml).
 //   [meta]               version, the build that wrote it, the one-time migration from S3SS.toml
-//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, legacy welcome_done/key_chosen, start_profile_done, sidebar_collapsed, changelog_seen
+//   [ui]                 toggle_key, font_scale, shortcuts and screenshot capture settings, legacy welcome_done/key_chosen, start_profile_done, sidebar_collapsed, changelog_seen, profile_shortcuts
 //   [qol.picture]        Picture filters (same keys as the combined build)
 //   [qol.frame_profiler] Frame Profiler (development build)
 //   [patches.<Name>]     one table per feature: enabled + its settings (same keys as before the split)
@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <toml++/toml.hpp>
+#include "key_combo.h"
 
 namespace toml {
 inline namespace v3 {
@@ -25,6 +26,13 @@ struct KeyChord {
     bool ctrl = true;
     bool shift = true;
     bool alt = false;
+};
+
+// A key combination that applies a preset ([ui.profile_shortcuts]: the preset's key = its virtual-key codes). Kept in the
+// player's settings, never in the preset files: sharing a preset does not carry anyone's keys.
+struct ProfileShortcut {
+    std::string preset; // a file in Profiles (its name) or a built-in preset ("#builtin<index>")
+    KeyCombo keys;
 };
 
 struct UiSettings {
@@ -57,6 +65,7 @@ struct UiSettings {
     bool sidebarCollapsed = false; // the sidebar is the icon-only rail ([ui] sidebar_collapsed)
     std::string changelogSeen; // the newest What's new version opened; the version button shows a dot until then ([ui] changelog_seen)
     int language = -1;             // menu language: -1 = Windows' display language, else I18n::Lang ([ui] language = "auto" or I18n::Code: "en", "pt", ..., "zh_hant", "th")
+    std::vector<ProfileShortcut> profileShortcuts; // optional, none by default ([ui.profile_shortcuts]); Presets page
 };
 
 std::string KeyChordText(const KeyChord& chord); // "Ctrl+Shift+F11"

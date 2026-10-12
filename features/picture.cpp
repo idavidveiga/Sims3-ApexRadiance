@@ -22,7 +22,6 @@
 #include <filesystem>
 #include <fstream>
 #include <cfloat>
-#include "hotkeys.h"
 #include "apex_config.h"
 #include "apex_log.h"
 #include "hook_guard.h"
@@ -1341,44 +1340,6 @@ const FilterBoolKey kToggleFilters[] = {
     {"daltonize", &PictureParams::daltonize},
  };
 static_assert(std::size(kToggleFilters) == PictureParams::kFilterCount);
-std::atomic<int> g_filterRecording{-1};
-std::string g_filterRecordingName; // render-thread UI label of the filter being edited
-std::atomic<unsigned> g_filterRequests{0};
-std::mutex g_filterCaptureMutex;
-FilterShortcut g_filterCaptured;
-std::atomic<bool> g_filterCaptureCancelled{false};
-
-FilterShortcut HeldFilterKeys() {
-    FilterShortcut b;
-    for (unsigned k=7; k<256; ++k) {
-        if (k>=VK_LSHIFT && k<=VK_RMENU) continue;
-        if (GetKeyState(k)<0) b.Add(k);
-    }
-    return b;
-}
-std::string FilterKeyText(const FilterShortcut& b) {
-    std::string text;
-    auto append=[&](unsigned k) { if (!text.empty()) text += "+"; text += ApexConfig::KeyName(k); };
-    for (unsigned k : {unsigned(VK_CONTROL),unsigned(VK_SHIFT),unsigned(VK_MENU)}) if (b.Has(k)) append(k);
-    for (unsigned k=7;k<256;++k) if (k!=VK_CONTROL && k!=VK_SHIFT && k!=VK_MENU && b.Has(k)) append(k);
-    return text;
-}
-FilterShortcut SingleChord(const ApexConfig::KeyChord& k) {
-    FilterShortcut b; if (!k.vk) return b;
-    b.Add(k.vk); if(k.ctrl)b.Add(VK_CONTROL); if(k.shift)b.Add(VK_SHIFT); if(k.alt)b.Add(VK_MENU); return b;
-}
-bool ReservedFilterKeys(const FilterShortcut& b) {
-    if(b.Empty()) return false;
-    const auto ui=ApexConfig::GetUi();
-    if (b==SingleChord(ui.toggle) || b==SingleChord(ui.searchKey) || b==SingleChord(ui.peekKey) ||
-        b==SingleChord(ui.pictureCompareKey) || b==SingleChord({VK_F10,false,false,false})) return true;
-    for (int i=0;i<int(Hotkeys::Action::Count);++i) {
-        if (i==int(Hotkeys::Action::Screenshot) && !ui.screenshotShortcutEnabled) continue;
-        if (b==SingleChord(Hotkeys::Key(Hotkeys::Action(i)))) return true;
-    }
-    return false;
-}
-
 const FilterFloatKey kFilterFloats[] = {
     {"technicolor1_amount", &PictureParams::tech1Amount}, {"technicolor1_cyan", &PictureParams::tech1Cyan},
     {"technicolor1_saturation", &PictureParams::tech1Saturation}, {"technicolor2_amount", &PictureParams::tech2Amount},
@@ -1425,7 +1386,7 @@ const FilterArrayKey kFilterArrays[] = {{"technicolor2_dye", &PictureParams::tec
                                         {"filmic_curve", &PictureParams::filmicCurve}};
 
 const char* const kKeys[] = {"enabled", "exposure", "contrast", "midtones", "shadows", "highlights", "blacks", "temperature", "tint", "saturation", "vibrance",
-                             "shadow_hue", "shadow_tint", "highlight_hue", "highlight_tint", "mixer", "deband", "sharpen", "clarity", "vignette", "vignette_size", "basic_enabled", "tones_enabled", "color_enabled", "detail_enabled", "filters_enabled", "filters", "filter_shortcuts"};
+                             "shadow_hue", "shadow_tint", "highlight_hue", "highlight_tint", "mixer", "deband", "sharpen", "clarity", "vignette", "vignette_size", "basic_enabled", "tones_enabled", "color_enabled", "detail_enabled", "filters_enabled", "filters"};
 
 } // namespace
 
@@ -1634,7 +1595,6 @@ static void LogGates(IDirect3DDevice9* dev, int skip) {
 }
 
 void Picture::OnEndScene(IDirect3DDevice9* dev) {
-    ProcessFilterKeys();
     const PictureParams raw = GetParams(), q = Effective(raw);
     if (!g_atBoundary && raw.enabled) LogGates(dev, m_skip.load());
     if (!dev || !q.enabled) {
@@ -2058,7 +2018,6 @@ void Picture::SetParams(const PictureParams& p, bool save) {
         std::lock_guard<std::mutex> lock(m_mutex);
         switched = m_p.enabled != p.enabled;
         m_p = p;
-        m_filterKeysPresent.store(std::any_of(p.filterShortcuts.begin(),p.filterShortcuts.end(),[](const auto& b){return !b.Empty();}));
     }
     m_checkPasses.store(3, std::memory_order_relaxed);
     if (save) LOG_INFO("[Picture] Settings saved: " + ParamsText(p));
@@ -2132,13 +2091,6 @@ void Picture::ParamsToToml(const PictureParams& q, toml::table& qolTable) {
     pt.insert("enabled", q.enabled);
     pt.insert("basic_enabled",q.basicEnabled); pt.insert("tones_enabled",q.tonesEnabled);
     pt.insert("color_enabled",q.colorEnabled); pt.insert("detail_enabled",q.detailEnabled); pt.insert("filters_enabled",q.filtersEnabled);
-    toml::table shortcuts;
-    for (size_t i=0;i<std::size(kToggleFilters);++i) if (!q.filterShortcuts[i].Empty()) {
-        toml::array keys;
-        for (unsigned k=7;k<256;++k) if(q.filterShortcuts[i].Has(k)) keys.push_back(int(k));
-        shortcuts.insert(kToggleFilters[i].key,std::move(keys));
-    }
-    pt.insert("filter_shortcuts",std::move(shortcuts));
     pt.insert("exposure", static_cast<double>(q.exposure));
     pt.insert("contrast", static_cast<double>(q.contrast));
     pt.insert("midtones", static_cast<double>(q.midtones));
@@ -2182,7 +2134,6 @@ void Picture::LoadFromToml(const toml::table& qolTable) {
     if (!ParamsFromToml(qolTable, q)) return;
     std::lock_guard<std::mutex> lock(m_mutex);
     m_p = q;
-    m_filterKeysPresent.store(std::any_of(q.filterShortcuts.begin(),q.filterShortcuts.end(),[](const auto& b){return !b.Empty();}));
 }
 
 bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
@@ -2197,12 +2148,10 @@ bool Picture::ParamsFromToml(const toml::table& qolTable, PictureParams& out) {
     q.enabled = t["enabled"].value_or(false);
     q.basicEnabled=t["basic_enabled"].value_or(true); q.tonesEnabled=t["tones_enabled"].value_or(true);
     q.colorEnabled=t["color_enabled"].value_or(true); q.detailEnabled=t["detail_enabled"].value_or(true); q.filtersEnabled=t["filters_enabled"].value_or(true);
-    if (const auto* keys=t["filter_shortcuts"].as_table()) for (size_t i=0;i<std::size(kToggleFilters);++i) {
-        if (const auto* a=(*keys)[kToggleFilters[i].key].as_array()) {
-            FilterShortcut b; bool valid=true;
-            for (const auto& node:*a) { const auto k=node.value<int>(); if(!k || *k<7 || *k>255) {valid=false;break;} b.Add(unsigned(*k)); }
-            if(valid && b.HasMainKey()) q.filterShortcuts[i]=b;
-        }
+    // 2.11.0 to 2.12.1 filter shortcuts moved to presets (user, 2026-10-12): older keys are ignored, then dropped on save
+    if (const auto* keys=t["filter_shortcuts"].as_table(); keys && !keys->empty()) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true)) LOG_INFO("[Picture] Filter shortcuts from an older version are ignored: assign shortcuts to presets instead");
     }
     f("exposure", q.exposure);
     f("contrast", q.contrast);
@@ -2411,7 +2360,6 @@ void Picture::RenderFiltersUI(bool lutOnly) {
     };
     // One panel per family; every filter keeps its complete controls behind an independent disclosure.
     bool familyOpen=false, familyVisible=false;
-    int requestEditor=-1;
     auto family=[&](const char* label) {
         if(lutOnly) {if(!familyOpen) {familyVisible=ApexUi::BeginCard("##Luts");familyOpen=true;} return;}
         if(familyOpen) ApexUi::EndCard();
@@ -2426,56 +2374,25 @@ void Picture::RenderFiltersUI(bool lutOnly) {
             ImGui::BeginDisabled(!q.enabled || !groupEnabled || !*on);
             controls(); ImGui::EndDisabled(); ImGui::PopID(); return;
         }
-        int index=-1;
-        for(size_t i=0;i<std::size(kToggleFilters);++i) if(&(q.*kToggleFilters[i].field)==on) index=int(i);
-        const std::string key=index>=0 ? FilterKeyText(q.filterShortcuts[index]) : "";
         const float u=ApexUi::Unit(), gap=ApexUi::kSpace2*u;
         const ImVec2 switchSize=ApexUi::ToggleSwitchSize();
-        const float rowWidth=ImGui::GetContentRegionAvail().x;
-        std::string tag=key;
-        const float tagBudget=std::max(18.0f*u,rowWidth-(24.0f+24.0f)*u-switchSize.x-gap*3);
-        bool shortened=false;
-        while(!tag.empty() && ApexUi::ChipSize((tag+(shortened?"…":"")).c_str()).x>tagBudget) {
-            const auto cut=tag.find_last_of('+');
-            tag=cut==std::string::npos ? std::string() : tag.substr(0,cut);
-            shortened=true;
-        }
-        if(shortened) tag+="…";
-        const float chipW=tag.empty() ? 0.0f : ApexUi::ChipSize(tag.c_str()).x+gap;
-        // Right-aligned cluster: shortcut tag, disclosure, actions, switch; retained in narrow layouts.
-        const float controlsW=(24.0f+24.0f)*u+switchSize.x+gap*2+chipW;
-        const ImVec2 rowStart=ImGui::GetCursorScreenPos();
+        // Right-aligned cluster: disclosure, switch; retained in narrow layouts.
+        const float controlsW=24.0f*u+switchSize.x+gap;
         const bool visible=ApexUi::BeginControlRow(name,what,controlsW,icon,30.0f*u);
         if(visible) {
             bool expanded=ImGui::GetStateStorage()->GetBool(ImGui::GetID("Expanded"),lutOnly);
             const float centerY=ImGui::GetCursorScreenPos().y+15.0f*u;
             auto center=[&](float h){ImGui::SetCursorPosY(centerY-ImGui::GetWindowPos().y+ImGui::GetScrollY()-h*0.5f);};
-            if(!key.empty()) {
-                center(ApexUi::ChipSize(tag.c_str()).y); ApexUi::Chip(tag.c_str());
-                if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s",key.c_str());
-                ImGui::SameLine(0,gap);
-            }
             center(24*u);
             if(ApexUi::IconButton("##Adjust",expanded?IconId::ChevronUp:IconId::ChevronDown,"Adjust this filter",expanded)) {
                 expanded=!expanded; ImGui::GetStateStorage()->SetBool(ImGui::GetID("Expanded"),expanded);
             }
-            ImGui::SameLine(0,gap); center(24*u);
-            if(ApexUi::IconButton("##Shortcuts",IconId::Ellipsis,"Filter shortcuts")) ImGui::OpenPopup("Filter actions");
             ImGui::SameLine(0,gap);
             center(switchSize.y);
             ImGui::BeginDisabled(!q.enabled || !groupEnabled);
             if(ApexUi::ToggleSwitch("##On",on)) {changed=save=true;ApexUi::ReportChange(name);}
             ImGui::EndDisabled();
             ApexUi::EndControlRow();
-            const ImVec2 rowEnd(rowStart.x+rowWidth,ImGui::GetCursorScreenPos().y);
-            if(ImGui::IsMouseHoveringRect(rowStart,rowEnd) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("Filter actions");
-            if(ApexUi::BeginActionMenu("Filter actions",I18n::Tr(name))) {
-                if(ApexUi::ActionMenuItem(key.empty()?"Assign shortcut":"Change shortcut",IconId::Keyboard)) {
-                    requestEditor=index; g_filterRecordingName=I18n::Tr(name);
-                }
-                if(ApexUi::ActionMenuItem("Remove shortcut",IconId::Trash2,!key.empty())) {q.filterShortcuts[index]={};changed=save=true;}
-                ApexUi::EndActionMenu();
-            }
             if(expanded) {
                 ApexUi::Gap(ApexUi::kSpace3);
                 ImGui::BeginDisabled(!q.enabled || !groupEnabled || !*on);
@@ -2824,57 +2741,6 @@ void Picture::RenderFiltersUI(bool lutOnly) {
         resetFilter(&P::daltonType, &P::daltonAmount, &P::daltonSimulate);
     });
     if(familyOpen) ApexUi::EndCard();
-    if(requestEditor>=0) {
-        {std::lock_guard<std::mutex> lock(g_filterCaptureMutex);g_filterCaptured={};}
-        g_filterCaptureCancelled=false; g_filterRecording=requestEditor;
-        ImGui::OpenPopup(I18n::Tr("Filter shortcut"));
-    }
-    bool editorOpen=true;
-    const float modalWidth=std::max(1.0f,std::min(480*ApexUi::Unit(),ImGui::GetIO().DisplaySize.x-32.0f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(modalWidth,0),ImVec2(modalWidth,FLT_MAX));
-    ImGui::SetNextWindowSize(ImVec2(modalWidth,0),ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),ImGuiCond_Appearing,ImVec2(.5f,.5f));
-    if(ImGui::BeginPopupModal(I18n::Tr("Filter shortcut"),&editorOpen,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_AlwaysAutoResize)) {
-        {
-            ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
-            bool close=false;
-            ApexUi::HeaderExtra extra; extra.iconOff=extra.iconOn=IconId::X; extra.value=&close; extra.tooltip="Cancel";
-            ApexUi::CardHeader(IconId::Keyboard,"Filter shortcut",g_filterRecordingName.c_str(),nullptr,nullptr,true,&extra);
-            ApexUi::CardDivider();
-            ApexUi::MutedText(I18n::Tr("Press the keys together, then choose Save"));
-            ApexUi::Gap(ApexUi::kSpace2);
-            FilterShortcut binding;
-            {std::lock_guard<std::mutex> lock(g_filterCaptureMutex);binding=g_filterCaptured;}
-            const auto text=FilterKeyText(binding);
-            std::string shown=text.empty()?I18n::Tr("Waiting for keys"):text;
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputText("##RecordedKeys",shown.data(),shown.size()+1,ImGuiInputTextFlags_ReadOnly);
-            if(ImGui::IsItemHovered()&&!text.empty()) ImGui::SetTooltip("%s",text.c_str());
-            const int recording=g_filterRecording.load();
-            bool conflict=ReservedFilterKeys(binding);
-            for(size_t i=0;i<q.filterShortcuts.size();++i) if(int(i)!=recording && !binding.Empty() && binding==q.filterShortcuts[i]) conflict=true;
-            if(conflict) ApexUi::IconNote(IconId::TriangleAlert,"This shortcut is already in use");
-            ApexUi::Gap(ApexUi::kSpace3);
-            ApexUi::CardDivider();
-            const float available=ImGui::GetContentRegionAvail().x;
-            const float cancelWidth=ApexUi::ButtonWidth("Cancel",false),saveWidth=ApexUi::ButtonWidth("Save",false);
-            const float total=cancelWidth+ImGui::GetStyle().ItemSpacing.x+saveWidth;
-            const bool oneRow=total<=available;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX()+std::max(0.0f,available-(oneRow?total:cancelWidth)));
-            if(ApexUi::TextButton("Cancel") || close || !editorOpen || g_filterCaptureCancelled.exchange(false)) {
-                g_filterRecording=-1; ImGui::CloseCurrentPopup();
-            }
-            if(oneRow) ImGui::SameLine();
-            else ImGui::SetCursorPosX(ImGui::GetCursorPosX()+std::max(0.0f,ImGui::GetContentRegionAvail().x-saveWidth));
-            ImGui::BeginDisabled(recording<0 || g_filterRecording.load()!=recording || !binding.HasMainKey() || conflict);
-            if(ApexUi::TextButton("Save",nullptr,ApexUi::ButtonKind::Primary)) {
-                q.filterShortcuts[recording]=binding; changed=save=true;
-                g_filterRecording=-1;ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndDisabled();
-        }
-        ImGui::EndPopup();
-    } else if(g_filterRecording>=0) g_filterRecording=-1;
     if (changed) SetParams(q, save);
 }
 
@@ -2884,26 +2750,3 @@ void Picture::RenderDeveloperUI() {
     else ImGui::TextDisabled("GPU cost: not measured yet (Picture off, or no frame drawn)");
 }
 
-bool Picture::RecordingFilterShortcut() { return g_filterRecording.load()>=0; }
-bool Picture::FilterKeyDown(WPARAM vk,bool repeat) {
-    if(g_filterRecording.load()>=0) {
-        if(vk==VK_ESCAPE) g_filterCaptureCancelled=true;
-        else if(!repeat) {auto b=HeldFilterKeys();b.Add(unsigned(vk));if(b.HasMainKey()) {std::lock_guard<std::mutex> lock(g_filterCaptureMutex);g_filterCaptured=b;}}
-        return true;
-    }
-    if(!m_filterKeysPresent.load()) return false;
-    const auto q=GetParams();
-    int chosen=-1; unsigned count=0;
-    for(size_t i=0;i<q.filterShortcuts.size();++i) {
-        const auto& b=q.filterShortcuts[i];
-        if(b.Matches(unsigned(vk),[](unsigned key){return GetKeyState(key)<0;}) && b.Count()>count && !ReservedFilterKeys(b)) {chosen=int(i);count=b.Count();}
-    }
-    if(chosen<0) return false;
-    if(!repeat) g_filterRequests.fetch_xor(1u<<chosen); return true;
-}
-void Picture::ProcessFilterKeys() {
-    const unsigned requests=g_filterRequests.exchange(0); if(!requests) return;
-    auto q=GetParams();
-    for(size_t i=0;i<std::size(kToggleFilters);++i) if(requests&(1u<<i)) q.*kToggleFilters[i].field=!(q.*kToggleFilters[i].field);
-    SetParams(q,true);
-}
