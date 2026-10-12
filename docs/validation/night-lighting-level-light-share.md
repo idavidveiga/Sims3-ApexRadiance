@@ -28,8 +28,12 @@ only the repository and print to the console.
 
 ## Latest results
 
+Release preparation: the public x86 build passes with zero warnings. Exact release commit identity is recorded in the release PR; final artifact gameplay and menu-footer validation remain open. Gameplay evidence applies to the final development candidate ASI (`26CAA132F3D4DD6921E7E3CFFA8BEFA09B3F73868AEA3A917B92B7873D1D8C0D` SHA-256), with wall updates, fence lighting and gate faces visually accepted. This does not establish general FPS gains or exhaustive scene coverage.
+
+
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Wall generation policy fixtures | Zero build warnings; Passed the clean source policy checks; no FPS or instantaneous-update guarantee | Native D3D9 fixtures / x86 build |
 | 2026-10-07 | v2.10.1 | Extracted exterior floor lookup against v2.10.0 | 86,364 checks passed; 84,000 to 7,000 full link searches in the fixed multi-story fixture | None (native accesses mocked) |
 | 2026-10-05 | PR #2 (`2584e01`) | Indoor stories fixture, raised-room wall veto | 18,992 extracted checks passed; the raised-wall fixture failed twice before the guard and passes after | None (mocks) |
 | 2026-10-04 | PR #2, candidate `2.5.6-indoor-wall-guard-test` | Extracted indoor and basis tests | 30,890 passed | None |
@@ -122,6 +126,11 @@ topology mutation inside a point is not reproduced. This release does not promis
 
 ## Open checks
 
+- Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
+- Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
+- Wider fence/gate materials, fallback groups and daytime transitions
+
+
 - Both leak paths fixed in the wall guard candidate (furniture behind walls through the directional maps, and the lot
   UV contraction on the ground) and the raised-room veto: gameplay appearance, DXVK and frame-time cost.
 - The three-story open-shaft scene with multi-story openings.
@@ -135,3 +144,5 @@ topology mutation inside a point is not reproduced. This release does not promis
 - An outdoor room 0 of story 3 sent to solve about every 50 ms for 3 s and never finishing (one F8, 2026-09-29): the
   journal fields `Q`/`H`, lot, camera story and flag `+0x19` should identify the source.
 - Basements: untouched by design, no report yet.
+
+An isolated indoor cross-story update delay in the 2026-10-12 12:57:36 session resolved without a code change. The indoor feature was enabled and installed; no specific rejection cause was confirmed. Retained for follow-up.

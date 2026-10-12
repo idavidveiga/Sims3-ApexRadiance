@@ -10,7 +10,7 @@ their own story. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together, and the lit story's wall test from where an outdoor lamp's ray enters it (upper half walls): Released in 2.7.0 |
+| Availability | Released in 2.12.1: lighting corrections.  Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together, and the lit story's wall test from where an outdoor lamp's ray enters it (upper half walls): Released in 2.7.0 |
 | Default | On (all six switches) |
 | Menu | Lighting > Stories (*Seamless walls between floors* and *Every floor in full detail* under Advanced > *Floor detail*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -40,7 +40,9 @@ test. The light solve itself, lamp ranges and attenuation are the game's.
 1. **Outdoor sharing.** After the game gathers room 0 of a story (0 to 7), the outdoor lamps of every other story are
    added with the game's gather function.
 2. **Refresh cascade.** A change in room 0 of any story refreshes room 0 of all stories, so switching an upper lamp also
-   updates the stories below.
+   updates the stories below. Exterior wall participants are included in the generation barrier. This does not guarantee that every story visibly changes at the same instant. A deferred
+   request already covered by a newer completed generation does not repeat that work; removing a lamp still invalidates
+   stale work safely.
 3. **Walls of the lamp's story.** A borrowed outdoor lamp is tested against the walls of its own story and of every
    story in between, mirroring the game's per-batch wall culling. A porch lamp under an upper overhang is not affected.
 4. **Indoor openings.** An indoor room near a removed floor takes the lamps of rooms on other stories that are near the
@@ -97,6 +99,9 @@ patch.
   every room of every loaded lot, basements included.
 
 ## Limitations
+
+- Synchronized generation updates do not guarantee instantaneous map calculation; the native solve still has a cost.
+- Release cleanup has not yet received gameplay confirmation on the exact release artifact; see validation.
 
 - A balcony slab of the upper story does not block outdoor light going down: occluders are per story. The same holds for
   type-11 lights under the Split-Level fix.

@@ -31,6 +31,7 @@ tests, publication) is in [workflow.md](../workflow.md#6-release).
 
 | Version | Published | Headline |
 |---|---|---|
+| [2.12.1](2.12.1.md) | 2026-10-12 | Outdoor lighting corrections |
 | [2.12.0](2.12.0.md) | 2026-10-09 | LUTs, presets and graphics improvements |
 | [2.11.1](2.11.1.md) | 2026-10-08 | Ambient Occlusion cleanup |
 | [2.11.0](2.11.0.md) | 2026-10-07 | Color groups, optional filter shortcuts and hidden-interface effect timing |

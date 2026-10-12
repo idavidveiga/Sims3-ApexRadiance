@@ -75,9 +75,10 @@ bool IsInstancedStructureVs(const std::vector<DWORD>& t);
 // Their pixel shader adds COLOR0 once ("add rD.xyz, rS, vC"): replace it with max(vC, ground light atlas at the pixel's
 // world xz * strength). uv = vT.zw * cA.xy + cA.zw, strength = cB.x.
 // With TEXCOORD2 (world normal xyz, world y w) the patch also gets the objects' per-pixel lamps (pixelLamps; constants
-// lampParamConst = (0, lamp strength, 0, 1e-4), lampConst .. + 2 * kObjectPixelLamps - 1 = per lamp (pos, 1/R^2),
-// (colour, spill)) and the atlas only on faces turned up: max(vC + lamps x strength, atlas x sat(N.y) x cB.x). Each lamp
+// lampParamConst = (direct mode, lamp strength, 0, 1e-4), lampConst .. + 2 * kObjectPixelLamps - 1 = per lamp (pos, 1/R^2),
+// (colour, spill)) and the atlas only on faces turned up: max(lerp(vC, lamps x strength, direct mode), atlas x sat(N.y) x cB.x). Each lamp
 // is gated by its cones (07/10): x S + (1 - S) sat(max(l.k1 + k1.w, l.k2 + k2.w)), S = colour .w, k1 / k2 at coneConst.
+// A valid group uses pixel lamps; unavailable groups retain the native rig.
 struct InstancedPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
@@ -133,8 +134,9 @@ struct ObjectLampPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
     DWORD strengthConst = 0;
-    DWORD lampParamConst = 0; // (0, lamp strength, 0, 1e-4)
-    DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, 0)
+    DWORD lampParamConst = 0; // (direct mode, lamp strength, 0, 1e-4)
+    DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, spill)
+    DWORD coneConst = 0;      // two cone rows per lamp, evaluated at the pixel
     bool rigLamps = true;     // c5..c7 are the rig's lamp colours (false: no lamps in the pixel shader)
 };
 bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out);
@@ -190,8 +192,8 @@ struct WindowOutdoorPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;     // uv = world.xz x .xy + .zw
     DWORD strengthConst = 0;  // .x = ground strength
-    DWORD lampParamConst = 0; // (0, lamp strength, 0, 1e-4)
-    DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, 0)
+    DWORD lampParamConst = 0; // (direct mode, lamp strength, 0, 1e-4)
+    DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, spill)
     DWORD planConst = 0;      // 2 constants: (du/dx, du/dz, 0, 0) x d, (dv/dx, dv/dz, 0, 0) x d
     int uvUsage = -1, uvIndex = -1; // the semantic of the basis uv input (the VS output to read the uv rows from)
 };

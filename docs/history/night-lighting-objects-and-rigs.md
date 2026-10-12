@@ -176,3 +176,11 @@ walls; and by day the per-pixel and rig replacements still drew though they add 
 **Outcome:** a room-mode part is drawn with its rig's lights from before the switch until its room's solve ends; in full
 daylight (night level 0.01 or less) the per-pixel pass is not drawn either, like the moon-shadow and leaf-shadow passes
 (from idavidveiga's day/night isolation fixes; the fork's day fade of the object boost was not kept). Released in 2.7.0.
+
+### 2026-10-12: spatial lighting and generation update preparation
+
+**Context:** outdoor walls update between stories; fences and gates use different lighting compositions.
+
+**Finding:** shared fence-group lamp brightness and directionless ground light on vertical object faces can obscure spatial lamp response. Deferred wall refresh requests can already be covered by a newer generation.
+
+**Outcome:** retain spatial fence lighting with native fallback, per-pixel object cones, vertical ground-light isolation and generation-aware wall refresh. Offline CPU/GPU exploration remains research rather than a shipped companion DLL. Final release identity and gameplay coverage are recorded in the validation page.

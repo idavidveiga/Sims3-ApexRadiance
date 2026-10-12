@@ -9,6 +9,9 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Swedish}
 const I18n::Pair kPairs[] = {
+    {"Exterior walls respond a little faster to lighting changes", "Ytterväggar reagerar lite snabbare på förändringar i ljuset"},
+    {"Fence lighting better follows the position of lamps", "Staketens belysning följer lampornas placering bättre"},
+    {"Gates receive lighting more consistent with fences", "Grindar får belysning som stämmer bättre med staketen"},
     {"3D CUBE LUTs with adjustable strength", "3D CUBE-LUT:ar med justerbar styrka"},
     {"Presets have their own page and can be shared as TOML or ZIP", "Förinställningar har en egen sida och kan delas som TOML eller ZIP"},
     {"Restart Apex graphics without losing your settings", "Starta om Apex-grafiken utan att förlora inställningarna"},

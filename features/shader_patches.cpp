@@ -949,7 +949,11 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
             if (k == 0) code.insert(code.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX)});
             else code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX), Src(kTemp, Q)});
         }
-        code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, LA, 0x7), Src(kTemp, Q), Src(kConst, cS, kSwzY), Src(kInput, C),
+        // Native rig and pixel lamps are alternative estimates; adding both can
+        // amplify overlapping illumination. Use pixel lamps when the group is valid,
+        // otherwise retain the native rig.
+        code.insert(code.end(), {Op(kMul, 3), Dst(kTemp, LA, 0x7), Src(kTemp, Q), Src(kConst, cS, kSwzY),
+                                 Op(kLrp, 4), Dst(kTemp, LA, 0x7), Src(kConst, cS, kSwzX), Src(kTemp, LA), Src(kInput, C),
                                  Op(kMax, 3), Dst(kTemp, T, 0x7), Src(kTemp, LA), Src(kTemp, T)});
         Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}},
                   {A.at, code}});
@@ -1451,7 +1455,7 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
         }
         if (!sun || !lamp1) return false;
     }
-    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 4 + 2 * kObjectPixelLamps >= 224 || u.maxTemp + 5 >= 32) return false;
+    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 4 + 4 * kObjectPixelLamps >= 224 || u.maxTemp + 5 >= 32) return false;
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1), Fr = T + 1;
     const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cB = cA + 1, cH = cA + 2, V = static_cast<DWORD>(maxIn + 1);
     const DWORD cS = cA + 3, cL = cA + 4; // per-pixel lamps: parameters, then kObjectPixelLamps x (pos + 1/R^2, colour)
@@ -1461,11 +1465,16 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
     out.strengthConst = cB;
     out.lampParamConst = cS;
     out.lampConst = cL;
+    out.coneConst = cL + 2 * kObjectPixelLamps;
     out.rigLamps = shape != kC;
     std::vector<DWORD> ground = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzXYXY), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                                  Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
                                  Op(kMad, 4), Dst(kTemp, Fr, 0x8), Src(kTemp, Nrm, kSwzY), Src(kConst, cH, kSwzX), Src(kConst, cH, kSwzY),
-                                 Op(kMul, 3), Dst(kTemp, Fr, 0x8), Src(kTemp, Fr, kSwzW), Src(kConst, cB, kSwzX),
+                                 // In direct-pixel mode the directionless terrain
+                                 // atlas belongs to upward surfaces, not gate faces.
+                                 Op(kMov, 2), Dst(kTemp, A, 0x8, true), Src(kTemp, Nrm, kSwzY),
+                                 Op(kLrp, 4), Dst(kTemp, A, 0x8), Src(kConst, cS, kSwzX), Src(kTemp, A, kSwzW), Src(kTemp, Fr, kSwzW),
+                                 Op(kMul, 3), Dst(kTemp, Fr, 0x8), Src(kTemp, A, kSwzW), Src(kConst, cB, kSwzX),
                                  Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, Fr, kSwzW)};
     if (shape == kA && colorReg >= 0) // the vertex lights are added after the max: take them out of the ground light first
         ground.insert(ground.end(), {Op(kAdd, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kInput, static_cast<DWORD>(colorReg)) | 0x01000000u /* -vC */});
@@ -1473,7 +1482,7 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
     // evaluated at the piece's centre (3 lamps in c5..c7 here, 4 more as vertex lights), so neighbouring pieces differ.
     // Q = the same world lamps for every pixel: sum of colour * sat(N.l) * sat(1 - d^2/R^2)^2 at the pixel's world
     // position (TEXCOORD8.xzy). The draw zeroes the rig (PS c5..c7 and the VS vertex-light colours) while cS.y > 0.
-    // cS = (unused, lamp strength, unused, 1e-4).
+    // cS = (valid direct-pixel mode, lamp strength, unused, 1e-4).
     constexpr DWORD kNeg = 0x01000000u;
     const DWORD pw = Src(kInput, V, 0xD8 /* xzyw: world x, y, z */);
     for (DWORD k = 0; k < kObjectPixelLamps; k++) {
@@ -1490,6 +1499,16 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
                                      Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
                                      Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
                                      Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
+        const DWORD k1 = out.coneConst + 2 * k, k2 = k1 + 1;
+        ground.insert(ground.end(), {
+            Op(kDp3, 3), Dst(kTemp, B, 0x4), Src(kTemp, A), Src(kConst, k1),
+            Op(kAdd, 3), Dst(kTemp, B, 0x4), Src(kTemp, B, 0xAA), Src(kConst, k1, kSwzW),
+            Op(kDp3, 3), Dst(kTemp, B, 0x8), Src(kTemp, A), Src(kConst, k2),
+            Op(kAdd, 3), Dst(kTemp, B, 0x8), Src(kTemp, B, kSwzW), Src(kConst, k2, kSwzW),
+            Op(kMax, 3), Dst(kTemp, B, 0x4, true), Src(kTemp, B, 0xAA), Src(kTemp, B, kSwzW),
+            Op(kMad, 4), Dst(kTemp, B, 0x8), Src(kTemp, B, 0xAA), Src(kConst, cc, kSwzW) | kNeg, Src(kTemp, B, 0xAA),
+            Op(kAdd, 3), Dst(kTemp, B, 0x4), Src(kTemp, B, kSwzW), Src(kConst, cc, kSwzW),
+            Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, 0xAA)});
         if (k == 0) ground.insert(ground.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX)});
         else ground.insert(ground.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX), Src(kTemp, Q)});
     }

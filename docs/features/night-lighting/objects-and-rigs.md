@@ -9,7 +9,7 @@ shadows. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). Daytime response of the per-pixel terms: Released in 2.6.0. Walls blocking per-pixel lamps outdoors, indoor objects lit by lamps of another story, furniture keeping its light until its room changes at a lamp switch, and the game's own lighting in full daylight: Released in 2.7.0 |
+| Availability | Released in 2.12.1: lighting corrections.  Released (present since 2.1.0, the first version in this repository). Daytime response of the per-pixel terms: Released in 2.6.0. Walls blocking per-pixel lamps outdoors, indoor objects lit by lamps of another story, furniture keeping its light until its room changes at a lamp switch, and the game's own lighting in full daylight: Released in 2.7.0 |
 | Default | On (all switches), Brightness 75%, Seamless light brightness 75% (the Soft light style) |
 | Menu | Lighting > Objects (cards *Objects* and *Doors, counters and fences*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -85,9 +85,11 @@ forcaLuzPorPixelNosObjetos)`. The *Fences and stairs catch light* rows of the sa
 
 ## Limitations
 
+- Release cleanup has not yet received gameplay confirmation on the exact release artifact; see validation.
+
 - The game's rig lamps have no wall shadow: objects inside a U of walls can get rig light through a wall. Per-pixel lamps
   are dropped only for outside walls of the lot, tested from the object's position.
-- The ground term is the light of the ground below, without height: an upper-story window can pick up ground light.
+- The ground term has no height or direction. Valid direct-pixel mode limits it to upward-facing surfaces; fallback draws can still pick up ground light at another height.
 - Specular from rig lamps (c5 read twice in 84 Counters and 300 Phong pixel shaders) is not replaced, so highlights can
   still differ between pieces.
 - Shape B: whether c0/c4 is the sun or a fourth rig lamp is not verified; c4 is not treated as a lamp.
@@ -251,7 +253,7 @@ Resources added (refused if `maxConst + 4 + 16 >= 224`, `maxTemp + 5 >= 32` or s
 
 Per pixel:
 
-1. Ground term `G = atlas(world.xz) x (0.5 + 0.5 N.y) x cB.x`. Shape A with COLOR0: `G -= vC` (vC is added after the
+1. Ground term `G = atlas(world.xz) x (0.5 + 0.5 N.y) x cB.x` in fallback mode; valid direct-pixel mode uses `sat(N.y)` instead of the wrapped factor. Shape A with COLOR0: `G -= vC` (vC is added after the
    combine).
 2. Per-pixel lamps `Q = sum_k colour_k x sat(N.l_k) x sat(1 - d²/R_k²)²`, d = 3D distance from the pixel to the lamp
    head, `d² >= 1e-4`. The `1 - d²/R²` term is computed in two instructions because native D3D9 accepts one constant
@@ -279,9 +281,10 @@ best 16 (memoised per position and lamp-list generation), and the draw uses the 
 **Lamp cones (07/10, F8 10-57-41).** `ReadLamp` also keeps each lamp's cones (`LampCone`, beside `g_allLamps` in
 `g_allCones`; `SelectLamps` hands them out as `g_lampCone`, memo included): the game's cone laws, type 5 `0x006BC940`
 (two cones, scale `[0x011D11A0] = 5`, spill `+0x150`) and type 4 `0x006BDA10` (one cone, spill 0). `PickObjectLamps`
-multiplies each kept lamp's colour (and its weight in the ground share) by `S + (1 - S) sat(max(t1, t2))` measured at the
-object's middle, so a piece well off a wall sconce's cones takes only its spill, as the game's own solve gives it. One
-factor per object (not per pixel; fences and stairs are gated per pixel, [fences.md](fences.md)). Log once: `Per-pixel
+passes the cone rows to the pixel shader, which evaluates `S + (1 - S) sat(max(t1, t2))` at each surface position.
+The surface normal still determines which face receives direct light. In valid direct-pixel mode, the directionless
+ground atlas contributes only to upward-facing surfaces, keeping vertical gate faces independent of ground color.
+Fallback draws retain their original composition. Fences and stairs also evaluate cones per pixel ([fences.md](fences.md)). Log once: `Per-pixel
 lamps follow their cones`.
 
 ### Indoor objects (directional maps)

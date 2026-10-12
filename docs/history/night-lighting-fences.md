@@ -106,3 +106,11 @@ the group's centre and both ends. Released in 2.7.0.
 
 **Outcome:** with a night level of 0.01 or less the fence patch is not drawn, so fences keep the game's daylight look;
 `SurfaceLampGain` still fades the lamp term at dusk and dawn. Released in 2.7.0.
+
+### 2026-10-12: spatial lighting and generation update preparation
+
+**Context:** outdoor walls update between stories; fences and gates use different lighting compositions.
+
+**Finding:** shared fence-group lamp brightness and directionless ground light on vertical object faces can obscure spatial lamp response. Deferred wall refresh requests can already be covered by a newer generation.
+
+**Outcome:** retain spatial fence lighting with native fallback, per-pixel object cones, vertical ground-light isolation and generation-aware wall refresh. Offline CPU/GPU exploration remains research rather than a shipped companion DLL. Final release identity and gameplay coverage are recorded in the validation page.
