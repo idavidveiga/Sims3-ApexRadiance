@@ -1,6 +1,6 @@
 #pragma once
 // What's new: the short player-facing changelog shown when the version at the bottom of the menu is clicked.
-// The release workflow (.agents/skills/apex-review-pr-release) adds the new version at the top of apex_changelog.cpp,
+// The release process (docs/release-process.md) adds the new version at the top of apex_changelog.cpp,
 // written from docs/releases/<version>.md, and adds the lines to i18n/tr_menu.cpp. Newest first.
 
 namespace ApexChangelog {
