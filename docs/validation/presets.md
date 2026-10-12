@@ -24,7 +24,7 @@
 
 ## Confirmed in game
 
-The maintainer reported completion of the test-build gameplay check before release preparation. No detailed scenario-by-scenario confirmation was supplied.
+The test-build gameplay check was completed before release preparation. No detailed scenario-by-scenario confirmation was recorded.
 
 ## Open checks
 

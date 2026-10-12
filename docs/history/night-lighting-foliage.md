@@ -25,7 +25,7 @@ the moon shadow with an `lrp` fade.
 
 ### 2026-09-25: review fixes
 
-**Context:** review at about 03:30, item 5, and a later review the same day.
+**Context:** an early review, item 5, and a later review the same day.
 
 **Finding:**
 

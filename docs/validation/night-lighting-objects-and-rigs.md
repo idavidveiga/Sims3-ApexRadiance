@@ -16,7 +16,7 @@ It must:
 
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
-| Offline countertest (scratchpad perl simulators `counter_sh\`, REPORT.md; not in the repository) | `PatchObjectLampVs` / `PatchObjectLampPs` rules over the 2139 Counters/Phong variants of `Shaders_Win32.precomp`: accepted shapes, refusals, validity after patching | Scratch scripts | perl, the game's shader package |
+| Offline countertest (private research folder: perl simulators `counter_sh\`, REPORT.md; not in the repository) | `PatchObjectLampVs` / `PatchObjectLampPs` rules over the 2139 Counters/Phong variants of `Shaders_Win32.precomp`: accepted shapes, refusals, validity after patching | Scratch scripts | perl, the game's shader package |
 | Scratch `test5.cpp` | Accepted and refused captured object shaders (the lists in the feature's *Shader coverage*) | Scratch | d3dcompiler, captures |
 | [`tools/terrain_lighting_test`](../../tools/terrain_lighting_test/README.md) `run_resource_checks.ps1` | Extracted production `DrawObjectLamp` and `DrawInstanced` against D3D9 fixtures: the strength written, native drawing when disabled, indoor objects excluded from the daytime outdoor balance, missing atlas stays native, state restoration | `powershell -File tools/terrain_lighting_test/run_resource_checks.ps1 [-OutDir <dir>]` | MSVC x86, native D3D9 |
 | same, `run.ps1 -WallCapture / -InstancedCapture` | `SurfaceLampGain` over night levels and gains; the captured instanced bench shader `PS_3019F738` (912 bytes, FNV `0xC0F5CCD7`) on the GPU: night and lamp-free sunlight pixels identical, daytime lamp term reduced, lamp attenuation separate from sunlight | `run.ps1 -Captures <session> -InstancedCapture <dir>` | same, captures |

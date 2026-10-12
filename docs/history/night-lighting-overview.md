@@ -14,7 +14,7 @@ Sub-part histories: [lot light pass](night-lighting-lot-light-pass.md),
 them). Item 3: `Uninstall` called `DirtyAllRigs` off the render thread. Item 5: `PatchLeafShadow` emitted an `lrp` with
 two constant sources, which DXVK accepts and native D3D9 refuses. Shader caches keyed by pointer without AddRef gave
 stale classes when addresses were reused. Any menu change used to switch off `automaticoAoAnoitecer` while
-`luzDoLoteNaGrama` was off (fixed 25/09 10:40). The hooks gained exception catching (`HookFailed`, log "Excecao dentro
+`luzDoLoteNaGrama` was off (fixed 25/09). The hooks gained exception catching (`HookFailed`, log "Excecao dentro
 do gancho de desenho ..."), `g_stateUnknown` and a mutex in `UpdateHooks`.
 
 **Outcome:** `DeferredReinstall` on the render thread, rig dirtying deferred to `OnPresent`, all patches follow native

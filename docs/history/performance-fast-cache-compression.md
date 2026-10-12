@@ -26,7 +26,7 @@ write of the same source, size, flags and depth copies it when the CRC still mat
 **In game (build 0d1408ad, the same cache writes before and after, hitch frames only):** the about 21 MB writes (4
 calls: 2 counting runs plus their writes) 299 ms (49 cases) to 101 ms (3 cases); about 11 MB 121 to 43 ms; about 5.5 MB
 78 to 24 ms (44 / 6 cases); worst compression-dominated hitch 295 to 395 ms down to 135 ms. In game the pieces ran about
-2x faster than one thread (3.8x offline), since the game's own threads are busy at those moments. Maintainer feedback:
+2x faster than one thread (3.8x offline), since the game's own threads are busy at those moments. Observed in game:
 the result appeared better in play.
 
 ### 2026-09-30: development check rate and kept buffers

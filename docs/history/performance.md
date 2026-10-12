@@ -6,7 +6,7 @@ described in [features/performance/README.md](../features/performance/README.md)
 
 ### 2026-09-28: measured baseline
 
-**Context:** a Frame Profiler session on the maintainer's game: a camera test of about 110 s with 1,293 hitches.
+**Context:** a Frame Profiler session in a test game: a camera test of about 110 s with 1,293 hitches.
 
 **Finding:**
 
@@ -25,7 +25,7 @@ moving), C9 (texture compression), C4 (cache compression), C6 (scene node budget
 ### 2026-09-29: first implementation
 
 **Context:** the six candidates written from the game's disassembly (`research\engine_map\full.asm`,
-`S3SS-dev\re\TS3W.exe`) and Apex's own framework, with no Sims3SettingsSetter code. Facts were marked VERIFIED (read in
+`TS3W.exe`) and Apex's own framework, with no Sims3SettingsSetter code. Facts were marked VERIFIED (read in
 the disassembly) or INFERRED (deduction, not confirmed at run time). At first written, not compiled or tested in game.
 
 **Finding:** the menu had one card under SYSTEM > Performance, two Overview rows, and developer lines under
@@ -54,7 +54,7 @@ cache compression* and the Vulkan driver guard (released in 2.4.0) were added. S
 **Context:** the single Performance card had grown to twelve rows.
 
 **Finding:** the card was split into four cards (*Camera and lighting*, *Files and objects*, *Textures and Sims*,
-*Memory handling*); dependent rows stayed under their parent. Experimental badges were removed by maintainer decision.
+*Memory handling*); dependent rows stayed under their parent. Experimental badges were removed by project decision.
 
 **Outcome:** shipped in 2.5.3. The labelling change did not add gameplay validation.
 

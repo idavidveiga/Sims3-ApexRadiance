@@ -18,7 +18,7 @@ sub-part has its own validation page (for example [lot light pass](night-lightin
 | [`tools/terrain_lighting_test`](../../tools/terrain_lighting_test/README.md) | Daylight policy, terrain lamp scales, native solar alpha, lot pass HLSL, edit and queue logic, world reset | `run.ps1` and the `run_*_checks.ps1` scripts | Native D3D9 GPU; F7 capture folders for some fixtures |
 | [`tools/world_lamp_test/check.cpp`](../../tools/world_lamp_test/check.cpp) | World lamp eligibility and edit guard | See [world lamp response validation](night-lighting-world-lamp-response.md) | None |
 | `tools/basis_test` | Room basis map patches (smooth indoor light) | See the harness | Captured shaders |
-| `perl .claude/skills/apex-menu/audit.pl .` | Menu texts, translations, documented keys, ResetDefaults coverage | From the repository root | Perl |
+| `perl tools/menu_audit.pl .` | Menu texts, translations, documented keys, ResetDefaults coverage | From the repository root | Perl |
 
 The harnesses only read captures and the repository; they never write into the game folder.
 
@@ -58,6 +58,6 @@ Sub-part results are on their own validation pages.
 - Brightness controls (1.5.0): ground, roads, street and lot lamps and moonlight were not separately confirmed in game.
 - Roadmap items not implemented: plants with ground light (m79), OutdoorProp shaders (C0C6E0FF, 2BE88B48),
   4-light-matrix foliage (VS 4375A3EE), instanced SingleObject, 34 object shaders with no free input; per-pixel lamps on
-  walls and floors (`PASSO3-PLANO.md`, with its 8 MUST-FIX items); terrain stamp re-rendered at 4 texels/m; one lamp
+  walls and floors (the per-pixel plan (private notes), with its 8 MUST-FIX items); terrain stamp re-rendered at 4 texels/m; one lamp
   model for every surface (today: rig bounds radius, sqrt(range) radius for roofs and water, W = 0.4 x range for
   per-pixel objects, wall gain).

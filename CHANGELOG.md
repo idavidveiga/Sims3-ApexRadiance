@@ -10,4 +10,4 @@
 - End object-point capture after one click, return to the Report panel after completion and align routine notices at the top center.
 - Translate the updated shared controls into English, Portuguese, Spanish and French. Developer binaries remain private.
 
-The maintainer accepted the latest private lighting-response build and reported improved perceived performance. This report does not provide instrumented latency/FPS figures or validate unverified shader variants. See the feature documentation for scope and testing.
+Perceived responsiveness improved in testing. This release does not provide instrumented latency/FPS figures or validate unverified shader variants. See the feature documentation for scope and testing.

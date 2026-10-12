@@ -59,7 +59,7 @@ reference predication path; FXAA can scale its contrast test the same way.
 
 ### 2026-09-30: Extreme presets
 
-**Context:** maintainer feedback: even at Ultra, long edges were not perfectly straight with either method (build
+**Context:** observed in game: even at Ultra, long edges were not perfectly straight with either method (build
 31ab53c8).
 
 **Finding:** at 4K one step of a nearly horizontal edge can be longer than Ultra's reach (32 steps x 2 pixels per side).
@@ -71,7 +71,7 @@ needs supersampling.
 
 ### 2026-09-30: supersampling note at 1080p
 
-**Context:** maintainer feedback: players at 1080p still found the game very jagged with Edge Smoothing on.
+**Context:** feedback from play: players at 1080p still found the game very jagged with Edge Smoothing on.
 
 **Finding:** only rendering at a higher resolution smooths detail thinner than a pixel. DLSS, DLAA and FSR 2+ are
 temporal (jittered camera, motion vectors) and have no D3D9 path.

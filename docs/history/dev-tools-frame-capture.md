@@ -28,7 +28,7 @@ Depth Blur and everything using its INTZ depth requires the game's own Edge Smoo
 
 ### 2026-09-25: lake pass with depth off
 
-**Context:** review at about 03:30, item 1.
+**Context:** an early review, item 1.
 
 **Finding:** the lake pass turned ZENABLE off, and Depth Blur treated it as the first UI draw.
 
@@ -36,7 +36,7 @@ Depth Blur and everything using its INTZ depth requires the game's own Edge Smoo
 
 ### 2026-09-28: the first z-off draw is not always the UI
 
-**Context:** HDR diagnostics (NOTAS "HDR (28/09)", "Diagnosticos HDR_Diag_1/2").
+**Context:** HDR diagnostics (notebook "HDR (28/09)", "Diagnosticos HDR_Diag_1/2").
 
 **Finding:** interiors have z-off draws in the middle of the scene; copying the scene at the first z-off draw lost the
 lamp light.
@@ -47,7 +47,7 @@ stands: read the capture rather than assuming a single boundary.
 
 ### 2026-09-28: standalone plan
 
-**Context:** PLANO-SEPARACAO.md section 4.
+**Context:** the standalone split plan (private notes) section 4.
 
 **Finding:** the standalone needed its own output path and a decision about the single-owner ExtraHooks observer slots.
 

@@ -44,7 +44,7 @@ Sim Occlusion has its own page: [validation/sim-occlusion.md](sim-occlusion.md).
 
 ### Local full-resolution-only candidate, 2026-10-07
 
-Half resolution and the unreleased reconstruction candidate were removed at the user's request. The local native D3D9
+Half resolution and the unreleased reconstruction candidate were removed. The local native D3D9
 fixture passed 65 checks: the six retained non-GTAO entrypoints and all ten GTAO quality/thickness variants compile to
 bytecode identical to the pre-reconstruction full-resolution baseline and create successfully on the native device.
 Existing full-resolution uniforms retain pixel size 1 and base pyramid level 0. Runtime/preset reduction keys,

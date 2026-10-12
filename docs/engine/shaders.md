@@ -29,11 +29,11 @@ handled without re-deriving it. The per-surface fixes are in the feature docs
 
 ### `Shaders_Win32.precomp`
 
-- Path: `C:\Games\Hydra\The Sims 3\Game\Bin\Shaders_Win32.precomp` (read-only reference; never modify it).
+- Path: `<Game>\Bin\Shaders_Win32.precomp` (read-only reference; never modify it).
 - It holds **every** shader of the game, grouped by **technique name** (ExteriorWall, InteriorFloor, Counters...), plus
   parameter names such as `InteriorBuildingAmbientColor` and `LightingTweaks`. It is the reference for coverage tests:
   a patcher is run over every pixel / vertex shader of a technique and every result is disassembled.
-- The container format was parsed by Perl scripts in the session scratchpad (`passo3\shdlist.pl`, `ground\techof.pl`,
+- The container format was parsed by Perl scripts in the private research folder (`passo3\shdlist.pl`, `ground\techof.pl`,
   `ground\techps.pl`, `shd\knm.pl` / `shd\knm.tsv` = names by hash). The layout below was re-read with those scripts
   on 28/09 (file size 92,614,595 bytes); field meanings marked *(unverified)* were not confirmed.
 
@@ -46,7 +46,7 @@ handled without re-deriving it. The per-surface fixes are in the feature docs
 | Name hash | **FNV-1** 32-bit (multiply by `0x01000193`, then xor the byte) over the **lowercase** name, basis `0x811C9DC5`. Checked: `LightingTweaks` = `039b656e`, `ExteriorWall` = `0ddcaefb`, `StaticTerrainLightmap` = `86a5dfa4`. Note this is FNV-1 on names; Apex's shader ids ([How Apex identifies a game shader](#how-apex-identifies-a-game-shader)) use FNV-1a over bytecode DWORDs |
 
   Offline tools (read-only): `techof.pl <precomp> <knm.tsv> <bin>...` maps captured `.bin` files to technique names by
-  MD5 (e.g. `scratchpad\censo_tech.txt`); `techps.pl <precomp> <knm.tsv> <outdir> <regex>` dumps the distinct PS/VS of
+  MD5 (e.g. `censo_tech.txt`); `techps.pl <precomp> <knm.tsv> <outdir> <regex>` dumps the distinct PS/VS of
   technique families (source of `review\wallfam\`, `floorfam\`, `counter_sh\dis\`).
 - Counts found (offline scans, 25/09 - 28/09):
 
@@ -59,7 +59,7 @@ handled without re-deriving it. The per-surface fixes are in the feature docs
 | InteriorFloor | 58 | | none matches the floor table |
 | Counters (SM3) | 184 | 236 | exterior use: object rig; interior: lot LightMap + LightBasisMap0..3 |
 | Phong (SM3) | 444 | 352 | the main object family |
-| Counters + Phong, all models | 2139 variants analysed | | `scratchpad counter_sh\REPORT.md` |
+| Counters + Phong, all models | 2139 variants analysed | | `counter_sh\REPORT.md` |
 | Room-lit families (InteriorWall*, InteriorFloor, FloorTileCeiling, FloorWith*, Hideable, TerrainLight_Indoor*) | 196 match "rule A" | | from the removed Native HDR analysis |
 
 Other techniques met in captures and the census: TerrainLight (lot terrain light pass), TerrainHigh (paint layers, no
@@ -174,7 +174,7 @@ Three levels, from strict to general (combined build files; the standalone keeps
    | `kFloorVs` | 1492 | `0x2BC34FA8` | snowy floor tiles |
 
 2. **Tables generated offline from the precomp**, same size + FNV-1a key: `wall_lamp_table.h` (58 ExteriorWall PS with
-   their `K`), `floor_atlas_table.h` (261 ExteriorFloors PS). Generators: `scratchpad snowcover\test11.cpp` and
+   their `K`), `floor_atlas_table.h` (261 ExteriorFloors PS). Generators: `snowcover\test11.cpp` and
    `test13.cpp`.
 3. **Patterns** (`shader_patches.cpp`, pure functions on the D3D9 token stream, testable offline): the parser walks
    instruction tokens (length in bits 24..27, comments skipped by their length), finds instruction and register shapes
@@ -258,12 +258,12 @@ snow-floor VS draws not claimed by any PS class.
 
 | Check | Result | Where |
 |---|---|---|
-| Roads | 118 unique captured shaders: 3 road VS, 7 road PS (4 winter + 3 summer), all valid; sidewalk only in variants 1 and 3 | NOTAS "Ruas SEM neve" |
-| Foliage VS / leaf-shadow PS | VS 6 → 8 of 77, PS 2 → 3 of 99 (`test7.cpp`), later +7 PS with def-1 components; road VS correctly refused | NOTAS "Arbustos de inverno", "Plantas de verao" |
-| Instanced structures | 3 of 116 captured VS | NOTAS "CERCAS: causa real" |
-| Snow cover / relief | only VS_2F27C9C0 / PS_2F27C510; only VS_2E036438 of 161 VS | NOTAS 25/09 ~10:00-10:40 |
-| Snow floor VS | only m29 / m69 / m71 after the review (5 terrain/water VS matched before) | NOTAS "Revisao profunda" |
-| Objects | after v5.6: VS 588/588; Counters PS 136/184 (A 128, B 8); Phong PS 426/444 (A 394, C 32); 0 invalid. Not covered: 34 PS using all of v0..v9, 32 Counters group D | `scratchpad\counter_sh\` (perl simulators reproduce the C++ counts) |
+| Roads | 118 unique captured shaders: 3 road VS, 7 road PS (4 winter + 3 summer), all valid; sidewalk only in variants 1 and 3 | notebook "Ruas SEM neve" |
+| Foliage VS / leaf-shadow PS | VS 6 → 8 of 77, PS 2 → 3 of 99 (`test7.cpp`), later +7 PS with def-1 components; road VS correctly refused | notebook "Arbustos de inverno", "Plantas de verao" |
+| Instanced structures | 3 of 116 captured VS | notebook "CERCAS: causa real" |
+| Snow cover / relief | only VS_2F27C9C0 / PS_2F27C510; only VS_2E036438 of 161 VS | notebook 25/09 |
+| Snow floor VS | only m29 / m69 / m71 after the review (5 terrain/water VS matched before) | notebook "Revisao profunda" |
+| Objects | after v5.6: VS 588/588; Counters PS 136/184 (A 128, B 8); Phong PS 426/444 (A 394, C 32); 0 invalid. Not covered: 34 PS using all of v0..v9, 32 Counters group D | `counter_sh\` (perl simulators reproduce the C++ counts) |
 | Wall table | 58 ExteriorWall PS, K = c2 in 26 / c3 in 32; 0 of 27 other-family PS | `snowcover\test11.cpp` |
 | Floor table | 261 accepted of 571 ExteriorFloors (235 ps_2_0); 0 of 58 InteriorFloor | `snowcover\test13.cpp` |
 | In-game census (dev) | 84 VS/PS pairs with baked light or an outdoor rig, 49 unfixed at 25/09 17:05 | `censo_tech.txt` |
@@ -280,14 +280,14 @@ Must stay clear of game registers and of each other.
 | Snowy roof `roof_snow_lamps_ps.hlsl` | same block c20..c52, c53.x = VS c15.x |
 | Water `water_lamps_ps.hlsl` | c20..c59 (lamps, c52 params, WVP rows c53..c56, translation c57, depth linearisation c59), INTZ in s7 |
 | Object / fence patches | `atlasConst`, `strengthConst`, `lampParamConst` (0, strength, 0, 1e-4) + 2 × 8 lamp blocks, all taken from the first free constant of each shader; objects use TEXCOORD8 |
-| Planned per-pixel walls/floors (PASSO3-PLANO.md 3.4) | c64..c149, **never built** |
+| Planned per-pixel walls/floors (the per-pixel plan (private notes) 3.4) | c64..c149, **never built** |
 
 ### Validation and limits
 
 - Every patch is tested offline over all captured shaders and, where possible, over the whole technique in the precomp,
-  and every output is disassembled with `D3DDisassemble` (harnesses in the scratchpad; see
+  and every output is disassembled with `D3DDisassemble` (harnesses in the private research folder; see
   [../features/dev-tools/census.md](../features/dev-tools/census.md) and [../workflow.md](../workflow.md)). Test
-  executables must not write many files (Kaspersky flagged one as ransomware).
+  executables must not write many files (security software may flag a test executable that writes many files).
 - ps_3_0 allows 512 instruction slots on native D3D9 (DXVK reports 32768; the combined build logs the device limits at
   startup), and at most 10 input registers. ps_2_0 has tighter rules: `lrp` with two constant sources is invalid on
   native D3D9 even though DXVK accepts it (bug found and fixed on 25/09).
@@ -317,7 +317,7 @@ Must stay clear of game registers and of each other.
 
 ### Open items
 
-- The precomp container format (only known through the scratchpad scripts).
+- The precomp container format (only known through the private research scripts).
 - Exact counts per technique for InteriorWall, and the full technique list.
 - Why some variants keep the lamp scale in `c2` and others in `c3` (per-material build options, *unverified*).
 

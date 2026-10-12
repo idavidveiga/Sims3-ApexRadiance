@@ -58,7 +58,7 @@ the snowy albedo `r6`; fog with `v4`. No lamps. The shader is too large to rewri
 
 **Outcome:** position from COLOR0 x VS `c15.x` (copied to PS `c53.x`).
 
-### 2026-09-25 (10:43): stair snow sent to the roof pass
+### 2026-09-25: stair snow sent to the roof pass
 
 **Context:** first test of the snow-on-stairs fix (m50/m51, `LightProbe-neve-escada`: `VS_2E036438` / `PS_2E036820`, 500
 triangles, 4 `rep` loops of 3D noise with `s1` permutation 256x256 and `s2` gradient 256x1).

@@ -73,7 +73,7 @@ S3SS's LSO resolves the same function differently: Steam address `0x0073E060` pl
 `E8 ?? ?? ?? ?? 85 C0 74 2F 8B C8 E8 ?? ?? ?? ?? 85 C0 74 24 8B C8 E8 ?? ?? ?? ?? 85 C0 74 19 8B 10 8B C8 8B 42 0C 68 89 DD 0F 11 FF D0 85 C0 74 ?? 8A 80 B9 08 00 00`.
 Its **map view blocker** detours WorldManager::Update (`0x00C6D570`) and, while map view is on and for 1000 ms after it
 closes (`kMapViewGraceMs`), sets WorldManager+0x258 = 1 around the original call (restoring the old value after).
-Apex only calls the getter; PLANO-SEPARACAO.md section 3 lists it as "cooperate (read or call only)". Consequence for
+Apex only calls the getter; the standalone split plan (private notes) section 3 lists it as "cooperate (read or call only)". Consequence for
 Apex: while that blocker is active, 0x00C6C290 is not called, so the Frame Profiler's camera point (and the removed GC
 Scheduler's) stops updating; both have / had a second source (below).
 

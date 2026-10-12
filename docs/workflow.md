@@ -10,23 +10,16 @@ The earlier combined-build process (Apex inside a fork of Sims3SettingsSetter) i
 
 | What | Path |
 |---|---|
-| This repository (Apex Radiance) | `%USERPROFILE%\Documents\Projetos\ApexRadiance\` (GitHub `loinyx/Sims3-ApexRadiance`) |
-| Combined build (frozen reference, read-only; tag `combined-final`, commit `45e36e2`, branch `night-remake`) | `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\` |
-| Game binaries (`TS3W.exe`, `Sims3LauncherW.exe`, ASIs, DXVK `d3d9.dll`) | `C:\Games\Hydra\The Sims 3\Game\Bin\` |
-| Game shaders (read-only reference) | `C:\Games\Hydra\The Sims 3\Game\Bin\Shaders_Win32.precomp` |
+| This repository | GitHub `loinyx/Sims3-ApexRadiance` |
+| Game binaries (`TS3W.exe`, `Sims3LauncherW.exe`, ASIs, an optional DXVK `d3d9.dll`) | `<Game>\Bin\` (for example `...\The Sims 3\Game\Bin\`) |
+| Game shaders (read-only reference) | `<Game>\Bin\Shaders_Win32.precomp` |
 | Apex Radiance config, log and developer outputs | `%USERPROFILE%\Documents\Electronic Arts\The Sims 3\Apex Radiance\` |
-| Official S3SS config and log (also the combined build's) | `...\The Sims 3\S3SS\` |
+| Official S3SS config and log | `...\The Sims 3\S3SS\` |
 | Previous standalone (`S3SSApex.asi`), read once for migration | `...\The Sims 3\S3SS\Apex\` |
-| Backups | `%USERPROFILE%\Desktop\Backups Sims 3\<NN-description>\` |
-| Knowledge notes (Portuguese, chronological; later entries win) | `%USERPROFILE%\Desktop\S3SS-dev\NOTAS-ILUMINACAO.md`, `PASSO3-PLANO.md`, `PLANO-SEPARACAO.md`, `ROADMAP-NIGHT-REMAKE.md` |
-| Ghidra project and decompile output | `%USERPROFILE%\Desktop\S3SS-dev\re\` (`re\out` = decompiled C per function) |
 | MSBuild | `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe` |
-| GitHub CLI | `C:\Program Files\GitHub CLI\gh.exe` (logged in as `loinyx`) |
 
-**Test machine:** The Sims 3 Steam 1.67.2 at 4K on an RTX 4070 Ti SUPER. `d3d9.dll` is the official DXVK 3.1.1
-(sha256 starts `265888c3`; it was once misread as "2.0"). Ultimate ASI Loader 9.7.4 is installed as `wininet.dll`,
-next to `Sims3Performance.asi` and `MonoPatcher.asi`. Nothing in `Bin` other than the mod's `.asi` is changed without
-an explicit request.
+**Reference setup:** The Sims 3 Steam 1.67.2 with Ultimate ASI Loader as `wininet.dll`, tested both on native
+Direct3D 9 and on DXVK.
 
 ---
 
@@ -53,8 +46,8 @@ In PowerShell use the call operator: `& "C:\Program Files (x86)\...\MSBuild.exe"
 - **`ApexPublic` is a legacy no-op.** The active public-build switch is `ApexFlavorDefines=APEX_NO_DEV_TOOLS`.
 - **Files on disk that are not in `ApexRadiance.vcxproj` are not built.** A new `.cpp` must be added to the project's
   `ClCompile` list.
-- The [apex-compile-project](../.agents/skills/apex-compile-project/SKILL.md) skill finds, runs and caches a verified
-  build command, checks the expected artifact and keeps the full log local.
+- `tools/development/build.ps1` runs the build through `tools/development/build_runner.mjs`, which checks the expected
+  artifact and keeps the recipe and full log under the ignored `outputs/build/`.
 
 ---
 
@@ -65,11 +58,9 @@ Install only with the game closed.
 1. **Close the game and the launcher.** Neither `TS3W.exe` nor `Sims3LauncherW.exe` may be running (the launcher also
    holds `d3d9.dll` and files in `Bin`). Check with `tasklist | findstr /i "TS3W Sims3Launcher"`. Never copy into `Bin`
    while either is open, and never end the game process without asking.
-2. **Back up first** ([rule 1](#3-project-rules)). Copy the installed `Bin\ApexRadiance.asi` (the first time, the old
-   `Bin\S3SSApex.asi`) into a new numbered folder `Backups Sims 3\<NN-description>\`, for example
-   `ApexRadiance.asi.instalado-antes`, and any source file about to be rewritten (`<file>.antes-<change>`). The next
-   folder number is recorded in `CLAUDE.md`.
-3. Copy `Release\ApexRadiance.asi` into `C:\Games\Hydra\The Sims 3\Game\Bin\`.
+2. **Back up first.** Copy the installed `Bin\ApexRadiance.asi` (the first time, the old `Bin\S3SSApex.asi`) and the
+   configuration into a backup folder outside the game.
+3. Copy `Release\ApexRadiance.asi` into `<Game>\Bin\`.
 4. **Exactly one copy of the mod in `Bin`.** Delete the old `S3SSApex.asi` (previous standalone and combined-build
    name). The official `Sims3SettingsSetter.asi` stays next to `ApexRadiance.asi`. A leftover `S3SSApex.asi` is
    detected: if it loaded first, Apex Radiance stays idle and only writes an error to its log; otherwise the old one
@@ -79,50 +70,25 @@ Install only with the game closed.
    On the first start without it, Apex Radiance copies `...\S3SS\Apex\Apex.toml` (previous standalone) as it is, else
    migrates the Apex tables from `...\S3SS\S3SS.toml` (combined build), backing it up as `S3SS.toml.pre-split.bak`.
    Developer mode applies only from the next game start.
-6. Tell the tester (in Portuguese) what to test and what to look for.
+6. Write down what to test and what to look for, so the result can be recorded in the validation page.
 
 ---
 
 ## 3. Project rules
 
-1. **Back up before modifying** any game file, mod file, config, driver or source file about to be rewritten, into
-   `%USERPROFILE%\Desktop\Backups Sims 3\<numbered folder>`. The scratchpad alone is never a backup.
-2. **No guessing: study before implementing.** Static deduction failed repeatedly on this project. The method that
-   works: (a) GPU probe capture (Light Probe), (b) Light Diag, (c) read the actual shader and its constants,
-   (d) patch by pattern and test offline over all captured shaders, (e) adversarial review. Mark anything not verified
-   as *Unverified*, in code comments and in docs.
-3. **English is the source language** of UI text, tooltips and status lines. Logs, the Developer page and file names
-   are English only. The menu is translated into Portuguese (Brazil), Spanish and French (Settings > Menu >
-   Language; automatic = the Windows display language). New texts are written in English and their translations added
-   to `i18n/tr_*.cpp` (how: `i18n/TRANSLATING.md`). The maintainer communicates in Portuguese; replies to the
-   maintainer are in Portuguese.
-4. **Credits:** "Credits: @loinyx" appears only at the end of each feature description shown on hover. Other credits
-   live in Settings > Credits: sims3fiend (Sims3SettingsSetter, the model for the rewritten framework), FXAA and
-   third-party code (Dear ImGui, Microsoft Detours, toml++, SMAA, Lucide icons under ISC), and one line for
-   Every-Story Ground Light (`apex_gui.cpp`: "Upper-floor ground light: Arro's technique, adapted in Apex Radiance.").
-   The README credits carry the same attribution with a link to arro-now.tumblr.com. Arro is never named in feature
-   descriptions, tooltips, release notes or promotional text, and the wording never implies the whole mod is based on
-   that work. Sims3SettingsSetter is named only in compatibility notices, detection, the S3SS recommendation card,
-   Credits and the S3SS.toml migration.
-5. **Menu organisation:** main controls visible, tuning in collapsed "Advanced" areas, developer tools apart (Developer
-   page, shown only in developer mode). Every new control gets English text, a hint, a sane default and translations.
-   After adding any feature or option, review the whole menu with the [apex-menu](../.agents/skills/apex-menu/SKILL.md)
-   skill and run `perl .claude/skills/apex-menu/audit.pl .` from the repository root (details in
-   [section 7](#7-branches-pull-requests-and-repository-skills)). Theme and layout: [ui.md](ui.md).
-6. **Name:** visible text says "Apex Radiance" (full: "Apex Radiance for The Sims 3") through `APEX_PRODUCT_NAME` and
-   `APEX_PRODUCT_TAGLINE` in `apex_version.h`; the file is `ApexRadiance.asi`. Never "S3SS Apex" or "Apex Edition"
-   again. Internal identifiers keep "Apex" (namespaces, `ApexPatch`, `APEX_` macros, `apex_*` source files).
-7. **Git:** commits use the maintainer's identity (loinyx). Never commit the game's shader bytecode (`*_ref.h`), the
-   developer leftovers `patches/call_trace_patch.cpp`, `patches/lot_edge_lighting_patch.cpp`,
-   `patches/light_diag_patch.cpp` and `trace_targets.h`, or `Public/`. Commit only on request.
-8. **Publishing, pushing, releases and repository renames** happen only with the maintainer's explicit approval.
-9. **Scope:** HDR output, Native HDR, Smooth Streaming, Script GC Scheduler and Service Frame Budget stay removed
-   ([removed-features.md](removed-features.md)); they are not restored without a request. Ambient Occlusion is a
-   standalone GTAO feature ([features/ambient-occlusion.md](features/ambient-occlusion.md)). Smooth Patch Precise
-   improvements stay out of Apex Radiance (upstream pull-request candidate).
-10. **Licensing:** upstream S3SS has no licence. The framework was rewritten from scratch, so no sims3fiend file headers
-    are carried. Ask sims3fiend before publishing under a new licence arrangement.
-11. **New work goes into this repository**, never into the frozen combined tree.
+The rules for every change are in [AGENTS.md](../AGENTS.md) (evidence before patches, English source text and
+translations, menu review, credits, what is never committed) and [PUBLIC-TEXT-POLICY.md](PUBLIC-TEXT-POLICY.md).
+In addition:
+
+- **Name:** visible text says "Apex Radiance" (full: "Apex Radiance for The Sims 3") through `APEX_PRODUCT_NAME` and
+  `APEX_PRODUCT_TAGLINE` in `apex_version.h`; the file is `ApexRadiance.asi`. Internal identifiers keep "Apex"
+  (namespaces, `ApexPatch`, `APEX_` macros, `apex_*` source files).
+- **Scope:** HDR output, Native HDR, Smooth Streaming, Script GC Scheduler and Service Frame Budget stay removed
+  ([removed-features.md](removed-features.md)). Ambient Occlusion is a standalone GTAO feature
+  ([features/ambient-occlusion.md](features/ambient-occlusion.md)).
+- **License:** the project is MIT licensed ([LICENSE](../LICENSE)). The framework was written from scratch after the
+  design of sims3fiend's Sims3SettingsSetter, credited in the README and Settings > Credits; no upstream files are
+  included.
 
 ---
 
@@ -138,7 +104,7 @@ feature's validation page (`docs/validation/<feature>.md`) lists its harnesses, 
 | Convention | Rule |
 |---|---|
 | Location | One folder per harness, `tools/<name>_test/` or `tools/<name>_check/`, with a `README.md` when it needs arguments or fixtures |
-| Read-only | A harness never writes into the game folder, the capture folders or the repository. It prints to stdout. Compiler outputs and any scratch file go to an `-OutDir` / scratch directory (default under `%TEMP%`). Never write many files from a test executable: one was flagged as ransomware by Kaspersky |
+| Read-only | A harness never writes into the game folder, the capture folders or the repository. It prints to stdout. Compiler outputs and any scratch file go to an `-OutDir` / scratch directory (default under `%TEMP%`). Never write many files from a test executable: security software may flag it |
 | Game closed | Harnesses do not attach to `TS3W.exe` and never install anything into the game. Run them with the game closed so the GPU and the shader package are not in use |
 | Runner | `run.ps1`, or `run_<topic>.ps1` for a sub-suite (for example `tools/terrain_lighting_test/run_queue_checks.ps1`). The runner compiles the harness with `cl.exe` and runs it, throwing on a compile error or a non-zero exit code |
 | Compiler | MSVC x86 (`cl.exe`). Runners dot-source `tools/terrain_lighting_test/compiler_env.ps1` and call `Initialize-TerrainCompiler`, which finds Visual Studio with `vswhere`, runs `VsDevCmd.bat -arch=x86 -host_arch=x64` once and imports `PATH`, `INCLUDE`, `LIB` and `LIBPATH` (nested suites reuse an already initialised toolchain). Harnesses without a runner give their `cl` command in their README, to run from an x86 developer prompt |
@@ -225,22 +191,7 @@ folder. The previous standalone wrote `Apex_*.txt` under `...\S3SS\Apex\` (left 
 
 ## 6. Release
 
-Every release follows [apex-review-pr-release](../.agents/skills/apex-review-pr-release/SKILL.md) before publication.
-
-1. **Review.** Substantive code gets an independent review and an evidence-based discussion of bugs and regressions,
-   performance cost, preservation of the intended look and documentation consistency. Demonstrated bugs are fixed.
-   Record the exact reviewed and tested commit SHA and what gameplay or performance validation is still open
-   (*Unverified*). Changes added after the review are reviewed before publishing.
-2. **Build once** (section 1) and check the translations (`tools/i18n_check`, the apex-menu audit).
-3. **Install and test** the build in game (section 2). Record results in the validation pages.
-4. **Documentation:** update the feature, validation and history pages, and write the release page in
-   [releases/](releases/README.md) using its common layout.
-5. **Publish only after the maintainer's explicit approval.** The release asset is the public `ApexRadiance.asi`
-   built from the reviewed commit; verify after publication that the published asset matches the reviewed build.
-   Repository: `loinyx/Sims3-ApexRadiance`.
-6. **Release notes:** a short `##` headline, player-facing `- **Title:** description` bullets and `## Install`. The
-   Nexus workflow derives its changelog from that body. Keep internal provenance notes out of Git and source archives.
-   A documentation-only follow-up does not require rebuilding or replacing the published ASI.
+The review, documentation and publication steps are in [release-process.md](release-process.md).
 
 Published versions are listed in [releases/README.md](releases/README.md).
 
@@ -248,27 +199,19 @@ Published versions are listed in [releases/README.md](releases/README.md).
 
 ## 7. Branches, pull requests and repository skills
 
-New versions and features are developed on a branch with small coherent commits and a draft pull request. The same
-pull request is resumed across sessions, with its scope, tested commit and remaining validation kept visible.
-Concurrent contributors use separate worktrees and contribution branches, with one integrator updating the shared pull
-request. Fetch and inspect new remote commits before pushing; never force-push over someone else's work. Merging and
-releasing are explicit actions.
+Branch names, commit and pull request titles follow [CONTRIBUTING.md](../CONTRIBUTING.md#branches-commits-and-pull-requests)
+and [PUBLIC-TEXT-POLICY.md](PUBLIC-TEXT-POLICY.md). Concurrent contributors use separate worktrees and branches; fetch
+and inspect new remote commits before pushing and never force-push over someone else's work. Merging and releasing are
+maintainer actions.
 
-| Skill | Use |
-|---|---|
-| [apex-version-pr-workflow](../.agents/skills/apex-version-pr-workflow/SKILL.md) | Start or resume a version branch, commits and draft pull request |
-| [apex-compile-project](../.agents/skills/apex-compile-project/SKILL.md) | Build with a verified, cached command; check the artifact; keep logs local |
-| [apex-review-pr-release](../.agents/skills/apex-review-pr-release/SKILL.md) | Pre-release review: independent review, evidence-based debate, recorded SHA and open validation |
-| [apex-menu](../.agents/skills/apex-menu/SKILL.md) | Plan or review menu changes; `audit.pl` reports untranslated texts, copy-guideline breaks, undocumented keys and settings missing from ResetDefaults |
-
-The apex-menu skill has a Claude Code discovery copy in [.claude/skills/apex-menu](../.claude/skills/apex-menu/SKILL.md);
-keep both copies and their audit scripts in sync. The audit uses Perl, takes the repository root as its argument and
-reports heuristically: check runtime text and persistence by hand. Skill caches, checkpoints and task scratch or output
-directories are ignored by Git; machine-specific build recipes and binaries are never committed.
+The [apex-menu](../.agents/skills/apex-menu/SKILL.md) skill (discovery copy in `.claude/skills/apex-menu`, kept
+identical) covers menu changes. Its audit, `perl tools/menu_audit.pl .`, reports untranslated texts, copy-guideline
+breaks, undocumented keys and settings missing from ResetDefaults; it is heuristic, so check runtime text and
+persistence by hand.
 
 ## See also
 
 - [architecture.md](architecture.md): framework internals.
 - [releases/README.md](releases/README.md): published versions.
-- [history/workflow.md](history/workflow.md): the combined-build build and release process, and earlier backup folders.
+- [history/workflow.md](history/workflow.md): the combined-build build and release process.
 - [DOCUMENTATION-STANDARD.md](DOCUMENTATION-STANDARD.md): how pages are written.

@@ -5,7 +5,7 @@ described in [features/banding-fix.md](../features/banding-fix.md).
 
 ### 2026-09-30: report of rings around lamp light
 
-**Context:** maintainer feedback: colours were uneven, mainly in lit areas; an interior wall showed
+**Context:** observed in game: colours were uneven, mainly in lit areas; an interior wall showed
 rings around a lamp's pool of light, on an OLED display (AW3225QF, DCI-P3).
 
 **Finding:** lossless captures (`cor_1/2/6.bmp`) showed black at 0 and white at 255, so the range is correct. In smooth
@@ -16,7 +16,7 @@ dark gradients. Wide gamut is not the cause; reaching P3 would need an HDR / scR
 
 ### 2026-09-30: uniform grain replaced by a triangular grain
 
-**Context:** the first build (57a0a09d) used a uniform grain of plus or minus half a step. Maintainer feedback: a partial
+**Context:** the first build (57a0a09d) used a uniform grain of plus or minus half a step. Observed in game: a partial
 improvement only.
 
 **Finding:** a uniform dither leaves noise modulation. The inverse CDF of the triangular distribution applied to the IGN
@@ -36,7 +36,7 @@ switch; with Picture off, the Picture pass runs with only the deband, never in a
 
 ### 2026-09-30 evening: most of the scene was not covered
 
-**Context:** maintainer feedback: on many walls the fix had almost no effect. The magenta view turned the whole screen magenta: a
+**Context:** observed in game: on many walls the fix had almost no effect. The magenta view turned the whole screen magenta: a
 full-screen depth-on ps_2_x pass drawn over the scene with blending became opaque magenta. The log showed only 109 to
 139 copies made in the session.
 

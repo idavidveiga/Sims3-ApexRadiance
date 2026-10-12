@@ -5,7 +5,7 @@ described in [features/performance/room-light-queue.md](../features/performance/
 
 ### 2026-09-29: room lighting queue study
 
-**Context:** five parallel studies (report in the session scratchpad `plan.md`) of why rooms light up slowly.
+**Context:** five parallel studies (private research notes) of why rooms light up slowly.
 
 **Finding:** from entering a lot to the last room solve took 12 to 36 s, with only 1.2 to 2.8 s of solve work in it; in
 95 to 98% of the frames with solve work a single lot story was being solved. The cause is the game's queue, not the
@@ -50,7 +50,7 @@ room showed the new light. The notes of that day, kept as written in the feature
 
 #### Many lamps at once (06/10)
 
-User report: switching all the lights of a big lot (5 stories, rooms with 35-98 lights) took 3-7 s before every room
+Observed in game: switching all the lights of a big lot (5 stories, rooms with 35-98 lights) took 3-7 s before every room
 showed the new light (the same house took up to 10 s on 05/10). Measured: the game's class-2 solve cost 24.8 s of the session
 against 1.0 s for class 0.
 
@@ -61,8 +61,8 @@ against 1.0 s for class 0.
   class above 0 back to class 0 before the game reads its priority. Class 0 is the game's own fast first solve and has 100x
   the priority of class 2, so every room of the switch takes its new light within a few frames, the camera's story first;
   "No middle step" then takes each room straight to its class. Until 06/10 evening only bursts of 3 or more lights
-  (`MassSwitchActive`) took it: one lamp of the atrium had its 4 rooms solved at class 2 one after another (user: "the
-  quick pass for one lamp too"). Drags and value edits never take it. Status line: "quick pass for lamp switches" and its
+  (`MassSwitchActive`) took it: one lamp of the atrium had its 4 rooms solved at class 2 one after another, so the
+  quick pass was extended to single-lamp switches. Drags and value edits never take it. Status line: "quick pass for lamp switches" and its
   room count; each lamp edit's log line ends with the rooms that took the quick pass.
 - **No second send for waiting rooms**: the lamp switch's safety net (LevelLightShare::RelightLot, about 120 ms after the
   switch) skips a room that is queued (state 2) and has not started its solve, as it would skip a fresh solve: its gather
@@ -77,10 +77,10 @@ against 1.0 s for class 0.
 
 #### Smooth light changes indoors (06/10, removed the same day)
 
-Removed after the fixes below (user: "much better without"): the light changes at once; the module became AtriumHold
+Removed after the fixes below (the result looked better in game without it): the light changes at once; the module became AtriumHold
 (`features/atrium_hold.{h,cpp}`), which only makes an atrium's stories wait for each other. History:
-`[patches.RoomLightQueue] lightFade` (default on, Experimental), `features/room_light_fade.{h,cpp}`. The user saw the quick
-pass as a blink (video 11:01: the lower walls went darker for ~1 s, the class-0 solve has no wall blur, then the refinement
+`[patches.RoomLightQueue] lightFade` (default on, Experimental), `features/room_light_fade.{h,cpp}`. In game the quick
+pass showed as a blink (recorded video: the lower walls went darker for ~1 s, the class-0 solve has no wall blur, then the refinement
 brightened them). The room solves write the story maps (MANAGED single-level A8R8G8B8: wall atlas, floor, ceiling, room light
 map, basis maps) through LockRect / UnlockRect; both are detoured (vtable 19 / 20 of a probe texture). While a lamp edit is
 pending, a map first locked during a room solve (the queue's current room in state 3, render thread: never the UI) is kept
@@ -92,7 +92,7 @@ Faster room lighting status line ("smooth light changes").
 Also fixed the quick pass: a room sent back to its class by the switch's safety net before its class-0 solve ran is set
 to 0 again until its quick solve is shown, and never after.
 
-Its quick solve is shown when the room's solve ends (06/10 evening, from the first light update trace, recording 13:52):
+Its quick solve is shown when the room's solve ends (06/10 evening, from the first light update trace recording):
 LevelLightShare's `FinalizeHook` (the solve's step 8, `0x006A0E00` called at `0x6A3E65`) calls
 `RoomLightQueue::NoteSolveEnd`, and on the render thread a room of the burst counts as shown at the first solve end after the
 quick pass set it to 0. The earlier test, "shown" (+0x100) is 0, was already true for a room still showing the previous
@@ -102,18 +102,18 @@ class-2 solve (the lights-on log line said every room showed its new light after
 build) the old test stays. Bounds: a room is set to 0 at most 3 times per burst; after 3 s the burst counts as refining even
 if some rooms never ran (logged: "N of the M rooms ... showed their new light").
 
-Every story together (06/10, user: the light's story changed first and the others up to 0.5 s later): while the edit's
+Every story together (06/10; observed: the light's story changed first and the others up to 0.5 s later): while the edit's
 first solves run (the quick pass of a burst, or every room of a smaller edit; not its refinement, not a dragged lamp; at most
 2.5 s) a changed map holds what was on screen, then every held map starts its fade in the same frame. Maps are kept only
 for the edit's own rooms (the solved room must have lamp-edit urgency: other rooms, even of other lots, had filled the 128
 slots). A burst is now 3 different lights switching within 1.5 s, even when each switched more than 3 times in 10 s (the
 self-switching rule had turned repeated tests of "all the lights" into no edit at all).
-That hold was turned off the same day (user: worse; the light's story waited for a cascade of 2-4 s). The causes were
+That hold was turned off the same day (worse in game: the light's story waited for a cascade of 2-4 s). The causes were
 found and fixed instead (below); only an atrium's maps wait now.
 
-#### Every story at once: what fixed it (06/10, user: "ficou ótimo")
+#### Every story at once: what fixed it (06/10, confirmed in game)
 
-Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 on stories 0-2, 35-98 lights each):
+Recordings of a 4-story house with an atrium (rooms 23, 19 + 3, 20 on stories 0-2, 35-98 lights each):
 
 1. **One round per atrium** (level_light_share, "One round for an atrium"). The stacked-ambient merge used the other
    members' values from their last solve, so the first member solved after an edit took a mixed target, the next another,
@@ -132,22 +132,22 @@ Recordings 11:01-12:01 of a 4-story house with an atrium (rooms 23, 19 + 3, 20 o
    after the lamp's room whatever their story; their new maps wait while another member is still waiting for or in its
    solve (at most 1.5 s; not while a lamp is dragged), then show in the same frame. Only atrium rooms' maps are kept. The switched lamp's own room is no longer solved twice
    when its gather fell in the change's tick (a gather serial now orders gathers and lamp marks).
-5. **Loads** ("when entering the lot it takes long to correct"; log 12:18: 17 s after the world went live). The
+5. **Loads** (entering the lot took long to correct; one log: 17 s after the world went live). The
    after-load refresh keeps every room gathered again since the world went live (it re-sent 75 rooms of 16 lots after the
    world-live round had settled them), and for 15 s after the world goes live the lot being played gets 25 ms of solving a
    frame with the camera still (the game's own budget while it moves; it averaged 4.4 ms) and the queue drains 12 ms.
 
 Measuring tools that found these: the recorder's [solve] / [room] journal (F8), the "Wall seams.csv" of a recording (the
-same wall points at class 0 and class 2), and frames extracted from the user's video with VLC's scene filter.
+same wall points at class 0 and class 2), and frames extracted from a gameplay video with VLC's scene filter.
 
-Then (same day, user: "do the 3 improvements"):
+Then (same day), three further improvements:
 - **The switch's safety net sends only the rooms a lamp can reach** (`LevelLightShare::RelightLampSwitch`): those holding
   the lamp, its own room, the rooms near the stair openings of its story and the stories next to it, and every story's
   outdoor rooms for an outdoor lamp (fresh solves kept). It sent the whole lot before (17 rooms for one sconce). A lamp
   moved into another room, moved and switched, or more than 8 lamps at once ("all the lights") still send the lot.
   06/10 evening: the lamp's story and room are its home (`LampHome`: room id light+8, the one the object rigs' gather
   compares, on the story whose lowest floor is the highest at or under the lamp's height +0x124); the lamp mark's room was
-  only the first room the game marked (room 0 of every story in the 13:52 recording), so every switch counted as an
+  only the first room the game marked (room 0 of every story in that recording), so every switch counted as an
   outdoor lamp and sent the outdoor rooms of every story. When only lamps switched off, a room whose light list is empty is
   left alone (none of them reached it: rooms 22 and 24 of the atrium house's ground floor were solved again for nothing).
   The log line counts both ("N with no light left alone", "M of them found in their own room").
@@ -161,8 +161,7 @@ Then (same day, user: "do the 3 improvements"):
 
 Left as it is: the refinement of a burst ends room by room (now only a change of resolution).
 
-The "Smooth light changes indoors" option was then removed (user: "the fade is not needed any more, is it?" and, with it
-off, "much better without"): its first reason, the quick pass's blink, was gone. An old `lightFade` key is ignored.
+The "Smooth light changes indoors" option was then removed (with it off the result looked better in game): its first reason, the quick pass's blink, was gone. An old `lightFade` key is ignored.
 
 **Outcome:** the quick pass, the safety net that skips waiting rooms, the background refinement, the solve-end test, one
 round per atrium, AtriumHold and the narrower lamp safety net were kept. Smooth light changes indoors (a 250 ms fade of

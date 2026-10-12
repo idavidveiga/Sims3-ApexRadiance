@@ -8,7 +8,7 @@ This page documents how Apex Radiance finds the game code it patches on every bu
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, image base 0x00400000, fixed addresses); EA app 1.69.47 (`TS3.exe`) and other builds through the signature scan |
 | Used by | Every game-code feature: [Night Lighting](../features/night-lighting/README.md), [Every-Story Ground Light](../features/night-lighting/level-light-share.md), [Performance](../features/performance/README.md), [Light Diag](../features/dev-tools/light-diag.md), S3SS detection |
-| Evidence | `framework/game_addresses.{h,cpp}`, `framework/game_version.{h,cpp}`, offline checker `S3SS-dev\research\port169\sigcheck.pl`, research notes `S3SS-dev\research\port169\method.md` |
+| Evidence | `framework/game_addresses.{h,cpp}`, `framework/game_version.{h,cpp}`, offline checker `sigcheck.pl` and its method notes (private research tools, not published) |
 
 ## Overview
 
@@ -21,7 +21,7 @@ the features that use the addresses (`patches/night_terrain_relight_patch.cpp`,
 and the Performance and Frame Profiler sources in `features/`, such as `resource_cache.cpp`, `lot_lighting_motion.cpp`,
 `scene_budget.cpp`, `object_index.cpp`, `fast_memory.cpp`, `fast_crc.cpp`, `unlit_rooms.cpp` and `frame_profiler.cpp`; the
 loaded-world gate `features/world_session.h` uses `WorldManagerPtr` and `UiServiceGetter`).
-Offline checker: `S3SS-dev\research\port169\sigcheck.pl`. Research notes: `S3SS-dev\research\port169\method.md`.
+Offline checker: `sigcheck.pl`, with its method notes (private research tools, not published).
 
 ## Details
 
@@ -30,7 +30,7 @@ Offline checker: `S3SS-dev\research\port169\sigcheck.pl`. Research notes: `S3SS-
 | Build | Exe | PE timestamp | `GameVersion` | Game-code addresses |
 |---|---|---|---|---|
 | Retail disc 1.67.2.024002 | TS3W.exe | 0x52D872DA | `Retail` | signature scan |
-| Steam 1.67.2.024037 | TS3W.exe | 0x52DEC247 | `Steam` | fixed (verified in `S3SS-dev\re\TS3W.exe`), signatures logged as a self-check |
+| Steam 1.67.2.024037 | TS3W.exe | 0x52DEC247 | `Steam` | fixed (verified in `TS3W.exe`), signatures logged as a self-check |
 | EA app 1.69.47.024017 | TS3.exe | 0x6707155C | `EA` | signature scan |
 | Origin / EA 1.69.43.024017 | TS3.exe | 0x568D4BAC | `EA_1_69_43` | signature scan |
 | anything else | | | `Unknown` | signature scan |
@@ -208,7 +208,7 @@ the texture load calls above), which take the resolved address and, for a CALL s
 ### Checking a table change
 
 ```
-perl S3SS-dev\research\port169\sigcheck.pl [exe] [game_addresses.cpp]
+perl sigcheck.pl [exe] [game_addresses.cpp]
 ```
 
 Read-only. It parses `kInfo` and `kTable` (keep one entry per line in their current shape), runs the resolution rules
@@ -218,7 +218,7 @@ the signatures comes from `research\engine_map\full.asm` (dumpbin disassembly of
 
 ## Address reference
 
-Checked on `S3SS-dev\re\TS3W.exe` (Steam 1.67.2) with `research\port169\sigcheck.pl`, which parses the table from
+Checked on `TS3W.exe` (Steam 1.67.2) with `sigcheck.pl` (private), which parses the table from
 `game_addresses.cpp` and runs the same rules: **all 101 ids resolve to the fixed Steam address** (116 of 116 since
 2026-09-28, with the 15 Frame Profiler ids at the end of the table below; 133 of 133 since 2026-09-29, with the 17
 performance ids after them; 153 of 153 since the v1.5.0 merge (v1.4.0 round 3 ids, then the scene node budget and object index ids); 155 of 155

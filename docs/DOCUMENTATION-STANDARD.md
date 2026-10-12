@@ -38,10 +38,9 @@ One feature, one page per type. A feature page links to its validation and histo
 - **Lead with the result.** The first paragraph describes what the player sees. Implementation detail comes after.
 - **No dates, session names or build candidates in feature pages.** Dates belong in history, validation and release
   notes. Exception: the *Status* table records the version that introduced the feature.
-- **Write as product documentation, not a conversation log.** Never write "at the user's request", "the user
-  asked", "user-approved", "as requested", "we tried", "I", "you asked" or "Claude/Codex". State the behaviour and,
-  where needed, the design reason ("Reset buttons are per control to avoid accidental page resets").
-- **No conversation quotes** ("ficou incrível", "the user said"). Record the decision and, in history, the reason.
+- **Write as product documentation, not a conversation log.** No request or approval wording, first person or tool
+  names, and no quoted reactions; [PUBLIC-TEXT-POLICY.md](PUBLIC-TEXT-POLICY.md) lists the checked phrases. State the
+  behaviour and, where needed, the design reason ("Reset buttons are per control to avoid accidental page resets").
 - **No test counts in feature pages.** "Verified with 9,400 checks" goes to the validation page.
 - **Facts are verifiable.** Name the file, function, address or capture behind a claim. Mark anything not confirmed
   in game as *Unverified* (validation page) and say so in *Limitations* when it affects players.

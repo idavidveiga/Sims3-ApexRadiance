@@ -6,7 +6,7 @@ described in [features/depth-blur.md](../features/depth-blur.md).
 ### 2026-09-25: origin and the lake pass trigger
 
 **Context:** the feature request asked for a depth of field that does not blur the UI. ReShade CinematicDOF blurred pie
-menus (it runs on the final frame); REST, which can inject before a draw, crashed under DXVK (old scratchpad note
+menus (it runs on the final frame); REST, which can inject before a draw, crashed under DXVK (old private note
 `s3ss_feature_request_dof.md`).
 
 **Finding:** inside the D3D9 hooks the blur can run between the last scene draw and the first UI draw. An adversarial
@@ -83,7 +83,7 @@ transition instead. The PR #2 EndScene fallback does not change this behaviour.
 
 ### 2026-10-02: default preferences
 
-**Context:** release 2.5.5 adopted the maintainer's player configuration as the defaults.
+**Context:** release 2.5.5 adopted a tested player configuration as the defaults.
 
 **Finding:** fixed focus, amount 100%, Sharp area Large, Focus speed 0.1 s, Fixed start 0.318108052, transition
 0.287828237, strength 100%, Quality Medium, Glowing lights on, Blur the sky on, Sharp in map view on, far plane 1000,
@@ -94,7 +94,7 @@ and the reset state share the same `Params` values; saved choices are not overwr
 
 ### 2026-10-02: distant foliage speckles
 
-**Context:** maintainer feedback with an image showing small sharp dark and light points inside blurred trees.
+**Context:** an in-game screenshot showing small sharp dark and light points inside blurred trees.
 
 **Finding:** a code-based hypothesis: PrepPS stores the minimum blur amount of each 2x2 block while CompositePS compares
 it to full-resolution depth. Thin alpha-tested foliage can give mismatched blur values; a low `sum w_i` lowers the

@@ -10,7 +10,7 @@ The feature is described in [features/night-lighting/floors.md](../features/nigh
 
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
-| Offline table generators (scratchpad `snowcover/test13.cpp`, not in the repository) | Which ExteriorFloors pixel shaders `PatchBakedAtlasPs` accepts and which pass `D3DDisassemble` after patching | Not maintained in the repository | Game `Shaders_Win32.precomp`, d3dcompiler |
+| Offline table generators (private research folder: `snowcover/test13.cpp`, not in the repository) | Which ExteriorFloors pixel shaders `PatchBakedAtlasPs` accepts and which pass `D3DDisassemble` after patching | Not maintained in the repository | Game `Shaders_Win32.precomp`, d3dcompiler |
 | Offline VS pattern test (combined build, notes m66) | `IsFloorVs` accepts only `kFloorVs` and the pool-edge VS | Not maintained in the repository | Captured shaders |
 
 No maintained harness in `tools/` covers the floor patches.
@@ -36,7 +36,7 @@ No maintained harness in `tools/` covers the floor patches.
 
 ## Confirmed in game
 
-- Combined build: winter floors confirmed patched (m62); summer floors added in v5.4 (2026-09-25 around 17:25).
+- Combined build: winter floors confirmed patched (m62); summer floors added in v5.4 (2026-09-25).
 
 ## Open checks
 

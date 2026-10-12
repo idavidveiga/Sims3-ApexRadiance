@@ -8,7 +8,7 @@ This page documents the CPU light solve of lots: every lot story has a lighting 
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, image base 0x00400000) unless stated |
 | Used by | [Rooms at Night](../features/night-lighting/unlit-rooms.md), [Faster Room Lighting](../features/performance/room-light-queue.md), [Lot light pass](../features/night-lighting/lot-light-pass.md), [Level light share](../features/night-lighting/level-light-share.md), [Walls](../features/night-lighting/walls.md), [Floors](../features/night-lighting/floors.md), [Light Diag](../features/dev-tools/light-diag.md) |
-| Evidence | Ghidra `re\out` (`fn_006a31d0.c`, `fn_0069fd60.c` and others), `engine_map` `full.asm` and `dwords.txt`, F8 diagnostics, PASSO3-PLANO.md and NOTAS-ILUMINACAO.md (see Sources) |
+| Evidence | Ghidra decompile (private) (`fn_006a31d0.c`, `fn_0069fd60.c` and others), `engine_map` `full.asm` and `dwords.txt`, F8 diagnostics, the per-pixel plan (private notes) and the lighting notebook (private notes) (see Sources) |
 
 ## Overview
 
@@ -38,9 +38,9 @@ Sources: `level_light_share.cpp`, `light_diag.cpp`, `patches/night_terrain_relig
 `patches/lot_edge_lighting_patch.cpp`, `patches/lighting_quality_patch.cpp` (inherited S3SS),
 `patches/split_level_lighting_fix_patch.cpp` (inherited S3SS), `patches/smooth_streaming_patch.cpp` (note 3/5),
 `hdr_native.cpp` (header; used here only for its engine findings: Native HDR and its interior lamp gain existed only in the
-combined build, see [../removed-features.md](../removed-features.md)), `S3SS-dev\re\out` (`fn_006a31d0.c`, `fn_0069fd60.c`, `fn_006c6ab0.c`, `fn_006c6990.c`,
-`fn_006a4700.c`, `fn_006a7700.c`, `fn_006a20d0.c`), `scratchpad\engine_map\full.asm` and `dwords.txt`,
-PASSO3-PLANO.md (facts F-J1..F-J6, section 3.2, section 6), NOTAS-ILUMINACAO.md sections 1, 4c, 6, "Andares" (both rounds),
+combined build, see [../removed-features.md](../removed-features.md)), the private decompile (`fn_006a31d0.c`, `fn_0069fd60.c`, `fn_006c6ab0.c`, `fn_006c6990.c`,
+`fn_006a4700.c`, `fn_006a7700.c`, `fn_006a20d0.c`), `engine_map\full.asm` and `dwords.txt`,
+the per-pixel plan (facts F-J1..F-J6, section 3.2, section 6), the lighting notebook sections 1, 4c, 6, "Andares" (both rounds),
 "Revisao adversarial", "Passo 3", "Paredes mais escuras", "HDR nativo" (28/09).
 
 ### Data structures
@@ -77,7 +77,7 @@ Evidence: light_diag.cpp (walks and printed fields), level_light_share.cpp (`Tre
 ("manager: +0x00 lighting system (its +0xD4 is the tree), +0x88 level, +0x90/+0x94 lot id").
 
 Note: levels are relative to the lot. On a house built on a foundation, level 0 is the terrain story and the ground floor
-is level 1 (F8 of the house lot C49C001BCF2DEA20, NOTAS "Andares, segunda rodada").
+is level 1 (F8 of the house lot C49C001BCF2DEA20, notebook "Andares, segunda rodada").
 
 #### Room ("LightingRoom")
 
@@ -86,12 +86,12 @@ is level 1 (F8 of the house lot C49C001BCF2DEA20, NOTAS "Andares, segunda rodada
 | +0x00 | ptr | Owning manager | level_light_share `ShareOutdoorLights` |
 | +0x04 | ptr | LODParams* | lighting_quality_patch.cpp |
 | +0x0C | int | Room id (0 = outside of the story) | `fn_006c6ab0.c`; level_light_share |
-| +0x10 | vector | 3D blockers (objects) of this story | NOTAS "Andares, segunda rodada" |
-| +0x18 | byte | Roofless / outdoor flag ("externo" in F8). Fences or railings that close an area make a roofless room with +0x18 = 1. In `0x006A31D0` a room with +0x18 == 0 gets the normalisation and ambient alpha; +0x18 != 0 stores the raw sum | light_diag; NOTAS "Cerca em area cercada"; `fn_006a31d0.c` |
+| +0x10 | vector | 3D blockers (objects) of this story | notebook "Andares, segunda rodada" |
+| +0x18 | byte | Roofless / outdoor flag ("externo" in F8). Fences or railings that close an area make a roofless room with +0x18 = 1. In `0x006A31D0` a room with +0x18 == 0 gets the normalisation and ambient alpha; +0x18 != 0 stores the raw sum | light_diag; notebook "Cerca em area cercada"; `fn_006a31d0.c` |
 | +0x30 / +0x34 | vector<int> | 2D blockers: the walls of this story's room (built by `0x006A1DE0`) | level_light_share `CulledWalls` |
 | +0xC0 / +0xC4 | int | Lot size (inferred: `0x006C6AB0` gathers world lights at `(C0 × 0.5, 0, C4 × 0.5)` transformed by +0xF8, i.e. the lot centre) | `fn_006c6ab0.c`; dwords `0x00F9A5AC` = 0.5 |
 | +0xC8 / +0xCC | Light** | **Room light list** begin / end | `fn_0069fd60.c`; light_diag |
-| +0xD8 / +0xDC | vector | LightingWall list (source of +0x30) | NOTAS "Andares, segunda rodada" |
+| +0xD8 / +0xDC | vector | LightingWall list (source of +0x30) | notebook "Andares, segunda rodada" |
 | +0xEC | int | Resume state of a budgeted solve | smooth_streaming note 5 |
 | +0xF0 | int | Solve state ("estado" in F8); 3 = synchronous solve running; 1 with +0x168 != 0 = waiting for its gather | light_diag; smooth_streaming note 3; level_light_share `QueueOutdoorRegather` |
 | +0xF4 | int | LOD class / LOD index; 2 = the wall blur class | light_diag ("classe"); lighting_quality ("LOD index"); PASSO3 F-J1 |
@@ -128,7 +128,7 @@ written at `Y × pitch + X × 4`).
      (`GetLotID` → 0) lot lights of type 11 also enter here, on every story.
 2. 3D blockers: `0x006C6A20` + `0x0069E5E0` (room+0x10), own story only.
 
-Measured consequence (F8, NOTAS "Andares"): before Apex, upper stories never saw the ground story's type-3 lamps and the
+Measured consequence (F8, notebook "Andares"): before Apex, upper stories never saw the ground story's type-3 lamps and the
 ground story never saw upper-story lamps; only type 11 (via world lights) reached every story. The EA cascade in
 `0x006C7250` (room 0 of level 0 changes → refresh room 0 of levels 0..7) suggests EA meant upper stories to see the ground
 lamps; the list gather does not do it. The lot-load path `0x006C54E0` gathers every story's room 0 through level 0's tree
@@ -143,7 +143,7 @@ level, so ground lamps lit the upper stories only until the first update.
 - The solve itself runs in the budgeted path (normal play) or synchronously (impostor builder); see
   [lot-loading-and-streaming.md](lot-loading-and-streaming.md).
 - A lot solved by day keeps the street lamps as "off": `0x006BE020` uses the effective colour +0xE0, which is 0 while a
-  lamp is off, and nothing re-solves lots when lamps switch on at dusk (NOTAS 1, lot_edge_lighting comment). Loading the
+  lamp is off, and nothing re-solves lots when lamps switch on at dusk (notebook 1, lot_edge_lighting comment). Loading the
   save at night makes the cut mostly disappear.
 
 #### The per-texel solve
@@ -169,7 +169,7 @@ So a room map texel is `rgb = min(Σ lights × normalisation, 1)` and `alpha = a
 
 #### The per-light lamp formula (street-lamp class, `0x006BE020`)
 
-From the disassembly and PASSO3-PLANO.md 3.2 (the other classes follow the same shape with their own cone terms; only the
+From the disassembly and the per-pixel plan 3.2 (the other classes follow the same shape with their own cone terms; only the
 street lamp was read in full):
 
 - `W = +0x130 (range) × intensity.x (+0x10) × k2 [0x011D0A68] / k1 [0x011D0A60]`;
@@ -177,12 +177,12 @@ street lamp was read in full):
   N·L (ground_report 5, unverified detail);
 - colour = effective colour +0xE0 (`0x006BE18C`), i.e. zero while the lamp is off; this street-lamp evaluation also
   reads `[0x01158DA8]` = 3.333 right after (`0x006BE1A1`). PASSO3 3.2 models it as `col = E0 × 3.333` for type 11, and
-  NOTAS 3 calls it "the ×3.333 of the ground" that the rig formula lacks. Whether it applies to every sample or only to
+  notebook 3 calls it "the ×3.333 of the ground" that the rig formula lacks. Whether it applies to every sample or only to
   ground samples is unverified.
 
 Measured runtime values (F8 16:09, "LUZ POR PIXEL"): k1 = 1, k2 = 0.075, Cmax = 2, street factor 3.333, type-5 s = 5,
 blur passes 2, blur mode 0; spot (type 4) axis ≈ (0, −1, 0), offset −0.32, scale 4.9. k2 = 0.075 is why walls look much
-dimmer than objects lit by rigs (NOTAS "Paredes mais escuras").
+dimmer than objects lit by rigs (notebook "Paredes mais escuras").
 
 Cone data read by F8 (light_diag `PixelLampDiag`): type 4 (vtable `0x00FF4570`): axis +0x170, offset +0x158, scale +0x154;
 type 5 (vtable `0x00FF4350`): a1 +0x1A0, o1 +0x174, a2 +0x190, o2 +0x170, S +0x150, s `[0x011D11A0]`. The type-5 blend
@@ -216,19 +216,19 @@ type 5 (vtable `0x00FF4350`): a1 +0x1A0, o1 +0x174, a2 +0x190, o2 +0x170, S +0x1
 - **Window lights**: RectangleWindowLight (vtable `0x00FF43A8`, factory type 7) and CircleWindowLight (vtable `0x00FF4408`)
   appear in room lists like lamps (F8 dumps; PASSO3 F-J5 saw index #5494 become a "type-7 window light" in a later dump).
   They carry daylight, so a room map is lamp-only only at night (hdr_native header, 28/09).
-- A roofless room (+0x18 = 1) made by fences/railings gets 0 lights on lots that are not active (NOTAS 4c, 6: park plaza
+- A roofless room (+0x18 = 1) made by fences/railings gets 0 lights on lots that are not active (notebook 4c, 6: park plaza
   floor dark).
 
 ### The maps and their layouts
 
 | Surface | Map | uv | Evidence |
 |---|---|---|---|
-| Outdoor and indoor walls | One wall atlas per story (e.g. 256×128 A8R8G8B8 T9 upper / T3 ground in m44/m45; 1024×512 for the ExteriorWall family of m59); small strips, one per wall piece | vertex `TEXCOORD1 × 1/4096` → `o2.xy`; PS `texld r1, v1, s2; mad r5.xyz, r1, c3.x(or c2.x), r2` | NOTAS "Andares", "Passo 3: capturas"; wall_lamp_table.h |
-| Outdoor floor tiles | Floor map, e.g. 256×256 covering 64 m (`uv = pos × 0.5 / 64`), nearly black in summer (mean 0.002, max 0.18, m61) | TEXCOORD2 = local xz × c12 (VS 898DEAF3) | NOTAS "Piso de fora no verao"; PASSO3 F-J3 |
-| Lot grass (light pass) | Lot `LightMap` of room 0 | TEXCOORD5 (`s1`, stock 568-byte pass) | NOTAS 1; lot_light_bridge `kReplacementHlsl` |
-| Snowy lot / floors | Same room maps × a direction factor × 0.25 (def c9.x) | | NOTAS "Neve: analise completa" |
-| Interior objects in room mode | Lot LightMap + LightBasisMap0..3 via `WorldToLotTransform` (LightMapXform) | | NOTAS "Counters/Phong"; `fn_006a7700.c` |
-| Doors/thresholds (Counter-like pieces) | Own 32×32 A8R8G8B8 map | | NOTAS "Porta" (m52) |
+| Outdoor and indoor walls | One wall atlas per story (e.g. 256×128 A8R8G8B8 T9 upper / T3 ground in m44/m45; 1024×512 for the ExteriorWall family of m59); small strips, one per wall piece | vertex `TEXCOORD1 × 1/4096` → `o2.xy`; PS `texld r1, v1, s2; mad r5.xyz, r1, c3.x(or c2.x), r2` | notebook "Andares", "Passo 3: capturas"; wall_lamp_table.h |
+| Outdoor floor tiles | Floor map, e.g. 256×256 covering 64 m (`uv = pos × 0.5 / 64`), nearly black in summer (mean 0.002, max 0.18, m61) | TEXCOORD2 = local xz × c12 (VS 898DEAF3) | notebook "Piso de fora no verao"; PASSO3 F-J3 |
+| Lot grass (light pass) | Lot `LightMap` of room 0 | TEXCOORD5 (`s1`, stock 568-byte pass) | notebook 1; lot_light_bridge `kReplacementHlsl` |
+| Snowy lot / floors | Same room maps × a direction factor × 0.25 (def c9.x) | | notebook "Neve: analise completa" |
+| Interior objects in room mode | Lot LightMap + LightBasisMap0..3 via `WorldToLotTransform` (LightMapXform) | | notebook "Counters/Phong"; `fn_006a7700.c` |
+| Doors/thresholds (Counter-like pieces) | Own 32×32 A8R8G8B8 map | | notebook "Porta" (m52) |
 
 Room-0 texels always have alpha 0 (PASSO3 critique F2: an atlas alpha > 0 comes from indoor texels); Apex's planned
 per-pixel wall lamps used "alpha < 1/255" as the outdoor guard.
@@ -236,7 +236,7 @@ per-pixel wall lamps used "alpha < 1/255" as the outdoor guard.
 **Lot map vs world terrain map**: lot surfaces bind "LightMap" (per room, CPU solve, occluded by walls, lamps × k2 or
 × 3.333 for street lamps on the ground); world terrain binds "terrainLightMap" (per 256 m chunk, GPU stamp, no occlusion,
 see [terrain-and-light-bake.md](terrain-and-light-bake.md)). The two meet at the lot border, which is the original "straight
-cut" (NOTAS 1). Apex's lot light bridge draws the lot pass with `max(lot map, terrain map or world atlas)`, so lot ground
+cut" (notebook 1). Apex's lot light bridge draws the lot pass with `max(lot map, terrain map or world atlas)`, so lot ground
 now shows terrain light through walls (ground_report 5: "the leak already exists").
 
 ### Night level (lightMgr+0xF0)
@@ -302,7 +302,7 @@ solve).
 
 - The first story fix only shared lamp lists; a wall sconce near a corner then lit the side wall of the story below
   around the corner, because the lower story's wall list does not contain the upper walls and `0x0069AA90` only blocks
-  below the wall top. Fixed by the cross-story wall test (NOTAS "Andares, segunda rodada").
+  below the wall top. Fixed by the cross-story wall test (notebook "Andares, segunda rodada").
 - Review 25/09 fixes (keep them): the real story comes from the manager (`room[0]+0x88`), basements excluded, no cascade
   by signature, the refresh skips rooms already pending, reinstalling other options never touches the stories;
   `0x0069FC40` reads the wall mode +0x639 of the room it is given, so the solving room's value is swapped in and restored
@@ -314,10 +314,10 @@ solve).
 - A slab of an upper balcony does not block light going down (blockers are per story) — same limitation as the
   Split-Level fix for type 11.
 - Street lamps counted as lit (`0x006BE18C`) and high quality on every lot were tried for the lot-border cut and did not
-  fix it; both remain experimental options (NOTAS 1).
+  fix it; both remain experimental options (notebook 1).
 - Room lists are written on the light-tree thread; reading them on the render thread needs `__try` and sanity checks
   (PASSO3 critique F5). F8 light indices are not stable between dumps: identify lights by pointer (PASSO3 F-J5).
-- The planned per-pixel wall/floor lamp term (PASSO3-PLANO.md, "Design A") was never implemented; its facts (threshold,
+- The planned per-pixel wall/floor lamp term (the per-pixel plan, "Design A") was never implemented; its facts (threshold,
   blur, matrix, constants) are recorded above.
 
 ### Open items / unverified
@@ -332,18 +332,18 @@ solve).
 | Address | Name / role | Evidence |
 |---|---|---|
 | `0x006C6AB0` | `AddWorldLightsToLot`: thiscall(treeLevel, room) ret 4. Room light list = own-floor lot lights (`0x006C6990(room, 1)`); for room 0 of level 0 once more (`0x006C6990(room, 0)`); for room 0 also world lights around the lot (`0x006B66B0`) | `fn_006c6ab0.c`; level_light_share.cpp header; lot_edge_lighting pattern `55 8B EC 83 E4 F0 83 EC 34 53 56 33 DB F6 05 ?? ?? ?? ?? 01 57 8B F9 75 30 83 0D` |
-| `0x006C6B08`, `0x006C6B2D` | The two calls of `0x006C6990` inside it; the level-0 test is `cmp [edi+0x1A0],0 / jnz` at `0x006C6B16` | level_light_share `kLevelGatherCalls`; NOTAS "Andares" |
+| `0x006C6B08`, `0x006C6B2D` | The two calls of `0x006C6990` inside it; the level-0 test is `cmp [edi+0x1A0],0 / jnz` at `0x006C6B16` | level_light_share `kLevelGatherCalls`; notebook "Andares" |
 | `0x006C5816`, `0x006C7094` | Callers of `0x006C6AB0`: room creation / room update | level_light_share `kGatherCalls` |
-| `0x006C7010` | Room gather entry: `0x006C6AB0` + 3D blockers (`0x006C6A20` + `0x0069E5E0`, room+0x10) | NOTAS "Andares, segunda rodada" |
+| `0x006C7010` | Room gather entry: `0x006C6AB0` + 3D blockers (`0x006C6A20` + `0x0069E5E0`, room+0x10) | notebook "Andares, segunda rodada" |
 | `0x006C6990` | Walks a tree level's light registry (+0x90: buckets +0x98, count +0x9C) and offers each light to `0x006C7820` | `fn_006c6990.c` |
-| `0x006C7820` | Per-light filter for the room list: lit, type > 2, entry room id == room (entry+0x1C) | NOTAS "Andares" |
+| `0x006C7820` | Per-light filter for the room list: lit, type > 2, entry room id == room (entry+0x1C) | notebook "Andares" |
 | `0x006B66B0` | `GatherWorldLightsNearPoint`: world lights in ±2 light cells (32 m) around a point; lights added with `0x006A2060` | lot_edge_lighting pattern `8B 54 24 04 83 EC 10 53 55 56 8B E9 8D 44 24 14 50 8D 4C 24 1C 51 52 8B CD E8`, `kRadiusOffsets` |
 | `0x006B6320` | `CellGatherWorldLights`: per-cell filter, `vfunc+0x20` and `GetLotID() == 0` | lot_edge_lighting pattern `51 53 57 8B 79 14 2B 79 10 ...`; re/out report.txt |
 | `0x006BC020` | `BaseLight::GetLotID` (+0xC0/+0xC4). S3SS's Split-Level Lighting Fix makes it return 0, so lot lights of type 11 also come in as "world lights" on every story | split_level_lighting_fix_patch.cpp |
 | `0x006C5560` | `LightUpdateTree_RoomLightChanged` thiscall(tree, lotLo, lotHi, level, roomId): marks that room dirty | lot_edge_lighting pattern `8B 44 24 08 8B 54 24 04 50 52 E8 ?? ?? ?? ?? 85 C0 74 31 8B 4C 24 0C 83 F9 FC` |
 | `0x006C6D00` | `LightTreeLevel_MarkRoomDirty` thiscall(treeLevel, roomId) (inserts into the set at treeLevel+0x4C) | lot_edge_lighting pattern `8B 44 24 04 50 68 ?? ?? ?? ?? 8D 51 4C 52 E8 ?? ?? ?? ?? C2 04 00` |
 | `0x006C5E20` | `LightUpdateTree_Update`: processes dirty rooms every frame | lot_edge_lighting pattern `56 6A 00 8B F1 E8 ?? ?? ?? ?? 68 ?? ?? ?? ?? 8B CE E8` |
-| `0x006C7250` | Dirty rooms per floor. When room 0 of **level 0** changes, invalidates room 0 of levels 0..7 (`0x006C73B6..0x006C7426`: `0x006A6550(mgr,0)`, `0x0069EED0(room,1,0)`, insert 0 into treeLevel+0x28). Level test `cmp [esi+0x1A0],eax; jnz` at `0x006C73AA` (bytes `39 86 A0 01 00 00 0F 85 7C 00 00 00`), Jcc at `0x006C73B1` | level_light_share `kCascadeTest`, `kCascadeJcc`; NOTAS "Andares" |
+| `0x006C7250` | Dirty rooms per floor. When room 0 of **level 0** changes, invalidates room 0 of levels 0..7 (`0x006C73B6..0x006C7426`: `0x006A6550(mgr,0)`, `0x0069EED0(room,1,0)`, insert 0 into treeLevel+0x28). Level test `cmp [esi+0x1A0],eax; jnz` at `0x006C73AA` (bytes `39 86 A0 01 00 00 0F 85 7C 00 00 00`), Jcc at `0x006C73B1` | level_light_share `kCascadeTest`, `kCascadeJcc`; notebook "Andares" |
 | `0x006C54E0` | Lot load: gathers room 0 of EVERY floor through level 0's tree level (`0x006C5525`) | level_light_share header |
 | `0x006C7160` | Queue a room: thiscall(treeLevel, roomId) ret 4 (the Build-mode lamp-change path) | night_terrain_relight `kQueueRoom`, bytes `83 EC 2C 53 55 56 33 DB 8B F1` |
 | `0x006A6550` | Room by id: thiscall(manager, id) ret 4 | level_light_share `kRoomById` |
@@ -352,9 +352,9 @@ solve).
 | `0x0069FD60` | `LightPointWithAllLights` thiscall(room, float out[4], list2D, list3D, char flags[2], sample) ret 0x14 | `fn_0069fd60.c`; re/out report.txt |
 | `0x0069FE19` | Return address after the per-light `call edx` (light vfunc+0x4C) inside it | level_light_share `kLightEvalReturn` (`FF D2` before it checked) |
 | `0x0069FE93` | Its call of the 2D wall test `0x0069FC40` | level_light_share `kWallTestCall` |
-| `0x0069FC40` | 2D wall test thiscall(room, int* indexVec, lightPos, sample, float* t) ret 0x10 → `0x0069D4C0` over room+0x30; reads the room's wall mode byte +0x639 | level_light_share; NOTAS "Andares, segunda rodada", "Revisao ... 2." |
+| `0x0069FC40` | 2D wall test thiscall(room, int* indexVec, lightPos, sample, float* t) ret 0x10 → `0x0069D4C0` over room+0x30; reads the room's wall mode byte +0x639 | level_light_share; notebook "Andares, segunda rodada", "Revisao ... 2." |
 | `0x0069FCE0` | 3D occluder test (bubble-shaped objects) | `fn_0069fd60.c` |
-| `0x0069AA90` | Wall/ray test: blocks only if the ray passes **below the wall top**; no base test | NOTAS "Andares, segunda rodada" |
+| `0x0069AA90` | Wall/ray test: blocks only if the ray passes **below the wall top**; no base test | notebook "Andares, segunda rodada" |
 | `0x0069DFF0` | Per-light wall cull thiscall(walls, int-vector* out, from, lightPos) ret 0xC, called at `0x006A311F` in `0x006A30B0` | level_light_share `kWallCull` |
 | `0x006A3140` | Per-light 3D occluder cull (batch) | `fn_006a31d0.c` |
 | `0x0069F1E0` | Batch centre (mean of the samples) | level_light_share comment; `fn_006a31d0.c` |
@@ -363,17 +363,17 @@ solve).
 | `0x01158AC8` | Global vector {begin, end} of the current batch, 0x30 bytes per sample | level_light_share `kBatchSamples` |
 | `0x006A0F50` | Other solve path; calls `0x0069FD60` at `0x006A1187` and `0x006A126F` | level_light_share `kSolvePointCalls` |
 | `0x011D0368` / `0x011D0358` | Static vectors "Lighting/LightingOccluder/m2DOccluders" / "m3DOccluders" (per-light cull lists of a batch) | `fn_006a31d0.c` |
-| `0x0069F650` | Wall atlas blur when room+0xF4 == 2: `[0x01158B1C]` passes (static value 2) of [1 2 1]/4 (flag `[0x011D02E4] == 0`) or a 2×2 box with half-texel shift | PASSO3-PLANO.md F-J1 (`passo3\out\fn_0069f650.c`); dwords.txt |
-| `0x006A1DE0` | Builds room+0x30 (2D blockers) from room+0xD8..+0xDC (LightingWall+4); called by the room rebuild `0x006A2740` | NOTAS "Andares, segunda rodada" |
+| `0x0069F650` | Wall atlas blur when room+0xF4 == 2: `[0x01158B1C]` passes (static value 2) of [1 2 1]/4 (flag `[0x011D02E4] == 0`) or a 2×2 box with half-texel shift | the per-pixel plan F-J1 (`passo3\out\fn_0069f650.c`); dwords.txt |
+| `0x006A1DE0` | Builds room+0x30 (2D blockers) from room+0xD8..+0xDC (LightingWall+4); called by the room rebuild `0x006A2740` | notebook "Andares, segunda rodada" |
 | `0x006A0E00` | `FinalizePrime`: commits locked floor/ceiling/object textures (called from `0x006A3C90`) | re/out report.txt; lighting_quality pattern `56 8B F1 57 8B BE F4 00 00 00 C1 E7 06 03 7E 04 8B CF E8` |
 | `0x006A4480` | `CacheLightingParams` (called from `0x006A6D10`) | re/out report.txt |
 | `0x006A4700` | Registers lot surface shader parameters: "LightMap", "SpilloverLightMap", "WorldToLotTransform" (4×float4), "LightmapSizeParameters", "LotSizeParameters", "LightBasisMap0..3", "CounterLightingConfig"; handles at `0x011D04A4..0x011D04C8` | `fn_006a4700.c` |
 | `0x006A7700` | Binds a lot's LightMap / LightBasisMap0..3 and chooses CounterLightingConfig `(2, 0, 0, 5)` or, when manager+0x288 is set, `(2, 0.85, 1, 1)` | `fn_006a7700.c`; dwords `0x00F98A58`=2.0, `0x00FB6258`=0.85, `0x00FBD498`=5.0 |
 | `0x006A20D0` | Room init; registers "InteriorBuildingAmbientColor"; allocs "Lighting/LightingRoom/mLightList", "mTileStorage", "mWallStorage" | `fn_006a20d0.c` |
-| `0x006AABE0` | Floor sampler: `*(float**)(room+0xF8)` is a 4×4 lot→world matrix, row-vector convention (world = x·m[0..3] + y·m[4..7] + z·m[8..11] + m[12..15]) | PASSO3-PLANO.md F-J2 |
+| `0x006AABE0` | Floor sampler: `*(float**)(room+0xF8)` is a 4×4 lot→world matrix, row-vector convention (world = x·m[0..3] + y·m[4..7] + z·m[8..11] + m[12..15]) | the per-pixel plan F-J2 |
 | `0x006BE020` | Street-lamp class evaluation (vfunc+0x4C of vtable `0x00FF42F8`) for the room solve | level_light_share `kClasses`; full.asm |
 | `0x006BE18C` | Inside it: `movaps xmm0,[esi+0E0h]` (effective colour; 0 while the lamp is off) | night_terrain_relight `kLampColourSite` `0F 28 86 E0 00 00 00` |
-| `0x011D0A60`, `0x011D0A68` | k1, k2 (tweakables read through `0x00F626F0`); runtime 1.0 and 0.075 | full.asm `006BE064`, `006BE13C`; F8 16:09 (NOTAS "Lote escuro") |
+| `0x011D0A60`, `0x011D0A68` | k1, k2 (tweakables read through `0x00F626F0`); runtime 1.0 and 0.075 | full.asm `006BE064`, `006BE13C`; F8 16:09 (notebook "Lote escuro") |
 | `0x011D1160` | Cmax float4; `.x` = 2.0 at runtime | full.asm `006BE167`; F8 16:09 |
 | `0x01158DA8` | Street-lamp factor 3.3333 (`405554CA`) | full.asm `006BE1A1`; dwords.txt |
 | `0x011D11A0` | Type-5 (ShadedLamp) cone scale s (runtime 5) | light_diag `PixelLampDiag`; F8 16:09 |

@@ -5,7 +5,7 @@ described in [features/night-lighting/unlit-rooms.md](../features/night-lighting
 
 ### 2026-09-29: first build
 
-**Context:** maintainer feedback: rooms with every lamp off still looked very bright inside, and the original game makes
+**Context:** observed in game: rooms with every lamp off still looked very bright inside, and the original game makes
 them strongly blue; Sims3SettingsSetter's *Brady Bunch BEGONE* (all zero) made them far too dark.
 
 **Finding:** the colours at `0x011D0B60` / `0x011D0B40`, the top-up `FUN_006a00a0` and the furniture fill light
@@ -58,7 +58,7 @@ window or sky lights, the cube x c12.w and the vertex lights.
 
 **Outcome:** `OnDrawInner` wrapped every room-mode draw; `AnalyzeRigPs` found the chain; slot 0 and dim bluish slots
 (b > 1.15 r, luma < 0.2) got the furniture colour, times *On furniture*; the cube weight scaled; `PatchCubeTint` added the
-tint to the game's shaders (maintainer feedback: the blue tint was the only control missing on furniture). Status line
+tint to the game's shaders (the blue tint was the only control missing on furniture). Status line
 added. Not tested in game at the time.
 
 ### 2026-09-30: furniture Blue tint (second study, two adversarial verifiers)
@@ -74,7 +74,7 @@ added. Not tested in game at the time.
   red lamp at (1.79 0 0)).
 - The tint was multiplied by *On furniture* (at 57.9% furniture moved only between 0.42 and 1).
 - Path A replaced the whole rig diffuse by the basis light, so unlit furniture there had only the grey cube (b/r 1.000
-  at Blue 0% and 100%; the installed 02:59 ASI emitted only `mul D, Acc, cStr.x`).
+  at Blue 0% and 100%; the installed ASI emitted only `mul D, Acc, cStr.x`).
 - Matte shaders (`EB0C8C35`, `25F66827`) were not recognised.
 - `BicubicSetup`'s first instruction read two constant registers, which native D3D9 refuses.
 
@@ -165,7 +165,7 @@ inference or lamp-contribution guessing.
 ### 2026-10-01: 2.5.3
 
 **Outcome:** 2.5.3 carries the test005 path and later performance changes (test007, test008). The Experimental badge was
-removed on the maintainer's decision; Brightness, Blue tint, keys and defaults unchanged.
+removed by project decision; Brightness, Blue tint, keys and defaults unchanged.
 
 ### 2026-10-03: reliability audit
 

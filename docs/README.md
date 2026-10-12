@@ -111,9 +111,10 @@ Project-wide history: [architecture](history/architecture.md), [workflow](histor
 
 - The code in this repository; the frozen combined build (`combined-final`, commit 45e36e2) for explicitly historical
   sections.
-- `%USERPROFILE%\Desktop\S3SS-dev\NOTAS-ILUMINACAO.md`: chronological lighting notebook (Portuguese); later entries
-  supersede earlier ones. Also `PASSO3-PLANO.md`, `ROADMAP-NIGHT-REMAKE.md` and `PLANO-SEPARACAO.md`.
-- Static reverse engineering of `TS3W.exe`: `S3SS-dev\re\out` (Ghidra decompile).
+- Private research notes (not published): a chronological lighting notebook (later entries supersede earlier ones),
+  the per-pixel lighting plan ("PASSO3"), the night-lighting roadmap and the standalone split plan. Pages cite them
+  only as background; every fact used by the code is restated in these docs.
+- Static reverse engineering of `TS3W.exe`: a Ghidra decompile and disassembly kept with the private research notes.
 
 ## Presets and recovery
 

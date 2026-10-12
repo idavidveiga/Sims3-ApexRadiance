@@ -71,7 +71,7 @@ on showed "samples=8".
 
 ### 2026-09-25: Depth Blur blurred mid-frame
 
-**Context:** review item 1 (about 03:30).
+**Context:** review item 1.
 
 **Finding:** the pass sets `ZENABLE` off; Depth Blur treated it as the first interface draw and blurred mid-frame.
 

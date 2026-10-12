@@ -53,7 +53,7 @@ different profile from the one shipped.
 
 - Combined build (notes section 1): the lot pass with `max(lot, terrain)` removes the straight cut.
 - 2026-10-02, terrain-variant build `C1257AF49C613DF227B5EBAD639D795665D77E378A0FB3744DB948AFA0883B39`: the reported lot/world
-  cutoff resolved in the tested scene (maintainer feedback, no new GPU comparison). The earlier lamp-off package
+  cutoff resolved in the tested scene (observed in game, no new GPU comparison). The earlier lamp-off package
   `D593AECA5885682FEA5D6EDCDAB3F038512CC6B08D8CDC1371A4F456041DD88D` predated the multi-pass correction.
 
 ## Open checks

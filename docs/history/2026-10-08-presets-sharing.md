@@ -1,6 +1,6 @@
 # Portable presets and LUT menu — 2026-10-08
 
-Development changes on `codex/cube-luts`: Presets is a sidebar page, user presets precede built-ins, native modals
+Development changes on the cube-LUT branch: Presets is a sidebar page, user presets precede built-ins, native modals
 handle save/apply/import/export, and selected LUTs travel automatically in one stored ZIP. Legacy TOML, profile part
 bits, Profiles and LUTs paths remain supported. LUTs has its own Color tab. Development dumps use English names
 inside Diagnostics; old data is retained.
@@ -15,9 +15,9 @@ scales, four frames per case, no ImGui errors or clipped modal actions. Translat
 CPU-rendered previews were inspected. Native OS picker interaction, actual ZIP sharing between players and in-game
 visual validation remain pending. The artifact is a test build, not a release.
 
-## Approved compact action layout
+## Compact action layout
 
-The explanatory action-row variant was approved. Save current is violet; every preset action, file picker button,
+The explanatory action-row variant was chosen. Save current is violet; every preset action, file picker button,
 name/icon field group and modal footer uses the compact scope, matching Apply. The LUT filename is shown once in the
 selector, with the shared full-name tooltip. Single-line IconNote text now uses the same glyph-centering helper as
 buttons; multiline notices retain their wrapped layout. Validation repeated: public Win32 test build, zero warnings;
@@ -27,7 +27,7 @@ buttons; multiline notices retain their wrapped layout. Validation repeated: pub
 
 The selected quick-export flow keeps source, name and output summary visible. Customize content contains the
 category choices; More options contains the optional shortcut and development parts. The page toolbar is now the
-approved simple button bar, and saved user presets omit the category description. Built-in descriptions remain.
+chosen simple button bar, and saved user presets omit the category description. Built-in descriptions remain.
 Export uses shared compact widgets and spacing. Its body scrolls when expanded content exceeds the available screen
 height, keeping the footer outside the scroll region; centering follows changes in modal height.
 
@@ -43,7 +43,7 @@ The quick-export proposal was rejected after testing. The original visible categ
 
 ## Identified action menus
 
-The approved identified-menu variant replaces individually bordered popup buttons with shared selectable action rows. Preset and filter shortcut popups show the selected item name above a separator and use aligned 16-unit Lucide icons. Existing export, delete and shortcut callbacks and disabled states are preserved. Public Win32 build passes with zero warnings; native fixture includes an open action popup across four frames in every supported language, width and scale. In-game appearance remains unverified.
+The chosen identified-menu variant replaces individually bordered popup buttons with shared selectable action rows. Preset and filter shortcut popups show the selected item name above a separator and use aligned 16-unit Lucide icons. Existing export, delete and shortcut callbacks and disabled states are preserved. Public Win32 build passes with zero warnings; native fixture includes an open action popup across four frames in every supported language, width and scale. In-game appearance remains unverified.
 
 
 ## Card section heading standard

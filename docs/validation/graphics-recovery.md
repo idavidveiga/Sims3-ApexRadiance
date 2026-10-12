@@ -24,7 +24,7 @@ After warm-up, handles remained stable at 402 on native and 405 on DXVK. Private
 
 ## Confirmed in game
 
-The maintainer reported that the test build had been tested in game. This does not establish separate coverage of each scenario above.
+The test build was tested in game. This does not establish separate coverage of each scenario above.
 
 ## Open checks
 

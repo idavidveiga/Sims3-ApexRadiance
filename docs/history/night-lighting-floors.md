@@ -12,7 +12,7 @@ described in [features/night-lighting/floors.md](../features/night-lighting/floo
 **Outcome:** the `IsFloorVs` pattern (accepts only `kFloorVs` and the pool-edge VS in the offline test) and `PatchFloor`.
 Confirmed patched in game (m62).
 
-### 2026-09-25: summer outdoor floors (v5.4, around 17:25)
+### 2026-09-25: summer outdoor floors (v5.4)
 
 **Context:** m61: a summer floor next to a street lamp was nearly black (floor map mean 0.002). Before the `FloorAtlas`
 class existed, these floors kept only the faint lot map, because `RecordWorldChunk` fails on them (ground report 4.3).

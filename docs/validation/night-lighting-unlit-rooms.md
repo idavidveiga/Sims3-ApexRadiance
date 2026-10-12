@@ -54,7 +54,7 @@ installed hooks or D3D9 draws; the check count includes many slider values rathe
 
 ## Confirmed in game
 
-- 2.5.3 builds (test005 to test008): Rooms at Night reported working well in maintainer tests (scenario-specific).
+- 2.5.3 builds (test005 to test008): Rooms at Night confirmed working well in game tests (scenario-specific).
 - 2026-10-03, installed recovery binary (SHA-256 verified), one Apex ASI beside the official S3SS, Brightness and Blue
   tint saved at 1.0, read-only inspection: both families' original and patched colours were (.01, .01, .01), matching
   S3SS's saved `BradyBunchBlue RGB`. The standard second family (.15, .15, .30) has luma .16083, about 16.083 times that

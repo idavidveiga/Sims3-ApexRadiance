@@ -8,17 +8,17 @@ The feature is described in [features/dev-tools/census.md](../features/dev-tools
 
 ## Automated tests
 
-The census and false colour run only in game. The offline coverage tests below are read-only C++ harnesses kept in the
-maintainer's scratchpad, outside this repository. They include `shader_patches.cpp`, run the patchers over captured
+The census and false colour run only in game. The offline coverage tests below are read-only C++ harnesses kept in a
+private research folder (not published), outside this repository; paths below are relative to it. They include `shader_patches.cpp`, run the patchers over captured
 shaders or over every shader of `Shaders_Win32.precomp`, and validate the output with `D3DDisassemble`.
 
-Rule: never write many files from a test executable. Kaspersky flagged one as ransomware (also ROADMAP-NIGHT-REMAKE.md,
-risks). Harnesses print to stdout and write at most a handful of `.txt`/`.bin` dumps, one example per shader shape
+Rule: never write many files from a test executable; security software may flag a test executable that writes many
+files. Harnesses print to stdout and write at most a handful of `.txt`/`.bin` dumps, one example per shader shape
 (as `test14.cpp` does).
 
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
-| `scratchpad\snowcover\test4.cpp` | Captured draws whose VS is an outdoor-object VS but whose PS `PatchObjectLampPs` refuses | `cl` (pattern below) | Windows SDK `d3dcompiler.lib` |
+| `snowcover\test4.cpp` | Captured draws whose VS is an outdoor-object VS but whose PS `PatchObjectLampPs` refuses | `cl` (pattern below) | Windows SDK `d3dcompiler.lib` |
 | `test5.cpp` | Why `PatchObjectLampPs` refuses each `ShadersRecusados` PS (first failing step) | Same | Same |
 | `test6.cpp` | Object patch over refused and known-good shaders, validated | Same | Same |
 | `test7.cpp` | Foliage patchers after the m63 generalisation | Same | Same |
@@ -30,12 +30,12 @@ risks). Harnesses print to stdout and write at most a handful of `.txt`/`.bin` d
 | `fencetest`, `leaftest`, `roadtest*.ps1`, `snowtest.ps1` | Fence and instanced, leaf shadow, the 4 road variants (m06/m10/m18/m24), snow patches | Per folder | Same |
 | `counter_sh\REPORT.md` | A Perl port of the object patchers over the 2,139 disassemblies; reproduced the C++ counts and planned the v5.6 generalisation | Perl | None |
 
-Build pattern (`scratchpad\snowcover\build14.bat`):
+Build pattern (`snowcover\build14.bat`):
 
 ```
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat" >nul
-cl /nologo /std:c++20 /EHsc /O1 /I %USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter test14.cpp ^
-   %USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\shader_patches.cpp d3dcompiler.lib /Fe:countertest.exe
+cl /nologo /std:c++20 /EHsc /O1 /I <combined-tree> test14.cpp ^
+   <combined-tree>\shader_patches.cpp d3dcompiler.lib /Fe:countertest.exe
 ```
 
 Some tests `#include` `shader_patches.cpp` directly instead. Each loads `.bin` bytecode as DWORDs, runs a
@@ -47,10 +47,10 @@ Shader sources:
 
 - captured shaders: `LightProbe-*\{VS,PS}_<ptr>.bin` (deduplicate by content);
 - `Censo\*.bin`, `ShadersRecusados\*.bin`;
-- every game shader: `Game\Bin\Shaders_Win32.precomp` (read-only), split by `scratchpad\passo3\shdlist.pl` (walks
+- every game shader: `Game\Bin\Shaders_Win32.precomp` (read-only), split by `passo3\shdlist.pl` (walks
   `VSHD`/`PSHD` blobs, finds the version token, trims at `0x0000FFFF`), with technique names from `TECH`/`PASS` records
   (`passo3\ground\techof.pl`, `techps.pl`, name hashes in `shd\knm.tsv`); extracted families in
-  `scratchpad\counterfam\` (2,139 Counters/Phong variants), `floorfam\` (867), `passo3\...`.
+  `counterfam\` (2,139 Counters/Phong variants), `floorfam\` (867), `passo3\...`.
 
 ## Latest results
 

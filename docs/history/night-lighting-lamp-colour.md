@@ -14,16 +14,16 @@ Other stock colours in the F8 dumps (G/R, B/R): 0.98/0.85 (warm), 1.01/1.18 (blu
 
 **Outcome:** tint exactly the stock pink towards warm white of the same luminance at the creation colour setter.
 
-### 2026-09-25 (about 01:40): creation path not enough
+### 2026-09-25: creation path not enough
 
 **Context:** after the first fix, `S3SS_LightDiag-neve-praca.txt` and m17 still showed 56 street lamps (type 11) and 46
 lot lamps (type 3) at (1 / 0.75 / 0.79).
 
 **Finding:** the lamp object's script sets the colour after creation (`FUN_006B0B50` -> `FUN_006BC3E0`).
 
-**Outcome:** the call at `0x006B0BDE` is redirected too (fixed about 02:10).
+**Outcome:** the call at `0x006B0BDE` is redirected too (fixed the same night).
 
-### 2026-09-25 (about 03:30): unaligned script buffer
+### 2026-09-25: unaligned script buffer
 
 **Context:** review item 2.
 
@@ -33,7 +33,7 @@ lot lamps (type 3) at (1 / 0.75 / 0.79).
 
 ### 2026-09-25: plan not implemented
 
-**Context:** ROADMAP-NIGHT-REMAKE.md phase 8 lists optional per-type colours (street lamps cooler, garden lamps warmer).
+**Context:** the night-lighting roadmap (private notes) phase 8 lists optional per-type colours (street lamps cooler, garden lamps warmer).
 
 **Finding:** no implementation.
 

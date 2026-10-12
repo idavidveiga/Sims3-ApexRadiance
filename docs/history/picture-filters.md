@@ -43,7 +43,7 @@ that see every draw.
 
 ### 2026-09-28: carve-out for the standalone
 
-**Context:** HDR output and Native HDR were removed from the standalone (plan `PLANO-SEPARACAO.md`, section 2d).
+**Context:** HDR output and Native HDR were removed from the standalone (the standalone split plan (private notes), section 2d).
 
 **Finding:** kept: `PictureParams`, the Picture part of the shader, the scene-copy machinery, `BeforeOverlay` logic, the
 frame / scene / chain targets, shader and queries, the SDR path of `OnEndScene`, `[qol.picture]` read and write with the
@@ -159,7 +159,7 @@ position came from the depth copy and the inverted camera view-projection (compu
 relative to the eye), its normal from the neighbours, with each light's angle and windowed falloff and 12-step
 screen-space shadows. Lights were placed at the world point under the screen's centre (a 1x1 depth read back once).
 
-**Outcome:** reverted the same day (commit 7619418) at the maintainer's decision; not part of any release.
+**Outcome:** reverted the same day (commit 7619418) by project decision; not part of any release.
 
 ### 2026-10-06: Smooth gradients off by default, on the Banding Fix page
 
@@ -199,9 +199,9 @@ no effect invocation, preserved old boundaries and budget termination. Compilati
 
 ### 2026-10-07: actual tile-copy evidence and second colour candidate
 
-The user clarified that all Color-page controls are affected, while lighting corrections work normally. The first
+Further testing showed that all Color-page controls are affected, while lighting corrections work normally. The first
 image is the correct UI-visible reference. The installed diagnostic's hash is 4A4125BA5D6DEC0C5C51DA328F2142BA891C2192CBC460A6A48396DCB69CDEB3.
-Its saved 20:43 copy/redraw log reveals 256x256 source/destination rectangles at origin, not full-surface copies.
+Its saved copy/redraw log reveals 256x256 source/destination rectangles at origin, not full-surface copies.
 At the hidden copy, depth is enabled / no write / LESSEQUAL and colour writes are RGB-only. The earlier candidate
 incorrectly required null rectangles and ALWAYS at the copy, so it never matched. The following redraw is ALWAYS.
 
@@ -219,7 +219,7 @@ Visual parity, cost and wrapper compatibility still require gameplay validation;
 
 ### Local Color controls candidate, 2026-10-07
 
-User approved the compact-list artifact: add Overview without profiles, independent switches for all five adjustment
+The compact-list design was chosen: add Overview without profiles, independent switches for all five adjustment
 groups, complete filter controls behind disclosures, no default shortcuts, right-click assignment and a small tag
 left of each switch. The native implementation retains all 25 filter rows and their previous controls. Edge Smoothing
 moves to IMAGE. The successful-boundary timestamp corrects the repeated isolation warning without deleting its
