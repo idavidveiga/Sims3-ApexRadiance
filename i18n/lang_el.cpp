@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Πατήστε τα πλήκτρα μαζί και επιλέξτε Αποθήκευση"},
     {"Waiting for keys", "Αναμονή πλήκτρων"},
     {"This shortcut is already in use", "Αυτή η συντόμευση χρησιμοποιείται ήδη"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Προσθέστε Ctrl ή Alt σε γράμματα, ψηφία και Διάστημα"},
 
     {"See what is in use; click a resource to open its settings", "Δες τι χρησιμοποιείται· κάνε κλικ σε μια λειτουργία για τις ρυθμίσεις της"},
     {"Performance and screen", "Επιδόσεις και οθόνη"},

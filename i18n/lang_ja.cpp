@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "キーを同時に押してから「保存」を選んでください"},
     {"Waiting for keys", "キー入力待ち"},
     {"This shortcut is already in use", "このショートカットは使用中です"},
+    {"Add Ctrl or Alt to letters, digits and Space", "文字、数字、Space には Ctrl か Alt を加えてください"},
 
     {"See what is in use; click a resource to open its settings", "使用中のものを確認。リソースをクリックすると設定が開きます"},
     {"Performance and screen", "パフォーマンスと画面"},

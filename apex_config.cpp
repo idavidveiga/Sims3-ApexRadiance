@@ -388,6 +388,10 @@ void LoadSettings() {
                     if (!vk || *vk < 7 || *vk > 255) { valid = false; break; }
                     shortcut.keys.Add(static_cast<unsigned>(*vk));
                 }
+                if (valid && shortcut.keys.TypingOnly()) {
+                    LOG_INFO("[Config] profile shortcut for " + shortcut.preset + " needs Ctrl or Alt; ignored");
+                    continue;
+                }
                 if (valid && shortcut.keys.HasMainKey()) u.profileShortcuts.push_back(std::move(shortcut));
             }
         }

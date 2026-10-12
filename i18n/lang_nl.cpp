@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Druk de toetsen tegelijk in en kies Opslaan"},
     {"Waiting for keys", "Wachten op toetsen"},
     {"This shortcut is already in use", "Deze sneltoets is al in gebruik"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Voeg Ctrl of Alt toe aan letters, cijfers en spatie"},
 
     {"See what is in use; click a resource to open its settings", "Zie wat in gebruik is; klik op een onderdeel om de instellingen te openen"},
     {"Performance and screen", "Prestaties en scherm"},

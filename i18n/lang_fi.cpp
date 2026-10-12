@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Paina näppäimiä yhdessä ja valitse Tallenna"},
     {"Waiting for keys", "Odotetaan näppäimiä"},
     {"This shortcut is already in use", "Tämä pikanäppäin on jo käytössä"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Lisää Ctrl tai Alt kirjaimiin, numeroihin ja välilyöntiin"},
 
     {"See what is in use; click a resource to open its settings", "Näe, mitä on käytössä; avaa asetukset napsauttamalla"},
     {"Performance and screen", "Suorituskyky ja näyttö"},

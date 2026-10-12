@@ -22,6 +22,7 @@ const I18n::Entry kEntries[] = {
     {"Press the keys together, then choose Save", "Pressione as teclas juntas e escolha Salvar", "Pulsa las teclas juntas y elige Guardar", "Appuyez sur les touches ensemble, puis choisissez Enregistrer"},
     {"Waiting for keys", "Aguardando teclas", "Esperando teclas", "En attente des touches"},
     {"This shortcut is already in use", "Este atalho já está em uso", "Este atajo ya está en uso", "Ce raccourci est déjà utilisé"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Adicione Ctrl ou Alt a letras, números e Espaço", "Añade Ctrl o Alt a letras, números y Espacio", "Ajoutez Ctrl ou Alt aux lettres, chiffres et à Espace"},
 
     {"Sim intensity", "Intensidade nos Sims", "Intensidad en los Sims", "Intensité sur les Sims"},
     {"Shade on supported Sim materials; 0% removes it, 100% keeps the original", "Sombra nos materiais de Sims reconhecidos; 0% remove, 100% preserva a original", "Sombra en materiales de Sims reconocidos; 0% la elimina, 100% conserva la original", "Ombre sur les matériaux Sims reconnus ; 0 % la retire, 100 % conserve l'originale"},

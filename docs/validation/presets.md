@@ -22,7 +22,7 @@
 2. Export a preset with a LUT and import its ZIP on a separate folder setup. Expected: the same LUT is selected, with no manual extraction.
 3. Export over an existing final filename and cancel its overwrite confirmation. Expected: the destination stays intact.
 4. Assign a shortcut to a personal and a built-in preset, then press each with the menu closed. Expected: the preset applies, a note confirms it and Undo restores the previous settings.
-5. Try a combination already used by another preset or by the menu. Expected: it is refused and the previous keys stay.
+5. Try a combination already used by another preset or by the menu, and a bare letter such as P. Expected: both are refused and the previous keys stay.
 6. Type the combination in an Apex text field and in the cheat console. Expected: no preset is applied.
 
 ## Confirmed in game

@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Drücke die Tasten zusammen und wähle Speichern"},
     {"Waiting for keys", "Warte auf Tasten"},
     {"This shortcut is already in use", "Dieses Tastenkürzel wird bereits verwendet"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Buchstaben, Ziffern und Leertaste mit Strg oder Alt kombinieren"},
 
     {"See what is in use; click a resource to open its settings", "Sieh, was aktiv ist; klicke auf eine Funktion, um ihre Einstellungen zu öffnen"},
     {"Performance and screen", "Leistung und Bildschirm"},

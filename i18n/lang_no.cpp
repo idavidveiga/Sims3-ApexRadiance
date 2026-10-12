@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Trykk tastene samtidig og velg Lagre"},
     {"Waiting for keys", "Venter på taster"},
     {"This shortcut is already in use", "Denne snarveien er allerede i bruk"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Legg til Ctrl eller Alt for bokstaver, tall og mellomrom"},
 
     {"See what is in use; click a resource to open its settings", "Se hva som er i bruk; klikk på en ressurs for å åpne innstillingene"},
     {"Performance and screen", "Ytelse og skjerm"},

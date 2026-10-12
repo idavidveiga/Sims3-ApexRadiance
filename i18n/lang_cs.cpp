@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Stiskněte klávesy současně a zvolte Uložit"},
     {"Waiting for keys", "Čekání na klávesy"},
     {"This shortcut is already in use", "Tato zkratka se již používá"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Přidejte Ctrl nebo Alt k písmenům, číslicím a mezerníku"},
 
     {"See what is in use; click a resource to open its settings", "Podívej se, co je zapnuté; kliknutím na funkci otevřeš její nastavení"},
     {"Performance and screen", "Výkon a obrazovka"},

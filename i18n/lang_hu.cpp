@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Nyomd meg együtt a billentyűket, majd válaszd a Mentést"},
     {"Waiting for keys", "Billentyűkre vár"},
     {"This shortcut is already in use", "Ez a gyorsbillentyű már használatban van"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Betűkhöz, számokhoz és a Szóközhöz adjon Ctrl vagy Alt billentyűt"},
 
     {"See what is in use; click a resource to open its settings", "Nézd meg, mi van használatban; kattints egy erőforrásra a beállításaihoz"},
     {"Performance and screen", "Teljesítmény és képernyő"},

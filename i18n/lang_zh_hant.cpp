@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "同時按下組合鍵，然後選擇儲存"},
     {"Waiting for keys", "等待按鍵"},
     {"This shortcut is already in use", "此快捷鍵已被使用"},
+    {"Add Ctrl or Alt to letters, digits and Space", "字母、數字和空白鍵需搭配 Ctrl 或 Alt"},
 
     {"See what is in use; click a resource to open its settings", "查看目前使用的功能；點選一項即可開啟其設定"},
     {"Performance and screen", "效能與螢幕"},

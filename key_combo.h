@@ -20,6 +20,17 @@ struct KeyCombo {
         for (unsigned k = 7; k < 256; ++k) if (k != 0x10 && k != 0x11 && k != 0x12 && Has(k)) return true;
         return false;
     }
+    // Letters, digits, Space and punctuation without Ctrl or Alt also type into the game's name fields (Sim, lot, save)
+    bool TypingOnly() const {
+        if (!HasMainKey() || Has(0x11) || Has(0x12)) return false;
+        for (unsigned k = 7; k < 256; ++k) {
+            if (k == 0x10 || !Has(k)) continue;
+            const bool typing = (k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9') || k == 0x20 ||
+                                (k >= 0xBA && k <= 0xC0) || (k >= 0xDB && k <= 0xDF) || k == 0xE2;
+            if (!typing) return false;
+        }
+        return true;
+    }
     template<class Down> bool Matches(unsigned pressed, Down down) const {
         if (!Has(Normalize(pressed)) || !HasMainKey()) return false;
         // Modifiers are exact: plain A must never fire for Ctrl+A.

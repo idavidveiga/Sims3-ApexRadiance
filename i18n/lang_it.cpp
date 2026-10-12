@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Premi i tasti insieme, poi scegli Salva"},
     {"Waiting for keys", "In attesa dei tasti"},
     {"This shortcut is already in use", "Questa scorciatoia è già in uso"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Aggiungi Ctrl o Alt a lettere, cifre e Spazio"},
 
     {"See what is in use; click a resource to open its settings", "Guarda cosa è in uso; clicca una risorsa per aprirne le impostazioni"},
     {"Performance and screen", "Prestazioni e schermo"},

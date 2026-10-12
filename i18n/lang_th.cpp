@@ -76,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "กดปุ่มพร้อมกัน แล้วเลือกบันทึก"},
     {"Waiting for keys", "รอการกดปุ่ม"},
     {"This shortcut is already in use", "ปุ่มลัดนี้ถูกใช้แล้ว"},
+    {"Add Ctrl or Alt to letters, digits and Space", "เพิ่ม Ctrl หรือ Alt ให้ตัวอักษร ตัวเลข และ Space"},
 
     {"See what is in use; click a resource to open its settings", "ดูสิ่งที่ใช้งานอยู่ คลิกฟีเจอร์เพื่อเปิดการตั้งค่า"},
     {"Performance and screen", "ประสิทธิภาพและหน้าจอ"},

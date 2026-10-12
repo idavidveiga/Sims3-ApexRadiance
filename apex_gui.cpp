@@ -2449,7 +2449,9 @@ void PresetShortcutEditor() {
             bool conflict = Hotkeys::ComboReserved(keys);
             for (const auto& other : ApexConfig::GetUi().profileShortcuts)
                 if (other.preset != g_presetKeyEditing && !keys.Empty() && other.keys == keys) conflict = true;
+            const bool typing = keys.TypingOnly();
             if (conflict) ApexUi::IconNote(IconId::TriangleAlert, "This shortcut is already in use");
+            else if (typing) ApexUi::IconNote(IconId::TriangleAlert, "Add Ctrl or Alt to letters, digits and Space");
             ApexUi::Gap(ApexUi::kSpace3);
             ApexUi::CardDivider();
             const float available = ImGui::GetContentRegionAvail().x;
@@ -2463,7 +2465,7 @@ void PresetShortcutEditor() {
             }
             if (oneRow) ImGui::SameLine();
             else ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - saveWidth));
-            ImGui::BeginDisabled(!g_presetKeyRecording.load() || !keys.HasMainKey() || conflict);
+            ImGui::BeginDisabled(!g_presetKeyRecording.load() || !keys.HasMainKey() || conflict || typing);
             if (ApexUi::TextButton("Save", nullptr, ApexUi::ButtonKind::Primary)) {
                 SetPresetShortcut(g_presetKeyEditing, keys);
                 g_presetKeyRecording = false;
