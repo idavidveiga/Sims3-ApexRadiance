@@ -3,8 +3,8 @@
 The feature is described in [features/night-lighting/objects-and-rigs.md](../features/night-lighting/objects-and-rigs.md).
 It must:
 
-- Never make an outdoor object darker than the game: the result is at least the ground light below it and, outside the
-  reach of the selected lamps, the game's own rig light.
+- Evaluate outdoor lamps and their cones at each surface pixel. In valid direct-pixel mode, vertical gate faces receive no directionless ground-atlas term; upward faces retain it.
+- Preserve the existing native fallback when spatial data or shader support is unavailable; do not impose equal brightness on opposite faces.
 - Give doors and windows at least the light of the wall around them, and the pieces of a modular counter one continuous
   light.
 - Boost lamps of every light class on rigs, but leave interior lamps and indoor (mode 0) objects unchanged.
@@ -26,8 +26,12 @@ The harnesses only read captures and print results; they do not attach to the ga
 
 ## Latest results
 
+Release preparation: the public x86 build passes with zero warnings. Exact release commit identity is recorded in the release PR; final artifact gameplay and menu-footer validation remain open. Gameplay evidence applies to the final development candidate ASI (`26CAA132F3D4DD6921E7E3CFFA8BEFA09B3F73868AEA3A917B92B7873D1D8C0D` SHA-256), with wall updates, fence lighting and gate faces visually accepted. This does not establish general FPS gains or exhaustive scene coverage.
+
+
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Reconstructed gate shader fixture | Zero build warnings; Passed per-pixel cones and vertical/upward/fallback ground masks; material diversity and gameplay are not exhaustive | Native D3D9 fixtures / x86 build |
 | 2026-10-04 | PR #2 | Resource and GPU fixtures (object, wall, instanced paths) with the 8% daytime endpoint | Passed under controlled inputs; not a visual check of a scene | Native D3D9 |
 | 2026-10-01 | `2.5.3` test008 | Indoor-object cap variant | 84 captured PS examined, 3 matching shader/sampler combinations; the fallback is byte-identical to the previous build and both variants assemble; the uncapped variant removes exactly 12 tokens (three instructions) | d3dcompiler |
 | 2026-09-25 | combined build, v5.6 rules | Countertest over 2139 variants | VS 588/588; PS Counters 136/184 (A 128, B 8); PS Phong 426/444 (A 394, C 32); 0 invalid after patch. Before v5.6: VS Counters 118/236, Phong 64/352; PS Counters 72/184, Phong 292/444 | perl simulators |
@@ -62,6 +66,11 @@ The harnesses only read captures and print results; they do not attach to the ga
 
 ## Open checks
 
+- Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
+- Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
+- Wider fence/gate materials, fallback groups and daytime transitions
+
+
 - Calibrate *Seamless light brightness* in game against walls and ground.
 - Shape B: whether c0/c4 is the sun or a fourth rig lamp; check with F7 if a seam appears on a counter without sky
   reflection (8 variants).
@@ -75,3 +84,5 @@ The harnesses only read captures and print results; they do not attach to the ga
 - Sims under street lamps.
 - Whether the combined build's bake-matched law should be ported; it was fixed for a gate darker than vanilla
   ([history](../history/night-lighting-objects-and-rigs.md)).
+
+The updated resource-path fixture passed 13,754 checks. Geometry producers are fixture-controlled; state restoration and cone upload are verified, without claiming scene-wide visual parity.

@@ -6,6 +6,13 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k2121Added[] = {nullptr};
+constexpr const char* k2121Improved[] = {"Exterior walls respond a little faster to lighting changes", nullptr};
+constexpr const char* k2121Fixed[] = {
+    "Fence lighting better follows the position of lamps",
+    "Gates receive lighting more consistent with fences",
+    nullptr};
+
 constexpr const char* k2120Added[] = {
     "3D CUBE LUTs with adjustable strength",
     "Presets have their own page and can be shared as TOML or ZIP",
@@ -180,6 +187,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.12.1", "2026-10-12", k2121Added, k2121Improved, k2121Fixed},
     {"2.12.0", "2026-10-09", k2120Added, k2120Improved, k2120Fixed},
     {"2.11.1", "2026-10-08", k2111Added, k2111Improved, k2111Fixed},
     {"2.11.0", "2026-10-07", k2110Added, k2110Improved, k2110Fixed},

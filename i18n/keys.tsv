@@ -34,6 +34,9 @@ Automatic ({})	tr_widgets.cpp:kEntries	Automático ({})	Automático ({})	Automat
 Language	tr_widgets.cpp:kEntries	Idioma	Idioma	Langue	
 The language of this menu	tr_widgets.cpp:kEntries	O idioma deste menu	El idioma de este menú	La langue de ce menu	
 Language, menu key, text size and saving	tr_widgets.cpp:kEntries	Idioma, tecla do menu, tamanho do texto e salvamento	Idioma, tecla del menú, tamaño del texto y guardado	Langue, touche du menu, taille du texte et sauvegarde	
+Exterior walls respond a little faster to lighting changes	tr_menu.cpp:kEntries	Paredes externas respondem um pouco mais rápido às mudanças de luz	Las paredes exteriores responden un poco más rápido a los cambios de luz	Les murs extérieurs réagissent un peu plus vite aux changements de lumière	
+Fence lighting better follows the position of lamps	tr_menu.cpp:kEntries	A iluminação das cercas respeita melhor a posição das lâmpadas	La iluminación de las cercas respeta mejor la posición de las lámparas	L’éclairage des clôtures suit mieux la position des lampes	
+Gates receive lighting more consistent with fences	tr_menu.cpp:kEntries	Portões recebem luz de forma mais consistente com as cercas	Las puertas reciben una luz más coherente con las cercas	Les portails reçoivent un éclairage plus cohérent avec les clôtures	
 Restarts graphics resources while keeping your settings	tr_menu.cpp:kEntries	Reinicia os recursos gráficos mantendo seus ajustes	Reinicia los recursos gráficos conservando tus ajustes	Redémarre les ressources graphiques en conservant vos réglages	
 Recovery	tr_menu.cpp:kEntries	Recuperação	Recuperación	Récupération	
 Restarts graphics resources while keeping your settings. This does not uninstall Apex.	tr_menu.cpp:kEntries	Reinicia os recursos gráficos mantendo seus ajustes. Isso não desinstala o Apex.	Reinicia los recursos gráficos conservando tus ajustes. No desinstala Apex.	Redémarre les ressources graphiques en conservant vos réglages. Cela ne désinstalle pas Apex.	

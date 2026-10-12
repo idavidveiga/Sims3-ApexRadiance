@@ -2,8 +2,8 @@
 
 The feature is described in [features/night-lighting/fences.md](../features/night-lighting/fences.md). It must:
 
-- Light instanced fences, railings, posts and stairs at least as brightly as the ground atlas at their world position,
-  scaled by the strength, and never below the game's vertex lights.
+- Use spatial lamp light for valid instanced groups, with surface position, normal, distance and cones; shared native vertex lamp light does not impose a brightness floor.
+- Limit the directionless ground atlas to upward-facing surfaces in spatial mode, retaining native vertex/atlas fallback when group data is unavailable.
 - At full night, send exactly the configured strength; by day, send `0.08 x min(strength, 1)`; and leave lamp-free
   sunlit pixels identical to the game.
 - Stay as the game draws when the switch is off or the atlas is missing, with no device writes.
@@ -21,14 +21,18 @@ The harnesses only read captures and sources and print to stdout.
 
 ## Latest results
 
+Release preparation: the public x86 build passes with zero warnings. Exact release commit identity is recorded in the release PR; final artifact gameplay and menu-footer validation remain open. Gameplay evidence applies to the final development candidate ASI (`26CAA132F3D4DD6921E7E3CFFA8BEFA09B3F73868AEA3A917B92B7873D1D8C0D` SHA-256), with wall updates, fence lighting and gate faces visually accepted. This does not establish general FPS gains or exhaustive scene coverage.
+
+
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Reconstructed fence shader fixture | Zero build warnings; Passed spatial/native selection, directional lamp composition and fallback checks; captured-scene gameplay is not reconstructed | Native D3D9 fixtures / x86 build |
 | 2026-10-04 | `92582b6` | Terrain lighting suite (policy, bench GPU, resource fixtures) | Passed (part of 2,017,393 GPU, policy and resource checks); Release x86 built with no errors or warnings | Native D3D9 |
 
 ## In-game test plan
 
 1. Night: a fence line and a fenced yard between street lamps and garden lamps, stairs and a porch railing outside.
-   **Expected:** rails as bright as the ground next to them.
+   **Expected:** each face follows lamp direction and distance; distant rails do not keep the brightness of the group center. Upward surfaces can retain ground light while vertical faces remain directional.
 2. Day: the same scene, including an outdoor bench. **Expected:** sunlit fences and the bench look like the game; only a
    faint lamp share remains near lamps.
 3. Dusk and dawn. **Expected:** the lamp term rises and falls smoothly with the night level.
@@ -44,7 +48,14 @@ The harnesses only read captures and sources and print to stdout.
 
 ## Open checks
 
+- Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
+- Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
+- Wider fence/gate materials, fallback groups and daytime transitions
+
+
 - Daytime response 0.08 (PR #2): gameplay appearance pending; only the captured bench shader was tested offline.
 - Same-lot gameplay and DXVK confirmation of the PR #2 lighting changes: pending.
 - Per-pixel lamps on fences and walls blocking them (2.7.0): the patched fence shader was not validated offline;
   in-game check of a fence beside a lamp, a fence behind a wall, and a long fence running past a wall.
+
+The updated resource-path fixture passed 13,754 checks. Geometry producers are fixture-controlled; state restoration and cone upload are verified, without claiming scene-wide visual parity.

@@ -9,6 +9,9 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), German}
 const I18n::Pair kPairs[] = {
+    {"Exterior walls respond a little faster to lighting changes", "Außenwände reagieren etwas schneller auf Lichtänderungen"},
+    {"Fence lighting better follows the position of lamps", "Die Beleuchtung der Zäune folgt besser der Position der Lampen"},
+    {"Gates receive lighting more consistent with fences", "Tore werden gleichmäßiger passend zu den Zäunen beleuchtet"},
     {"3D CUBE LUTs with adjustable strength", "3D-CUBE-LUTs mit einstellbarer Stärke"},
     {"Presets have their own page and can be shared as TOML or ZIP", "Voreinstellungen haben eine eigene Seite und lassen sich als TOML oder ZIP teilen"},
     {"Restart Apex graphics without losing your settings", "Starte die Apex-Grafik neu, ohne Einstellungen zu verlieren"},

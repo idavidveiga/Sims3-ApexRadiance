@@ -42,10 +42,10 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | [World atlas and smoothed maps](features/night-lighting/world-atlas-and-smoothed-maps.md): smooth terrain light maps | Released |
 | [Terrain relight](features/night-lighting/terrain-relight.md): rebuilding terrain lighting at dusk and after edits | Released |
 | [World lamp response](features/night-lighting/world-lamp-response.md): terrain and rigs follow lamp edits | Released in 2.5.6 |
-| [Every-story light](features/night-lighting/level-light-share.md): lamps on any floor light the ground and the rooms they reach; walls block lamp light outdoors | Released (walls blocking light outdoors: 2.7.0) |
+| [Every-story light](features/night-lighting/level-light-share.md): lamps on any floor light the ground and the rooms they reach; walls block lamp light outdoors | Released (walls blocking light outdoors: 2.7.0); Released in 2.12.1: update corrections |
 | [Rooms at Night](features/night-lighting/unlit-rooms.md): ambient light and tint of unlit rooms | Released |
 | [Walls](features/night-lighting/walls.md), [Floors](features/night-lighting/floors.md), [Roofs](features/night-lighting/roofs.md), [Roads](features/night-lighting/roads.md) | Released |
-| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released |
+| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released; Objects and Fences corrections: Released in 2.12.1 |
 | [Daytime bloom and wall bloom fixes](features/night-lighting/day-bloom-fixes.md): the game's daylight look and bloom kept (idavidveiga) | Released in 2.7.0 |
 | Light detail (Lighting option, in [Night Lighting](features/night-lighting/README.md#settings)): sharper lamp light on walls and floors | Experimental (released in 2.7.0) |
 
@@ -119,4 +119,5 @@ Project-wide history: [architecture](history/architecture.md), [workflow](histor
 
 - [Presets](features/presets.md): saved settings and portable ZIP packages with a LUT.
 - [Graphics recovery](features/graphics-recovery.md): restart image-effect resources without resetting settings.
+- [2.12.1](releases/2.12.1.md): Released in 2.12.1; outdoor lighting corrections.
 - [2.12.0](releases/2.12.0.md): LUTs, presets and graphics improvements.

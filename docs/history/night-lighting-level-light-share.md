@@ -482,3 +482,11 @@ Released in 2.10.1; quantitative timing and wider-scene validation remain open.
 
 A preceding broad exterior-priority experiment did not improve the reported delay and is not included. Its initially
 reported colour concern was subsequently withdrawn; it is not recorded as a confirmed visual regression.
+
+### 2026-10-12: spatial lighting and generation update preparation
+
+**Context:** outdoor walls update between stories; fences and gates use different lighting compositions.
+
+**Finding:** shared fence-group lamp brightness and directionless ground light on vertical object faces can obscure spatial lamp response. Deferred wall refresh requests can already be covered by a newer generation.
+
+**Outcome:** retain spatial fence lighting with native fallback, per-pixel object cones, vertical ground-light isolation and generation-aware wall refresh. Offline CPU/GPU exploration remains research rather than a shipped companion DLL. Final release identity and gameplay coverage are recorded in the validation page.

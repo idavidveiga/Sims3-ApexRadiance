@@ -89,3 +89,5 @@ refusal of shared, mixed or saturated multipliers. Native D3D9 readback compares
 both multiplier equations at five day/night weights and eight brightness gains.
 The executable only reads captures and prints results; it does not install files.
 These checks do not substitute for visual gameplay validation.
+
+The resource suite extracts the current object lamp picker and cone functions as well as the draw paths. Its fixture covers full-daylight native fallback, the expanded cone upload/restoration block, upward-only atlas mode, legacy centre-cone callers, and wall bloom alpha/depth/stencil restoration. Group discovery, wall blocking, atlas production and wet/mask resource construction are controlled fixture dependencies; these checks do not validate those producers or gameplay.

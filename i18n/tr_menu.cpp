@@ -11,6 +11,9 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"Exterior walls respond a little faster to lighting changes", "Paredes externas respondem um pouco mais rápido às mudanças de luz", "Las paredes exteriores responden un poco más rápido a los cambios de luz", "Les murs extérieurs réagissent un peu plus vite aux changements de lumière"},
+    {"Fence lighting better follows the position of lamps", "A iluminação das cercas respeita melhor a posição das lâmpadas", "La iluminación de las cercas respeta mejor la posición de las lámparas", "L’éclairage des clôtures suit mieux la position des lampes"},
+    {"Gates receive lighting more consistent with fences", "Portões recebem luz de forma mais consistente com as cercas", "Las puertas reciben una luz más coherente con las cercas", "Les portails reçoivent un éclairage plus cohérent avec les clôtures"},
     {"Restarts graphics resources while keeping your settings", "Reinicia os recursos gráficos mantendo seus ajustes", "Reinicia los recursos gráficos conservando tus ajustes", "Redémarre les ressources graphiques en conservant vos réglages"},
 
     {"Recovery", "Recuperação", "Recuperación", "Récupération"},

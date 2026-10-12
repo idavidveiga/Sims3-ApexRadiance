@@ -9,6 +9,9 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Chinese (Simplified, mainland China)}
 const I18n::Pair kPairs[] = {
+    {"Exterior walls respond a little faster to lighting changes", "外墙对灯光变化的响应稍快一些"},
+    {"Fence lighting better follows the position of lamps", "围栏照明更符合灯具的位置"},
+    {"Gates receive lighting more consistent with fences", "大门的照明与围栏更加协调"},
     {"3D CUBE LUTs with adjustable strength", "可调强度的 3D CUBE LUT"},
     {"Presets have their own page and can be shared as TOML or ZIP", "预设有独立页面，可通过 TOML 或 ZIP 分享"},
     {"Restart Apex graphics without losing your settings", "重启 Apex 图形资源并保留设置"},

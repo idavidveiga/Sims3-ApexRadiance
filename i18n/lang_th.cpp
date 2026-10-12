@@ -9,6 +9,9 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Thai}
 const I18n::Pair kPairs[] = {
+    {"Exterior walls respond a little faster to lighting changes", "ผนังภายนอกตอบสนองต่อการเปลี่ยนแสงเร็วขึ้นเล็กน้อย"},
+    {"Fence lighting better follows the position of lamps", "แสงบนรั้วสอดคล้องกับตำแหน่งโคมไฟมากขึ้น"},
+    {"Gates receive lighting more consistent with fences", "ประตูรั้วได้รับแสงที่สอดคล้องกับรั้วมากขึ้น"},
     {"3D CUBE LUTs with adjustable strength", "LUT CUBE 3D ที่ปรับความเข้มได้"},
     {"Presets have their own page and can be shared as TOML or ZIP", "พรีเซ็ตมีหน้าของตัวเองและแชร์เป็น TOML หรือ ZIP ได้"},
     {"Restart Apex graphics without losing your settings", "เริ่มกราฟิก Apex ใหม่โดยไม่เสียการตั้งค่า"},

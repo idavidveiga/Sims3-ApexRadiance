@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cmath>
@@ -27,6 +28,9 @@ struct FakeDevice {
     std::array<std::array<float,4>,256> vertex{};
     std::array<std::array<DWORD,11>,16> sampler{};
     std::array<FakeTexture*,16> textures{};
+    std::array<DWORD,256> render{};
+    HRESULT GetRenderState(D3DRENDERSTATETYPE t,DWORD* v){*v=render[t];return S_OK;}
+    HRESULT SetRenderState(D3DRENDERSTATETYPE t,DWORD v){render[t]=v;++writes;return S_OK;}
     FakeShader* ps = nullptr;
     FakeShader* vs = nullptr;
     int writes = 0, pixelWrites = 0, vertexWrites = 0, textureWrites = 0, samplerWrites = 0, shaderWrites = 0;
@@ -60,6 +64,9 @@ struct FakeDevice {
 #include "features/native_terrain_sampler.h"
 
 namespace D3D9Hooks { enum class HookAction { Continue,Skip }; }
+enum class ClaimSource { LotLightAtlas };
+D3D9Hooks::HookAction NoteClaim(ClaimSource){return D3D9Hooks::HookAction::Skip;}
+std::atomic<int> g_wallBloomPreserved{0},g_wallBloomFallback{0};
 std::atomic<float> g_wallGain{1},g_groundGain{1},g_roadGain{1},g_lotMapGain{1},g_night{1};
 std::atomic<int> g_wallDrawn{0},g_groundGainDraws{0},g_lotDrawn{0},g_lotMissing{0},g_edgeMatched{0},g_edgeUnmatched{0};
 std::atomic<bool> g_softEdges{false},g_wallEnabled{true};
@@ -100,7 +107,7 @@ void SetVsConst(FakeDevice* d,UINT r,const float* v,UINT n) { ++d->writes; ++d->
 namespace RigTracker { int fixtureMode=2;int CurrentMode(){return fixtureMode;} }
 namespace ShaderPatches {
 constexpr unsigned kObjectPixelLamps=8;
-struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true;};
+struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true,pixelLamps=true;UINT groundWeightConst=39;};
 bool PatchObjectLampPs(std::vector<DWORD>&,ObjectPatch&){return true;}
 bool PatchInstancedLamps(std::vector<DWORD>&,ObjectPatch&){return true;}
 }
@@ -120,6 +127,21 @@ float g_lampData[33][4]{};
 template<class Patch> PatchedPs& PatchedFor(FakeDevice*,int&,const char*,Patch){return objectPatch;}
 FakeShader* ObjectVsFor(FakeDevice*,FakeShader*){return &replacementVs;}
 int SelectLamps(float,float,float){return 1;}
+struct LampCone {float c1[4]={0,0,0,1},c2[4]={0,0,0,1};float spill=1;};
+LampCone g_lampCone[16];
+bool g_fenceConeLogged=false,g_lampConeLogged=false;
+
+#define LOG_INFO(...) ((void)0)
+namespace LevelLightShare {bool WallBlocks(const float*,const float*,float=0){return false;}}
+constexpr float kWindowWallSkip=.75f;
+bool ObjectLampPoint(const float (&m)[3][4],float (&at)[3]){for(int k=0;k<3;++k)at[k]=m[k][3];return false;}
+struct GroupCentre {float x=0,y=0,z=0,ext=0,a[3]{},b[3]{};};
+GroupCentre fixtureGroup;
+const GroupCentre* InstancedGroupCentre(FakeDevice*){return &fixtureGroup;}
+std::map<FakeShader*,int> g_wetLotPs;
+FakeShader* g_replacementWetPs=&replacementPs;
+void EnsureWetReplacement(FakeDevice*){}
+FakeTexture* LotMaskFor(FakeDevice*,const float*,const float*,const float*,const float*,const LotRect*,float* rows){std::memset(rows,0,32);return nullptr;}
 template<class LampArray> std::string DescribeObjectDraw(FakeDevice*,const ShaderPatches::ObjectPatch&,int,bool,int,int,const LampArray&,int){return "fixture";}
 void SetVs(FakeDevice* d,FakeShader* shader){++d->writes;d->vs=shader;}
 #include "extracted_resource_paths.h"
@@ -248,14 +270,18 @@ void ObjectChecks() {
         const auto ps=d.pixel;const auto vs=d.vertex;const auto states=d.sampler;const auto textures=d.textures;int calls=0;
         const float day=std::min(strength,1.f)*.08f;
         const float expected=night==1?strength:day+(strength-day)*night;
-        Check(DrawObjectLamp(&d,[&]{++calls;
+        const bool claimed=DrawObjectLamp(&d,[&]{++calls;
             Check(d.pixel[41][0]==expected,"actual object draw receives daytime-balanced ground strength");
             Check(d.pixel[42][1]==(pixel?expected:0),"actual object draw receives balanced per-pixel strength");
+            Check(d.pixel[42][0]==(pixel?1.f:0.f),"direct mode enables upward-only atlas; fallback retains old weighting");
+            if(pixel){Check(d.pixel[44][3]==1.f,"non-cone lamp spill uploads unchanged");Check(d.pixel[59][3]==1.f&&d.pixel[60][3]==1.f,"two cone constants uploaded in expanded block");}
+
             Check(Same(d.pixel[0],ps[0]),"object brightness does not change sunlight constants");
             Check(d.ps==&replacementPs&&d.vs==&replacementVs&&g_inOwnCall,"object uses one existing draw with guard");
-        })&&calls==1,"object draw claims exactly one callback");
+        });
+        Check(claimed==(night>.01f)&&calls==int(night>.01f),"object draws at night and preserves native full daylight");
         Check(Same(d.pixel,ps)&&Same(d.vertex,vs)&&Same(d.sampler,states)&&Same(d.textures,textures),"object restores every constant sampler and texture");
-        Check(d.ps==g_curPs&&d.vs==g_curVs&&!g_inOwnCall&&g_objDrawInfo.empty()&&g_objLampDrawn==1,"object restores shaders diagnostics and guard");
+        Check(d.ps==g_curPs&&d.vs==g_curVs&&!g_inOwnCall&&g_objDrawInfo.empty()&&g_objLampDrawn==int(night>.01f),"object restores shaders diagnostics and guard");
         Check(atlas.refs==1&&old.refs==1,"object retains exact texture ownership");
     }
     ResetGlobals();auto d=Device();fixtureAtlas=&atlas;g_objPixel=false;int calls=0;
@@ -271,12 +297,13 @@ void InstancedChecks() {
         g_fenceFix=true;g_fenceStrength=gain;g_night=night;g_fenceDrawn=0;
         const auto pixel=d.pixel;const auto vertex=d.vertex;const auto sampler=d.sampler;const auto textures=d.textures;int calls=0;
         const float day=std::min(gain,1.f)*.08f,expected=night==1?gain:day+(gain-day)*night;
-        Check(DrawInstanced(&d,[&]{++calls;
+        const bool claimed=DrawInstanced(&d,[&]{++calls;
             Check(d.pixel[41][0]==expected,"captured bench path gets shared daytime lamp scale");
             Check(Same(d.pixel[0],pixel[0])&&Same(d.pixel[1],pixel[1]),"bench path retains sunlight colour and direction");
-        })&&calls==1,"instanced surface draws once");
+        });
+        Check(claimed==(night>.01f)&&calls==int(night>.01f),"instanced surface draws at night and preserves native full daylight");
         Check(Same(d.pixel,pixel)&&Same(d.vertex,vertex)&&Same(d.sampler,sampler)&&Same(d.textures,textures),"instanced surface restores all device states");
-        Check(!g_inOwnCall&&d.ps==g_curPs&&g_fenceDrawn==1&&atlas.refs==1&&old.refs==1,"instanced surface restores shader guard counter and ownership");
+        Check(!g_inOwnCall&&d.ps==g_curPs&&g_fenceDrawn==int(night>.01f)&&atlas.refs==1&&old.refs==1,"instanced surface restores shader guard counter and ownership");
     }
     ResetGlobals();auto d=Device();g_fenceFix=false;fixtureAtlas=&atlas;
     Check(!DrawInstanced(&d,[]{})&&d.writes==0,"disabled instanced path stays native");
@@ -309,8 +336,35 @@ void NativeSamplerChecks() {
     { NativeTerrainSampler guard(&d,2,3,nullptr,NativeSet);Check(!guard&&d.writes==0,"null native map fails closed"); }
     std::printf("Production NativeTerrainSampler: %d checks\n",checks-before);
 }
+void ExpandedStateChecks() {
+    const int before=checks;
+    for(bool alpha:{false,true})for(bool blend:{false,true})for(bool z:{false,true})for(bool stencil:{false,true}) {
+        ResetGlobals();auto d=Device();g_wallGain=2;
+        d.render[D3DRS_COLORWRITEENABLE]=7|(alpha?8:0);
+        d.render[D3DRS_ALPHABLENDENABLE]=blend;
+        d.render[D3DRS_ZWRITEENABLE]=z;
+        d.render[D3DRS_STENCILWRITEMASK]=stencil?255:0;
+        const auto saved=d.render;const auto pixel=d.pixel;int draws=0;
+        const bool dual=alpha&&!blend;
+        Check(DrawWallGain(&d,[&]{++draws;
+            if(dual&&draws==1){Check(d.render[D3DRS_COLORWRITEENABLE]==8,"bloom pass writes alpha only");Check(d.render[D3DRS_ZWRITEENABLE]==0&&d.render[D3DRS_STENCILWRITEMASK]==0,"bloom pass has no depth or stencil writes");Check(Same(d.pixel,pixel),"bloom pass retains native constants");}
+            else Check(d.pixel[7][0]==pixel[7][0]*2,"geometry pass uses stronger wall term");
+        }),"wall state scenario claims draw");
+        Check(draws==(dual?2:1),"opaque alpha gets two passes; all other states one");
+        Check(Same(saved,d.render)&&Same(pixel,d.pixel)&&!g_inOwnCall,"all wall render states and constants restored");
+    }
+    ResetGlobals();g_lampData[0][3]=10;g_lampData[16][0]=.7f;
+    g_lampCone[0].spill=.2f;g_lampCone[0].c1[3]=0;g_lampCone[0].c2[3]=0;
+    float direct[33][4]{},centred[33][4]{},rows[16][4]{};float share=1;
+    Check(PickObjectLamps(0,0,0,direct,share,.2f,rows)==1,"direct picker retains selected lamp");
+    Check(direct[2][0]==.7f&&direct[2][3]==.2f,"direct picker preserves raw color and spill");
+    Check(Same(rows[0],g_lampCone[0].c1)&&Same(rows[1],g_lampCone[0].c2),"picker uploads both real cone rows exactly");
+    Check(PickObjectLamps(0,0,0,centred,share,.2f)==1&&Near(centred[2][0],.14f),"legacy caller retains centre cone multiplication");
+    g_lampCone[0]=LampCone{};
+    std::printf("Expanded wall state and cone upload: %d checks\n",checks-before);
+}
 int main() {
-    WallChecks();LotChecks();NativeSamplerChecks();ObjectChecks();InstancedChecks();
+    WallChecks();LotChecks();NativeSamplerChecks();ObjectChecks();InstancedChecks();ExpandedStateChecks();
     std::printf("Resource paths: %d checks, %d failures; extracted production, fake D3D9, no game/driver execution\n",checks,failures);
     return failures?1:0;
 }

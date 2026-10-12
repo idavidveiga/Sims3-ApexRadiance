@@ -9,7 +9,7 @@ same switch and strength. By day the lamp term fades, and in full daylight fence
 
 | | |
 |---|---|
-| Availability | Released in 1.0.0. Subdued daytime lamp response: Released in 2.6.0. Per-pixel lamps, walls blocking them and the game's own lighting in full daylight: Released in 2.7.0 |
+| Availability | Released in 2.12.1: lighting corrections.  Released in 1.0.0. Subdued daytime lamp response: Released in 2.6.0. Per-pixel lamps, walls blocking them and the game's own lighting in full daylight: Released in 2.7.0 |
 | Default | On |
 | Menu | Lighting > Objects > *Doors, counters and fences* card |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -25,29 +25,27 @@ lamp light at all. See [engine/light-objects-and-rigs.md](../../engine/light-obj
 
 ## How Apex Radiance solves it
 
-Apex Radiance patches the fence pixel shader by pattern so that it adds per-pixel lamp light, as on outdoor objects:
+Apex Radiance patches the fence pixel shader by pattern so that valid groups use per-pixel lamp light, as on outdoor objects:
 the lamps around the fence group, with angle and distance. Where the group's position cannot be read, the lamp term
 falls back to the brighter of the game's vertex lights and the world ground-light atlas at the pixel's world position.
 
 1. **Recognise the instanced structure vertex shader** by its instance streams and output shape.
 2. **Patch the pixel shader** once per game shader: up to 8 per-pixel lamps (colour x sat(N.l) x sat(1 - d^2/R^2)^2,
-   from the world normal and height the instanced vertex shader already passes in TEXCOORD2) added to the game's vertex
-   lights, and the ground light atlas at world xz, scaled, with `max` in place of the plain add.
+   from the world normal and height the instanced vertex shader already passes in TEXCOORD2) replace shared vertex lamp light when the group has valid spatial data. Missing spatial data keeps
+   the original vertex/atlas fallback.
 3. **Choose the lamps per group.** The group's centre and its two ends are read from the instance stream (the mean of the
    instance positions, the farthest instance from it, then the farthest from that one; read again every 5 s). Lamps
    within 40 m plus the group's half length (at most 60 m more) are chosen around the centre. A lamp is dropped when an
    outside wall stands between it and the centre and both ends (0.5 m above the pieces), so a fence wholly behind a wall
-   loses it and one that only runs past a wall keeps it. With lamps, the atlas weight is 0 on every face (the atlas is
-   light lying on the ground, at no height); a group whose centre cannot be read gets no lamps and the atlas on every
-   face.
+   loses it and one that only runs past a wall keeps it. With valid spatial data, the atlas contributes only to upward-facing surfaces; vertical faces use directional lamps.
+   A group whose centre cannot be read gets no spatial lamps and retains the native atlas fallback.
    Each lamp keeps the game's cones (07/10): a face off a wall sconce's cones takes only its spill, as the game's own
    cone law gives it (`0x006BC940`; see the pixel shader patch below), so a brick fence face beside a sconce aimed down
-   its wall is no longer lit at full strength.
+   its wall is no longer lit at full strength. Shared group brightness does not set a minimum for valid spatial groups.
 4. **Draw with the atlas bound** and the strength and lamps set per draw; restore everything afterwards.
 5. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)`: the configured strength
    at full night, moving linearly toward `0.08 x min(strength, 1)` as day comes. In full daylight (night level 0.01 or
-   less) the patch is not drawn at all and the game's own fence lighting stays. The game's vertex lighting is always the
-   lower bound, and sunlight, geometry and materials are untouched.
+   less) the patch is not drawn at all and the game's own fence lighting stays. Shared vertex lamp lighting remains only in the fallback path; sunlight, geometry and materials are untouched.
 
 There are two fence shader families in the game. The `vs_2_0` instanced "object rig" family shares its shaders with
 bushes and is fixed by the foliage and rig changes ([foliage.md](foliage.md), [objects-and-rigs.md](objects-and-rigs.md)).
@@ -78,6 +76,8 @@ The Lighting balance styles set `forcaNasCercas` to 67.5% (Subtle), 75% (Soft) o
 - No game code is patched for the shader part; recognition is by instruction shape.
 
 ## Limitations
+
+- Release cleanup has not yet received gameplay confirmation on the exact release artifact; see validation.
 
 - One lamp list serves a whole fence group (up to 8 lamps around its centre); a very long group can miss a lamp near one
   end. Walls block a lamp only when they hide it from the centre and both ends of the group.
@@ -118,9 +118,9 @@ rotation); outputs TEXCOORD1 and COLOR0; contains `mov oT1.zw, rW.xyxz` (world x
 ### Pixel shader patch (`ShaderPatches::PatchInstancedLamps`, `ps_3_0`)
 
 With a TEXCOORD2 input (world normal xyz, world height w) the patch also adds the per-pixel object lamps
-(`pixelLamps`: `lampParamConst = (0, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, spill)) and a
+(`pixelLamps`: `lampParamConst = (valid spatial group, lamp strength, 0, 1e-4)`, then per lamp (position, 1/R^2) and (colour, spill)) and a
 ground weight constant `(a, b, 1, 0)`, the atlas weight being `sat(N.y x a + b)`: `(1, 0)` with lamps, `(0, 1)` (every
-face) without. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`.
+face) in fallback mode. The first lamp parameter selects an `lrp` between spatial lamp light and native vertex light; valid groups select spatial light even when all lamps are rejected. The lamp strength is `SurfaceLampGain(night, forcaLuzPorPixelNosObjetos) x forcaNasCercas`.
 
 Lamp cones (07/10, F8 10-57-41): after the lamp block, `coneConst = lampConst + 16` holds two rows per lamp, the cones
 `c = (-s a, -s o)` of the game's laws (type 5 `0x006BC940`: two cones `a1 +0x1A0 / o1 +0x174`, `a2 +0x190 / o2 +0x170`,
