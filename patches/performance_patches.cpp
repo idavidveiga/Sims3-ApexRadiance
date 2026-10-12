@@ -928,7 +928,7 @@ APEX_REGISTER_FEATURE(LotDetailRangePatch,
                                       "Validated baseline: distance 300 and 16 detailed lots. Part of " APEX_PRODUCT_NAME ".",
                        .category = "Performance",
                        .experimental = true,
-                       .enabledByDefault = false, // 06/10 user: Lot Streaming off by default in 2.7.0 (little play on Steam yet)
+                       .enabledByDefault = false, // Lot Streaming off by default since 2.7.0 (little play-testing on Steam yet)
                        .supportedVersions = VERSION_STEAM,
                        .technicalDetails = {"EA 1.69 WorldManager+0xDC is the native Lot LOD distance. Controlled probes validated the squared-distance cutoffs: 200 -> ~40,000 and 300 -> ~90,000.",
                                             "EA 1.69 WorldManager+0xE4 is the independent Max Active Lots capacity. Raising 8 -> 16 produced 16 simultaneous Detailed View lots at the same dense reference point that previously saturated at eight.",

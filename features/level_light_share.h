@@ -142,7 +142,7 @@ const char* ApexTestPartName(int i);
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
 void NoteLampEditing(bool continuous);
 // A lamp is being dragged (moved or a value changed within the last 200 ms). The one-go solve once an edit ended
-// (05/10, option A) was taken out the same day: 300-1300 ms frames while moving lamps in Build mode (log 20:33-20:34)
+// (05/10, option A) was taken out the same day: 300-1300 ms frames while moving lamps in Build mode (log)
 bool LampDragging();
 // Rooms at Night: visits every room (id > 0) of every loaded lot (stories -4..7); visit returns true to send the room to
 // gather again. Render thread. Returns the rooms visited; queued = how many were sent.

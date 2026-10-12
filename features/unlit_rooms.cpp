@@ -16,7 +16,7 @@
 // game's colours are read through the pointers the code had (another mod may have changed them; all zero = the game's
 // defaults).
 //
-// Applying a change (user 29/09: "it takes forever to apply; the controls do not respond"; the first build relit every room
+// Applying a change (it took far too long to apply and the controls stopped responding; the first build relit every room
 // of every lot, one room at a time through the game's queue). The game hands the shader a POINTER to room+0x110 when it
 // draws a room (0x0069EB70 / 0x006A06BF: the "InteriorBuildingAmbientColor" parameter, id [0x01158AEC], takes room+0x110),
 // and a room lit by the unlit colour alone holds exactly that colour there (and at +0x120). So every room whose +0x110 is
@@ -63,17 +63,17 @@ bool g_ready = false, g_patched = false;
 bool g_on = false;
 bool g_probe = false; // SetAmbientProbe (light tree thread)
 float g_light = 1.0f, g_blue = 1.0f;
-// Furniture (30/09, second multi-agent study): its unlit-room light is the game's [NoLight] rig lights (CustomLightRigging.ini,
+// Furniture (30/09, a second study): its unlit-room light is the game's [NoLight] rig lights (CustomLightRigging.ini,
 // three fixed lights FUN_006bb3e0 adds to room-mode rigs, x0.21 in the captured rooms) plus the fill light (FUN_006b7e70,
 // (0.8, 0.8, 1.0)); the ambient cube (CASDiffuseProbe) is flat grey. Brightness and Blue tint turn it exactly as the walls
-// (30/09, user: "the furniture brightness and the brightness itself get in each other's way, they should be one thing": the
+// (the furniture brightness and the Brightness got in each other's way and are now one control: the
 // "On furniture" slider, how far furniture followed the Brightness, was removed; at 38.5% furniture kept x0.65 of the
 // game's light in rooms whose walls kept x0.09).
 // Both follow the night level (0 = day, 1 = night; set every frame by Night Lighting): by day nothing changes.
 float g_night = 0.0f;
 // Set per draw by the furniture guard (render thread): the object's rig holds [NoLight] lights, which the game adds only
 // to a dark room (FUN_006bb3e0: sum of the gathered lights below [0x11D0BB8]), so the room is dark whatever the clock
-// says (user 30/09: "sometimes the brightness stops working on the objects" at dawn / by day, while walls follow it)
+// says (the brightness sometimes stopped working on objects at dawn / by day, while walls followed it)
 bool g_drawDark = false;
 float NightNow() { return g_drawDark ? 1.0f : std::fmin(std::fmax(g_night, 0.0f), 1.0f); }
 // The same linear brightness controls room ambient and furniture's background light.
@@ -141,8 +141,8 @@ void Retarget() {
     g_retintDue = g_restDue = true;
     g_changedAt = GetTickCount();
 }
-// ---- The unlit colour as a base under the lamps (29/09, user: "the controls should set the room's tone also with a lamp
-// on, or turning that lamp off changes the whole room") ----
+// ---- The unlit colour as a base under the lamps (the controls set the room's tone with a lamp on too, so turning
+// that lamp off does not change the whole room) ----
 // FUN_006a00a0 (thiscall(room, out, lamp, char pow) ret 0xC, called twice at the end of FUN_006a0f50: 0x006A13F0 with
 // pow 1, its result stored at room+0x110; 0x006A1410 with pow 0, stored at +0x120): with C = the unlit colour (slot by the
 // lot, FUN_00c63140 on the WorldManager) x the scalar at 0x011D0B88, and sums over x, y, z (weights 1.0 at 0x0107A538):
@@ -282,7 +282,7 @@ int MoveBase(BYTE* room, BaseRec& rec, const VisitCtx& ctx) {
 // An unlit room holding a colour set before gets the new one (true, state 1); false: not one of them (state 2: it has lamps)
 // The colour family of a room: the game's lot test (FUN_00c63140, the same the top-up uses: true = the first colour,
 // 0x011D0B60), by the room's lot id (+0x10 / +0x14), cached per lot on the render thread; -1 when it cannot be run.
-// 30/09 (F6 092629, user: "the first slider leaves the room extremely dark, even at 100%"): the retint used to tell the
+// F6 capture (the first slider left the room extremely dark, even at 100%): the retint used to tell the
 // family from the room's current colour; near Brightness 0 both families are almost black and match each other within
 // the tolerance, so a room of the second colour (0.15 0.15 0.30) took the first's (0.01 0.01 0.01, 15-30x darker) and
 // stayed there, and the other way round a room turned 15-30x too bright.
@@ -321,7 +321,7 @@ int SlotOfRoom(const unsigned char* room) {
     return slot;
 }
 
-// 30/09 (F6 092629): only a room without lamps is matched by its colour. Near Brightness 0 a lit room's value (its lamps'
+// 30/09 (F6 capture): only a room without lamps is matched by its colour. Near Brightness 0 a lit room's value (its lamps'
 // share + the base) came within the tolerance of a colour set during the drag: rooms of 20 and 29 lamps (lot E4606BD0)
 // were taken for unlit ones, lost their lamps' share and followed the unlit colour from then on (+0x120 left behind). A
 // room with lamps is moved by MoveBase or solved again once the change rests.
@@ -679,7 +679,7 @@ void OnRoomChanged(uintptr_t room) {
 float FurnitureAmbient() { return g_patched && g_on ? FurnitureShareNow() : 1.0f; }
 bool FurnitureActive() { return g_patched && g_on && NightNow() > 0.001f; }
 float FurnitureTint() { return FurnitureActive() ? FurnitureTintNow() : 1.0f; }
-// 30/09 (F7 110-113, user: "the blue tint again is not applied to almost any furniture"): the ambient cube (CASDiffuseProbe) is
+// F7 captures 110-113 (the blue tint reached almost no furniture): the ambient cube (CASDiffuseProbe) is
 // grey, so pulling it towards its grey did nothing; in a room with every lamp off most of a sofa is lit by that cube alone (the
 // three [NoLight] lights are directional), while walls, floors and rugs take the room's blue. The cube now takes the chroma of
 // the game's unlit-room blue (0x011D0B40, (0.15 0.15 0.30): x0.93 0.93 1.86 at luma 1), by the Blue tint: grey at 0%.

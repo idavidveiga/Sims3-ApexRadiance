@@ -117,7 +117,7 @@ LightProbe captures `andar2-b` (m44), `andar1-b` (m45), `passo3-parede` (m59) an
   The baked map is the `texld` at TEXCOORD1 (`s2` in the full variants, `s1` in the simple ps_2_0 ones) or, in 4
   variants, the single 2D `texld` (TEXCOORD3) read by `mad ..., cK.x`; K is read nowhere else. K is per variant because
   in 24 variants c3.x is the bloom threshold, not the lamp scale. No other wall family (InteriorWall, ExteriorWallAOSI,
-  UnlitExteriorWall; 27 variants) matches. Generated offline (scratchpad `snowcover/test11.cpp`).
+  UnlitExteriorWall; 27 variants) matches. Generated offline (private research folder: `snowcover/test11.cpp`).
 - `ClassifyPsCode -> WallLampConst(code, size)`: a table match gives `PsClass::WallGain` and K in `g_wallConst[ps]`.
 - Per draw (`DrawWallGain`): off -> the game draws. Otherwise read `cK`; invalid or negative values, failed reads,
   unknown shaders and an unchanged result keep the native draw. `TerrainLightingPolicy::WallLampScale(native, night,

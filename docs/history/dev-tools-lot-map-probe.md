@@ -3,12 +3,12 @@
 Chronological record of investigations and design decisions. Newest entries at the bottom. The technique is described
 in [features/dev-tools/lot-map-probe.md](../features/dev-tools/lot-map-probe.md).
 
-Evidence: the four folders `MapaLote_1` to `MapaLote_4` in the combined build's S3SS folder (2026-09-27 22:57 to 23:06,
-written by the Portuguese-label version of the code) and NOTAS 27/09.
+Evidence: the four folders `MapaLote_1` to `MapaLote_4` in the combined build's S3SS folder (2026-09-27,
+written by the Portuguese-label version of the code) and notebook 27/09.
 
 ### 2026-09-27: world-space AO study
 
-**Context:** NOTAS "AO novo: deterministico, estudo no lab (27/09)": a feasibility test for a deterministic world-space
+**Context:** notebook "AO novo: deterministico, estudo no lab (27/09)": a feasibility test for a deterministic world-space
 ambient occlusion built from a lot height map.
 
 **Finding:** the game's draws can be re-rendered from an ortho camera with "0 failures, 100% covered" once the camera
@@ -32,7 +32,7 @@ file header comment still says "c40..c43 replaced", which is outdated: the code 
 
 ### 2026-09-27: a block of zeros won the camera vote
 
-**Context:** the second version (MapaLote_4, 23:06).
+**Context:** the second version (MapaLote_4).
 
 **Finding:** it elected an all-zero block that many draws have: every value in `info.txt` is `nan` (centre, heights,
 camera) and the "camera found" list covers almost every register.
@@ -50,7 +50,7 @@ town are at y about 60 to 90 (lighting snapshot). Depth spans 0.9949 to 0.9987.
 
 ### 2026-09-28: standalone plan
 
-**Context:** PLANO-SEPARACAO.md section 4 listed the renames for the standalone.
+**Context:** the standalone split plan (private notes) section 4 listed the renames for the standalone.
 
 **Finding:** `MapaLote_N` was not listed; it would have landed in `...\Apex Radiance\MapaLote_N` with
 `[patches.LotMapProbe]` in `ApexRadiance.toml`.

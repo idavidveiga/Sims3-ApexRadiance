@@ -427,7 +427,7 @@ float3 ColorLooks(float2 uv, float3 g)
     }
     [branch] if (cFlagG.z > 0.5) // color-blind mode (daltonize): what the eye cannot tell apart is moved into channels it can see
     {
-        // 06/10 review (user: "does not seem to work right"): the simulation (Vienot et al. / daltonize.org matrices) needs
+        // Review (the filter did not look right): the simulation (Vienot et al. / daltonize.org matrices) needs
         // linear light, as before, but the error was also redistributed in linear light: the common algorithm (Fidaner et
         // al.) moves the error on gamma-encoded values, and in linear light the shift was far too weak in the darks and
         // clipped in the brights. Tritanopia used the red-green redistribution, which moved the lost blue into blue again.
@@ -524,15 +524,15 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     float3 s = tex2Dlod(sScene, float4(uv, 0, 0)).rgb;
     float3 d = abs(f - s);
     // no scene copy this frame (the game did not draw its scene into the back buffer): everything is filtered, UI included
-    // UI mask (05/10, user: new strong filters still touched translucent panels and text shadows): the scene copy comes
+    // UI mask (new strong filters still touched translucent panels and text shadows): the scene copy comes
     // from the same back buffer, so a pixel the UI never touched is identical bit for bit; any change of one 8-bit step
     // or more is UI and is left exactly as the game drew it. (It was saturate(diff x 64): a soft edge was half filtered.)
-    // 06/10 (user: a box around the pie menu): a faint veil, like the pie menu's backing rectangle (a few steps darker),
+    // A box around the pie menu: a faint veil, like the pie menu's backing rectangle (a few steps darker),
     // was a box of unfiltered picture. Now only a clear change (from 4 to 24 steps, smoothly) counts as UI; under a faint
     // veil the scene copy is filtered and the veil applied again as the ratio frame / scene, as a translucent overlay
     // would be. A pixel the UI never touched is identical bit for bit (ratio 1); text, buttons and panels stay as drawn.
     float dmax = max(d.r, max(d.g, d.b));
-    // 06/10 evening (user: every Color setting broken since 2.6.0): back to 2.6.0's model, the final frame graded and the
+    // Every Color setting was broken after 2.6.0: back to 2.6.0's model, the final frame graded and the
     // UI pixels (any difference to the scene copy) left alone. The scene-copy grading with a frame/scene "veil" multiplied
     // every pixel by the smallest difference between the copy and the frame and undid the grade across the picture.
     float ui = cLook.y > 0.5 ? saturate(dmax * 64.0) : 0.0;
@@ -690,7 +690,7 @@ float4 PicturePS(float2 uv : TEXCOORD0) : COLOR0
     // back to gamma 2.2 for the 8-bit back buffer
     float3 o = pow(saturate(g), 1.0 / 2.2);
     float2 px = floor(uv * cSize.zw);
-    // Film grain (rebuilt 05/10, user: the old blocky per-cell noise looked like dirt): smooth value noise in two sizes
+    // Film grain (rebuilt: the old blocky per-cell noise looked like dirt): smooth value noise in two sizes
     // (the grain and a finer one), multiplying the brightness like silver grain does, strongest in the midtones and
     // fading in the blacks and whites; "More in the shadows" moves it toward the darker tones. The same grain every frame.
     [branch] if (cFlagD.w > 0.5 && scene)
@@ -838,7 +838,7 @@ struct Gpu {
     bool copyAfterStrip = false; // a bloom strip right after the scene: copy once it has drawn
     bool sceneCopied = false;
     // the scene depth copied with the scene (R32F, the device depth as it is), for Emphasize: at the end of the frame the
-    // live depth has holes (06/10, user: a grey box around the pie menu with the old fog filter on: the Sim portrait
+    // live depth has holes (a grey box around the pie menu with the old fog filter on: the Sim portrait
     // clears the depth of its 256x256 square before drawing the head, and it was taken as infinitely far)
     IDirect3DTexture9* depthTex = nullptr;
     IDirect3DSurface9* depthSurf = nullptr;
@@ -1040,7 +1040,7 @@ void OnFrameBoundary(IDirect3DDevice9* dev) {
         if (gpu.ready && SUCCEEDED(s->GetDesc(&bd)) && (bd.Width != gpu.width || bd.Height != gpu.height)) Picture::Get().BeforeReset();
         s->Release();
     }
-    // Render target 0 read again every frame, not only after a Reset (user 06/10: a friend's game with dxwrapper and
+    // Render target 0 read again every frame, not only after a Reset (a game with dxwrapper and
     // Sims3SettingsSetter showed no Color filter on entering CAW until it was turned off and on, which reads it again; a
     // change made where the SetRenderTarget hook does not see it left the remembered one stale for good)
     if (SUCCEEDED(dev->GetRenderTarget(0, &s)) && s) {
@@ -1606,7 +1606,7 @@ void Picture::BeforeOverlay(IDirect3DDevice9* dev) {
         CopyScene(dev);
 }
 
-// Diagnostics while Color is on (user 06/10: a friend's Edit in Game showed no Color until it was turned off and on, and
+// Diagnostics while Color is on (one Edit in Game setup showed no Color until it was turned off and on, and
 // nothing in the code explained it): once per frame, every gate between Color and the screen. A line when one of them changes
 // (at most every 300 ms), and a full line every 10 s; at most 400 lines a session.
 static void LogGates(IDirect3DDevice9* dev, int skip) {
@@ -1654,7 +1654,7 @@ void Picture::OnEndScene(IDirect3DDevice9* dev) {
     if (!ShaderCache::PrecompileComplete()) return; // keep loading frames moving while bytecode compiles
     RegisterHooks(dev);
     if (!g_atBoundary && g_boundaryDone) return; // already applied on the finished scene this frame
-    // The end-of-frame fallback never filters without a scene copy (06/10, user: at some angles Color went over the game's
+    // The end-of-frame fallback never filters without a scene copy (at some angles Color went over the game's
     // UI while Ambient Occlusion never did): with too few scene draws for the boundary, AO skips the frame, but this pass
     // filtered the whole picture, the UI included. Now Color skips that frame too.
     if (!g_atBoundary && !gpu.sceneCopied) return;

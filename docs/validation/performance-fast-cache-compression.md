@@ -49,7 +49,7 @@ Developer mode, Developer > Performance > *Compressed game data*:
 ## Confirmed in game
 
 - 2026-09-30, build 0d1408ad: the kept counting-run stream and the segmented compressor reduced compression hitches as
-  in the table. Maintainer feedback: the game felt smoother.
+  in the table. Observed in game: the game felt smoother.
 
 ## Open checks
 

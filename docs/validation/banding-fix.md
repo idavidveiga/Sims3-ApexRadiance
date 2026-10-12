@@ -13,9 +13,9 @@ The feature is described in [features/banding-fix.md](../features/banding-fix.md
 
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
-| `scratchpad/dither/dithertest.cpp` (not in the repository) | `AddDither` over every ps_3_0 of the game's shader package; creation on a native HAL device | Built and run by hand | Game `Shaders_Win32.precomp`, D3D9 GPU |
-| `scratchpad/dither/dithertest2.cpp` (not in the repository) | `AddDither2` and `AddScreenPosVs` over ps_2_0 and vs_2_0; a grey drawn through a patched pair | Built and run by hand | Game `Shaders_Win32.precomp`, D3D9 GPU |
-| `scratchpad/dither/tpdftest.cpp` (not in the repository) | Mean and level weights of the triangular grain on the GPU | Built and run by hand | D3D9 GPU |
+| `dither/dithertest.cpp` (not in the repository) | `AddDither` over every ps_3_0 of the game's shader package; creation on a native HAL device | Built and run by hand | Game `Shaders_Win32.precomp`, D3D9 GPU |
+| `dither/dithertest2.cpp` (not in the repository) | `AddDither2` and `AddScreenPosVs` over ps_2_0 and vs_2_0; a grey drawn through a patched pair | Built and run by hand | Game `Shaders_Win32.precomp`, D3D9 GPU |
+| `dither/tpdftest.cpp` (not in the repository) | Mean and level weights of the triangular grain on the GPU | Built and run by hand | D3D9 GPU |
 | `techver.pl` (not in the repository) | ps_2_0 / ps_3_0 variant counts per technique | Perl over the shader package | Game shader package |
 
 These harnesses were scratch tools of the investigation and are not kept in `tools/`. Re-running them requires

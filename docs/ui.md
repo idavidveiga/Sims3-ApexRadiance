@@ -42,7 +42,7 @@ Sims 3"); internal names keep "Apex". Visible text uses `APEX_PRODUCT_NAME`, nev
 | WORLD > Water & Snow (waves-horizontal) | Lamp Glow, Water Reflections (with "Turn on Night Lights" / "Turn on Depth Blur"), Snow. See [reflections](features/reflections.md) |
 | IMAGE > Color (palette) | Overview owns the Color master switch, measured GPU cost and comparison tools; its card title matches the tab. Clickable overview rows lead to Basic, Tones, Color, Detail and Filters, each with an independent group switch. Master off disables and visually turns off dependent switches without clearing saved group preferences. Filters has six compact family panels, down/up adjustment disclosures, right-click/ellipsis shortcut actions and an optional tag left of the disclosure arrow. The shortcut modal uses the native card header and right-aligned actions. No profiles on this overview. See [picture-filters.md](features/picture-filters.md) |
 | IMAGE > Banding Fix (blend) | "Still being tested" note and the Banding Fix card with Strength, Moving grain and Smooth gradients. See [banding-fix.md](features/banding-fix.md) |
-| IMAGE > Ambient Occlusion (contrast) | Scene AO card and Sim Occlusion card. Scene AO runs at full resolution; the reduced-resolution and reconstruction controls were removed at the user's request. See [ambient-occlusion.md](features/ambient-occlusion.md), [sim-occlusion.md](features/sim-occlusion.md) |
+| IMAGE > Ambient Occlusion (contrast) | Scene AO card and Sim Occlusion card. Scene AO runs at full resolution; the reduced-resolution and reconstruction controls were removed. See [ambient-occlusion.md](features/ambient-occlusion.md), [sim-occlusion.md](features/sim-occlusion.md) |
 | IMAGE > Depth Blur (aperture) | Depth Blur card; mode-specific rows are drawn and searchable only in their mode. See [depth-blur.md](features/depth-blur.md) |
 | IMAGE > Edge Smoothing (spline) | FXAA / SMAA controls and the game-MSAA notice. See [edge-smoothing.md](features/edge-smoothing.md) |
 | SYSTEM > Performance (gauge) | Five cards with the 15 performance switches: Camera and lighting, Files and objects, Textures and Sims, Memory handling, Game and scripts. See [Performance](features/performance/README.md) |
@@ -86,7 +86,7 @@ Rules:
 - Defaults passed to rows come from the code's real defaults (registered setting defaults, `PictureParams{}`, the
   features' `Params{}`, `ApexPatch::IsEnabledByDefault()`), never guessed.
 - After adding any option, review the whole menu's organization and run the `apex-menu` audit
-  (`perl .claude/skills/apex-menu/audit.pl .`).
+  (`perl tools/menu_audit.pl .`).
 
 ### Design tokens
 
@@ -411,10 +411,9 @@ credited in Settings > About.
 "Apex Radiance by @loinyx."; "Sims3SettingsSetter by sims3fiend: project origin and framework reference."; "FXAA 3.11:
 Timothy Lottes (NVIDIA)."; "FidelityFX CAS: AMD (MIT)."; "Upper-floor ground light: Arro's technique, adapted in Apex
 Radiance."; "Libraries and licenses: Dear ImGui (MIT), Microsoft Detours (MIT), toml++ (MIT), SMAA - Jorge Jimenez et
-al. (MIT), Lucide icons (ISC)." Arro and the Split-Level fix are not mentioned anywhere else (feature descriptions,
-tooltips, release notes, promotional text); functional notices about official S3SS's own fix ("Already handled by
-Sims3SettingsSetter (its Split-Level Lighting Fix is on)") stay. Sims3SettingsSetter appears only in compatibility
-notices, detection, the recommendation card, Credits and the settings migration.
+al. (MIT), Lucide icons (ISC)." Arro's technique is also credited in the README. Functional notices about official
+S3SS's own fix ("Already handled by Sims3SettingsSetter (its Split-Level Lighting Fix is on)") are shown where relevant;
+Sims3SettingsSetter also appears in compatibility notices, detection, the recommendation card and the settings migration.
 
 ## See also
 

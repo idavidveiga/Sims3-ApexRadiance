@@ -41,7 +41,7 @@ state; a restart was needed after changing that setting. Its inactive FPS limit 
 Driver, RTSS and DXVK limiters could not be detected.
 
 **Local investigation:** Sims3SettingsSetter active FPS 237, inactive FPS 60, TPS 960, DXVK `d3d9.presentInterval=1`;
-none of those files was changed by this feature (an earlier, separately authorized window handoff changed only the two
+none of those files was changed by this feature (an earlier, separate window-mode change touched only the two
 borderless mode keys). DXVK can force V-Sync regardless of the Apex request. The candidate did not claim to remove OLED
 flicker.
 
@@ -56,5 +56,5 @@ and visible flicker rather than average FPS.
 
 ### 2026-10-02: removed
 
-**Outcome:** removed together with Display and Fluency by maintainer decision before any release. Apex forwards the
+**Outcome:** removed together with Display and Fluency by project decision before any release. Apex forwards the
 game's original CreateDevice, Reset and Present requests without changing synchronization or window state.

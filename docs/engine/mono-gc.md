@@ -24,7 +24,7 @@ This page maps those functions and globals. It is the background for:
 
 TS3W.exe 1.67.2 Steam, image base 0x00400000. Items marked *(inferred)* come from static reading only.
 
-Threads, per NOTAS-ILUMINACAO.md "Desempenho: mapa do motor (28/09)":
+Threads, per the lighting notebook (private notes) "Desempenho: mapa do motor (28/09)":
 - The render thread is the main thread.
 - The render thread does **not** wait for the simulation thread every frame.
 - The game UI runs on the simulation thread.
@@ -75,7 +75,7 @@ checked between steps.
 
 | Patch (name, display name) | Bytes | Effect and notes |
 |---|---|---|
-| `GCTryToCollect`, "Chunky Patch - Disable GC_try_to_collect()" | NOPs the 5-byte `call` at 0xD819AA (pattern `68 ?? ?? ?? ?? A3 ?? ?? ?? ?? E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 83 C4 04`, +10; `expectedBytes {E8}`) | No explicit collections at all. Collection then happens only through allocation pressure, which means **blocking full collections** on the allocating thread (0xD70800 → 0xE4A320). In the combined build it refuses while GcScheduler is on, and vice versa (see [../removed-features.md](../removed-features.md#script-gc-scheduler)). Upstream only checks `E8`, so it would NOP over Apex's redirect (PLANO-SEPARACAO.md §3) |
+| `GCTryToCollect`, "Chunky Patch - Disable GC_try_to_collect()" | NOPs the 5-byte `call` at 0xD819AA (pattern `68 ?? ?? ?? ?? A3 ?? ?? ?? ?? E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 83 C4 04`, +10; `expectedBytes {E8}`) | No explicit collections at all. Collection then happens only through allocation pressure, which means **blocking full collections** on the allocating thread (0xD70800 → 0xE4A320). In the combined build it refuses while GcScheduler is on, and vice versa (see [../removed-features.md](../removed-features.md#script-gc-scheduler)). Upstream only checks `E8`, so it would NOP over Apex's redirect (the standalone split plan (private notes) §3) |
 | `GCFinalizeThrottle`, "GC Finalizer Throttle" | `cmp eax,0C8h` → `cmp eax,7FFFh` at 0xD81A1D (pattern `03 C5 3D C8 00 00 00 A3 ?? ?? ?? ?? 75`, +2); `jnz` (75 F7) → `90 90` at 0xD81A37 (pattern `E8 ?? ?? ?? ?? 85 C0 75 F7 89 1D`, +7). PLANO §3 lists the pattern starts 0xD81A1B / 0xD81A30 | The blocking loop triggers after 32767 pressured passes instead of 200, and then runs one extra batch instead of looping until none are left. Finalizers can pile up in long sessions (upstream note: "May slightly increase memory usage") |
 | `GCStopWorld`, "GC_stop_world() Optimization" | At 0xE511F5 (Retail 0xE514E5, EA 0xE51245), `3D 00 01 00 00 7C 05` → `85 C0 74 7D 90 90 90` (`test eax,eax; jz 0xE51276; nop x3`) | Upstream intent: skip the thread loop when the count is 0. **Static finding:** the patch also removes the `jl` that skipped `mov eax,0FFh` (0xE511FC), so whenever the count is non-zero the loop bound becomes 255 on every iteration. The loop then visits all 256 slots instead of count+1. Empty slots are skipped cheaply, so the effect is small either way *(not measured)*. Upstream calls it "very minor" |
 

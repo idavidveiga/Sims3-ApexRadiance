@@ -1,7 +1,7 @@
 // Outdoor floor pixel shaders (ExteriorFloors technique of Game\Bin\Shaders_Win32.precomp, ps_3_0) that
 // ShaderPatches::PatchBakedAtlasPs accepts and that pass D3DDisassemble after patching: their lamp light is only the
 // baked floor map ("texld rL, vK, sM" then "mad rX.xyz, rL, cK.x, rY"), which in summer is nearly black (LightProbe-m61).
-// Generated offline (scratchpad snowcover/test13.cpp); InteriorFloor shaders never pass. size in bytes, hash = FNV-1a
+// Generated offline (a local test over the precomp's shaders); InteriorFloor shaders never pass. size in bytes, hash = FNV-1a
 // 32-bit over the bytecode DWORDs.
 #pragma once
 #include <cstdint>

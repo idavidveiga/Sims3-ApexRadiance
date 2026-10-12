@@ -14,8 +14,8 @@ for (let i = 3; i < process.argv.length; i += 2) {
 const repo = fs.realpathSync(options.get('repo') || process.cwd());
 const normalized = process.platform === 'win32' ? repo.toLowerCase() : repo;
 const key = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 20);
-const skill = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const cache = path.join(skill, 'cache', key);
+// Recipes and logs stay machine-local, under the ignored outputs/ folder
+const cache = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..'), 'outputs', 'build', 'cache', key);
 const recipePath = path.join(cache, 'recipe.json');
 const known = /^(package\.json|.*lock.*|CMakeLists\.txt|CMakePresets\.json|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|Makefile|pom\.xml|build\.gradle.*|settings\.gradle.*|.*\.(sln|vcxproj|csproj|props|targets)|pyproject\.toml|meson\.build|vcpkg\.json)$/;
 function manifests() {

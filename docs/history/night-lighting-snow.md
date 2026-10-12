@@ -14,7 +14,7 @@ the world term, and the lot map has no street lamps.
 **Outcome:** lot = `max(lot x factor, terrain x 4)`; road = extra `texld` of the terrain map + `max`
 ([roads.md](../features/night-lighting/roads.md)).
 
-### 2026-09-25 (about 01:40): snow fix list
+### 2026-09-25: snow fix list
 
 **Context:** the pending list of winter defects.
 
@@ -22,7 +22,7 @@ the world term, and the lot map has no street lamps.
 
 | # | Item | Outcome |
 |---|---|---|
-| 1 | Pink lamps still pink (56 street lamps type 11, 46 lot lamps type 3 at 1/0.75/0.79; the script sets the colour after creation via `FUN_006B0B50` -> `FUN_006BC3E0`) | Fixed about 02:10 by redirecting the call at `0x006B0BDE` ([lamp-colour.md](../features/night-lighting/lamp-colour.md)) |
+| 1 | Pink lamps still pink (56 street lamps type 11, 46 lot lamps type 3 at 1/0.75/0.79; the script sets the colour after creation via `FUN_006B0B50` -> `FUN_006BC3E0`) | Fixed the same night by redirecting the call at `0x006B0BDE` ([lamp-colour.md](../features/night-lighting/lamp-colour.md)) |
 | 2 | Dark strip at the road edge (screenshot 41; m24, fourth road variant) | Fixed by the generic `PatchRoad` |
 | 3 | Dark squares at sidewalk corners (m16/m18, third road variant) | Fixed the same way |
 | 4 | Black pond with white streaks in the snowy plaza (screenshot 42; m25): MSAA on, no INTZ, the 40 m guess sampled the scene copy wrongly | Fixed: no screen reflection without depth ([water.md](../features/night-lighting/water.md)) |
@@ -31,10 +31,10 @@ the world term, and the lot map has no street lamps.
 | 6 | Snowy roofs "waiting" (m23, `PS_2793C3E8` 4992 bytes, `VS_27944BD8`) | Fixed: additive pass `roof_snow_lamps_ps.hlsl`; m29 position fix ([roofs.md](../features/night-lighting/roofs.md)) |
 | 7 | Snowy floor (m08, `PS_1B3938E8`, lot map only x 0.25) | Fixed: world atlas + `PatchFloor` |
 
-Later additions the same day: snow on fence tops (m48, about 10:01), stair snow (m50/m51, about 10:40), snow on floors
+Later additions the same day: snow on fence tops (m48), stair snow (m50/m51), snow on floors
 around the pool (m69), door sills (m71/m72), pool edge (m66).
 
-### 2026-09-25 (10:43): stairs sent to the roof-snow handler
+### 2026-09-25: stairs sent to the roof-snow handler
 
 **Context:** first test of stair snow.
 
@@ -45,7 +45,7 @@ VS classes, so stairs went to `DrawRoofSnow`, which computes lamp positions from
 shader class shared by two families. `PatchSnowCover` could not be reused because it refuses flow control and stair snow
 has four `rep` loops; a separate patch inserts outside the loops.
 
-### 2026-09-25 (about 14:35 to 15:00): snow on floors never ran
+### 2026-09-25: snow on floors never ran
 
 **Context:** review of the snow-floor fix.
 

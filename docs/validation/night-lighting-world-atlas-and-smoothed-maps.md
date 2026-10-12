@@ -90,7 +90,7 @@ Both paths:
 - Smoothing (decode, colour cleanup, 4x B-spline, mips) since the v0.1.0 baseline (`b84d5f1`): blocks and specks
   removed.
 - 2026-10-02, terrain-variant build `C1257AF4...`: with the summer multi-pass pair recognised, the reported lot/world
-  cutoff resolved in the tested scene (maintainer feedback, no new GPU comparison).
+  cutoff resolved in the tested scene (observed in game, no new GPU comparison).
 
 ## Open checks
 
@@ -110,7 +110,7 @@ Both paths:
   seasons) and under DXVK. No FPS change is claimed.
 - Winter multi-pass variants and other untested scenes for the multi-pass and compact corrections.
 - Planned, not started: PASSO3 increment 5, re-rendering the terrain stamp at 4 texels/m with the game's formula from
-  `FUN_00C292B0` (`E = c0.rgb * sat(c0.w / d^2) * (N.L >= 0 ? sat(sqrt(N.L)) : 0)`, PASSO3-PLANO section 4), delivered
+  `FUN_00C292B0` (`E = c0.rgb * sat(c0.w / d^2) * (N.L >= 0 ? sat(sqrt(N.L)) : 0)`, the per-pixel plan (private notes) section 4), delivered
   through `LightmapSmooth::Find` and validated against the original at 256^2. Pre-sizing the atlas to the whole terrain
   at world load (terrain chunk vector `terrain+0xB0/+0xB4`) needs the WorldManager global and the chunk coordinates at
   run time; the GPU copy on growth already avoids black cells.

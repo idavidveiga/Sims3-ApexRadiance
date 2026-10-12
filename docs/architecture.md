@@ -767,7 +767,7 @@ Full map in [engine/main-loop-and-services.md](engine/main-loop-and-services.md)
 
 | Thread | What runs there | Evidence |
 |---|---|---|
-| **Render thread = main thread** | Main loop `0x00ECA960`: ServiceManager main services, WorldManager and lot streaming, terrain update `0x00C845C0`, the whole D3D9 frame (BeginScene to Present), the window message pump | NOTAS-ILUMINACAO "Desempenho: mapa do motor"; `profiler_targets.tsv`; `frame_profiler.cpp` header |
+| **Render thread = main thread** | Main loop `0x00ECA960`: ServiceManager main services, WorldManager and lot streaming, terrain update `0x00C845C0`, the whole D3D9 frame (BeginScene to Present), the window message pump | notebook-ILUMINACAO "Desempenho: mapa do motor"; `profiler_targets.tsv`; `frame_profiler.cpp` header |
 | **Simulation (Mono) thread** | `MonoScriptHost::Simulate` (GC call at `0x00D819AA`, IdleSimulationCycle call at `0x00D81FDE`, sim job pump `ProcessJobs` called at `0x00D81FDA`), ServiceManager sim services `0x0059ED70`, script tasks `0x00D7FE80`, animation ticks. **The game UI runs here**; the render thread does not wait for it each frame | Notes; `profiler_targets.tsv` |
 | Job workers ("JobThread", affinity mask 2) | `ExecuteJob 0x00599720`, for example resource read jobs `0x0072A4F0`; their mask-1 follow-ups run on the render thread | `profiler_targets.tsv` |
 | Other game threads | Light tree gather (`level_light_share.cpp` counts calls "on another thread") | `level_light_share.cpp` |
@@ -943,7 +943,7 @@ thread and adds no game-memory hook or light polling.
 ## 14. How to add a new feature
 
 1. **Study first.** Read the relevant [engine pages](engine/) and the feature pages' *Rejected approaches* and history.
-   Get evidence: Light Probe and Light Diag captures, the decompile in `S3SS-dev\re\out`, engine_map. Do not guess
+   Get evidence: Light Probe and Light Diag captures, the private decompile, engine_map. Do not guess
    addresses or constants.
 2. **Files.** Put the feature in `patches/<name>_patch.cpp` (or a `features/<name>.cpp/.h` module plus a thin patch) and
    add it to `ApexRadiance.vcxproj`'s `ClCompile` list.
@@ -992,6 +992,6 @@ thread and adds no game-memory hook or light polling.
 
 ## See also
 
-- [history/architecture.md](history/architecture.md): the combined build, the standalone split plan and decisions,
+- [history/architecture.md](history/architecture.md): the combined build, the standalone split plan (private notes) and decisions,
   release-candidate notes.
 - [workflow.md](workflow.md), [ui.md](ui.md), [engine/](engine/), [removed-features.md](removed-features.md).

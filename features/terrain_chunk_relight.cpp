@@ -553,7 +553,7 @@ bool Editing() {
 
 bool Busy() { return g_rb.active || g_haveFlight || !g_queue.empty() || !g_batches.empty(); }
 
-// A chunk render that took long (06/10, session 11:49: 44 ms a chunk while the game's whole frames took 72-164 ms; the same
+// A chunk render that took long (06/10, a session: 44 ms a chunk while the game's whole frames took 72-164 ms; the same
 // 9 lamps and 4 chunks took 4.7-6 ms in the sessions after: the render probably waits for the GPU, so it costs about what a
 // frame costs then): at most kSlowPerSecond such renders a second, so a lamp edit does not stack heavy frames back to back
 constexpr size_t kSlowPerSecond = 3;

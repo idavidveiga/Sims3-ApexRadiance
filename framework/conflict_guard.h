@@ -5,7 +5,7 @@
 //  3. byte-compare every site at install and name the module a foreign E8/E9 lands in;
 //  4. re-verify the sites every second; when overridden: status line, stop, never restore over foreign bytes.
 //
-// TODO(step 8, conflict guard agent): implement. Only the interface exists so features can already describe their
+// TODO(step 8, conflict guard): implement. Only the interface exists so features can already describe their
 // sites; nothing calls Verify/Watch yet and every query below reports "no conflict".
 #include <windows.h>
 #include <cstdint>

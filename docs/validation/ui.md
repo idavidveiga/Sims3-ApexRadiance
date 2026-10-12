@@ -17,7 +17,7 @@ The menu is described in [ui.md](../ui.md). It must:
 | [`tools/report_check/control_layout_check.cpp`](../../tools/report_check/control_layout_check.cpp) | Shared control geometry and the profile picker: popup style stacks, adjacent heights, text ink centres, EN/PT/ES/FR at two scales | README | x86 MSVC, ImGui |
 | [`tools/report_check/menu_253_check.cpp`](../../tools/report_check/menu_253_check.cpp) | The Report page and the notice layout (24 cases: four languages, three widths, two font sizes) | README | x86 MSVC, ImGui |
 | [`tools/i18n_check`](../../tools/i18n_check/i18n_check.cpp) | Translation tables: conflicting duplicates, missing languages, placeholder mismatches | Build line in the source header | x86 MSVC |
-| [`.claude/skills/apex-menu/audit.pl`](../../.claude/skills/apex-menu/audit.pl) | Heuristic audit: untranslated texts, copy-guideline breaks, undocumented keys, settings missing from ResetDefaults | `perl .claude/skills/apex-menu/audit.pl .` | Perl |
+| [`tools/menu_audit.pl`](../../tools/menu_audit.pl) | Heuristic audit: untranslated texts, copy-guideline breaks, undocumented keys, settings missing from ResetDefaults | `perl tools/menu_audit.pl .` | Perl |
 | [`tools/developer_mode_check`](../../tools/developer_mode_check/check.cpp) | Profile part bits and filtering | See [validation/developer-mode.md](developer-mode.md) | x86 MSVC |
 
 Native checks are geometric evidence; they do not replace inspecting every page in the game.

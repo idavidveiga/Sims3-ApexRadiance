@@ -181,7 +181,7 @@ struct QualityLevel {
     const char* steps;
     const char* sizes;
 };
-// Extreme (30/09, user: "the anti-aliasing still does not leave things perfectly straight, even on Ultra, in both modes"):
+// Extreme (Ultra still left long, nearly straight edges stepped in both modes):
 // finer first steps and a longer reach (57.5 texels each way against High's 30.5), for long, nearly straight edges at 4K.
 constexpr int kFxaaLevels = 4;
 constexpr QualityLevel kQualities[kFxaaLevels] = {
@@ -1153,7 +1153,7 @@ class EdgeSmoothingPatch : public ApexPatch {
         if (g.p.depthEdges && g.ready && g.framesSmoothed > 60 && !g.depthUsed)
             ApexUi::IconNote(IconId::Info, "The scene depth is not available right now: edges come from colour only");
         changed |= ApexUi::SliderPercent("Sharpen textures", &g.p.sharpen, 0.0f, 1.0f, "Crisper textures; the smoothed edges stay smooth. 0% is off", kDefaults.sharpen);
-        // 30/09 (user: "many players at 1080p showed the game very jagged", with this on): at 1200 lines or fewer, the driver's
+        // At 1080p the game still looks jagged with this on: at 1200 lines or fewer, the driver's
         // own supersampling (render at a higher resolution, shown on the same screen) smooths what no post-process AA can
         // (thin rails, wires, leaves)
         if (g.height > 0 && g.height <= 1200) {

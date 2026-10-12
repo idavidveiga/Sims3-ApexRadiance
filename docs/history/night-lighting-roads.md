@@ -21,16 +21,16 @@ In variant 1 with snow, the bright parts of the road texture (sidewalk, markings
 
 **Outcome:** `max(road map, chunk terrain map)` on a free sampler, plus the luma-based sidewalk blend ("trodden snow").
 
-### 2026-09-25 (about 01:40): byte-matched first version
+### 2026-09-25: byte-matched first version
 
 **Context:** the first road fix matched only the two known winter pixel shaders by their bytes.
 
 **Finding:** variants 3 (corner, already uses `r6`, so the temp must be configurable) and 4 (edge) stayed dark.
 
 **Outcome:** rejected. Recognition moved to the vertex shader pattern, with the extra sampler and temp computed per
-shader. Winter variants 1 to 4 tested offline and in game at about 02:10.
+shader. Winter variants 1 to 4 tested offline and in game the same night.
 
-### 2026-09-25 (about 09:10): summer roads
+### 2026-09-25: summer roads
 
 **Context:** a lot lamp lit the grass through the terrain map (lot map there about 0, maximum 0.012) but not the road or
 sidewalk (captures m42 `calcada-verao`, m43 `rua-verao`, `grama-luz-lote`).

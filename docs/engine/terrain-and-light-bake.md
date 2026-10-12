@@ -8,7 +8,7 @@ This page documents how world terrain is split into 256 m chunks, how each chunk
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, image base 0x00400000) unless stated |
 | Used by | [Terrain relight](../features/night-lighting/terrain-relight.md), [World atlas and smoothed maps](../features/night-lighting/world-atlas-and-smoothed-maps.md), [Lot light pass](../features/night-lighting/lot-light-pass.md), [World lamp response](../features/night-lighting/world-lamp-response.md) |
-| Evidence | Ghidra `re\out` (`fn_00c292b0.c`, `fn_00c296e0.c` and others), `engine_map` `full.asm`, `patches/night_terrain_relight_patch.cpp`, `features/lightmap_smooth.cpp`, `features/lot_light_bridge.cpp`, NOTAS-ILUMINACAO.md (see Sources) |
+| Evidence | Ghidra decompile (private) (`fn_00c292b0.c`, `fn_00c296e0.c` and others), `engine_map` `full.asm`, `patches/night_terrain_relight_patch.cpp`, `features/lightmap_smooth.cpp`, `features/lot_light_bridge.cpp`, the lighting notebook (private notes) (see Sources) |
 
 ## Overview
 
@@ -36,10 +36,9 @@ crossing a chunk border. Everything Apex does to the terrain light goes through 
 ### Sources
 
 Sources: `patches/night_terrain_relight_patch.cpp` (header comment and constants), `patches/smooth_streaming_patch.cpp`
-(notes 4 and "Localized terrain relight"), `lightmap_smooth.cpp`, `lot_light_bridge.cpp`, the Ghidra output in
-`S3SS-dev\re\out` (`fn_00c292b0.c`, `fn_00c296e0.c`, `fn_00c256f0.c`, `fn_00c25a90.c`, `fn_00c7e7a0.c`, `fn_00c845c0.c`,
-`fn_00c7f750.c`), the disassembly `scratchpad\engine_map\full.asm`, NOTAS-ILUMINACAO.md sections 1, 1b, 1c, 2, "Mapa de luz
-suavizado", "Lote escuro ao lado da calcada" and "Corte na borda do lote (28/09)", and `scratchpad\ground_report.md`.
+(notes 4 and "Localized terrain relight"), `lightmap_smooth.cpp`, `lot_light_bridge.cpp`, the private Ghidra output (`fn_00c292b0.c`, `fn_00c296e0.c`, `fn_00c256f0.c`, `fn_00c25a90.c`, `fn_00c7e7a0.c`, `fn_00c845c0.c`,
+`fn_00c7f750.c`), the disassembly `engine_map\full.asm`, the lighting notebook sections 1, 1b, 1c, 2, "Mapa de luz
+suavizado", "Lote escuro ao lado da calcada" and "Corte na borda do lote (28/09)", and `ground_report.md`.
 Where a statement rests on one of these only, the table says so. "(unverified)" means nobody confirmed it at runtime or
 in code.
 
@@ -184,12 +183,12 @@ The standalone's local terrain relight sets only `+0x54`, one chunk at a time ([
 4. Returns 1; `0x00C296E0` then runs `0x00C28CD0(0)` on the result (unverified what it does; type 7 calls it with 1).
 
 Light rect: `0x006BDDF0` sets `+0x134..+0x140 = (x - s, z - s, x + s, z + s)` with
-`s = sqrt(+0x130 / (k1 × [0x011D1180].x))`. k1 (`0x011D0A60`) measured 1.0 at runtime (F8 of 16:09, NOTAS "Lote escuro");
-the value of `[0x011D1180].x` was never read (unverified). NOTAS 4d measured rects of about 50 m for ranges 40..100.
+`s = sqrt(+0x130 / (k1 × [0x011D1180].x))`. k1 (`0x011D0A60`) measured 1.0 at runtime (F8 of 16:09, notebook "Lote escuro");
+the value of `[0x011D1180].x` was never read (unverified). Notebook 4d measured rects of about 50 m for ranges 40..100.
 
 Stamp law: the shader itself was never disassembled (ground_report section 6). Fitted on the smoothed atlas around a
 street-lamp pair, the ground follows `2 · w · cos / d²` with `w = 0.2 · range · intensity` (shader_patches.cpp comment above
-`AppendPixelLamps`, 28/09), saturated at 1 next to the lamp. PASSO3-PLANO.md's Design B wrote it as
+`AppendPixelLamps`, 28/09), saturated at 1 next to the lamp. The per-pixel plan (private notes)'s Design B wrote it as
 `E = c0.rgb · sat(c0.w / d²) · (N·L ≥ 0 ? sat(sqrt(N·L)) : 0)` (unverified). The bake has **no occluder input** (only the
 normal and height maps are bound; ground_report section 5, inferred), so walls never block terrain light.
 
@@ -205,10 +204,10 @@ frame (research\perf2\chunkrelight.md 1.3). The earlier "1 mip when rebuilt" (he
 
 | Consumer | Binding | Evidence |
 |---|---|---|
-| World terrain, single pass | PS samples the map from `s8` (4 paint layers), `s7` (3 layers) or another sampler depending on the variant; `uv = (world − chunk centre)/256 + 0.5`; VS `c15 = (1/256, 1/256, 0.5, 0.5)`, chunk centre in VS `c8.w`/`c10.w`; lamp term `texld rT, v1, sLM; mul rL.xyz, rT, c7.x` (c7.x = 1 in captures). The map alpha is also used for sun visibility | NOTAS 1, 1b; lot_light_bridge `RecordWorldChunk`; ground_report 1A |
+| World terrain, single pass | PS samples the map from `s8` (4 paint layers), `s7` (3 layers) or another sampler depending on the variant; `uv = (world − chunk centre)/256 + 0.5`; VS `c15 = (1/256, 1/256, 0.5, 0.5)`, chunk centre in VS `c8.w`/`c10.w`; lamp term `texld rT, v1, sLM; mul rL.xyz, rT, c7.x` (c7.x = 1 in captures). The map alpha is also used for sun visibility | notebook 1, 1b; lot_light_bridge `RecordWorldChunk`; ground_report 1A |
 | World terrain, multi-pass (albedo passes + modulate2x light pass + fog) | summer light pass `475E594D/756` samples `s2 × c3.x²`; winter `1A5B580F/1548` samples `s7 × c4.x²` | ground_report 1B |
-| Lot grass light pass | `0x00C7F750` with the lot flag binds `chunk+0xD8` when non-zero (else nothing); the stock 568-byte pass samples the lot `LightMap` (s1) × c3.x, modulate2x | night_terrain_relight `kLotPassSite` comment; NOTAS 1 |
-| Roads / sidewalks | Their own copy of the chunk map (s6/s4/s2 by variant), same uv via VS `c16` (winter) / `c14` (summer) | NOTAS "Ruas"; shader_patches `IsRoadVs` |
+| Lot grass light pass | `0x00C7F750` with the lot flag binds `chunk+0xD8` when non-zero (else nothing); the stock 568-byte pass samples the lot `LightMap` (s1) × c3.x, modulate2x | night_terrain_relight `kLotPassSite` comment; notebook 1 |
+| Roads / sidewalks | Their own copy of the chunk map (s6/s4/s2 by variant), same uv via VS `c16` (winter) / `c14` (summer) | notebook "Ruas"; shader_patches `IsRoadVs` |
 
 Details of these shaders are in [shaders.md](shaders.md).
 
@@ -268,7 +267,7 @@ Runtime logic (render thread, `OnPresent` from the Present hook):
   a save loaded by day keeps the day-time terrain light.
 - **World load** (`cells` pointer changed): `Settle` waits until the set of lit lot lamps has not changed for 3 s (at least
   5 s after the load, at most 60 s), then one full kick. It runs by day too, because the world-file maps also miss the part
-  of a lamp's light that crosses into the neighbouring chunk (NOTAS 1b: cut at x = 1280 between chunks (1408, 1152) and
+  of a lamp's light that crosses into the neighbouring chunk (notebook 1b: cut at x = 1280 between chunks (1408, 1152) and
   (1152, 1152)).
 - **Reconcile** (about once a second, not while a full rebuild is pending): `Bakeable` lamps (from
   `LotLightBridge::ForEachOutdoorLotLamp`, refreshed every 20 frames by the light enumeration) are diffed against what the
@@ -317,11 +316,11 @@ refused". If "on the ground" grows while "lot lamps" stays 0, lamps are lost bet
 
 ### Pitfalls and failed approaches (do not retry)
 
-- NOTAS 1, tried and failed for the lot-border cut: widening the world-light gather radius; recomputing room 0; redoing the
+- Notebook 1, tried and failed for the lot-border cut: widening the world-light gather radius; recomputing room 0; redoing the
   type-5 terrain textures; high lighting quality on every lot (also dropped FPS to 63); disabling the terrain texture in
   the lot layer (the `0x00C7F87D` stub, kept only as an experimental option); counting street lamps as lit in the solve.
   What worked was the lot light bridge (`max(lot map, terrain map)`), see [lot-light-pass.md](../features/night-lighting/lot-light-pass.md).
-- NOTAS 1c: an automatic "unlock" that reacted to any armed `+0x38` rebuilt the whole terrain every ~30 s (16 times per
+- Notebook 1c: an automatic "unlock" that reacted to any armed `+0x38` rebuilt the whole terrain every ~30 s (16 times per
   session), because lots streaming in register lamps. Fixed then by a 1/min limit, later replaced by the reconciliation.
 - Re-queuing lot solves after every terrain rebuild made a loop (relighting re-registers lamps, which re-arms), so lot
   relights run only after the dusk rebuild.
@@ -333,7 +332,7 @@ refused". If "on the ground" grows while "lot lamps" stays 0, lamps are lost bet
 - DXT5 RGB565 endpoints make dim lamp light purple/green on snow; the 1 texel/m map looks blocky. Fixed texture-side
   (smoothed maps), never by changing the bake.
 - The world-file maps miss light that crosses a chunk border (cut on world grass at chunk seams); only a rebuild fixes it.
-- A per-pixel terrain term was designed (PASSO3-PLANO.md increment 5: re-render the stamp at 4 texels/m) but never built.
+- A per-pixel terrain term was designed (the per-pixel plan increment 5: re-render the stamp at 4 texels/m) but never built.
 
 ### Open items / unverified
 
@@ -344,7 +343,7 @@ refused". If "on the ground" grows while "lot lamps" stays 0, lamps are lost bet
 - Which script command reaches `0x006B08A0` (the `+0x3C` arming path).
 - Local terrain relight (29/09): `+0x54` does not mark the road partition (`0x00B789B0`, only the `+0x55` branch does).
   The light map is updated in place, so roads that bind `+0xD8` per draw should see it; whether roads keep their own copy
-  that only the road mark refreshes (NOTAS "Ruas") is unverified: check roads after a local relight in game. Also
+  that only the road mark refreshes (notebook "Ruas") is unverified: check roads after a local relight in game. Also
   unverified at run time: the bake record equals the chunk rect, TerrainData `+0x1C/+0x1D/+0x20` and WM `+0x1B4` values
   in live play (the local relight checks the record, the rect and the gates before every chunk it flags).
 
@@ -361,7 +360,7 @@ refused". If "on the ground" grows while "lot lamps" stays 0, lamps are lost bet
 | `0x006B6090` | Light removal; same test at `0x006B60D3`, `cells+0x38 = 50` | full.asm `006B60D3..60E0` |
 | `0x006B6590` | Light moved / toggled; same test at `0x006B6618`, `cells+0x38 = 50` | full.asm `006B6618..6625` |
 | `0x006B5730` | Arms the FULL rebuild: `cells+0x3C = 50` | full.asm (only writer of `+0x3C = 0x32`) |
-| `0x006B08A0` | Per-object light command: for each light of an object id whose vfunc+0x20 is true, calls `0x006B5730` (call at `0x006B0923`); only caller is `FUN_006B1850` (`0x006B18CE`) | full.asm, calls.tsv. That `FUN_006B1850` is the script light-object dispatcher is inferred from NOTAS ("FUN_006b0b50 ... chamado por FUN_006b1850") (unverified) |
+| `0x006B08A0` | Per-object light command: for each light of an object id whose vfunc+0x20 is true, calls `0x006B5730` (call at `0x006B0923`); only caller is `FUN_006B1850` (`0x006B18CE`) | full.asm, calls.tsv. That `FUN_006B1850` is the script light-object dispatcher is inferred from notebook ("FUN_006b0b50 ... chamado por FUN_006b1850") (unverified) |
 | `0x006B5DA0` | Per-frame countdown decrement: `+0x38` and `+0x3C` each go down by 1 while > 0 | full.asm `006B5DA0..5DB7` |
 | `0x006B5750` | `CountdownDone(cells, bool live)`: live ? `+0x3C == 0` : `+0x38 == 0` (thiscall, ret 4) | full.asm `006B5750..5767` |
 | `0x006B5770` | Consume: `+0x38 = +0x3C = -1` | full.asm `006B5770..5779` |

@@ -8,13 +8,12 @@ This page documents how the game waits: the stopwatch behind every budget, the s
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, PE timestamp `0x52DEC247`, image base 0x00400000, relocations stripped, no ASLR) |
 | Used by | [Frame Profiler](../features/frame-profiler.md) (timing only); reference for S3SS Smooth Patch coexistence |
-| Evidence | Disassembly (`S3SS-dev\research\engine_map\full.asm`), byte checks in shipped code; *Verified* = read in the disassembly or checked byte for byte |
+| Evidence | Disassembly (`engine_map\full.asm`, private research notes), byte checks in shipped code; *Verified* = read in the disassembly or checked byte for byte |
 
 ## Overview
 
 Engine reference for TS3W.exe 1.67.2 Steam (PE timestamp `0x52DEC247`, image base 0x00400000, relocations stripped,
-so no ASLR). "Verified" = read in the disassembly (`S3SS-dev\research\engine_map\full.asm`, the permanent copy of the
-session scratchpad `engine_map\`) or checked byte for byte by shipped code. *(unverified)* / *(inferred)* = not
+so no ASLR). "Verified" = read in the disassembly (`engine_map\full.asm`, kept with the private research notes) or checked byte for byte by shipped code. *(unverified)* / *(inferred)* = not
 confirmed.
 
 How the game waits: the stopwatch it uses for every budget, the one sleep wrapper (`0x004E1320`) that almost every
@@ -90,7 +89,7 @@ The render thread does not wait for the simulation thread each frame (see main-l
 
 - Frame time median 4.4 - 7 ms at 4K on the test machine; "Present (driver)" about 1.0 ms of it on average; 7-9 % of
   frames are hitches, which come from single large work items, not from sleeps
-  (`S3SS-dev\SIMS3-PERFORMANCE-KNOWLEDGE.md`, Frame Profiler sessions of 28/09).
+  (private performance notes, Frame Profiler sessions of 28/09).
 - Pacing advice: one limiter only (237 fps with G-Sync) instead of vsync at 240 plus a cap of 240.
   Effect not isolated.
 

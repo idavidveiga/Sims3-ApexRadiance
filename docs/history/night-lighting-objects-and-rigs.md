@@ -2,7 +2,7 @@
 
 Chronological record of investigations and design decisions. Newest entries at the bottom. The current behaviour is
 described in [features/night-lighting/objects-and-rigs.md](../features/night-lighting/objects-and-rigs.md). Raw sources:
-`NOTAS-ILUMINACAO.md` sections 3, 4, 5, "Porta escura" and "Counters".
+The lighting notebook (private notes) sections 3, 4, 5, "Porta escura" and "Counters".
 
 ### 2026-09-24: rig cap times strength
 
@@ -25,7 +25,7 @@ for non-street classes.
 **Context:** stairs and railings outside had zero rig lamp constants (m03); `RigCtorForce` was added to set the
 "accepts dynamic lights" bit at rig construction.
 
-**Finding:** correction recorded at 02:45: the SceneModel constructor `FUN_006f5b40` already sets the model bit; the game
+**Finding:** correction recorded later: the SceneModel constructor `FUN_006f5b40` already sets the model bit; the game
 clears it only for terrain, roads, roofs, ceiling, sea, lot skirt and objects whose script asks. The dark fences and stairs
 come from the vertex-light slots ([fences history](night-lighting-fences.md)).
 
@@ -33,7 +33,7 @@ come from the vertex-light slots ([fences history](night-lighting-fences.md)).
 
 ### 2026-09-25: class-10 dispatch starved roofs and snow
 
-**Context:** around 11:15, roofs and snow drawn with a vertex shader that also classifies as an object VS lost their lamp
+**Context:** roofs and snow drawn with a vertex shader that also classifies as an object VS lost their lamp
 light.
 
 **Finding:** the class-10 branch returned early even when the object patch did not apply.
@@ -47,12 +47,12 @@ and moved the uninstall refresh to the render thread.
 **Context:** doors and windows darker than the lit wall beside them (m52, m56); modular counter pieces with colour steps
 (m55, "Counters vs Phong"; the interior Counters technique reads the room light map, so it is continuous).
 
-**Outcome:** the ground-light patch on outdoor Counters/Phong objects. Confirmed in game around 11:35; upper-story windows
+**Outcome:** the ground-light patch on outdoor Counters/Phong objects. Confirmed in game; upper-story windows
 picking up ground light judged acceptable, so no height correction was added.
 
 ### 2026-09-25: accepted and refused object shaders
 
-**Context:** around 13:50, refused shaders dumped to `S3SS\ShadersRecusados` and examined with scratch `test5.cpp`.
+**Context:** refused shaders dumped to `S3SS\ShadersRecusados` and examined with scratch `test5.cpp`.
 
 **Outcome:** generalising the recogniser accepted `PS_298DF5B8`, `PS_298DFD88` (no COLOR0), `PS_2D03FF80` and
 `PS_2D041628` (4-light specular). HD objects with their own per-pixel lamps need nothing; `2BE88B48`, `2E279A20` and
@@ -60,7 +60,7 @@ picking up ground light judged acceptable, so no height correction was added.
 
 ### 2026-09-25: per-pixel lamps (v5.6)
 
-**Context:** around 17:50, per-pixel world lamps were added to the object patch, with the rig zeroed during the draw so
+**Context:** per-pixel world lamps were added to the object patch, with the rig zeroed during the draw so
 the per-pixel term replaced it.
 
 **Finding:** during development:
@@ -118,8 +118,8 @@ list ([roofs](../features/night-lighting/roofs.md) holds the `SelectLamps` memo)
 **Context:** F7 captures 120-121: an upright object got half the ground light of the fence of the same material beside
 it.
 
-**Outcome:** `sat(N.y + 1)` was brought back (installed build 81934361) and undone the same morning on maintainer
-feedback; `0.5 + 0.5 N.y` stays.
+**Outcome:** `sat(N.y + 1)` was brought back (installed build 81934361) and undone the same morning after in-game
+testing; `0.5 + 0.5 N.y` stays.
 
 ### 2026-10-01: test008, paintings inheriting furniture floor shadows
 
@@ -139,7 +139,7 @@ as the source of a bright daytime lamp term.
 
 **Outcome:** `DrawObjectLamp` uses `TerrainLightingPolicy::SurfaceLampGain` for the ground-map and per-pixel strengths,
 and the same policy reaches `DrawInstanced` and snow on objects. The full-day value was first `0.25 x min(strength, 1)`;
-maintainer feedback found it too bright, and it became `0.08 x min(strength, 1)`, fading to the exact configured strength
+in-game testing found it too bright, and it became `0.08 x min(strength, 1)`, fading to the exact configured strength
 at full night. Lower strengths are never raised; sunlight, ambient, lamp RGB, falloff and saved settings are unchanged; the
 CPU rig boost has no day factor. GPU fixtures verify the object, wall and instanced paths under controlled inputs.
 

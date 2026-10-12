@@ -8,7 +8,7 @@ One paragraph: which part of `TS3W.exe` this page documents and which Apex Radia
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, image base 0x00400000) unless stated |
 | Used by | [Feature](../features/feature.md) |
-| Evidence | Decompile (`re\out`), captures, runtime probes |
+| Evidence | Private decompile, captures, runtime probes |
 
 ## Overview
 

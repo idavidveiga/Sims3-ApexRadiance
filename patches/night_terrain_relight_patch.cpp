@@ -192,7 +192,7 @@ float g_unlitBlue = 0.0f;        // how much of its blue tint (0 = grey)
 bool g_objPixel = true;
 bool g_objPixelLights = true;          // outdoor rig objects: world lamps per pixel (seamless modular pieces)
 float g_objPixelLightStrength = 0.75f;
-bool g_windowOutdoor = true;           // (on by default since 06/10, user approved) windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
+bool g_windowOutdoor = true;           // (on by default) windows lit by the room take outdoor light on their outer side (LotLightBridge::SetWindowOutdoor)
 bool g_neutralProbe = true;            // (07/10) at night the game's sky light keeps its brightness, loses the lamps' colour (ProbeNeutral)
 float g_neutralProbeStrength = 1.0f;
 float g_fenceGroundStrength = 0.75f;
@@ -205,7 +205,7 @@ float g_roofStrengthSetting = 0.45f;
 bool g_water = true;
 bool g_waterFilter = true, g_waterColorCompression = true;
 float g_waterStrengthSetting = 0.4f;
-float g_waterReflSetting = 1.56f; // the default the user chose 06/10
+float g_waterReflSetting = 1.56f; // the tuned default
 // Brightness controls (Lamps and Ground tabs). Ground / roads / lot lamps on lot grass apply live in the ground shaders
 // (LotLightBridge::SetGroundBrightness); street / lot lamps in the terrain light bake (BakeColourStub) need a terrain
 // rebuild, done once when the slider is let go; the moonlight scales the game's sun / moon colour at night.
@@ -225,7 +225,7 @@ bool g_lotPassNoTerrainMap = true;
 //  - relightPacedSweep: Apex's own dusk and lamp-change full rebuilds become a paced sweep of every chunk, nearest to the
 //    camera first (the world-load rebuild and the button stay full rebuilds).
 bool g_localRelight = false;
-bool g_pacedSweep = true; // test007: user-approved gradual external terrain updates
+bool g_pacedSweep = true; // test007: gradual external terrain updates, validated in game
 
 // FUN_00c7f750(chunk, lot, out) builds the per-chunk light/fog pass. For the LOT pass (lot=1, [ebp+0Ch]) it binds the
 // rebuilt terrain lightmap chunk+0xD8 when it exists; that texture has no street-lamp light inside lot footprints, so
@@ -287,7 +287,7 @@ constexpr auto kEditMinInterval = std::chrono::seconds(3);
 constexpr auto kAutoMinInterval = std::chrono::seconds(5);   // automatic lamp changes: after the last rebuild of any kind (was 30 s: lamps switched by Sims stayed on the ground too long; flickering lamps are "animated" and never rebuild)
 constexpr auto kAutoBusyInterval = std::chrono::seconds(30); // ... once two automatic rebuilds ran within the last minute
 constexpr auto kCameraStill = std::chrono::seconds(1);
-constexpr auto kCameraWaitMax = std::chrono::seconds(2); // a lamp change waits at most this long for the camera to stop (user, 30/09: the square's lamps took ~16 s to reach the ground while panning)
+constexpr auto kCameraWaitMax = std::chrono::seconds(2); // a lamp change waits at most this long for the camera to stop (the square's lamps took ~16 s to reach the ground while panning)
 constexpr auto kGameRebuiltSlack = std::chrono::seconds(2); // a rebuild up to 2 s before a change was SEEN already had it
 constexpr auto kSnapshotWaitMax = std::chrono::seconds(2);
 enum class EditWait { None, Snapshot, Camera, Interval, Rate, Relight, LampRate };
@@ -371,7 +371,7 @@ Clock::time_point g_worldAt{}, g_liveAt{}, g_levelRefAt{};
 bool g_live = false;
 // The load is over: the after-load refresh ran (lots and rooms lit again), or 10 s passed since the world went live. With
 // the game's interactive loading (Options.ini enableinteractiveloading = 1) terrain is drawn and the loading window is gone
-// long before the lots finish (log 2026-10-05: world loaded 10:19:03, after-load refresh 10:19:50), so "live" alone opened
+// long before the lots finish (a log: the after-load refresh came 47 s after the world loaded), so "live" alone opened
 // the start note and Depth Blur during that screen. Render thread writes, any thread reads.
 std::atomic<bool> g_loadSettled{false};
 constexpr auto kSettleFallback = std::chrono::seconds(10);
@@ -418,8 +418,8 @@ alignas(16) float g_bakeStreetMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 alignas(16) float g_bakeLotMul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 uintptr_t kBakeColourSite = 0; // 0x00C2950F
 const std::vector<BYTE> kBakeColourOrig = {0x0F, 0x28, 0x87, 0xF0, 0x00, 0x00, 0x00};
-// Lamps with cones in the bake (07/10, user: the lawn, the deck and the fence caps greened by a wall sconce aimed down the
-// wall; F8 10-57-41). The bake gives every light only its position, its colour and a weight (0xC294E6..0xC295B7), no
+// Lamps with cones in the bake (the lawn, the deck and the fence caps greened by a wall sconce aimed down the
+// wall; F8 capture). The bake gives every light only its position, its colour and a weight (0xC294E6..0xC295B7), no
 // cone, so a type-5 sconce stamps its full colour all round. The game's own cone law (FUN_006BC940) gives the points off
 // its cones only the spill +0x150 (per channel; 16-byte aligned: the game reads it with movaps at 0x006BCA6B): the stub
 // stamps type-5 lot lamps at their spill. The pool right under the lamp comes from the room-solve map, which has the cones.
@@ -1397,7 +1397,7 @@ void OnPresent() {
         g_lastLampEdits = edits;
         g_lastUserEdits = user;
         if (!WorldSession::InWorld()) {
-            // lots and their lamps still streaming in during the load (06/10: a full rebuild every 3 s as "user edits"):
+            // lots and their lamps still streaming in during the load (a full rebuild every 3 s as "user edits"):
             // no decision until the world is drawn, then one automatic rebuild (below)
             g_editsWhileLoading = true;
         } else {
@@ -1657,8 +1657,8 @@ std::string Missing(std::initializer_list<GameAddr::Id> ids) {
 // that the draw hooks are using, and rewrites code the game runs there. Update() (message-loop thread) only schedules it.
 std::atomic<bool> g_reinstallDue{false};
 void (*g_reinstallFn)() = nullptr;
-// Any lighting setting changed (menu, profile, undo, reset, the upper floors switch; 30/09, user: "whenever any setting of the
-// lights changes, do the F9 refresh automatically"): "Refresh the lighting" runs once, kAutoRefreshDelay after the last change
+// Any lighting setting changed (menu, profile, undo, reset, the upper floors switch): the F9
+// refresh, "Refresh the lighting", runs automatically once, kAutoRefreshDelay after the last change
 // (a slider being dragged keeps pushing it back), on the render thread (Present)
 constexpr DWORD kAutoRefreshDelay = 1000;
 std::atomic<DWORD> g_autoRefreshAt{0};
@@ -1668,7 +1668,7 @@ void RequestAutoRefresh() {
     g_autoRefreshRoomsOnly.store(false);
     g_autoRefreshAt.store((GetTickCount() + kAutoRefreshDelay) | 1);
 }
-// 30/09, user: "right after loading, apply that refresh" (a room lit only by lamps of another story was black after a load
+// The same refresh right after loading (a room lit only by lamps of another story was black after a load
 // until something solved it again): the lots and every room light again once, kAfterLoadDelay after the world is on screen
 // (the lots have settled by then: at the latest 6 s, level_light_share), and the rigs with them; not the terrain
 constexpr DWORD kAfterLoadDelay = 500, kAfterLoadMax = 8000;
@@ -2321,9 +2321,9 @@ class NightTerrainRelightPatch : public ApexPatch {
     };
     // Preserve the approved Soft surface ratios; variants change intensity conservatively.
     static constexpr LightStyle kStyles[] = {
-        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 0.27f, 0.405f}}, // Subtle (walls 27%, Soft 30% scaled, user 07/10; the others keep the ratio)
-        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 0.30f, 0.45f}},        // Soft reference (the defaults; walls 30%, user 07/10)
-        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.56f, 0.6f}},            // Natural (walls 56%, user 07/10)
+        {{0.675f, 1.0f, 0.72f, 0.72f, 0.675f, 0.675f, 0.675f, 0.27f, 0.405f}}, // Subtle (walls 27%, Soft 30% scaled; the others keep the ratio)
+        {{0.75f, 1.0f, 0.8f, 0.8f, 0.75f, 0.75f, 0.75f, 0.30f, 0.45f}},        // Soft reference (the defaults; walls 30%)
+        {{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.56f, 0.6f}},            // Natural (walls 56%)
     };
     static float* StyleValue(int i) {
         float* const v[] = {&g_groundBrightness, &g_roadBrightness, &g_streetLampGain, &g_lotLampGain, &g_objStrength,
@@ -2384,8 +2384,8 @@ class NightTerrainRelightPatch : public ApexPatch {
     }
 
     // Lighting > Ground
-    // Lighting > Stories: everything about lamp light between the floors of a house (2026-09-29, user: "everything about
-    // stories deserves its own tab")
+    // Lighting > Stories: everything about lamp light between the floors of a house (its own
+    // tab)
     void DrawStoriesCard(void (*drawUpperFloorRow)()) {
         using ApexUi::IconId;
         ImGui::PushID("NightStories");
@@ -2399,7 +2399,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 ImGui::BeginDisabled(!g_levelShare);
 
                 changed |= ApexUi::SwitchRow("Indoor light between floors", &g_indoorShare, "Lamps inside shine through stairwells and open floors", true);
-                // 30/09 (user): the game solves rooms one after the other (after a load, a change or a lamp switched), so
+                // The game solves rooms one after the other (after a load, a change or a lamp switched), so
                 // a room can show its old light for a moment; switching floors solves the rooms shown again
                 if (g_indoorShare) ApexUi::IconNote(ApexUi::IconId::Info, "Rooms may take a few seconds to update; if one lags, change floors");
                 changed |= ApexUi::SwitchRow("Walls block light on floors", &g_floorWalls, "Decks and yards without a roof stay dark behind a wall", true);
@@ -2574,8 +2574,8 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::PopID();
     }
 
-    // Lighting > Buildings: how sharp the baked lamp light on walls and floors is (2026-10-05, user: "the lights look low
-    // resolution, create an option to raise their quality"; see light_detail.cpp). Read at startup only.
+    // Lighting > Buildings: how sharp the baked lamp light on walls and floors is (the game's lamp
+    // light looks low resolution; see light_detail.cpp). Read at startup only.
     void DrawLightDetailCard() {
         ImGui::PushID("NightLightDetail");
         if (ApexUi::BeginCard("##Card")) {
@@ -2595,7 +2595,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         ImGui::PopID();
     }
 
-    // Lighting > Buildings: rooms with every lamp off (2026-09-29, user: the game leaves them "super blue", S3SS's switch
+    // Lighting > Buildings: rooms with every lamp off (the game leaves them very blue, S3SS's switch
     // makes them far too dark; a control in between)
     void DrawRoomsCard() {
         ImGui::PushID("NightRooms");
@@ -2613,7 +2613,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             // S3SS's saved room colour: Rooms at Night already uses the game's blue in its place; removing it is on the Attention page
             if (g_unlitOn && S3SSDetect::SavedRoomAmbientOverride())
                 ApexUi::IconNote(ApexUi::IconId::Puzzle, "S3SS saves its own room color; Rooms at Night replaces it (see Attention)");
-            // 30/09 (user: "a button to recalculate these lights when they bug"): the "Refresh the lighting" shortcut as a button
+            // A button to recalculate the lights when they go wrong: the "Refresh the lighting" shortcut as a button
             const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Refresh));
             const float gap = ImGui::GetStyle().ItemSpacing.x;
             if (ApexUi::BeginControlRow("Refresh the lighting", "If a room or its furniture looks wrong: rooms, lots and objects light again",

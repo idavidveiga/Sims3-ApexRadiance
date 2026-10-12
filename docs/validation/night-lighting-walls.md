@@ -42,7 +42,7 @@ validation of a player's lot and does not establish instant wall-map baking.
 - Combined build, 2026-09-25: lamps of every story with the cross-story wall test confirmed after the second round.
 - 2026-10-04, daytime F7 10:28:03: `PS_265EBE18.bin` (1372 bytes, `04956FE9`, K = 3) with `c3 = (0, 0.188235313, 0, 0)`
   confirms the native daytime factor discards the baked lamp RGB (the map holds non-zero RGB elsewhere; this is not
-  proof of illumination at that pixel). The 11:13 follow-up confirmed full-day c3.x = 1 with the then-installed build.
+  proof of illumination at that pixel). A later follow-up confirmed full-day c3.x = 1 with the then-installed build.
 
 ## Open checks
 

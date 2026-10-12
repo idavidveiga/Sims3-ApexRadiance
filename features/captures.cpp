@@ -200,7 +200,7 @@ uint64_t FolderSize(const std::filesystem::path& path) {
     return bytes;
 }
 
-// ---- Screenshots (user, 30/09: "the game should capture the screen too, to have a print") ----
+// ---- Screenshots (every capture also saves what the screen showed) ----
 // Finish queues the capture folder; the next frame's picture is copied from the back buffer and written as
 // Screenshot.png on a short-lived thread (WIC). Menu closed: at Present, so the picture has everything the player sees
 // (Color filters included); the capture notes are not drawn that frame (ScreenshotPending). Menu open: the bootstrap

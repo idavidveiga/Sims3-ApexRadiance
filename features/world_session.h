@@ -52,9 +52,9 @@ inline bool IsActive() {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// The screen effects' gate (Picture, Ambient Occlusion, Edge Smoothing; user 06/10: nothing on the main menu or on a load
-// screen). IsActive alone opens during a load from the main menu (the script-driven load screen is not the startup
-// window; log 06/10 01:07: Bridgeport's load screen counted as playable), so the world must also have been drawn: at least
+// The screen effects' gate (Picture, Ambient Occlusion, Edge Smoothing: nothing on the main menu or on a
+// load screen). IsActive alone opens during a load from the main menu (the script-driven load screen is not the startup
+// window; a log: Bridgeport's load screen counted as playable), so the world must also have been drawn: at least
 // kMinDepthWrites depth-writing draws per frame for kDrawnMs in a row (a load screen draws 0 .. 50, the world hundreds).
 // Then it stays open while the world is active, so the save screen and the in-game menus keep the same look; it closes
 // with the world (main menu) and waits for the next world to be drawn. Render thread only.
@@ -64,7 +64,7 @@ inline bool IsActive() {
 // 150 was tried on 06/10 and never opened in close views (fewer draws than that): 48 again, with the settled signal now
 // reset by every new world (the Twinbrook load screen passed only because that signal was stale after a travel).
 constexpr int kMinDepthWrites = 48;
-constexpr unsigned long long kDrawnMs = 500; // 1000 until 06/10 (user: effects too late)
+constexpr unsigned long long kDrawnMs = 500; // was 1000: the effects came too late
 constexpr unsigned long long kSparseMs = 2000; // a sparse world (fewer than kMinDepthWrites a frame): drawn this long, all else ready
 // Night Lighting's "world live" (terrain drawn; true when it is off), registered by Depth Blur; null = not required. It was
 // the after-load refresh ("load settled") until 06/10: effects came 3 .. 10 s after the map showed
@@ -92,12 +92,12 @@ inline bool InWorld() {
     // effect on): the settled signal alone
     const int now0 = PostScene::DepthWritesThisFrame(), last = PostScene::DepthWritesLastFrame();
     const int writes = now0 > last ? now0 : last;
-    // the drawn time runs alongside the settled wait (user 06/10: effects came about 3 s after the world appeared,
+    // the drawn time runs alongside the settled wait (effects came about 3 s after the world appeared,
     // because the 1 s count only started once Night Lighting had settled)
     if (!PostScene::Counting() || writes >= kMinDepthWrites) {
         if (!drawnSince) drawnSince = now;
     } else drawnSince = 0;
-    // A sparse world (06/10, a friend's empty world in Edit in Game: 7 depth-writing draws a frame, bare terrain) never reaches
+    // A sparse world (an empty world in Edit in Game: 7 depth-writing draws a frame, bare terrain) never reaches
     // kMinDepthWrites: with the world manager read, the world active, its loading window gone and Night Lighting's "world
     // live", any drawn world counts once that lasted kSparseMs
     const bool settled = !g_loadSettled || g_loadSettled();

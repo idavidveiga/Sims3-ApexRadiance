@@ -2,7 +2,7 @@ name: Windows build and CPU checks
 on:
   pull_request:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,6 +34,6 @@ jobs:
           path: |
             Public/ApexRadiance.asi
             outputs/checks/*.txt
-            .agents/skills/apex-compile-project/cache/*/*.log
+            outputs/build/cache/*/*.log
           if-no-files-found: warn
           retention-days: 14

@@ -40,9 +40,9 @@ or the global rig refresh cost.
 ## Confirmed in game
 
 - 2.5.5-world-lamp-test2 build: the colour response of the edited world post was correct in the test scene
-  (maintainer feedback before the 2.5.6 publication; qualitative, no latency or FPS measurement, not every world,
+  (observed in game before the 2.5.6 publication; qualitative, no latency or FPS measurement, not every world,
   weather or streaming case).
-- The latest terrain test build before the 2026-10-04 review was reported as excellent; that feedback predates the
+- The latest terrain test build before the 2026-10-04 review was confirmed in game; that check predates the
   review changes and does not validate them.
 
 ## Open checks

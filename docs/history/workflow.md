@@ -6,7 +6,7 @@ described in [workflow.md](../workflow.md).
 ### 2026-09-27: combined build and its two flavours
 
 **Context:** until the standalone split, Apex lived inside a fork of Sims3SettingsSetter, built from
-`%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\` (branch `night-remake`, frozen as tag `combined-final`, commit
+the combined tree (private, not published; branch `night-remake`, frozen as tag `combined-final`, commit
 `45e36e2`, local only). Dependencies also included mimalloc for S3SS's allocator hook.
 
 **Finding:** the tree was built twice, one flavour after the other (they share `vcpkg_installed` and intermediate
@@ -23,9 +23,8 @@ state), with the commands from its `README.md`:
 | public | `/p:S3SSPublic=true` | `S3SS_PUBLIC` (`kPublicBuild = true`) | `Public\S3SSApex.asi`, objects in `Public\obj\` | the developer tools and Developer sections compiled out |
 
 Both flavours used English text only (`build_flavor.h`: `S3SS_TR(pt, en)` expands to `en`, kept so older call sites
-compile). The maintainer played the dev build; the public build was for releases and for a friend, who received zipped
-packages `pacote-night-remake-v5.x-{dev,public}` from the Desktop or the scratchpad (the public build unless asked
-otherwise).
+compile). The dev build was used for testing; the public build was for releases and for testers, who received zipped
+packages `pacote-night-remake-v5.x-{dev,public}` (the public build by default).
 
 **Outcome:** replaced by the standalone's single build. The standalone first kept two flavours (`/p:ApexPublic=true`
 defined `S3SS_PUBLIC` and wrote `Public\ApexRadiance.asi`); on 2026-10-02 it moved to one unified binary with an
@@ -33,16 +32,13 @@ optional developer mode, and `ApexPublic` became a no-op.
 
 ### 2026-09-28: backup folders at the split
 
-**Context:** inventory of `%USERPROFILE%\Desktop\Backups Sims 3\` when the standalone started.
+**Context:** local backups when the standalone started.
 
-**Finding:** existing folders: `9-S3SS compilado anterior`, `10-DXVK 3.1.1 oficial (original do jogo)`,
-`11-antes da reorganizacao Apex`, `12-antes dos filtros Picture`, `13-antes do HDR nativo`, `14-antes da otimizacao`,
-`15-borda-e-portao`, `16-antes da separacao (codigo completo)` (the full combined tree), `17-antes do Apex standalone`,
-`18-antes da UI Violet`, `19-antes do rename Apex Radiance (codigo)` (standalone source before the rename), plus
-`S3SS-source-2026-09-28-english-ui`. The folder vanished once (2026-09-26) and was recreated, so older backups,
-including the vanilla S3SS, are gone. The next number was then 20.
+**Finding:** numbered local backups held the earlier combined builds, the game's original DXVK 3.1.1, configurations
+before major changes and the full combined tree before the split. An earlier set, including the vanilla S3SS, was lost
+on 2026-09-26.
 
-**Outcome:** numbering continues; the current next number is kept in `CLAUDE.md`.
+**Outcome:** backups stay local and are not part of the repository.
 
 ### 2026-09-28: combined-build release process
 
@@ -50,7 +46,7 @@ including the vanilla S3SS, are gone. The next number was then 20.
 `sims3fiend/Sims3SettingsSetter`, renamed from `Sims3SettingsSetter-NightRemake` on 2026-09-28 (old links redirect).
 Local repository: branch `night-remake`, remote `fork` (pointing to -Apex), remote `origin` = upstream.
 
-**Finding:** steps, each after the maintainer's explicit approval:
+**Finding:** steps, each explicitly approved before it ran:
 
 1. Build both flavours; install and test the dev build.
 2. Update `README.md` (English only) and the changelog.

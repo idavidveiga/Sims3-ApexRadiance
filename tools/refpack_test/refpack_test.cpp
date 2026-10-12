@@ -12,7 +12,7 @@
 //
 // Build (x86 like the game; x64 also works for this file), from "x86 Native Tools Command Prompt for VS 2022" or after
 //   "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat":
-//   cd /d C:\Users\luiz_\Desktop\S3SS-dev\S3SSApex\tools\refpack_test
+//   cd /d <repo>\tools\refpack_test
 //   cl /nologo /O2 /EHsc /std:c++20 /I..\..\features refpack_test.cpp ..\..\features\refpack_codec.cpp /Fe:refpack_test.exe
 // Run:
 //   refpack_test.exe                 full run (a few minutes: the game's compressor is the slow part)

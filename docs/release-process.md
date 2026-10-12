@@ -1,0 +1,57 @@
+# Release process
+
+How a version of Apex Radiance is reviewed, documented and published. Building and installing are in
+[workflow.md](workflow.md); documentation rules in [DOCUMENTATION-STANDARD.md](DOCUMENTATION-STANDARD.md); public
+wording in [PUBLIC-TEXT-POLICY.md](PUBLIC-TEXT-POLICY.md).
+
+## 1. Review
+
+Every release is reviewed on its exact commit before publication.
+
+- **Independent review** of substantive code: a reviewer who did not write the change traces concrete failure cases,
+  regressions and missing validation in the combined release diff. Findings are settled with code, reproductions and
+  tests; uncertainty without evidence stays recorded as such. Documentation-only changes get a focused direct review.
+- **Correctness:** real callers, invalidation and stale caches, resource lifetime, error paths, concurrency, state
+  restoration, supported game versions and configuration or profile migrations, traced end to end.
+- **Regressions:** behaviour outside the changed path, enable and disable transitions, defaults, loading, device reset,
+  resolution changes and interactions with other features.
+- **Visual preservation:** intended visual changes are documented. Unchanged features are compared against a verified
+  baseline in the same scene, camera and settings. Intensity, quality, resolution, light counts or update latency are
+  never reduced as an optimization without an intended, documented visual change.
+- **Performance:** repeated work, allocations and synchronization, including work outside the profiler's measured
+  region. Frame-time gains are claimed only from representative measurements.
+- Each actionable finding has a severity, file and line, trigger, impact and fix or required evidence. Demonstrated
+  issues are fixed in small commits and the affected checks rerun. A change added after the review is reviewed before
+  publishing.
+
+## 2. Documentation
+
+- Feature pages describe the code at the release commit (defaults, ranges, keys, labels, dependencies, limitations).
+- Validation pages record the checks that ran on the release commit in *Latest results*; unverified gameplay stays in
+  *Open checks*.
+- `docs/releases/<version>.md` follows [releases/README.md](releases/README.md) and is added to its index; released
+  features are marked "Released in <version>" in their Status tables and in [README.md](README.md).
+
+## 3. In-game What's new
+
+The changelog opened from the version in the menu footer (`apex_changelog.cpp`):
+
+- The new version goes at the top of `kReleases` with its release date; older versions live on the GitHub releases page.
+- Lines come from `docs/releases/<version>.md`, sorted into `added`, `improved` and `fixed`; empty sections are left out.
+- Each line is one short sentence in the player's words (about 5 to 15 words), present tense, naming the feature by its
+  menu name, with no ending period, internal names, addresses, test counts, marketing adjectives or emoji. A fix line
+  states what now works ("Depth Blur waits until the world has loaded"), never "Fixed an issue where…".
+- Every line is translated into all 21 menu languages (`i18n/tr_menu.cpp` and the `lang_<code>.cpp` tables).
+- `APEX_VERSION_NUMBER` in `apex_version.h` matches the newest entry; the footer shows it once.
+
+## 4. Build and publish
+
+1. Build the public flavor once from the reviewed commit ([workflow.md](workflow.md#1-build)); run `tools/i18n_check`
+   and `perl tools/menu_audit.pl .`.
+2. Test the build in game and record the results in the validation pages.
+3. The release PR is titled `release: X.Y.Z`; merging and publishing are maintainer actions.
+4. Publish `Public\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance` as `Apex Radiance X.Y.Z – Short title`, with
+   player-facing notes (a short headline, `- **Title:** description` bullets and an `## Install` section) checked with
+   `python tools/public_text_check.py --text-file`. The Nexus workflow derives its changelog from that body.
+5. After publication, verify that the published asset matches the reviewed build (version and SHA-256) and that the
+   Nexus workflow succeeded. Publication does not validate gameplay.

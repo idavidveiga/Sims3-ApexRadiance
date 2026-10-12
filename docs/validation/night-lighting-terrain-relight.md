@@ -71,7 +71,7 @@ Lamp changes (night and Build-mode day preview; stationary and moving camera):
 - test007 build (before 2.5.3): the paced sweep, adopted as the default in 2.5.3.
 - 2026-10-02, private response build `76B4C32DD5749D6FB6516971D3FDB30092259D805CE97D0B20B8E3363558C300` (released as the
   2.5.4 hotfix with the same lighting logic): lighting response in the tested scene accepted, perceived as more
-  responsive (maintainer feedback, no instrumented input-to-screen or FPS measurement).
+  responsive (observed in game, no instrumented input-to-screen or FPS measurement).
 
 ## Open checks
 

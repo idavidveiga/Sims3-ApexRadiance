@@ -1,6 +1,6 @@
 # Working on Apex Radiance
 
-Read `AGENTS.md` and `CLAUDE.md`, then the relevant feature, engine, validation and history pages. Existing rejected approaches require new evidence before another attempt. Back up existing source/game/config files before modifying them according to the project workflow. Do not commit proprietary executables, shader bytecode, captures, credentials or build output.
+Read [docs/README.md](docs/README.md), then the relevant feature, engine, validation and history pages. Existing rejected approaches require new evidence before another attempt. Keep a backup of the installed mod and its configuration before testing a build in game. Do not commit proprietary executables, shader bytecode, captures, credentials or build output. Automated contributors also follow [AGENTS.md](AGENTS.md).
 
 ## Reproducible Windows build
 
@@ -17,15 +17,20 @@ Setup uses the exact vcpkg revision in `vcpkg.json` and `x86-windows-static`. It
 
 `-Suite Full` runs the same three CPU harnesses at their full default coverage. These cover DXT, RefPack and CAS triangle sorting; they do not represent the full project's tests. Read each feature's validation page and run its relevant harnesses before changing it. D3D9 HAL tests and actual gameplay remain separate from the hosted CI job.
 
-The GitHub build workflow checks PRs and main/codex branch pushes. Downloaded CI artifacts are test builds, not automatically published releases. Existing Nexus workflows still run when a release is published.
+The GitHub build workflow checks pull requests and pushes to `main`. Downloaded CI artifacts are test builds, not automatically published releases. Existing Nexus workflows still run when a release is published.
 
-## Continuity across agents, chats and accounts
+## Branches, commits and pull requests
 
-The shared source of truth is the branch and its PR, including the Agent handoff section. Record the exact tested SHA, results, decisions and remaining checks. A shared chat snapshot does not synchronize future messages or transfer access to this machine or GitHub credentials. Each account must obtain its own authorized access.
-
-Before takeover: inspect the current PR head, review/check status and local dirty files. Do not overwrite another agent's work. For simultaneous work, use one worktree and contribution branch per agent, agree on file ownership and assign one integrator for the shared PR. Never force-push away other work.
-
-Use coherent commits, maintain one draft PR for the task and update its handoff as work progresses. Publishing a release requires the repository's review skill, recorded provenance and explicit authorization; successful CI alone does not establish visual correctness or gameplay performance.
+- Branches: `feature/<slug>`, `fix/<slug>`, `docs/<slug>`, `chore/<slug>`, `release/<x.y.z>`.
+- Commit subjects and PR titles: `area: imperative summary`, at most 72 characters, no trailing period, no
+  parentheses. Areas: `lighting`, `color`, `fx`, `aa`, `ao`, `perf`, `ui`, `i18n`, `presets`, `build`, `ci`, `docs`,
+  `tools`, `release`. Details go in the body.
+- One focused pull request per change, opened as a draft until its checks pass. Record the tested commit and what
+  remains unverified in its Validation section.
+- Public text follows [docs/PUBLIC-TEXT-POLICY.md](docs/PUBLIC-TEXT-POLICY.md). Enable the local hooks once with
+  `git config core.hooksPath .githooks`; CI runs the same check.
+- Never force-push over someone else's work. Merging and releasing are maintainer actions
+  ([docs/release-process.md](docs/release-process.md)).
 
 ## Reverse engineering
 

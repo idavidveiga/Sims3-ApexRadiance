@@ -8,7 +8,7 @@ This page documents how one frame of The Sims 3 is driven: the main loop `0x00EC
 |---|---|
 | Game build | Steam 1.67.2 (`TS3W.exe`, image base 0x00400000) unless stated |
 | Used by | [Frame Profiler](../features/frame-profiler.md), [Performance](../features/performance/README.md), every render-thread hook ([architecture](../architecture.md#10-threads-and-synchronisation)) |
-| Evidence | Disassembly (`engine_map` `f_ECA960.asm`, `f_5F0E50.asm`, `f_D81840.asm` and tables), combined-build patch headers, `S3SS_Hitches.txt` of 2026-09-28; `re\out` has no decompile of these functions |
+| Evidence | Disassembly (`engine_map` `f_ECA960.asm`, `f_5F0E50.asm`, `f_D81840.asm` and tables), combined-build patch headers, `S3SS_Hitches.txt` of 2026-09-28; the private decompile does not cover these functions |
 
 ## Overview
 
@@ -38,12 +38,12 @@ every Apex hook must respect.
 
 ### Sources
 
-Sources: static study of 2026-09-28 (`NOTAS-ILUMINACAO.md`, last section "Desempenho: mapa do motor"; files in
-`scratchpad\engine_map\`: `f_ECA960.asm`, `f_5F0E50.asm`, `f_D81840.asm`, `profiler_targets.tsv`, `addsvc.tsv`,
+Sources: static study of 2026-09-28 (the lighting notebook (private notes), last section "Desempenho: mapa do motor"; files in
+`engine_map\`: `f_ECA960.asm`, `f_5F0E50.asm`, `f_D81840.asm`, `profiler_targets.tsv`, `addsvc.tsv`,
 `addsvc_sites.txt`, `svc_vt.txt`, `regfns.txt`, `calls.tsv`, `strings.tsv`, `fnstrings.tsv`, `cc.tsv`, grep of
 `full.asm`), the code of `frame_profiler.cpp` and `patches/frame_budget_patch.cpp` (their header comments record
 byte-level verification against `re\TS3W.exe`), and a measured `S3SS_Hitches.txt` (report 2026-09-28 13:19,
-51 600 frames). The Ghidra output in `re\out` has **no** decompile of these functions (grep for ECA960 / 59ED20 /
+51 600 frames). The private Ghidra output has **no** decompile of these functions (grep for ECA960 / 59ED20 /
 5F0E50 / 599A10 finds nothing); everything below is from disassembly. Items marked (unverified) or (inferred) were not
 confirmed at runtime.
 
@@ -171,12 +171,12 @@ reload per pending key), WorldManager 0x00C7E3C0 (runs only while `[[0x011ECBC4]
 | Thread | What runs there | Evidence |
 |---|---|---|
 | **Main = render** | main loop 0x00ECA960: app state, main-loop services (flag 1) including JobManager's main-thread jobs, scene capture, Scene::Begin/EndFrame, render frame, D3D9 calls, Present, all D3D9 registry hooks, the S3SS / Apex ImGui overlay (EndScene) | f_ECA960.asm; the profiler's `g_renderTid` = thread calling Present |
-| **Simulation** ("Scripting/Service/Thread") | 0x00D81840 "Simulator Frame": Mono script host steps (0x00D74800, 0x00D7F8B0, 0x00D7FE80), explicit GC at 0x00D819AA, animation ticks (0x0083CED0, 0x00571B90), the ServiceManager simulation loop 0x0059ED70 (4 call sites), sim-side job pump at 0x00D81FDA, WorldManager sim update 0x00C636D0. **The game UI (scripted) runs here.** | f_D81840.asm, profiler_targets.tsv, NOTAS engine map; the profiler identifies it as the thread calling GC_try_to_collect |
+| **Simulation** ("Scripting/Service/Thread") | 0x00D81840 "Simulator Frame": Mono script host steps (0x00D74800, 0x00D7F8B0, 0x00D7FE80), explicit GC at 0x00D819AA, animation ticks (0x0083CED0, 0x00571B90), the ServiceManager simulation loop 0x0059ED70 (4 call sites), sim-side job pump at 0x00D81FDA, WorldManager sim update 0x00C636D0. **The game UI (scripted) runs here.** | f_D81840.asm, profiler_targets.tsv, notebook engine map; the profiler identifies it as the thread calling GC_try_to_collect |
 | **Job workers** ("JobThread%i", created in 0x00599CF0) | jobs with worker affinity (e.g. resource read job 0x0072A4F0, mask 2), scene jobs | fnstrings.tsv, frame_budget_patch.cpp header |
 | Others | SIGS / Crossroads network threads ("NamedPipeListenerThread", "SIGS/UploadThread/..."), Mono / OS threads | strings.tsv |
 
 Cross-thread rules:
-- The render thread does **not** wait for the simulation each frame (NOTAS engine map). Simulation-to-render work goes
+- The render thread does **not** wait for the simulation each frame (notebook engine map). Simulation-to-render work goes
   through posted remote calls (0x007D98C0 / job function 0x007D9840) and PostRemoteMethodCall (0x00ABE9C0), which run as
   jobs on the target thread (e.g. `Lot::AddLotObjectsToScene` 0x00AC1130 posted by 0x00AC20E0).
 - The render thread does wait for its own scene jobs: Scene::BeginFrame may wait for the previous frame's job, Scene::EndFrame

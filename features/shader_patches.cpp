@@ -900,7 +900,7 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
     t[tc1Dcl] = (t[tc1Dcl] & ~0x000F0000u) | 0x000F0000u; // vT.xy -> vT (zw = world xz)
     const Ins& A = ins[add];
     t[A.at + slot] = Src(kTemp, T); // add rD.xyz, rS, vC  ->  add rD.xyz, rS, rT
-    // Per-pixel lamps (user 05/10: fences looked lit far from a lamp, faces turned away included): with the normal and the
+    // Per-pixel lamps (fences looked lit far from a lamp, faces turned away included): with the normal and the
     // height in TEXCOORD2, the same lamps as objects (PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2 at the
     // pixel), and the ground atlas only on faces turned up (the fence tops: x sat(N.y)), since the atlas is the light
     // lying on the ground and has no direction. T = max(vC + lamps x cS.y, atlas x sat(N.y) x cB.x).
@@ -934,7 +934,7 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
                                      Op(kAdd, 3), Dst(kTemp, LB, 0x2, true), Src(kTemp, LB, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
                                      Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LB, kSwzY), Src(kTemp, LB, kSwzY),
                                      Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, kSwzY),
-                                     // the lamp's cones (07/10, user: the brick fence face lit by a sconce it sits 47 deg or more
+                                     // the lamp's cones (a brick fence face was lit by a sconce it sits 47 deg or more
                                      // off; the game gives it only the spill there, FUN_006BC940): f = S + (1 - S) sat(max(t1, t2)),
                                      // t = l.k.xyz + k.w (lot_light_bridge LampCone), S = cc.w. LB.z / LB.w are free after the
                                      // normalize; each instruction reads one constant register.
@@ -1331,7 +1331,7 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
         if (wCube < 0 || wD < 0 || !isCubeTexld(wCube) || !chainEnd(wD)) return -1;
         return wCube;
     };
-    // Three shapes (Counters/Phong analysis 25/09, scratchpad counter_sh):
+    // Three shapes (offline analysis of the Counters/Phong shaders):
     //  A: rig lamps + sky cube (+ "add rX.xyz, rA, vC"): insert at the sky mad; the normal is the cube coordinate.
     //  B: the 4-light chain c0..c3 / c4..c7 with no cube and no COLOR0 (8 Counters): insert right after the chain end.
     //  C: no lamps in the pixel shader, light = max(vC, per-object light map, sky) (32 Phong): the lamps go into vC.
@@ -1478,7 +1478,7 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
                                  Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, Fr, kSwzW)};
     if (shape == kA && colorReg >= 0) // the vertex lights are added after the max: take them out of the ground light first
         ground.insert(ground.end(), {Op(kAdd, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kInput, static_cast<DWORD>(colorReg)) | 0x01000000u /* -vC */});
-    // Per-pixel lamps (the friend's "Counters" request, 25/09): each piece of a modular object gets its own rig
+    // Per-pixel lamps (requested for Counters): each piece of a modular object gets its own rig
     // evaluated at the piece's centre (3 lamps in c5..c7 here, 4 more as vertex lights), so neighbouring pieces differ.
     // Q = the same world lamps for every pixel: sum of colour * sat(N.l) * sat(1 - d^2/R^2)^2 at the pixel's world
     // position (TEXCOORD8.xzy). The draw zeroes the rig (PS c5..c7 and the VS vertex-light colours) while cS.y > 0.
@@ -2078,7 +2078,7 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
     out.strengthConst = cStr;
     // The rig diffuse chain reads its own copy of c4..c7 (cU .. cU+3, set per draw by DrawIndoorObject: only the rig's
     // unlit-room lights, the fill and [NoLight] ones, with the lamps set to 0, since the basis light holds them per pixel).
-    // The specular chain keeps reading c4..c7 (lamp highlights as before). 30/09, second multi-agent study: replacing the
+    // The specular chain keeps reading c4..c7 (lamp highlights as before). 30/09, a second study: replacing the
     // whole diffuse by the basis light left unlit furniture with the grey cube only, so the Blue tint had nothing to act on.
     const DWORD cU = cS + 7;
     out.diffuseConst = static_cast<int>(cU);
@@ -2111,7 +2111,7 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
             body.insert(body.end(), {Op(kMad, 4), Dst(kTemp, Acc, 0x7), Src(kTemp, Tmp), Src(kTemp, Wn, Sw(c, c, c, c)), Src(kTemp, Acc)});
         }
     }
-    // The basis light never above kBasisCap x the room light map at the same place (30/09, F7 128 + F8 10:45: a TV in a closed
+    // The basis light never above kBasisCap x the room light map at the same place (30/09, F7 128 + F8: a TV in a closed
     // room upstairs took the green lamp of the story below). The room's light list holds lamps of another story near an opening
     // (the indoor light between floors); the room light map is solved point by point with the floor test (IndoorShadow: black
     // there), the 4 basis maps are filled by another routine of the game that the test never sees (green there). Where both are

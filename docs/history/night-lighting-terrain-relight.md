@@ -6,7 +6,7 @@ described in [features/night-lighting/terrain-relight.md](../features/night-ligh
 ### 2026-09-24: load rebuild and the automatic unlock (combined build)
 
 **Context:** the first terrain relight armed a full rebuild 15 s after "world loaded" (reason "carregamento") and an
-automatic "lights changed" kick whenever +0x38 was armed. The `LightProbe-grama3-escura` session log (23:54) showed 16
+automatic "lights changed" kick whenever +0x38 was armed. The `LightProbe-grama3-escura` session log showed 16
 rebuilds per session, "luzes mudaram" about every 30 s.
 
 **Finding:** the automatic unlock reacted to any armed +0x38, including street lamps of lots streaming in as the camera
@@ -14,11 +14,11 @@ moved. The earlier notes' statement "rebuild happens at dusk; needs +0x38 and +0
 arms both.
 
 **Outcome:** the unlock fired only when `g_lotLampArms` changed, at most once per minute; later superseded (arms are now
-only counted). Do not rebuild on lamp changes that streaming produces (NOTAS 1c).
+only counted). Do not rebuild on lamp changes that streaming produces (notebook 1c).
 
 ### 2026-09-25: load delay, lamp signature and lot relight loop (combined build)
 
-**Context:** snow took more than 20 s to look right after a load (16:25); version 5.4 of the lamp tracking.
+**Context:** snow took more than 20 s to look right after a load; version 5.4 of the lamp tracking.
 
 **Finding:** the load rebuild moved to 5 s after loading. The lamp signature included the position (recalculation 0.7 s
 after a move) and the safety recalculation went from 60 s to 15 s. Relighting lots after every rebuild made a loop
@@ -242,7 +242,7 @@ of at most 12 ms. Released in 2.5.4.
 
 **Context:** the complete private response build `76B4C32D...` tested in game.
 
-**Finding:** maintainer feedback: the response was correct and felt more responsive.
+**Finding:** observed in game: the response was correct and felt more responsive.
 
 **Outcome:** the same lighting logic shipped in 2.5.4, development tools excluded. No universal latency guarantee or
 validation of unverified variants follows from it.

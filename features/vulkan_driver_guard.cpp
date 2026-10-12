@@ -56,11 +56,10 @@ std::string Narrow(const std::wstring& w) {
 }
 
 // AMD registers the same manifest as an implicit LAYER too (VK_LAYER_AMD_switchable_graphics, library amdvlk32.dll; the
-// display adapter's VulkanImplicitLayersWow, 05/10 on the user's PC), and VK_LOADER_DRIVERS_DISABLE does not stop layers:
+// display adapter's VulkanImplicitLayersWow, seen on a test PC), and VK_LOADER_DRIVERS_DISABLE does not stop layers:
 // amdvlk32.dll (~85 MB) was still loaded. The layer's own "disable_environment" variable keeps it out: its known name.
 // 2.7.0 read it from every AMD manifest registered for a display adapter (enumerating the display class keys of the
-// registry); BitDefender's generic detection and its resellers flagged that build (Gen:Variant.Fragtor, 8 of 67 on
-// VirusTotal, 06/10), so the name the manifest gives is set directly.
+// registry); a generic antivirus heuristic flagged that build as a false positive, so the name the manifest gives is set directly.
 std::vector<std::pair<std::wstring, std::wstring>> AmdLayerDisables() {
     return {{L"DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", L"1"}};
 }

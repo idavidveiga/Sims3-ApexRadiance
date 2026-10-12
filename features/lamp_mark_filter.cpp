@@ -1,7 +1,7 @@
 // Rooms keep their light when their lamps did not change (part of Night Lighting, 2026-09-30).
 //
-// User: "the indoor light breaks for a moment at every floor switch"; "keep the light information cached and change it only
-// when something changes". F6 092629: at every floor switch the game restarted room 0 of every story and every room holding
+// The indoor light broke for a moment at every floor switch; the light information should stay cached and change only
+// when something changes. F6 capture: at every floor switch the game restarted room 0 of every story and every room holding
 // a lamp (return address 0x006C7451 in FUN_006c7250), twice within 16 ms, and solved them again in 110-140 ms, with the same
 // ambient, light counts and normalisation as before. Two studies (30/09):
 // - The mark comes from the lamp entry update FUN_006c7ba0 (the entry's vtable slot +8, run by FUN_006c7250 for the
@@ -82,11 +82,10 @@ struct LampState {
 constexpr DWORD kEditHoldMs = 2000;
 std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the lamp at its last mark
 // The story (tree level) each lamp marked last: a first mark on another story of the same lot is the lamp moved between
-// stories (05/10, F8 19:22: nothing sent its lot again, and the rooms that gathered while the game registered it missed it)
+// stories (05/10, F8: nothing sent its lot again, and the rooms that gathered while the game registered it missed it)
 std::unordered_map<uintptr_t, uintptr_t> g_lampStory; // light -> tree level (under g_mx)
 
-// A lamp switched on or off, or moved (30/09, user: "also refresh the lighting whenever a lamp is moved, switched off or on,
-// if it costs no performance"): a switch waits 120 ms; a move still waits 300 ms after its last change (a drag:
+// A lamp switched on or off, or moved (the lighting is refreshed then too, kept cheap): a switch waits 120 ms; a move still waits 300 ms after its last change (a drag:
 // once when it stops). At most once per kLotGap per lot; never while dusk/dawn switches every lamp at once.
 // Not the whole world as the shortcut: only the rooms of that lot (every story), on the light tree thread, and the rigs.
 // Since 05/10 the rooms that take an edited lamp are sent at once by the edit itself (LevelLightShare, "Lamp edits first"),
@@ -111,7 +110,7 @@ struct LotDue {
 std::unordered_map<uintptr_t, LotDue> g_lotDue; // tracker -> when its refresh is due (under g_mx); due 0 = none pending
 std::atomic<long> g_lampEvents{0}, g_lotRefreshes{0}, g_lotSkippedDusk{0};
 std::atomic<bool> g_editRefresh{false};
-// Mass switches (06/10, user: switching all the lights of a big lot took 3-7 s to settle): the player's switches are counted
+// Mass switches (switching all the lights of a big lot took 3-7 s to settle): the player's switches are counted
 // in a window; MassSwitchActive lets the room queue give the rooms a quick pass first (room_light_queue.cpp)
 constexpr int kMassSwitches = 3;
 constexpr DWORD kMassWindowMs = 1500, kMassHoldMs = 1500;
@@ -149,7 +148,7 @@ bool NoteSwitch(uintptr_t light, DWORD tick) {
     g_massLast.store(tick | 1, std::memory_order_relaxed);
     return true;
 }
-// Any switch of the player's (06/10, user: the quick pass for one lamp too): a lamp switched on or off where it is, not a
+// Any switch of the player's (the quick pass for one lamp too): a lamp switched on or off where it is, not a
 // light switching itself (past kSelfMax switches in kSelfWindow), not at dusk or dawn. Switches less than kMassHoldMs apart
 // are one event, so "all the lights" is one too.
 std::atomic<DWORD> g_switchLast{0};
@@ -503,7 +502,7 @@ void OnPresent(float nightLevel) {
     }
     // the rooms gathered after the change keep their solve (the lamp edit sent them already) for a switch or a lamp that
     // only moved, and lamps that only moved send only the rooms holding them; a lamp moved into another room or story sends
-    // every room again: a gather made while the game was still registering it missed it (F8 19:22)
+    // every room again: a gather made while the game was still registering it missed it (F8)
     // (lamps switched where they are: only the rooms they can reach, LevelLightShare::RelightLampSwitch)
     for (const Run& r : run) {
         const int sent = !r.allRooms && r.switchCount > 0

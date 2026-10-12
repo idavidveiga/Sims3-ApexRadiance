@@ -1,5 +1,5 @@
 // Outdoor wall pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) and the constant that scales
-// their baked lamp light ("texld rA, vT, s2" then "mad rB.xyz, rA, cK.x, rC"). Generated offline (scratchpad snowcover/test11.cpp over the 58 ExteriorWall pixel shaders of the precomp: the baked
+// their baked lamp light ("texld rA, vT, s2" then "mad rB.xyz, rA, cK.x, rC"). Generated offline (a local test over the 58 ExteriorWall pixel shaders of the precomp: the baked
 // light map is the texld at TEXCOORD1, or the one 2D texld read by "mad ..., cK.x"; K is read nowhere else); see lot_light_bridge.cpp
 // (WallLampConst). size in bytes, hash = FNV-1a 32-bit over the bytecode DWORDs.
 #pragma once

@@ -3,18 +3,17 @@
 Chronological record of investigations and design decisions. Newest entries at the bottom. The current behaviour is
 described in [features/dev-tools/light-probe.md](../features/dev-tools/light-probe.md).
 
-Raw sources: `S3SS-dev\NOTAS-ILUMINACAO.md`, `PASSO3-PLANO.md`, `PLANO-SEPARACAO.md`. Captures were cited in the notes by
+Raw sources: The lighting notebook (private notes), the per-pixel plan (private notes), the standalone split plan (private notes). Captures were cited in the notes by
 their archive folder names (`LightProbe-<name>`, `LightProbe-m01` to `-m80`).
 
 ### 2026-09-24: the probe as the main lighting instrument
 
-**Context:** static reverse engineering of the lot-edge and lamp lighting paths failed repeatedly (maintainer memory note
-`sims3-lot-edge-lighting.md`).
+**Context:** static reverse engineering of the lot-edge and lamp lighting paths failed repeatedly (private research notes).
 
 **Finding:** a per-pixel GPU probe answers which draws paint a pixel, in which order and blend state, which shader pair
 and technique family, and where the light comes from: a baked light map on some sampler (256x256 DXT5 terrain chunk
 map, A8R8G8B8 room/wall/floor atlases, 32x32 per-object maps), rig lamps in PS c1..c3 / c5..c7, vertex lights in VS
-c4..c11, or no lamp term at all (roofs, water). NOTAS section 1c (`LightProbe-grama3-escura`, 23:54): the "dark" grass
+c4..c11, or no lamp term at all (roofs, water). Notebook section 1c (`LightProbe-grama3-escura`, 23:54): the "dark" grass
 was terrain paint, not light. Always compare with a correct pixel (`-clara`/`-escura`, `-lote`/`-mundo` pairs).
 
 **Outcome:** kept. Almost every lighting fix in the notes starts from a capture.
@@ -26,10 +25,10 @@ was terrain paint, not light. Always compare with a correct pixel (`-clara`/`-es
 **Finding:** captures that mattered were copied to sibling folders: `S3SS\LightProbe-<name>` (for example
 `LightProbe-lote`, `LightProbe-andar2-b`), `LightProbe-seq-N-name` (the ordered sequence of notes section 4g), and from
 00:23 automatically `LightProbe-m01`, `-m02` ... `-m80` (m80 dated 2026-09-27 17:39). The watcher script that made the
-`mNN` copies was run by an earlier agent session and is not in the scratchpad (no `.ps1/.sh/.pl` refers to
+`mNN` copies was a separate script and is not in the private research folder (no `.ps1/.sh/.pl` refers to
 `LightProbe-m`). Inferred from the folders: an `mNN` folder holds `S3SS_LightProbe.txt` plus the `.bin`/`.txt` of the
 shaders it names (13 files in m01 and m80); some named folders (for example `LightProbe-m44`) also hold stale BMPs.
-Offline indexers over the archives (scratchpad, read-only): `draws.ps1` (every `== DESENHO` line of every
+Offline indexers over the archives (private research folder, read-only): `draws.ps1` (every `== DESENHO` line of every
 `LightProbe-*` folder with MD5 of the VS/PS files, output `draws.csv`), `consts.ps1` (selected constants per shader
 family), `passo3\index.ps1`, `census.ps1` (see [dev-tools-census.md](dev-tools-census.md)).
 
@@ -37,13 +36,13 @@ family), `passo3\index.ps1`, `census.ps1` (see [dev-tools-census.md](dev-tools-c
 
 ### 2026-09-25: DXT decoding and full constant arrays
 
-**Context:** plant capture m65 (~14:15) showed no texture where a DXT1 texture multiplied the lamp light; skinned
+**Context:** plant capture m65 showed no texture where a DXT1 texture multiplied the lamp light; skinned
 objects showed no world matrix.
 
 **Finding:** DXT textures were skipped by the dumper. Before 18:40 the probe stored only PS c0..c31 and VS c0..c95;
 skinned objects keep the world matrix and vertex lights at VS c184..c199.
 
-**Outcome:** `DecodeDxt` added; all PS c0..c223 and VS c0..c255 stored; the two-capture comparison added at 18:40
+**Outcome:** `DecodeDxt` added; all PS c0..c223 and VS c0..c255 stored; the two-capture comparison added the same day
 ("Captura F7 aprofundada").
 
 ### 2026-09-25: MSAA revealed by the sample count
@@ -68,7 +67,7 @@ c144..c149 and the lamp block id were not implemented.
 
 **Context:** "near = 1.0 on the road" read from 3-digit constants (w about 243) was rounding.
 
-**Finding:** m80, with 9 digits and the depth-bias states (NOTAS "SSAO refeito com GTAO"), gave near = 0.250 identical
+**Finding:** m80, with 9 digits and the depth-bias states (notebook "SSAO refeito com GTAO"), gave near = 0.250 identical
 in c0/c40/c180/c192/c216 for every draw of the frame, varying 0.2 to 0.3 between frames; A = 1.00008.
 
 **Outcome:** constants are written with 9 significant digits.
@@ -76,11 +75,11 @@ in c0/c40/c180/c192/c216 for every draw of the frame, varying 0.2 to 0.3 between
 ### 2026-09-28: HDR back buffers and the growing dump folder
 
 **Context:** probe2 and probe4 captures (`probe2_clara.txt`, `probe4_portao.txt` ... `probe_borda_escura.txt`, copied
-to the scratchpad) under the then-current HDR output.
+to the private research folder) under the then-current HDR output.
 
 **Finding:** with an A16B16G16R16F back buffer, `ReadScreenPixel` wrote `COR NA TELA NO PIXEL: (nao lida)` (cause
 inferred). The shared `LightProbe\` folder was never cleared and held 1,177 files; shader files named by pointer and
-`T<n>` BMPs mixed captures. NOTAS item 6 of the 2026-09-25 deep review listed "LightProbe without a size limit and
+`T<n>` BMPs mixed captures. Notebook item 6 of the 2026-09-25 deep review listed "LightProbe without a size limit and
 holding render targets" as a risk.
 
 **Outcome:** HDR output was later removed. The folder problem was fixed on 2026-09-30.
@@ -102,7 +101,7 @@ holding render targets" as a risk.
 
 ### 2026-09-24 to 2026-09-28: captures behind the lighting fixes
 
-**Context:** index of captures named in `NOTAS-ILUMINACAO.md`. The fixes themselves are documented in the Night
+**Context:** index of captures named in the lighting notebook. The fixes themselves are documented in the Night
 Lighting pages.
 
 **Finding:**
@@ -142,7 +141,7 @@ Lighting pages.
 
 ### 2026-09-28: standalone separation plan
 
-**Context:** `PLANO-SEPARACAO.md` section 4 listed the probe's renames for the standalone.
+**Context:** the standalone split plan section 4 listed the probe's renames for the standalone.
 
 **Finding:** planned output `Documents\Electronic Arts\<localized>\Apex Radiance\ApexRadiance_LightProbe.txt` and a
 `LightProbe\` folder inside `Apex Radiance\`; the menu key Ctrl+Shift+F11 next to the dev chords F7 to F10. Open items:

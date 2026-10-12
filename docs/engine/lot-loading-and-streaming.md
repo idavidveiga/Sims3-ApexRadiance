@@ -38,7 +38,7 @@ Sources:
 - `frame_profiler.cpp` (header, target table);
 - engine_map (`f_C6D570.asm`, `full.asm`, `strings.tsv`, `calls.tsv`, `dwords.txt`, `profiler_targets.tsv`);
 - Ghidra `re/out/fn_00aea680.c`;
-- NOTAS-ILUMINACAO.md "Desempenho: mapa do motor (28/09)".
+- The lighting notebook (private notes) "Desempenho: mapa do motor (28/09)".
 
 ### Data structures
 
@@ -172,7 +172,7 @@ main loop 0xECA960
 
 ### Resource system I/O
 
-- **Package I/O is synchronous on the thread that asks for it** (NOTAS 28/09): `FileStream::Read` 0x4DB850 calls
+- **Package I/O is synchronous on the thread that asks for it** (notebook 28/09): `FileStream::Read` 0x4DB850 calls
   `ReadFile` directly. RefPack-compressed resources are read and decompressed by 0x4EC010 → 0x4EB3B0, in the requesting
   thread.
 - **Async loads** use a read job 0x72A4F0 on the JobThread workers (mask 2). A finalize job 0x7297C0 then runs on the
@@ -202,7 +202,7 @@ How the world cache interacts with streaming (what is cached, when it is read) w
 
 ### What S3SS Lot Streaming Optimizations touches
 
-(`patches/lot_streaming_optimizations_patch.cpp`, S3SS, all versions; the Steam addresses are from PLANO-SEPARACAO.md
+(`patches/lot_streaming_optimizations_patch.cpp`, S3SS, all versions; the Steam addresses are from the standalone split plan (private notes)
 §3 and the 2026-09-28 log.) Each sub-feature is independent. A resolve failure logs and skips it.
 
 | Sub-feature (TOML key, default) | Sites | What it does |
@@ -280,9 +280,9 @@ LSO's install log lines, as seen on 28/09:
 | 0x00C6CF80 (0xC6D430) / 0x00C6B780 | Sets WorldManager+0x41 at the end of a world load / clears it on shutdown | Smooth Streaming note 1, Frame Budget |
 | 0x007F1760 | `GameUtils_SwapLoadScreen` posts a UI callback (the loading screen is script driven) | Smooth Streaming note 1 |
 | 0x00C0FD60 | Empty stub (`ret`), the body of `GameUtils_Begin/End/ResetLoadEvent` | Smooth Streaming note 1 |
-| 0x0073E060 | `Camera_IsMapViewModeEnabled` (reads camera+0x8B9) | LSO pattern, NOTAS (Mapa (M)) |
+| 0x0073E060 | `Camera_IsMapViewModeEnabled` (reads camera+0x8B9) | LSO pattern, notebook (Mapa (M)) |
 | 0x004DB850 / 0x004DB8E0 | `FileStream::Read` (ReadFile) / `Flush` (FlushFileBuffers) | profiler targets |
-| 0x004EC010 | RefPack stream read, stdcall(5), RET 0x14 → 0x004EB3B0 decompress | profiler targets, NOTAS |
+| 0x004EC010 | RefPack stream read, stdcall(5), RET 0x14 → 0x004EB3B0 decompress | profiler targets, notebook |
 | 0x004EB3B0 | RefPack decompressor (replaced entirely by S3SS's "RefPack Decompressor Optimization") | S3SS `refpack_decompressor_patch.cpp`, PLANO §3 |
 | 0x007377F0 → 0x00737560 → 0x0072A730 | ResourceSystem service → `Update(budgetMs)` (at least 250 ms while +0x1F0) → deferred callback queue | Frame Budget, `profiler_targets.tsv` |
 | 0x0072A4F0 / 0x007297C0 | Async resource read job (JobThread workers, mask 2) / finalize job (main thread, mask 1; created at 0x00729C5B) | Frame Budget header |

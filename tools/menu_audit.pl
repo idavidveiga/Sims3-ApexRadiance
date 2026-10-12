@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Apex Radiance menu audit (read-only). Usage: perl audit.pl [repo]
+# Apex Radiance menu audit (read-only). Usage: perl tools/menu_audit.pl [repo]
 # Reports: menu texts without a translation entry, copy-guideline breaks (docs/ui.md "Copy guidelines"), settings keys
 # missing from docs/, and settings not put back by a ResetDefaults() in the same file.
 use strict; use warnings;
@@ -9,7 +9,7 @@ use File::Find qw(find);
 use File::Spec;
 
 my $repo_arg = shift;
-my $repo = $repo_arg // File::Spec->catdir(dirname(__FILE__), '..', '..', '..');
+my $repo = $repo_arg // File::Spec->catdir(dirname(__FILE__), '..');
 $repo = abs_path($repo) or die "no repo $repo\n";
 chdir $repo or die "cannot enter repo $repo\n";
 sub slurp { my $f = shift; open my $h, '<:raw', $f or return ''; local $/; my $d = <$h>; $d =~ s/\r//g; return $d; }

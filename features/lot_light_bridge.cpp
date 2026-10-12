@@ -284,8 +284,8 @@ bool g_curPsBasis = false;
 // The samplers each WorldCandidate pixel shader declares (bit s = s declared), from its bytecode in Classify.
 // RecordWorldChunk looks for the chunk light map only there: a texture left bound in a sampler the shader never reads
 // (e.g. the neighbour chunk's map in s8 while a 3-layer chunk reads s7) was taken as this chunk's map, depending on the
-// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (user video
-// 29/09: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
+// draw order, i.e. on the camera; the road, fence and lot grass fixes then used a map without the lamps (a gameplay
+// video: those fixes switching off and on together as the camera moved). g_chunkStraySkipped counts the declared-sampler
 // textures skipped because they already are the map of another chunk.
 std::unordered_map<IDirect3DPixelShader9*, uint16_t> g_worldSamplers;
 std::atomic<int> g_chunkStraySkipped{0};
@@ -517,7 +517,7 @@ bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], c
     return true;
 }
 
-// ---- Room mask (07/10, user: "a luz do solo foi pra dentro de um comodo"): the terrain light (world atlas, lamp stamps with
+// ---- Room mask (the ground light went inside a room): the terrain light (world atlas, lamp stamps with
 // no wall occlusion) reached the grass inside a walled room with no floor and no roof. Per lot, a texture of its rooms
 // (LevelLightShare::LotGroundMask, 4 texels a metre, bilinear: soft at the walls) multiplies the terrain term of the lot
 // light pass (and the snowy passes); 1 outside, 0 inside. Checked again every 500 ms per lot (walls placed or removed).
@@ -596,7 +596,7 @@ IDirect3DTexture9* LotMaskFor(IDirect3DDevice9* dev, const float k[4], const flo
 }
 
 // ---- Outdoor walls. Their lamp light is only the game's baked wall atlas (room solve, lamps x k2 = 0.075), much
-// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them (user, 25/09). The
+// dimmer than the rig lamps objects get, so walls look darker than the objects in front of them. The
 // pixel shaders of the game's ExteriorWall technique (Shaders_Win32.precomp) add it with "texld rA, vT, s2" then
 // "mad rB.xyz, rA, cK.x, rC"; K differs per variant (in others c3.x is the bloom threshold). wall_lamp_table.h lists
 // every ExteriorWall pixel shader by size + FNV-1a (32-bit, over DWORDs) with its K, generated offline; a draw with
@@ -827,7 +827,7 @@ float g_cam[3] = {};
 float g_lampData[33][4] = {}; // 16 x pos+radius, 16 x colour, params
 int g_lampCount = 0;
 int g_lampFrame = 0;
-// Lamp cones (07/10, user: the brick fence face and objects lit by a wall sconce they sit far off its axis; F8 10-57-41).
+// Lamp cones (a brick fence face and objects were lit by a wall sconce they sit far off its axis; F8 capture).
 // The game's cone laws: type 5 FUN_006BC940 (t = s (a.u - o) per cone, a1 +0x1A0 / o1 +0x174, a2 +0x190 / o2 +0x170,
 // s = [0x011D11A0] = 5 (static init 0x00F81EF0 from [0x00FBD498]), u = point - lamp normalised (0x006BE342); full at
 // t >= 1 on either cone, the spill S (+0x150, per channel) when both t <= 0, S (1 - t) + t between with t = the larger),
@@ -1080,7 +1080,7 @@ constexpr auto kQuietLogEvery = std::chrono::seconds(60);
 
 bool IsPlainType(int type) { return type >= 3 && type <= 6; }
 
-// The captured 02:03 session toggles 0x40 on ordinary lot lamps (types 3..6).
+// A captured session toggles 0x40 on ordinary lot lamps (types 3..6).
 // Do not confuse that discrete enable switch with an animated colour/intensity.
 // Both observations must identify the same lamp on the same lot; first sights,
 // pointer reuse on another lot and streaming additions are never fast edits.
@@ -1484,10 +1484,10 @@ void TrackLotLampEdits() {
         if (c.removed > 0) seen.removalPending = true; // confirmed at the next enumeration
         if (c.added > 0 || c.edited > 0) {
             counted++;
-            const bool user = c.added > 0 || c.moved > 0 || c.userEdited;
-            userDriven |= user;
-            if (user) userLots.push_back(lot);
-            what = std::format("lot {:016X}: {} added, {} edited ({} moved), {} removed ({})", lot, c.added, c.edited, c.moved, c.removed, user ? "user-driven" : "automatic");
+            const bool manual = c.added > 0 || c.moved > 0 || c.userEdited;
+            userDriven |= manual;
+            if (manual) userLots.push_back(lot);
+            what = std::format("lot {:016X}: {} added, {} edited ({} moved), {} removed ({})", lot, c.added, c.edited, c.moved, c.removed, manual ? "manual-driven" : "automatic");
             if (!c.detail.empty()) what += ": " + c.detail;
         }
     }
@@ -2022,7 +2022,7 @@ template <typename DrawFn> bool DrawLotSnow(IDirect3DDevice9* dev, DrawFn draw, 
     return true;
 }
 
-// The lot light pass while snow melts (kMeltLotPs, F7 2026-10-06 00:21: the lot kept the game's light next to Apex's world
+// The lot light pass while snow melts (kMeltLotPs, F7: the lot kept the game's light next to Apex's world
 // terrain, a cut at the lot edge). Same lamp term as the snowy pass, so the same patch (terrain light in s14); its VS
 // gives the terrain uv in TEXCOORD1 from c14/c15 like the dry lot pass, so the atlas goes through VS c14 as there.
 template <typename DrawFn> bool DrawLotMelt(IDirect3DDevice9* dev, DrawFn draw) {
@@ -2313,7 +2313,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         const GroupCentre* g = g_objPixelLamps.load(std::memory_order_relaxed) ? InstancedGroupCentre(dev) : nullptr;
         if (g) {
             const int n = SelectLamps(g->x, g->z, 40.0f + std::min(g->ext, 60.0f));
-            // Walls block light on objects applies to fences too (user 05/10: a brick fence behind a tower took the wall
+            // Walls block light on objects applies to fences too (a brick fence behind a tower took the wall
             // lamp on the other side). One lamp list serves the whole group, so a lamp leaves it only when a wall stands
             // between it and the group's centre and both its ends (0.5 m above the pieces): a fence wholly behind a wall
             // loses it, one that only runs past a wall keeps it.
@@ -2349,11 +2349,11 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             // all selected lamps. Without a group or when pixel lights are off,
             // cS.x stays zero and the native vertex contribution is retained.
             lamps[0][0] = 1.0f;
-            // No atlas at all with the lamps (user 05/10: the top of a deck's stone half wall took the ground light pool of
+            // No atlas at all with the lamps (the top of a deck's stone half wall took the ground light pool of
             // the wall lamp under the deck; the atlas is the light lying on the ground, at no height). Street and lot
             // lamps are in the lamp list, so fences are lit like walls: by their lamps, with angle and distance.
             // the atlas weight is sat(N.y x w0 + w1) (PatchInstancedLamps): (1, 0) keeps the ground light on faces turned up and
-            // none on the sides, which take the lamps (06/10, user: with (0, 0) a curb's top went nearly black at night wherever
+            // none on the sides, which take the lamps (with (0, 0) a curb's top went nearly black at night wherever
             // no lamp reached it, about 6 times darker than the game's own fence lighting, in blotches)
             weight[0] = 1.0f;
             weight[1] = 0.0f;
@@ -2483,7 +2483,7 @@ std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::Objec
 }
 
 // The per-pixel lamps of an object at translation (x, y, z): SelectLamps there, then Walls block light on objects
-// (LevelLightShare::WallBlocks, user 05/10): a lamp with an outside wall between it and the object's middle (its origin +
+// (LevelLightShare::WallBlocks): a lamp with an outside wall between it and the object's middle (its origin +
 // 0.5 m) is left out, and the next one takes its slot. groundShare (left as it is when no lamp is near) = the share of
 // the nearby lamps' light that is not blocked: the ground light (the atlas, which has no walls) is scaled by it. Fills
 // lamps[1 + 2 k] = (pos, 1/R^2). With cone output, colour stays unscaled and
@@ -2530,7 +2530,7 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
 }
 
 // Windows take outdoor light: the point a wall object picks its lamps at. A window's origin is a corner of its tile, on
-// one side of the wall or the other as it is turned (F7 20-17-15 / 20-17-20, 06/10: the same window turned took other lamps
+// one side of the wall or the other as it is turned (F7 capture, 06/10: the same window turned took other lamps
 // and another ground share, a slightly different tone); the tile's centre, origin + (local X - local Z) / 2, is on the
 // wall line both ways. Used only when an outside wall runs along one of the object's axes through that centre; else the origin.
 // true when an unscaled object turned about y has its centre on an outside wall's line (a door or a window set in its wall);
@@ -2600,9 +2600,9 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
         if (wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
             // Windows take outdoor light: a window or door sits in its wall with its origin up to half a tile from the wall
             // line (turned the other way, inside the house), so its own wall must not block every lamp in front of it
-            // (F7 19-21-19, 06/10: the turned window's frame got 0 of 19 lamps and no ground light). Off: the 0.2 m as before.
+            // (F7 capture, 06/10: the turned window's frame got 0 of 19 lamps and no ground light). Off: the 0.2 m as before.
             // only an object set in its wall (ObjectLampPoint moved it onto the wall line) passes a wall within kWindowWallSkip;
-            // loose objects keep 0.2 m, so a wall 0.4 m behind an armchair still blocks the next room's lamp (F7 09-53-38, 07/10)
+            // loose objects keep 0.2 m, so a wall 0.4 m behind an armchair still blocks the next room's lamp (F7 capture, 07/10)
             float at[3];
             const bool inWall = ObjectLampPoint(m, at);
             const float nearSkip = inWall ? kWindowWallSkip : 0.2f;
@@ -2651,7 +2651,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     return true;
 }
 
-// ---- Windows take outdoor light (experimental, "janelasLuzDeFora", off by default). F7 19-17-52 and 19-21-19 (06/10):
+// ---- Windows take outdoor light (experimental, "janelasLuzDeFora", off by default). F7 capture (06/10):
 // a window's origin is the centre of the tile in front of it, half a metre from its wall; turned the other way, the origin
 // is inside the room, and the window's sash and glass part gets a room-mode rig (RigTracker mode 0) and is drawn by a
 // basis-reading object shader (VS class 10 with a basis PS: VS 1E93EFA8 / PS 8B83B1A0 in that capture; Apex drew it as
@@ -2881,7 +2881,7 @@ std::atomic<long> g_doorsKept{0}, g_doorsNoWorld{0}; // indoor smooth light: obj
 std::atomic<bool> g_doorsLogged{false}, g_doorsNoWorldLogged{false};
 // An object set in a wall (DrawIndoorObject): unscaled, turned about y only, and its tile's centre (origin + (X - Z) / 2) on an
 // outside wall's line, or on a tile edge of the room map along one axis (uv rows 3..4 after the world triple, 0..1 over the
-// map, x its size: 1 texel per metre; F7 10-28-12: c195 / c196, the door's centre at texel (12.99, 20.99))
+// map, x its size: 1 texel per metre; F7 capture: c195 / c196, the door's centre at texel (12.99, 20.99))
 bool SetInWall(const float (&m)[5][4], float sizeU, float sizeV) {
     const float xx = m[0][0], xz = m[2][0], zx = m[0][2], zz = m[2][2];
     const float lx = std::sqrt(xx * xx + xz * xz), lz = std::sqrt(zx * zx + zz * zz);
@@ -2922,7 +2922,7 @@ template <typename DrawFn> bool DrawIndoorObject(IDirect3DDevice9* dev, DrawFn d
     lightMap->Release();
     if (!scaled) return false;
     // A door or window set in its wall spans two rooms: the smooth read (a B-spline over 4 texels, +-2 m) mixed the room
-    // behind the wall into the faces on this side (F7 10-28-12, 07/10: a sconce's room at ~41% on the dark room's door frame).
+    // behind the wall into the faces on this side (F7 capture, 07/10: a sconce's room at ~41% on the dark room's door frame).
     // The game's rig (one room, the camera's side) lights it, as before Apex.
     if (const int wk = g_curVsInfo->patched.worldK; wk >= 0) {
         float wm[5][4];
@@ -3702,15 +3702,15 @@ void TrackVs(IDirect3DVertexShader9* vs, bool force = false) {
     if (g_curVsIsSnowFloor) g_curSnowFloorTc = info->snowFloorTc;
 }
 
-// Rooms at Night on furniture (unlit_rooms.h, user 30/09: "objects that respond to nothing, mostly on the upper floor"): an
+// Rooms at Night on furniture (unlit_rooms.h; objects that responded to nothing, mostly on the upper floor): an
 // indoor object (room-mode rig, RigTracker mode 0) is lit by its rig's four lights plus the ambient cube. Room-mode rigs have no
 // sun (FUN_006bbde0: start slot = (mode == 1)): in an unlit room the lights are the game's three [NoLight] lights and the fill
-// light, the only blue on furniture (the cube, CASDiffuseProbe, is flat grey; second multi-agent study, 30/09). While it
+// light, the only blue on furniture (the cube, CASDiffuseProbe, is flat grey; a second study). While it
 // draws, through the game's shader or Apex's, those lights (PS c4..c7 of shaders with that chain, recognised by direction /
 // fill w, UnlitRooms::IsUnlitLight; dim bluish vertex lights) and the cube's weight get the room's Brightness and Blue tint;
 // lamps keep their colour and strength. The draw is then made here and every
 // constant put back. The game's own shader draws with a copy whose ambient cube colour is pulled towards its grey by the
-// Blue tint too (PatchCubeTint; user 30/09: "the only thing missing on the furniture that works is the blue tint"), as
+// Blue tint too (PatchCubeTint; the blue tint was the only control missing on furniture), as
 // Apex's indoor-object shader does.
 ShaderLookupCache<const ShaderPatches::RigPsInfo*> g_rigLookup;
 std::unordered_map<IDirect3DPixelShader9*, ShaderPatches::RigPsInfo> g_rigPsInfo;
@@ -3876,8 +3876,8 @@ void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChai
     Recorder::Note(text);
 }
 
-// ---- A lamp switch's furniture waits for its room (06/10 evening, user: "objects together with the walls") ----
-// At a switch the game updates the rigs of the lamp's room at once (the 13:52 recording: rig lights changed 0.05 s after
+// ---- A lamp switch's furniture waits for its room (objects change together with the walls) ----
+// At a switch the game updates the rigs of the lamp's room at once (a recording: rig lights changed 0.05 s after
 // the switch), while the room's walls and its light map show the new light only when its solve ends (0.1 .. 0.5 s): the
 // lamp's light left the furniture first, then the room followed. Every room-mode part draw remembers its rig's lights
 // (PS c0..c7 and the vertex lights) while no switch is on; during a switch, while the rig's room still awaits its new

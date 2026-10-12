@@ -67,8 +67,8 @@ v2.10.0 shows only the `LevelFor` to `LevelForPoint` substitution and comments i
 updates its version and translated What's new text. The earlier priority experiment is excluded; see
 [history](../history/night-lighting-level-light-share.md).
 
-**Confirmed in game:** the maintainer tested the lookup candidate and confirmed substantially faster exterior lighting
-updates in the reported Build/Buy scene, with the result accepted for release. This is qualitative gameplay evidence;
+**Confirmed in game:** the lookup candidate gave substantially faster exterior lighting
+updates in the reported Build/Buy scene, and the result was accepted for release. This is qualitative gameplay evidence;
 no millisecond, frame-time or FPS improvement is claimed.
 
 **Open checks:** quantitative end-to-end timing and broader lots/backends; pixel-by-pixel visual equivalence on all
@@ -112,13 +112,13 @@ topology mutation inside a point is not reproduced. This release does not promis
 
 ## Confirmed in game
 
-- Outdoor sharing (parts 1 and 2) and the wall test of the lamp's story (part 3), combined build: confirmed by the
-  maintainer as almost seamless after the first round and much better after the wall test.
+- Outdoor sharing (parts 1 and 2) and the wall test of the lamp's story (part 3), combined build: confirmed in game
+  as almost seamless after the first round and much better after the wall test.
 - Floor pairing through the story's own floor object (build `e3fab9d4`): the walls above a double-height room lit at once.
 - Seamless walls, first version: a very slight crease remained next to a sconce just under the line; the ghost-row blur
   addresses it.
-- 2.5.3: Rooms at Night and connected-room behaviour reported working in maintainer tests (scenario-specific feedback).
-- PR #2, indoor seam candidate: maintainer feedback validated the visual result before the wall guard candidate.
+- 2.5.3: Rooms at Night and connected-room behaviour confirmed in game tests (scenario-specific).
+- PR #2, indoor seam candidate: the visual result was confirmed in game before the wall guard candidate.
 - Session `2026-10-04 16-58-09`, recording `18-11-40` (`2.5.6-indoor-stories-test2`): story 0 room 23, story 1 room 19
   and story 2 room 20 converge to identical ambient RGB after lamp edits; queued at 18:11:30.743, matching ambient at
   18:11:31.399. This measures queue-to-ambient convergence, not visible latency.

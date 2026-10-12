@@ -105,7 +105,7 @@ These settings are documented on their own pages ([lot-light-pass.md](lot-light-
 
 - `floor_atlas_table.h`: 261 ExteriorFloors ps_3_0 pixel shaders (size and FNV-1a) that `PatchBakedAtlasPs` accepts and
   that pass `D3DDisassemble` after patching. The package has 571 ExteriorFloors PS, 235 of them ps_2_0; none of the 58
-  InteriorFloor PS matches. Generated offline (scratchpad `snowcover/test13.cpp`, families from `passo3/ground/techps.pl`).
+  InteriorFloor PS matches. Generated offline (private research folder: `snowcover/test13.cpp`, families from `passo3/ground/techps.pl`).
 - Dispatch: `g_curClass == FloorAtlas && !g_curVsIsSnowFloor`, after the class-5 floor branch.
 - Vertex shader: a copy made once per game VS with `PatchObjectLampVs(t, needColor0 = false, &tc)`, which finds the world
   position `dp4` triple (c8/c9/c10) and writes world xz to the first free TEXCOORD from 7 up (many floor VS already use

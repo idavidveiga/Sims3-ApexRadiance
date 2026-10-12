@@ -1,0 +1,3 @@
+#!/bin/sh
+# Public text policy for commit messages (docs/PUBLIC-TEXT-POLICY.md)
+exec python "$(git rev-parse --show-toplevel)/tools/public_text_check.py" --commit-msg "$1"

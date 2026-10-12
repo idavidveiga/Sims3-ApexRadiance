@@ -5,14 +5,14 @@
 #define S3SS_TR(pt, en) en
 inline std::atomic<bool> kPublicBuild{true}; // legacy name: true means developer mode is off
 
-// Two flavours (06/10, after 2.7.0): the players' build (ApexFlavorDefines=APEX_NO_DEV_TOOLS, PublicApexRadiance.asi) leaves
-// out the developer tools and never turns developer mode on; the maintainer's build (ReleaseApexRadiance.asi) has them all.
+// Two flavours (since 2.7.0): the players' build (ApexFlavorDefines=APEX_NO_DEV_TOOLS, PublicApexRadiance.asi) leaves
+// out the developer tools and never turns developer mode on; the developer build (ReleaseApexRadiance.asi) has them all.
 #ifdef APEX_NO_DEV_TOOLS
 inline constexpr bool kDevToolsBuild = false;
 #else
 inline constexpr bool kDevToolsBuild = true;
 #endif
 
-// Light through doors and windows (LevelLightShare::SetRealisticOpenings): on by default since 07/10 (user chose the realistic
-// build); the setting can still turn it off
+// Light through doors and windows (LevelLightShare::SetRealisticOpenings): on by default (the realistic
+// result was preferred in testing); the setting can still turn it off
 inline constexpr bool kRealisticOpeningsDefault = true;

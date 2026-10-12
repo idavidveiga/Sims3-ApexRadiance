@@ -254,8 +254,8 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     // a lamp just switched on or off: the rooms relight at the game's own pace for a moment, even while moving
     const bool boosted = now < g_boostUntil.load(std::memory_order_relaxed);
     const bool moving = MovingAt(now);
-    // The lots correcting themselves right after a load (06/10, user: "when entering the lot it takes long to correct"; log
-    // 12:18: 4.4 ms of solving a frame for 8 s): the lot being played keeps the game's budget while the camera moves, and
+    // The lots correcting themselves right after a load (entering the lot, the light took long to correct;
+    // a log: 4.4 ms of solving a frame for 8 s): the lot being played keeps the game's budget while the camera moves, and
     // gets kLampEditMs with it still
     const bool settling = game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::SettlingAfterLoad();
     if (settling && !moving) out = std::max(out, kLampEditMs);
@@ -264,9 +264,9 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
         out = std::max(kMinMs, std::min(game, scaled));
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
     }
-    // A lamp being edited in Build mode (05/10, user: "make the corrections in Build mode even more instant"): its rooms
+    // A lamp being edited in Build mode (the corrections in Build mode should be near instant): its rooms
     // waiting for or in their solve get 25 ms of the lot being played per frame instead of 15, camera still, once the lamp
-    // is let go (while it is dragged the game's 15 ms: 05/10, recording 20:38:25, moving a lamp had become laggy)
+    // is let go (while it is dragged the game's 15 ms: in a recording, moving a lamp had become laggy)
     if (!moving && game >= kPriorityMs && game < kLeaveAloneMs && LevelLightShare::LampEditPending() && !LevelLightShare::LampDragging())
         out = std::max(out, kLampEditMs);
     // Many lamps switched at once whose rooms already show their quick pass (06/10, RoomLightQueue::Refining): the refinement

@@ -21,11 +21,11 @@ tracer). The "latest" copies and the 20-capture pruning were removed.
 
 ### 2026-09-30: Explorer crash and layout
 
-**Context:** the first test of the page (crash report 22:10:22).
+**Context:** the first test of the page (crash report).
 
 **Finding:** Open and "Open the captures folder" called `ShellExecuteW` inside the menu frame; it pumped the game
 window's messages, the overlay's window procedure ran again inside the frame and its `std::mutex` threw (resource
-deadlock, `Overlay::ApexWndProc` -> `std::_Throw_Cpp_error`). Maintainer feedback also asked for sessions higher on the
+deadlock, `Overlay::ApexWndProc` -> `std::_Throw_Cpp_error`). Feedback on the page also asked for sessions higher on the
 page, clearer, with a more distinct look, and for a picture of the screen with every capture.
 
 **Outcome:** Explorer opens on a short-lived thread with COM (`ShowInExplorer`), like the Profiles folder button; never

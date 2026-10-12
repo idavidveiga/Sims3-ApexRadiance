@@ -8,7 +8,7 @@ described in [features/night-lighting/fences.md](../features/night-lighting/fenc
 **Context:** fences stayed dark next to lit ground (first fence capture `LightProbe-cerca` draw #106, alpha test,
 cull 1; the same shaders as bushes `LightProbe-arbusto` #103: `VS_2BC7F188` + `PS_2BC82F40`, PS = `kObjectRigPs`, 600
 bytes; each instance, index `a0.z`, gets 3 directional lamps, directions `c27/c28/c29[i]`, colours `c54/c55/c56[i]`, plus
-the sun `c137/c138`). A workflow of four analysis passes plus a synthesis ("fence-lamp-rca", about 02:45) studied the
+the sun `c137/c138`). A four-part analysis plus a synthesis studied the
 `vs_3_0` family.
 
 **Finding:**

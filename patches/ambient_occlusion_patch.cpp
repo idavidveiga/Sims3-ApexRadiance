@@ -129,8 +129,8 @@ float4 DownPS(float2 uv : TEXCOORD0) : COLOR0
                       tex2Dlod(sZ, float4(uv + cDir.xy * float2(-0.5,  0.5), 0, 0)).r,
                       tex2Dlod(sZ, float4(uv + cDir.xy * float2( 0.5,  0.5), 0, 0)).r);
     float n = dot(float4(w > 0.0), 1.0);
-    // across an edge (depths more than 10% apart) the farthest instead of the average (06/10, user: ghost shade under
-    // table legs): the average of a thin leg and the floor behind it is a surface that is not there, and at the coarse
+    // across an edge (depths more than 10% apart) the farthest instead of the average (a ghost shade
+    // under table legs): the average of a thin leg and the floor behind it is a surface that is not there, and at the coarse
     // levels it cast a blurred shade around the leg. Sky texels (0) are left out of the nearest test.
     float wMax = max(max(w.x, w.y), max(w.z, w.w));
     float4 wf = w > 0.0 ? w : wMax;
@@ -330,13 +330,13 @@ static_assert(kQualitySlices[0] == 4 && kQualitySlices[1] == 6 && kQualitySlices
               "kGtaoPsId lists the SLICES of kQualitySlices");
 
 struct Params {
-    float strength = 1.68f; // user-approved default from the in-game configuration
-    float reach = 1.3f; // user-approved default, scales the radii
+    float strength = 1.68f; // default tuned in the in-game configuration
+    float reach = 1.3f; // tuned default, scales the radii
     float protect = 0.38f; // lamp-lit / bright pixels keep this share of their light
     int quality = 2; // stored index into kQualitySlices (2 = High, 8 slices)
     bool inMapView = true; // the map view gets its own radii (else the shade fades out there, as it is far)
     float distance = 351.0f;
-    // Sim Occlusion defaults (user 06/10, the same in the built-in profiles that have AO on)
+    // Sim Occlusion defaults (the same in the built-in profiles that have AO on)
     float simStrength = 0.40f;
     bool simControls = true;
     float hairStrength = 0.0f;
@@ -1342,7 +1342,7 @@ class AmbientOcclusionPatch : public ApexPatch {
     // qualities, shade preview), 3 = 30/09 evening (grain in the composite), 4 = 30/09 night (the map view), 5 = 30/09 night
     // (the composite grain follows the Banding Fix, only where the shade changed the pixel); 6 = distance and Sim receivers;
     // 7 = independent hair, transparency coverage and a separate Sim card; 8 = Sim Occlusion defaults off;
-    // 9 = user-approved default configuration for scene and Sim controls.
+    // 9 = tuned default configuration for scene and Sim controls.
     static constexpr int kSettingsRevision = 9;
     static constexpr const char* kRevisionKey = "revisao";
     static int Revision(const toml::table& table) { return static_cast<int>(table[kRevisionKey].value<int64_t>().value_or(1)); }

@@ -17,23 +17,23 @@ of level 0 (`0x006C6B16`), confirmed in `S3SS_LightDiag.txt` 01:39 (type 3 lamps
 `re/out/dump/asm/006c6ab0.asm`. `FUN_006c7250` already refreshes room 0 of every story when level 0 changes, so the test
 in `FUN_006c6ab0` looks inverted. Rigs compare only the room id, so windows already took lamps of every story.
 
-**Outcome:** part 1 (sharing through `OutdoorGather`) and part 2 (JNZ -> JL cascade). Maintainer feedback around 10:00:
+**Outcome:** part 1 (sharing through `OutdoorGather`) and part 2 (JNZ -> JL cascade). Observed in game:
 almost seamless.
 
 ### 2026-09-25: first version without a wall test
 
-**Context:** the first version (around 09:20) shared lights but did not test walls.
+**Context:** the first version shared lights but did not test walls.
 
 **Finding:** LightProbe `andar1-c` (m47, with m46): the side face of the ground story near a corner became lighter than
 the upper one. F8 09:50, lot `C49C001BCF2DEA20`: the 19 lights of room 0 were right on every story, but a sconce near a
 corner passed above the lower story's walls (`room+0x30` holds only the own story's walls; `FUN_0069aa90` has no base
 test).
 
-**Outcome:** part 3, the wall test of the lamp's story. Maintainer feedback: much better.
+**Outcome:** part 3, the wall test of the lamp's story. Observed in game: much better.
 
 ### 2026-09-25: review of the first design
 
-**Context:** independent review around 10:00 and 10:40.
+**Context:** two independent reviews the same day.
 
 **Finding:**
 
@@ -126,13 +126,13 @@ sampler, which made the upper room's floors and ceilings much brighter (review).
 not); F7 captures 048/049 showed the same slight step on outside walls on two stories' atlases.
 
 **Finding:** the step is the game's wall sampling, not the lamps. F8: the atrium's lower room had rows up to 46.44 / 46.24
-/ 45.92 for the three classes, the upper room's bottom row at the line (46.67). The first fix (19:33) moved samples and
+/ 45.92 for the three classes, the upper room's bottom row at the line (46.67). The first fix moved samples and
 kept edge rows out of the vertical blur; with a sconce just under the line the rows next to the edges were raised by the
 blur and the edges were not, giving a crease (east sconce column: slope 0.54/m under the line against 0.11/m above, 4.8x;
-a blur continued across the line gives 0.44/0.19, 2.4x). Maintainer feedback: almost perfect, with a very slight
+a blur continued across the line gives 0.44/0.19, 2.4x). Observed in game: almost perfect, with a very slight
 difference left. The solid strip along the atrium's north wall (keys `00028019`) keeps its step correctly.
 
-**Outcome:** second version (around 20:15): ghost rows and a combined blur for atrium groups. Room 0 deliberately left
+**Outcome:** second version: ghost rows and a combined blur for atrium groups. Room 0 deliberately left
 out.
 
 ### 2026-09-29: cost of the per-point hooks
@@ -146,7 +146,7 @@ game's wall test wrapper (`GameWallTest`) only in the development build. Not mea
 
 ### 2026-09-29: re-entering a lot and loading
 
-**Context:** maintainer feedback: the indoor light sometimes worked only after reloading the save, and was right only
+**Context:** observed in game: the indoor light sometimes worked only after reloading the save, and was right only
 after a lamp was moved; the target is a lot that is right as it loads. After a restart the stairwell light was gone until
 a floor was edited.
 
@@ -181,7 +181,7 @@ to the shape.
 ### 2026-09-30: rooms holding a switched-off lamp
 
 **Context:** F8 01:26, house `C49C001BCF2DEA20`, every lamp off: after the load, room 2 of story 1 still held two lamps
-switched off for about 25 s (journal: lights 20, 9, 4, then 2 only when another lamp was switched on). Maintainer report:
+switched off for about 25 s (journal: lights 20, 9, 4, then 2 only when another lamp was switched on). Observed in game:
 the background colour was wrong right after entering and fixed itself later.
 
 **Finding:** the game switches a lamp off through its intensity and keeps the lit flag; why the game did not gather the
@@ -206,15 +206,15 @@ floor (`LevelOwnFloor`); F8 lists every object naming each story. Confirmed in g
 
 ### 2026-09-30: floor switches restart lit rooms
 
-**Context:** maintainer feedback: the indoor light broke for a moment at every floor switch; the light should be kept
+**Context:** observed in game: the indoor light broke for a moment at every floor switch; the light should be kept
 and changed only when something changes. F6 092629: every switch restarted room 0 of every story and every room holding a lamp
 (`0x006C7451`, twice within 16 ms), solved again in 110-140 ms with the same ambient, light counts and normalisation.
 
 **Finding:** two studies: Apex added one room of its own (room 14 of story 0, through `AfterChangedWalk` deps); the rest
 is the game's entry update marking rooms without comparing.
 
-**Outcome:** `lamp_mark_filter.cpp` (`MarkThunk`). Installed as build `81934361`; the approved floor build is backup 108,
-the previous ASI backup 127. A follow-up (build `5eba1685`) relights a lot when a lamp is switched or moved,
+**Outcome:** `lamp_mark_filter.cpp` (`MarkThunk`). Installed as build `81934361`; the earlier confirmed floor build and
+the previous ASI were kept as local backups. A follow-up (build `5eba1685`) relights a lot when a lamp is switched or moved,
 provided it costs no performance, with a 0.7 s delay at the time.
 
 ### 2026-09-30: the directional basis maps ignore the floor test
@@ -340,7 +340,7 @@ reconciliation at 15:44:03.190.
 
 **Outcome:** pure on/off changes wait 120 ms instead of 700 ms (moves and mixed batches keep 700 ms); a switch-only
 reconciliation may keep rooms already re-gathered after the switch (`NoteGatherStamp`). This removes 580 ms of debounce,
-not necessarily 580 ms of visible delay. Settle time and frame cost were not measured. A later report said test001 felt
+not necessarily 580 ms of visible delay. Settle time and frame cost were not measured. In a later game test, test001 felt
 laggier in ordinary camera movement; the profiler run at 16:16:36-16:17:05 did not coincide with the switches. Hitch
 #2562 took 33.95 ms (texture creation 27.20 ms, lot lighting 0.01 ms), #2571 24.79 ms (driver Present 19.67 ms, lighting
 0.02 ms); other hitches were dominated by texture creation. This neither establishes nor excludes a lighting regression.
@@ -420,8 +420,8 @@ behind walls. The ground capture also showed contracted regular-lot UVs sampling
 transmission scales only that lamp's contribution. For the ground, the exact recognised regular lot vertex shader
 (`kLotLightVs`, `contractedLotUv` in `lot_light_bridge.cpp`) inverts the UV contraction for the CPU floor map when its map
 constants (VS c12) are valid and square; unsupported layouts keep native coordinates. Neither change alters light
-intensity, texture-read count, the world atlas or CPU light-map generation. The previously approved candidate and backup
-368 are kept.
+intensity, texture-read count, the world atlas or CPU light-map generation. The previously confirmed candidate is kept as a
+local backup.
 
 ### 2026-10-05: raised-room object-map guard
 
@@ -476,7 +476,7 @@ called `LevelFor` again, locking and walking the floor links even when `OutdoorE
 resolved the same floor at that sample. The existing `LevelForPoint` cache is bounded to eight slots and expires with
 the point generation; the original last-manager shortcut and owner checks remain.
 
-**Outcome:** reuse that per-point lookup in the exterior lower-wall pass. The maintainer confirmed faster updates in
+**Outcome:** reuse that per-point lookup in the exterior lower-wall pass. Faster updates were confirmed in game in
 the reported gameplay scene. No lighting calculation, quality, gather wait, queue order or time budget changes.
 Released in 2.10.1; quantitative timing and wider-scene validation remain open.
 

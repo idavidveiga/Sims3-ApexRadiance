@@ -131,7 +131,7 @@ with the other page resets, and the Performance group became one switch.
 performance features default on for missing feature states and new configurations; Color and Ambient Occlusion stay
 off; developer mode stays opt-in with confirmation; profiler and capture actions never start automatically; stored
 choices are never overwritten; internal diagnostic switches are unchanged. Window and presentation control was removed
-for 2.5.5. Reference values copied from the maintainer's saved configuration the same day:
+for 2.5.5. Reference values copied from a tested saved configuration the same day:
 
 - Ambient Occlusion: strength 1.6693748235702515, reach 1.3028700351715088, light protection 0.5, quality index 2
   (High), map view true; disabled by default; registered defaults and reset parameters agree; revision 5 unchanged.
@@ -208,8 +208,7 @@ sections, a temporary Violet target, the configured key and Esc). The local tree
 notices wait for a loaded active session plus three seconds of readiness (Night Lights' world-live signal, with a
 read-only WorldManager fallback), sampled the overlay delta time every game frame and logged a throttled slow-panel
 trace. The footer was reduced to save status and "Hold Alt to peek"; Sims3SettingsSetter detection moved to Settings >
-Compatibility; About credits began with Apex Radiance by @loinyx and a short sims3fiend framework attribution replaced
-the promotional paragraph.
+Compatibility; About credits began with Apex Radiance by @loinyx, followed by a short sims3fiend framework attribution.
 
 **Outcome:** the gate and footer are current; the Report page was restored to the 2.5.3 layout
 ([history/bug-reports.md](bug-reports.md)).

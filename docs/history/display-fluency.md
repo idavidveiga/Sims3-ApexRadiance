@@ -92,6 +92,6 @@ Sources: [NVIDIA VRR structure](https://docs.nvidia.com/nvapi/struct___n_v___g_e
 ### 2026-10-02: removed
 
 **Outcome:** window modes, monitor selection, the Apex FPS and V-Sync controls and the driver VRR detection were removed
-by maintainer decision before any release. Apex forwards the game's original CreateDevice, Reset and Present requests
+by project decision before any release. Apex forwards the game's original CreateDevice, Reset and Present requests
 without changing synchronization or window state; G-SYNC and FreeSync stay controlled by the driver and monitor. The
 `[display]` table is dropped from profiles.

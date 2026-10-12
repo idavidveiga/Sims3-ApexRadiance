@@ -6,7 +6,7 @@
 // captures of 29/09: the basis maps' alpha is 255 on exactly the house and 0 outside, where the colour is black), which
 // the smooth reads use to average only the texels inside the house (ShaderPatches::BicubicTaps), so the edge no longer
 // pulls towards black. Nothing here writes the game's textures: an earlier version padded them on the CPU, and the game
-// rewriting them while the camera moved made the light flicker (user, 29/09).
+// rewriting them while the camera moved made the light flicker.
 //
 // This module only remembers, from the draws of the pixel shaders that read the basis maps (IsBasisPs), which basis maps
 // go with which room light map (BasisFor): indoor objects lit by a rig bind only the room light map, and get its basis
@@ -52,7 +52,7 @@ long g_released = 0;
 
 constexpr uint32_t kCheckEvery = 30;  // frames between two looks at the draws of one set and shader
 constexpr uint32_t kSweepEvery = 300; // frames between two checks for sets the game has let go of
-// 30/09 (floor switches, multi-agent study): sets used to be released after 600 frames (~3 s) without a draw. A floor out
+// 30/09 (floor switches, a study): sets used to be released after 600 frames (~3 s) without a draw. A floor out
 // of view for that long lost its sets, and its furniture flipped between the game's shader and Apex's indoor-object
 // shader when it came back, depending on which draw re-learned the set first. A set is now kept while the game holds its
 // textures (checked every kSweepEvery frames: a reference count, AddRef + Release, no higher than the references Apex

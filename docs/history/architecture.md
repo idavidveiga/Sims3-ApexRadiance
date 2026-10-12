@@ -8,7 +8,7 @@ headings below.
 ### 2026-09-28: combined-build framework (frozen baseline)
 
 **Context:** before the split, Apex lived inside a fork of Sims3SettingsSetter: the **frozen combined build**, tag
-`combined-final`, commit 45e36e2, tree `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`. File paths in this entry
+`combined-final`, commit 45e36e2, tree: The combined tree (private, not published). File paths in this entry
 are relative to that tree. Game addresses are for TS3W.exe Steam 1.67.2.024037 (PE TimeDateStamp `0x52DEC247`, image
 base 0x00400000, no ASLR). Anything marked "(unverified)" or "(inferred ...)" was not confirmed at run time.
 
@@ -21,7 +21,7 @@ base 0x00400000, no ASLR). Anything marked "(unverified)" or "(inferred ...)" wa
   An ASI loader in `Game\Bin` loads every `*.asi` in that folder. README "Installation" lists dxwrapper or Ultimate ASI
   Loader. The test machine's `Game\Bin` held `wininet.dll`, `S3SSApex.asi`, `MonoPatcher.asi` and `Sims3Performance.asi`.
   That `wininet.dll` is the UAL build: README names `wininet.dll` as the Win32 UAL file (inferred, not hashed).
-- The loader loads ASIs in folder enumeration order (PLANO-SEPARACAO section 4, "Output name"). `S3SSApex.asi` sorts before
+- The loader loads ASIs in folder enumeration order (the standalone split plan section 4, "Output name"). `S3SSApex.asi` sorts before
   `Sims3SettingsSetter.asi`.
 - **Never keep two copies of the mod in `Bin`.** The combined build is a whole S3SS. The old name was
   `Sims3SettingsSetter.asi`.
@@ -118,7 +118,7 @@ On `FreeLibrary` (`lpReserved == NULL`) the order is:
 5. `g_hookManager.Cleanup()` (the settings hooks).
 6. `Logger::Handler::Close()`.
 
-UAL never unloads, so in practice this path never runs (PLANO-SEPARACAO 2a.6, 2b hazard 2).
+UAL never unloads, so in practice this path never runs (the standalone split plan 2a.6, 2b hazard 2).
 
 ---
 
@@ -274,7 +274,7 @@ The registry installs all 15 unconditionally, even when nothing is registered.
 - **Priority** is a plain `enum class Priority { First = 0, Early = 25, Normal = 50, Late = 75, Last = 100 }`. Lower runs
   first. Any int can be cast in: the Frame Profiler uses `-1000` (start) and `+1000` (end) (`frame_profiler.cpp`
   `kPrioStart` / `kPrioEnd`).
-- **Equal priorities have no defined order.** `std::sort` is not stable (`SortHooks`; PLANO-SEPARACAO 2d). Several
+- **Equal priorities have no defined order.** `std::sort` is not stable (`SortHooks`; the standalone split plan 2d). Several
   modules sit at `Priority::First` on Present and on the draws. None of them may depend on running before another
   `First` hook.
 - **Dispatch** (`Execute*Hooks`): hold the registry mutex, then call each callback in order.
@@ -906,7 +906,7 @@ HDR output, Native HDR and Ambient Occlusion are **removed** (see [removed-featu
 ##### 10.1 The game's threads (engine side; full map in [engine/main-loop-and-services.md](../engine/main-loop-and-services.md))
 | Thread | What runs there | Evidence |
 |---|---|---|
-| **Render thread = main thread** | Main loop `0x00ECA960`: ServiceManager main services, WorldManager and lot streaming, terrain update `0x00C845C0`, the whole D3D9 frame (BeginScene .. Present), the window message pump | NOTAS-ILUMINACAO "Desempenho: mapa do motor"; `profiler_targets.tsv` (thread = render); `frame_profiler.cpp` header ("The render thread is the main thread") |
+| **Render thread = main thread** | Main loop `0x00ECA960`: ServiceManager main services, WorldManager and lot streaming, terrain update `0x00C845C0`, the whole D3D9 frame (BeginScene .. Present), the window message pump | notebook-ILUMINACAO "Desempenho: mapa do motor"; `profiler_targets.tsv` (thread = render); `frame_profiler.cpp` header ("The render thread is the main thread") |
 | **Simulation (Mono) thread** | `MonoScriptHost::Simulate` (the GC call at `0x00D819AA`, IdleSimulationCycle call at `0x00D81FDE`, sim job pump `ProcessJobs` called at `0x00D81FDA`), ServiceManager sim services `0x0059ED70`, script tasks `0x00D7FE80`, animation ticks. **The game UI runs here**, and the render thread does not wait for it each frame | Notes (same section); `gc_scheduler_patch.cpp` header; `profiler_targets.tsv` |
 | Job workers ("JobThread", affinity mask 2) | `ExecuteJob 0x00599720` on any thread, e.g. resource read jobs `0x0072A4F0`; their mask-1 follow-ups run on the render thread | `frame_budget_patch.cpp` header; `profiler_targets.tsv` |
 | Other game threads | Light tree gather (see `level_light_share.cpp` `g_gatherThread`, which may differ from the render thread) | `level_light_share.cpp` (it counts calls "on another thread") |
@@ -964,7 +964,7 @@ The 28/09 log shows different ids for the two main threads: SmoothPatchPrecise l
 
 #### 11. Apex-owned vs inherited files (combined tree)
 
-From PLANO-SEPARACAO section 1a / 1b. `git diff 5eb2c65` is the merge-base with upstream.
+From the standalone split plan section 1a / 1b. `git diff 5eb2c65` is the merge-base with upstream.
 
 **Apex-owned (new files):**
 - HDR and post: `hdr_output.*`, `hdr_native.*`, `post_scene.*`, `depth_share.h`.
@@ -1002,7 +1002,7 @@ From PLANO-SEPARACAO section 1a / 1b. `git diff 5eb2c65` is the merge-base with 
 #### 13. How to add a new feature (checklist)
 
 1. **Study first.** Read the relevant docs in `docs/engine/` and the feature docs' "Pitfalls" sections. Get evidence:
-   F7 / F8 captures, decompile in `S3SS-dev\re\out`, engine_map. Do not guess addresses or constants.
+   F7 / F8 captures, the private decompile, engine_map. Do not guess addresses or constants.
 2. **New patch file.** Put it in `patches/<name>_patch.cpp` (or a module `.cpp/.h` pair plus a thin patch) and **add it
    to the vcxproj** `ClCompile` list. Files on disk that are not in the project are silently not built.
 3. **Class and registration:**
@@ -1084,16 +1084,16 @@ after the first Present.
 ### 2026-09-28: standalone split plan and decisions
 
 **Context:** the standalone ASI (first `S3SSApex.asi`, renamed `ApexRadiance.asi` the same day) was planned in
-`S3SS-dev\PLANO-SEPARACAO.md`.
+the standalone split plan (private notes).
 
 **Finding:** the plan and the decisions that amended it:
 
 #### 12. The standalone split (planned / in progress)
 
 > **Status (2026-09-28):** in progress in `S3SSApex\`. Nothing in this section describes the frozen code. The source is
-> `S3SS-dev\PLANO-SEPARACAO.md` (written against HEAD `f18cca8` plus the working tree), amended by the **maintainer decisions
+> the standalone split plan (private notes) (written against HEAD `f18cca8` plus the working tree), amended by the **decisions
 > of 2026-09-28** in 12.0. Where the plan and those decisions disagree, the decisions win. Check the standalone's own
-> code and `CLAUDE.md` for the final names.
+> code for the final names.
 
 ##### 12.0 Decisions of 2026-09-28 (they override the plan)
 - **Content baseline = v0.1.0.** Night Lighting, Depth Blur and Edge Smoothing in the standalone start from **v0.1.0**:
@@ -1124,20 +1124,20 @@ after the first Present.
   - **growable callback lists** instead of `RenderCallbacks::kSlots = 4` fixed slots (4.2).
   Section-level names (`D3D9Hooks`, `ExtraHooks`, `RenderCallbacks`, `PostScene`, `DepthShare`) are kept where they
   still fit; read the standalone code for the final API.
-- **Snapshot of the tree (28/09, about 14:45; it changes quickly):** `framework/` had `apex_log.*` (new buffered logger,
+- **Snapshot of the tree (28/09; it changed quickly):** `framework/` had `apex_log.*` (new buffered logger,
   writer thread every 0.5 s, warnings flushed at once), `apex_util.*`, `game_version.*` (PE timestamp table, Steam value
-  checked against `re\TS3W.exe`), plus `d3d9_extra_hooks.*` and `render_callbacks.h` still identical to the combined
+  checked against `TS3W.exe`), plus `d3d9_extra_hooks.*` and `render_callbacks.h` still identical to the combined
   files. `features/*.cpp` and `patches/*.cpp` were byte-identical to `combined-final`, not yet reset to v0.1.0, and
   `patches/` still held `smooth_streaming_patch.cpp`, `gc_scheduler_patch.cpp` and `frame_budget_patch.cpp`. Check the
   tree before assuming either state.
-- **UI** (standalone `CLAUDE.md`): new menu, Violet theme, sidebar plus feature cards, own hotkey Ctrl+Shift+F11.
+- **UI** (standalone project rules): new menu, Violet theme, sidebar plus feature cards, own hotkey Ctrl+Shift+F11.
 
 ##### 12.1 Why a separate ASI
 - Official S3SS's `SaveAll` rebuilds `S3SS.toml` from its own sections only, and its `LoadFromToml` skips unknown patch
   names. **Every Apex key in `S3SS.toml` is lost the first time official S3SS saves.**
 - Both mods would write `S3SS_LOG.txt` (truncate) and `imgui.ini` in `Game\Bin`.
-- Upstream has no LICENSE. Decision: the framework is rewritten rather than carried (12.0); ask sims3fiend before
-  publishing anyway, and credit "based on Sims3SettingsSetter by sims3fiend".
+- Upstream has no LICENSE. Decision: the framework is rewritten rather than carried (12.0). Apex Radiance is published
+  under its own MIT license, with design credit to sims3fiend's Sims3SettingsSetter.
 
 ##### 12.2 Coexisting with official S3SS on one device
 **Two Detours chains:**
@@ -1330,7 +1330,7 @@ Lighting ones (flags 0).
 
 ### 2026-09-29: lock-free registry dispatch
 
-**Context:** own-cost analysis `research\perf2pexcost
+**Context:** own-cost analysis `research\perf2\apexcost
 eport.md` (items P1, P2, P3, M1, M3). Every dispatch took the
 `std::recursive_mutex` and copied a `shared_ptr` (two lock operations and two interlocked reference-count changes), and
 six profiler counting callbacks made every state call of the game run a full dispatch (P1).

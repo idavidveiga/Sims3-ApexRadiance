@@ -5,8 +5,8 @@ same structure: **What it was**, **Why removed**, and **Revival notes** (where t
 pitfalls worth keeping, and what a revival would need). Nothing here describes current behaviour; current features are
 listed in [README.md](README.md).
 
-The removed code is in the combined build (S3SS and Apex in one ASI, git tag `combined-final`, commit 45e36e2, tree
-`%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`), which is the ground truth; file paths below are relative to
+The removed code is in the combined build (S3SS and Apex in one ASI, git tag `combined-final`, commit 45e36e2, in
+the combined tree (private, not published)), which is the ground truth; file paths below are relative to
 that tree. Scope rule: these features are not restored without an explicit request.
 
 | Feature | Removed | Replaced by |
@@ -132,7 +132,7 @@ Before the Picture split, `[qol.hdr]` also held the grade keys; the Picture load
    `output_at_peak.bmp`, `scene_copy.bmp`, `info.txt` (monitor values, used values, scene copy yes/no with the list of
    transitions, % treated as UI, gamma ramp identity/ACTIVE, back-buffer draws with sRGB write, input luminance
    percentiles, % of mid-tones on 8-bit levels, output nits percentiles, negative/invalid counts).
-10. **Standalone plan, if revived** (PLANO-SEPARACAO.md 2c, 2d, step 6): the final pass would move to a registry Present
+10. **Standalone plan, if revived** (the standalone split plan (private notes) 2c, 2d, step 6): the final pass would move to a registry Present
     hook at explicit priority about -500 (after the profiler's frame boundary at -1000, before the `Priority::First`
     frame-boundary hooks of post_scene, depth_blur and HDR itself); bind the back buffer and restore RT0/depth there
     (the current pass bails when RT0 is not the back buffer); no BeginScene/EndScene around it (would re-enter S3SS's
@@ -141,7 +141,7 @@ Before the Picture split, `[qol.hdr]` also held the grade keys; the Picture load
 
 #### Pitfalls (do not repeat)
 - **HDR-mod DXVK fork.** On 28/09 the fork "HDR-mod" (Lilium/EndlesslyFlowering, v3.1-HDR-mod-v0.3.4) was installed in
-  place of what was believed to be "DXVK 2.0" (backup folder `Backups Sims 3\10-DXVK 2.0 original`). That was a misread:
+  place of what was believed to be "DXVK 2.0" (kept in a local backup). That was a misread:
   the game's `d3d9.dll` was already the official DXVK 3.1.1 (hash identical to the release), and the backup is 3.1.1.
   The fork only upgrades formats (`d3d9.enableBackBufferUpgrade` / `upgradeBackBufferTo`, `enableSwapChainUpgrade` /
   `upgradeSwapChainFormatTo = rgba16_sfloat`, `upgradeSwapChainColorSpaceTo = scRGB`, `enableRenderTargetUpgrades` +
@@ -174,7 +174,7 @@ Code: `hdr_native.cpp/.h`, the
 `water_lamps_ps.hlsl`, `g_lampGainOn` in `lot_light_bridge.cpp` (`OnPresent` keeps the bridge hooks on for the gain alone).
 The standalone replaced these calls with 1 or removed them.
 
-#### Lamp gain paths (Stage B, NOTAS "HDR nativo e saida HDR")
+#### Lamp gain paths (Stage B, notebook "HDR nativo e saida HDR")
 
 | Surface | Where the gain went | Source |
 |---|---|---|
@@ -224,7 +224,7 @@ The `ConstGain` helper scales `cK.x` for one draw and restores it; it does nothi
   `L0 = 2 x0 / k`, `slope = 0.5 k (1 - 0.64)`, `offset = 0.8 - slope L0` (for k = 4.2: L0 = 0.523, slope = 0.756,
   offset = 0.404), computed per draw from the bound LightingTweaks.
 - Only shaders without flow control, predication or relative addressing; exact matches only. Validated offline against
-  every PS of `Shaders_Win32.precomp` (scratchpad `hdrnative\sim.pl`, `sim2.pl`; names via `shd\knm.tsv`).
+  every PS of `Shaders_Win32.precomp` (private research folder: `hdrnative\sim.pl`, `sim2.pl`; names via `shd\knm.tsv`).
 - **Mechanics.** Hooks: SetPixelShader `Priority::Last`, DIP/DP `Priority::Late` (after lot_light_bridge, whose
   replaced draws end with Skip and whose own shaders match no rule), CreatePixelShader `Priority::Last`. Patched copies
   are pre-created when the game creates the shader (usually during lot load) into a pool keyed by patched bytecode
@@ -245,7 +245,7 @@ The `ConstGain` helper scales `cK.x` for one draw and restores it; it does nothi
 Screen-space ambient occlusion computed from the scene depth and applied to the finished 3D scene
 before the UI: soft shading under furniture, in corners, around houses and trees. Patch name `AmbientOcclusion`,
 Apex tab, settings `[patches.AmbientOcclusion]` (`intensidade` 1.0 [0-3], `raioM` 2.0 m [0.5-4], `protegerLuz` 0.5 [0-1],
-`visualizar` 0 Normal / 1 Shading only), flagged experimental. The last version was installed 27/09 23:52 ("not tested in
+`visualizar` 0 Normal / 1 Shading only), flagged experimental. The last version was installed 27/09 ("not tested in
 game" in the notes); the log of the 28/09 14:20 session shows it running in game (`[AO] Installed`, `[AO] Resources
 ready (3840x2160, pyramid 3840x2304)`, later `[AO] Uninstalled`), which is when it was judged in play.
 
@@ -253,7 +253,7 @@ ready (3840x2160, pyramid 3840x2304)`, later `[AO] Uninstalled`), which is when 
 
 Decision of 28/09/2026: the deterministic AO was judged **not good enough** in play, and AO (together
 with HDR output and Native HDR) is not carried into the standalone. An earlier SSAO line had already been removed
-on 27/09 after repeated twinkling complaints; maintainer feedback was that it did not work and should be removed completely.
+on 27/09 after repeated twinkling complaints; in-game testing found that it did not work, and it was removed completely.
 
 ### Revival notes
 
@@ -271,10 +271,10 @@ Combined build, git tag `combined-final`, commit 45e36e2:
 - `DepthShare::Request(true)` in `Install()` (released in `Uninstall()`) kept Depth Blur's INTZ depth swap running with
   Depth Blur off.
 - The older SSAO/GTAO/HBIL line: `patches/ssao_patch.cpp` exists in commit b84d5f1 ("Night Remake alpha", the two-scale
-  GTAO + HBIL version, 838 lines) and was deleted in f18cca8 (v0.2.0-alpha). The temporal versions exist only in the
-  maintainer's backups: `Backups\9-S3SS compilado anterior\*.antes-remover-ssao`, `Sims3SettingsSetter.asi.ssao-folhas` (full
-  source with the motion recorder and temporal v3), `ssao_patch.cpp.pre-folhas`.
-- Offline labs (session scratchpad `ao\`): `lab.cpp` (aolab: seams / normals / sao / gtao / probe / gi), `motion.cpp`
+  GTAO + HBIL version, 838 lines) and was deleted in f18cca8 (v0.2.0-alpha). The temporal versions exist only in private local
+  backups (not published): the full source with the motion recorder and temporal v3, and the `ssao_patch.cpp` before the
+  foliage changes.
+- Offline labs (private research folder `ao\`): `lab.cpp` (aolab: seams / normals / sao / gtao / probe / gi), `motion.cpp`
   (analysis of in-game motion recordings), `msao.cpp` (deterministic study: still / shift / motion). Study data in the
   S3SS documents folder: `Profundidade\` (depth dumps `profundidade_N_WxH.f32`, `cor_N.bmp`, `info_N.txt`) and
   `Movimento_1..3\` (motion recordings).
@@ -282,7 +282,7 @@ Combined build, git tag `combined-final`, commit 45e36e2:
 #### History and why each version failed
 
 Note: the notebook's date labels are inconsistent (some entries say 28/09 but precede "27/09, night" entries; the lab
-files are all dated 27/09 17:39-23:52). The order below is the notebook's file order.
+files are all dated 27/09). The order below is the notebook's file order.
 
 1. **SSAO, SAO style (26/09).** Half resolution, 8/12/16 spiral samples with per-pixel rotation (interleaved gradient
    noise), normal from depth, 9-tap depth-aware blur (10% tolerance), depth-guided upsample, multiply blend, fade from
@@ -295,7 +295,7 @@ files are all dated 27/09 17:39-23:52). The order below is the notebook's file o
    2.2, quantisation tolerance z'^2 x 1.2e-7, 2-px normal base, Jimenez multi-bounce).
 3. **Two scales + HBIL (27/09).** Vertical stripes on a hill: the half-res pixel centre fell exactly between two depth
    texels and point sampling picked either (invisible in the lab, which read exact texels). Fix: snap every read to a
-   texel centre, pixel centre `floor(uv*W - 0.25)`. Maintainer feedback asked for less dirty, more intense shade with more on trees: contact
+   texel centre, pixel centre `floor(uv*W - 0.25)`. In-game review called for less dirty, more intense shade with more on trees: contact
    GTAO (r 3.5) + volume GTAO (r 20) + horizon-based indirect light (HBIL), MRT A16B16G16R16F x2, 1572/2750/4022 slots.
 4. **Camera stability (28/09 label).** Complaint: blurry and "moving" when the camera moves. Cause 1: radius in near
    units while near varies 0.2-0.3 with zoom, so the shading grew and shrank; fixed with the per-frame near vote
@@ -316,15 +316,15 @@ files are all dated 27/09 17:39-23:52). The order below is the notebook's file o
    right; the twinkling came from tree canopies: leaves sway, the depth test dropped the history at leaf edges and the raw
    frame showed through. v3 (4 point taps with a 5% depth test, bilinear fallback, age capped at 8) cut still-camera
    pixels jumping >6 levels from 1.2% to 0.24%, moving ~2% to ~1%. Not tested in game.
-8. **SSAO removed (27/09 night)** at the maintainer's request.
+8. **SSAO removed (27/09 night).**
 9. **Deterministic AO, lab study (27/09 night, `msao.cpp`).** **Root cause of every "micro dots" / twinkling report:
    half resolution takes 1 of the 4 depth pixels of each 2x2; a 1-pixel camera move picks another one.** Even raw depth
    changed 1.7 levels (6% of pixels >2) on odd shifts, 0 on even; half-res AO 2.5-3.7 levels, 11-15% >6. Full resolution
    removes it. The "shift" test (move the image 1-4 px, compare with the shifted original, ideal 0) became the metric.
    A fixed spiral sum drew copies of outlines (discarded). A first HBAO candidate (16 fixed directions, 10 geometric
-   steps, R 2.5 m, 5x5 tent) gave zero change with a still camera and 0.27-0.47 levels on shifts; maintainer feedback then found
+   steps, R 2.5 m, 5x5 tent) gave zero change with a still camera and 0.27-0.47 levels on shifts; in-game testing then found
    interiors strange and noisy, which led to the final interleave below.
-10. **Deterministic AO shipped (27/09 23:52), tried in game 28/09, removed 28/09** (judged not good enough in play).
+10. **Deterministic AO shipped (27/09), tried in game 28/09, removed 28/09** (judged not good enough in play).
 
 #### The final design (ambient_occlusion_patch.cpp), worth reviving as is
 
@@ -361,7 +361,7 @@ files are all dated 27/09 17:39-23:52). The order below is the notebook's file o
 
 #### What reviving would need
 
-1. Only on an explicit request (scope rule in CLAUDE.md). Superseded in practice by the GTAO of 2.1.0. Start from `ambient_occlusion_patch.cpp` at `combined-final`
+1. Only on an explicit request (project scope rule). Superseded in practice by the GTAO of 2.1.0. Start from `ambient_occlusion_patch.cpp` at `combined-final`
    and from the lab (`msao.cpp`), not from the SSAO line.
 2. Restore in the standalone's post-scene code: the camera votes (`CameraNear`, `CameraViewProj`, `CameraDepthA`) and
    the order slot 10; keep `DepthShare::Request` (the INTZ swap must run with Depth Blur off).
@@ -375,7 +375,7 @@ files are all dated 27/09 17:39-23:52). The order below is the notebook's file o
 ## Shared evidence for the performance removals
 
 Smooth Streaming, Script GC Scheduler and Service Frame Budget were removed together by the decision of 2026-09-28: no perceptible gain in game. The measurements agree with that:
-- the 28/09 engine study found that limiting lot building and lot lighting did not reduce the spikes (NOTAS "Desempenho:
+- the 28/09 engine study found that limiting lot building and lot lighting did not reduce the spikes (notebook "Desempenho:
   mapa do motor");
 - in the last profiler session (`S3SS_Hitches.txt`, session 2026-09-28 14:20:59), the render-thread services in the
   hitch frames cost well under 1.5 ms each. Typical values: Scene service 0.4-0.6 ms, service 00588A00 up to 1.26 ms,
@@ -444,7 +444,7 @@ premise (lot builds cause the hitches) was not confirmed.
 > `S3SSApex/patches/` is byte-identical at the time of writing).
 >
 > **Status: works, but no measured benefit.** In the 28/09 engine study, limiting lot building and lot lighting did
-> not reduce the frame spikes (NOTAS-ILUMINACAO.md, last section, "Medicoes"). The feature is kept because Night
+> not reduce the frame spikes (the lighting notebook (private notes), last section, "Medicoes"). The feature is kept because Night
 > Lighting depends on its localized terrain relight, and the terrain spreading is harmless. Read "Pitfalls" before
 > tuning it again.
 
@@ -491,7 +491,7 @@ never rename them."
 shortSlices || lighting wanted), slices, lighting (`WantLight()` = lightingCap || currentLotLightingCap), and terrain
 spread (`PartsMatchInstalled`).
 
-**Values seen in the maintainer's config.** The session log of 2026-09-28 14:20 (`S3SS_LOG.txt`) has "frame budget true / 16 ms,
+**Values seen in a test config.** The session log of 2026-09-28 14:20 (`S3SS_LOG.txt`) has "frame budget true / 16 ms,
 slices true / 20-35 ms, lighting cap true / 10 ms, terrain spread true / 64 per frame". Those slice and lighting values
 equal the game's own, so in that session only the 16 ms shared frame gate and the terrain queue were doing anything.
 
@@ -711,7 +711,7 @@ None.
 ##### Interactions
 
 - **S3SS Lot Streaming Optimizations** (`patches/lot_streaming_optimizations_patch.cpp`, S3SS, all versions). The two
-  are complementary, with no byte overlap (PLANO-SEPARACAO.md §3). LSO:
+  are complementary, with no byte overlap (the standalone split plan §3). LSO:
   - replaces `Lot::AddLotObjectsToScene` (0xAC1130) with a JMP to its object throttle (`objectsPerLot` 2, `delayMs` 16);
   - detours `WorldManager::Update` 0xC6D570 for the map-view blocker (sets WorldManager+0x258);
   - patches the camera-view bias JZ at 0xC63015 to a JMP;
@@ -739,7 +739,7 @@ None.
 - **Service Frame Budget:** independent. The lot pass runs inside the WorldManager service (0xC7E3C0), which is not one
   of the four services Frame Budget limits. See [Service Frame Budget](#service-frame-budget).
 - **Script GC Scheduler:** independent (simulation thread).
-- **Standalone split:** PLANO-SEPARACAO.md §3 policy is "cooperate": defer the install until S3SS's startup patches are
+- **Standalone split:** the standalone split plan §3 policy is "cooperate": defer the install until S3SS's startup patches are
   in, and byte-verify every site at install (already done by `VerifySite`).
 
 ##### Known limitations
@@ -760,7 +760,7 @@ None.
   - `GameUtils_Begin/End/ResetLoadEvent` are empty stubs (0xC0FD60 = `ret`).
 
 ##### Pitfalls and failed approaches
-- **Measured: no spike reduction.** NOTAS-ILUMINACAO.md, section "Desempenho: mapa do motor (28/09)":
+- **Measured: no spike reduction.** the lighting notebook, section "Desempenho: mapa do motor (28/09)":
   - about 5 ms per frame is "unattributed" (outside the render);
   - spikes above 50 ms create about 16 textures;
   - limiting lot and light work (Smooth Streaming) did not reduce the spikes.
@@ -885,7 +885,7 @@ hitches are most visible, and to catch up when the camera rests.
 
 Two facts limit what this can achieve:
 - The render thread does **not** wait for the simulation thread every frame. The UI runs on the simulation thread
-  (NOTAS-ILUMINACAO.md, "Desempenho: mapa do motor (28/09)"). GC time therefore reaches the frame only indirectly.
+  (the lighting notebook, "Desempenho: mapa do motor (28/09)"). GC time therefore reaches the frame only indirectly.
 - The long, non-interruptible parts of a collection (`GC_finish_collection`, the forced finish after 40 aborted
   attempts, allocator-triggered blocking collections) are not time-boxed by the game, and this patch cannot split them.
 
@@ -1021,7 +1021,7 @@ None.
   - Scheduler → "Turn off \"Chunky Patch - Disable GC_try_to_collect()\" first: both patches take over the same
     GC_try_to_collect call."
   - GCTryToCollect → "Turn off \"Script GC Scheduler\" first: both patches take over the same GC_try_to_collect call."
-    This check is an Apex edit to the upstream file (PLANO-SEPARACAO.md §1a, diff +30..35). **Upstream S3SS does not
+    This check is an Apex edit to the upstream file (the standalone split plan §1a, diff +30..35). **Upstream S3SS does not
     have it.**
 - **S3SS "GC Finalizer Throttle"** (`GCFinalizeThrottle`). It patches the finalizer loop right after the call: the
   `cmp eax,0C8h` at 0x00D81A1D (200 → 32767) and the `jnz` at 0x00D81A37 (NOPed). PLANO lists the pattern starts
@@ -1040,7 +1040,7 @@ None.
     the scheduler then falls back to source 2 (profiler comment, approx. lines 62-63).
 - **LSO map-view blocker:** see camera source 2 above.
 - **Smooth Patch (S3SS):** the tick rate sets how often Simulate passes, and therefore how often this hook runs.
-- **Standalone split** (PLANO-SEPARACAO.md §3, table row "Script GC Scheduler"). The Apex guard inside S3SS's file is
+- **Standalone split** (the standalone split plan §3, table row "Script GC Scheduler"). The Apex guard inside S3SS's file is
   lost in the split, and upstream S3SS only checks `expectedBytes {E8}`, so it would NOP over Apex's redirected call.
   Planned policy, **not implemented in the combined code**:
   - **Refuse at install** if the 5 bytes are `90 x5`, or if `S3SS.toml [patches.GCTryToCollect].enabled = true`.
@@ -1191,7 +1191,7 @@ In the CAS SimService it is worse:
 - a slice-limited frame therefore costs "phase A up to the slice + one full build step";
 - the source comment attributes the 9-15 ms frames measured to that, and the 40-147 ms frames to single build steps.
 
-NOTAS-ILUMINACAO.md, "Desempenho: mapa do motor (28/09)": "Services on the render thread with their own 5 ms budget
+The lighting notebook, "Desempenho: mapa do motor (28/09)": "Services on the render thread with their own 5 ms budget
 each (checked only between items) ... Several in the same frame add up to 10-20 ms = typical spikes." ObjectDesigner
 0xB3A960 has no budget and is not handled.
 
@@ -1366,7 +1366,7 @@ None.
   - Its per-service names still work: it keys by the vtable entry, which is unchanged.
   - Profiler "Services (self)" includes the hooks' own cost.
   - No byte overlap: the profiler hooks neither these entries nor the patched bytes.
-- **PLANO-SEPARACAO.md §3** lists "frame_budget_patch (another agent is writing it) | Unknown". Now resolved: it touches
+- **The standalone split plan §3** lists "frame_budget_patch (in progress at the time) | Unknown". Now resolved: it touches
   none of Smooth Patch's bytes (0xEC9FBA, 0xD81FC3..0xD81FE3) and not the 0xEC9F00 prologue. Per the plan, it goes
   through the same `ConflictGuard` and cooperates. No S3SS patch touches these sites (PLANO §3 list).
 - **Smooth Streaming:** independent. The lot pass is inside the WorldManager service (0x00C7E3C0), which is not limited
@@ -1395,7 +1395,7 @@ None.
     jobs up to 7 ms. Example: hitch #50193, CAS SimService 40.78 ms in one frame.
   - The main-thread jobs are job 0x007297C0, the resource finalize job.
 
-  Separately, the notes record that limiting lot and light work (Smooth Streaming) did not reduce the spikes (NOTAS
+  Separately, the notes record that limiting lot and light work (Smooth Streaming) did not reduce the spikes (notebook
   "Medicoes", 28/09). The services, not the lot pass, are the next suspect.
 - **Unit changes need the value and the unit changed together.** 0x00599A20 is patched in one write (load + `push 3`).
   The compositor unit is patched before the first field write, which gives a harmless 5 µs for at most one frame. On

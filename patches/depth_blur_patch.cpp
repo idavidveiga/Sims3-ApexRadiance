@@ -55,7 +55,7 @@ constexpr D3DFORMAT kFmtINTZ = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 
 constexpr int kRetryFrames = 120;
 constexpr float kMapFadeSeconds = 0.3f;
 // With the blur on as soon as the world gate opened (WorldSession::Settled, 3 s), the whole screen was blurred for about a
-// second at the end of a load, before the world showed (user report, 2026-10-05; the cause, unfinished first frames, is
+// second at the end of a load, before the world showed (reported in play; the cause, unfinished first frames, is
 // inferred, not measured). So the blur waits this long after the gate opens and then fades in.
 constexpr unsigned long long kWorldHoldMs = 2000;
 constexpr float kWorldFadeInSeconds = 1.0f;
@@ -963,7 +963,7 @@ void BlurEffect(IDirect3DDevice9* dev) {
         g.worldIn = 0;
         return;
     }
-    // A frozen screen over a loaded world (user 05/10: the save screen came out fully blurred; the game shows a still
+    // A frozen screen over a loaded world (the save screen came out fully blurred; the game shows a still
     // image there and draws almost nothing with depth, so the depth read is not the picture shown): no blur that frame.
     // A drawn world writes depth in hundreds of draws.
     {
@@ -1023,8 +1023,8 @@ bool NightSettled() {
     const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");
     return !night || !night->IsEnabled() || NightLighting::LoadSettled();
 }
-// The shared screen-effects gate (features/world_session.h) waits only for the world's terrain to be drawn (user 06/10:
-// the map should come up with the effects on; the after-load refresh came 3 .. 10 s later). The load screen draws no
+// The shared screen-effects gate (features/world_session.h) waits only for the world's terrain to be drawn (the
+// map should come up with the effects on; the after-load refresh came 3 .. 10 s later). The load screen draws no
 // terrain, and what the interactive loading's overlay covers is the world itself (the effects never touch the UI).
 bool NightLive() {
     const ApexPatch* night = PatchManager::Get().Find("NightTerrainRelight");

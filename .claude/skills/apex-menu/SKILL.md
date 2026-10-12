@@ -26,7 +26,7 @@ Read only the relevant sections of `docs/ui.md` and the affected feature documen
 Run the read-only audit from any directory, passing the repository root when it cannot be inferred from the script location:
 
 ```sh
-perl .claude/skills/apex-menu/audit.pl .
+perl tools/menu_audit.pl .
 ```
 
 It reports missing translation entries, copy guideline breaks, undocumented settings, and settings omitted from a local `ResetDefaults()`. It is a heuristic: manually check runtime/generated text, reset paths outside the feature file, profile and preset behavior, and whether each report is applicable. Developer-only English is allowed; investigate other findings rather than blindly changing text. Run it again after UI changes.

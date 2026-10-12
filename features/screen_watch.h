@@ -1,10 +1,9 @@
 #pragma once
-// Screen pixels during a recording (06/10, user: "can we build something to measure better what happens when the lights
-// update?"). While a recording (F8) runs, 33 pixels are read from the back buffer at every frame, without stalling it
+// Screen pixels during a recording (measures what the player sees when the lights update). While a recording (F8) runs, 33 pixels are read from the back buffer at every frame, without stalling it
 // (StretchRect into a small render target, read back a few frames later once an event query says the copy is done): a
 // column of 9 around the mouse (the screen's centre when the mouse is over the Apex menu or outside the game), so pointing
 // at the line between two floors measures both stories at once, and a grid of 6 x 4 over the whole screen. They are copied
-// before the Apex menu and notices are drawn (the first recording, 06/10 13:52, measured the menu's own pixels). The
+// before the Apex menu and notices are drawn (the first recording measured the menu's own pixels). The
 // recorder writes the samples ("Screen pixels.csv") and, for every lamp edit, when each point began to change, when it
 // settled and whether it went the wrong way first (Recording.txt, "Light updates").
 #include <d3d9.h>

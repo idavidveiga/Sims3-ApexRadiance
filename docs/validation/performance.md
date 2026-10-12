@@ -14,7 +14,7 @@ described in [features/performance/README.md](../features/performance/README.md)
 | Harness | Covers | Run | Needs |
 |---|---|---|---|
 | `research\port169\sigcheck.pl` (outside the repository) | Every `GameAddr` signature matches once at the expected place, alternates included | Perl, against `TS3W.exe` | Game executable |
-| `perl .claude/skills/apex-menu/audit.pl .` | Menu texts, translations, documented keys, ResetDefaults | From the repository root | Perl |
+| `perl tools/menu_audit.pl .` | Menu texts, translations, documented keys, ResetDefaults | From the repository root | Perl |
 
 Per-switch harnesses (`tools/dxt_test`, `tools/refpack_test`, `tools/cas_sort_test`) are listed on their switch's page.
 

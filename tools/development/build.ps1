@@ -21,7 +21,7 @@ $recipePath = Join-Path $repo "outputs/build/$Flavor-recipe.json"
 $recipe | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $recipePath -Encoding utf8
 Push-Location $repo
 try {
-    & node (Join-Path $repo '.agents/skills/apex-compile-project/scripts/build.mjs') run --repo $repo --recipe $recipePath
+    & node (Join-Path $repo 'tools/development/build_runner.mjs') run --repo $repo --recipe $recipePath
     if ($LASTEXITCODE -ne 0) { throw "$Flavor build failed." }
     $artifact = Join-Path $output 'ApexRadiance.asi'
     Get-FileHash -LiteralPath $artifact -Algorithm SHA256

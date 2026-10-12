@@ -15,25 +15,25 @@ had to be judged before coming back.
 
 **Finding:** the audit below, as written at the time (the per-change file and line references are to the combined tree).
 
-Every change between **v0.1.0** (combined tree commit `b84d5f1`, release `nightremake-v0.1.0-alpha`, 27/09 19:13) and
-**`combined-final`** (commit `45e36e2`, 28/09 14:23) in the lighting and rendering chain and in everything else that runs
+Every change between **v0.1.0** (combined tree commit `b84d5f1`, release `nightremake-v0.1.0-alpha`, 27/09) and
+**`combined-final`** (commit `45e36e2`, 28/09) in the lighting and rendering chain and in everything else that runs
 per frame, with a re-add recommendation for the standalone. The intermediate release **v0.2.0** is commit `f18cca8`
-(28/09 02:14). There are only these two commits after v0.1.0, so each change is dated by commit plus the chronological
-notes `S3SS-dev\NOTAS-ILUMINACAO.md` (Portuguese).
+(28/09). There are only these two commits after v0.1.0, so each change is dated by commit plus the chronological
+lighting notebook (private notes).
 
-Tree for all paths below: `%USERPROFILE%\Desktop\S3SS-dev\Sims3SettingsSetter\`. Line numbers are in `combined-final`
+Tree for all paths below: the combined tree (private, not published). Line numbers are in `combined-final`
 unless marked `b84d5f1`. Diff commands: `git diff b84d5f1 f18cca8 -- <file>` (v0.2.0) and
 `git diff f18cca8 combined-final -- <file>` (combined-final).
 
 Evidence used besides the code:
-- `Documents\Electronic Arts\The Sims 3\S3SS\S3SS_LOG.txt` of the last combined-final session (started 28/09 14:20:59);
-- the Frame Profiler output `S3SS_Hitches.txt` of that same session (profiler session "2026-09-28 14:20:59");
-- the maintainer's configs: current `S3SS.toml`, and the backups `Backups Sims 3\11-antes da reorganizacao Apex\S3SS.toml.antes-remover-splitlevel`
-  (28/09 02:07, the config used while playing v0.1.0), `12-...\S3SS.toml`, `14-...\S3SS.toml`;
-- `re\TS3W.exe` (bytes at `0x006BC020` and `0x00C294CE`, and a scan for calls to `0x006BC020`).
+- `Documents\Electronic Arts\The Sims 3\S3SS\S3SS_LOG.txt` of the last combined-final session (started 28/09);
+- the Frame Profiler output `S3SS_Hitches.txt` of that same session (profiler session of 2026-09-28);
+- the test configurations: the then-current `S3SS.toml` and local backups of it (28/09, the config used while playing
+  v0.1.0, and two later copies);
+- `TS3W.exe` (bytes at `0x006BC020` and `0x00C294CE`, and a scan for calls to `0x006BC020`).
 
 Status column values: **approved** (tested in game and kept), **reported fix** (a bug reported from play), **experiment**
-(the mod's own idea), **infrastructure** (enables other changes), **removed** (dropped from the standalone by the maintainer decisions of 28/09, see
+(the mod's own idea), **infrastructure** (enables other changes), **removed** (dropped from the standalone by the decisions of 28/09, see
 [architecture.md](architecture.md#120-decisions-of-2026-09-28-they-override-the-plan) 12.0).
 
 #### 1. Summary, in suggested re-add order
@@ -47,13 +47,13 @@ Lowest risk and highest player value first. "Cost" means stability and fluidity 
 | 2 | Lot-edge story gate (`BakeLevelStub`, `0xC294D9`) | combined-final | reported fix | removes the straight cut at lot borders of houses on a foundation | very low (a call per lot light per chunk bake) | **Only if #0 is not used.** Redundant with the Split-Level fix (bypassed when it is on) |
 | 3 | Batched shader-first-draw log lines (`NoteShader`) | combined-final | experiment | none | lowers cost (no disk write per new shader) | Optional, low value: the standalone's logger is already buffered |
 | 4 | Relight reconciliation + localized relight (`Reconcile`, `Settle`, chunk `+0x55`) | combined-final | reported fix (automatic relight: lamps switched on later kept a cut) | ground under a changed lamp updates by itself | **high**: 12-60 ms hitches about once a second (evidence 2.1) | **Re-add only after a redesign and a test** (throttle, lit lamps only, no churn from streaming) |
-| 5 | Gate darkness fix (rig kept, ground light >= 1, facing `sat(N.y + 1)`) | combined-final | reported fix | gates and doors never darker than the game; objects overall brighter and flatter | low CPU, a few ALU | **Keep out for now** (maintainer feedback: objects looked no better, or worse). Retest alone, without #6, only if dark gates come back |
-| 6 | Object per-pixel kernel and lamp choice (W/d^2, no cut-off) | combined-final | experiment | much more lamp light on objects 8-20 m from lamps (5x at 10 m), faint wash from lamps up to ~140 m | low | **Keep out** (maintainer feedback: objects looked worse) |
+| 5 | Gate darkness fix (rig kept, ground light >= 1, facing `sat(N.y + 1)`) | combined-final | reported fix | gates and doors never darker than the game; objects overall brighter and flatter | low CPU, a few ALU | **Keep out for now** (observed in game: objects looked no better, or worse). Retest alone, without #6, only if dark gates come back |
+| 6 | Object per-pixel kernel and lamp choice (W/d^2, no cut-off) | combined-final | experiment | much more lamp light on objects 8-20 m from lamps (5x at 10 m), faint wash from lamps up to ~140 m | low | **Keep out** (observed in game: objects looked worse) |
 | 7 | Shader pre-creation at `CreatePixelShader` / `CreateVertexShader` | combined-final | experiment | none | medium risk, no measured gain (log: 0 copies made) | **Keep out** |
 | 8 | HDR lamp-gain plumbing (`ConstGain`, `DrawLampGainOnly`, `LampScaleAfter`, water `params.z`, foliage gain copy) | v0.2.0 + combined-final | removed | none in SDR (gain = 1) | small, inert | **Keep out** (HDR removed) |
 | 9 | PostScene camera votes (`CameraNear`, `CameraViewProj`, `CameraDepthA`) | v0.2.0 | removed (AO) | none | 7 constant reads per draw for the first 24 scene draws, every frame | **Keep out** (only AO used them; profiler has another source) |
-| 10 | Picture filters (SDR) | combined-final | kept by decision | strong: the maintainer's config had exposure -0.93 EV, sharpen 1.5, clarity -0.46, saturation 0.87, shadows -0.35 | 1 scene copy + downsample chain + full-screen pass per frame, a Priority::First hook on every draw | Kept. **A/B test it off** against v0.1.0 (section 2.2) |
-| 11 | SMAA 1x in Edge Smoothing (default method) | v0.2.0 | kept by decision | sharper than FXAA; the maintainer ran **Ultra** | 3 passes + 4 timestamp queries per frame; 3 large D3DCompile at first use | Kept. **A/B test FXAA** (what v0.1.0 used with the same config) |
+| 10 | Picture filters (SDR) | combined-final | kept by decision | strong: the test config had exposure -0.93 EV, sharpen 1.5, clarity -0.46, saturation 0.87, shadows -0.35 | 1 scene copy + downsample chain + full-screen pass per frame, a Priority::First hook on every draw | Kept. **A/B test it off** against v0.1.0 (section 2.2) |
+| 11 | SMAA 1x in Edge Smoothing (default method) | v0.2.0 | kept by decision | sharper than FXAA; the tests ran **Ultra** | 3 passes + 4 timestamp queries per frame; 3 large D3DCompile at first use | Kept. **A/B test FXAA** (what v0.1.0 used with the same config) |
 | 12 | Depth Blur off in map view (`MapView::IsOpen`, fade 0.3 s) | v0.2.0 | kept by decision | map view stays sharp | negligible | Kept |
 | 13 | Buffered logger (flush thread, 1 s) | combined-final | kept (standalone has its own `apex_log`) | none | lowers cost | Kept (own implementation) |
 | 14 | Frame Profiler | combined-final | kept, dev only, off by default | none | when on: 27 game detours + 2 hooks on every draw | Keep dev-only; **it was on in the combined-final session that was judged** |
@@ -86,7 +86,7 @@ In order of weight of evidence.
 - Caveat: Smooth Streaming (terrain spread 64 chunks per frame) and the Frame Profiler were also on in that session.
 
 ##### 2.2 Visuals: the post-processing and the config, not only the lighting code
-The maintainer's config changed between v0.1.0 play (backup 11, 28/09 02:07) and now:
+The test config changed between v0.1.0 play (backup of 28/09) and now:
 
 | Setting | v0.1.0 play | now | Effect |
 |---|---|---|---|
@@ -105,8 +105,8 @@ and FXAA before judging any re-added change.**
 
 ##### 2.3 Visuals: Split-Level Lighting Fix removed in v0.2.0 (change #0)
 - v0.1.0 still built `patches\split_level_lighting_fix_patch.cpp` (an upstream S3SS patch). It rewrites
-  `BaseLight::GetLotID` to return 0. It was **enabled** while playing v0.1.0 (backup 11 line 153-154).
-- `re\TS3W.exe`: `0x006BC020` = `8B 81 C0 00 00 00 8B 91 C4 00 00 00 C3` (GetLotID). Only two direct callers:
+  `BaseLight::GetLotID` to return 0. It was **enabled** while playing v0.1.0 (lines 153-154 of that backup).
+- `TS3W.exe`: `0x006BC020` = `8B 81 C0 00 00 00 8B 91 C4 00 00 00 C3` (GetLotID). Only two direct callers:
   `0x006B635D` (the outdoor-room world-light gather, [engine/room-light-maps.md](../engine/room-light-maps.md)) and
   `0x00C294D0` (the terrain bake, right before the story gate `cmp [edi+0D0h],0` at `0x00C294D9`).
 - So in v0.1.0, with the fix on, lot lamps of every story passed the bake's lot/story test (no lot-edge cut on houses on
@@ -124,7 +124,7 @@ and FXAA before judging any re-added change.**
   `sat(N.y + 1) x max(1, strength)` instead of `(0.5 + 0.5 N.y) x strength`.
 - For a street lamp at 10 m the new kernel gives 0.39 cos vs 0.08 (about 5x); at 18 m 0.12 vs 0. Upright faces get the full
   ground light instead of half. Result: more light everywhere on objects, less falloff contrast. Consistent with the
-  maintainer feedback that objects looked no better, or worse.
+  in-game observation that objects looked no better, or worse.
 
 ##### 2.5 Stability: new code on threads and in create hooks (change #7)
 - The shader pre-creation hook runs inside the registry's `CreatePixelShader` / `CreateVertexShader` dispatch, which holds
@@ -166,7 +166,7 @@ not track), so its bookkeeping would under-count, which is harmless for relighti
 exports world y and the normal and the group's rig is outdoors: `rT = max(atlas x cB.x, vC, Q x cS.y)`, Q = the sum over
 8 lamps of `colour x min(1, W x sat(N.l) / d^2)` at the pixel's world position, W = 0.4 x range. Lamps are chosen once
 per group around the rig centre, so they do not change with the camera. Indoor railings and stairs (rig mode 0) keep the
-ground light only. Evidence for the law: NOTAS 28/09 (`probe7_cerca`), and the comment on `AppendPixelLamps`
+ground light only. Evidence for the law: Notebook 28/09 (`probe7_cerca`), and the comment on `AppendPixelLamps`
 (`shader_patches.cpp` 661): the atlas around a street-lamp pair follows `2 w cos / d^2`, w = 0.2 x range x intensity.
 
 ##### 4.2 Pieces it needs (all from `combined-final`)
@@ -246,7 +246,7 @@ See section 4. Kind: experiment, then **approved after in-game testing**. Re-add
 - What: the bake `FUN_00C292B0` drops lot lights whose story `light+0xD0 != 0`. The stub keeps story 0 as the game does,
   keeps upper-story outdoor lot lamps (type 3..6, alive, enabled, room 0, lit) and refuses basements.
 - Look: no straight cut at the border of lots with a house on a foundation (evidence `probe2_clara/escura`, lot
-  `6C11001B51A4D8B0`, NOTAS "Corte na borda do lote", 28/09 tarde).
+  `6C11001B51A4D8B0`, notebook "Corte na borda do lote", 28/09 tarde).
 - Cost: one `__stdcall` with `__try` per lot light that reaches the gate, only during a bake. Negligible.
 - Kind: **reported fix**, but the bug was introduced by #0's removal.
 - Recommendation: redundant when Split-Level is on in official S3SS. Re-add only if Split-Level is not to be used
@@ -298,7 +298,7 @@ See section 4. Kind: experiment, then **approved after in-game testing**. Re-add
 - Cost: ~6-10 ALU more per object pixel; no CPU change.
 - Kind: **reported fix** (dark gate). Part of the darkness came from the configured `forcaNosObjetos = 0.38`, which in v0.1.0
   also scales the ground light on objects (0.19 x the ground light at the gate).
-- Recommendation: keep out (maintainer feedback: objects looked no better, or worse). If dark gates return on the v0.1.0 baseline
+- Recommendation: keep out (observed in game: objects looked no better, or worse). If dark gates return on the v0.1.0 baseline
   with `forcaNosObjetos` at 0.57 or 1.0, try only `ObjectGroundStrength` (ground term >= 1) first, then the facing
   factor, each tested alone; never together with #6.
 
@@ -359,16 +359,16 @@ See section 4. Kind: experiment, then **approved after in-game testing**. Re-add
   maximum) the whole image, so lamp pools read dimmer and gradients harsher than in v0.1.0.
 - Cost: scene copy (`StretchRect`), 1/2-1/4-1/8 downsamples when clarity is non-zero, one full-screen pass, deband;
   a cheap hook on every draw.
-- Kind: experiment, kept by maintainer decision.
+- Kind: experiment, kept by project decision.
 - Recommendation: kept; judge every lighting re-add with Picture off first.
 
 ##### #11 SMAA 1x (v0.2.0)
 - Files: `patches/edge_smoothing_patch.cpp` (`SmaaShaders`, `CreateSmaaLookups`, `RunSmaa`, timestamp queries),
   `third_party/smaa/*`. New keys `metodo` (default 1 = SMAA) and `qualidadeSmaa` (default 2).
-- Look: sharper edges and textures than FXAA. The maintainer ran Ultra (threshold 0.05, 32/16 search steps).
+- Look: sharper edges and textures than FXAA. The tests ran Ultra (threshold 0.05, 32/16 search steps).
 - Cost: 3 passes plus 2 extra render targets; 4 queries issued per frame (read back non-blocking); the three passes are
   compiled from the full SMAA.hlsl with `OPTIMIZATION_LEVEL3` at first use (a one-off hitch when turned on).
-- Kind: experiment, kept by maintainer decision. v0.1.0 with the same config runs FXAA quality 2.
+- Kind: experiment, kept by project decision. v0.1.0 with the same config runs FXAA quality 2.
 - Recommendation: kept; compare against FXAA once.
 
 ##### #12 Depth Blur off in map view (v0.2.0)
@@ -410,7 +410,7 @@ still turns both on). Strings only in `level_light_share.cpp`, `lightmap_smooth.
 - `d3d9_hook_registry.cpp/.h`: `CallOriginalDrawIndexedPrimitive`, `CallOriginalDrawPrimitive`,
   `CallOriginalSetVertexShaderConstantF` (for the lot map probe, dev), profiler timing in the draw dispatch.
 - `hdr_native.cpp/.h` (Native HDR; hooks only with HDR on and a lamp gain other than 1), `patches/ambient_occlusion_patch.cpp`
-  (replaced `ssao_patch.cpp`, which v0.1.0 had; off in the maintainer's config), `patches/lot_map_probe_patch.cpp` (dev,
+  (replaced `ssao_patch.cpp`, which v0.1.0 had; off in the test config), `patches/lot_map_probe_patch.cpp` (dev,
   idle unless capturing): removed or dev-only.
 - Unchanged since v0.1.0: `d3d9_extra_hooks.*`, `floor_atlas_table.h`, `wall_lamp_table.h`, `roof_ps*.hlsl/.h`,
   `roof_snow_lamps*`, `shader_ids.h`, `level_light_share.cpp` logic, `lightmap_smooth.cpp` logic,
@@ -433,5 +433,5 @@ Update this table when a change comes back; later entries in the notes win over 
 
 **Outcome:** used as the re-add plan for the standalone: Split-Level parity first, fence per-pixel lamps first among
 the code changes, the relight reconciliation only after a redesign. The state-tracking table above was not maintained;
-later entries in the feature history pages and in `NOTAS-ILUMINACAO.md` supersede this audit. PostScene's camera votes
+later entries in the feature history pages and in the lighting notebook supersede this audit. PostScene's camera votes
 returned with Ambient Occlusion in 2.1.0.

@@ -245,8 +245,8 @@ void SetShore(bool on) {
     }
 }
 
-// ---- recommendations: DXVK and official Sims3SettingsSetter (user, 30/09: "DXVK is recommended for the mod to work well;
-// suggest both at the start when missing; when installed, only Settings shows them") ----
+// ---- recommendations: DXVK and official Sims3SettingsSetter (DXVK helps the mod work well; both are suggested at the
+// start when missing; when installed, only Settings shows them) ----
 
 constexpr const char* kRecommendText = APEX_PRODUCT_NAME " works on its own, but it pairs well with Sims3SettingsSetter by sims3fiend: a frame "
                                        "rate limiter, fewer stutters and many extra game settings.";
@@ -686,7 +686,7 @@ void PictureRows(int tab) {
     ImGui::PopID();
 }
 
-// Image > Banding Fix (user, 30/09: everything against color steps in one place; its own page since 06/10): the Banding Fix card (scene_dither.cpp:
+// Image > Banding Fix (everything against color steps in one place, on its own page): the Banding Fix card (scene_dither.cpp:
 // switch, grain Strength) with Picture's Smooth gradients (the deband), which follows the Banding Fix's switch
 void BandingTabContent() {
     ApexUi::IconNote(IconId::Info, "Still being tested: if anything looks wrong or the game crashes, turn it off");
@@ -704,7 +704,7 @@ void BandingTabContent() {
     });
 }
 
-// Image > Banding Fix (user 06/10: its own page; not part of the built-in profiles)
+// Image > Banding Fix (its own page; not part of the built-in profiles)
 void BandingPage() {
     ApexUi::PageTitle("Banding Fix", "Smooth light and gradients, with no color steps");
     BandingTabContent();
@@ -1321,8 +1321,8 @@ void ReportListCard() {
     ImGui::PopID();
 }
 
-// The capture session, first on the page and drawn apart (user, 30/09: "the sessions part should be higher up, clearer,
-// a bit different from the others with a nicer UI"): a violet-edged card with a big icon, the three steps as numbered
+// The capture session, first on the page and drawn apart (higher up, clearer and set off from the other cards):
+// a violet-edged card with a big icon, the three steps as numbered
 // bubbles and one large button; while a session is open, a pulsing dot, its time and count, the captures so far and the
 // End button.
 void SessionHeroCard() {
@@ -2992,7 +2992,7 @@ void VersionButton(float x, float y, float h) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ApexUi::kSpace4 * u, ApexUi::kSpace3 * u));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 12.0f * u);
     if (ImGui::BeginPopup("##WhatsNew")) {
-        // The last kShown versions, newest first, in a list that scrolls past kListH (07/10, user: "scroll, always the last 8")
+        // The last kShown versions, newest first, in a list that scrolls past kListH (always the last 8)
         constexpr int kShown = 8;
         const float kListH = 520.0f * u;
         const float wrap = ImGui::GetContentRegionAvail().x - ApexUi::kSpace4 * u - ImGui::GetStyle().ScrollbarSize;
@@ -3312,7 +3312,7 @@ void UpdateMenuAvailability() {
         g_worldEpoch.fetch_add(1);
         Captures::OnWorldSessionChanged(); // the game shows its UI again after a load
     }
-    // 06/10 (user): the menu and the start note from the world selector on (the startup loading window gone), not only
+    // The menu and the start note from the world selector on (the startup loading window gone), not only
     // once a world is drawn; the screen effects still wait for the world (WorldSession::InWorld)
     (void)night;
     const bool menuReady = session || WorldSession::LoaderDismissed();
@@ -3479,12 +3479,12 @@ void Banner() {
     ImGui::End();
 }
 
-// ---- The start note (user's pick 30/09, "A Ã‚Â· compact pill"): the logo, "Apex Radiance is ready", a dot, "press" and the
+// ---- The start note (a compact pill): the logo, "Apex Radiance is ready", a dot, "press" and the
 // menu key in light violet, in a dark rounded pill with a faint violet border, top-center, at every start (never
 // takes input; fades out). Starts only after the loaded-world/menu gate settles. Each frame counts at most 100 ms
 // so a loading stall does not use up the note; opening the menu ends it. ----
 constexpr int kHintMs = 4000;
- // 4 s (user 06/10)
+ // 4 s
 int g_hintLeftMs = 0;                  // time on screen left (render thread)
 bool g_hintStarted = false;            // started once this start
 unsigned long long g_hintLastDraw = 0; // the previous Hint() frame
