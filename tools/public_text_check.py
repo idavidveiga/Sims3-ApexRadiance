@@ -2,6 +2,8 @@
 """Checks public text against docs/PUBLIC-TEXT-POLICY.md: changed files, commit messages, PR titles and bodies.
 
 Exit code 1 when a rule matches outside the exceptions in tools/public_text_allow.txt. Standard library only.
+Personal names are not stored in the repository: set PUBLIC_TEXT_PERSONAL to a comma-separated list of terms (a
+repository secret in CI, an environment variable locally).
 """
 import argparse
 import fnmatch
@@ -13,7 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 RULES = [
     ("local-path", re.compile(r"[A-Za-z]:\\\\?Users\\\\?|/Users/[A-Za-z]|/home/[a-z]|%USERPROFILE%\\Desktop|\\Desktop\\|Backups Sims 3|\bscratchpad\b", re.I)),
-    ("personal", re.compile(r"\bluiz\b|andreolla|@gmail\.com", re.I)),
+    ("personal", re.compile("|".join([r"@gmail\.com"] + [re.escape(t.strip()) for t in
+                                     os.environ.get("PUBLIC_TEXT_PERSONAL", "").split(",") if t.strip()]), re.I)),
     ("conversation", re.compile(
         r"\b(the )?(user|maintainer)('s)? (asked|said|says|chose|approved|confirmed|preferred|prefers|requested|wants|wanted|reported|feedback|rule|choice|decision)\b"
         r"|\buser-approved\b|\bat the user's request\b|\(user[,)]|\buser rule\b|\breply in portuguese\b", re.I)),
