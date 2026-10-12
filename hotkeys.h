@@ -12,6 +12,7 @@
 //     recorder, F5 frame capture.
 #include "apex_config.h"
 #include <windows.h>
+#include <string>
 
 namespace Hotkeys {
 
@@ -33,5 +34,12 @@ const char* ActionName(Action a); // "Compare", "Refresh lighting", ...
 bool OnKeyDown(WPARAM vk, bool repeat);
 // Render thread: true once per press of that action's shortcut
 bool Take(Action a);
+
+// Keys held together (the Presets page's shortcuts, key_combo.h)
+KeyCombo HeldCombo();                      // every key held now; left/right modifiers count as Ctrl, Shift, Alt
+KeyCombo ComboOf(const ApexConfig::KeyChord& chord);
+std::string ComboText(const KeyCombo& c);  // "Ctrl+Shift+P", modifiers first
+// The menu key, search, peek, hold-to-compare, the game's own F10 or an Apex action: a preset cannot take it
+bool ComboReserved(const KeyCombo& c);
 
 }

@@ -16,7 +16,6 @@
 #include <atomic>
 #include <mutex>
 #include <string>
-#include "filter_shortcut.h"
 
 namespace toml {
 inline namespace v3 {
@@ -29,7 +28,6 @@ struct PictureParams {
     // Missing group keys keep all existing settings active. Disabling a group never resets its stored values.
     bool basicEnabled = true, tonesEnabled = true, colorEnabled = true, detailEnabled = true, filtersEnabled = true;
     static constexpr size_t kFilterCount = 25;
-    std::array<FilterShortcut, kFilterCount> filterShortcuts{}; // optional; saved with the picture/profile
     bool& Group(int tab) {
         switch (tab) { case 1: return tonesEnabled; case 2: return colorEnabled; case 3: return detailEnabled;
                        case 4: return filtersEnabled; default: return basicEnabled; }
@@ -162,12 +160,8 @@ class Picture {
 
     // Stable tab values; Overview is displayed first without moving the existing search indices.
     enum Tab : int { TabBasic, TabTones, TabColor, TabDetail, TabFilters, TabOverview, TabLuts, TabCount };
-    // The Filters tab: compact rows in six family panels, with independent adjustment disclosures and shortcuts.
+    // The Filters tab: compact rows in six family panels, with independent adjustment disclosures.
     void RenderFiltersUI(bool lutOnly = false);
-    // Window-thread input, queued for the render thread. No work or allocation when no shortcuts are assigned.
-    bool FilterKeyDown(WPARAM vk, bool repeat);
-    static bool RecordingFilterShortcut();
-    void ProcessFilterKeys();
     // Rows of one Color tab. The overview owns the global Picture switch and comparison tools;
     // each settings tab has its own group switch. Off groups retain their settings, shown disabled.
     void RenderUI(int tab);
@@ -189,7 +183,6 @@ class Picture {
 
     mutable std::mutex m_mutex;
     PictureParams m_p;
-    std::atomic<bool> m_filterKeysPresent{false};
     float m_gpuMs = -1.0f;
     std::atomic<unsigned long long> m_holdUntil{0}; // GetTickCount64 until which the pass is skipped (hold to compare)
     // Diagnostics (Problem): when it was turned on, when the game's EndScene last reached it, when the pass last ran,

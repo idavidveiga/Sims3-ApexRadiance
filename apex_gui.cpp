@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cmath>
 #include <cfloat>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -2302,6 +2303,174 @@ void PresetDialog() {
     }
 }
 
+// ---- preset shortcuts (Presets page) ----
+// A preset can have its own key combination ([ui.profile_shortcuts], the player's settings, not the preset file).
+// Pressing it applies the preset's parts, never its keyboard shortcuts or developer settings. The window thread
+// records and matches the keys; the render thread applies (RunPresetShortcut). User, 2026-10-12: replaces the
+// per-filter shortcuts of 2.11.0, in the same visual style.
+constexpr unsigned kPresetKeyParts = ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper);
+std::atomic<bool> g_presetKeyRecording{false}, g_presetKeyCancelled{false}, g_presetKeyPending{false};
+std::mutex g_presetKeyLock;
+KeyCombo g_presetKeyCaptured;   // the editor's keys (g_presetKeyLock)
+std::string g_presetKeyRequest; // the preset whose shortcut was pressed (g_presetKeyLock)
+std::string g_presetKeyEditing; // render thread: the preset the editor is for (its Key) ...
+std::string g_presetKeyEditingName; // ... and its name as shown
+bool g_presetKeyOpenEditor = false;
+int g_presetKeyEditorFrame = 0; // the last frame the editor was drawn: recording stops when it is gone (menu closed)
+
+KeyCombo PresetShortcut(const std::vector<ApexConfig::ProfileShortcut>& list, const std::string& preset) {
+    for (const auto& s : list) if (s.preset == preset) return s.keys;
+    return {};
+}
+KeyCombo PresetShortcut(const std::string& preset) { return PresetShortcut(ApexConfig::GetUi().profileShortcuts, preset); }
+
+void SetPresetShortcut(const std::string& preset, const KeyCombo& keys) {
+    auto ui = ApexConfig::GetUi();
+    auto& list = ui.profileShortcuts;
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const auto& s) { return s.preset == preset; }), list.end());
+    if (!keys.Empty()) list.push_back({preset, keys});
+    ApexConfig::SetUi(ui);
+    LOG_INFO(keys.Empty() ? std::format("[Menu] Preset shortcut removed: {}", preset)
+                          : std::format("[Menu] Preset shortcut: {} = {}", preset, Hotkeys::ComboText(keys)));
+}
+
+// Window thread: true = the key belongs to a preset shortcut (or to the editor while it records)
+bool PresetKeyDown(WPARAM vk, bool repeat) {
+    if (g_presetKeyRecording.load()) {
+        if (vk == VK_ESCAPE) g_presetKeyCancelled = true;
+        else if (!repeat) {
+            KeyCombo keys = Hotkeys::HeldCombo();
+            keys.Add(static_cast<unsigned>(vk));
+            if (keys.HasMainKey()) { std::lock_guard<std::mutex> lock(g_presetKeyLock); g_presetKeyCaptured = keys; }
+        }
+        return true;
+    }
+    const auto ui = ApexConfig::GetUi();
+    const ApexConfig::ProfileShortcut* chosen = nullptr;
+    unsigned count = 0;
+    for (const auto& s : ui.profileShortcuts) {
+        // The combination with the most keys wins: Ctrl+Shift+P over Shift+P
+        if (s.keys.Count() > count && s.keys.Matches(static_cast<unsigned>(vk), [](unsigned k) { return GetKeyState(static_cast<int>(k)) < 0; }) &&
+            !Hotkeys::ComboReserved(s.keys)) { chosen = &s; count = s.keys.Count(); }
+    }
+    if (!chosen) return false;
+    if (!repeat) {
+        std::lock_guard<std::mutex> lock(g_presetKeyLock);
+        g_presetKeyRequest = chosen->preset;
+        g_presetKeyPending = true;
+    }
+    return true;
+}
+
+// Render thread, every frame (RunShortcuts)
+void RunPresetShortcut() {
+    if (g_presetKeyRecording.load() && ImGui::GetFrameCount() - g_presetKeyEditorFrame > 2) g_presetKeyRecording = false;
+    if (!g_presetKeyPending.exchange(false)) return;
+    std::string preset;
+    { std::lock_guard<std::mutex> lock(g_presetKeyLock); preset = std::move(g_presetKeyRequest); }
+    if (Loading() || preset.empty()) return;
+    toml::table state;
+    std::string error, logName = preset, shown = preset;
+    bool read = false;
+    if (preset.starts_with("#builtin")) {
+        const int index = std::atoi(preset.c_str() + 8);
+        if (index >= 0 && index < ApexPresets::kCount) {
+            logName = ApexPresets::Get(index).name;
+            shown = I18n::Tr(ApexPresets::Get(index).name);
+            read = ApexPresets::Read(index, state, &error);
+        }
+    } else {
+        read = ApexConfig::ReadProfile(preset, state, &error);
+    }
+    if (!read) {
+        LOG_WARNING(std::format("[Menu] Preset shortcut: could not load {}: {}", preset, error));
+        Captures::Notify(I18n::Trf("Could not load \"{}\": {}", shown, error), 4, Captures::NoteKind::Warning);
+        return;
+    }
+    const unsigned parts = ApexConfig::ProfilePartsOf(state) & kPresetKeyParts;
+    if (!parts) return;
+    ApplyProfileState(logName, shown, std::move(state), parts);
+    LOG_INFO(std::format("[Menu] Preset shortcut applied {}", logName));
+    if (!Overlay::IsVisible()) Captures::Notify(I18n::Trf("Loaded \"{}\"", shown), 3, Captures::NoteKind::Success);
+}
+
+// A key combination shortened at a '+' (with "…") until its tag fits in width; empty when not even one key fits
+std::string ShortcutTag(const std::string& keys, float width) {
+    std::string tag = keys;
+    bool shortened = false;
+    while (!tag.empty() && ApexUi::ChipSize((tag + (shortened ? "\xE2\x80\xA6" : "")).c_str()).x > width) {
+        const auto cut = tag.find_last_of('+');
+        tag = cut == std::string::npos ? std::string() : tag.substr(0, cut);
+        shortened = true;
+    }
+    if (shortened && !tag.empty()) tag += "\xE2\x80\xA6";
+    return tag;
+}
+
+// The modal that records a preset's shortcut, in the menu's native modal card (Cancel, the close icon and Esc keep the
+// previous keys)
+void PresetShortcutEditor() {
+    if (g_presetKeyOpenEditor) {
+        g_presetKeyOpenEditor = false;
+        { std::lock_guard<std::mutex> lock(g_presetKeyLock); g_presetKeyCaptured = {}; }
+        g_presetKeyCancelled = false;
+        g_presetKeyRecording = true;
+        g_presetKeyEditorFrame = ImGui::GetFrameCount();
+        ImGui::OpenPopup(I18n::Tr("Preset shortcut"));
+    }
+    bool editorOpen = true;
+    const float modalWidth = std::max(1.0f, std::min(480 * ApexUi::Unit(), ImGui::GetIO().DisplaySize.x - 32.0f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(modalWidth, 0), ImVec2(modalWidth, FLT_MAX));
+    ImGui::SetNextWindowSize(ImVec2(modalWidth, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(.5f, .5f));
+    if (ImGui::BeginPopupModal(I18n::Tr("Preset shortcut"), &editorOpen, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize)) {
+        g_presetKeyEditorFrame = ImGui::GetFrameCount();
+        {
+            ApexUi::ControlSizeScope size(ApexUi::ControlSize::Primary);
+            bool close = false;
+            ApexUi::HeaderExtra extra; extra.iconOff = extra.iconOn = IconId::X; extra.value = &close; extra.tooltip = "Cancel";
+            ApexUi::CardHeader(IconId::Keyboard, "Preset shortcut", g_presetKeyEditingName.c_str(), nullptr, nullptr, true, &extra);
+            ApexUi::CardDivider();
+            ApexUi::MutedText(I18n::Tr("Press the keys together, then choose Save"));
+            ApexUi::Gap(ApexUi::kSpace2);
+            KeyCombo keys;
+            { std::lock_guard<std::mutex> lock(g_presetKeyLock); keys = g_presetKeyCaptured; }
+            const std::string text = Hotkeys::ComboText(keys);
+            std::string shown = text.empty() ? I18n::Tr("Waiting for keys") : text;
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##RecordedKeys", shown.data(), shown.size() + 1, ImGuiInputTextFlags_ReadOnly);
+            if (ImGui::IsItemHovered() && !text.empty()) ImGui::SetTooltip("%s", text.c_str());
+            bool conflict = Hotkeys::ComboReserved(keys);
+            for (const auto& other : ApexConfig::GetUi().profileShortcuts)
+                if (other.preset != g_presetKeyEditing && !keys.Empty() && other.keys == keys) conflict = true;
+            if (conflict) ApexUi::IconNote(IconId::TriangleAlert, "This shortcut is already in use");
+            ApexUi::Gap(ApexUi::kSpace3);
+            ApexUi::CardDivider();
+            const float available = ImGui::GetContentRegionAvail().x;
+            const float cancelWidth = ApexUi::ButtonWidth("Cancel", false), saveWidth = ApexUi::ButtonWidth("Save", false);
+            const float total = cancelWidth + ImGui::GetStyle().ItemSpacing.x + saveWidth;
+            const bool oneRow = total <= available;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, available - (oneRow ? total : cancelWidth)));
+            if (ApexUi::TextButton("Cancel") || close || !editorOpen || g_presetKeyCancelled.exchange(false)) {
+                g_presetKeyRecording = false;
+                ImGui::CloseCurrentPopup();
+            }
+            if (oneRow) ImGui::SameLine();
+            else ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - saveWidth));
+            ImGui::BeginDisabled(!g_presetKeyRecording.load() || !keys.HasMainKey() || conflict);
+            if (ApexUi::TextButton("Save", nullptr, ApexUi::ButtonKind::Primary)) {
+                SetPresetShortcut(g_presetKeyEditing, keys);
+                g_presetKeyRecording = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndPopup();
+    } else if (g_presetKeyRecording) {
+        g_presetKeyRecording = false;
+    }
+}
+
 void ProfilesTab() {
     auto& s=g_profiles;
     if(s.listDirty) {
@@ -2330,6 +2499,7 @@ void ProfilesTab() {
     }
     if(!s.message.empty() && s.dialog==ProfilesState::None) ApexUi::IconNote(s.messageError?IconId::TriangleAlert:IconId::CircleCheck,s.message.c_str());
     ApexUi::Gap(ApexUi::kSpace2);
+    const auto presetKeys=ApexConfig::GetUi().profileShortcuts;
     for(int group=0;group<2;++group) {
         ApexUi::SectionLabel(group?"Apex presets":"My presets");
         if(ApexUi::BeginCard(group?"##ApexPresets":"##MyPresets")) {
@@ -2337,32 +2507,58 @@ void ProfilesTab() {
             for(const auto& item:s.list) {
                 const bool builtin=item.builtin>=0; if(builtin!=(group==1)) continue; any=true;
                 const auto key=item.Key(); ImGui::PushID(key.c_str());
-                const float gap=ImGui::GetStyle().ItemSpacing.x;
-                const float actions=ApexUi::ButtonWidth("Apply",true)+gap+24.0f*ApexUi::Unit();
+                const float u=ApexUi::Unit(), gap=ImGui::GetStyle().ItemSpacing.x;
                 const auto description=builtin?std::string(ApexPresets::Get(item.builtin).description):ProfilePartsText(item.parts);
+                const char* shownName=builtin?I18n::Tr(item.name.c_str()):item.name.c_str();
+                // Right-aligned cluster, as on the Filters tab: shortcut tag, actions, Apply
+                const std::string keys=Hotkeys::ComboText(PresetShortcut(presetKeys,key));
+                const float rowWidth=ImGui::GetContentRegionAvail().x;
+                const float fixed=ApexUi::ButtonWidth("Apply",true)+gap+24.0f*u;
+                const std::string tag=keys.empty()?std::string():ShortcutTag(keys,std::max(18.0f*u,rowWidth*0.5f-fixed));
+                const float tagW=tag.empty()?0.0f:ApexUi::ChipSize(tag.c_str()).x+gap;
+                const ImVec2 rowStart=ImGui::GetCursorScreenPos();
                 if(!builtin) ApexUi::SetNextRowUntranslated();
-                if(ApexUi::BeginControlRow(item.name.c_str(),builtin?description.c_str():nullptr,actions,item.icon)) {
+                if(ApexUi::BeginControlRow(item.name.c_str(),builtin?description.c_str():nullptr,fixed+tagW,item.icon)) {
                     const ImVec2 applyPos=ImGui::GetCursorScreenPos();
-                    ImGui::SetCursorScreenPos(ImVec2(applyPos.x,applyPos.y+(ImGui::GetFrameHeight()-24.0f*ApexUi::Unit())*0.5f));
+                    const float frameH=ImGui::GetFrameHeight();
+                    if(!tag.empty()) {
+                        ImGui::SetCursorScreenPos(ImVec2(applyPos.x,applyPos.y+(frameH-ApexUi::ChipSize(tag.c_str()).y)*0.5f));
+                        ApexUi::Chip(tag.c_str());
+                        ApexUi::Tooltip(keys.c_str());
+                        ImGui::SameLine();
+                    }
+                    ImGui::SetCursorScreenPos(ImVec2(applyPos.x+tagW,applyPos.y+(frameH-24.0f*u)*0.5f));
                     if(ApexUi::IconButton("##More",IconId::Ellipsis,"More options")) ImGui::OpenPopup("Actions");
                     ImGui::SameLine();
-                    ImGui::SetCursorScreenPos(ImVec2(applyPos.x+24.0f*ApexUi::Unit()+gap,applyPos.y));
+                    ImGui::SetCursorScreenPos(ImVec2(applyPos.x+tagW+24.0f*u+gap,applyPos.y));
                     ImGui::BeginDisabled(Loading() || !item.parts);
                     if(ApexUi::IconTextButton("Apply",IconId::Download)) StartPresetDialog(ProfilesState::Apply,&item);
                     ImGui::EndDisabled();
-                    if(ApexUi::BeginActionMenu("Actions",builtin?I18n::Tr(item.name.c_str()):item.name.c_str())) {
+                    ApexUi::EndControlRow();
+                    // Right-click anywhere on the row opens the same actions as the "..." button
+                    const ImVec2 rowEnd(rowStart.x+rowWidth,ImGui::GetCursorScreenPos().y);
+                    if(ImGui::IsMouseHoveringRect(rowStart,rowEnd) && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("Actions");
+                    if(ApexUi::BeginActionMenu("Actions",shownName)) {
                         {const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Compact);
+                            if(ApexUi::ActionMenuItem(keys.empty()?"Assign shortcut":"Change shortcut",IconId::Keyboard,item.parts!=0)) {
+                                g_presetKeyEditing=key; g_presetKeyEditingName=shownName; g_presetKeyOpenEditor=true; ImGui::CloseCurrentPopup();
+                            }
+                            if(ApexUi::ActionMenuItem("Remove shortcut",IconId::X,!keys.empty())) {SetPresetShortcut(key,{});ImGui::CloseCurrentPopup();}
+                            ImGui::Separator(); ApexUi::Gap(ApexUi::kSpace1);
                             if(ApexUi::ActionMenuItem("Export",IconId::ExternalLink)) {StartPresetDialog(ProfilesState::Export,&item);ImGui::CloseCurrentPopup();}
                             if(!builtin && ApexUi::ActionMenuItem("Delete",IconId::Trash2)) {s.confirmDelete=key;ImGui::CloseCurrentPopup();}
                         } ApexUi::EndActionMenu();
                     }
-                    ApexUi::EndControlRow();
                     if(s.confirmDelete==key) {
                         ApexUi::MutedText("Delete this preset?");
                         if(ApexUi::TextButton("Cancel")) s.confirmDelete.clear(); ImGui::SameLine();
                         if(ApexUi::IconTextButton("Delete##Confirm",IconId::Trash2,nullptr,ButtonKind::Primary)) {
                             std::string error;
-                            if(ApexConfig::DeleteProfile(item.name,&error)) ProfileMessage(I18n::Trf("Deleted \"{}\"",item.name),false);
+                            if(ApexConfig::DeleteProfile(item.name,&error)) {
+                                ProfileMessage(I18n::Trf("Deleted \"{}\"",item.name),false);
+                                if(!PresetShortcut(key).Empty()) SetPresetShortcut(key,{}); // its shortcut goes with it
+                            }
                             else ProfileMessage(I18n::Trf("Could not delete \"{}\": {}",item.name,error),true);
                             s.confirmDelete.clear();s.listDirty=true;
                         }
@@ -2375,7 +2571,7 @@ void ProfilesTab() {
     {const ApexUi::ControlSizeScope size(ApexUi::ControlSize::Compact);
         if(ApexUi::IconTextButton("Open the presets folder",IconId::ExternalLink)) OpenProfilesFolder();
     }
-    PresetDialog(); ImGui::PopID();
+    PresetDialog(); PresetShortcutEditor(); ImGui::PopID();
 }
 
 void RecoveryCard() {
@@ -4010,6 +4206,7 @@ void RunShortcuts() {
     if (Hotkeys::Take(Hotkeys::Action::Refresh)) NightLighting::RefreshAll();
     if (Hotkeys::Take(Hotkeys::Action::Screenshot))
         Captures::RequestPlayerScreenshot(ApexConfig::GetUi().screenshotHideGameUi);
+    RunPresetShortcut();
 }
 
 // The capture notes (Report a problem, both builds): a pill at the top center in the start note's style; shown instead of the start note when
@@ -4143,7 +4340,7 @@ class GuiClient final : public Overlay::Client {
 
     bool IsToggleKey(WPARAM vk) override {
         if (CheatConsoleOpen()) return false; // the game's cheat console owns all keys until Enter, Esc or Ctrl+Shift+C
-        if (g_recRow >= 0 || Picture::RecordingFilterShortcut()) return false; // being recorded as a shortcut
+        if (g_recRow >= 0 || g_presetKeyRecording.load()) return false; // being recorded as a shortcut
         const ApexConfig::KeyChord c = ApexConfig::GetUi().toggle;
         if (vk != c.vk) return false;
         const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
@@ -4207,7 +4404,7 @@ class GuiClient final : public Overlay::Client {
     // While a shortcut records, every key press is eaten (no shortcut fires, the game sees nothing)
     bool HotkeyDown(WPARAM vk, bool repeat) override {
         if (!g_menuAvailable.load()) return false;
-        if(Picture::RecordingFilterShortcut()) return Picture::Get().FilterKeyDown(vk,repeat);
+        if (g_presetKeyRecording.load()) return PresetKeyDown(vk, repeat);
         if (CheatConsoleOpen()) return false; // don't steal letters from a cheat being typed
         if (vk == VK_ESCAPE && LightProbe::Aiming()) { LightProbe::CancelAim(); return true; }
         const auto ui = ApexConfig::GetUi();
@@ -4223,7 +4420,7 @@ class GuiClient final : public Overlay::Client {
             return false; // let ImGui handle typing; its keyboard capture still keeps the key from reaching the game
         const bool aiming = LightProbe::Aiming();
         const bool handled = g_recRow >= 0 || Hotkeys::OnKeyDown(vk, repeat) ||
-            ((!Overlay::IsVisible() || !g_menuTextInput.load()) && Picture::Get().FilterKeyDown(vk,repeat));
+            ((!Overlay::IsVisible() || !g_menuTextInput.load()) && PresetKeyDown(vk, repeat));
         if (aiming && handled && vk == Hotkeys::Key(Hotkeys::Action::Probe).vk) g_returnFromProbe.store(true);
         return handled;
     }
