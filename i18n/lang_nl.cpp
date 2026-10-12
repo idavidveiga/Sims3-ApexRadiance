@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Dutch}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Voorinstellingen kunnen eigen sneltoetsen hebben"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Sneltoetsen passen nu voorinstellingen toe in plaats van losse filters"},
     {"Exterior walls respond a little faster to lighting changes", "Buitenmuren reageren iets sneller op veranderingen in het licht"},
     {"Fence lighting better follows the position of lamps", "De verlichting van hekken volgt de positie van lampen beter"},
     {"Gates receive lighting more consistent with fences", "Poorten worden meer in overeenstemming met hekken verlicht"},

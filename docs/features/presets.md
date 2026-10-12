@@ -6,7 +6,7 @@ Presets save a chosen set of Apex settings so it can be applied again or shared.
 
 | | |
 |---|---|
-| Availability | Dedicated page and portable ZIP packages: 2.12.0 |
+| Availability | Dedicated page and portable ZIP packages: 2.12.0; shortcuts: Released in 2.13.0 |
 | Default | Current settings; importing does not automatically apply a preset |
 | Menu | Presets, below Overview |
 | Configuration | TOML files in `Apex Radiance\Profiles\`; LUTs in `Apex Radiance\LUTs\`; shortcuts in `[ui.profile_shortcuts]` |

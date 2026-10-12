@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Norwegian (Bokmal)}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Forhåndsinnstillinger kan ha egne hurtigtaster"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Hurtigtaster bruker nå forhåndsinnstillinger i stedet for enkeltfiltre"},
     {"Exterior walls respond a little faster to lighting changes", "Yttervegger reagerer litt raskere på endringer i lyset"},
     {"Fence lighting better follows the position of lamps", "Belysningen av gjerder følger lampenes plassering bedre"},
     {"Gates receive lighting more consistent with fences", "Porter får belysning som samsvarer bedre med gjerdene"},

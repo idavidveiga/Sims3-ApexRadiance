@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Finnish}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Esiasetuksille voi antaa omat pikanäppäimet"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Pikanäppäimet ottavat nyt käyttöön esiasetuksia yksittäisten suodattimien sijaan"},
     {"Exterior walls respond a little faster to lighting changes", "Ulkoseinät reagoivat hieman nopeammin valaistuksen muutoksiin"},
     {"Fence lighting better follows the position of lamps", "Aitojen valaistus vastaa paremmin lamppujen sijaintia"},
     {"Gates receive lighting more consistent with fences", "Porttien valaistus vastaa paremmin aitojen valaistusta"},

@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Czech}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Předvolby mohou mít vlastní klávesové zkratky"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Klávesové zkratky nyní použijí předvolbu místo jednoho filtru"},
     {"Exterior walls respond a little faster to lighting changes", "Vnější stěny reagují na změny osvětlení o něco rychleji"},
     {"Fence lighting better follows the position of lamps", "Osvětlení plotů lépe odpovídá poloze lamp"},
     {"Gates receive lighting more consistent with fences", "Brány jsou osvětleny podobněji jako ploty"},

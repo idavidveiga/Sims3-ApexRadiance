@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Hungarian}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Az előbeállításoknak saját gyorsbillentyűi lehetnek"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "A gyorsbillentyűk mostantól előbeállításokat alkalmaznak egyes szűrők helyett"},
     {"Exterior walls respond a little faster to lighting changes", "A külső falak kissé gyorsabban reagálnak a fény változásaira"},
     {"Fence lighting better follows the position of lamps", "A kerítések megvilágítása jobban követi a lámpák helyét"},
     {"Gates receive lighting more consistent with fences", "A kapuk megvilágítása jobban illeszkedik a kerítésekéhez"},

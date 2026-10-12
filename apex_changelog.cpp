@@ -6,6 +6,10 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k2130Added[] = {"Presets can have their own keyboard shortcuts", nullptr};
+constexpr const char* k2130Improved[] = {"Keyboard shortcuts now apply presets instead of single filters", nullptr};
+constexpr const char* k2130Fixed[] = {nullptr};
+
 constexpr const char* k2121Added[] = {nullptr};
 constexpr const char* k2121Improved[] = {"Exterior walls respond a little faster to lighting changes", nullptr};
 constexpr const char* k2121Fixed[] = {
@@ -187,6 +191,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.13.0", "2026-10-12", k2130Added, k2130Improved, k2130Fixed},
     {"2.12.1", "2026-10-12", k2121Added, k2121Improved, k2121Fixed},
     {"2.12.0", "2026-10-09", k2120Added, k2120Improved, k2120Fixed},
     {"2.11.1", "2026-10-08", k2111Added, k2111Improved, k2111Fixed},

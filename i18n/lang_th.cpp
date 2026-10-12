@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Thai}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "ค่าที่ตั้งไว้แต่ละชุดมีปุ่มลัดของตัวเองได้"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "ปุ่มลัดใช้ค่าที่ตั้งไว้แทนฟิลเตอร์เดี่ยวแล้ว"},
     {"Exterior walls respond a little faster to lighting changes", "ผนังภายนอกตอบสนองต่อการเปลี่ยนแสงเร็วขึ้นเล็กน้อย"},
     {"Fence lighting better follows the position of lamps", "แสงบนรั้วสอดคล้องกับตำแหน่งโคมไฟมากขึ้น"},
     {"Gates receive lighting more consistent with fences", "ประตูรั้วได้รับแสงที่สอดคล้องกับรั้วมากขึ้น"},

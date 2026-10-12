@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Chinese (Traditional, Taiwan / Hong Kong)}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "預設可以擁有自己的快捷鍵"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "快捷鍵現在套用預設，而不是單一濾鏡"},
     {"Exterior walls respond a little faster to lighting changes", "外牆對燈光變化的反應稍快一些"},
     {"Fence lighting better follows the position of lamps", "圍欄照明更符合燈具的位置"},
     {"Gates receive lighting more consistent with fences", "大門的照明與圍欄更加協調"},
