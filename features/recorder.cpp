@@ -59,7 +59,7 @@ std::string g_lastStatusText[8];
 std::string g_settingsAtStart; // ApexRadiance.toml as it was when the recording started
 size_t g_notes = 0;            // lines added by other modules (Note: furniture, probe), capped
 constexpr size_t kMaxNotes = 40000;
-// [room] lines have their own cap (30/09, F6 105204: a Brightness drag filled the shared cap with [furniture] lines in 4 s
+// [room] lines have their own cap (30/09, F6 capture: a Brightness drag filled the shared cap with [furniture] lines in 4 s
 // and the room tracer stopped before the room that went wrong)
 size_t g_roomNotes = 0;
 constexpr size_t kMaxRoomNotes = 20000;
@@ -69,7 +69,7 @@ DWORD g_savedAt = 0;
 
 std::filesystem::path Dir() { return std::filesystem::path(ApexPaths::ApexDirectory()); }
 
-// ---- Light update trace (06/10, user: "can we build something to measure better what happens when the lights update?") ----
+// ---- Light update trace (measures what happens when the lights update) ----
 // The lamps the player edited during the recording (lamp_mark_filter.cpp), the end of every room solve (the solve journal's
 // 'E' notes: the room shows its new maps from the next frame) and the screen pixels of ScreenWatch, summed up per lamp edit
 // at the top of Recording.txt ("Light updates"), the pixels also in "Screen pixels.csv". A room's first 'E' after an edit is
@@ -85,7 +85,7 @@ std::mutex g_editMx;
 std::vector<Edit> g_edits;
 constexpr DWORD kBurstGapMs = 400; // edits closer than this are one ("all the lights" switches each lamp a few ms apart)
 // The story each lot shows, at the start and at every change (the 100 ms status check). A lamp edit's window ends when its
-// lot shows another story or leaves the view (06/10 13:52: the third edit counted the solves of a trip to the map view)
+// lot shows another story or leaves the view (a recording: the third edit counted the solves of a trip to the map view)
 struct ViewSnap {
     DWORD tick;
     std::map<uint32_t, int> stories;

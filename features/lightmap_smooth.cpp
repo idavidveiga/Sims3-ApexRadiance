@@ -1041,8 +1041,8 @@ uint64_t g_changeEpoch = 1, g_serviceEpoch = 0; // a change seen since the last 
 int g_gpuBuilds = 0, g_gpuInView = 0, g_gpuOutOfView = 0, g_gpuBorders = 0, g_gpuCells = 0, g_gpuFailures = 0;
 int g_gpuHashChecks = 0, g_sameMapNotices = 0;
 
-// ---- The ground of a lamp switch in one frame (06/10, user: "can the ground's update be as perfect as the walls'?") ----
-// A switch's local terrain relight re-renders its chunks one at a time (the house of the 06/10 recordings sits at the corner
+// ---- The ground of a lamp switch in one frame (as clean as the walls' update) ----
+// A switch's local terrain relight re-renders its chunks one at a time (the house of the test recordings sits at the corner
 // of 4 chunks): each chunk showed its new light in its own frame, and the smoothed strip along the borders between them
 // (6 texels read from the neighbour) only kSettleFrames after the last change. While a switch's batch runs (HoldChunks),
 // its chunks keep their smoothed map from before the switch (Current) and none of them is built; when every batch held is

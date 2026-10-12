@@ -1,5 +1,5 @@
 #pragma once
-// Apex's keyboard shortcuts, in presets (user, 30/09: "laptops often have the F keys behind Fn"; "presets, well thought").
+// Apex's keyboard shortcuts, in presets (laptops often put the F keys behind Fn, so no preset needs them).
 // Every shortcut is eaten by the overlay's window procedure before the game sees it (Overlay::Client::HotkeyDown), so
 // no key of the game can clash with one. The menu key is ApexConfig's [ui] toggle_key (the overlay's toggle chord);
 // the other actions follow the preset ([ui] hotkey_preset) unless the player assigned an override in Shortcuts.

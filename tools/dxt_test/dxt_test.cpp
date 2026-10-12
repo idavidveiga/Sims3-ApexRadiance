@@ -15,7 +15,7 @@
 //
 // Build (x86: the code uses x87 inline assembly), from "x86 Native Tools Command Prompt for VS 2022" or after running
 //   "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat":
-//   cd /d C:\Users\luiz_\Desktop\S3SS-dev\S3SSApex\tools\dxt_test
+//   cd /d <repo>\tools\dxt_test
 //   cl /nologo /O2 /EHsc /std:c++20 /arch:SSE2 /fp:precise /I..\..\features dxt_test.cpp ..\..\features\dxt_codec.cpp /Fe:dxt_test.exe
 // Run:
 //   dxt_test.exe                        10 million blocks per format, edge sizes, several cores, timing

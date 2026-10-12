@@ -414,7 +414,7 @@ struct Cross {
     float upwardHeadroom = 0.0f; // first wall plane above the bulb, relative to it; resolved at gather, not per point
     bool operator<(const Cross& o) const { return light < o.light; }
 };
-// Light through doors and windows (08/10, option "luzRealistaPorAberturas"; see "Light through doors and windows into
+// Light through doors and windows (option "luzRealistaPorAberturas"; see "Light through doors and windows into
 // roofless rooms" below): every wall of a story with its openings and drawn tops, built on the light tree thread
 struct StoryGrid;
 // Per outdoor room (room 0 of floors 0..7), and per indoor room that takes lamps through a stair opening: the lights of
@@ -469,19 +469,19 @@ std::string g_relightWhy; // the reasons merged into it
 
 void NoteSolve(BYTE* room, char event, uintptr_t caller = 0); // development build: the solve journal of the F8 diag
 
-// ---- Lamp edits first (2026-10-05) ----
-// User: lamps must update at once when anything changes (moved, switched, recoloured, removed), "practically instant",
+// ---- Lamp edits first ----
+// Lamps must update at once when anything changes (moved, switched, recoloured, removed), practically instantly,
 // above all while a lamp is dragged in Build mode. Before, every step of a drag marked the lamp's room again, and each
 // mark goes through FUN_0069eed0(room, 1, 0): state 1 with the gather countdown +0x168 = 5 (FUN_0069eb00 counts it down
 // once per room update), and a solve in progress is thrown away (FUN_006c4870, nothing committed). So the light of a
 // dragged lamp moved only once the lamp stopped, 5 updates later, after the solves of every story's room 0 in the game's
-// order (F6 of 17:31: the lamp's own story last). Now the rooms a lamp edit sends are urgent for kUrgentMs:
+// order (F6: the lamp's own story last). Now the rooms a lamp edit sends are urgent for kUrgentMs:
 //  - the scheduler solves them before any other room (RoomLightQueue's priority hook asks LampUrgency): the lamp's own
 //    room first (tier 0), then the rooms of other stories that take its light (tier 1);
 //  - for a lamp already registered in that room that moved, switched or changed a value (`soon`), they gather in the room
 //    update that sends them (countdown 1: the pending walk of the same FUN_006c7250 call gathers them) instead of 5
 //    updates later. Never for a lamp added, removed or moved into another room or story: the game registers its
-//    new entries over the next updates, and a gather before that misses the lamp (F8 19:22, build f65626e: a sconce moved
+//    new entries over the next updates, and a gather before that misses the lamp (F8, build f65626e: a sconce moved
 //    up to story 3 was in the lists of stories 0-2 but not in its own story's, gathered at once, nor in story 4's);
 //  - a room being solved whose lamp only moved or changed a value keeps that solve: LampMarkFilter holds the mark
 //    (HoldLampMark) and the room update gives it back once the solve is over (FlushHeldMarks), so the light of a lamp
@@ -705,7 +705,7 @@ template <class F> void WalkRegistry(uintptr_t tl, F&& visit) {
     }
 }
 
-// Roofless outdoor rooms (05/10, user, F8 19:11: a sconce moved into a light well left the wall of the story above dark).
+// Roofless outdoor rooms (an F8 capture: a sconce moved into a light well left the wall of the story above dark).
 // Walls, fences or railings that close an outdoor area make a room of its own with +0x18 set (a light well, a fenced yard,
 // a deck behind a railing: room 17 of story 2 in the test house); the game solves it as outdoor, but its lamps are
 // registered for its own id, so the light between stories, which carried only room 0's lamps, never took them, and those
@@ -895,7 +895,7 @@ void ShareOutdoorLights(BYTE* treeLevel, BYTE* room) {
 // FUN_006a2060, after the indoor share (which starts this room's record again). Recorded before the first lamp goes in, so
 // a fault in the middle never leaves a lamp the point solve does not test. Needs the room update hooks (InstallIndoor): they
 // send these rooms again when an outdoor lamp of another story changes.
-// Light through doors and windows (08/10, option "luzRealistaPorAberturas"): also the outdoor lamps of its own story it can
+// Light through doors and windows (option "luzRealistaPorAberturas"): also the outdoor lamps of its own story it can
 // reach (GatherSameStory: room 0's and the other roofless rooms', through an opening, over a wall top or past an outline edge
 // with no wall), each tested per point against every wall of the story (YardShadow); a room closed all round takes none.
 struct SameLamp {
@@ -1249,7 +1249,7 @@ void ToLocal(const Xform& x, const float* w, float* l) {
 // above a story's base uses the above/YardPass path, which has no angular fade.
 // Use the drawn wall planes, as HouseWallBase does: a foundation fixes story 1,
 // then walls rise by 3 m per story. A lowered floor does not lower its walls.
-// The F8 of 10/10 15:58 has story 3's lowest floor at 65.06 but walls at 67.31;
+// The F8 has story 3's lowest floor at 65.06 but walls at 67.31;
 // using the floor incorrectly started the upper emitter's fade 6 cm above it.
 float UpwardHeadroom(uintptr_t tracker, int home, void* light) {
     __try {
@@ -1451,7 +1451,7 @@ std::mutex g_depsMx;
 std::unordered_map<DepKey, std::vector<std::pair<int, int>>, DepHash> g_deps;
 
 // The lamps of other stories that have lit a room, at any point of any of its solves since its story was built (05/10,
-// recording 20:38:25, atrium house: every 10 cm of a dragged sconce re-solved 13 rooms of stories 0, 2 and 3, 5.9 s of
+// a recording, atrium house: every 10 cm of a dragged sconce re-solved 13 rooms of stories 0, 2 and 3, 5.9 s of
 // solving in 6.5 s, ~9 frames a second; 9 of them never get any of its light, all of it stopped by the floors). A lamp
 // edit sends at once only the rooms its lamps have lit; the others wait until the lamps are quiet (FlushEditWaits).
 // Light tree thread (the point solve writes, AfterChangedWalk and AuditTakers read).
@@ -1507,7 +1507,7 @@ bool GameTakesLight(uintptr_t entry, uintptr_t light) {
     const BYTE flags = *reinterpret_cast<const BYTE*>(info + 0x90);
     if (!(flags & 2) || !(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x20)) return false;
     // A lot lamp sold or deleted in Build mode stays registered, lit (0x20) with its full colour, only disabled (0x40 clear;
-    // 07/10 snapshots 14:07:55 -> 14:07:58, a type-11 lamp post): the game's own gather still takes it for its own story,
+    // 07/10 snapshots, a type-11 lamp post): the game's own gather still takes it for its own story,
     // but the other stories (their outside walls) must not keep it. Lot lamps only (world street lamps: lot id 0).
     if (!(*reinterpret_cast<const BYTE*>(light + 0x100) & 0x40) &&
         (*reinterpret_cast<const uint32_t*>(light + 0xC0) | *reinterpret_cast<const uint32_t*>(light + 0xC4)) != 0)
@@ -1653,7 +1653,7 @@ int BoostedLod(BYTE* room) {
     }
 }
 
-// Every floor in full detail (user 30/09: "switching floors resets the lights every time"): FUN_0069e710 gives the top LOD
+// Every floor in full detail (switching floors reset the lights every time): FUN_0069e710 gives the top LOD
 // class only to the rooms on the camera's story of the active lot, so every floor change re-solved the rooms of the floors
 // the camera left and reached. With this on, every room of the active lot (+0x288 == 1) gets the top class on every story:
 // its light maps are solved once and stay when the camera changes floor (more solve work when entering a lot, none after).
@@ -1820,8 +1820,8 @@ bool Differs(const Applied& a, const float* c4, float norm, float wallBase) {
     return std::fabs(a.norm - norm) > 1e-4f || std::fabs(a.wallBase - wallBase) > 1e-3f;
 }
 
-// ---- One round for an atrium after a lamp edit (06/10) ----
-// User (recordings 11:01 and 11:17: "all the lights", then one lamp of the atrium): the light's story changed first and
+// ---- One round for an atrium after a lamp edit ----
+// Two recordings ("all the lights", then one lamp of the atrium): the light's story changed first and
 // the atrium's other stories up to 4 s later. Each member's merge used the other members' values from their LAST solve,
 // so the first member solved after the edit took a target made of its new values and the others' old ones, the next
 // member another target, and every change of the normalisation (AmbientMapsCompatible is bit-exact) sent every member to
@@ -1860,7 +1860,7 @@ void NoteClassThreshold(const BYTE* room) {
 // The top class's threshold from the game's own table (Steam 1.67.2: FUN_006a8e50 = 0xFF36F4[idx] x [0xFF3700], the code
 // checked at install), so it is known from the first solve: with only the solves seen, the rooms solved at classes 0-1
 // while a lot loads set a first value, and the first class-2 solve changed it, which changed every atrium's target and
-// sent its rooms to solve once more (06/10, user: "when entering the lot it takes long to correct")
+// sent its rooms to solve once more (entering the lot, the light took long to correct)
 float g_thrTable = -1.0f;
 void ReadThresholdTable() {
     const BYTE code[] = {0x8B, 0x41, 0x08, 0xD9, 0x04, 0x85, 0xF4, 0x36, 0xFF, 0x00, 0xD8, 0x0D, 0x00, 0x37, 0xFF, 0x00, 0xC3};
@@ -2139,9 +2139,9 @@ void MergeStackedAmbient(BYTE* room) {
 //    step (0x6A3A76). Class 0: 0 everywhere (no wall and no object stops a light); class 2: walls on every pass;
 //  - the light threshold room+0x63C (FUN_006a8e50, see "One round for an atrium"): 2 x 3/255 at classes 0-1, 3/255 at 2.
 // So with every lamp switched off, the window lights and the lamps of the room next door reached the walls straight
-// through them in the quick pass (Wall seams of 11:50: room 19 five times brighter at class 0 than at class 2, same
-// points), and the refinement then took that light away (user, video of 12:00: "some corners look right, then wrong
-// again"). Right after state 0 a quick-pass room takes the threshold and the switches of the class it will be refined to
+// through them in the quick pass (a Wall seams capture: room 19 five times brighter at class 0 than at class 2, same
+// points), and the refinement then took that light away (on video, some corners looked right, then wrong
+// again). Right after state 0 a quick-pass room takes the threshold and the switches of the class it will be refined to
 // (the wall pass's ones around each wall step, WallPassHook), and its ambient is taken again with that threshold
 // (FUN_006a0f50; its copy in the sampler +0x650 as state 0 makes it with FUN_006ab110). Class 0 has few texels, so the
 // tests cost little.
@@ -2214,8 +2214,8 @@ bool AmbientActive() {
 }
 
 // ---- F8 (development build): the solves of the rooms that share light through an opening, since the world loaded ----
-// A room lit right after the lot loads can look different from the same room lit again after a lamp moves (user,
-// 29/09): each solve of such a room notes its thread, LOD class, light list, ambient and the wall-pass counters.
+// A room lit right after the lot loads can look different from the same room lit again after a lamp moves:
+// each solve of such a room notes its thread, LOD class, light list, ambient and the wall-pass counters.
 struct SolveNote {
     DWORD tick;
     uintptr_t room, mgr;
@@ -2442,7 +2442,7 @@ struct PieceNote {
 };
 PieceNote g_piece;            // the piece WallSamplesHook just lined up, lit next by the wall pass (light tree thread)
 
-// ---- Wall notes for the F7 light capture (06/10, user: "a capture that measures it"; an outside sconce lit its wall well
+// ---- Wall notes for the F7 light capture (a capture that measures the wall light; an outside sconce lit its wall well
 // below the lamp). Every wall piece the solve lays out (WallSamplesHook, any thread): its atlas block, rows, the base and
 // the heights its bottom and top rows are lit at, its line on the ground and its normal, and the room being solved.
 // WallNotesOnRay finds the piece a screen ray meets and reports it with the room's lamps. Read-only, bounded.
@@ -2549,7 +2549,7 @@ float MeasuredDrop(uintptr_t wall, int cls, uintptr_t batch) {
     WallNote w;
     if (!ReadWallPiece(wall, cls, batch, w)) return 0.0f;
     if (!w.outdoor) return 0.0f; // indoor walls start at their floor (the survey: 0); they stay as the game lays them out
-    // the whole wall, not only this piece: a long wall has vertices at its ends and openings only (22:43 F7: the middle
+    // the whole wall, not only this piece: a long wall has vertices at its ends and openings only (F7: the middle
     // pieces found none and kept their base)
     const float ax = w.cx, az = w.cz, bx = w.cx + w.dx, bz = w.cz + w.dz;
     if (!std::isfinite(ax) || !std::isfinite(az) || !std::isfinite(bx) || !std::isfinite(bz) || w.dx * w.dx + w.dz * w.dz < 1e-4f) return 0.0f;
@@ -2573,7 +2573,7 @@ void DropWallSamples(uintptr_t batch, float dy) {
 // ---- Walls taller than a story (07/10, vanilla: the game lights every wall face over 3 m from its base, constant 3.0 at
 // 0x006ABE08, but draws the light block from the drawn foot to the drawn top. The light-UV writer 0x00C38530 can only
 // shorten it (top V = vT + (vB - vT) max(0, wallpaper V of the top vertex / 512 - 8), for walls cut lower), never lengthen
-// it: on a wall running up to its roof (5.7 m on the user's foundation house) the 3 m of light is pulled over the whole
+// it: on a wall running up to its roof (5.7 m on the test foundation house) the 3 m of light is pulled over the whole
 // wall, so a sconce at 2.4 m lit the wall at 4.6 m and the light drifted further the higher the lamp was moved.) The two
 // calls of the UV writer (0x00C387B5 / 0x00C387CC, one wall cell each: 6 vertices at geo +8, stride 0x2C, int16 x y z / 256
 // lot space at +0; 0 bottom-left, 2 bottom-right, 3 top-right, 4 top middle, 5 top-left) note each cell's drawn foot and
@@ -2706,7 +2706,7 @@ void NoteWallCell(void* geo, uintptr_t mgr, int x, int z, int dir) {
         std::find(g_wallHRequeue.begin(), g_wallHRequeue.end(), c.wall) == g_wallHRequeue.end() && g_wallHRequeue.size() < 4096)
         g_wallHRequeue.push_back(c.wall);
 }
-// ---- Short walls lit at their drawn heights (07/10, user: "look at the foundation"; F8 10-57-41). Foundation faces are
+// ---- Short walls lit at their drawn heights (foundation walls; F8 capture). Foundation faces are
 // story-0 walls drawn from the terrain to the foundation's top, lit over the 3 m above their light base. The UV writer trims
 // the block only by the top vertices' wallpaper V (f = max(0, int16 +0x0A / 512 - 8), 0x00C385AB..DB; the wall builders
 // write +0x0A = (V + 8) 512 at 0x00C3C587 / 0x00C3C8B9), about 0 on foundations: the whole 3 m was squeezed onto the
@@ -2858,8 +2858,8 @@ void RequeueTallWalls() {
     if (queued) LOG_INFO(std::format("[WallTall] {} walls drawn taller than lit: {} rooms solved again", walls.size(), queued));
 }
 
-// ======== Light through doors and windows into roofless rooms (08/10, option "luzRealistaPorAberturas") ========
-// (user) The light of the lamps outside a walled roofless room (a yard, a light well, a deck behind a half wall) gets in
+// ======== Light through doors and windows into roofless rooms (option "luzRealistaPorAberturas") ========
+// The light of the lamps outside a walled roofless room (a yard, a light well, a deck behind a half wall) gets in
 // only as it would: a room closed all round gets none; a door, a window or an arch lets through what its opening lets
 // through, at its height (sill to head); a lamp above a wall's drawn top lights over it; every wall of the story counts, not
 // only room 0's; snow on floors respects the walls too (lot_light_bridge DrawSnowFloor / DrawFloor). The game cannot: such
@@ -3807,7 +3807,7 @@ int MakeGhosts(uintptr_t batch, const PieceNote& p, BYTE* out, int max) {
     }
 }
 
-// ---- The wall base from the house's foundation (06/10, the wall self-check of 23:40 against every wall on screen): the
+// ---- The wall base from the house's foundation (06/10, the wall self-check against every wall on screen): the
 // walls of every story s >= 1 are drawn from lot base + foundation + 3 (s - 1), indoor or outdoor, straight or diagonal,
 // whatever the floor tiles say (platforms raise floors, not walls: a room on a 6.239 platform had its walls drawn from
 // 3.989). The foundation is story 1's lowest floor over the lot's base (0.977 .. 1.105 in the captures; 3 without one, and
@@ -3873,7 +3873,7 @@ bool FoundationWallBase(const BYTE* wall, float& base) {
     }
     const uintptr_t tracker = mgr ? MgrTracker(mgr) : 0;
     // story 1's lowest floor; a lot being built is not known yet (its walls are set up before NoteLotManagers sees it:
-    // the self-check of 23:57, a lot whose outdoor walls all kept story x 3), then this story's own floors
+    // the self-check, a lot whose outdoor walls all kept story x 3), then this story's own floors
     float foundation = -1.0f;
     if (tracker && ReadStoryOneFloor(tracker, floor1)) foundation = floor1 - lotBase;
     else if (float lowest = 0, lowestTile = 0; mgr && ReadOwnFloors(mgr, lowest, lowestTile)) {
@@ -3906,7 +3906,7 @@ bool LookupWallDecision(uintptr_t wall, WallBaseDecision& out) {
     return true;
 }
 
-// ---- The wall light in a recording (06/10, user: "improve the recording, then I show you recorded"): while a recording
+// ---- The wall light in a recording (the recording measures the wall light too): while a recording
 // runs, every wall piece the game lights (WallSolveHook, right after its solve) is read back from the atlas it just wrote:
 // for each column the brightest sample's height, and for the piece its brightest column with the nearest lamp of the room,
 // so the recording shows where the light peaks on a wall against the lamp's height, story by story, outdoors and indoors.
@@ -4526,8 +4526,8 @@ void QueueOpeningRooms(uintptr_t tracker, std::vector<std::pair<int, int>>* sent
         GatherLog(tracker, std::format("rooms near openings sent to gather again: {} of {} (the others were waiting already) |{}", queued, todo.size(), summary));
 }
 
-// Rooms taking lamps of other stories, checked against those lamps as they are now (05/10, user, atrium house: "the second
-// floor is not receiving the correction"; recording 19:54:44 and its wall seams: at 43.98 s rooms 20, 10, 16, 17, 18 of
+// Rooms taking lamps of other stories, checked against those lamps as they are now (atrium house: the second
+// floor did not receive the correction; a recording and its wall seams: at 43.98 s rooms 20, 10, 16, 17, 18 of
 // story 2, 21, 23, 25 of story 0 and story 3's gathered without the sconce of room 19 just under the floor line (41 -> 40
 // lights, 30 -> 29 of another story), while room 19 itself, gathered 0.1 s later, still had it where it was; the upper wall
 // over it went from 2.26 to 0.11 at the line. They gathered while the game was still re-registering the lamp after the edit,
@@ -4670,8 +4670,8 @@ struct LotState {
     DWORD auditAt = 0; // the next AuditTakers of this lot
     std::vector<std::pair<int, int>> watch; // (story, room) sent by the last QueueOpeningRooms
     // The lot's story managers when last seen: a lot whose lighting was rebuilt (the camera left it and came back, or
-    // its tracker's address was reused by another lot) is a new lot for this state (user, 29/09: "sometimes I even have
-    // to reload the save for the indoor fix to work": the old counts matched the new lot, so nothing was sent again)
+    // its tracker's address was reused by another lot) is a new lot for this state (the indoor fix sometimes needed the save
+    // to be reloaded: the old counts matched the new lot, so nothing was sent again)
     uintptr_t mgrs[8] = {};
 };
 std::unordered_map<uintptr_t, LotState> g_lots;
@@ -4811,7 +4811,7 @@ void RecheckLotWindows(uintptr_t tracker, unsigned pass) {
 
 // A member whose own state 0 is still to come (waiting for its gather or its solve, or picked and not started: sub-step
 // +0xEC still 0): it merges with the group's target then, so the ambient pass does not send it again (06/10, recording
-// 11:01: that send threw away its gather and its quick pass, and the atrium's stories came last)
+// a recording: that send threw away its gather and its quick pass, and the atrium's stories came last)
 bool AmbientMergeAhead(const DepKey& key) {
     BYTE* room = SafeRoomById(key.tracker, key.level, key.room);
     if (!room) return false;
@@ -4921,7 +4921,7 @@ void BeforeRoomUpdate(BYTE* tl) {
         }
         // A lot that just found its openings sends its rooms near them once more when the boosts, the stacked ambient and
         // the other story's lamps of the first round are all in place: the rooms are then lit the way a lamp moved by hand
-        // lights them (user, 29/09: "entering the lot it should already be right"). That is as soon as the first round is
+        // lights them (entering the lot, it should already be right). That is as soon as the first round is
         // over (none of its rooms waits for a solve for kSettleQuiet), at the latest kSettleMax after (atrium house F8,
         // 29/09: the fixed 6 s came 2.5 s after the last solve of the first round; the lot looked right only then).
         constexpr DWORD kSettleMin = 500, kSettleQuiet = 400, kSettleMax = 6000;
@@ -5061,8 +5061,8 @@ void __fastcall RoomUpdateHook(BYTE* tl) {
 // at +0x130, F8: 0, 1122, 3e-4, 1e-19 on RectangleWindowLight, and they follow the sky). A lamp counts as moved when it is
 // more than kMoveMin from where it was at the last send, or its range changed by more than 2%: animated lamps (candles,
 // fires: "animated" in the lot light bridge log) wobble every few frames, and as a move they restarted the rooms taking
-// them without end (29/09 F8: 1028 such sends while the camera stood still; user: "between indoor floors it got worse,
-// some lights dimmer"). A slow drag adds up against the last send, so it is still followed.
+// them without end (F8: 1028 such sends while the camera stood still; the light between indoor floors
+// got worse, some lights dimmer). A slow drag adds up against the last send, so it is still followed.
 struct LampAt {
     uintptr_t light;
     float x, y, z, range;
@@ -5433,7 +5433,7 @@ uint32_t GatherSerial(const BYTE* room) {
     return GatherSerialImpl(room, mgr, id);
 }
 // A lot lamp sold or deleted in Build mode stays registered, lit (+0x100 bit 0x20) with its full colour and only disabled
-// (bit 0x40 clear), also after a save load (07/10 snapshots 14:07:58 and 14:21:45: lamp post L3BEA4030, type 11, flags B5,
+// (bit 0x40 clear), also after a save load (07/10 snapshots: lamp post L3BEA4030, type 11, flags B5,
 // still in 8 room lists). The game's gather (FUN_006c7820: lit, brightness, type) never reads 0x40, so its room solves kept
 // lighting the outside walls and the deck with it. Removed from the list the gather just built (a plain vector of light
 // pointers, room+0xC8..+0xCC, filled by FUN_006a2060); world lights (lot id 0) keep the game's behaviour.
@@ -5697,7 +5697,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx = prev;
     return r;
 }
-// Walls block light on outdoor floors (user 05/10, F7 + screenshots: a wall lamp outside lit the floor of a yard with no
+// Walls block light on outdoor floors (F7 + screenshots: a wall lamp outside lit the floor of a yard with no
 // roof behind the wall, and an upper deck behind its half wall). Outdoor floors (room 0 and roofless rooms, which the
 // game solves as outdoor, +0x18) are drawn with max(floor map, ground atlas) by lot_light_bridge DrawFloorAtlas; the
 // atlas carries the outdoor lamps (room 0's list) with no walls, and the game solves floor texels without a wall test.
@@ -5802,7 +5802,7 @@ extern "C" float __cdecl IndoorWallBase(const BYTE* wall, float tile) {
     return tile;
 }
 // Indoor faces of diagonal walls (orientations 4..7): the game takes the floor under them (0x006AB340, "movss xmm0,
-// [eax+78h]"), but diagonal walls are drawn at story * 3 like their outdoor faces (the recording of 23:33: the two faces
+// [eax+78h]"), but diagonal walls are drawn at story * 3 like their outdoor faces (a recording: the two faces
 // of one diagonal were lit from 63.325 outside and 61.314 inside, 2 m apart; the floor for the outside face lifted its
 // light above the sconce). With the option, a diagonal's indoor face takes story * 3 ([ebp+10h]) as its outdoor face does.
 constexpr uintptr_t kIndoorBaseSite = 0x006AB340;
@@ -5845,7 +5845,7 @@ __declspec(naked) void OutdoorWallBaseThunk() {
     }
 }
 float Lum3(const float* c) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; }
-// Walls block light on objects (user 05/10, F7: a telescope in a yard without a roof, behind a wall, took the red wall
+// Walls block light on objects (F7: a telescope in a yard without a roof, behind a wall, took the red wall
 // lamp outside through Apex's per-pixel object lamps; the game's own rig had that lamp too). Objects are drawn on the
 // render thread and the walls live on the light tree thread, so room 0's walls of each story (its LightingWall list
 // room+0xD8..+0xDC: every outside face, yards included) are copied here when that room is solved: start +0x110 (world),
@@ -5882,7 +5882,7 @@ int ReadStoryWalls(const BYTE* room0, uintptr_t& mgr) {
     }
     return n;
 }
-// The sides of a foundation (07/10, user: doors and windows on a foundation took no light from a lamp on the terrain, only
+// The sides of a foundation (doors and windows on a foundation took no light from a lamp on the terrain, only
 // from one on the same foundation). Story 0's outside walls under a foundation are its sides, drawn only up to the
 // foundation's top, but the copy made them 3 m tall like any wall: every ray from a lamp on the terrain to a door on the
 // foundation crossed one below its top and WallBlocks dropped the lamp. A story-0 wall with a placed floor of story 1 on
@@ -6056,8 +6056,8 @@ void* MaskWallLists(int slot, BYTE* room) {
     return &L.head;
 }
 
-// ---- Upper outdoor floors: no ground light map from lamps under them (07/10; user: "not the roof, the floor of another room
-// under the roof"). F7 08:36:25, lot CF2DEA20 story-3 room-0 floor over the left wing: draw #142 = DrawFloorAtlas, its map T7
+// ---- Upper outdoor floors: no ground light map from lamps under them (not the roof: the floor of
+// another room under the roof). An F7 capture, lot CF2DEA20 story-3 room-0 floor over the left wing: draw #142 = DrawFloorAtlas, its map T7
 // black there, the atlas T11 the red disc of wall sconce #4140 (story 2, 0.56 m UNDER that floor), T7 alpha 0..0.55 over the
 // wing and 1 along room 6 but for 4x4-texel holes of 0 at tile centres: pink, and red squares. The atlas is the terrain bake:
 // every lamp a point light stamped at the terrain, 2 w cos / d^2 with w = 0.2 x range x intensity (terrain-and-light-bake.md
@@ -6149,7 +6149,7 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
-    // Every thread (user 05/10: the light between stories "does not work every time"): the game also solves rooms off the
+    // Every thread (the light between stories did not work every time): the game also solves rooms off the
     // light tree thread (loading, lot impostors); skipping those left some texels of a floor masked and others not. The
     // game's 2D wall test works on any thread; SolvePoint calls the game directly there (no cross-story context).
     const float* s = static_cast<const float*>(sample);
@@ -6167,7 +6167,7 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
         if (g_floorMaskReady && room[0x18]) out[3] = 0.0f; // outdoor: the game's alpha 0
         return r;
     }
-    // An outdoor floor texel of a story >= 1: its own light is solved once, with the walls tested (user 05/10, top view:
+    // An outdoor floor texel of a story >= 1: its own light is solved once, with the walls tested (top view:
     // a yard opened by a gap in its wall becomes part of room 0, and the game, which never wall-tests floor texels, lit the
     // yard floor right behind the solid wall with the lamp outside). The same lamps and the real normal, the 2D test on:
     // the light comes in through the gap only. (The game's untested solve is not run: it was replaced anyway.)
@@ -6223,8 +6223,8 @@ float* __fastcall SolvePointSingle(BYTE* room, void*, float* out, void* list2D, 
     return SolvePoint(room, out, list2D, list3D, flags, sample, false);
 }
 
-// ---- Rooms lit only by lamps of another story (30/09, F6 105204; user: "a room did not take the brightness of rooms for a
-// while", mostly right after loading). Rooms 5 and 7 of story 2 took the green lamp of story 1 (rooms near an opening take
+// ---- Rooms lit only by lamps of another story (F6 capture: a room did not take the brightness of
+// other rooms for a while, mostly right after loading). Rooms 5 and 7 of story 2 took the green lamp of story 1 (rooms near an opening take
 // the lamps of the story below) and the floor test blocked every point of it: ambient (0, 0, 0), normalisation inf, the
 // Brightness slider did nothing to them; room 6, almost all blocked, x98. FUN_006a0230 (thiscall(room, float brightest[4]),
 // its only call 0x006A13B4 in FUN_006a0f50): +0x160 = limit / max(the lamps' vfunc+0x30, the brightest sample x k) when
@@ -6264,7 +6264,7 @@ void __fastcall RoomNormHook(BYTE* room, void*, const float* brightest) {
     }
 }
 
-// ---- The 4 directional basis maps get the floor test too (30/09, third agent study; F7 128 / F8 10:45: a TV in a closed
+// ---- The 4 directional basis maps get the floor test too (30/09, a third study; F7 128 / F8: a TV in a closed
 // room upstairs took the green lamp of the story below). The story's LightBasisMap0..3 (64x64, 1 texel per metre, locked at
 // room+0x584 + i*0x28 in FUN_0069fa40, gated by room+0x629) are filled by FUN_006a09f0 (from FUN_006a3b80 at 0x006A3C0A,
 // state 7 of the room solve FUN_006a3c90, indoor rooms of high-quality lots): one sample per tile centre, and for each light
@@ -6606,8 +6606,8 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
     return !(key[0] & 0x40000000u);
 }
 
-// Where an outdoor lamp of a lower story enters an outdoor room's story through open air (06/10, user's F7 16:30 and F8
-// 16:29:57: a sconce of the ground floor left the upper story's half wall of a balcony dark beside the lit wall next to it;
+// Where an outdoor lamp of a lower story enters an outdoor room's story through open air (F7 and F8
+// captures: a sconce of the ground floor left the upper story's half wall of a balcony dark beside the lit wall next to it;
 // all 21 recorded points of the half wall were blocked by the game's wall test of the upper story and passed by ours). That
 // test (0x0069FC40) has no wall base, and its soft mode shades rays passing near a wall's end, so a ray rising past the
 // corner of the balcony below its floor was blocked by walls that stand above it. The game's test (GameWallTest) then runs
@@ -6700,11 +6700,11 @@ bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* samp
     }
 }
 
-// The walls of the stories between a lamp's story and the point's (07/10, user's F7 16:34:27: a ground post lit the tower's
+// The walls of the stories between a lamp's story and the point's (an F7 capture: a ground post lit the tower's
 // story-3 wall from below the story-2 balcony's parapet: the lamp's story was WallPass's, this story's the game's, and the
 // parapet of the story between was tested by nobody). Each at its real heights (GridPass); 1 = nothing in the way.
 std::atomic<long> g_midTests{0}, g_midBlocked{0};
-// A lamp's light going steeply up (07/10, user's F7 16:41:47: a ground post 5.5 m below lit the tower's story-3 piers over
+// A lamp's light going steeply up (an F7 capture: a ground post 5.5 m below lit the tower's story-3 piers over
 // most of their height, 50 degrees above the lantern, nothing modelled in the way). A lamp post's lantern sends little light
 // up past its cap; the game's lamp has no such shape and its falloff over range 42.5 is nearly flat over a few metres. A ray
 // from a lamp of a lower story to a point of an upper story keeps all of it up to sin(elevation) 0.35 (20 degrees) and
@@ -6781,12 +6781,12 @@ void FillShare(const RoomInfo& info, void* light, const float* sample, const Sla
     alignas(16) float pos[4] = {};
     GridWhy why{};
     const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
-    // (07/10, user: the top of the wall must get more than the bottom, and the light went far along the wall) The share
+    // (the top of the wall must get more than the bottom, and the light went far along the wall) The share
     // follows how close the ray comes to clearing the slab's edge (its vertical miss there: 0 = it grazes the edge, where
     // it meets the direct light without a seam), how far it then runs under the slab (grazing rays from far along the wall
     // run deep), and a pool centred on the lamp as its own light on the facade (on top of the game's own falloff, kept in
     // the colour)
-    // (07/10, balcony4: the user found balcony2's even share almost right; balcony3's narrow pool and the ramp to full
+    // (balcony4: balcony2's even share looked almost right; balcony3's narrow pool and the ramp to full
     // light at the edge made harsh streaks) The share is smooth everywhere: higher on the wall the ray passes closer under
     // the slab's edge and keeps more (vertical miss, gentle), and it fades sideways from the point of the wall nearest the
     // lamp over about 4.5 m. Nothing here changes sharply from one texel to the next.
@@ -6968,7 +6968,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 g_ctx.enterHard = true; // and without a wall end's penumbra (WallTestHard)
                 g_outdoorEnters.fetch_add(1, std::memory_order_relaxed);
             } else if (above && info.grid[0] && !info.yard) {
-                // (07/10, user's capture 15:14: the yard's lamp posts left the upper facade behind a balcony's parapet dark)
+                // (a capture: the yard's lamp posts left the upper facade behind a balcony's parapet dark)
                 // A lamp of a lower story whose bulb stands above this story's lowest floor: the game's whole-ray 2D test,
                 // which has no wall base, shaded every point behind the parapet. This story's walls (and the story above's
                 // for a ray that high) are tested here at their real feet, tops (half walls, drawn heights) and openings
@@ -6985,7 +6985,7 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 g_aboveTests.fetch_add(1, std::memory_order_relaxed);
                 if (pass <= 0.0f) g_aboveBlocked.fetch_add(1, std::memory_order_relaxed);
             } else if (slab.valid && !slab.lower && info.grid[0] && !info.yard && g_fillOn.load(std::memory_order_relaxed)) {
-                // Light under balconies (07/10, user's F7 15:25:59: the wall behind a 3 m deep balcony stayed black beside its
+                // Light under balconies (an F7 capture: the wall behind a 3 m deep balcony stayed black beside its
                 // lit neighbours). The ray comes up through a placed floor of this story: no direct light, but the slab's
                 // edge, underside and parapet scatter some onto the wall behind. A share of the light is kept, smaller the
                 // deeper behind the edge the ray comes up (smooth, no seam), times this story's walls at their real heights
@@ -7100,7 +7100,7 @@ float IndoorPassImpl(const RoomInfo& info, const Cross& c, void* light, const fl
     // Where the ray enters the solving room's story: its last floor crossing. The game's own 2D wall test of the solving
     // room, which follows in the point solve (0x69FE93), tests the ray from there (GameWallTest) instead of from the lamp:
     // this story's walls stand on that floor, and a lamp of another story that lies behind one of them only in plan (under
-    // a ledge, a set-back upper wall, a recess) shines past it. Measured 05/10, atrium house, wall seams of 19:54:44: the
+    // a ledge, a set-back upper wall, a recess) shines past it. Measured 05/10, atrium house, wall seams capture: the
     // sconces of the lower west wall, 1 m behind the upper story's west wall, lit the upper walls nowhere (0.08-0.16 less
     // at the floor line all along the opposite wall than the lower room's top row at the same points).
     if (entry && !g_ctx.basis && count > 0 && currentStory == info.level) {
@@ -7650,7 +7650,7 @@ bool FreshLampSolveImpl(BYTE* room, DWORD changed, bool waiting) {
         std::lock_guard<std::mutex> lock(g_gatherStampMx);
         const auto stamp = g_gatherStamps.find(reinterpret_cast<uintptr_t>(room));
         if (stamp == g_gatherStamps.end() || stamp->second.mgr != mgr || stamp->second.id != id) return false;
-        // a gather in the same tick as the change counts when it came after the latest lamp mark (06/10, recording 12:01:
+        // a gather in the same tick as the change counts when it came after the latest lamp mark (a recording:
         // the switched lamp's own room, gathered by the game's walk in that tick, was solved a second time for nothing)
         if (!RoomAmbientPolicy::GatherAfterChange(stamp->second.started, changed)
             && !(stamp->second.started == changed && stamp->second.serial > g_markSerial)) return false;
@@ -7660,7 +7660,7 @@ bool FreshLampSolveImpl(BYTE* room, DWORD changed, bool waiting) {
     const int level = *reinterpret_cast<const int*>(mgr + 0x88);
     if (StoryManager(tracker, level) != mgr) return false;
     const DepKey key{tracker, level, id};
-    // An atrium target waiting for this room (g_ambToQueue) is not a reason to gather it again (06/10, recording 11:17: the
+    // An atrium target waiting for this room (g_ambToQueue) is not a reason to gather it again (a recording: the
     // lamp's own room was solved twice, and its waiting atrium members were sent back to their gather, losing their quick
     // pass): its own state 0 merges with the target, and a member solved before the target changed is sent again by the
     // room update's ambient pass (BeforeRoomUpdate)
@@ -7733,7 +7733,7 @@ int RequeueStory(uintptr_t tracker, int level, DWORD changed = 0, int* skipped =
 }
 // Every room of every loaded lot lights again (after an option that changes them). Render thread. Basements too (stories
 // -4..-1; 30/09: "Refresh the lighting" left them out).
-// The after-load refresh alone (06/10, user: "when entering the lot it takes long to correct"; log 12:18: the world went
+// The after-load refresh alone (entering the lot, the light took long to correct; a log: the world went
 // live, its rooms near openings gathered again and settled in 3.8 s, and then the after-load refresh sent all 75 rooms of
 // 16 lots once more, 6 s more): a room gathered again since the world went live already has every lamp of its lot
 // (the reason for that refresh, 30/09: a room solved before the other stories' lamps were registered), so it keeps that
@@ -8171,10 +8171,10 @@ int ForEachRoomImpl(bool (*visit)(unsigned char* room, void* ctx), void* ctx, in
 // ---- Rooms still lit by a lamp switched off (30/09) ----
 // A room's light list (room+0xC8..+0xCC) holds the lights its last gather took. The gather's filter (GameTakesLight: the
 // lit flag +0x100 & 0x20 and LightBright, FUN_006bc520: the lit colour +0xE0..+0xE8 summed >= [0x010459E4]) leaves a lamp
-// switched off out. F8 30/09 01:26 (house C49C001BCF2DEA20, every lamp off; the game switches a lamp off by its intensity,
+// switched off out. F8 (house C49C001BCF2DEA20, every lamp off; the game switches a lamp off by its intensity,
 // the lit flag stays): after the load, room 2 of story 1 still held two of its lamps switched off for ~25 s (lights 4,
-// then 2 once the user switched a lamp on; user: "right after entering the game the background colour was wrong, after a
-// while it fixed itself"). Once a second an indoor room at rest whose list still holds a lamp the filter refuses now is
+// then 2 once a lamp was switched on; right after entering the game the background colour was wrong and fixed
+// itself after a while). Once a second an indoor room at rest whose list still holds a lamp the filter refuses now is
 // sent to gather again, once per such set of lamps. Left out: room 0 (the outside stays as it is), window lights (types 7
 // and 8 follow the sky) and street lamps (lot 0).
 constexpr DWORD kStaleEvery = 1000;
@@ -9077,7 +9077,7 @@ void OnWorldChanged() {
 
 // A world loaded at night gets no lot relight (NightTerrainRelight, g_pendingLoad), and its lots were solved during the
 // load screen: a lot may find its floors, openings and lamps then in any order, and its settle could fire before the
-// lot was complete (29/09, user: "only when I opened the game some lights failed"; Night Lighting off and on fixed it).
+// lot was complete (some lights failed only at the first load after starting the game; Night Lighting off and on fixed it).
 // One more round of the rooms near openings once the world is drawn (only those rooms, not the whole lots).
 // Development tools: the story each loaded lot shows (story 0 manager +0x284, the "cam" of the solve journal: it follows
 // the floor switches of the lot being played; +0x288 is set on more than one lot, so no single lot is picked here)
@@ -9507,7 +9507,7 @@ int ForEachRoom(bool (*visit)(unsigned char* room, void* ctx), void* ctx, int* q
 // sent at once by the lamp edit itself (AfterChangedWalk), so this is the safety net, and their fresh solves are kept.
 // The lamps are held by indoor rooms of two stories or more (lamps taken through a stair opening, part 4.): a lamp edit's
 // targeted refresh left such a room lit through the closed walls around it until every room of the lot lit again (06/10,
-// recording 22:09:14), so LampMarkFilter relights the whole lot at once for them. Render thread.
+// a recording), so LampMarkFilter relights the whole lot at once for them. Render thread.
 bool LampsCrossStories(uintptr_t tracker, const uintptr_t* lamps, int lampCount) {
     if (!tracker || !lamps || lampCount <= 0) return false;
     LoadAddresses();
@@ -9570,7 +9570,7 @@ int RelightLotById(uint64_t lot, const char* why) {
 // A switched lamp's home (06/10 evening): its room id (light+8, what the object rigs' gather compares, FUN_006bb270) on the
 // story whose lowest floor (mgr+0x98, world) is the highest at or under the lamp (+0x124), and whether it is on now (the lit
 // bit and colour, as LampMarkFilter reads them). The lamp mark's room is only the first room the game marked: room 0 of
-// every story in the 13:52 recording, so every switch counted as an outdoor lamp and sent the outdoor rooms of every story.
+// every story in a recording, so every switch counted as an outdoor lamp and sent the outdoor rooms of every story.
 // False when unreadable or when that story has no such room (the caller keeps the mark's story and room).
 bool ReadLampHomeRaw(uintptr_t light, int& id, float& y, bool& on) {
     __try {
@@ -9619,14 +9619,14 @@ size_t SafeListSize(const BYTE* room) {
     }
 }
 
-// A lamp switched (06/10, user approved "improve it"; recording 12:01: one sconce sent 17 rooms of its lot through this safety
+// A lamp switched (a recording: one sconce sent 17 rooms of its lot through this safety
 // net, ~1.5 s of solving in the background, story 3 and every outdoor room among them). A switch changes the light of the
 // rooms that hold the lamp, of its own room, and of the rooms that take it through a stair opening once it is on: those of
 // its story and the stories next to it near the openings between them (the gather of part 4 takes lamps of S - 1 and S + 1
 // only, near an opening); an outdoor lamp (room 0 or a roofless room) also lights the outdoor rooms of every story. Only
 // those rooms are sent (a fresh solve kept, as above); a lamp that moved too, or into another room, still sends the lot.
 // The lamp's own story and room are its home (LampHome); when only lamps switched off, a room with no light in its list
-// is left alone (no lamp reached it before the switch, so none of them changes it: rooms 22 and 24 of the 13:52 recording).
+// is left alone (no lamp reached it before the switch, so none of them changes it: rooms 22 and 24 of a recording).
 int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedAt, const LampSwitch* switched, int count,
                       const uintptr_t* moved, int movedCount) {
     LoadAddresses();
@@ -9742,7 +9742,7 @@ bool HoldLampMark(uintptr_t tl, int room, bool user) {
 }
 
 // The story the camera shows first, then the ones below it (seen from outside and through the cutaway), then the ones above
-// (05/10, recording 19:42: all lamps of a house switched on, 26 rooms solved over about a second in the queue's order)
+// (a recording: all lamps of a house switched on, 26 rooms solved over about a second in the queue's order)
 float CameraStoryFactor(const void* room) {
     __try {
         const uintptr_t mgr = *static_cast<const uintptr_t*>(room);
@@ -9780,10 +9780,10 @@ bool OtherMembers(const void* room, std::vector<DepKey>& others) {
     return true;
 }
 
-// (06/10, user: "it applies first on the light's story, and only then on the others"; recording 11:17: after the lamp's
+// (the light applied first on the lamp's story, and only then on the others; a recording: after the lamp's
 // room the scheduler took the camera story's rooms, then the stories below, so the atrium's member on story 0 came 1.5 s
 // and the one beside the lamp 3 s after the lamp's own). A member counts when any member of its group is a lamp edit's
-// (recording 12:01: the atrium's room beside the lamp's, sent by the lamp's safety net and so not urgent, came 2.8 s late).
+// (a recording: the atrium's room beside the lamp's, sent by the lamp's safety net and so not urgent, came 2.8 s late).
 bool StackedWithEdit(const void* room) {
     std::vector<DepKey> others;
     if (!OtherMembers(room, others)) return false;

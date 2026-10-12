@@ -224,7 +224,7 @@ bool DrawnFootPass(float ax, float az, float bx, float bz, float ext, float base
             }
         }
     // The stories share the line, stacked: the wall drawn for this one has the highest foot from 3.2 m under its base to
-    // 0.3 m over it (F7 23:00:23: story 1 drawn from 61.30 for a base of 63.325, story 2 from 64.30 for 66.325, the
+    // 0.3 m over it (F7: story 1 drawn from 61.30 for a base of 63.325, story 2 from 64.30 for 66.325, the
     // foundation's side from 60.55 for 60.325; the largest overlap rule took the story above for the foundation's walls)
     const Span* best = nullptr;
     for (const Span& s : spans) {

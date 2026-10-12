@@ -9,7 +9,7 @@
 // Console output only; writes no files. In game the ASI also checks its result against the game's own function.
 //
 // Build (x86 like the game), from "x86 Native Tools Command Prompt for VS 2022" or after vcvars32.bat:
-//   cd /d C:\Users\luiz_\Desktop\S3SS-dev\S3SSApex\tools\cas_sort_test
+//   cd /d <repo>\tools\cas_sort_test
 //   cl /nologo /O2 /EHsc /std:c++20 /I..\..\features cas_sort_test.cpp ..\..\features\cas_tri_sort.cpp /Fe:cas_sort_test.exe
 // Run: cas_sort_test.exe [--quick]. Exit code 0 = every count and every sorted list equal.
 //

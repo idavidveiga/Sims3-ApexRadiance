@@ -156,7 +156,7 @@ std::unordered_map<uintptr_t, QuickRoom> g_quickDone;
 // ends within one or two sets)
 constexpr int kQuickSetsMax = 3;
 // The solve ends are seen (FinalizeHook, NoteSolveEnd, on the render thread): a quick pass is shown when its room's solve
-// ends. 06/10 13:52 recording: the test below without it ("shown" +0x100 is 0) was already true for a room still showing
+// ends. A recording: the test below without it ("shown" +0x100 is 0) was already true for a room still showing
 // the previous switch's quick pass, so the next switch's quick pass gave it up after the safety net's invalidate gave it
 // back its class 2, and it kept the old light 3.5 s, waiting for its class-2 solve
 std::atomic<bool> g_endsSeen{false};
@@ -234,7 +234,7 @@ bool SetClass0(BYTE* room) {
         return false;
     }
 }
-// Any player's switch takes it (06/10 evening, user: one lamp too; it was only for bursts of 3+ lights, so one lamp of the
+// Any player's switch takes it (one lamp too; it was only for bursts of 3+ lights, so one lamp of the
 // atrium had its 4 rooms solved at class 2 one after another): drags and value edits do not (LampMarkFilter::SwitchActive)
 void QuickPassRoom(BYTE* room) {
     // a switch shown all at once (AtriumHold::AllAtOnce) waits for the final light: a quick pass would never be seen
@@ -401,7 +401,7 @@ void Drain(BYTE* tree, BYTE* before) {
     if (before && !(lampEdit && room == before && LevelLightShare::LampUrgency(room) > 1.0f)) room = nullptr;
     if (room && (!finishedLot || LotOf(room) != finishedLot)) room = nullptr;
     if (room) {
-        // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, 05/10 recording 20:38:25)
+        // a lamp being dragged: 6 ms (its own room follows it without the frame rate dropping, a recording)
         // a lamp switch whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         // a switch shown all at once waits for its rooms' final light: they take 16 ms a frame meanwhile (AtriumHold)

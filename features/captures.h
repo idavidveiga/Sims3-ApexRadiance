@@ -83,7 +83,7 @@ Summary Scan();            // walks Captures\ (call at most every few seconds)
 void OpenFolder();         // Explorer on Captures\ (created if missing)
 int DeleteAll();           // removes every capture folder; the number removed
 
-// Capture sessions (user, 30/09: "sessions that put everything in one place"): while one is open, every capture goes into
+// Capture sessions (everything of one test in one place): while one is open, every capture goes into
 // Captures\<date time> Session\<time> <kind>\; EndSession adds the log, the settings and "About this session.txt" (the list
 // of its captures) to the session folder. A session left open when the game closes stays as it is (its captures are complete).
 void BeginSession();

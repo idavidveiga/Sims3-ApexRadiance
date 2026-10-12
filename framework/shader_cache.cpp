@@ -78,10 +78,10 @@ std::string Message(ID3DBlob* errors) {
 }
 
 
-// ---- the disk cache (05/10, user: "use less RAM without losing any quality") ----
+// ---- the disk cache (less RAM without losing any quality) ----
 // Every variant's bytecode is kept in ApexRadiance_ShaderCache.bin once compiled, so a later start creates the same
 // shaders without D3DCompile, and the compiler's heap peak never happens. (2.7.0 also delay-loaded d3dcompiler_47.dll so
-// a complete cache never mapped it; BitDefender's generic detection flagged that build, 06/10, so 2.7.1 links it as before.) A variant whose identity changed (its source, macros,
+// a complete cache never mapped it; a generic antivirus heuristic flagged that build, so 2.7.1 links it as before.) A variant whose identity changed (its source, macros,
 // flags or target) misses the cache and is compiled as before; the file is then written again with the current set only.
 constexpr uint32_t kDiskMagic = 0x53585041; // "APXS"
 constexpr uint32_t kDiskVersion = 1;

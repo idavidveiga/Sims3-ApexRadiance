@@ -30,7 +30,7 @@ constexpr DWORD kKeepMs = 3000;  // a map's buffers are kept this long after its
 constexpr size_t kMaxMaps = 192; // maps kept at once (a switch of every lamp of the atrium house: about 150)
 constexpr size_t kMaxBytes = 96u << 20; // their buffers together (2 x w x h x 4 each); past it a map is left to the game
 
-// ---- Lamp switches all at once (06/10 evening, user chose "one change only" over the quick pass and its corrections) ----
+// ---- Lamp switches all at once ("one change only" reads better than the quick pass and its corrections) ----
 // From a player's switch until every room it marked on a story its lot shows has ended a solve begun after the switch
 // (LevelLightShare::SwitchRoomsPending; the quick pass is off meanwhile, so that is the room's final light), or
 // kSwitchHoldMs after the latest switch: every map those rooms' solves write waits as an atrium's maps do, the furniture

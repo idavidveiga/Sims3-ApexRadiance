@@ -1,5 +1,5 @@
-// Light detail (part of Night Lighting, 2026-10-05; user: "the lights look low resolution, create an option in Apex to raise
-// the quality of the lights").
+// Light detail (part of Night Lighting): an option to raise the resolution of the baked lamp light, which looks low
+// resolution in the game.
 //
 // The game bakes lamp light into texture maps per story (room solve: walls into an atlas of strips, floors, ceilings and
 // objects into maps over the lot), with a detail set by each room's lighting LOD class (room+0xF4, 0..2) from fixed tables
@@ -21,8 +21,8 @@
 // Cost: four times the texels per room, so rooms take about four times longer to light (after loading and after a lamp
 // changes) and their maps take four times the memory.
 //
-// The class-2 floor and ceiling layout (07/10, user: indoor lamp light in 1 m squares, a sconce's red through its wall in
-// the next room, the floor strip along a sconce's wall black after a lamp edit; F7 light map T5 of 01:34:43): two places
+// The class-2 floor and ceiling layout (indoor lamp light in 1 m squares, a sconce's red through its wall in
+// the next room, the floor strip along a sconce's wall black after a lamp edit; F7 light map T5): two places
 // build it with the game's 4 written in the code instead of 0x00FF36AC[2], so High doubles them too:
 //  - 0x006A7E62 "push 4" in FUN_006a7cf0 (the story manager's tile rebuild, the only caller of FUN_006aa480): every
 //    quadrant no diagonal wall splits gets the texel origin (tile x * 4, tile z * 4) (0x006AA568, u16 at tile+0x8A /

@@ -127,8 +127,8 @@ std::unordered_set<BYTE*> g_roomRigSet;
 float g_regatherLevel = -1.0f;
 uintptr_t g_regatherCells = 0;
 
-// The lamps of another story for room-mode rigs (06/10, user: "the light between stories is not perfect"; Light capture
-// 13:20: the frame of an atrium's upper window was black, 0.02, right over the lower window's frame lit red by a sconce
+// The lamps of another story for room-mode rigs (the light between stories was not right; a Light
+// capture: the frame of an atrium's upper window was black, 0.02, right over the lower window's frame lit red by a sconce
 // of the story below). FUN_006bbde0 gathers a roofed room's rig from that room's light list (room+0xC8), which holds the
 // lamps of the stories next to it that the light between stories took near an opening (level_light_share part 4: the
 // room's walls and floors are lit by them), but FUN_006bb2f0 keeps only lights whose room id is the object's (light+8 ==
@@ -393,8 +393,8 @@ constexpr int kClassTypes[] = {3, 11, 5, 7, 9, 10, 4, 8, 6};
 LightClass kClasses[std::size(kClassTypes)] = {}; // set by LoadAddresses; {0, 0} = class not found on this build
 constexpr int kStreetClass = 1; // vtable 0xFF42F8 (type 11)
 std::atomic<int> g_classesPatched{0};
-// Cone lamps brighten objects only where their cones reach (07/10; user: light reached the plants "unrealistically"). F7
-// 08:36:18 on the circled flower bed: instanced foliage (VS 285429B8, wrap-lit, per-instance lamp colours c54..c56), instance 0
+// Cone lamps brighten objects only where their cones reach (light reached the plants far off the cone). An F7
+// capture of a flower bed: instanced foliage (VS 285429B8, wrap-lit, per-instance lamp colours c54..c56), instance 0
 // c55 = (0.594, 0, 0) = the red wall sconce #4140 (type 5, cones of ~40 degrees around -Y and +Y, 6.4 m over the garden) boosted
 // below: 0.75 x (1 - d^2 / R^2)^2, R = half the light's rect = sqrt(range / 0.0392 [0x00FF45C4 via 0x011D1180]) = 34.6 m for
 // range 47, i.e. d = 11.5 m, far outside both cones. The game's own record has the cone (0x006C0690 -> FUN_006BC940); the flat

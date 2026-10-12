@@ -53,8 +53,8 @@ bool SceneDepthReady(IDirect3DDevice9* dev) {
     return ready;
 }
 
-// The effects of this boundary: all of them, or with the scene drawn on another depth-stencil than the shared one (06/10: a
-// friend's Edit in Game; every boundary was rejected for it, so Color never ran until it was turned off and on, which dropped
+// The effects of this boundary: all of them, or with the scene drawn on another depth-stencil than the shared one (one
+// Edit in Game setup: every boundary was rejected for it, so Color never ran until it was turned off and on, which dropped
 // its depth request and with it the swap) only the ones that need no depth. The others stay pending as before.
 // 07/10, players' Runtime Error: an effect that throws is caught (the game's draw or EndScene goes on), noted, and skipped
 // from then on; the others keep running

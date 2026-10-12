@@ -316,7 +316,7 @@ void Patches(Gpu& gpu, const std::filesystem::path& captures) {
         gpu.dev->SetTexture(2, nullptr); gpu.dev->SetTexture(spare, nullptr);
         Release(base); Release(patched); Release(native); Release(smooth);
     }
-    // Validate the actual world single/multi-pass shaders from the user's captures.
+    // Validate the actual world single/multi-pass shaders from in-game captures.
     int found = 0;
     if (std::filesystem::exists(captures)) for (const auto& e : std::filesystem::recursive_directory_iterator(captures)) {
         const std::string name = e.path().filename().string();

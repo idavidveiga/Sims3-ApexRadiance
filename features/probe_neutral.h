@@ -1,5 +1,5 @@
 #pragma once
-// Lamp colours stay near lamps (07/10, user: one coloured wall lamp tinted every outdoor floor of the lot, the closed roofless
+// Lamp colours stay near lamps (one coloured wall lamp tinted every outdoor floor of the lot, the closed roofless
 // rooms and a glossy rug in a far room with its colour). The game's light probes (the exterior one at lightMgr+0x64 and the room
 // probes) render the scene into a cube, read it back and write on the CPU a diffuse cube (+0x2C50) and a 7-mip specular cube
 // (+0x2C5C) that outdoor floors, roofs, sims and glossy objects sample as their sky light (0x006B2EB0, 0x006B42C0). At night
