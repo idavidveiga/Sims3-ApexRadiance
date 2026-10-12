@@ -1,19 +1,16 @@
-Describe the concrete problem and resulting behavior.
+## Summary
+
+What changes for the player or the codebase, and why.
 
 ## Validation
 
-- Tested source SHA:
-- Build flavor and result:
-- Relevant offline checks:
-- Gameplay/backend evidence and remaining limitations:
+- Tested commit:
+- Build (public / developer):
+- Offline checks:
+- In game (backend, scene) and what remains unverified:
 
-## Agent handoff
+## Checklist
 
-- Current objective and branch:
-- Completed work:
-- Next steps:
-- Decisions and rejected approaches:
-- Open blockers:
-- Active owner / integrator:
-
-Read AGENTS.md, CLAUDE.md and CONTRIBUTING.md before continuing. Fetch the branch and verify the current head before editing. Simultaneous agents use separate worktrees. Merge and release require explicit authorization.
+- [ ] Title follows `area: imperative summary` (see docs/PUBLIC-TEXT-POLICY.md)
+- [ ] New menu texts translated; `perl tools/menu_audit.pl .` reviewed
+- [ ] Feature, validation and history pages updated when behaviour changes

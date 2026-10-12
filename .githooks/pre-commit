@@ -1,0 +1,5 @@
+#!/bin/sh
+# Public text policy for staged files (docs/PUBLIC-TEXT-POLICY.md)
+files=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$files" ] && exit 0
+exec python "$(git rev-parse --show-toplevel)/tools/public_text_check.py" --files $files

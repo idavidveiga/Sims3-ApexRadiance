@@ -1,0 +1,32 @@
+name: Public text
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Check changed files, commit messages, title and description
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          status=0
+          git diff --name-only --diff-filter=ACMR "$BASE" "$HEAD" > changed.txt
+          if [ -s changed.txt ]; then xargs -d '\n' python3 tools/public_text_check.py --files < changed.txt || status=1; fi
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            git log -1 --format=%B "$c" > msg.txt
+            python3 tools/public_text_check.py --commit-msg msg.txt || { echo "  in commit $c"; status=1; }
+          done
+          python3 tools/public_text_check.py --title "$TITLE" || status=1
+          printf '%s' "$BODY" > body.txt
+          python3 tools/public_text_check.py --text-file body.txt || status=1
+          exit $status
