@@ -48,7 +48,7 @@ and free of private context? Findings are fixed before merging.
 | Commit subject, PR title | `area: imperative summary`, at most 72 characters, no trailing period, no parentheses | `lighting: fix wall light on upper floors` |
 | Release PR | `release: X.Y.Z` | `release: 2.13.0` |
 | Branch | `feature/`, `fix/`, `docs/`, `chore/`, `release/` + slug | `feature/fx-effects` |
-| GitHub release | `Apex Radiance X.Y.Z – Short title` (en dash) | `Apex Radiance 2.13.0 – FX effects` |
+| GitHub release | `Apex Radiance X.Y.Z` (the headline goes in the notes) | `Apex Radiance 2.13.0` |
 
 Areas: `lighting`, `color`, `fx`, `aa`, `ao`, `perf`, `ui`, `i18n`, `presets`, `build`, `ci`, `docs`, `tools`,
 `release`, `deps`. Commit bodies explain what and why in full sentences; they carry no tool trailers.
