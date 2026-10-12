@@ -118,8 +118,8 @@ Project-wide history: [architecture](history/architecture.md), [workflow](histor
 
 ## Presets and recovery
 
-- [Presets](features/presets.md): saved settings, portable ZIP packages with a LUT and keyboard shortcuts (Released in 2.13.0).
+- [Presets](features/presets.md): saved settings, portable ZIP packages with a LUT and keyboard shortcuts (Released in 2.12.2).
 - [Graphics recovery](features/graphics-recovery.md): restart image-effect resources without resetting settings.
-- [2.13.0](releases/2.13.0.md): Released in 2.13.0; keyboard shortcuts for presets.
+- [2.12.2](releases/2.12.2.md): Released in 2.12.2; keyboard shortcuts for presets.
 - [2.12.1](releases/2.12.1.md): Released in 2.12.1; outdoor lighting corrections.
 - [2.12.0](releases/2.12.0.md): LUTs, presets and graphics improvements.

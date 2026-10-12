@@ -33,6 +33,6 @@ The test-build gameplay check was completed before release preparation. No detai
 
 - Native dialog overwrite confirmation and ZIP transfer on a separate computer.
 - Extended preset switching and all language layouts.
-- Preset shortcuts (2.13.0): steps 4 to 6 in game.
+- Preset shortcuts (2.12.2): steps 4 to 6 in game.
 
 Release provenance: the combined code was independently reviewed at `7ddaa214a6678cdbc0c9554082c779ffc485fa13`. Subsequent documentation-only edits do not change these code paths. The published release tag records the final source commit.
