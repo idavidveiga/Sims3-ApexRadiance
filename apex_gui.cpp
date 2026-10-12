@@ -2307,7 +2307,7 @@ void PresetDialog() {
 // ---- preset shortcuts (Presets page) ----
 // A preset can have its own key combination ([ui.profile_shortcuts], the player's settings, not the preset file).
 // Pressing it applies the preset's parts, never its keyboard shortcuts or developer settings. The window thread
-// records and matches the keys; the render thread applies (RunPresetShortcut). User, 2026-10-12: replaces the
+// records and matches the keys; the render thread applies (RunPresetShortcut). Replaces the
 // per-filter shortcuts of 2.11.0, in the same visual style.
 constexpr unsigned kPresetKeyParts = ~(ApexConfig::kPartShortcuts | ApexConfig::kPartDeveloper);
 std::atomic<bool> g_presetKeyRecording{false}, g_presetKeyCancelled{false}, g_presetKeyPending{false};
@@ -2318,6 +2318,12 @@ std::string g_presetKeyEditing; // render thread: the preset the editor is for (
 std::string g_presetKeyEditingName; // ... and its name as shown
 bool g_presetKeyOpenEditor = false;
 int g_presetKeyEditorFrame = 0; // the last frame the editor was drawn: recording stops when it is gone (menu closed)
+// Render thread: the notice of a preset applied by its keys with the menu closed (PresetPill)
+std::string g_presetPillName;
+IconId g_presetPillIcon = IconId::Bookmark;
+int g_presetPillLeftMs = 0;
+unsigned long long g_presetPillLastDraw = 0;
+constexpr int kPresetPillMs = 2500;
 
 KeyCombo PresetShortcut(const std::vector<ApexConfig::ProfileShortcut>& list, const std::string& preset) {
     for (const auto& s : list) if (s.preset == preset) return s.keys;
@@ -2374,6 +2380,7 @@ void RunPresetShortcut() {
     if (Loading() || preset.empty()) return;
     toml::table state;
     std::string error, logName = preset, shown = preset;
+    IconId icon = IconId::Bookmark;
     bool read = false;
     if (preset.starts_with("#builtin")) {
         int index = -1;
@@ -2383,10 +2390,12 @@ void RunPresetShortcut() {
         if (first != last && parsed.ec == std::errc() && parsed.ptr == last && index >= 0 && index < ApexPresets::kCount) {
             logName = ApexPresets::Get(index).name;
             shown = I18n::Tr(ApexPresets::Get(index).name);
+            icon = ApexUi::IconFromName(ApexPresets::Get(index).icon);
             read = ApexPresets::Read(index, state, &error);
         }
     } else {
         read = ApexConfig::ReadProfile(preset, state, &error);
+        if (read) icon = ApexUi::IconFromName(state["meta"]["icon"].value_or(std::string("bookmark")));
     }
     if (!read) {
         LOG_WARNING(std::format("[Menu] Preset shortcut: could not load {}: {}", preset, error));
@@ -2397,7 +2406,12 @@ void RunPresetShortcut() {
     if (!parts) return;
     ApplyProfileState(logName, shown, std::move(state), parts);
     LOG_INFO(std::format("[Menu] Preset shortcut applied {}", logName));
-    if (!Overlay::IsVisible()) Captures::Notify(I18n::Trf("Loaded \"{}\"", shown), 3, Captures::NoteKind::Success);
+    if (!Overlay::IsVisible()) {
+        g_presetPillName = shown;
+        g_presetPillIcon = icon;
+        g_presetPillLeftMs = kPresetPillMs;
+        g_presetPillLastDraw = 0;
+    }
 }
 
 // A key combination shortened at a '+' (with "…") until its tag fits in width; empty when not even one key fits
@@ -2441,11 +2455,32 @@ void PresetShortcutEditor() {
             ApexUi::Gap(ApexUi::kSpace2);
             KeyCombo keys;
             { std::lock_guard<std::mutex> lock(g_presetKeyLock); keys = g_presetKeyCaptured; }
-            const std::string text = Hotkeys::ComboText(keys);
-            std::string shown = text.empty() ? I18n::Tr("Waiting for keys") : text;
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputText("##RecordedKeys", shown.data(), shown.size() + 1, ImGuiInputTextFlags_ReadOnly);
-            if (ImGui::IsItemHovered() && !text.empty()) ImGui::SetTooltip("%s", text.c_str());
+            // Live preview: the keys held now, else the recorded combination, one violet chip per key
+            KeyCombo held;
+            for (unsigned k = 7; k < 256; ++k) {
+                if ((k >= VK_LSHIFT && k <= VK_RMENU) || k == VK_ESCAPE) continue;
+                if (GetAsyncKeyState(static_cast<int>(k)) & 0x8000) held.Add(k);
+            }
+            const KeyCombo& preview = held.Empty() || !g_presetKeyRecording.load() ? keys : held;
+            const std::string text = Hotkeys::ComboText(preview);
+            const float chipH = ApexUi::ChipSize("A").y;
+            ImGui::BeginGroup();
+            if (text.empty()) {
+                ImGui::Dummy(ImVec2(0.0f, (chipH - ImGui::GetTextLineHeight()) * 0.5f));
+                ApexUi::MutedText(I18n::Tr("Waiting for keys"));
+            } else {
+                size_t start = 0;
+                for (bool first = true;; first = false) {
+                    // a '+' key reads "+" in ComboText: never split at a leading or doubled '+'
+                    size_t plus = text.find('+', start + 1);
+                    const std::string key = text.substr(start, plus == std::string::npos ? std::string::npos : plus - start);
+                    if (!first) ImGui::SameLine(0.0f, ApexUi::kSpace1 * ApexUi::Unit());
+                    ApexUi::Chip(key.c_str(), VioletTheme::kAccent);
+                    if (plus == std::string::npos) break;
+                    start = plus + 1;
+                }
+            }
+            ImGui::EndGroup();
             bool conflict = Hotkeys::ComboReserved(keys);
             for (const auto& other : ApexConfig::GetUi().profileShortcuts)
                 if (other.preset != g_presetKeyEditing && !keys.Empty() && other.keys == keys) conflict = true;
@@ -3737,6 +3772,35 @@ void Hint() {
     EndNoticePill();
 }
 
+NoticeMotionState g_presetNoticeMotion;
+bool PresetPillVisible() { return g_presetPillLeftMs > 0 || NoticeAnimationPending(g_presetNoticeMotion); }
+
+// The preset applied by its keys with the menu closed: its icon and name, in the start note's pill
+void PresetPill() {
+    const unsigned long long now = GetTickCount64();
+    if (g_presetPillLastDraw) g_presetPillLeftMs -= static_cast<int>(std::min<unsigned long long>(now - g_presetPillLastDraw, 100));
+    g_presetPillLastDraw = now;
+    const NoticeMotion motion = AnimateNotice(g_presetNoticeMotion, g_presetPillLeftMs > 0);
+    if (!motion.draw) return;
+    const float u = ApexUi::Unit();
+    const float lineH = ImGui::GetTextLineHeight();
+    const float icon = std::round(lineH * 1.25f);
+    const std::string& text = g_presetPillName;
+    if (BeginNoticePill("##ApexPresetApplied", ImGui::CalcTextSize(text.c_str()).x + icon + 10.0f * u, motion.alpha, false,
+                        VioletTheme::kAccentLight, motion.yOffset, false)) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float box = std::round(lineH * 1.6f);
+        ImGui::Dummy(ImVec2(icon, box));
+        const float inset = (box - icon) * 0.5f;
+        ApexUi::DrawIcon(ImGui::GetWindowDrawList(), g_presetPillIcon, ImVec2(p.x, p.y + inset), icon,
+                         ImGui::GetColorU32(Col(VioletTheme::kAccent)));
+        ImGui::SameLine(0.0f, 10.0f * u);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (box - lineH) * 0.5f);
+        ImGui::TextUnformatted(text.c_str());
+    }
+    EndNoticePill();
+}
+
 // Key capture for the optional editor in Settings > Shortcuts.
 // The first key pressed now (with the modifiers held at that moment); false while none
 bool CaptureChord(ApexConfig::KeyChord& out) {
@@ -4328,9 +4392,12 @@ class GuiClient final : public Overlay::Client {
         if (!noticeShown) noticeShown = compareShown;
         if (BannerNeeded()) { Banner(); noticeShown = true; }
         if (!Overlay::IsVisible()) {
+            if (!noticeShown && PresetPillVisible() && !Captures::ScreenshotPending()) { PresetPill(); noticeShown = true; }
             if (!noticeShown && HintVisible() && !Captures::ScreenshotPending()) Hint();
             return;
         }
+        g_presetPillLeftMs = 0;
+        AnimateNotice(g_presetNoticeMotion, false);
         g_hintLeftMs = 0; // opening the menu ends the start note
         AnimateNotice(g_hintNoticeMotion, false);
         MainWindow();
@@ -4342,7 +4409,7 @@ class GuiClient final : public Overlay::Client {
         if (!g_menuAvailable.load()) { Overlay::SetVisible(false); return HintVisible(); }
         RunShortcuts();
         // the capture notes (recording, saved, an open session) show with the menu closed too
-        return BannerNeeded() || HintVisible() || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
+        return BannerNeeded() || HintVisible() || PresetPillVisible() || g_comparing || Recorder::SecondsRecorded() >= 0 || Captures::CurrentNote().visible ||
                NoticeAnimationsPending() || (!g_profiles.loading.empty() && ImGui::GetTime() - g_profiles.applyOpenedAt < 0.14) || LightProbe::Aiming() || g_returnFromProbe.load();
     }
 

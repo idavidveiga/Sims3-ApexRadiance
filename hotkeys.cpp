@@ -121,7 +121,10 @@ KeyCombo ComboOf(const KeyChord& chord) {
 
 std::string ComboText(const KeyCombo& c) {
     std::string text;
-    auto append = [&](unsigned k) { if (!text.empty()) text += "+"; text += ApexConfig::KeyName(k); };
+    auto append = [&](unsigned k) {
+        if (!text.empty()) text += "+";
+        text += k == VK_CONTROL ? "Ctrl" : k == VK_SHIFT ? "Shift" : k == VK_MENU ? "Alt" : ApexConfig::KeyName(k);
+    };
     for (unsigned k : {unsigned(VK_CONTROL), unsigned(VK_SHIFT), unsigned(VK_MENU)}) if (c.Has(k)) append(k);
     for (unsigned k = 7; k < 256; ++k) if (k != VK_CONTROL && k != VK_SHIFT && k != VK_MENU && c.Has(k)) append(k);
     return text;
