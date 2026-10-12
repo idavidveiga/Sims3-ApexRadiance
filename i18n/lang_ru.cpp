@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Russian}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "У пресетов могут быть свои сочетания клавиш"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Сочетания клавиш теперь применяют пресеты вместо отдельных фильтров"},
     {"Exterior walls respond a little faster to lighting changes", "Наружные стены немного быстрее реагируют на изменения освещения"},
     {"Fence lighting better follows the position of lamps", "Освещение оград лучше учитывает расположение ламп"},
     {"Gates receive lighting more consistent with fences", "Освещение ворот лучше согласуется с освещением оград"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Нажмите клавиши вместе, затем выберите «Сохранить»"},
     {"Waiting for keys", "Ожидание клавиш"},
     {"This shortcut is already in use", "Эти клавиши уже используются"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Добавьте Ctrl или Alt к буквам, цифрам и пробелу"},
 
     {"See what is in use; click a resource to open its settings", "Что сейчас используется; нажмите на функцию, чтобы открыть её настройки"},
     {"Performance and screen", "Производительность и экран"},

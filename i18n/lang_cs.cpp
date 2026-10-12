@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Czech}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Předvolby mohou mít vlastní klávesové zkratky"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Klávesové zkratky nyní použijí předvolbu místo jednoho filtru"},
     {"Exterior walls respond a little faster to lighting changes", "Vnější stěny reagují na změny osvětlení o něco rychleji"},
     {"Fence lighting better follows the position of lamps", "Osvětlení plotů lépe odpovídá poloze lamp"},
     {"Gates receive lighting more consistent with fences", "Brány jsou osvětleny podobněji jako ploty"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Stiskněte klávesy současně a zvolte Uložit"},
     {"Waiting for keys", "Čekání na klávesy"},
     {"This shortcut is already in use", "Tato zkratka se již používá"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Přidejte Ctrl nebo Alt k písmenům, číslicím a mezerníku"},
 
     {"See what is in use; click a resource to open its settings", "Podívej se, co je zapnuté; kliknutím na funkci otevřeš její nastavení"},
     {"Performance and screen", "Výkon a obrazovka"},

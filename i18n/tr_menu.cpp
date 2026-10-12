@@ -11,6 +11,8 @@ namespace {
 
 // {English (exactly as in the code), Portuguese (Brazil), Spanish, French}
 const I18n::Entry kEntries[] = {
+    {"Presets can have their own keyboard shortcuts", "Presets podem ter seus próprios atalhos de teclado", "Los preajustes pueden tener sus propios atajos de teclado", "Les préréglages peuvent avoir leurs propres raccourcis clavier"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Atalhos de teclado agora aplicam presets em vez de filtros individuais", "Los atajos de teclado ahora aplican preajustes en lugar de filtros sueltos", "Les raccourcis clavier appliquent désormais des préréglages au lieu de filtres individuels"},
     {"Exterior walls respond a little faster to lighting changes", "Paredes externas respondem um pouco mais rápido às mudanças de luz", "Las paredes exteriores responden un poco más rápido a los cambios de luz", "Les murs extérieurs réagissent un peu plus vite aux changements de lumière"},
     {"Fence lighting better follows the position of lamps", "A iluminação das cercas respeita melhor a posição das lâmpadas", "La iluminación de las cercas respeta mejor la posición de las lámparas", "L’éclairage des clôtures suit mieux la position des lampes"},
     {"Gates receive lighting more consistent with fences", "Portões recebem luz de forma mais consistente com as cercas", "Las puertas reciben una luz más coherente con las cercas", "Les portails reçoivent un éclairage plus cohérent avec les clôtures"},

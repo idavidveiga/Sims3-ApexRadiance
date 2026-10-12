@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Danish}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Forudindstillinger kan have deres egne tastaturgenveje"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Tastaturgenveje anvender nu forudindstillinger i stedet for enkelte filtre"},
     {"Exterior walls respond a little faster to lighting changes", "Ydervægge reagerer lidt hurtigere på ændringer i lyset"},
     {"Fence lighting better follows the position of lamps", "Hegnenes belysning følger lampernes placering bedre"},
     {"Gates receive lighting more consistent with fences", "Låger får belysning, der passer bedre til hegnene"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Tryk tasterne sammen, og vælg Gem"},
     {"Waiting for keys", "Venter på taster"},
     {"This shortcut is already in use", "Denne genvej er allerede i brug"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Tilføj Ctrl eller Alt til bogstaver, tal og mellemrum"},
 
     {"See what is in use; click a resource to open its settings", "Se, hvad der er i brug; klik på en funktion for at åbne dens indstillinger"},
     {"Performance and screen", "Ydeevne og skærm"},

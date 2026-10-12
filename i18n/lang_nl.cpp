@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Dutch}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Voorinstellingen kunnen eigen sneltoetsen hebben"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Sneltoetsen passen nu voorinstellingen toe in plaats van losse filters"},
     {"Exterior walls respond a little faster to lighting changes", "Buitenmuren reageren iets sneller op veranderingen in het licht"},
     {"Fence lighting better follows the position of lamps", "De verlichting van hekken volgt de positie van lampen beter"},
     {"Gates receive lighting more consistent with fences", "Poorten worden meer in overeenstemming met hekken verlicht"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Druk de toetsen tegelijk in en kies Opslaan"},
     {"Waiting for keys", "Wachten op toetsen"},
     {"This shortcut is already in use", "Deze sneltoets is al in gebruik"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Voeg Ctrl of Alt toe aan letters, cijfers en spatie"},
 
     {"See what is in use; click a resource to open its settings", "Zie wat in gebruik is; klik op een onderdeel om de instellingen te openen"},
     {"Performance and screen", "Prestaties en scherm"},

@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Hungarian}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Az előbeállításoknak saját gyorsbillentyűi lehetnek"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "A gyorsbillentyűk mostantól előbeállításokat alkalmaznak egyes szűrők helyett"},
     {"Exterior walls respond a little faster to lighting changes", "A külső falak kissé gyorsabban reagálnak a fény változásaira"},
     {"Fence lighting better follows the position of lamps", "A kerítések megvilágítása jobban követi a lámpák helyét"},
     {"Gates receive lighting more consistent with fences", "A kapuk megvilágítása jobban illeszkedik a kerítésekéhez"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Nyomd meg együtt a billentyűket, majd válaszd a Mentést"},
     {"Waiting for keys", "Billentyűkre vár"},
     {"This shortcut is already in use", "Ez a gyorsbillentyű már használatban van"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Betűkhöz, számokhoz és a Szóközhöz adjon Ctrl vagy Alt billentyűt"},
 
     {"See what is in use; click a resource to open its settings", "Nézd meg, mi van használatban; kattints egy erőforrásra a beállításaihoz"},
     {"Performance and screen", "Teljesítmény és képernyő"},

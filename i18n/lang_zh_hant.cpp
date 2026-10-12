@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Chinese (Traditional, Taiwan / Hong Kong)}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "預設可以擁有自己的快捷鍵"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "快捷鍵現在套用預設，而不是單一濾鏡"},
     {"Exterior walls respond a little faster to lighting changes", "外牆對燈光變化的反應稍快一些"},
     {"Fence lighting better follows the position of lamps", "圍欄照明更符合燈具的位置"},
     {"Gates receive lighting more consistent with fences", "大門的照明與圍欄更加協調"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "同時按下組合鍵，然後選擇儲存"},
     {"Waiting for keys", "等待按鍵"},
     {"This shortcut is already in use", "此快捷鍵已被使用"},
+    {"Add Ctrl or Alt to letters, digits and Space", "字母、數字和空白鍵需搭配 Ctrl 或 Alt"},
 
     {"See what is in use; click a resource to open its settings", "查看目前使用的功能；點選一項即可開啟其設定"},
     {"Performance and screen", "效能與螢幕"},

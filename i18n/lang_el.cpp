@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Greek}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Οι προρυθμίσεις μπορούν να έχουν δικές τους συντομεύσεις πληκτρολογίου"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Οι συντομεύσεις πληκτρολογίου εφαρμόζουν πλέον προρυθμίσεις αντί για μεμονωμένα φίλτρα"},
     {"Exterior walls respond a little faster to lighting changes", "Οι εξωτερικοί τοίχοι ανταποκρίνονται λίγο πιο γρήγορα στις αλλαγές φωτισμού"},
     {"Fence lighting better follows the position of lamps", "Ο φωτισμός των φραχτών ακολουθεί καλύτερα τη θέση των λαμπών"},
     {"Gates receive lighting more consistent with fences", "Οι πύλες φωτίζονται πιο ομοιόμορφα με τους φράχτες"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Πατήστε τα πλήκτρα μαζί και επιλέξτε Αποθήκευση"},
     {"Waiting for keys", "Αναμονή πλήκτρων"},
     {"This shortcut is already in use", "Αυτή η συντόμευση χρησιμοποιείται ήδη"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Προσθέστε Ctrl ή Alt σε γράμματα, ψηφία και Διάστημα"},
 
     {"See what is in use; click a resource to open its settings", "Δες τι χρησιμοποιείται· κάνε κλικ σε μια λειτουργία για τις ρυθμίσεις της"},
     {"Performance and screen", "Επιδόσεις και οθόνη"},

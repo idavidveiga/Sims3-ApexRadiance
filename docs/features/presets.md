@@ -6,7 +6,7 @@ Presets save a chosen set of Apex settings so it can be applied again or shared.
 
 | | |
 |---|---|
-| Availability | Dedicated page and portable ZIP packages: 2.12.0 |
+| Availability | Dedicated page and portable ZIP packages: 2.12.0; shortcuts: Released in 2.12.2 |
 | Default | Current settings; importing does not automatically apply a preset |
 | Menu | Presets, below Overview |
 | Configuration | TOML files in `Apex Radiance\Profiles\`; LUTs in `Apex Radiance\LUTs\`; shortcuts in `[ui.profile_shortcuts]` |
@@ -28,16 +28,17 @@ The modals select the source preset, name, icon and setting categories. Shortcut
 
 Each preset, personal or built-in, can have its own key combination. Right-clicking the row, or its ellipsis button,
 offers Assign/Change and Remove shortcut; a tag left of the ellipsis shows the keys, shortened at a `+` with the full
-combination on hover. The editor records keys held together, including letter chords such as A+S and optional
-Ctrl/Shift/Alt. Save commits; Cancel, the close icon or Esc keep the previous keys. Keys used by another preset, the
+combination on hover. The editor shows the keys as violet chips while they are held and records keys held together, such as Ctrl+A+S or F6, with optional
+Ctrl/Shift/Alt. Letters, digits, Space and punctuation need Ctrl or Alt, because without them they also type into the
+game's Sim, lot and save name fields; such combinations are refused in the editor and ignored when loaded. Save commits; Cancel, the close icon or Esc keep the previous keys. Keys used by another preset, the
 menu, search, peek, hold-to-compare, an Apex action or the game's F10 are refused. None are assigned by default.
 
 Pressing the keys applies the preset's parts, the same as Apply with every category it has, except Shortcuts and
 Developer. It does not toggle: pressing again applies the same preset, and another preset's keys switch to it. The
-usual Undo toast follows; with the menu closed, a note at the top center confirms the preset. Key-down events are
+usual Undo toast follows; with the menu closed, a pill at the top center shows the preset's icon and name, like the start note. Key-down events are
 queued for the render thread, repeats do not apply again, and Apex text fields and the cheat console keep their
-keys. Single letters can also be game commands; the first key of a multiple-letter chord may reach the game before
-the chord is recognised.
+keys. The first key of a multiple-key combination may reach the game before the combination is
+recognised.
 
 The keys belong to the player, not the preset: they are saved in `ApexRadiance.toml` under `[ui.profile_shortcuts]`
 (the preset's file name, or `#builtin<n>` for Apex presets, mapped to its Windows virtual-key codes) and never in

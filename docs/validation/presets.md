@@ -21,6 +21,9 @@
 1. Save, apply and import a TOML preset. Expected: only selected categories change.
 2. Export a preset with a LUT and import its ZIP on a separate folder setup. Expected: the same LUT is selected, with no manual extraction.
 3. Export over an existing final filename and cancel its overwrite confirmation. Expected: the destination stays intact.
+4. Assign a shortcut to a personal and a built-in preset, then press each with the menu closed. Expected: the preset applies, a note confirms it and Undo restores the previous settings.
+5. Try a combination already used by another preset or by the menu, and a bare letter such as P. Expected: both are refused and the previous keys stay.
+6. Type the combination in an Apex text field and in the cheat console. Expected: no preset is applied.
 
 ## Confirmed in game
 
@@ -30,5 +33,6 @@ The test-build gameplay check was completed before release preparation. No detai
 
 - Native dialog overwrite confirmation and ZIP transfer on a separate computer.
 - Extended preset switching and all language layouts.
+- Preset shortcuts (2.12.2): steps 4 to 6 in game.
 
 Release provenance: the combined code was independently reviewed at `7ddaa214a6678cdbc0c9554082c779ffc485fa13`. Subsequent documentation-only edits do not change these code paths. The published release tag records the final source commit.

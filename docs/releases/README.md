@@ -5,6 +5,7 @@ One page per published version of Apex Radiance (`ApexRadiance.asi`, repository
 GitHub release text in a common layout. Unreleased work is described in the feature pages with the status
 "In development"; it gets a page here only when it is published.
 
+- [2.12.2](2.12.2.md): keyboard shortcuts for presets.
 - [2.12.0](2.12.0.md): LUTs, presets and graphics improvements.
 - [2.11.1](2.11.1.md): simplified Ambient Occlusion.
 
@@ -31,6 +32,7 @@ tests, publication) is in [workflow.md](../workflow.md#6-release).
 
 | Version | Published | Headline |
 |---|---|---|
+| [2.12.2](2.12.2.md) | 2026-10-12 | Keyboard shortcuts for presets |
 | [2.12.1](2.12.1.md) | 2026-10-12 | Outdoor lighting corrections |
 | [2.12.0](2.12.0.md) | 2026-10-09 | LUTs, presets and graphics improvements |
 | [2.11.1](2.11.1.md) | 2026-10-08 | Ambient Occlusion cleanup |

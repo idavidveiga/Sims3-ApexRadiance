@@ -9,6 +9,8 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Finnish}
 const I18n::Pair kPairs[] = {
+    {"Presets can have their own keyboard shortcuts", "Esiasetuksille voi antaa omat pikanäppäimet"},
+    {"Keyboard shortcuts now apply presets instead of single filters", "Pikanäppäimet ottavat nyt käyttöön esiasetuksia yksittäisten suodattimien sijaan"},
     {"Exterior walls respond a little faster to lighting changes", "Ulkoseinät reagoivat hieman nopeammin valaistuksen muutoksiin"},
     {"Fence lighting better follows the position of lamps", "Aitojen valaistus vastaa paremmin lamppujen sijaintia"},
     {"Gates receive lighting more consistent with fences", "Porttien valaistus vastaa paremmin aitojen valaistusta"},
@@ -74,6 +76,7 @@ const I18n::Pair kPairs[] = {
     {"Press the keys together, then choose Save", "Paina näppäimiä yhdessä ja valitse Tallenna"},
     {"Waiting for keys", "Odotetaan näppäimiä"},
     {"This shortcut is already in use", "Tämä pikanäppäin on jo käytössä"},
+    {"Add Ctrl or Alt to letters, digits and Space", "Lisää Ctrl tai Alt kirjaimiin, numeroihin ja välilyöntiin"},
 
     {"See what is in use; click a resource to open its settings", "Näe, mitä on käytössä; avaa asetukset napsauttamalla"},
     {"Performance and screen", "Suorituskyky ja näyttö"},

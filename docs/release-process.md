@@ -50,7 +50,7 @@ The changelog opened from the version in the menu footer (`apex_changelog.cpp`):
    and `perl tools/menu_audit.pl .`.
 2. Test the build in game and record the results in the validation pages.
 3. The release PR is titled `release: X.Y.Z`; merging and publishing are maintainer actions.
-4. Publish `Public\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance` as `Apex Radiance X.Y.Z – Short title`, with
+4. Publish `Public\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance` as `Apex Radiance X.Y.Z`, with
    player-facing notes (a short headline, `- **Title:** description` bullets and an `## Install` section) checked with
    `python tools/public_text_check.py --text-file`. The Nexus workflow derives its changelog from that body.
 5. After publication, verify that the published asset matches the reviewed build (version and SHA-256) and that the
