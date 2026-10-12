@@ -56,3 +56,7 @@ trace_targets.h
 # Portable skill local state
 /.agents/skills/*/cache/
 /.agents/skills/*/state/
+
+# Machine-specific assistant notes (see AGENTS.md)
+CLAUDE.local.md
+AGENTS.local.md
