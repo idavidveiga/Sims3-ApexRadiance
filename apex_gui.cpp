@@ -29,6 +29,7 @@
 #include "shader_cache.h"
 #include "sim_occlusion.h"
 #include "ui/i18n.h"
+#include <charconv>
 #include "ui/logo.h"
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
@@ -2364,7 +2365,9 @@ bool PresetKeyDown(WPARAM vk, bool repeat) {
 
 // Render thread, every frame (RunShortcuts)
 void RunPresetShortcut() {
-    if (g_presetKeyRecording.load() && ImGui::GetFrameCount() - g_presetKeyEditorFrame > 2) g_presetKeyRecording = false;
+    // the frame count stops while the overlay is hidden, so a hidden editor also ends the recording
+    if (g_presetKeyRecording.load() && (!Overlay::IsVisible() || ImGui::GetFrameCount() - g_presetKeyEditorFrame > 2))
+        g_presetKeyRecording = false;
     if (!g_presetKeyPending.exchange(false)) return;
     std::string preset;
     { std::lock_guard<std::mutex> lock(g_presetKeyLock); preset = std::move(g_presetKeyRequest); }
@@ -2373,8 +2376,11 @@ void RunPresetShortcut() {
     std::string error, logName = preset, shown = preset;
     bool read = false;
     if (preset.starts_with("#builtin")) {
-        const int index = std::atoi(preset.c_str() + 8);
-        if (index >= 0 && index < ApexPresets::kCount) {
+        int index = -1;
+        const char* first = preset.data() + 8;
+        const char* last = preset.data() + preset.size();
+        const auto parsed = std::from_chars(first, last, index);
+        if (first != last && parsed.ec == std::errc() && parsed.ptr == last && index >= 0 && index < ApexPresets::kCount) {
             logName = ApexPresets::Get(index).name;
             shown = I18n::Tr(ApexPresets::Get(index).name);
             read = ApexPresets::Read(index, state, &error);
