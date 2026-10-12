@@ -374,22 +374,15 @@ disables the 25 filter branches. Banding Fix's deband continues independently of
 | Color | `color_enabled` | true | Tint, vibrance, split toning and mixer |
 | Detail | `detail_enabled` | true | Clarity and vignette |
 | Filters | `filters_enabled` | true | All filter branches, retaining individual switches and parameters |
-| Filter shortcut | `filter_shortcuts.<stable filter key>` | absent | Array of canonical Windows virtual-key integers; only on/off, never intensity |
 
-Group keys absent from older files default to true, preserving their existing appearance. Shortcut arrays are
-optional, empty by default, and saved with Picture settings in config, Color profiles and undo snapshots.
-Malformed arrays and modifier-only bindings are ignored. Right-clicking a filter, or its ellipsis button, offers
-Assign/Change and Remove shortcut. The editor records simultaneously held keys, including letter chords such as
-A+S and optional Ctrl/Shift/Alt. Save commits; Cancel or Esc leaves the previous binding intact. Duplicate bindings
-and existing Apex actions are refused. Native F10 remains the game's UI command. No shortcut is supplied by default.
-Key-down events are queued for the render thread, repeats do not toggle again, and typing in Apex text fields or the
-recognised cheat console is protected. A shortcut never enables Picture or the Filters group automatically.
-Single letters can also be game commands; choose combinations accordingly. The first key of a multiple-letter
-chord may reach the game before the complete chord is recognised; Windows-level shortcuts also remain Windows-owned.
+Group keys absent from older files default to true, preserving their existing appearance. The per-filter
+shortcuts of 2.11.0 to 2.12.1 (`filter_shortcuts`) moved to presets ([presets.md](presets.md#shortcuts)): a preset
+that saves only Color reproduces one filter, and a key now switches the whole look. Older `filter_shortcuts` tables
+are ignored with one log line and dropped at the next save.
 
-Tags use the native switch geometry, an 8-unit gap and matching vertical centres. Very long chords shorten the
-visible tag at token boundaries, with the full chord on hover. Expanded sliders retain every existing label,
-range, default, reset and setter. Search traverses collapsed filter controls without opening them.
+Each filter row keeps its disclosure arrow and switch on the right, with the native switch geometry and an 8-unit gap.
+Expanded sliders retain every existing label, range, default, reset and setter. Search traverses collapsed filter
+controls without opening them.
 
 The menus-tinted diagnostic now also accepts a successful pre-UI Color boundary as evidence of scene isolation,
 and does not diagnose the main menu as an active-world colour failure. The warning is retained for the actual
@@ -397,6 +390,4 @@ missing-isolation fallback; it is shown once on Overview, not repeated on every 
 
 The Overview card uses the tab's title and remains the master Color switch. While it is off, overview/group-header
 switches display off and are disabled; saved group preferences are not overwritten, and return when the master is on.
-Filter disclosure buttons point down when closed and up when open. The shortcut editor uses the native modal card
-header, identifies the chosen filter, shows keys in a full-width read-only field and aligns Cancel then Save on the
-right. Its width is constrained across frames; Cancel, the close icon and Esc retain the previous shortcut.
+Filter disclosure buttons point down when closed and up when open.
