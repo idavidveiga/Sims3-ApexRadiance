@@ -8,7 +8,7 @@ sun and shadows; only the lamp light baked into each wall is scaled. Part of [Ni
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: Released in 2.6.0. The game's bloom alpha kept on lit walls and the rebalanced style brightness (84% for Soft): Released in 2.7.0. Realistic lamp reach and balcony floors blocking a lamp below them (replacing *Light behind balconies*): Released in 2.12.3 |
+| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: Released in 2.6.0. The game's bloom alpha kept on lit walls and the rebalanced style brightness (84% for Soft): Released in 2.7.0. Realistic lamp reach and balcony floors blocking a lamp below them (replacing *Light behind balconies*), the shared daytime curve: Released in 2.12.3 |
 | Default | On, Brightness 30%, Realistic lamp reach on |
 | Menu | Lighting > Buildings > Buildings card, group *WALLS* (lamps of every story: Lighting > Stories) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -35,9 +35,10 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
    balcony gets nothing from a lamp under the slab, while a lamp in front of the balcony still lights it, with a soft
    edge the width of a 0.3 m lantern where its light passes the slab's edge.
 2. **Wall gain** multiplies the baked lamp term of the 58 ExteriorWall pixel shaders for each draw. For each recognised
-   draw, Apex reads the constant that scales the baked map, writes `native x Brightness + (1 - night) x min(Brightness, 1)
-   x 0.08` into its `.x`, draws, and restores the constant. At full night this is exactly `native x Brightness`; by day a
-   subdued lamp term is added so the baked lamp light is not discarded.
+   draw, Apex reads the constant that scales the baked map, writes into its `.x` `native x Brightness` at full night
+   (unchanged) and `Brightness x LampDay(night)` before it (the shared daytime curve, 3% of the night strength by day,
+   in place of the game's own daytime factor), draws, and restores the constant. Until 2.12.2 the daytime value was
+   `native x Brightness + (1 - night) x min(Brightness, 1) x 0.08`.
 
    The ExteriorWall shader derives its output alpha, the scene's bloom mask, from the final luminance, so a stronger lamp
    term would also widen the bloom over whole walls and foundations. For opaque wall draws Apex therefore draws twice:
@@ -79,7 +80,9 @@ Both apply live (pushed every frame). The lamps of every story are controlled by
   any, is scaled too (inferred).
 - The gain adds no light where the game baked none: no new lamps, no change to wall occlusion.
 - Wall variants outside the table (for example `PS_2A74E378`, if it is not one of them) keep the game's look.
-- The daytime term is visual tuning, not a physical ratio. Brightness below 100% stays lower than the game.
+- The daytime curve is visual tuning, not a physical ratio. Brightness below 100% stays lower than the game.
+- The curve meets the night value only if the game's own factor is 1 at full night (F7 20-31-19 on the captured
+  variant; other variants unverified).
 
 ## Technical reference
 
@@ -125,8 +128,8 @@ LightProbe captures `andar2-b` (m44), `andar1-b` (m45), `passo3-parede` (m59) an
 - `ClassifyPsCode -> WallLampConst(code, size)`: a table match gives `PsClass::WallGain` and K in `g_wallConst[ps]`.
 - Per draw (`DrawWallGain`): off -> the game draws. Otherwise read `cK`; invalid or negative values, failed reads,
   unknown shaders and an unchanged result keep the native draw. `TerrainLightingPolicy::WallLampScale(native, night,
-  gain) = native x gain + DayLampScale(night, min(gain, 1) x kDaySurfaceResponse)`, with `DayLampScale(n, g) = (1 -
-  clamp(n, 0, 1)) x g` and `kDaySurfaceResponse = 0.08` (shared with objects, fences and snow on objects). Only `.x`
+  gain) = native x gain` at night >= 1, else `gain x LampDay(night)` with `LampDay(n) = 0.03 + 0.97 smoothstep(0, 1, n)`
+  (the curve every outdoor lamp term shares, [README](README.md#daylight-policy-terrain_lighting_policyh)). Only `.x`
   changes; the full constant is restored after the single draw. Counter `g_wallDrawn`.
 
 ### Lamps of every story (summary)
@@ -148,7 +151,8 @@ share. F7 on a wall shows the PS (1372 bytes or another table entry) and the dra
   against the whole shader package were chosen instead. Details in [history](../../history/night-lighting-walls.md).
 - A signature cascade between stories, and a cross-story test without batch culling or the wall-mode byte: see
   [level-light-share history](../../history/night-lighting-level-light-share.md).
-- A daytime wall term of 25% of the unboosted lamp scale: too saturated; reduced to 8%.
+- A daytime wall term of 25% of the unboosted lamp scale: too saturated; reduced to 8%, then (2.12.3) replaced by the
+  shared 3% curve: the 8% term was still a visibly lit wall next to a lamp by day.
 - A balcony share (*Light behind balconies*) lit the wall behind a slab from a lamp beneath it (2026-10-12, captures
   18-38-41): see [level-light-share history](../../history/night-lighting-level-light-share.md).
 

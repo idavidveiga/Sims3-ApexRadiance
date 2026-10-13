@@ -45,8 +45,11 @@ Three layers:
    lamps for every piece near each other: `max(sun + rig or per-pixel lamps, ground)`, never darker than the game where
    the rig is weak.
 
-In full daylight (night level 0.01 or less) the per-pixel patch, the moon-shadow pass and the leaf-shadow pass are not
-drawn, so objects keep the game's daylight look; at dusk and dawn the lamp terms fade with `SurfaceLampGain`. Outdoor
+Since 2.12.3 the per-pixel patch and the window pass run at every night level and their lamp and ground terms follow
+the shared daytime curve (`SurfaceLampGain` = strength x `LampDay(night)`: 3% by day, the night strength at night,
+[day-bloom-fixes.md](day-bloom-fixes.md)); an outdoor draw that places no per-pixel lamp keeps the game's rig with its lamp
+colours x `LampDay(night)` for that draw. Until 2.12.2 the patch was skipped in full daylight, which left the game's rig
+lamps and the CPU rig boost at night strength by day. The moon-shadow and leaf-shadow passes stay night-only. Outdoor
 objects and windows drop a per-pixel lamp hidden behind an outside wall of the lot, or below a balcony or upper floor
 they stand above, and keep part of one seen past a slab's edge (Lighting > Stories > *Buildings block light on
 objects*, see [level-light-share.md](level-light-share.md#walls-block-light-outdoors)). An object or window standing
@@ -273,12 +276,15 @@ Per pixel:
    instead of vC (`rigLamps = false`).
 4. While per-pixel lamps are on and lamps were selected, the draw zeroes the rig's lamps (PS c5..c7 for shapes A/B and
    the VS vertex-light colours at `vertexLight`), so Q replaces them; the Phong ambient term in COLOR0 stays. They are
-   restored after the draw.
+   restored after the draw. When no lamp is placed (per-pixel lamps off, or no world triple) and the night level is
+   below 1, the same registers keep the rig with rgb x `LampDay(night)` (w untouched) for the draw, restored after it
+   (status *object draws with the game's rig scaled*).
 
 **Strengths.** `cB.x = SurfaceLampGain(night, forcaNosObjetos)` and `cS.y = SurfaceLampGain(night,
-forcaLuzPorPixelNosObjetos)`, where `SurfaceLampGain(n, g) = d + (g - d) x n` with `d = min(g, 1) x 0.08`: the configured
-value at full night, a subdued 8% response by day. Lower strengths are never raised. The same policy applies to fences,
-instanced structures and snow on objects. The CPU rig boost has no day factor.
+forcaLuzPorPixelNosObjetos)`, where `SurfaceLampGain(n, g) = g x LampDay(n)` (`LampDay(n) = 0.03 + 0.97 smoothstep(0, 1,
+n)`, exactly 1 at night): the configured value at full night, 3% of it by day. Lower strengths are never raised. The same
+policy applies to fences, instanced structures, windows and snow on objects. The CPU rig boost has no day factor of its
+own: by day it reaches the screen only through the rig scaled or replaced per draw (no re-gather).
 
 **Lamp list and selection.** `LotLightBridge::OnPresent` every 20 frames, when roofs, water or per-pixel lamps are on,
 runs `ReadEnumeratedLamps`: `FUN_006acf70(visitor)` (stdcall, visitor vtable[0] = thiscall `(visitor, Light*)`; prologue
@@ -329,13 +335,14 @@ shared with `ReachShareImpl`):
   after the plan rows for windows. The instruction count grows by 5 per lamp (41 per shader); `w` is kept in `LampCone`
   (`ReadLamp`), so `g_allLamps`, which roofs and water upload as it is, is unchanged;
 - scale: `cS.y = ReachLampScale` = the walls' native lamp scale (the `cK.x` `DrawWallGain` reads, trusted for 2 s after a
-  wall draw read it, else the night value 1: a daytime 0 kept while no wall was drawn left these draws unlit) x their gain as
-  `WallLampScale` applies it (walls on; the native scale alone with walls off), times `forcaLuzPorPixelNosObjetos / 0.75`
+  wall draw read it, else `LampDay(night)`, 1 at night: a daytime 0 kept while no wall was drawn left these draws unlit,
+  and until 2.12.2 the fallback 1 gave columns the night scale at dusk) x their gain as `WallLampScale` applies it (walls
+  on, before full night gain x `LampDay(night)`; the native scale alone with walls off), times `forcaLuzPorPixelNosObjetos / 0.75`
   (fences also `x forcaNasCercas / 0.75`). At the default sliders a column, a band or a window frame takes the light of the
   wall behind it; the two sliders act as trims. The ground terms (`cB.x`) are unchanged;
 - a shader without room for the two rows keeps the first law (status *first law kept*); with the option off, the first
-  law's copies and constants are byte-identical to before (offline comparison with the previous source). In full daylight
-  these draws are not replaced, as before.
+  law's copies and constants are byte-identical to before (offline comparison with the previous source). Since 2.12.3
+  these draws are also replaced in full daylight, at the daytime curve's strengths.
 
 Fences take the reach copy only for a group whose pieces were read (the per-pixel lamps placed); otherwise the first law's
 copy draws, as with the option off. The law's form gives `(1 - (r0/R)^4)^2` instead of 1 just inside r0: 0.994 for the

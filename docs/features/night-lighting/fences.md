@@ -2,7 +2,7 @@
 
 At night, fence rails and posts, railings and outdoor stairs are lit by the lamps around them: faces turned toward a lamp
 are brighter, faces turned away and fences behind a wall stay dark. Snow lying on fence tops and stair tops follows the
-same switch and strength. By day the lamp term fades, and in full daylight fences keep the game's look. Part of
+same switch and strength. By day the lamp term fades to 3% of its night strength (the shared daytime curve). Part of
 [Night Lighting](README.md).
 
 ## Status
@@ -50,9 +50,10 @@ falls back to the brighter of the game's vertex lights and the world ground-ligh
    cone law gives it (`0x006BC940`; see the pixel shader patch below), so a brick fence face beside a sconce aimed down
    its wall is no longer lit at full strength. Shared group brightness does not set a minimum for valid spatial groups.
 4. **Draw with the atlas bound** and the strength and lamps set per draw; restore everything afterwards.
-5. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)`: the configured strength
-   at full night, moving linearly toward `0.08 x min(strength, 1)` as day comes. In full daylight (night level 0.01 or
-   less) the patch is not drawn at all and the game's own fence lighting stays. Shared vertex lamp lighting remains only in the fallback path; sunlight, geometry and materials are untouched.
+5. **Daytime response:** the strength sent to the shader is `SurfaceLampGain(night, strength)` = strength x
+   `LampDay(night)`: the configured strength at full night, 3% of it in full daylight, `0.03 + 0.97 smoothstep(0, 1,
+   night)` between (2.12.3; until 2.12.2 a linear fade toward `0.08 x min(strength, 1)` and no draw at all at a night
+   level of 0.01 or less). Shared vertex lamp lighting remains only in the fallback path; sunlight, geometry and materials are untouched.
 
 There are two fence shader families in the game. The `vs_2_0` instanced "object rig" family shares its shaders with
 bushes and is fixed by the foliage and rig changes ([foliage.md](foliage.md), [objects-and-rigs.md](objects-and-rigs.md)).
@@ -156,7 +157,7 @@ max   rT.xyz, rT, vC                     ; never below the game's vertex lights
 
 Reached from `OnDrawInner` when the VS is class 7, after the *Street lamps light lots* gate.
 
-1. Off if `cercasComLuzDoChao` is off, the night level is 0.01 or less, or the atlas (`LightmapSmooth::Atlas`) is not
+1. Off if `cercasComLuzDoChao` is off or the atlas (`LightmapSmooth::Atlas`) is not
    ready.
 2. `PatchedFor(g_fencePs, "Fence/stairs", PatchInstancedLamps)`: one patched copy per game pixel shader.
 3. Save `cA` and `cB`; bind the atlas to `sE` (`SamplerBind`, no mip filter); set `cA` to the atlas mapping and
@@ -166,10 +167,8 @@ Reached from `OnDrawInner` when the VS is class 7, after the *Street lamps light
 ### Daytime response (`TerrainLightingPolicy::SurfaceLampGain`)
 
 ```
-kDaySurfaceResponse = 0.08
 if night >= 1 or input invalid: return gain
-day = min(gain, 1) x 0.08
-return day + (gain - day) x night
+return gain x LampDay(night)        // LampDay(n) = 0.03 + 0.97 n^2 (3 - 2n), 1 at n >= 1
 ```
 
 The same function feeds the outdoor object lamp paths and snow on objects (`DrawSnowOnObject`).
@@ -203,7 +202,7 @@ The same function feeds the outdoor object lamp paths and snow on objects (`Draw
 |---|---|---|
 | `features/shader_patches.cpp/.h` | `IsInstancedStructureVs`, `PatchInstancedLamps`, `InstancedPatch` | Recognition and patch |
 | `features/lot_light_bridge.cpp` | `ClassifyVs` (class 7), `DrawInstanced`, `PatchedFor`, `g_fencePs`, `SetFenceGroundLight` | Dispatch |
-| `features/terrain_lighting_policy.h` | `SurfaceLampGain`, `kDaySurfaceResponse` | Daytime response |
+| `features/terrain_lighting_policy.h` | `SurfaceLampGain`, `LampDay` | Daytime response |
 | `features/object_light_bridge.cpp` | `RoomGatherThunk` | Fenced yards on the CPU (mode 1) |
 
 ## Rejected approaches

@@ -133,7 +133,7 @@ The snow on stair tops (`VS_2E036438` / `PS_2E036820`) uses byte for byte the sa
 | `c0..c8` | Game: sun colour, sun direction, shadow size, albedo tint, specular tint, alpha reference, ambient scale, Fresnel bias, fog mix | `c3` albedo tint, `c6.z` snow amount, `c8.x` output scale |
 | `c20..c35` | Lamp head + radius | Same |
 | `c36..c51` | Lamp colour | Same |
-| `c52` | x strength, y count | x strength |
+| `c52` | x strength x `LampDay(night)` (2.12.3: the shared daytime curve, 3% by day, exact at night), y count | x strength x `LampDay(night)` |
 | `c53` | | x = VS `c15.x` |
 | Samplers | `s0` environment cube, `s1` ambient cube, `s2` albedo, `s3` specular mask, `s4` top, `s5` shadow, `s6` mask | `s3` snow, `s4` albedo, `s6` top, `s7` mask |
 

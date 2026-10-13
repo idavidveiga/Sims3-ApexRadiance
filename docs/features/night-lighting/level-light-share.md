@@ -97,8 +97,21 @@ patch.
   matches inside the re-entered body), but the cross-story wall tests then run N times.
 - **Refresh the lighting** (Lighting > Buildings, shortcut) and the automatic refresh after any lighting setting relight
   every room of every loaded lot, basements included.
+- **Daytime curve** (2.12.3, [day-bloom-fixes.md](day-bloom-fixes.md)): in the solves of a roofed room (id > 0,
+  `room+0x18` = 0), an outdoor lamp (a street lamp, type 11, or a lot lamp of room 0 with flag `0x04`) takes
+  `SolveLampDay(night level)`: 0.03 by day, 1 at night, `LampDay(level)` at twilight, in the wrapped light evaluation
+  (`RoofedDay`, before every other test) and in the directional maps (`BasisLightHook`; at night the game's own
+  accumulation runs unchanged). Indoor lamps are untouched. Each roofed room an outdoor lamp lit is noted with the factor
+  of its solve; once the night level has stayed at day or at night for 2 s, the rooms noted with another factor are sent
+  to gather again once (`SweepDayRooms`, log `Daytime curve: N roofed rooms ... gather again`). Status: *daytime curve
+  in roofed rooms*.
 
 ## Limitations
+
+- Daytime curve in roofed rooms: their maps are baked, so between the endpoints they keep the factor of their last solve
+  (a lamp switched at dusk solves at its twilight factor); a dawn or dusk sends the noted rooms to gather again once.
+  Unverified in game: that the roofed rooms' map texels are all solved through the wrapped evaluation on the light tree
+  thread, and the cost of that one-time gather at dawn on large lots.
 
 - Synchronized generation updates do not guarantee instantaneous map calculation; the native solve still has a cost.
 - Release cleanup has not yet received gameplay confirmation on the exact release artifact; see validation.

@@ -165,7 +165,7 @@ rejection, so occluded pixels also sample the waves. No render pass, texture or 
 | `c1`, `c5` | Game: camera, wave normal scales |
 | `c20..c35` | Lamp position: head xyz, w = visual radius |
 | `c36..c51` | Lamp colour: colour x intensity x fade |
-| `c52` | x = lamp strength (`brilhoNaAgua`, 0 when the glow is off), y = lamp count (unused by the shader), z = highlight filter on, w = colour preservation on |
+| `c52` | x = lamp strength (`brilhoNaAgua`, 0 when the glow is off) x `LampDay(night)` (2.12.3: the shared daytime curve, 3% by day, exact at night; the shore reflection is not scaled), y = lamp count (unused by the shader), z = highlight filter on, w = colour preservation on |
 | `c53..c56` | World-to-clip matrix |
 | `c57` | World translation (0 when the matrix was inverted) |
 | `c58` | x = reflection strength (`reflexoNoLago`) |
