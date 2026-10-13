@@ -6,6 +6,21 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k2123Added[] = {
+    "Realistic lamp reach: lamp light on outside walls fades with distance",
+    nullptr};
+constexpr const char* k2123Improved[] = {
+    "Lamp edits all at once: the lamp's floor updates first, other floors together",
+    "Objects, fences and windows take the same lamp light as nearby walls",
+    "Walls block light on objects is now called Buildings block light on objects",
+    "Removed Light behind balconies; balcony floors now block lamps below them",
+    nullptr};
+constexpr const char* k2123Fixed[] = {
+    "A lamp under a balcony no longer lights walls and objects above it",
+    "Fence and railing tops above the lamps no longer take ground light",
+    "Outdoor lamps no longer light walls, objects and ground in daylight",
+    nullptr};
+
 constexpr const char* k2122Added[] = {"Presets can have their own keyboard shortcuts", nullptr};
 constexpr const char* k2122Improved[] = {"Keyboard shortcuts now apply presets instead of single filters", nullptr};
 constexpr const char* k2122Fixed[] = {nullptr};
@@ -191,6 +206,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.12.3", "2026-10-13", k2123Added, k2123Improved, k2123Fixed},
     {"2.12.2", "2026-10-12", k2122Added, k2122Improved, k2122Fixed},
     {"2.12.1", "2026-10-12", k2121Added, k2121Improved, k2121Fixed},
     {"2.12.0", "2026-10-09", k2120Added, k2120Improved, k2120Fixed},

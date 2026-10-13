@@ -50,9 +50,12 @@ void NoteSolveEnd(const void* room);
 bool AwaitingSwitchLight(const void* room);
 // Render thread (LevelLightShare's solve start hook): a room's solve begins
 void NoteSolveStart(const void* room);
-// Render thread: the room's last finished solve began after the switch whose LampMarkFilter::SwitchSerial is `since`; true when
-// not known on this thread
+// Render thread: the room's last finished solve began after the edit whose LampMarkFilter::EditSerial is `since` (12/10: was
+// the switch serial); true when not known on this thread
 bool SolvedSince(const void* room, unsigned long since);
+// Render thread (LotLightingMotion's lot budget): the light tree's current room is a lamp edit's (LampUrgency > 1); false on
+// any other thread
+bool CurrentRoomUrgent();
 // Render thread: that room is being solved at a higher class than the one on screen (the quick pass's refinement): the
 // maps it writes are not the ones shown, and hold the room's light from before the edit
 bool SolveRefiningUp();

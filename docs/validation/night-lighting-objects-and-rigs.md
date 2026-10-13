@@ -31,6 +31,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `run_resource_checks.ps1` | Builds passed; resource paths 14,154 checks, 0 failures (extracted `DrawObjectLamp` 386, realistic reach on objects and fences 386, *Buildings block light on objects* 14). `DrawWindowOutdoor` is not extracted; the captured-shader law checks (`run.ps1`) were not re-run | Fake D3D9 / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Reconstructed gate shader fixture | Zero build warnings; Passed per-pixel cones and vertical/upward/fallback ground masks; material diversity and gameplay are not exhaustive | Native D3D9 fixtures / x86 build |
 | 2026-10-04 | PR #2 | Resource and GPU fixtures (object, wall, instanced paths) with the 8% daytime endpoint | Passed under controlled inputs; not a visual check of a scene | Native D3D9 |
 | 2026-10-01 | `2.5.3` test008 | Indoor-object cap variant | 84 captured PS examined, 3 matching shader/sampler combinations; the fallback is byte-identical to the previous build and both variants assemble; the uncapped variant removes exactly 12 tokens (three instructions) | d3dcompiler |
@@ -66,6 +67,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 ## Open checks
 
+- 2.12.3 public build, not yet tested in game: with *Realistic lamp reach* on, a column, a balcony band and a window frame beside a lit wall, and objects standing above every lamp head around. **Expected:** they take the light of the wall behind them; objects above the lamps take no ground light; *Buildings block light on objects* off restores the previous light.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
 - Wider fence/gate materials, fallback groups and daytime transitions

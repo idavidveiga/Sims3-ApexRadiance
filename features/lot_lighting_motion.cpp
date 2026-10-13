@@ -94,6 +94,7 @@ constexpr float kLeaveAloneMs = 100.0f;    // budgets from here up (the tool mod
 constexpr float kMinMs = 0.25f;            // never below
 constexpr float kLampEditMs = 25.0f;       // the lot being played while a lamp edit's rooms wait, camera still (LevelLightShare)
 constexpr float kRefineMs = 6.0f;          // many lamps' rooms refined after their quick pass (RoomLightQueue::Refining)
+constexpr float kEditMovingMs = 6.0f;      // (12/10) a lamp edit's room is current while the camera moves: at most this
 constexpr uint64_t kHoldMs = 300;          // "moving" lasts this long after the last camera change
 constexpr float kMoveEpsilon = 0.005f;     // metres; smaller eye changes are not motion
 constexpr uint64_t kDriftWindowMs = 100;   // slow motion: the eye moved more than kMoveEpsilon within this window
@@ -130,7 +131,7 @@ std::atomic<uint32_t> g_frame{0};
 std::atomic<uint64_t> g_lastPresentTick{0};
 
 // statistics
-std::atomic<uint32_t> c_calls{0}, c_scaled{0}, c_eyeFails{0};
+std::atomic<uint32_t> c_calls{0}, c_scaled{0}, c_eyeFails{0}, c_editMoving{0};
 
 // ---- Lot build slice while moving (05/10) ----
 // 0x00AEA680 builds a streaming lot a slice per frame: its budget [esp+14h] is 20 ms (35 for a priority lot; 2000 when
@@ -262,6 +263,17 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     if (!boosted && !settling && moving && game > 0.0f && game < kLeaveAloneMs) {
         const float scaled = game * (static_cast<float>(g_budgetMs.load(std::memory_order_relaxed)) / kPriorityMs);
         out = std::max(kMinMs, std::min(game, scaled));
+        // 12/10: a lamp edit's room is the current room (RoomLightQueue::CurrentRoomUrgent): the lot being played keeps the
+        // game's own budget, at most kEditMovingMs, while the camera moves (an edit made while panning waited for the
+        // scaled 3 ms). Only the lot being played (its budget is the game's priority one): which lot a budget call serves is
+        // not read, so a neighbouring lot's pass is not raised (unverified whether that pass holds the edit's room)
+        if (game >= kPriorityMs && RoomLightQueue::CurrentRoomUrgent()) {
+            const float edit = std::min(game, kEditMovingMs);
+            if (edit > out) {
+                out = edit;
+                c_editMoving.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         if (out < game) c_scaled.fetch_add(1, std::memory_order_relaxed);
     }
     // A lamp being edited in Build mode (the corrections in Build mode should be near instant): its rooms
@@ -594,8 +606,8 @@ void RenderDeveloperUI() {
                         last ? std::format("{:.1f} s ago", static_cast<double>(now - last) / 1000.0).c_str() : "never", g_frame.load());
     ImGui::TextWrapped("Lot build slices %u, shortened to %u ms while moving %u (%s)", c_buildCalls.load(), kBuildMovingMs, c_buildLowered.load(),
                         g_buildOn ? "on" : "off");
-    ImGui::TextWrapped("Budget calls %u, scaled while moving %u, camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(), c_scaled.load(), c_eyeFails.load(),
-                        Bits(g_lastGame.load()), Bits(g_lastOut.load()));
+    ImGui::TextWrapped("Budget calls %u, scaled while moving %u (a lamp edit's room kept up to 6 ms %u), camera reads failed %u; last budget: game %.2f ms -> %.2f ms", c_calls.load(),
+                        c_scaled.load(), c_editMoving.load(), c_eyeFails.load(), Bits(g_lastGame.load()), Bits(g_lastOut.load()));
         ApexUi::EndAdvanced();
     }
 }

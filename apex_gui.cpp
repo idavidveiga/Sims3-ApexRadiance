@@ -882,7 +882,7 @@ void PerformanceCard() {
         if (FeatureSwitchRow(Performance::kRoomLightQueueName, "Faster room lighting", "Rooms light up sooner when you enter a lot or change floors")) {
             bool together = Performance::RoomAllAtOnce();
             ApexUi::SetNextRowBadge("Experimental", "Still being tested: if anything looks wrong or the game crashes, turn it off");
-            if (ApexUi::SwitchRow("Lamp switches all at once", &together, "Rooms, furniture and ground change together once the new light is ready", true))
+            if (ApexUi::SwitchRow("Lamp edits all at once", &together, "The lamp's own floor updates at once, the other floors change together when ready", true))
                 Performance::SetRoomAllAtOnce(together);
             if (!together) { // the other way: an approximate light first, refined room by room
                 bool quick = Performance::RoomQuickPass();

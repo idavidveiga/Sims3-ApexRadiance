@@ -1,7 +1,7 @@
 # Daytime bloom and wall bloom fixes
 
-By day, Night Lighting no longer makes objects look as if they glowed: in full daylight fences, snow on objects and
-outdoor objects keep the game's own lighting. Exterior walls and foundations lit brighter by Apex keep the game's bloom,
+By day, Night Lighting no longer makes objects look as if they glowed, and a lamp left on by day lights every outdoor
+surface at only 3% of its night strength, fading in smoothly through dusk. Exterior walls and foundations lit brighter by Apex keep the game's bloom,
 so they no longer turn white in the bloom pass, and a cinema/theatre facade of the base game no longer blooms in the
 sun. Switching *Smooth ground light* changes only how the ground light is filtered, without relighting anything. Found
 and validated by **idavidveiga**. Part of [Night Lighting](README.md).
@@ -10,7 +10,7 @@ and validated by **idavidveiga**. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released in 2.7.0 |
+| Availability | Released in 2.7.0. One daytime curve for outdoor lamps (replacing the full-daylight gates): Released in 2.12.3 |
 | Default | On with Night Lighting (no switch of its own) |
 | Menu | None. Diagnostics: Developer > Lighting (*Lighting + Bloom census*, *Capture bloom alpha mask*, developer mode) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` (the existing Night Lighting keys) |
@@ -30,10 +30,18 @@ and validated by **idavidveiga**. Part of [Night Lighting](README.md).
 
 ## How Apex Radiance solves it
 
-1. **Full daylight gates.** At a night level of 0.01 or less the fence pass, the snow-on-objects pass and the outdoor
-   object per-pixel pass are not drawn (as the moon-shadow and leaf-shadow passes already were not), so the game's
-   draw stays. At dusk and dawn the lamp terms fade with `TerrainLightingPolicy::SurfaceLampGain`
-   ([fences.md](fences.md), [objects-and-rigs.md](objects-and-rigs.md), [snow.md](snow.md)).
+1. **One daytime curve (2.12.3).** Every outdoor lamp term takes `TerrainLightingPolicy::LampDay(night)`: 3% of its
+   night strength in full daylight, `0.03 + 0.97 smoothstep(0, 1, night)` through dusk, exactly the night strength at
+   night ([README](README.md#daylight-policy-terrain_lighting_policyh)). The fence pass, the outdoor object per-pixel
+   pass and the window pass now run at every level (until 2.12.2 they were skipped at a night level of 0.01 or less,
+   which left the game's rig lamps, and Apex's rig boost, at full night strength by day: a red garden post lit columns,
+   window frames and glass in daylight). Their lamp and ground-atlas strengths take the curve; an outdoor object draw
+   that places no per-pixel lamp keeps the game's rig with its lamp colours (PS c5..c7, VS vertex light colours, rgb
+   only) multiplied by the curve for that draw. Walls, terrain, the lot pass, roads, outdoor floors, roofs and water use
+   the same curve, and outdoor lamps in the solves of roofed rooms take it at the settled day or night
+   ([level-light-share.md](level-light-share.md)). The snow-on-objects pass (ground atlas only) keeps its full-daylight
+   gate; the moon-shadow and leaf-shadow passes stay night-only ([fences.md](fences.md),
+   [objects-and-rigs.md](objects-and-rigs.md), [snow.md](snow.md)).
 2. **Wall bloom kept.** For opaque ExteriorWall draws with alpha writable, an alpha-only pass with the game's own lamp
    constant (no depth or stencil write) writes the game's bloom alpha, then the RGB pass writes Apex's brighter lamp term
    with alpha writes off. Blended or unusual wall draws keep the single pass ([walls.md](walls.md)).
@@ -71,6 +79,13 @@ and *Smooth ground light* ([README](README.md#settings)) decide which of these p
 - The facade shaders were captured on the EA app build 1.69; the shader package is the same on Steam, but the guard has
   not been confirmed in game there.
 - Only the one facade with the captured shaders is handled; other emissive materials keep the game's bloom.
+- Daytime curve, unverified in game: that the game's own wall and ground lamp factor is 1 at full night on every
+  variant (the curve meets the previous night value only then; F7 20-31-19 showed 1 on the captured wall variant); that
+  the daytime outdoor rig holds only lamps in PS c5..c7 and the VS vertex light colours (the per-pixel pass now zeroes
+  or scales them by day too). Draws outside the recognised paths keep the game's rig at full strength by day: instanced
+  objects drawn by the moon-shadow pass, foliage's per-instance lamp colours, and outdoor objects whose shader the
+  object patch does not take. Roads and outdoor floors keep the game's own factor under the curve, so where it is 0 by
+  day they show no lamp light rather than 3%.
 
 ## Technical reference
 
@@ -93,6 +108,11 @@ panel).
 
 - A global bloom threshold, alpha clamp or daytime bloom switch: would change many valid emissive materials.
 - The fork's day fade of the object rig boost: its rig re-gathers at every 0.1 of night level slowed indoor lighting.
+  The 2.12.3 curve scales the rig per draw instead (no re-gather).
+- Full-daylight gates on the outdoor object, fence and window passes (2.7.0 to 2.12.2): by day they left the game's rig
+  lamps and Apex's rig boost at full night strength (2026-10-12 screenshot, a red garden post by day).
+- A daytime term of 8% of the night strength (`kDaySurfaceResponse`, 2.6.0 to 2.12.2) added to walls and surfaces whose
+  game factor is 0 by day: still visible as a lit patch by day; replaced by the 3% floor of the shared curve.
 - Turning *Smooth ground light* off to hide daytime glow: it also removed the ground light quality it exists for.
 
 Details in [history](../../history/night-lighting-day-bloom-fixes.md).

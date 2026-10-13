@@ -215,8 +215,9 @@ XXXXXXXX, light map sN -> cK.x` or `no lamp-only scale found, left as the game`)
 
 `TerrainConst` writes `LampScale(native, night, gain, squared)` for the draw: `weighted = 1 + (gain - 1) x night`; at full
 night `native x weighted` (linear) or `native x sqrt(weighted)` (squared, so the product `c4.x x c4.x` scales by
-`weighted`); by day the `DayLampScale` term is added (`(1 - night) x gain`), as `native x weighted + day` or
-`sqrt(native^2 x weighted + day)`. The captured multi-pass world light shader (`kWorldMultiLightVs`) always uses `c3`
+`weighted`); before full night (since 2.12.3) it is `gain x LampDay(night)`, the shared daytime curve, or its square root
+for the squared variants (until 2.12.2 the `(1 - night) x gain` term was added, as `native x weighted + day` or
+`sqrt(native^2 x weighted + day)`). The captured multi-pass world light shader (`kWorldMultiLightVs`) always uses `c3`
 squared.
 
 ### Files
@@ -228,7 +229,7 @@ squared.
 | | `DrawSnowOnObject`, `DrawSnowCover`, `DrawSnowRelief`, `g_snowCoverPs`, `g_snowReliefPs` | Snow on objects and stairs |
 | | `OnDrawInner` (`RoofSnow && !g_curVsIsSnowRelief`), `TerrainLampConst`, `TerrainConst` | Stair routing, terrain brightness |
 | `features/shader_patches.cpp` | `IsSnowFloorVs`, `PatchSnowFloor`, `IsSnowCoverVs`, `PatchSnowCover`, `IsSnowReliefVs`, `PatchSnowRelief`, `IsFloorVs`, `PatchFloor`, `LightMapScaleConst` | Bytecode |
-| `features/terrain_lighting_policy.h` | `LampScale`, `DayLampScale`, `SurfaceLampGain` | Brightness and daytime policy |
+| `features/terrain_lighting_policy.h` | `LampScale`, `LampDay`, `SurfaceLampGain` | Brightness and daytime policy |
 | `shaders/shader_ids.h` | `kSnowLotPs`, `kSnowLotVs`, `kRoofSnowPs`, `kFloorVs` | Exact identities |
 
 ## Rejected approaches

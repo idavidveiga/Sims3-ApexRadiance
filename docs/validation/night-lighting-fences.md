@@ -26,6 +26,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `run_resource_checks.ps1` | Builds passed; resource paths 14,154 checks, 0 failures (extracted `DrawInstanced` 54, realistic reach on objects and fences 386). The captured fence shader suite (`run.ps1`) was not re-run | Fake D3D9 / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Reconstructed fence shader fixture | Zero build warnings; Passed spatial/native selection, directional lamp composition and fallback checks; captured-scene gameplay is not reconstructed | Native D3D9 fixtures / x86 build |
 | 2026-10-04 | `92582b6` | Terrain lighting suite (policy, bench GPU, resource fixtures) | Passed (part of 2,017,393 GPU, policy and resource checks); Release x86 built with no errors or warnings | Native D3D9 |
 
@@ -48,6 +49,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 ## Open checks
 
+- 2.12.3 public build, not yet tested in game: a balcony railing and an L-shaped band with a garden post below them, with *Realistic lamp reach* on and off. **Expected:** the band follows the light of the wall behind it; railing tops above the lamp heads take no ground light; a lamp under the balcony does not light the railing on it.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
 - Wider fence/gate materials, fallback groups and daytime transitions

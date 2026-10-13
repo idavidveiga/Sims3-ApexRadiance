@@ -23,15 +23,18 @@
 #include <d3d9.h>
 #include <string>
 
-// Lamp switches all at once ("one change only"; [patches.RoomLightQueue] switchAllAtOnce, default on):
-// from a player's switch until every room it marked on a story its lot shows has its final light (or 2.5 s after the
-// latest switch), every map of those rooms waits the same way, and the furniture rigs (lot_light_bridge.cpp), the ground
-// (LightmapSmooth) and the per-pixel lamp list (LotLightBridge) keep what was on screen; the quick pass is off meanwhile
-// (its light would never be seen). Then everything changes in the same frame.
+// Lamp edits all at once ([patches.RoomLightQueue] switchAllAtOnce, default on; 12/10: every edit, was switches only):
+// from a player's edit (switch, value, move, drag, a lamp added or removed) until every room it marked on another story than
+// the lamp's own has its final light (at the latest 2.5 s after the latest edit, 4 s after the first; a drag: 2.5 s after it
+// is let go), every map of those rooms waits the same way, and for a switch the furniture rigs of those stories
+// (lot_light_bridge.cpp), the ground (LightmapSmooth) and the per-pixel lamp list (LotLightBridge) keep what was on screen;
+// the quick pass is off meanwhile (its light would never be seen). Then the other stories change in the same frame. The
+// lamp's own story is never held: it shows its new light as soon as it is solved (atrium_hold.cpp).
 namespace AtriumHold {
 void SetAllAtOnce(bool on);
 bool AllAtOnce();     // on, and the texture lock hooks are installed
-bool SwitchHolding(); // a switch is being held now (any thread)
+bool SwitchHolding(); // an edit hold covering a switch is on now (any thread)
+bool EditHolding();   // an edit hold is on now, or an edit happened this frame (any thread)
 // Render thread (Present): installs the texture lock hooks once (false: not available, logged), updates the switch hold,
 // then releases the maps whose atrium is solved or whose switch is over
 void OnPresent(IDirect3DDevice9* dev);

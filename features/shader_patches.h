@@ -79,6 +79,11 @@ bool IsInstancedStructureVs(const std::vector<DWORD>& t);
 // (colour, spill)) and the atlas only on faces turned up: max(lerp(vC, lamps x strength, direct mode), atlas x sat(N.y) x cB.x). Each lamp
 // is gated by its cones (07/10): x S + (1 - S) sat(max(l.k1 + k1.w, l.k2 + k2.w)), S = colour .w, k1 / k2 at coneConst.
 // A valid group uses pixel lamps; unavailable groups retain the native rig.
+// reach (realistic lamp reach, 12/10): the per-pixel lamps follow the law of an outdoor wall texel (level_light_share
+// ReachShareImpl, lamp_reach.h): colour (x the game's weight) x sat(N.l) / d^2 x min(1, r0^2 / d^2 x sat(1 - (d^2/R^2)^2)^2),
+// the sum held under 1 per channel; r0^2 of lamp k at reachConst + k / 4, component k % 4 (2 rows after the cones). Without
+// the per-pixel lamps, or without room for 2 more rows, the reach variant is refused (t unchanged). reach = false gives the
+// bytes of the first law exactly.
 struct InstancedPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
@@ -88,8 +93,9 @@ struct InstancedPatch {
     DWORD lampConst = 0;
     DWORD groundWeightConst = 0; // (a, b, 1, 0): atlas weight sat(N.y * a + b); (1, 0) with lamps, (0, 1) = every face (as before)
     DWORD coneConst = 0;         // per lamp k: its cones at coneConst + 2k / + 2k + 1 (= lampConst + 2 kObjectPixelLamps); the lamp colour .w = its spill
+    DWORD reachConst = 0;        // reach variant: the 2 r0^2 rows (= coneConst + 2 kObjectPixelLamps); 0 = the first law
 };
-bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out);
+bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out, bool reach = false);
 
 // Snow lying on objects (fence tops, rails, props: the winter snow-cover mesh drawn over the object). Its vertex shader
 // morphs between two positions with flags in TEXCOORD1.x ("slt rX, cK, v.x") and writes world xz to TEXCOORD3.xy
@@ -130,6 +136,8 @@ bool PatchObjectLampVs(std::vector<DWORD>& t, bool needColor0 = true, int* texco
 // World position from TEXCOORD8 (PatchObjectLampVs); uv = xz * cA.xy + cA.zw.
 // Per-pixel lamps in the object pixel patch (constants lampConst .. lampConst + 2 * kObjectPixelLamps - 1).
 inline constexpr unsigned kObjectPixelLamps = 8;
+// reach: the outdoor walls' law, as PatchInstancedLamps (r0^2 rows at reachConst = coneConst + 2 kObjectPixelLamps, so
+// the parameters, lamps, cones and r0^2 rows are one upload from lampParamConst); refused (t unchanged) without room for them.
 struct ObjectLampPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
@@ -137,9 +145,10 @@ struct ObjectLampPatch {
     DWORD lampParamConst = 0; // (direct mode, lamp strength, 0, 1e-4)
     DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, spill)
     DWORD coneConst = 0;      // two cone rows per lamp, evaluated at the pixel
+    DWORD reachConst = 0;     // reach variant: the 2 r0^2 rows; 0 = the first law
     bool rigLamps = true;     // c5..c7 are the rig's lamp colours (false: no lamps in the pixel shader)
 };
-bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out);
+bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out, bool reach = false);
 
 // Indoor room light: the 4 directional room light maps ("basis maps", 64x64) read with a smooth (bicubic) filter.
 // BasisSamplers: the samplers of a basis-reading pixel shader, by direction (+X, -X, +Z, -Z). PatchBasisSmooth: its 4
@@ -188,6 +197,8 @@ bool PatchCubeTint(std::vector<DWORD>& t, int& tintConst);
 // .z = 0, set per draw). So faces looking into the house keep the game's light exactly; faces looking out of it take the
 // outdoor terms the outdoor-object patch uses. World (x, z, y) from TEXCOORD8 (PatchObjectLampVs); ps_3_0 without flow
 // control only; the normal = the input the shader normalizes ("nrm rN.xyz, vK"). False (t unchanged) otherwise.
+// reach: the outdoor walls' law, as PatchInstancedLamps (r0^2 rows at reachConst = planConst + 2); refused (t unchanged)
+// without room for them.
 struct WindowOutdoorPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;     // uv = world.xz x .xy + .zw
@@ -195,9 +206,10 @@ struct WindowOutdoorPatch {
     DWORD lampParamConst = 0; // (direct mode, lamp strength, 0, 1e-4)
     DWORD lampConst = 0;      // per lamp: (world pos, 1/R^2), (colour, spill)
     DWORD planConst = 0;      // 2 constants: (du/dx, du/dz, 0, 0) x d, (dv/dx, dv/dz, 0, 0) x d
+    DWORD reachConst = 0;     // reach variant: the 2 r0^2 rows; 0 = the first law
     int uvUsage = -1, uvIndex = -1; // the semantic of the basis uv input (the VS output to read the uv rows from)
 };
-bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out);
+bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out, bool reach = false);
 // The vertex shader side: how its output (usage, index) .xy is made from the world position, either "dp4 oN.x/.y, rW,
 // cK" or "dp4 rA.c, rW, cK" then "mul oN.xy, rA.<cc>, cS.<ss>" (the game's basis uv: room light map uv x c.zw). rW must
 // be the world-position temp of the triple c[worldK .. worldK + 2]. row[k] = K, scale[k] = S (-1: none), scaleComp[k] =

@@ -181,3 +181,24 @@ turn it off. Commit `645fc34` (pre-release review): solve starts stamped with a 
 begun in the switch's own 10 to 16 ms tick counted as before it and the switch waited the whole 2.5 s), maps kept from
 the very frame of the switch and only when the game locks them in step 1 of a solve, at most 96 MB of copies, and room by
 room without both solve hooks. Released in 2.7.0.
+
+### 2026-10-12: lamp edits all at once, the lamp's own story free
+
+**Context:** after moving, switching or editing a lamp, the stories showed the corrected light one at a time over 1 to
+20 s: only switches were held, value edits and moves were not, the safety net's rooms were never held, an urgent room
+lost its first place 3 s after its mark even when its solve had not begun, and the drain served only the priority lot.
+
+**Finding:** the 2026-10-06 rejection (holding every story until an edit's first solves ended made the lamp's own story
+wait 2 to 4 s) concerned the lamp's own story. Holding only the other stories keeps the edited story immediate.
+
+**Outcome:** (not yet validated in game) the switch hold became an edit hold triggered by every player edit (switch,
+value, move, drag release, a lamp into another story, a lamp added or removed). The lamp's own story (its own room's
+story, `LevelLightShare::OnEditStory`) is never held; every other affected story, the safety net's rooms included
+(urgent tier 2), is released in one frame once solved since its latest mark, at the latest 2.5 s after the latest edit or
+4 s after the first (a drag: one hold per settled drag), or at once at the 192-map / 96 MB cap. The visibility filter of
+the switch hold (`WallUpdatePolicy::VisibleForBarrier`) is no longer applied, since hidden stories are held too. To cut
+the waits: an urgent room keeps its urgency while it waits (at most 8 s), an edit's room is drained on any lot and keeps up
+to 6 ms of the lot budget while the camera moves, a move's safety net comes after 200 ms (was 300) and may run again after
+500 ms for a relocation or many lamps (2 s for switches), and only a relocation resends every room (the F8 bug of
+2026-10-05); other whole-lot refreshes keep their fresh solves. The gather countdown of an added or removed lamp
+(`f65626e`) is unchanged. The menu row became *Lamp edits all at once* (same `switchAllAtOnce` key).

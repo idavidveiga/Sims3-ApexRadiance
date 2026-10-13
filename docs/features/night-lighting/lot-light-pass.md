@@ -115,7 +115,7 @@ The full table is in the [Night Lighting overview](README.md#settings).
 | c28 | soft edges: `(dLx/du, dLx/dv, Lx0, W)`: lot-local x in metres = `dot(float3(terrainUv, 1), c28.xyz)`; W = lot width |
 | c29 | soft edges: `(dLz/du, dLz/dv, Lz0, D)`: lot-local z; D = lot depth |
 | c30 | soft edges: `(1 / band, bias, 0, 0)`: `(1/3, 0)` on, `(0, 1)` off (w = 1 everywhere) |
-| c31 | `(lot map gain, daylight terrain term, lot uv scale, lot uv offset)`: x = `LotMapGain()`, y = `DayLampScale(night, ground gain)`, z/w = `1/63` and `-c12.x x 16/63` for the recognised VS, else 0 |
+| c31 | `(lot map gain, daylight terrain term, lot uv scale, lot uv offset)`: x = `LotMapGain()` at full night, the lot map's night gain before it; y = 0 (since 2.12.3: before full night c3.x itself is set to ground gain x `LampDay(night)` for one draw, `TerrainLightingPolicy::LotPass`, so the terrain and the lot map follow the shared daytime curve; until 2.12.2 y = `(1 - night) x ground gain`, the full gain by day), z/w = `1/63` and `-c12.x x 16/63` for the recognised VS, else 0 |
 | s0 | sky cube (game) |
 | s1 | lot light map (game) |
 | s2 | terrain light (atlas or chunk map) |

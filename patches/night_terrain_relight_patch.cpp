@@ -198,8 +198,10 @@ float g_neutralProbeStrength = 1.0f;
 float g_fenceGroundStrength = 0.75f;
 bool g_walls = true;         // outdoor walls receive baked lamp light by day and night; off keeps the native draw
 float g_wallStrength = 0.30f; // multiplier of baked wall lamp RGB, independent of the enabled state
-bool g_balconyFill = true;        // (07/10) walls behind a balcony keep a soft share of a lower lamp's light (LevelLightShare::SetBalconyFill)
-float g_balconyFillStrength = 0.45f;
+// (12/10) "Light behind balconies" (luzSobSacadas, forcaSobSacadas) is gone: a placed floor blocks a lamp below it
+// (LevelLightShare, lamp_visibility.h). Old configs, profiles and presets that still hold the keys load as before: only the
+// registered settings are read (ApexPatch::LoadFromToml), so the two keys are skipped.
+bool g_realisticReach = true;     // (12/10) lamp light on outdoor walls fades with distance like on the ground (LevelLightShare::SetRealisticReach)
 bool g_roofs = true;
 float g_roofStrengthSetting = 0.45f;
 bool g_water = true;
@@ -1736,11 +1738,9 @@ class NightTerrainRelightPatch : public ApexPatch {
         RegisterFloatSetting(&g_wallStrength, "forcaNasParedes", SettingWidget::Slider, 0.30f, 0.25f, 4.0f,
             S3SS_TR("Intensidade da luz das lampadas nas paredes externas, durante o dia e a noite.",
                     "Intensity of lamp light on outside walls, by day and night."));
-        RegisterBoolSetting(&g_balconyFill, "luzSobSacadas", true,
-            "Walls behind a balcony get some light from the lamps below it (the light its floor and railing scatter), less the deeper they sit; "
-            "real walls still block (relights every room when changed).");
-        RegisterFloatSetting(&g_balconyFillStrength, "forcaSobSacadas", SettingWidget::Slider, 0.45f, 0.1f, 1.0f,
-            "How much of a lamp's light reaches the walls behind a balcony, at the balcony's edge.");
+        RegisterBoolSetting(&g_realisticReach, "alcanceRealistaDasLampadas", true,
+            "Lamp light on outside walls fades with distance as it does on the ground, instead of staying at full brightness "
+            "for about 9 m and reaching upper stories far away (relights every room when changed).");
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
             S3SS_TR("Luminarias externas iluminam as paredes e pisos de todos os andares (a luz nao corta mais na linha do piso).",
                     "Outdoor lights reach the walls and floors of every story (no cut at the floor line)."));
@@ -1760,7 +1760,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             "windows and arches, at their height, or over walls lower than the lamp; one closed all round stays dark (needs \"Walls block light on floors\"; "
             "relights every room when changed).");
         RegisterBoolSetting(&g_objectWalls, "paredesBloqueiamLuzNosObjetos", true,
-            "Walls stop lamp light on outdoor objects: furniture in a yard without a roof behind a wall stays dark.");
+            "Walls and the floors of balconies and upper stories stop lamp light on outdoor windows, objects and fences: furniture "
+            "in a yard without a roof behind a wall stays dark, and a lamp under a balcony does not light what stands on it.");
         RegisterEnumSetting(&g_lightDetail, "detalheDaLuz", 0,
             "How sharp the game's lamp light is on walls and floors. High doubles its detail: rooms take longer to light and use more memory "
             "(experimental; takes effect after restarting the game).",
@@ -2018,7 +2019,7 @@ class NightTerrainRelightPatch : public ApexPatch {
             LevelLightShare::SetAllLotsHighQuality(g_allLotsHQ);
             LevelLightShare::SetFloorWalls(g_floorWalls);
             LevelLightShare::SetRealisticOpenings(g_realisticOpenings);
-            if (!MenuSliderHeld()) LevelLightShare::SetBalconyFill(g_balconyFill, g_balconyFillStrength); // one relight, when let go
+            LevelLightShare::SetRealisticReach(g_realisticReach);
             LevelLightShare::SetObjectWalls(g_objectWalls);
             LevelLightShare::SetFoundationWalls(g_foundationWalls);
             UnlitRooms::Set(g_unlitOn, g_unlitLight, g_unlitBlue);
@@ -2281,8 +2282,7 @@ class NightTerrainRelightPatch : public ApexPatch {
         g_fenceGroundStrength = 0.75f;
         g_walls = true;
         g_wallStrength = 0.30f;
-        g_balconyFill = true;
-        g_balconyFillStrength = 0.45f;
+        g_realisticReach = true;
         g_roofs = true;
         g_roofStrengthSetting = 0.45f;
         g_water = true;
@@ -2407,7 +2407,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 changed |= ApexUi::SwitchRow("Light through doors and windows", &g_realisticOpenings, "Lamps light walled yards only through openings or over the walls",
                                              kRealisticOpeningsDefault);
                 ImGui::EndDisabled();
-                changed |= ApexUi::SwitchRow("Walls block light on objects", &g_objectWalls, "Furniture behind a wall gets no light from the lamp outside", true);
+                changed |= ApexUi::SwitchRow("Buildings block light on objects", &g_objectWalls, "Walls and balcony floors block lamp light on windows, objects and fences", true);
                 changed |= ApexUi::SwitchRow("Wall lamps at the right height", &g_foundationWalls, "Fixes a game bug: wall light too high on tall walls and foundations", true);
                 if (ApexUi::BeginAdvanced("StoryDetail", "Floor detail")) {
                     changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
@@ -2560,9 +2560,7 @@ class NightTerrainRelightPatch : public ApexPatch {
                 bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
                 if (g_walls)
                     changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 0.30f);
-                changed |= ApexUi::SwitchRow("Light behind balconies", &g_balconyFill, "Walls behind a balcony get some light from the lamps below", true);
-                if (g_balconyFill)
-                    changed |= ApexUi::SliderPercent("Strength##Balconies", &g_balconyFillStrength, 0.1f, 1.0f, "How much lamp light reaches walls behind a balcony", 0.45f);
+                changed |= ApexUi::SwitchRow("Realistic lamp reach", &g_realisticReach, "Lamp light on outside walls fades with distance like on the ground", true);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
@@ -2707,6 +2705,10 @@ class NightTerrainRelightPatch : public ApexPatch {
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", LotLightBridge::LightingBloomCensusStatus().c_str());
             ApexUi::Tooltip("Writes ApexRadiance_LightingBloomCensus.txt. Read-only: records which visible draw families Apex modifies in day, twilight and night and flags known or possible bloom-mask families");
+            if (ApexUi::TextButton("Exterior surface capture")) LotLightBridge::RequestExteriorCapture();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", LotLightBridge::ExteriorCaptureStatus().c_str());
+            ApexUi::Tooltip("Read-only. Writes ApexRadiance_ExteriorSurfaces.txt: for every visible outdoor wall, fence, stair, floor, ground and roof draw, its shaders, light maps, constants and the Apex fix that acted");
             if (ApexUi::TextButton("Capture bloom alpha mask")) BloomAlphaProbe::Request(g_level);
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", BloomAlphaProbe::Status().c_str());

@@ -122,7 +122,10 @@ written at `Y × pitch + X × 4`).
    - `0x006C6990(room, 1)`: lights registered on this story for this room (registry entry room id == room id), filtered by
      `0x006C7820` (lit, type > 2).
    - Only if `room id == 0` and `treeLevel+0x1A0 == 0` (level 0): `0x006C6990(room, 0)` again. So the ground story's
-     outdoor lamps are in its room-0 list **twice** (F8 01:39: type-3 lamps twice, type 11 three times).
+     outdoor lamps are in its room-0 list **twice** (F8 01:39: type-3 lamps twice, type 11 three times; the third entry
+     matches a zeroed `GetLotID` at the world-light gather below, which Apex's Every-Story Ground Light no longer causes,
+     UNVERIFIED for that capture. F7 20-31-19 (12/10) lists a story-0 type-11 lot post twice for an upper story's wall:
+     the story share's two entries, none from the world-light gather).
    - Only for room 0: world lights around the lot centre, `0x006B66B0` (±2 cells of 32 m), added with `0x006A2060`.
      The per-cell filter keeps lights with `GetLotID() == 0` (world lights). With the Split-Level Lighting Fix
      (`GetLotID` → 0) lot lights of type 11 also enter here, on every story.

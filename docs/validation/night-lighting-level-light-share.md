@@ -20,7 +20,7 @@ It must:
 | [`tools/exterior_lookup_test`](../../tools/exterior_lookup_test/README.md) | Extracted exterior floor lookup and per-point cache against the v2.10.0 implementation; alternating stories, replacement, missing data and eviction | `run.ps1 -ReferenceSource <v2.10.0-level_light_share.cpp>` | MSVC x86 |
 | [`tools/terrain_lighting_test/run_indoor_stories_checks.ps1`](../../tools/terrain_lighting_test/run_indoor_stories_checks.ps1) (`indoor_stories_fixture.cpp`) | Extracts the production `IndoorBoundaryPass`, `IndoorPassImpl` and `BasisLightHook` and runs them on mock game structures: all story pairs, open shafts, every solid intermediate floor, wall blocking, wall-mode restoration, tile heights, unavailable data, ghost rows and split-level crossings, the raised-room exterior wall veto, partial basis transmission. Optional `-ReferenceSource` compiles an older `IndoorPassImpl` to compare adjacent-story results | `run_indoor_stories_checks.ps1 [-OutDir ...] [-ReferenceSource ...]` | MSVC x86 |
 | [`tools/room_structure_test/run.ps1`](../../tools/room_structure_test/run.ps1) (`check.cpp`) | Extracts `NoteRoomStructure`: a new room schedules a refresh, LOD or repeated gathers do not, roof and wall changes do, repeated changes coalesce | `run.ps1` | MSVC x86 |
-| [`tools/room_ambient_test`](../../tools/room_ambient_test/README.md) (`room_ambient_test.cpp`) | Room ambient and scheduling policy (`room_ambient_policy.h`): group deadlines, first dispatch, overdue updates, tick wrap, window recheck timing (0 / 2 s / 6 s, bounded, wrap), lamp refresh delay (120 / 700 ms), gather ordering, floor priority, structure and floor-edit timing | `run.ps1` | MSVC x86 |
+| [`tools/room_ambient_test`](../../tools/room_ambient_test/README.md) (`room_ambient_test.cpp`) | Room ambient and scheduling policy (`room_ambient_policy.h`): group deadlines, first dispatch, overdue updates, tick wrap, window recheck timing (0 / 2 s / 6 s, bounded, wrap), lamp refresh delay (120 / 200 ms), safety-net gap (2 s / 500 ms), edit urgency (8 s cap) and edit hold decision, gather ordering, floor priority, structure and floor-edit timing | `run.ps1` | MSVC x86 |
 | [`tools/basis_test/basis_test.cpp`](../../tools/basis_test/basis_test.cpp) | `PatchBasisSmooth` / `PatchIndoorBasis` on a captured pixel shader, disassembled with d3dcompiler_47 | `basis_test <ps.bin> [lmSampler]` | d3dcompiler_47, a captured shader |
 
 These harnesses do not validate the game's room topology, lamp falloff, visual convergence or performance. They read
@@ -33,6 +33,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `tools/room_ambient_test`; `run_resource_checks.ps1` | Builds passed; room ambient policy 102 checks, 0 failures; resource paths 14,154 checks, 0 failures (*Buildings block light on objects* 14). The extracted indoor-stories, world-pool, queue and dispatch harnesses no longer compile against the current source (the same failure at v2.12.2), so they were not run | None (mocks) / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Wall generation policy fixtures | Zero build warnings; Passed the clean source policy checks; no FPS or instantaneous-update guarantee | Native D3D9 fixtures / x86 build |
 | 2026-10-07 | v2.10.1 | Extracted exterior floor lookup against v2.10.0 | 86,364 checks passed; 84,000 to 7,000 full link searches in the fixed multi-story fixture | None (native accesses mocked) |
 | 2026-10-05 | PR #2 (`2584e01`) | Indoor stories fixture, raised-room wall veto | 18,992 extracted checks passed; the raised-wall fixture failed twice before the guard and passes after | None (mocks) |
@@ -126,6 +127,8 @@ topology mutation inside a point is not reproduced. This release does not promis
 
 ## Open checks
 
+- 2.12.3 public build, not yet tested in game: a balcony or deck with a lamp under it and walls, windows, objects and fences on it; a lamp on the balcony; a lamp seen past the slab's edge. **Expected:** nothing above the slab takes the lamp below it; the edge dims rather than cuts; the lamp on the balcony still lights the wall below it.
+- The indoor-stories, world-pool, queue and dispatch harnesses need their extractions updated to the current source.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
 - Wider fence/gate materials, fallback groups and daytime transitions

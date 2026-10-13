@@ -106,9 +106,8 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Doors, counters and fences > Fence brightness | `forcaNasCercas` | float | 75% | 25 to 200% | Strength on fences, railings, stairs and their snow |
 | Indoor objects > Smooth indoor light (Experimental) | `bordasDosMapasDeLuz` | bool | on | | Indoor objects and stairs read the room's directional light maps smoothly (see *Smooth indoor light*) |
 | Buildings > Lamps light walls | `paredesComLuz` | bool | on | | Exterior wall lamp gain by day and night; off keeps the native draw ([walls](walls.md)) |
-| Buildings > Brightness (walls) | `forcaNasParedes` | float | 84% | 25 to 400% | Wall lamp RGB multiplier (`SetWallGain` clamps 0.25 to 8) |
-| Buildings > Light behind balconies | `luzSobSacadas` | bool | on | | Walls behind a balcony keep a soft share of a lower lamp's light (fades behind the slab edge; real walls still block; relights rooms) |
-| Buildings > Strength (balconies) | `forcaSobSacadas` | float | 45% | 10 to 100% | Share at the balcony edge (`LevelLightShare::SetBalconyFill`) |
+| Buildings > Brightness (walls) | `forcaNasParedes` | float | 30% | 25 to 400% | Wall lamp RGB multiplier (`SetWallGain` clamps 0.25 to 8) |
+| Buildings > Realistic lamp reach | `alcanceRealistaDasLampadas` | bool | on | | Lamp light on outside walls fades with distance like the ground ([walls](walls.md); relights rooms); outdoor objects, fences and windows then take the same law and the walls' scale, the two per-pixel sliders becoming trims over their 75% default ([objects](objects-and-rigs.md#realistic-reach-on-objects-fences-and-windows)) |
 | Buildings > Lamps light roofs | `telhadosComLuz` | bool | on | | Roof lamp pass ([roofs](roofs.md)) |
 | Buildings > Brightness (roofs) | `forcaNosTelhados` | float | 45% | 5 to 200% | Roof lamp strength |
 | Light detail > Detail (Experimental) | `detalheDaLuz` | enum | Game | Game, High | High doubles the game's lighting texels per metre on walls and floors (`features/light_detail.cpp`: texels per tile `0x00FF36AC` {1, 2, 4} -> {2, 4, 8}, wall atlases `0x00FF36DC` / `0x00FF36E8` doubled per LOD class). Written once at startup before any lot is lit, Steam 1.67.2 only, left alone when another mod changed those tables; a change takes effect after a restart. Rooms take about four times longer to solve and their maps use four times the memory |
@@ -120,7 +119,7 @@ Lighting > "Individual options (for tests)" (developer mode) or the TOML file.
 | Stories > Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Outdoor floors (decks, yards without a roof) lose the ground light blocked by walls; relights every room when changed |
 | Stories > Light through doors and windows (Experimental) | `luzRealistaPorAberturas` | bool | off | | Walled yards, light wells and decks without a roof take their story's outdoor lamps only through doors, windows and arches or over lower walls ([level-light-share](level-light-share.md)); needs *Walls block light on floors* |
 | Stories > Wall lamps at the right height | `paredesExternasNaAlturaDesenhada` | bool | on | | Two vanilla bugs fixed (`features/level_light_share.cpp`). 1: the game's wall setup FUN_006ab280 takes an indoor face's light base from the floor tile (+0x78) but an outdoor face's from story x 3.0 (0x006AB32C): on a house on a foundation outside walls were lit 2 m off; base = foundation + 3 (story - 1) (`OutdoorWallBase` / `IndoorWallBase`). 2: every wall is lit over 3 m (0x006ABE08) but its light block is drawn from the drawn foot to the drawn top (light-UV writer 0x00C38530 can only shorten it): walls running up to the roof showed the light stretched, higher the higher the lamp; the UV writer's calls (0x00C387B5 / 0x00C387CC) note each drawn cell's height and the samples spread over it (`WallUvHook`, `StretchTallWall`); walls drawn after their solve relight their room once. Walls are set up when a lot is built: reload the lot after switching it |
-| Stories > Walls block light on objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Outdoor objects drop per-pixel lamps with an outside wall in between, and their ground light is scaled by the unblocked share |
+| Stories > Buildings block light on objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Outdoor objects, windows and fences drop per-pixel lamps with an outside wall or, for a lamp below them, a placed floor of an upper story in between (a lamp seen past a slab's edge is dimmed), and their ground light is scaled by the unblocked share ([level-light-share](level-light-share.md)) |
 | Stories > Floor detail > Seamless walls between floors | `paredesSemEmendaEntreAndares` | bool | on | | Walls lit at the heights the game draws their light; needs outdoor light between floors |
 | Stories > Floor detail > Every floor in full detail | `todosOsAndaresEmDetalhe` | bool | on | | Every floor of the active lot solved in full detail |
 | Water & Snow > Lamp Glow > Lamps glow on ponds | `lagosRefletemLampadas` | bool | on | | Pond lamp pass ([water](water.md)) |
@@ -224,7 +223,7 @@ Notes:
 | [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp) | The patch class, all settings, the menu pieces (`DrawGroundCard`, `DrawObjectsCard`, `DrawBuildingsCard`, `DrawRoomsCard`, `DrawStoriesCard`, `DrawWaterCard`, `DrawSnowCard`, `DrawLightingBalance`, `DrawRefreshCard`, `RenderDeveloperUI`), terrain bake patches, dusk and daylight rebuilds, lamp change decisions, Present driver, `APEX_REGISTER_FEATURE` (`displayName = "Night Lights"`, category Graphics, `gameCodeGroup = "NightLights"`) |
 | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) | D3D9 draw interception: classification, dispatch, every `Draw*` handler, HLSL replacements (`kReplacementHlsl`, `kObjectRigHlsl`), lamp enumeration and selection (`g_allLamps`, `SelectLamps`, `SelectPixelLamps`), lamp tracking and bake snapshots, census and false colour, `DescribeDraw` for F7 |
 | [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) | Pure functions on D3D9 bytecode: recognisers (`IsRoadVs`, `IsFloorVs`, `IsSnowFloorVs`, `IsSnowCoverVs`, `IsSnowReliefVs`, `IsInstancedStructureVs`) and patchers (`PatchRoad`, `PatchFloor`, `PatchSnowFloor`, `PatchBakedAtlasPs`, `PatchSnowCover`, `PatchSnowRelief`, `PatchInstancedLamps`, `PatchObjectLampVs/Ps`, `PatchFoliageVs`, `PatchLeafShadow`, `PatchBasisSmooth`, `PatchIndoorBasis`, `PatchTerrainNativeAlpha`, `PatchTerrainDaylightRange`), `LightMapScaleConst`, `CodeBytes`. Testable offline |
-| [`features/terrain_lighting_policy.h`](../../../features/terrain_lighting_policy.h) | Day/night lamp scales (`DayLampScale`, `SurfaceLampGain`, `WallLampScale`, `LampScale`), day-edit deferral, phase cycle |
+| [`features/terrain_lighting_policy.h`](../../../features/terrain_lighting_policy.h) | Day/night lamp scales (`LampDay`, `SurfaceLampGain`, `WallLampScale`, `LampScale`, `LotPass`, `SolveLampDay`), day-edit deferral, phase cycle |
 | [`features/lightmap_smooth.cpp`](../../../features/lightmap_smooth.cpp) | Smoothed 1024x1024 chunk light maps and the world light atlas |
 | [`features/terrain_chunk_relight.cpp`](../../../features/terrain_chunk_relight.cpp) | Local terrain relight and paced sweep (`ChunkRelight`) |
 | [`features/world_lamp_policy.h`](../../../features/world_lamp_policy.h) | World-owned lamp eligibility and priority edits |
@@ -325,15 +324,19 @@ unchanged):
 
 ### Daylight policy (`terrain_lighting_policy.h`)
 
-At night level n (lightMgr+0xF0, 0 day to 1 night) and a configured gain g:
+At night level n (lightMgr+0xF0, 0 day to 1 night) and a configured gain g. Since 2.12.3 every outdoor lamp term follows
+one daytime curve, `LampDay(n) = 0.03 + 0.97 smoothstep(0, 1, n)` (exactly 1 at n >= 1, `kLampDayFloor` = 0.03 by day):
+a lamp left on by day lights every outdoor surface at 3% of its night strength. Full-night values are unchanged bit for bit.
 
 | Function | Formula | Used by |
 |---|---|---|
-| `NightWeighted(g)` (lot_light_bridge.cpp) | `1 + (g - 1) n` | Ground, road and lot-map gains |
-| `DayLampScale(n, g)` | `(1 - n) g` | Lot pass terrain term (c31.y), terrain lamp scale |
-| `SurfaceLampGain(n, g)` | `d + (g - d) n`, `d = min(g, 1) x 0.08` (`kDaySurfaceResponse`) | Fences and stairs, snow on objects, per-pixel object lamps |
-| `WallLampScale(K, n, g)` | `K g + DayLampScale(n, min(g, 1) x 0.08)` | Exterior wall cK.x |
-| `LampScale(K, n, g, squared)` | linear: `K w + (1 - n) g`; squared: `sqrt(K^2 w + (1 - n) g)`; `w = 1 + (g - 1) n`; at n = 1 exactly `K w` or `K sqrt(w)` | World terrain lamp constant ([world-atlas](world-atlas-and-smoothed-maps.md)) |
+| `NightWeighted(g)` (lot_light_bridge.cpp) | `1 + (g - 1) n` | Ground, road and lot-map gains at night |
+| `LampDay(n)` | `0.03 + 0.97 n^2 (3 - 2n)`, 1 at n >= 1 | Every outdoor lamp term below; roof, snowy roof and water lamp strength (c52.x); roads and outdoor floors (x the game's own factor x gain); the kept rig of an outdoor object that places no per-pixel lamp (PS c5..c7, VS vertex light colours) |
+| `SurfaceLampGain(n, g)` | `g LampDay(n)`, `g` at n >= 1 | Fences and stairs, snow on objects, per-pixel object and window lamps, ground atlas on objects |
+| `WallLampScale(K, n, g)` | `g LampDay(n)`, at n >= 1 exactly `K g` | Exterior wall cK.x |
+| `LampScale(K, n, g, squared)` | `g LampDay(n)` (squared: its square root); at n = 1 exactly `K w` or `K sqrt(w)`, `w = 1 + (g - 1) n` | World terrain and snowy lot lamp constants ([world-atlas](world-atlas-and-smoothed-maps.md)) |
+| `LotPass(n, g, lot)` | before n = 1: c3.x = `g LampDay(n)`, c31.x = the lot map's night gain; at n = 1 the previous constants | Lot light pass ([lot-light-pass](lot-light-pass.md)) |
+| `SolveLampDay(n)` | 0.03 by day, 1 at night, `LampDay(n)` at twilight | Outdoor lamps in the solves of roofed rooms ([level-light-share](level-light-share.md)) |
 
 Native solar and sky constants are never raised.
 

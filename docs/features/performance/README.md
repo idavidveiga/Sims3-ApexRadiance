@@ -58,7 +58,7 @@ Every switch works at the exact game function behind one measured cost, and foll
 
 | Switch (menu label) | Card | Introduced | Page |
 |---|---|---|---|
-| Faster room lighting (with *Lamp switches all at once*, 2.7.0) | Camera and lighting | 2.1.0 or earlier | [room-light-queue.md](room-light-queue.md) |
+| Faster room lighting (with *Lamp edits all at once*, 2.7.0 as *Lamp switches all at once*) | Camera and lighting | 2.1.0 or earlier | [room-light-queue.md](room-light-queue.md) |
 | Spread lot lighting while moving | Camera and lighting | 2.1.0 or earlier | [lot-lighting-motion.md](lot-lighting-motion.md) |
 | Wall shading waits while moving | Camera and lighting | 2.1.0 or earlier | [wall-shading-while-moving.md](wall-shading-while-moving.md) |
 | Spread new objects over frames | Camera and lighting | 2.1.0 or earlier | [scene-node-budget.md](scene-node-budget.md) |
