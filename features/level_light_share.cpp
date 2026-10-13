@@ -83,12 +83,15 @@
 #define NOMINMAX
 #endif
 #include "level_light_share.h"
+#include "lamp_visibility.h"
+#include "lamp_reach.h"
 #include "wall_heights.h"
 #include "apex_version.h"
 #include "room_ambient_policy.h"
 #include "wall_update_policy.h"
 #include "unlit_rooms.h"
 #include "room_light_queue.h"
+#include "lamp_mark_filter.h"
 #include "object_light_bridge.h"
 #include "recorder.h"
 #include "game_addresses.h"
@@ -305,10 +308,10 @@ std::atomic<bool> g_diagArmed{false}; // development build: record samples and g
 // ---- The time of each of Apex's own tests inside the room solves (07/10, wall speed; light tree thread only) ----
 // rdtsc cycles and calls per part, written by the light tree thread alone (plain counters: a torn read on the render
 // thread only skews one log line); ms through CyclesPerMs. Nested parts: the game's wall test and the lower-wall filter
-// are inside "wall pass", the grid pass of a share under a balcony inside "fill".
-enum TestPart { kTpWall, kTpWallGame, kTpKeep, kTpEntry, kTpMid, kTpYard, kTpFill, kTpIndoor, kTpCount };
+// are inside "wall pass", the slab gate inside "ray entry".
+enum TestPart { kTpWall, kTpWallGame, kTpKeep, kTpEntry, kTpMid, kTpYard, kTpGate, kTpIndoor, kTpCount };
 constexpr const char* kTestPartNames[kTpCount] = {"wall pass", "of it game wall test", "of it lower-wall filter", "ray entry",
-                                                  "stories in between", "grid pass", "fill", "indoor floors"};
+                                                  "stories in between", "grid pass", "of it slab gate", "indoor floors"};
 uint64_t g_partCycles[kTpCount] = {};
 uint32_t g_partCalls[kTpCount] = {};
 struct PartTimer {
@@ -341,7 +344,7 @@ double CyclesPerMs() {
 // lamp's position (vfunc+0x24), a room by id (FUN_006a6550), a story's floor object (LevelForPoint, below LevelFor). Keyed
 // by g_pointGen, bumped at every point solve (SolvePoint, the basis texel, the reach query): nothing is kept from one point
 // to the next. Light tree thread only. Development builds started with APEX_WALLCHECK=1 look every hit up again and count
-// mismatches (FillStatus "self-check").
+// mismatches (SlabStatus "self-check").
 uint32_t g_pointGen = 1;
 bool g_wallCheck = [] {
     char v[4] = {};
@@ -394,7 +397,7 @@ void* RoomByIdCached(void* mgr, int id) {
     g_roomCache[g_roomNext++ % std::size(g_roomCache)] = RoomEntry{g_pointGen, mgr, id, room};
     return room;
 }
-std::string TestTimeStatus() { // FillStatus: the time of each test so far
+std::string TestTimeStatus() { // SlabStatus: the time of each test so far
     const double r = CyclesPerMs();
     std::string s = "Apex test time so far:";
     for (int i = 0; i < kTpCount; i++)
@@ -486,17 +489,34 @@ void NoteSolve(BYTE* room, char event, uintptr_t caller = 0); // development bui
 //  - a room being solved whose lamp only moved or changed a value keeps that solve: LampMarkFilter holds the mark
 //    (HoldLampMark) and the room update gives it back once the solve is over (FlushHeldMarks), so the light of a lamp
 //    being dragged follows it solve after solve instead of restarting on every step.
+// 12/10: tier 2 = a room the edit's safety net sent (RelightLot / RelightLampSwitch from LampMarkFilter): after the
+// lamp's own room and the rooms taking its light, before any other room, and held with them by the edit hold
+// (AtriumHold), so the stories it covers change together instead of when the net's solve ends.
 struct UrgentRoom {
     uintptr_t room, mgr;
     int id, tier;
     DWORD until;
     bool soon; // the latest edit sending it was a registered lamp that moved or changed a value: gathered at once
+    DWORD marked = 0;          // the latest mark (UrgencyKept counts the 8 s cap from it)
+    unsigned long serial = 0;  // LampMarkFilter::EditSerial at the latest mark: a solve begun after it ends its wait
+    bool expiredPending = false; // reached the 8 s cap while still waiting (counted once)
+    bool kept = false;           // outlived its deadline while waiting (counted once)
 };
 std::mutex g_urgentMx;
-std::vector<UrgentRoom> g_urgent; // the rooms of the lamps edited in the last kUrgentMs (a handful)
+std::vector<UrgentRoom> g_urgent; // the rooms of the lamps edited in the last kUrgentMs (a handful; a big lot's net: more)
 std::atomic<int> g_urgentSize{0};
-std::atomic<long> g_urgentMarked{0}, g_heldMarks{0}, g_heldGiven{0}, g_gatherSoon{0};
+std::atomic<long> g_urgentMarked{0}, g_heldMarks{0}, g_heldGiven{0}, g_gatherSoon{0}, g_urgentKept{0}, g_urgentExpiredPending{0};
 constexpr DWORD kUrgentMs = 3000;
+// 12/10: a whole lot's safety net ("all the lights" of a big lot) tags more rooms than the 64 kept before
+constexpr size_t kUrgentMax = 256;
+// 12/10: the stories of the lamps' own rooms (tier 0, AfterChangedWalk): the edit hold never holds them (the lamp's own
+// story shows its new light as soon as it is solved); kept kEditStoryMs after their latest tier-0 mark
+struct EditStory {
+    uintptr_t mgr;
+    DWORD at;
+};
+std::vector<EditStory> g_editStories; // under g_urgentMx
+constexpr DWORD kEditStoryMs = 5000;
 bool RoomKey(const void* room, uintptr_t& mgr, int& id) {
     __try {
         mgr = *reinterpret_cast<const uintptr_t*>(room);
@@ -524,30 +544,70 @@ void GatherSoon(void* room) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
+// 12/10: an urgent entry is live until its deadline, and after it while its room still waits for or is in its solve
+// (states 1-3), at most 8 s after its latest mark (RoomAmbientPolicy::UrgencyKept): a room of the edit whose solve had not
+// begun 3 s after the mark lost its first place and was solved seconds later in the game's order. Under g_urgentMx; the
+// room's fields are read with SEH (RoomKey, RoomState).
+bool UrgentLive(UrgentRoom& u, DWORD now) {
+    if (static_cast<int32_t>(now - u.until) < 0) return true;
+    uintptr_t mgr = 0;
+    int id = 0;
+    const void* room = reinterpret_cast<const void*>(u.room);
+    const int state = RoomKey(room, mgr, id) && mgr == u.mgr && id == u.id ? RoomState(room) : -1;
+    if (RoomAmbientPolicy::UrgencyKept(now, u.until, u.marked, state)) {
+        if (!u.kept) { // counted once per mark (the first time it outlives its deadline)
+            u.kept = true;
+            g_urgentKept.fetch_add(1, std::memory_order_relaxed);
+        }
+        return true;
+    }
+    if (state >= 1 && state <= 3 && !u.expiredPending) { // the 8 s cap with the room still waiting (a paused lot)
+        u.expiredPending = true;
+        g_urgentExpiredPending.fetch_add(1, std::memory_order_relaxed);
+    }
+    return false;
+}
 // soon: the edit is a lamp registered in that room that moved, switched or changed a value (see above); the latest decides
 void MarkUrgent(void* room, int tier, bool soon) {
     uintptr_t mgr = 0;
     int id = 0;
     if (!room || !RoomKey(room, mgr, id)) return;
     const DWORD now = GetTickCount();
+    const unsigned long serial = LampMarkFilter::EditSerial();
     std::lock_guard<std::mutex> lk(g_urgentMx);
-    std::erase_if(g_urgent, [now](const UrgentRoom& u) { return static_cast<int32_t>(now - u.until) >= 0; });
+    std::erase_if(g_urgent, [now](UrgentRoom& u) { return !UrgentLive(u, now); });
     const auto it = std::find_if(g_urgent.begin(), g_urgent.end(), [room](const UrgentRoom& u) { return u.room == reinterpret_cast<uintptr_t>(room); });
     if (it == g_urgent.end()) {
-        if (g_urgent.size() >= 64) g_urgent.erase(g_urgent.begin());
-        g_urgent.push_back(UrgentRoom{reinterpret_cast<uintptr_t>(room), mgr, id, tier, now + kUrgentMs, soon});
+        if (g_urgent.size() >= kUrgentMax) { // full: the oldest room that is not a lamp's own goes first
+            const auto drop = std::find_if(g_urgent.begin(), g_urgent.end(), [](const UrgentRoom& u) { return u.tier != 0; });
+            g_urgent.erase(drop != g_urgent.end() ? drop : g_urgent.begin());
+        }
+        UrgentRoom u{reinterpret_cast<uintptr_t>(room), mgr, id, tier, now + kUrgentMs, soon};
+        u.marked = now;
+        u.serial = serial;
+        g_urgent.push_back(u);
     } else {
-        it->tier = it->mgr == mgr && it->id == id ? std::min(it->tier, tier) : tier;
+        const bool same = it->mgr == mgr && it->id == id;
+        it->tier = same ? std::min(it->tier, tier) : tier;
         it->mgr = mgr;
         it->id = id;
         it->until = now + kUrgentMs;
-        it->soon = soon;
+        if (tier != 2 || !same) it->soon = soon; // the safety net's tag never takes an edit's gather-at-once away
+        it->marked = now;
+        it->serial = serial;
+        it->expiredPending = it->kept = false;
+    }
+    if (tier == 0) { // the lamp's own story: never held by the edit hold (OnEditStory)
+        std::erase_if(g_editStories, [now](const EditStory& s) { return now - s.at >= kEditStoryMs; });
+        const auto s = std::find_if(g_editStories.begin(), g_editStories.end(), [mgr](const EditStory& e) { return e.mgr == mgr; });
+        if (s != g_editStories.end()) s->at = now;
+        else if (g_editStories.size() < 64) g_editStories.push_back(EditStory{mgr, now});
     }
     g_urgentSize.store(static_cast<int>(g_urgent.size()), std::memory_order_relaxed);
     g_urgentMarked.fetch_add(1, std::memory_order_relaxed);
 }
-// The urgent entry of a room: its tier (0 = a lamp's own room, 1 = a room taking its light; -1 = not urgent) and whether
-// it may gather at once
+// The urgent entry of a room: its tier (0 = a lamp's own room, 1 = a room taking its light, 2 = sent by the edit's safety
+// net; -1 = not urgent) and whether it may gather at once
 int UrgentTier(const void* room, bool* soon = nullptr) {
     if (soon) *soon = false;
     if (!room || !g_urgentSize.load(std::memory_order_relaxed)) return -1;
@@ -556,8 +616,8 @@ int UrgentTier(const void* room, bool* soon = nullptr) {
     if (!RoomKey(room, mgr, id)) return -1;
     const DWORD now = GetTickCount();
     std::lock_guard<std::mutex> lk(g_urgentMx);
-    for (const UrgentRoom& u : g_urgent)
-        if (u.room == reinterpret_cast<uintptr_t>(room) && u.mgr == mgr && u.id == id && static_cast<int32_t>(now - u.until) < 0) {
+    for (UrgentRoom& u : g_urgent)
+        if (u.room == reinterpret_cast<uintptr_t>(room) && u.mgr == mgr && u.id == id && UrgentLive(u, now)) {
             if (soon) *soon = u.soon;
             return u.tier;
         }
@@ -1282,11 +1342,8 @@ uintptr_t LightTile(uintptr_t mgr, int ix, int iz) {
 }
 // The room of a tile's quadrant (0 = outside; FUN_006a9760)
 int TileRoom(uintptr_t tile, int q) { return *reinterpret_cast<const int*>(tile + 0x7C + q * 0x14); }
-// Quadrants split the tile along its diagonals (FUN_006aa390): 0 toward -z, 1 +x, 2 +z, 3 -x
-int Quadrant(float fx, float fz) {
-    if (std::fabs(fx - 0.5f) <= std::fabs(fz - 0.5f)) return fz > 0.5f ? 2 : 0;
-    return fx > 0.5f ? 1 : 3;
-}
+// Quadrants split the tile along its diagonals (FUN_006aa390): 0 toward -z, 1 +x, 2 +z, 3 -x (lamp_visibility.h)
+int Quadrant(float fx, float fz) { return LampVis::Quadrant(fx, fz); }
 // A floor key with a floor in it. Measured in game (F8 maps, 2026-09-29): a quadrant whose floor was removed keeps a key
 // with bit 0x40000000 of its low dword set (the test tower: 4001E000 after its floor was removed; the ground under a
 // foundation 4001BFFE; the stairwell of the house 4000E000; the air next to walls 40000000), and a quadrant never built
@@ -5224,6 +5281,7 @@ void AfterChangedWalk(BYTE* tl) {
     }
     if (!n) return;
     bool room0Changed = false; // its lamps really changed (LampChange below): this story's roofless rooms mask with them
+    bool lampAddedOrRemoved = false; // a room's lamps were added or removed (LampChange 2): an edit for the edit hold
     const auto noteOf = [&](int id) -> const LampMarkNote* {
         for (int k = 0; k < noted; k++)
             if (notes[k].room == id) return &notes[k];
@@ -5282,7 +5340,10 @@ void AfterChangedWalk(BYTE* tl) {
             if (ids[i] == 0) room0Changed = true;
             if (outdoor) own.push_back(ids[i]); // its outdoor lamps changed (a lamp deleted: no note, the removal marks it)
             const bool soon = note && note->pure && change != 2; // a lamp registered in it changed, none added or removed
-            if (change == 2) ownLate.push_back(ids[i]); // a lamp of it added or removed: its gather waits for the game
+            if (change == 2) { // a lamp of it added or removed: its gather waits for the game
+                ownLate.push_back(ids[i]);
+                lampAddedOrRemoved = true;
+            }
             if (change == 1 && note && note->user) change = 3; // colour, intensity, on / off by a player or a Sim: at once
             auto& out = change == 2 ? now : change == 3 ? kept : later;
             const size_t from = out.size();
@@ -5340,6 +5401,10 @@ void AfterChangedWalk(BYTE* tl) {
     // this same update gathers them (a room in both lists waits: a lamp of it was added or removed)
     std::sort(own.begin(), own.end());
     own.erase(std::unique(own.begin(), own.end()), own.end());
+    // 12/10: a lamp added or removed runs no lamp mark of LampMarkFilter's when it is deleted: the edit hold (AtriumHold)
+    // starts here, before the rooms are marked (their marks carry the new edit serial). Not while the loaded lots settle,
+    // when every lamp registers.
+    if (lampAddedOrRemoved && !own.empty() && !LevelLightShare::SettlingAfterLoad()) LampMarkFilter::NoteEdit();
     for (int id : own)
         if (void* room = RoomOfTreeLevel(tl, id)) {
             const LampMarkNote* note = noteOf(id);
@@ -5496,12 +5561,6 @@ struct SolveCtx {
     // skipped (GameWallTest): it sees whole wall runs, no opening and no top for a full wall
     uintptr_t yardLight = 0;
     float yardLamp[3] = {};
-    // Light under balconies: a lamp of a lower story whose ray to this point comes up through a placed floor of this story
-    // (a balcony's slab); the game's wall test that follows for it keeps at least fillMin of the light (GameWallTest)
-    uintptr_t fillLight = 0;
-    float fillLamp[3] = {};
-    float fillMin = 0.0f;
-    bool fillExact = false; // the game's result is replaced by fillMin (the direct ray was stopped on the lamp's story)
 };
 SolveCtx g_ctx;
 bool g_enterReady = false; // GameWallTest is in (Install)
@@ -5511,6 +5570,7 @@ struct BatchCentre {
     alignas(16) float c[4] = {};
 } g_batch;
 bool g_copyInBatch = false; // a wrapped copy of a batch sample is being solved (SolvePointBatch, light tree thread): it stands for that sample
+thread_local bool t_maskCopy = false; // this thread solves one of the floor mask's wrapped copies (normal w = 1, N.L ignored)
 struct Culled {
     uintptr_t light;
     int floor;
@@ -5688,7 +5748,6 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
     g_ctx.enterLight = 0;
     g_ctx.yardLight = 0;
-    g_ctx.fillLight = 0;
     g_lastRec = -1;
     float* r =reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
     if (batch && !g_ghostSolve && g_recordSeams.load(std::memory_order_relaxed)) RecordRequestedSeam(room, out, static_cast<const float*>(sample));
@@ -5943,6 +6002,159 @@ void CaptureStoryWalls(BYTE* room0) {
     g_wallSnapGen.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Slabs for the render thread (12/10, F7: a window frame behind a balcony showed a ground post's red through the slab;
+// WallBlocks tests walls only; LampVisibility). The placed floors of each story >= 1 (PlacedFloorAt's rule, 4 bits per tile), its plane and the
+// lot matrix, copied when that story's room 0 is solved (light tree thread), as the outside walls are; published under
+// g_wallSnapMx (g_floorSnapGen). Read again only when the story's floor object, its grid, plane or matrix, or the floor
+// edits (g_floorEdits) changed; while an edit has not been handed on (g_floorTick) the next capture reads again.
+struct FloorSnap {
+    uintptr_t tracker = 0;     // the lot
+    int story = 0;             // 1..7
+    uint32_t serial = 0;       // publish order: a lot whose lighting was built again keeps its newest copy of each story
+    Xform xf{};                // world -> lot space (the same on every story)
+    float h = 0.0f;            // the story's lowest floor, lot space
+    int w = 0, d = 0;          // tiles along x and z
+    std::vector<uint8_t> bits; // quadrant q of tile i = iz * w + ix: bit (i & 1) * 4 + q of byte i / 2
+};
+std::unordered_map<uintptr_t, std::shared_ptr<const FloorSnap>> g_floorSnap; // story manager -> its slabs (under g_wallSnapMx)
+std::atomic<uint32_t> g_floorSnapGen{1};
+std::atomic<uint32_t> g_floorSnapEpoch{1}; // bumped when the copy is emptied (world change, uninstall): every story reads again
+std::atomic<long> g_floorSnapReads{0}, g_floorSnapPublished{0};
+// The render thread's side (LampVisibility, SlabStatus): lots and stories in its copy; lamp x point tests, blocked by a wall
+// (WallBlocks), by a slab, kept partly at a slab's edge
+std::atomic<long> g_slabLots{0}, g_slabStories{0};
+std::atomic<long> g_visTests{0}, g_visWall{0}, g_visSlab{0}, g_visRim{0};
+std::string FloorSnapStatus() {
+    return std::format("lamp visibility on the render thread: tested {} (blocked by a wall {}, by a slab {}, at a slab's edge {}), slab copy: {} stories of {} lots ({} reads, {} changes)",
+                       g_visTests.load(), g_visWall.load(), g_visSlab.load(), g_visRim.load(), g_slabStories.load(), g_slabLots.load(), g_floorSnapReads.load(),
+                       g_floorSnapPublished.load());
+}
+struct FloorSnapKey {
+    uintptr_t level = 0, data = 0;
+    int w = 0, d = 0;
+    float h = 0.0f;
+    Xform xf{};
+    long edits = -1;
+    DWORD at = 0; // GetTickCount of the read
+};
+std::unordered_map<uintptr_t, FloorSnapKey> g_floorSnapKeys; // light tree thread: what each story's last read saw
+std::vector<uint8_t> g_floorRead;                            // light tree thread: the bits being read (kept between reads)
+// POD only (SEH): room 0's story manager and story
+bool ReadRoomStory(const BYTE* room0, uintptr_t& mgr, int& story) {
+    __try {
+        mgr = *reinterpret_cast<const uintptr_t*>(room0);
+        if (!mgr) return false;
+        story = *reinterpret_cast<const int*>(mgr + 0x88);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// POD only (SEH): the story's plane (lot space), the lot matrix and the floor object's grid header (PlacedFloorAt's reads)
+bool ReadFloorHead(uintptr_t mgr, uintptr_t level, FloorSnapKey& key) {
+    __try {
+        key.level = level;
+        key.h = *reinterpret_cast<const float*>(mgr + 0x98) - *reinterpret_cast<const float*>(mgr + 0xD4);
+        std::memcpy(&key.xf, reinterpret_cast<const void*>(mgr + 0xE0), sizeof key.xf);
+        const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(level + 0x264);
+        if (!grid || !(std::fabs(key.h) < 1000.0f)) return false;
+        key.data = *reinterpret_cast<const uintptr_t*>(grid);
+        key.w = *reinterpret_cast<const int*>(grid + 0x10);
+        key.d = *reinterpret_cast<const int*>(grid + 0x14);
+        return key.data && key.w > 0 && key.d > 0 && key.w <= 1024 && key.d <= 1024;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// POD only (SEH): the placed quadrants of the grid, as PlacedFloorAt tells them (not the air next to walls, a removed floor
+// or never-built space)
+bool ReadPlacedBits(uintptr_t data, int w, int d, uint8_t* bits) {
+    __try {
+        const int n = w * d;
+        std::memset(bits, 0, static_cast<size_t>(n + 1) / 2);
+        for (int i = 0; i < n; i++) {
+            const uint32_t* key = reinterpret_cast<const uint32_t*>(data + static_cast<size_t>(i) * 40 + 8);
+            for (int q = 0; q < 4; q++, key += 2)
+                if (!(key[0] == 0xFFFFFFF8u && key[1] == 0xFFFFFFFFu) && !(key[0] & 0x40000000u)) bits[i >> 1] |= static_cast<uint8_t>(1u << ((i & 1) * 4 + q));
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool SameFloorHead(const FloorSnapKey& a, const FloorSnapKey& b) {
+    return a.level == b.level && a.data == b.data && a.w == b.w && a.d == b.d && a.h == b.h && std::memcmp(&a.xf, &b.xf, sizeof a.xf) == 0;
+}
+void CaptureStoryFloorsImpl(BYTE* room0) {
+    uintptr_t mgr = 0;
+    int story = 0;
+    if (!ReadRoomStory(room0, mgr, story) || story < 1 || story > 7) return;
+    const auto it = g_rooms.find(reinterpret_cast<uintptr_t>(room0));
+    if (it == g_rooms.end() || !it->second.tracker || it->second.mgr != mgr) return;
+    static uint32_t s_epoch = 0;
+    if (const uint32_t e = g_floorSnapEpoch.load(std::memory_order_relaxed); e != s_epoch || g_floorSnapKeys.size() > 4096) {
+        g_floorSnapKeys.clear();
+        s_epoch = e;
+    }
+    const long edits = g_floorEdits.load(std::memory_order_relaxed);
+    FloorSnapKey& last = g_floorSnapKeys[mgr];
+    const bool settled = last.level && last.edits == edits;
+    // while floors are being edited (a whole balcony placed in one drag) a story is read at most every 100 ms: the copy
+    // takes 16 K key reads on a 64 x 64 lot and this runs at every batch of room 0
+    if (!settled && last.level && g_floorTick.load(std::memory_order_relaxed) && GetTickCount() - last.at < 100) return;
+    // the floor object read last time, still this story's own floor: no lookup through the floor links (once per batch)
+    uintptr_t level = settled && LevelOwnFloor(last.level) && LevelManager(last.level) == mgr ? last.level : 0;
+    if (!level) {
+        level = LevelFor(mgr);
+        if (!level || LevelManager(level) != mgr) return; // no floor object linked yet: the last copy stays
+    }
+    FloorSnapKey key;
+    if (!ReadFloorHead(mgr, level, key)) return;
+    if (last.edits == edits && SameFloorHead(key, last)) return;
+    const size_t bytes = static_cast<size_t>(key.w * key.d + 1) / 2;
+    if (g_floorRead.size() < bytes) g_floorRead.resize(bytes);
+    if (!ReadPlacedBits(key.data, key.w, key.d, g_floorRead.data())) return;
+    g_floorSnapReads.fetch_add(1, std::memory_order_relaxed);
+    key.edits = g_floorTick.load(std::memory_order_relaxed) ? edits - 1 : edits; // an edit still settling: read again next time
+    key.at = GetTickCount();
+    last = key;
+    std::lock_guard<std::mutex> lk(g_wallSnapMx);
+    auto& slot = g_floorSnap[mgr];
+    if (slot && slot->tracker == it->second.tracker && slot->story == story && slot->w == key.w && slot->d == key.d && slot->h == key.h &&
+        std::memcmp(&slot->xf, &key.xf, sizeof key.xf) == 0 && std::memcmp(slot->bits.data(), g_floorRead.data(), bytes) == 0)
+        return;
+    auto snap = std::make_shared<FloorSnap>();
+    snap->tracker = it->second.tracker;
+    snap->story = story;
+    snap->serial = g_floorSnapGen.load(std::memory_order_relaxed);
+    snap->xf = key.xf;
+    snap->h = key.h;
+    snap->w = key.w;
+    snap->d = key.d;
+    snap->bits.assign(g_floorRead.begin(), g_floorRead.begin() + static_cast<ptrdiff_t>(bytes));
+    slot = std::move(snap);
+    g_floorSnapPublished.fetch_add(1, std::memory_order_relaxed);
+    g_floorSnapGen.fetch_add(1, std::memory_order_relaxed);
+}
+void ClearFloorSnap(); // below
+// Light tree thread, room 0's first batch sample: allocates only when a story's slabs change; a C++ exception turns the copy
+// off (HookGuard) and empties it once (12/10 review: the last copy stayed in use, so a slab added or removed afterwards was
+// never seen until the world changed): the render thread keeps the walls' test only
+void CaptureStoryFloors(BYTE* room0) {
+    static std::atomic<bool> s_dropped{false};
+    if (!HookGuard::Run("LevelLightShare slab copy", [room0] { CaptureStoryFloorsImpl(room0); }) && !s_dropped.exchange(true, std::memory_order_relaxed))
+        HookGuard::Run("LevelLightShare slab copy (drop)", [] { ClearFloorSnap(); });
+}
+// Render or uninstall: the copy is emptied (the next room 0 solves of every story read it again)
+void ClearFloorSnap() {
+    {
+        std::lock_guard<std::mutex> lk(g_wallSnapMx);
+        g_floorSnap.clear();
+    }
+    g_floorSnapEpoch.fetch_add(1, std::memory_order_relaxed);
+    g_floorSnapGen.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Room 0 of the room's story when that story is 1 or higher (story 0 is the lot's grass, which floor shaders never read)
 BYTE* MaskedFloorRoom0(BYTE* room) {
     __try {
@@ -6138,13 +6350,16 @@ void NoteFloorGate(const float* s, float base, float share) {
 
 float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, void* list3D, void* flags, void* sample) {
     // The first sample of a batch (this call runs once per sample, in order; the batch vector is reused, so its address does
-    // not tell batches apart): a new serial for the floor wall lists, and for room 0 its story's outside walls for
-    // WallBlocks (light tree thread)
+    // not tell batches apart): a new serial for the floor wall lists, and for room 0 its story's outside walls and slabs for
+    // WallBlocks and LampVisibility (light tree thread)
     if (kBatchSamples && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         __try {
             if (*reinterpret_cast<const uintptr_t*>(kBatchSamples) == reinterpret_cast<uintptr_t>(sample)) {
                 ++g_batchSerial;
-                if (g_objectWallsOn.load(std::memory_order_relaxed) && *reinterpret_cast<const int*>(room + 0xC) == 0) CaptureStoryWalls(room);
+                if (g_objectWallsOn.load(std::memory_order_relaxed) && *reinterpret_cast<const int*>(room + 0xC) == 0) {
+                    CaptureStoryWalls(room);
+                    CaptureStoryFloors(room); // and its slabs (LampVisibility)
+                }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
@@ -6208,8 +6423,10 @@ float* __fastcall SolvePointBatch(BYTE* room, void*, float* out, void* list2D, v
     wrapped[7] = 1.0f; // normal w = 1: the lights' evaluation wraps (N.L ignored)
     char testWalls[2] = {1, 0}, noWalls[2] = {0, 0};
     g_copyInBatch = inBatch; // the copy stands for this batch's sample: the lamp's story walls are culled for it too
+    t_maskCopy = true;
     SolvePoint(room0, vis, zeroLists, nullptr, testWalls, wrapped, true);
     SolvePoint(room0, all, nullptr, nullptr, noWalls, wrapped, true);
+    t_maskCopy = false;
     g_copyInBatch = false;
     const float total = Lum3(all);
     if (total > 1e-4f) out[3] = std::clamp(1.0f - Lum3(vis) / total, 0.0f, 1.0f);
@@ -6590,6 +6807,7 @@ __declspec(noinline) void Diag(const RoomInfo& info, void* light, const float* s
 struct RayEntry {
     bool valid = false;
     float lamp[3] = {}, at[3] = {};
+    float weight = 1.0f; // OutdoorEntry: the share a slab's edge leaves (LampVis::SlabGate), 1 = clear
 };
 
 // A floor a player placed at that quadrant of the story: not the air next to walls (the bare 0x40000000 key), a foundation,
@@ -6612,88 +6830,117 @@ bool PlacedFloorAt(uintptr_t level, int ix, int iz, int q) {
 // test (0x0069FC40) has no wall base, and its soft mode shades rays passing near a wall's end, so a ray rising past the
 // corner of the balcony below its floor was blocked by walls that stand above it. The game's test (GameWallTest) then runs
 // from where the ray reaches this story's lowest floor, as for indoor rooms (IndoorPassImpl's entry); the lamp's own story
-// is WallPass's. Where the ray comes up through a floor of this story (a deck, a balcony) the whole ray stays the game's.
-// Light under balconies: on, and the share of the light at a slab's edge (SetBalconyFill)
-std::atomic<bool> g_fillOn{true};
-std::atomic<float> g_fillStrength{0.45f};
+// is WallPass's.
+// Slabs block lamps below them (12/10, F7 captures of the wall behind a balcony with a ground post under it: the wall kept a
+// red pool of 25-45% of the post's light through the slab, the share the earlier "light under balconies" left there). A
+// ray coming up through a placed floor of this story or of a story in between reaches nothing above it; a ray passing
+// beside or over a slab's edge keeps its light, with the soft edge of a lantern 0.3 m wide (LampVis::SlabGate). Each
+// story's plane is its lowest floor (mgr+0x98 - mgr+0xD4): a tile raised or lowered from it is tested at that plane (the
+// tile's own height is not read; UNVERIFIED how far split levels depart from it). The lamp's position is the game's own
+// (LampPos, the head the light falloff uses), not the lantern drawn over it.
 struct SlabRay {
-    bool valid = false, lower = false; // through this story's slab; through a lower story's floor
-    float depth = 0.0f, miss = 0.0f, reach = 0.0f;
+    bool valid = false, lower = false; // stopped by this story's slab; by a lower story's floor
 };
-bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab, float* edgeW) {
+// The room solve's view of a story's plane for LampVis::SlabGate: the game's floor grid read live (PlacedFloorAt, what
+// cannot be read counts as a floor). Beside the grid there is no floor of this lot, as in the render thread's copy
+// (SnapView): 12/10 review, PlacedFloorAt's "floor" there stopped a ray from a lamp off the lot (a street lamp) crossing
+// this story's plane beside it, and darkened the part of a lantern band reaching past the lot's edge (before 12/10 such a
+// ray at this story's plane went on to the game's wall test). Read inside OutdoorEntry's SEH frame.
+struct LiveView {
+    float h = 0.0f; // the story's lowest floor, lot space
+    uintptr_t level = 0;
+    int story = 0;
+    int w = 0, d = 0; // the grid's tiles along x and z; 0 when unreadable (every cell then PlacedFloorAt's)
+    bool Placed(int ix, int iz, int q) const {
+        if (w > 0 && (ix < 0 || iz < 0 || ix >= w || iz >= d)) return false;
+        return PlacedFloorAt(level, ix, iz, q);
+    }
+};
+LiveView MakeLiveView(float h, uintptr_t level, int story) {
+    LiveView v{h, level, story};
+    const uintptr_t grid = *reinterpret_cast<const uintptr_t*>(level + 0x264);
+    if (!grid || !*reinterpret_cast<const uintptr_t*>(grid)) return v;
+    const int w = *reinterpret_cast<const int*>(grid + 0x10), d = *reinterpret_cast<const int*>(grid + 0x14);
+    if (w > 0 && d > 0 && w <= 1024 && d <= 1024) v.w = w, v.d = d; // PlacedFloorAt's range
+    return v;
+}
+// OutdoorEntry's gate and exits (SlabStatus): rays gated, of them at a slab's edge (0 < share < 1) and stopped; exits before
+// the gate: no floor object linked to the story (or no lot matrix), the lamp not below the point, the bulb at or above this
+// story's floor, the point below that floor; ghost rows (WallSolveHook) raised to the floor for the gate
+std::atomic<long> g_gateTests{0}, g_gateRim{0}, g_gateBlocked{0};
+std::atomic<long> g_exitLink{0}, g_exitDown{0}, g_exitAbove{0}, g_exitPlane{0}, g_ghostRaised{0};
+bool OutdoorEntryImpl(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab) {
     const PartTimer timer(kTpEntry);
     if (home < 0 || home >= info.level || info.level > 7) return false;
     const uintptr_t mgr = StoryManager(info.tracker, info.level);
     const uintptr_t level = mgr ? LevelForPoint(mgr) : 0;
     Xform xf;
-    if (!mgr || !level || LevelManager(level) != mgr || !ReadXform(info.mgr, xf)) return false;
+    if (!mgr || !level || LevelManager(level) != mgr || !ReadXform(info.mgr, xf)) {
+        g_exitLink.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     alignas(16) float pos[4];
     LampPos(light, pos);
     float P[3], Q[3];
     ToLocal(xf, pos, P);
     ToLocal(xf, sample, Q);
-    const float dy = Q[1] - P[1];
     const float h = *reinterpret_cast<const float*>(mgr + 0x98) - *reinterpret_cast<const float*>(mgr + 0xD4); // the story's lowest floor, lot space
-    if (!(std::fabs(h) < 1000.0f) || dy < 1e-4f) return false; // the lamp below the point only
+    // The rows the game's solve lights beyond a wall piece's bottom edge (GhostSolve) sit under the floor's plane and would
+    // take the whole ray past every slab; the blur carries up to 5/16 of them into the wall's foot row (two [1 2 1] passes),
+    // so for this test they stand 3 cm over the floor, where that foot row is gated. A lamp at or over the floor keeps its path.
+    if (g_ghostSolve && P[1] < h && Q[1] < h + 0.03f && std::fabs(h) < 1000.0f) {
+        Q[1] = h + 0.03f;
+        g_ghostRaised.fetch_add(1, std::memory_order_relaxed);
+    }
+    const float dy = Q[1] - P[1];
+    if (!(std::fabs(h) < 1000.0f) || dy < 1e-4f) { // the lamp below the point only
+        g_exitDown.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     if (above && P[1] >= h) *above = true; // the bulb above this story's lowest floor (CrossFloorShadow tests the walls itself)
     float t = (h - P[1]) / dy;
-    if (t >= 1.0f && std::fabs(Q[1] - h) < 0.02f) t = 0.9999f; // a point on that floor's plane: tested where it is
-    if (!(t > 0.0f && t < 1.0f)) return false;                 // the lamp not below that floor, or the point not above it
-    // the floors of the stories between the lamp's and this one: a ray coming up through one of them (a lower balcony's
-    // slab, a room's floor) reaches no point of this story, directly or through this story's slab (07/10, a band on story 3)
-    for (int k = home + 1; k < info.level; k++) {
+    if (t >= 1.0f && std::fabs(Q[1] - h) < LampVis::kOnPlane) t = 0.9999f; // a point on that floor's plane (the entry point)
+    if (!(t > 0.0f && t < 1.0f)) { // the lamp not below that floor, or the point not above it
+        (P[1] >= h ? g_exitAbove : g_exitPlane).fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // The floors of the stories between the lamp's and this one (07/10, a band on story 3: a lower balcony's slab, a room's
+    // floor), then this story's own (a deck, a balcony)
+    LiveView st[8];
+    int n = 0;
+    for (int k = home + 1; k < info.level && n < 7; k++) {
         const uintptr_t mk = StoryManager(info.tracker, k);
         const uintptr_t lk = mk ? LevelForPoint(mk) : 0;
         if (!mk || !lk || LevelManager(lk) != mk) continue;
         const float hk = *reinterpret_cast<const float*>(mk + 0x98) - *reinterpret_cast<const float*>(mk + 0xD4);
         if (!(std::fabs(hk) < 1000.0f)) continue;
-        const float tk = (hk - P[1]) / dy;
-        if (!(tk > 0.0f && tk < 1.0f)) continue;
-        const float xk = P[0] + tk * (Q[0] - P[0]), zk = P[2] + tk * (Q[2] - P[2]);
-        const int jx = static_cast<int>(std::floor(xk)), jz = static_cast<int>(std::floor(zk));
-        if (PlacedFloorAt(lk, jx, jz, Quadrant(xk - jx, zk - jz))) {
-            if (slab) slab->lower = true;
-            return false;
-        }
+        st[n++] = MakeLiveView(hk, lk, k);
     }
-    const float x = P[0] + t * (Q[0] - P[0]), z = P[2] + t * (Q[2] - P[2]);
-    const int ix = static_cast<int>(std::floor(x)), iz = static_cast<int>(std::floor(z));
-    if (PlacedFloorAt(level, ix, iz, Quadrant(x - ix, z - iz))) {
-        if (slab) {
-            // how far behind the slab's edge the ray comes up: walk back toward the lamp to the first quadrant with no floor
-            const float ex = P[0] - x, ez = P[2] - z, el = std::sqrt(ex * ex + ez * ez);
-            float depth = 6.0f;
-            if (el > 1e-4f)
-                for (float d = 0.25f; d < 6.0f && d <= el; d += 0.25f) {
-                    const float sx = x + ex / el * d, sz = z + ez / el * d;
-                    const int jx = static_cast<int>(std::floor(sx)), jz = static_cast<int>(std::floor(sz));
-                    if (!PlacedFloorAt(level, jx, jz, Quadrant(sx - jx, sz - jz))) {
-                        depth = d;
-                        break;
-                    }
-                }
-            slab->depth = depth;
-            slab->miss = el > 1e-4f ? t * dy * std::min(depth, el) / el : 0.0f; // how far below the edge the ray passes
-            slab->reach = std::sqrt((Q[0] - P[0]) * (Q[0] - P[0]) + (Q[2] - P[2]) * (Q[2] - P[2])); // lamp to point, along the ground
-            slab->valid = true;
-            if (edgeW) {
-                // the point of the ray just in front of the slab's edge, where the lamp's light meets the edge (world)
-                const float te = el > 1e-4f ? std::max(0.0f, t * (1.0f - std::min(el, depth + 0.05f) / el)) : 0.0f;
-                for (int k = 0; k < 3; ++k) edgeW[k] = pos[k] + te * (sample[k] - pos[k]);
-            }
-        }
+    st[n++] = MakeLiveView(h, level, info.level);
+    int stop = -1;
+    float v = 1.0f;
+    {
+        const PartTimer gateTimer(kTpGate);
+        v = LampVis::SlabGate(st, n, P, Q, &stop);
+    }
+    g_gateTests.fetch_add(1, std::memory_order_relaxed);
+    if (v <= 0.0f) {
+        g_gateBlocked.fetch_add(1, std::memory_order_relaxed);
+        if (slab) (stop >= 0 && st[stop].story < info.level ? slab->lower : slab->valid) = true;
         return false;
     }
+    if (v < 1.0f) g_gateRim.fetch_add(1, std::memory_order_relaxed);
     entry.valid = true;
+    entry.weight = v;
     for (int k = 0; k < 3; ++k) {
         entry.lamp[k] = pos[k];
         entry.at[k] = pos[k] + t * (sample[k] - pos[k]);
     }
     return true;
 }
-bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab, float* edgeW) {
+bool OutdoorEntry(const RoomInfo& info, int home, void* light, const float* sample, RayEntry& entry, bool* above, SlabRay* slab) {
     __try {
-        return OutdoorEntryImpl(info, home, light, sample, entry, above, slab, edgeW);
+        return OutdoorEntryImpl(info, home, light, sample, entry, above, slab);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
         return false; // the game's whole-ray test, as before
@@ -6708,9 +6955,18 @@ std::atomic<long> g_midTests{0}, g_midBlocked{0};
 // most of their height, 50 degrees above the lantern, nothing modelled in the way). A lamp post's lantern sends little light
 // up past its cap; the game's lamp has no such shape and its falloff over range 42.5 is nearly flat over a few metres. A ray
 // from a lamp of a lower story to a point of an upper story keeps all of it up to sin(elevation) 0.35 (20 degrees) and
-// fades smoothly to 15% at 0.85 (58 degrees). Only that direct light: the light behind balconies is left as it is.
+// fades smoothly to 15% at 0.85 (58 degrees).
+// (12/10, F7 20-31-19 / 20-31-21 at the red garden post, intensity 3.40) With realistic reach on it is 1 in the outdoor
+// rooms, where ReachShare runs: it was the factor that left story 3 dim (0.33 to 0.18 there, and the top third of story 2
+// down to 0.32) under a slab-free view, while the wall atlas matched the rest of the chain within 2/255. What it stood for is
+// covered without it: the slabs of the stories in between stop the light (LampVis::SlabGate, its own counters) and ReachShare
+// falls off with distance on every story, so an upper wall no longer keeps the game's flat light far above a post. The
+// lantern's upward shape it assumed was never measured (UNVERIFIED either way). UpperDistanceShare's rule, kept to where
+// ReachShare replaces it: a roofless room (indoor, taking an outdoor lamp of another story) has no ReachShare and keeps it.
 std::atomic<long> g_steepDimmed{0};
+std::atomic<bool> g_reachOn{false}; // Realistic lamp reach (ReachShare, SetRealisticReach)
 float UpwardShare(void* light, const float* sample, float headroom) {
+    if (g_reachOn.load(std::memory_order_relaxed) && g_ctx.info && !g_ctx.info->indoor) return 1.0f; // ReachShare and SlabGate cover it (above)
     alignas(16) float lampW[4];
     LampPos(light, lampW);
     const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
@@ -6757,74 +7013,37 @@ float MidPass(const RoomInfo& info, int home, void* light, const float* sample) 
     return pass;
 }
 std::atomic<long> g_aboveTests{0}, g_aboveBlocked{0}; // lower-story lamps above the story's floor, tested on its grid
-std::atomic<long> g_fillTests{0}, g_fillRaised{0};     // light under balconies: points given a share, game tests raised to it
-// light under balconies, where each lamp x point of an upper story's outdoor room went (FillStatus)
-std::atomic<long> g_fillSeen{0}, g_fillNoFlags{0}, g_fillWallZero{0}, g_fillEntered{0}, g_fillAbove{0}, g_fillSlab{0}, g_fillNoSlab{0}, g_fillNoGrid{0},
-    g_fillGridZero{0}, g_fillMissed{0}, g_fillGameHigher{0};
-std::atomic<long> g_fillEdgeHidden{0}, g_fillExact{0}, g_fillLower{0}, g_fillLowerNoWalls{0};
+// Where each lit lamp x point of an upper story's outdoor room from a lower story's lamp went (SlabStatus): with no 2D wall
+// test in the batch (of them stopped by a lower floor, by this story's slab); stopped on the lamp's story (WallPass); then,
+// with the test: entered through open air, the bulb above the floor, through this story's slab, a lower story's floor,
+// another exit. slabBlocked = every point a slab of this story left dark (with or without the test)
+std::atomic<long> g_slabSeen{0}, g_slabNoFlags{0}, g_slabNoFlagsLower{0}, g_slabNoFlagsSlab{0}, g_slabWallZero{0};
+std::atomic<long> g_slabEntered{0}, g_slabAbove{0}, g_slabThrough{0}, g_slabLower{0}, g_slabOther{0}, g_slabBlocked{0};
+// Outdoor floor texels (the map's own solve, real normal) lit by a lamp of another story more than 2 cm under their plane:
+// expected 0, the game's evaluation weighing each lamp by max(0, N.L) (room-light-maps.md, 0x006BE020); the floor mask's
+// wrapped copies (t_maskCopy) ignore N.L by design and are not counted there: they drop a lower story's lamp under the
+// texel in both copies (g_maskBelowDropped, CrossFloorShadow)
+std::atomic<long> g_floorBelowLit{0}, g_maskBelowDropped{0};
 std::atomic<long> g_farDimmed{0}, g_farDropped{0}; // UpperDistanceShare (below)
-std::string FillStatus() {
-    return std::format("light behind balconies {} ({:.0f}%): lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, blocked on the lamp's story {}), "
-                       "ray enters through open air {}, bulb above the floor {}, through a slab {} (no grid {}, grid blocked {}), through a lower story's floor {}, other {} | "
-                       "far points dimmed {} (dropped {}), walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | shares set {} ({} past walls of the lamp's story under the slab, {} with the slab's edge hidden), game tests raised {}, already brighter {}, no game test followed {}",
-                       g_fillOn.load() ? "on" : "off", g_fillStrength.load() * 100.0f, g_fillSeen.load(), g_fillNoFlags.load(), g_fillLowerNoWalls.load(), g_fillWallZero.load(),
-                       g_fillEntered.load(), g_fillAbove.load(), g_fillSlab.load(), g_fillNoGrid.load(), g_fillGridZero.load(), g_fillLower.load(), g_fillNoSlab.load(),
-                       g_farDimmed.load(), g_farDropped.load(), g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load(), g_fillTests.load(), g_fillExact.load(), g_fillEdgeHidden.load(), g_fillRaised.load(), g_fillGameHigher.load(), g_fillMissed.load()) +
-           " | " + TestTimeStatus();
-}
-// Light under balconies: the share of a lamp's light a point behind a slab keeps (strength, fading with the depth behind
-// the edge), times this story's walls at their real heights (GridPass). exact: the lamp's own story stopped the direct ray
-// (its colour was zeroed): the colour comes back and the game's test that follows ends exactly at the share (it would
-// otherwise let the direct ray through); else the game's test only never ends below it
-void FillShare(const RoomInfo& info, void* light, const float* sample, const SlabRay& slab, float seen, bool exact, float* colour, const float* before) {
-    const PartTimer timer(kTpFill);
-    alignas(16) float pos[4] = {};
-    GridWhy why{};
-    const float pass = YardPass(info.grid[0].get(), info.grid[1].get(), light, sample, pos, why);
-    // (the top of the wall must get more than the bottom, and the light went far along the wall) The share
-    // follows how close the ray comes to clearing the slab's edge (its vertical miss there: 0 = it grazes the edge, where
-    // it meets the direct light without a seam), how far it then runs under the slab (grazing rays from far along the wall
-    // run deep), and a pool centred on the lamp as its own light on the facade (on top of the game's own falloff, kept in
-    // the colour)
-    // (balcony4: balcony2's even share looked almost right; balcony3's narrow pool and the ramp to full
-    // light at the edge made harsh streaks) The share is smooth everywhere: higher on the wall the ray passes closer under
-    // the slab's edge and keeps more (vertical miss, gentle), and it fades sideways from the point of the wall nearest the
-    // lamp over about 4.5 m. Nothing here changes sharply from one texel to the next.
-    const float strength = g_fillStrength.load(std::memory_order_relaxed);
-    const float vert = 0.55f + 0.45f * std::exp(-std::max(slab.miss, 0.0f) / 1.5f);
-    const float wx = sample[0] - pos[0], wz = sample[2] - pos[2];
-    float nx = sample[4], nz = sample[6];
-    const float nl = std::sqrt(nx * nx + nz * nz);
-    float lateral = std::sqrt(wx * wx + wz * wz);
-    if (nl > 0.2f && std::isfinite(nl)) {
-        nx /= nl, nz /= nl;
-        const float along = wx * nx + wz * nz;
-        lateral = std::sqrt(std::max(0.0f, wx * wx + wz * wz - along * along));
-    }
-    const float lw = std::min(lateral / 4.5f, 1.0f);
-    const float side = (1.0f - lw * lw) * (1.0f - lw * lw);
-    const float share = strength * vert * side;
-    const float keep = std::clamp(pass * share * std::min(seen, 1.0f), 0.0f, 1.0f);
-    if (keep <= 0.0f) {
-        g_fillGridZero.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    if (exact) {
-        for (int i = 0; i < 3; i++) colour[i] = before[i];
-        colour[3] = std::max(colour[3], 0.0f);
-        g_fillExact.fetch_add(1, std::memory_order_relaxed);
-    }
-    g_ctx.fillLight = reinterpret_cast<uintptr_t>(light);
-    std::memcpy(g_ctx.fillLamp, pos, sizeof g_ctx.fillLamp);
-    g_ctx.fillMin = keep;
-    g_ctx.fillExact = exact;
-    g_fillTests.fetch_add(1, std::memory_order_relaxed);
+std::atomic<long> g_reachDimmed{0};
+std::string SlabStatus() {
+    return std::format("slabs block lamps below them: lower lamp x upper outdoor point {} (no 2D wall test {}, of them through a lower floor {}, through this story's slab {}; blocked on the lamp's story {}), "
+                       "ray enters through open air {}, bulb above the floor {}, through this story's slab {}, through a lower story's floor {}, other {}; points left dark by a slab {} | "
+                       "slab gate: rays tested {} (at a slab's edge {}, stopped {}), exits before it: no floor link {}, lamp not below the point {}, bulb at or over the floor {}, point under the floor {}; "
+                       "ghost rows raised to the floor {}; outdoor floor texels lit from under their plane {} (floor mask copies: lamps under the texel dropped {}) | ",
+                       g_slabSeen.load(), g_slabNoFlags.load(), g_slabNoFlagsLower.load(), g_slabNoFlagsSlab.load(), g_slabWallZero.load(), g_slabEntered.load(), g_slabAbove.load(),
+                       g_slabThrough.load(), g_slabLower.load(), g_slabOther.load(), g_slabBlocked.load(), g_gateTests.load(), g_gateRim.load(), g_gateBlocked.load(), g_exitLink.load(),
+                       g_exitDown.load(), g_exitAbove.load(), g_exitPlane.load(), g_ghostRaised.load(), g_floorBelowLit.load(), g_maskBelowDropped.load()) +
+           std::format("far points dimmed {} (dropped {}), realistic reach {} (wall texels {}), walls of the stories in between tested {} (blocked {}), steep rays dimmed {} | ",
+                       g_farDimmed.load(), g_farDropped.load(), g_reachOn.load() ? "on" : "off", g_reachDimmed.load(), g_midTests.load(), g_midBlocked.load(), g_steepDimmed.load()) +
+           FloorSnapStatus() + " | " + TestTimeStatus();
 }
 // Distance falloff of a lower story's lamp on an upper story (07/10, doors6: once the false blocking of WallPass was gone,
 // the game's nearly flat falloff over range 42.5 lit every upper wall around a courtyard evenly, 25 to 35 m from one post).
 // Full up to 6 m, then (6 / d)^2, and a smooth end between 18 and 26 m: an upper wall never gets more than the game gives a
 // ground-floor wall at the same distance, and far ones get none. World metres, lamp head to point.
 float UpperDistanceShare(void* light, const float* sample) {
+    if (g_reachOn.load(std::memory_order_relaxed)) return 1.0f; // ReachShare already falls off on every story
     alignas(16) float lampW[4];
     reinterpret_cast<LightPos_t>(kLightPos)(light, lampW);
     const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
@@ -6832,6 +7051,35 @@ float UpperDistanceShare(void* light, const float* sample) {
     if (!(d > 6.0f)) return 1.0f;
     const float u = std::clamp((d - 18.0f) / 8.0f, 0.0f, 1.0f);
     return (36.0f / (d * d)) * (1.0f - u * u * (3.0f - 2.0f * u));
+}
+// Realistic lamp reach (12/10, F7 captures of a garden post, range 42.5 x intensity 2): the game's wall law
+// min(1, 85 N.L / d^2) stays at the 8-bit clamp out to 9 m, so a facade 7-9 m away kept 24-51% of the near light where
+// the ground under the same lamp (the terrain stamp, see UnderFloorShare) keeps 11-28% and inverse square 5-10%. An outdoor
+// wall texel keeps each lamp's light up to r0 (3.5 m for that post: the near facade stays as the game lights it) and
+// beyond it takes (r0 / d)^2 more, times a smooth window ending at R (15 m for that post). r0 and R scale with
+// sqrt(range x intensity) (2 to 5 m, 6 to 20 m). For that post facing the wall: still at the clamp to about 5 m, then
+// 6 m 0.76, 8 m 0.21, 10 m 0.07, 12 m 0.02, 15 m 0 (before: the clamp to 9 m, 0.38 at 15 m). (A first try scaled
+// every lamp by 9/85 at all distances: the near walls went nearly black next to the lit ground; 12/10 screenshot.)
+// (12/10) The law lives in lamp_reach.h, shared with the per-pixel lamps of outdoor objects, fences and windows
+// (lot_light_bridge.cpp): the same operations in the same order, so the wall texels are unchanged.
+float ReachShareImpl(void* light, const float* sample) {
+    const auto L = reinterpret_cast<uintptr_t>(light);
+    const float w = *reinterpret_cast<const float*>(L + 0x130) * *reinterpret_cast<const float*>(L + 0x10); // range x intensity
+    float r0, R;
+    LampReach::Radii(w, r0, R);
+    alignas(16) float lampW[4];
+    LampPos(light, lampW);
+    const float dx = sample[0] - lampW[0], dy = sample[1] - lampW[1], dz = sample[2] - lampW[2];
+    const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return LampReach::Share(d, r0, R);
+}
+float ReachShare(void* light, const float* sample) {
+    __try {
+        return ReachShareImpl(light, sample);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_faults.fetch_add(1, std::memory_order_relaxed);
+        return 1.0f; // the game's light, as before
+    }
 }
 // Evaluate the same world ray against every crossed story, at each wall's actual ray height.
 // Only reuse complete, already-gathered geometry; missing geometry retains the native fallback.
@@ -6884,6 +7132,25 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
     }
     const bool lit = colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f;
     const float before[3] = {colour[0], colour[1], colour[2]};
+    // An outdoor floor texel never takes the light of a lamp under its plane: the game weighs each lamp by max(0, N.L) with
+    // the texel's real normal (0x006BE020, room-light-maps.md), so the texel's own solve adds no zeroing (12/10). Counted to
+    // confirm it in game (expected 0). The floor mask's two wrapped copies ignore N.L on purpose, and they must drop such a
+    // lamp alike (12/10 review): the copy with the walls tested returns through OutdoorFloorVisibility below (walls only)
+    // and kept it, while the copy without walls gated it at the texel's own slab, so the walls' share 1 - vis / all of a
+    // deck behind a half wall fell (0.67 -> 0.5 for a lamp under the deck at half the light of a walled-off lamp over it).
+    // The atlas share of those lamps is UnderFloorShare's (SolvePointBatch).
+    if (lit && g_ctx.floorSurface && home >= 0) {
+        alignas(16) float lp[4];
+        LampPos(light, lp);
+        if (lp[1] < sample[1] - LampVis::kOnPlane) {
+            if (!t_maskCopy) g_floorBelowLit.fetch_add(1, std::memory_order_relaxed);
+            else if (home < info.level) {
+                for (int i = 0; i < 4; i++) colour[i] = 0.0f;
+                g_maskBelowDropped.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
     // Floor-mask samples formerly lost all light to the emitter story's native 2D wall test.
     // Preserve height-aware wall/roof visibility, and do not apply the native test a second time.
     if (lit && g_ctx.floorSurface && !g_ctx.basis && g_ctx.flags && g_ctx.flags[0] && home >= 0 && g_enterReady) {
@@ -6897,20 +7164,30 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         }
     }
     if (home >= 0 && home < info.level && lit) {
-        g_fillSeen.fetch_add(1, std::memory_order_relaxed);
+        g_slabSeen.fetch_add(1, std::memory_order_relaxed);
         if (!(g_ctx.flags && g_ctx.flags[0])) {
-            g_fillNoFlags.fetch_add(1, std::memory_order_relaxed);
+            g_slabNoFlags.fetch_add(1, std::memory_order_relaxed);
             // (07/10, balcony4: bands of a ground post on the tower's story 3, behind the balcony) A batch with no 2D wall
             // test (the room's lighting detail class) skipped every test of ours, so the lamp lit points of an upper story
-            // through the floors in between. The floors still stop it here; walls stay as the game has them in that batch
+            // through the floors in between. The floors and this story's slab still stop it here (12/10: no share is left
+            // behind a slab); walls stay as the game has them in that batch
             if (g_enterReady && !g_ctx.basis) {
                 RayEntry e;
                 bool a = false;
                 SlabRay sr;
-                OutdoorEntry(info, home, light, sample, e, &a, &sr, nullptr);
+                const bool entered = OutdoorEntry(info, home, light, sample, e, &a, &sr);
                 if (sr.lower) {
                     for (int i = 0; i < 4; i++) colour[i] = 0.0f;
-                    g_fillLowerNoWalls.fetch_add(1, std::memory_order_relaxed);
+                    g_slabNoFlagsLower.fetch_add(1, std::memory_order_relaxed);
+                } else if (sr.valid) {
+                    for (int i = 0; i < 4; i++) colour[i] = 0.0f;
+                    g_slabNoFlagsSlab.fetch_add(1, std::memory_order_relaxed);
+                    g_slabBlocked.fetch_add(1, std::memory_order_relaxed);
+                } else if (entered && e.weight < 1.0f) {
+                    // (12/10) the share a slab's edge leaves (LampVis::SlabGate). Only that: the steep-ray dimming of the
+                    // batches with a wall test (UpwardShare) stays out of this batch, as before (12/10 review: added here it
+                    // dimmed upper walls with no slab involved, a solve policy the plan did not change)
+                    for (int i = 0; i < 4; i++) colour[i] *= e.weight;
                 }
             }
         }
@@ -6921,34 +7198,26 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
         if (mine <= 0.0f) g_wallBlocked.fetch_add(1, std::memory_order_relaxed);
         if (mine < 1.0f)
             for (int i = 0; i < 4; i++) colour[i] *= std::max(0.0f, mine);
-        // a lamp of a lower story: this story's walls, tested next by the game, from where its ray enters this story
+        // a lamp of a lower story: this story's walls, tested next by the game, from where its ray enters this story. A ray
+        // the lamp's own story stops stays dark (12/10: the balcony share tested such a ray to the slab's edge and gave the
+        // point part of the light back)
         RayEntry entry;
         bool above = false;
         SlabRay slab;
-        if (home < info.level && mine <= 0.0f) g_fillWallZero.fetch_add(1, std::memory_order_relaxed);
-        alignas(16) float edge[8] = {};
-        if (mine <= 0.0f && home < info.level && g_enterReady && !g_ctx.basis && !info.yard && info.grid[0] && g_fillOn.load(std::memory_order_relaxed)) {
-            // Light under balconies, a ray the lamp's own story stops: the walls of that story may stand right under the
-            // balcony (an arcade's arches, its back wall), so the lamp is tested to the slab's edge instead: when it sees the
-            // edge, the edge scatters its share onto the point (FillShare); otherwise it stays dark
-            if (!OutdoorEntry(info, home, light, sample, entry, &above, &slab, edge) && slab.valid && !slab.lower) {
-                std::memcpy(edge + 3, static_cast<const float*>(sample) + 3, 4 * sizeof(float));
-                bool culledEdge = false;
-                const float seen = WallPass(info.tracker, info.level, home, cross->outdoor ? cross->room : 0, light, edge, culledEdge);
-                if (seen > 0.0f) FillShare(info, light, sample, slab, seen, true, colour, before);
-                else g_fillEdgeHidden.fetch_add(1, std::memory_order_relaxed);
-            }
-            slab = SlabRay{};
-        }
+        if (home < info.level && mine <= 0.0f) g_slabWallZero.fetch_add(1, std::memory_order_relaxed);
         if (mine > 0.0f && home < info.level && g_enterReady && !g_ctx.basis) {
-            const bool entered = OutdoorEntry(info, home, light, sample, entry, &above, &slab, nullptr);
-            (entered ? g_fillEntered : above ? g_fillAbove : slab.lower ? g_fillLower : slab.valid ? g_fillSlab : g_fillNoSlab).fetch_add(1, std::memory_order_relaxed);
-            if (slab.valid && !info.grid[0]) g_fillNoGrid.fetch_add(1, std::memory_order_relaxed);
-            if (slab.lower) { // a lower story's floor in the way: no light (the game's test sees no floors)
+            const bool entered = OutdoorEntry(info, home, light, sample, entry, &above, &slab);
+            (entered ? g_slabEntered : above ? g_slabAbove : slab.lower ? g_slabLower : slab.valid ? g_slabThrough : g_slabOther).fetch_add(1, std::memory_order_relaxed);
+            if (slab.lower || slab.valid) { // a floor in the way: no light (the game's test sees no floors)
                 for (int i = 0; i < 4; i++) colour[i] = 0.0f;
                 mine = 0.0f;
+                if (slab.valid) g_slabBlocked.fetch_add(1, std::memory_order_relaxed);
             }
             if (entered) {
+                if (entry.weight < 1.0f) { // at a slab's edge: the share of the lantern it leaves (LampVis::SlabGate)
+                    for (int i = 0; i < 4; i++) colour[i] *= entry.weight;
+                    mine *= entry.weight;
+                }
                 if (home + 1 < info.level) { // the walls of the stories in between (a lower balcony's parapet)
                     const float mid = MidPass(info, home, light, sample);
                     g_midTests.fetch_add(1, std::memory_order_relaxed);
@@ -6984,13 +7253,6 @@ void CrossFloorShadow(const RoomInfo& info, void* light, const float* sample, fl
                 std::memcpy(g_ctx.yardLamp, pos, sizeof g_ctx.yardLamp);
                 g_aboveTests.fetch_add(1, std::memory_order_relaxed);
                 if (pass <= 0.0f) g_aboveBlocked.fetch_add(1, std::memory_order_relaxed);
-            } else if (slab.valid && !slab.lower && info.grid[0] && !info.yard && g_fillOn.load(std::memory_order_relaxed)) {
-                // Light under balconies (an F7 capture: the wall behind a 3 m deep balcony stayed black beside its
-                // lit neighbours). The ray comes up through a placed floor of this story: no direct light, but the slab's
-                // edge, underside and parapet scatter some onto the wall behind. A share of the light is kept, smaller the
-                // deeper behind the edge the ray comes up (smooth, no seam), times this story's walls at their real heights
-                // (GridPass: a real wall in the way still blocks); the game's test that follows never ends below it
-                FillShare(info, light, sample, slab, 1.0f, false, colour, before);
             }
         }
     }
@@ -7283,8 +7545,14 @@ template <int I> void __fastcall LightEvalHook(void* light, void*, const float* 
         const ApexCycles timed;
         g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
         g_ctx.yardLight = 0;  // and so does a lamp's skipped wall test (light through doors and windows)
-        if (g_ctx.fillLight) g_fillMissed.fetch_add(1, std::memory_order_relaxed); // the game made no wall test for it
-        g_ctx.fillLight = 0;  // and a lamp's share under a balcony
+        // Realistic lamp reach: outdoor wall texels only (floors, lot grass and the directional maps keep the game's law,
+        // which the ground atlas matches); before the threshold below, so far lamps are also dropped sooner
+        if (g_reachOn.load(std::memory_order_relaxed) && !g_ctx.info->indoor && !g_ctx.basis && normal && std::fabs(normal[1]) < 0.5f &&
+            (colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f)) {
+            const float m = ReachShare(light, sample);
+            for (int i = 0; i < 4; i++) colour[i] *= m;
+            g_reachDimmed.fetch_add(1, std::memory_order_relaxed);
+        }
         // A light the game is about to drop (0x69FE40: threshold > (b + g) + r, the same sums in the same order) needs no
         // test of ours: our tests only lower the colour, so it is dropped either way (bit-identical; most far lamps end here)
         if (g_ctx.thr > (colour[2] + colour[1]) + colour[0]) return;
@@ -7360,25 +7628,7 @@ bool __fastcall GameWallTest(BYTE* room, void*, void* idx, const float* lightPos
         g_ctx.enterLight = 0;
         g_ctx.enterHard = false;
     }
-    float fillMin = 0.0f; // light under balconies: the share this lamp keeps whatever the game's test says
-    bool fillExact = false;
-    if (ThreadId() == g_gatherThread.load(std::memory_order_relaxed) && g_ctx.fillLight) {
-        if (lightPos && lightPos[0] == g_ctx.fillLamp[0] && lightPos[1] == g_ctx.fillLamp[1] && lightPos[2] == g_ctx.fillLamp[2]) fillMin = g_ctx.fillMin, fillExact = g_ctx.fillExact;
-        g_ctx.fillLight = 0;
-    }
     bool ok = reinterpret_cast<WallTest_t>(kWallTest)(room, idx, from, sample, t);
-    if (fillMin > 0.0f && t) {
-        const float now = ok && std::isfinite(*t) ? *t : 0.0f;
-        if (fillExact) {
-            ok = true;
-            *t = fillMin;
-            g_fillRaised.fetch_add(1, std::memory_order_relaxed);
-        } else if (now < fillMin) { // never darker than the game's own result
-            ok = true;
-            *t = fillMin;
-            g_fillRaised.fetch_add(1, std::memory_order_relaxed);
-        } else g_fillGameHigher.fetch_add(1, std::memory_order_relaxed);
-    }
     if (hard && t && (!ok || *t < 1.0f)) {
         // shaded: when the ray crosses no wall at its real ends (the hard test, no height test, so walls of any height
         // count), that shade was only the soft penumbra of a wall's end; else the soft test's result stays (it knows the
@@ -7700,8 +7950,10 @@ bool HoldsAnyLamp(const BYTE* room, const uintptr_t* lamps, int count) {
     }
 }
 // lamps / lampCount: only the rooms whose light list holds one of them (a lamp moved: the rooms that take it)
+// urgentTier >= 0 (12/10, a lamp edit's safety net): the rooms sent, and the fresh solves kept that are still running, are
+// tagged urgent (tier 2), so the edit hold waits for them and shows them with the other stories
 int RequeueStory(uintptr_t tracker, int level, DWORD changed = 0, int* skipped = nullptr, std::vector<RigRoomWatch>* watch = nullptr,
-                 const uintptr_t* lamps = nullptr, int lampCount = 0) {
+                 const uintptr_t* lamps = nullptr, int lampCount = 0, int urgentTier = -1) {
     int ids[1024], n = 0, queued = 0;
     __try {
         const uintptr_t mgr = StoryManager(tracker, level);
@@ -7722,9 +7974,10 @@ int RequeueStory(uintptr_t tracker, int level, DWORD changed = 0, int* skipped =
             if (watch && room) watch->push_back({{tracker, level, ids[k]}, mgr});
             if (changed && room && FreshLampSolve(room, changed)) {
                 if (skipped) ++*skipped;
+                if (urgentTier >= 0 && RoomAmbientPolicy::SolverOwnsAmbient(RoomState(room))) MarkUrgent(room, urgentTier, false);
                 continue;
             }
-            queued += QueueRoom(tracker, level, ids[k], true);
+            queued += QueueRoom(tracker, level, ids[k], true, urgentTier, false);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
@@ -7752,7 +8005,7 @@ void RequeueAllRooms(const char* why) {
         for (int level = -4; level <= 7; level++) queued += RequeueStory(trackers[t], level, afterLoad ? live : 0, afterLoad ? &kept : nullptr);
     LOG_INFO(std::format("[LevelLightShare] {}: {} rooms of {} lots light again{}", why, queued, lots,
                          afterLoad ? std::format(" ({} gathered again since the world went live keep their solve)", kept) : std::string()));
-    LOG_INFO("[LevelLightShare] " + FillStatus());
+    LOG_INFO("[LevelLightShare] " + SlabStatus());
 }
 
 // Rooms at Night (unlit_rooms.cpp): every room (id > 0) of every loaded lot, stories -4..7. The list of (lot, story, id)
@@ -8010,9 +8263,9 @@ int StoryOfTreeLevel(uintptr_t tl) {
         return -99;
     }
 }
-bool QueueRoomSafe(uintptr_t tracker, int level, int id) {
+bool QueueRoomSafe(uintptr_t tracker, int level, int id, int urgentTier = -1) {
     __try {
-        return QueueRoom(tracker, level, id, true);
+        return QueueRoom(tracker, level, id, true, urgentTier, false);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_faults.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -8871,6 +9124,7 @@ void ClearLampEdits(bool requeue) {
     {
         std::lock_guard<std::mutex> lk(g_urgentMx);
         g_urgent.clear();
+        g_editStories.clear(); // (12/10) the edit hold then has nothing to wait for and releases what it held
         g_urgentSize.store(0, std::memory_order_relaxed);
     }
     if (!requeue || !kRoomById || !kInvalidateRoom || !kSetInsert) return;
@@ -8917,6 +9171,7 @@ void Uninstall() {
         g_wallSnap.clear();
     }
     g_wallSnapGen.fetch_add(1);
+    ClearFloorSnap();
     g_evalClasses = 0;
     if (!kPublicBuild) {
         EntryChain::Remove(EntryChain::Site::RoomInvalidate, EntryChain::Layer::LevelLightShare);
@@ -8935,7 +9190,7 @@ bool BasisFloorGuardReady() {
     return g_installed.load(std::memory_order_relaxed) && g_indoorReady && g_basisGuardReady.load(std::memory_order_relaxed);
 }
 
-int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount); // below
+int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount, bool editNet); // below
 void OnPresent() {
     if (const uintptr_t fm = g_focusRelightMgr.exchange(0)) { // an F7 focused the recording: its lot lights again now
         uintptr_t trackers[256];
@@ -9071,6 +9326,7 @@ void OnWorldChanged() {
         g_depSentAt.clear();
     }
     ClearLampEdits(false); // the rooms and tree levels of the previous world
+    ClearFloorSnap();      // the slabs of the previous world's lots (their story managers' addresses get reused)
     std::lock_guard<std::mutex> lk(g_ghostMx);
     g_ghosts.clear();
 }
@@ -9211,6 +9467,133 @@ bool WallBlocks(const float lamp[3], const float point[3], float nearSkip) {
             }
         }
     return false;
+}
+
+// Render thread: the copy of the slabs (CaptureStoryFloors) grouped by lot and lot matrix, with each group's bounds in
+// world xz, rebuilt when the copy changes
+namespace {
+struct SlabLot {
+    Xform xf{};
+    float x0 = 0.0f, x1 = 0.0f, z0 = 0.0f, z1 = 0.0f; // world bounds of its stories' grids, 0.5 m wider
+    int n = 0;
+    std::shared_ptr<const FloorSnap> st[7];
+};
+struct SlabGrid {
+    uint32_t gen = 0;
+    bool ok = true; // false once a rebuild threw (its site is off): no slab is tested
+    std::vector<SlabLot> lots;
+} g_slabGrid;
+// A story's copy for LampVis::SlabGate. Outside the grid there is no floor of this lot: unlike PlacedFloorAt (unreadable
+// counts as a floor for the solve's own lot), every loaded lot is tested here and a ray crossing beside one is not its.
+struct SnapView {
+    float h = 0.0f;
+    const uint8_t* bits = nullptr;
+    int w = 0, d = 0;
+    bool Placed(int ix, int iz, int q) const {
+        if (ix < 0 || iz < 0 || ix >= w || iz >= d) return false;
+        const int i = iz * w + ix;
+        return ((bits[i >> 1] >> ((i & 1) * 4 + q)) & 1) != 0;
+    }
+};
+// Lot space -> world xz: the inverse of the matrix ToLocal applies (rows r[0..2], translation r[3]); false when singular
+bool LotToWorld(const Xform& x, float lx, float ly, float lz, float& wx, float& wz) {
+    const float(*a)[4] = x.r;
+    const float det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    if (!(std::fabs(det) > 1e-8f) || !std::isfinite(det)) return false;
+    const float l[3] = {lx - a[3][0], ly - a[3][1], lz - a[3][2]};
+    // w = l . inverse(A), A[j][k] = r[j][k]: columns 0 and 2 of the inverse (cofactors over det)
+    const float i00 = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) / det, i10 = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) / det, i20 = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) / det;
+    const float i02 = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / det, i12 = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / det, i22 = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / det;
+    wx = l[0] * i00 + l[1] * i10 + l[2] * i20;
+    wz = l[0] * i02 + l[1] * i12 + l[2] * i22;
+    return std::isfinite(wx) && std::isfinite(wz);
+}
+void RefreshSlabGridImpl() {
+    g_slabGrid.lots.clear();
+    std::vector<std::shared_ptr<const FloorSnap>> snaps;
+    {
+        std::lock_guard<std::mutex> lk(g_wallSnapMx);
+        snaps.reserve(g_floorSnap.size());
+        for (const auto& [mgr, s] : g_floorSnap)
+            if (s && s->w > 0 && s->d > 0) snaps.push_back(s);
+    }
+    long stories = 0;
+    for (const auto& s : snaps) {
+        // by lot and matrix (12/10 review): a lot unloaded without a world change keeps its copies, and a lot loaded later
+        // at the same tracker address must not test them, or its own, in the other's matrix. Each group is tested in its
+        // own matrix and SlabGate multiplies plane by plane, so a lot split over two groups is tested the same.
+        SlabLot* lot = nullptr;
+        for (SlabLot& l : g_slabGrid.lots)
+            if (l.st[0]->tracker == s->tracker && std::memcmp(&l.xf, &s->xf, sizeof l.xf) == 0) lot = &l;
+        float cx[4], cz[4];
+        bool ok = true;
+        const float gx[4] = {0.0f, static_cast<float>(s->w), 0.0f, static_cast<float>(s->w)}, gz[4] = {0.0f, 0.0f, static_cast<float>(s->d), static_cast<float>(s->d)};
+        for (int c = 0; c < 4 && ok; c++) ok = LotToWorld(s->xf, gx[c], s->h, gz[c], cx[c], cz[c]);
+        if (!ok) continue;
+        if (!lot) {
+            lot = &g_slabGrid.lots.emplace_back();
+            lot->xf = s->xf;
+            lot->x0 = lot->z0 = 1e30f;
+            lot->x1 = lot->z1 = -1e30f;
+        }
+        // one copy per story: a lot whose lighting was built again (new story managers) leaves the old one behind
+        int slot = -1;
+        for (int i = 0; i < lot->n; i++)
+            if (lot->st[i]->story == s->story) slot = i;
+        if (slot >= 0) {
+            if (lot->st[slot]->serial > s->serial) continue;
+            lot->st[slot] = s;
+        } else {
+            if (lot->n >= static_cast<int>(std::size(lot->st))) continue;
+            lot->st[lot->n++] = s;
+            stories++;
+        }
+        for (int c = 0; c < 4; c++) {
+            lot->x0 = std::min(lot->x0, cx[c] - 0.5f), lot->x1 = std::max(lot->x1, cx[c] + 0.5f);
+            lot->z0 = std::min(lot->z0, cz[c] - 0.5f), lot->z1 = std::max(lot->z1, cz[c] + 0.5f);
+        }
+    }
+    g_slabLots.store(static_cast<long>(g_slabGrid.lots.size()), std::memory_order_relaxed);
+    g_slabStories.store(stories, std::memory_order_relaxed);
+}
+// False when the copy cannot be used (a C++ exception rebuilding it turned it off: the walls' test stays)
+bool RefreshSlabGrid() {
+    const uint32_t gen = g_floorSnapGen.load(std::memory_order_relaxed);
+    if (gen == g_slabGrid.gen) return g_slabGrid.ok;
+    g_slabGrid.gen = gen;
+    g_slabGrid.ok = HookGuard::Run("LevelLightShare slab copy (render)", [] { RefreshSlabGridImpl(); });
+    if (!g_slabGrid.ok) g_slabGrid.lots.clear();
+    return g_slabGrid.ok;
+}
+} // namespace
+
+float LampVisibility(const float lamp[3], const float point[3], float nearSkip) {
+    if (WallBlocks(lamp, point, nearSkip)) {
+        g_visWall.fetch_add(1, std::memory_order_relaxed);
+        return 0.0f;
+    }
+    if (!g_objectWallsOn.load(std::memory_order_relaxed) || !g_installed.load(std::memory_order_relaxed)) return 1.0f;
+    if (!(point[1] > lamp[1]) || !RefreshSlabGrid() || g_slabGrid.lots.empty()) return 1.0f; // slabs stop light going up only
+    const float x0 = std::min(lamp[0], point[0]), x1 = std::max(lamp[0], point[0]);
+    const float z0 = std::min(lamp[2], point[2]), z1 = std::max(lamp[2], point[2]);
+    float v = 1.0f;
+    for (const SlabLot& lot : g_slabGrid.lots) {
+        if (x1 < lot.x0 || x0 > lot.x1 || z1 < lot.z0 || z0 > lot.z1) continue;
+        float P[3], Q[3];
+        ToLocal(lot.xf, lamp, P);
+        ToLocal(lot.xf, point, Q);
+        SnapView st[7];
+        for (int i = 0; i < lot.n; i++) st[i] = SnapView{lot.st[i]->h, lot.st[i]->bits.data(), lot.st[i]->w, lot.st[i]->d};
+        v *= LampVis::SlabGate(st, lot.n, P, Q);
+        if (v <= 0.0f) break;
+    }
+    g_visTests.fetch_add(1, std::memory_order_relaxed);
+    if (v <= 0.0f) {
+        g_visSlab.fetch_add(1, std::memory_order_relaxed);
+        return 0.0f;
+    }
+    if (v < 1.0f) g_visRim.fetch_add(1, std::memory_order_relaxed);
+    return v;
 }
 struct NoteLamp {
     uintptr_t ptr = 0;
@@ -9450,12 +9833,12 @@ void SetRealisticOpenings(bool on) {
 }
 bool RealisticOpeningsActive() { return OpeningsOn(); }
 
-void SetBalconyFill(bool on, float strength) {
-    strength = std::clamp(std::isfinite(strength) ? strength : 0.45f, 0.0f, 1.0f);
-    const bool onChanged = g_fillOn.exchange(on) != on;
-    const bool strengthChanged = std::fabs(g_fillStrength.exchange(strength) - strength) > 1e-4f;
-    if ((onChanged || (on && strengthChanged)) && g_installed.load(std::memory_order_relaxed))
-        RelightAllRooms(on ? "Light under balconies changed" : "Light under balconies off");
+void SetRealisticReach(bool on) {
+    if (g_reachOn.exchange(on) != on && g_installed.load(std::memory_order_relaxed))
+        RelightAllRooms(on ? "Realistic lamp reach on" : "Realistic lamp reach off");
+}
+bool RealisticReachActive() { // ReachShare runs in the wrapped light evaluation (LightEvalHook)
+    return g_reachOn.load(std::memory_order_relaxed) && g_installed.load(std::memory_order_relaxed) && g_evalClasses.load(std::memory_order_relaxed) > 0;
 }
 
 void SetAllFloors(bool on) {
@@ -9540,7 +9923,7 @@ bool LampsCrossStories(uintptr_t tracker, const uintptr_t* lamps, int lampCount)
     }
     return false;
 }
-int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount) {
+int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount, bool editNet) {
     LoadAddresses();
     if (!kRootPtr || !kRoomById || !kInvalidateRoom || !kSetInsert || !tracker) return -1;
     uintptr_t trackers[256];
@@ -9548,7 +9931,8 @@ int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, cons
     if (std::find(trackers, trackers + lots, tracker) == trackers + lots) return -1;
     int queued = 0, skipped = 0;
     RigWait wait{{}, GetTickCount(), false};
-    for (int level = -4; level <= 7; level++) queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps, lamps ? lampCount : 0);
+    for (int level = -4; level <= 7; level++)
+        queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps, lamps ? lampCount : 0, editNet ? 2 : -1);
     if (!wait.rooms.empty() && wait.rooms.size() <= 128 && (g_rigWait.size() < 256 || g_rigWait.contains(tracker)))
         g_rigWait[tracker] = std::move(wait);
     else {
@@ -9638,8 +10022,8 @@ int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedA
     for (int k = 0; k < count; k++) lamps.push_back(switched[k].light);
     int queued = 0, skipped = 0;
     RigWait wait{{}, GetTickCount(), false};
-    for (int level = -4; level <= 7; level++)
-        queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps.data(), static_cast<int>(lamps.size()));
+    for (int level = -4; level <= 7; level++) // (12/10: tagged tier 2, the edit hold waits for them too)
+        queued += RequeueStory(tracker, level, changedAt, &skipped, &wait.rooms, lamps.data(), static_cast<int>(lamps.size()), 2);
     // the rooms the switched lamps can reach without holding them yet
     std::vector<std::pair<int, int>> reach;
     bool outdoorLamp = false, anyOn = false;
@@ -9683,13 +10067,14 @@ int RelightLampSwitch(uintptr_t tracker, const char* why, unsigned long changedA
         if (!room) continue;
         if (changedAt && FreshLampSolve(room, changedAt)) {
             skipped++;
+            if (RoomAmbientPolicy::SolverOwnsAmbient(RoomState(room))) MarkUrgent(room, 2, false); // still solving: held with the others
             continue;
         }
         if (!anyOn && SafeListSize(room) == 0) { // only lamps switched off, and none of them reached it
             unlit++;
             continue;
         }
-        if (QueueRoomSafe(tracker, S, id)) {
+        if (QueueRoomSafe(tracker, S, id, 2)) {
             queued++;
             if (const uintptr_t mgr = SafeStoryManager(tracker, S)) wait.rooms.push_back({{tracker, S, id}, mgr});
         }
@@ -9756,7 +10141,7 @@ float CameraStoryFactor(const void* room) {
 
 float LampUrgency(const void* room) {
     const int tier = UrgentTier(room);
-    return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : 1.0e5f) * CameraStoryFactor(room);
+    return tier < 0 ? 1.0f : (tier == 0 ? 1.0e6f : tier == 1 ? 1.0e5f : 1.0e4f) * CameraStoryFactor(room); // tier 2: the safety net's (12/10)
 }
 
 bool SettlingAfterLoad() {
@@ -9835,47 +10220,68 @@ const char* ApexTestPartName(int i) { return i >= 0 && i < kTpCount ? kTestPartN
 bool InMapLockStep() { return t_lockStep > 0; }
 bool SolveHooksReady() { return g_finalizeReady.load(std::memory_order_relaxed) && g_lockStepReady.load(std::memory_order_relaxed); }
 
-bool ReadExteriorBarrierRoom(const void* room,bool& exterior) {
-    __try { exterior = static_cast<const BYTE*>(room)[0x18] != 0; return true; }
-    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-int SwitchRoomsPending(unsigned long since, int* visible) {
+// 12/10: lamp edits all at once. The switch hold waited only for the rooms on stories the camera shows
+// (WallUpdatePolicy::VisibleForBarrier); the edit hold waits for every room the edits marked on a story other than the
+// lamps' own (a story hidden above the camera included: it is held too, so it must be solved before the release), each for a
+// solve begun after its latest mark. The own stories' rooms are only counted (the log's "own story shown").
+int EditRoomsPending(unsigned long after, int* others, int* ownPending, int* ownTotal) {
     struct Entry {
         uintptr_t room, mgr;
         int id;
+        unsigned long serial;
+        bool own;
     };
-    Entry rooms[64];
+    Entry rooms[kUrgentMax];
     int n = 0;
     {
         const DWORD now = GetTickCount();
         std::lock_guard<std::mutex> lk(g_urgentMx);
-        for (const UrgentRoom& u : g_urgent)
-            if (static_cast<int32_t>(now - u.until) < 0 && n < static_cast<int>(std::size(rooms))) rooms[n++] = Entry{u.room, u.mgr, u.id};
+        for (UrgentRoom& u : g_urgent) {
+            if (static_cast<long>(u.serial - after) <= 0 || n >= static_cast<int>(std::size(rooms)) || !UrgentLive(u, now)) continue;
+            const bool own = std::any_of(g_editStories.begin(), g_editStories.end(), [&](const EditStory& s) { return s.mgr == u.mgr && now - s.at < kEditStoryMs; });
+            rooms[n++] = Entry{u.room, u.mgr, u.id, u.serial, own};
+        }
     }
-    int pending = 0, shown = 0;
+    int pending = 0, counted = 0, ownWaiting = 0, ownCounted = 0;
     for (int k = 0; k < n; k++) {
         int level = 0, cam = 0, state = 0;
-        if (!RoomViewState(rooms[k].room, rooms[k].mgr, rooms[k].id, level, cam, state)) continue;
+        if (!RoomViewState(rooms[k].room, rooms[k].mgr, rooms[k].id, level, cam, state)) continue; // gone: nothing to wait for
         const void* room = reinterpret_cast<const void*>(rooms[k].room);
-        bool exterior = false;
-        if (!ReadExteriorBarrierRoom(room, exterior)) { pending++; continue; }
-        if (!WallUpdatePolicy::VisibleForBarrier(level, cam, exterior, level < cam && !exterior && InAtrium(room), AllFloorsDetailed())) continue;
-        shown++;
-        if ((state >= 1 && state <= 3) || !RoomLightQueue::SolvedSince(room, since)) pending++;
+        const bool waiting = (state >= 1 && state <= 3) || !RoomLightQueue::SolvedSince(room, rooms[k].serial);
+        if (rooms[k].own) {
+            ownCounted++;
+            ownWaiting += waiting;
+            continue;
+        }
+        counted++;
+        pending += waiting;
     }
-    if (visible) *visible = shown;
+    if (others) *others = counted;
+    if (ownPending) *ownPending = ownWaiting;
+    if (ownTotal) *ownTotal = ownCounted;
     return pending;
 }
 
+bool OnEditStory(const void* room) {
+    uintptr_t mgr = 0;
+    int id = 0;
+    if (!room || !g_urgentSize.load(std::memory_order_relaxed) || !RoomKey(room, mgr, id)) return false;
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_urgentMx);
+    return std::any_of(g_editStories.begin(), g_editStories.end(), [&](const EditStory& s) { return s.mgr == mgr && now - s.at < kEditStoryMs; });
+}
+
+long UrgentExpiredPending() { return g_urgentExpiredPending.load(std::memory_order_relaxed); }
+
 bool LampEditPending() {
     if (!g_urgentSize.load(std::memory_order_relaxed)) return false;
-    uintptr_t rooms[64];
+    uintptr_t rooms[kUrgentMax];
     int n = 0;
     {
         const DWORD now = GetTickCount();
         std::lock_guard<std::mutex> lk(g_urgentMx);
-        for (const UrgentRoom& u : g_urgent)
-            if (static_cast<int32_t>(now - u.until) < 0 && n < static_cast<int>(std::size(rooms))) rooms[n++] = u.room;
+        for (UrgentRoom& u : g_urgent)
+            if (n < static_cast<int>(std::size(rooms)) && UrgentLive(u, now)) rooms[n++] = u.room;
     }
     for (int k = 0; k < n; k++) {
         uintptr_t mgr = 0;
@@ -10000,7 +10406,7 @@ std::string DiagText() {
 }
 
 std::string Status() {
-    return std::format("Colour groups committed {} ({} native fallbacks) | ", g_groupCommits.load(), g_groupFallbacks.load()) + FillStatus() + " | " + std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
+    return std::format("Colour groups committed {} ({} native fallbacks) | ", g_groupCommits.load(), g_groupFallbacks.load()) + SlabStatus() + " | " + std::format("{} | outdoor lights carried to other stories: {} | stories updated: {} | walls of the light's story: {}/{} classes, {} tests, {} blocked | indoor "
                        "lamps through stair openings: {} | seamless walls between floors: {}{}{}{}{}",
                        g_installed ? "Active" : "Off", g_shared.load(), g_queued.load(), g_evalClasses.load(), std::size(kClasses), g_wallTests.load(), g_wallBlocked.load(),
                        !g_indoorReady ? std::string("not installed")
@@ -10010,9 +10416,9 @@ std::string Status() {
                                           std::format(", stacked rooms ambient {} ({} merges; members' values taken at the merge {} in {:.1f} ms, already right {}, kept from their gather {}, only an older solve's {}; quick passes with the refinement's light threshold {} and wall tests {}), lots settled after loading {} ({} as soon as their rooms were done), lamp changes folded into "
                                                       "one update {} (lamps added, moved or removed, sent at once {}; lamp values changed without a move {}; outside of a floor marked changed without a change {}), lots rebuilt {}, floor objects made {}, rooms held until their solve ended {}, rooms still holding a lamp switched off gathered again {}",
                                                       g_ambReady ? "on" : "not installed", g_ambMerges.load(), g_canonTaken.load(), CanonMs(), g_canonKept.load(), g_canonReused.load(), g_canonOld.load(), g_quickThreshold.load(), g_quickTests.load(), g_settles.load(), g_settlesEarly.load(), g_depCoalesced.load(), g_depShapeSends.load(), g_lampWobbles.load(), g_outdoorQuiet.load(), g_lotRebuilds.load(), g_levelsMade.load(), g_deferredCount.load(), g_staleSends.load()) +
-                                          std::format(", lamp edits first: rooms made urgent {}, gathered at once {}, marks held while their room was solved {} (given back {}), "
+                                          std::format(", lamp edits first: rooms made urgent {} (kept urgent past 3 s while waiting {}, past 8 s still waiting {}), gathered at once {}, marks held while their room was solved {} (given back {}), "
                                                       "floor batches with per-lamp wall lists {} (every wall tested {})",
-                                                      g_urgentMarked.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
+                                                      g_urgentMarked.load(), g_urgentKept.load(), g_urgentExpiredPending.load(), g_gatherSoon.load(), g_heldMarks.load(), g_heldGiven.load(), g_maskListBatches.load(),
                                                       g_maskListFallbacks.load()) +
                                           std::format(", rooms taking lamps of another story checked against them {} (sent to gather again {}, left alone a while {}), "
                                                       "lamps of another story tested against the lit room's walls from where they enter its story {}{} (outdoors {}, past a wall end's penumbra {}), rooms a moved lamp never lit left until it is quiet {}",

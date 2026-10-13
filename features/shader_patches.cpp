@@ -137,6 +137,45 @@ int LampScaleAfter(const std::vector<DWORD>& t, const std::vector<Ins>& ins, siz
     return uses == 1 ? K : -1;
 }
 
+// One per-pixel lamp of the object, fence and window patches (ps_3_0): A.xyz = l (pixel to lamp, normalised), A.w = d^2,
+// B.x = the lamp's share before its cones; B.y, B.z and B.w are free after it. pos = the pixel's world position (negated
+// here), nrm = its normal, cp = the lamp row (pos, 1/R^2), cS.w = the smallest d^2, cH.z = 1. One constant per instruction
+// (native D3D9 refuses two).
+//  - the first law: B.x = sat(N.l) x sat(1 - d^2/R^2)^2 (R = 1.2 sqrt(range), lot_light_bridge ReadLamp);
+//  - reach (12/10, F7 20-31-19 / 20-31-21: a band and a column 5.5-9.8 m from a red post went black at R = 7.82 m while the
+//    outdoor wall behind them, on the realistic reach law, was lit): the law of an outdoor wall texel (level_light_share
+//    ReachShareImpl), B.x = sat(N.l) / d^2 x min(1, r0^2 / d^2 x sat(1 - (d^2/R^2)^2)^2), r0^2 at reachRow.<k % 4>, R from
+//    the lamp row's 1/R^2; the colour row holds the game's weight (lamp_reach.h Gain). min(1, ..) differs from
+//    ReachShareImpl's "1 up to r0" only just inside r0, by at most 1 - (1 - (r0/R)^4)^2: 0.6% for the 12/10 garden post
+//    (3.5 / 15 m), 0.8% for any w of 28 or more, 2.5% for a weak lamp with both radii at their floors (2 / 6 m, w under 14),
+//    where the wall texel need not be at its clamp (12/10 review: 0.98 against 1, about 3/255 at most).
+void AppendLampLaw(std::vector<DWORD>& code, DWORD A, DWORD B, DWORD nrm, DWORD posNeg, DWORD cp, DWORD cS, DWORD cH, bool reach, DWORD reachRow, unsigned k) {
+    constexpr DWORD kNeg = 0x01000000u, kRsq = 0x07, kMin = 0x0A;
+    code.insert(code.end(), {Op(kAdd, 3), Dst(kTemp, A, 0x7), Src(kConst, cp), posNeg,             // l = lamp - pixel
+                             Op(kDp3, 3), Dst(kTemp, A, 0x8), Src(kTemp, A), Src(kTemp, A),         // d^2
+                             Op(kMax, 3), Dst(kTemp, A, 0x8), Src(kTemp, A, kSwzW), Src(kConst, cS, kSwzW),
+                             Op(kRsq, 2), Dst(kTemp, B, 0x8), Src(kTemp, A, kSwzW),
+                             Op(kMul, 3), Dst(kTemp, A, 0x7), Src(kTemp, A), Src(kTemp, B, kSwzW),  // normalize
+                             Op(kDp3, 3), Dst(kTemp, B, 0x1, true), Src(kTemp, nrm), Src(kTemp, A), // sat(N.l)
+                             // q = d^2 / R^2 (two steps: one constant per instruction, final review 30/09)
+                             Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW)});
+    if (!reach) {
+        code.insert(code.end(), {Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
+                                 Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
+                                 Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
+        return;
+    }
+    const DWORD comp = (k & 3u) * 0x55u; // .x .y .z .w replicated
+    code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kTemp, B, kSwzY), Src(kConst, cH, 0xAA), // sat(1 - q^2)
+                             Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),                                    // its square
+                             Op(kMul, 3), Dst(kTemp, B, 0x8), Src(kTemp, B, kSwzW), Src(kTemp, B, kSwzW),                                    // 1 / d^2
+                             Op(kMul, 3), Dst(kTemp, B, 0x4), Src(kTemp, B, kSwzW), Src(kConst, reachRow + (k >> 2), comp),                 // r0^2 / d^2
+                             Op(kMul, 3), Dst(kTemp, B, 0x4), Src(kTemp, B, 0xAA), Src(kTemp, B, kSwzY),
+                             Op(kMin, 3), Dst(kTemp, B, 0x4), Src(kTemp, B, 0xAA), Src(kConst, cH, 0xAA),                                    // reach share
+                             Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzW),                                    // sat(N.l) / d^2
+                             Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, 0xAA)});
+}
+
 
 } // namespace
 
@@ -847,7 +886,7 @@ bool IsInstancedStructureVs(const std::vector<DWORD>& t) {
     return world && lamps;
 }
 
-bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
+bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out, bool reach) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
     if (ins.empty()) return false;
@@ -889,6 +928,9 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
             }
     }
     if (found != 1 || u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 2 >= 224 || u.maxTemp + 1 >= 32) return false;
+    // the reach variant is the per-pixel lamps with the wall law and 2 more rows (r0^2 of the 8 lamps) or nothing: refused here,
+    // before any change, the draw keeps the first variant
+    if (reach && !(tc2Reg >= 0 && u.maxConst + 6 + 4 * kObjectPixelLamps < 224 && u.maxTemp + 7 < 32)) return false;
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1);
     const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cB = cA + 1;
     const DWORD C = static_cast<DWORD>(colorReg), V = static_cast<DWORD>(tc1Reg);
@@ -897,13 +939,15 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
     out.strengthConst = cB;
     out.pixelLamps = false;
     out.coneConst = 0;
+    out.reachConst = 0;
     t[tc1Dcl] = (t[tc1Dcl] & ~0x000F0000u) | 0x000F0000u; // vT.xy -> vT (zw = world xz)
     const Ins& A = ins[add];
     t[A.at + slot] = Src(kTemp, T); // add rD.xyz, rS, vC  ->  add rD.xyz, rS, rT
     // Per-pixel lamps (fences looked lit far from a lamp, faces turned away included): with the normal and the
     // height in TEXCOORD2, the same lamps as objects (PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2 at the
-    // pixel), and the ground atlas only on faces turned up (the fence tops: x sat(N.y)), since the atlas is the light
-    // lying on the ground and has no direction. T = max(vC + lamps x cS.y, atlas x sat(N.y) x cB.x).
+    // pixel; the reach variant: the outdoor walls' law, AppendLampLaw), and the ground atlas only on faces turned up (the
+    // fence tops: x sat(N.y)), since the atlas is the light lying on the ground and has no direction.
+    // T = max(vC + lamps x cS.y, atlas x sat(N.y) x cB.x).
     if (tc2Reg >= 0 && u.maxConst + 4 + 4 * kObjectPixelLamps < 224 && u.maxTemp + 7 < 32) {
         const DWORD cH = cA + 2, cS = cA + 3, cL = cA + 4, cK = cL + 2 * kObjectPixelLamps;
         const DWORD N = T + 1, G = T + 2, P = T + 3, LA = T + 4, LB = T + 5, Q = T + 6, V2 = static_cast<DWORD>(tc2Reg);
@@ -913,6 +957,8 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
         out.lampConst = cL;
         out.groundWeightConst = cH;
         out.coneConst = cK;
+        const DWORD cR = cK + 2 * kObjectPixelLamps; // reach: r0^2 of lamps 0..3 / 4..7 (one upload with the rows above)
+        out.reachConst = reach ? cR : 0;
         t[tc2Dcl] = (t[tc2Dcl] & ~0x000F0000u) | 0x000F0000u; // vT2.xyz -> vT2 (w = world y)
         std::vector<DWORD> code = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzZWZW), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                                    Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
@@ -924,20 +970,13 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
                                    Op(kMov, 2), Dst(kTemp, P, 0x2), Src(kInput, V2, kSwzW)};
         for (DWORD k = 0; k < kObjectPixelLamps; k++) {
             const DWORD cp = cL + 2 * k, cc = cp + 1, k1 = cK + 2 * k, k2 = k1 + 1;
-            code.insert(code.end(), {Op(kAdd, 3), Dst(kTemp, LA, 0x7), Src(kConst, cp), Src(kTemp, P) | kNeg,      // l = lamp - pixel
-                                     Op(kDp3, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA), Src(kTemp, LA),             // d^2
-                                     Op(kMax, 3), Dst(kTemp, LA, 0x8), Src(kTemp, LA, kSwzW), Src(kConst, cS, kSwzW),
-                                     Op(0x07 /* rsq */, 2), Dst(kTemp, LB, 0x8), Src(kTemp, LA, kSwzW),
-                                     Op(kMul, 3), Dst(kTemp, LA, 0x7), Src(kTemp, LA), Src(kTemp, LB, kSwzW),      // normalize
-                                     Op(kDp3, 3), Dst(kTemp, LB, 0x1, true), Src(kTemp, N), Src(kTemp, LA),        // sat(N.l)
-                                     Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LA, kSwzW), Src(kConst, cp, kSwzW),
-                                     Op(kAdd, 3), Dst(kTemp, LB, 0x2, true), Src(kTemp, LB, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
-                                     Op(kMul, 3), Dst(kTemp, LB, 0x2), Src(kTemp, LB, kSwzY), Src(kTemp, LB, kSwzY),
-                                     Op(kMul, 3), Dst(kTemp, LB, 0x1), Src(kTemp, LB, kSwzX), Src(kTemp, LB, kSwzY),
+            // l = lamp - pixel, d^2, sat(N.l) and the falloff (AppendLampLaw; the reach variant: the outdoor walls' law)
+            AppendLampLaw(code, LA, LB, N, Src(kTemp, P) | kNeg, cp, cS, cH, reach, cR, k);
+            code.insert(code.end(), {
                                      // the lamp's cones (a brick fence face was lit by a sconce it sits 47 deg or more
                                      // off; the game gives it only the spill there, FUN_006BC940): f = S + (1 - S) sat(max(t1, t2)),
                                      // t = l.k.xyz + k.w (lot_light_bridge LampCone), S = cc.w. LB.z / LB.w are free after the
-                                     // normalize; each instruction reads one constant register.
+                                     // law; each instruction reads one constant register.
                                      Op(kDp3, 3), Dst(kTemp, LB, 0x4), Src(kTemp, LA), Src(kConst, k1),
                                      Op(kAdd, 3), Dst(kTemp, LB, 0x4), Src(kTemp, LB, 0xAA /* z */), Src(kConst, k1, kSwzW),
                                      Op(kDp3, 3), Dst(kTemp, LB, 0x8), Src(kTemp, LA), Src(kConst, k2),
@@ -949,6 +988,8 @@ bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out) {
             if (k == 0) code.insert(code.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX)});
             else code.insert(code.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, LB, kSwzX), Src(kTemp, Q)});
         }
+        // reach: the sum is held under 1 per channel as an outdoor wall's texel is (the room map's min(sum, 1))
+        if (reach) code.insert(code.end(), {Op(kMov, 2), Dst(kTemp, Q, 0x7, true), Src(kTemp, Q)});
         // Native rig and pixel lamps are alternative estimates; adding both can
         // amplify overlapping illumination. Use pixel lamps when the group is valid,
         // otherwise retain the native rig.
@@ -1271,7 +1312,7 @@ bool PatchObjectLampVs(std::vector<DWORD>& t, bool needColor0, int* texcoordOut,
     return true;
 }
 
-bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
+bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out, bool reach) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto all = Parse(t);
     if (all.empty()) return false;
@@ -1455,17 +1496,20 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
         }
         if (!sun || !lamp1) return false;
     }
-    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 4 + 4 * kObjectPixelLamps >= 224 || u.maxTemp + 5 >= 32) return false;
+    // reach: 2 more rows (the r0^2 of the 8 lamps) after the cones
+    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 4 + 4 * kObjectPixelLamps + (reach ? 2 : 0) >= 224 || u.maxTemp + 5 >= 32) return false;
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1), Fr = T + 1;
     const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cB = cA + 1, cH = cA + 2, V = static_cast<DWORD>(maxIn + 1);
     const DWORD cS = cA + 3, cL = cA + 4; // per-pixel lamps: parameters, then kObjectPixelLamps x (pos + 1/R^2, colour)
     const DWORD A = T + 2, B = T + 3, Q = T + 4;
+    const DWORD cR = cL + 4 * kObjectPixelLamps; // reach: r0^2 of lamps 0..3 / 4..7, right after the cones (one upload from cS)
     out.atlasSampler = E;
     out.atlasConst = cA;
     out.strengthConst = cB;
     out.lampParamConst = cS;
     out.lampConst = cL;
     out.coneConst = cL + 2 * kObjectPixelLamps;
+    out.reachConst = reach ? cR : 0;
     out.rigLamps = shape != kC;
     std::vector<DWORD> ground = {Op(kMad, 4), Dst(kTemp, T, 0x3), Src(kInput, V, kSwzXYXY), Src(kConst, cA), Src(kConst, cA, kSwzZWZW),
                                  Op(kTexld, 3), Dst(kTemp, T), Src(kTemp, T), Src(kSampler, E),
@@ -1481,24 +1525,16 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
     // Per-pixel lamps (requested for Counters): each piece of a modular object gets its own rig
     // evaluated at the piece's centre (3 lamps in c5..c7 here, 4 more as vertex lights), so neighbouring pieces differ.
     // Q = the same world lamps for every pixel: sum of colour * sat(N.l) * sat(1 - d^2/R^2)^2 at the pixel's world
-    // position (TEXCOORD8.xzy). The draw zeroes the rig (PS c5..c7 and the VS vertex-light colours) while cS.y > 0.
+    // position (TEXCOORD8.xzy); the reach variant: the outdoor walls' law (AppendLampLaw), held under 1 like their texels.
+    // The draw zeroes the rig (PS c5..c7 and the VS vertex-light colours) while cS.y > 0.
     // cS = (valid direct-pixel mode, lamp strength, unused, 1e-4).
     constexpr DWORD kNeg = 0x01000000u;
     const DWORD pw = Src(kInput, V, 0xD8 /* xzyw: world x, y, z */);
     for (DWORD k = 0; k < kObjectPixelLamps; k++) {
         const DWORD cp = cL + 2 * k, cc = cp + 1;
-        ground.insert(ground.end(), {Op(kAdd, 3), Dst(kTemp, A, 0x7), Src(kConst, cp), pw | kNeg,          // l = lamp - pixel
-                                     Op(kDp3, 3), Dst(kTemp, A, 0x8), Src(kTemp, A), Src(kTemp, A),         // d^2
-                                     Op(kMax, 3), Dst(kTemp, A, 0x8), Src(kTemp, A, kSwzW), Src(kConst, cS, kSwzW),
-                                     Op(0x07 /* rsq */, 2), Dst(kTemp, B, 0x8), Src(kTemp, A, kSwzW),
-                                     Op(kMul, 3), Dst(kTemp, A, 0x7), Src(kTemp, A), Src(kTemp, B, kSwzW),  // normalize
-                                     Op(kDp3, 3), Dst(kTemp, B, 0x1, true), Src(kTemp, Nrm), Src(kTemp, A),  // sat(N.l)
-                                     // sat(1 - d^2 / R^2) in two steps: native D3D9 takes one constant register per
-                                     // instruction (final review 30/09: the single mad made native D3D9 refuse the shader)
-                                     Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW),
-                                     Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
-                                     Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
-                                     Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
+        // l = lamp - pixel, d^2, sat(N.l) and the falloff, one constant register per instruction (final review 30/09: a
+        // two-constant mad made native D3D9 refuse the shader); the reach variant: the outdoor walls' law (AppendLampLaw)
+        AppendLampLaw(ground, A, B, Nrm, pw | kNeg, cp, cS, cH, reach, cR, k);
         const DWORD k1 = out.coneConst + 2 * k, k2 = k1 + 1;
         ground.insert(ground.end(), {
             Op(kDp3, 3), Dst(kTemp, B, 0x4), Src(kTemp, A), Src(kConst, k1),
@@ -1512,6 +1548,8 @@ bool PatchObjectLampPs(std::vector<DWORD>& t, ObjectLampPatch& out) {
         if (k == 0) ground.insert(ground.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX)});
         else ground.insert(ground.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX), Src(kTemp, Q)});
     }
+    // reach: the sum is held under 1 per channel as an outdoor wall's texel is (the room map's min(sum, 1))
+    if (reach) ground.insert(ground.end(), {Op(kMov, 2), Dst(kTemp, Q, 0x7, true), Src(kTemp, Q)});
     std::vector<Edit> edits = {{1, {Op(kDef, 5), Dst(kConst, cH), F(0.5f), F(0.5f), F(1.0f), F(0.0f)}},
                                {afterLastInDcl, {Op(kDcl, 2), 0x80080005u /* texcoord8 */, Dst(kInput, V, 0x7)}},
                                {u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}}};
@@ -2139,7 +2177,7 @@ bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& 
 }
 
 // ---- Windows take outdoor light (experimental, see the header) ----
-bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out) {
+bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out, bool reach) {
     out = WindowOutdoorPatch{};
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
@@ -2203,17 +2241,20 @@ bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out) {
     }
     if (!usedAsLight) return false;
     const Usage u = Scan(t, ins);
-    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 6 + 2 * static_cast<int>(kObjectPixelLamps) >= 224 || u.maxTemp + 7 >= 32) return false;
+    // reach: 2 more rows (the r0^2 of the 8 lamps) after the plan rows
+    if (u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl || u.maxConst + 6 + 2 * static_cast<int>(kObjectPixelLamps) + (reach ? 2 : 0) >= 224 || u.maxTemp + 7 >= 32) return false;
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1), V = static_cast<DWORD>(maxIn + 1), Nin = static_cast<DWORD>(nIn), U = static_cast<DWORD>(r.uvNum);
     const DWORD T = static_cast<DWORD>(u.maxTemp + 1), Fr = T + 1, A = T + 2, B = T + 3, Q = T + 4, N = T + 5, P = T + 6;
     const DWORD cA = static_cast<DWORD>(u.maxConst + 1), cB = cA + 1, cH = cA + 2, cS = cA + 3, cL = cA + 4;
     const DWORD cP = cL + 2 * kObjectPixelLamps; // cP, cP + 1
+    const DWORD cR = cP + 2;                     // reach: r0^2 of lamps 0..3 / 4..7
     out.atlasSampler = E;
     out.atlasConst = cA;
     out.strengthConst = cB;
     out.lampParamConst = cS;
     out.lampConst = cL;
     out.planConst = cP;
+    out.reachConst = reach ? cR : 0;
     constexpr DWORD kNeg = 0x01000000u;
     std::vector<DWORD> v = {
         Op(kNrm, 2), Dst(kTemp, N, 0x7), Src(kInput, Nin),
@@ -2230,23 +2271,16 @@ bool PatchWindowOutdoor(std::vector<DWORD>& t, WindowOutdoorPatch& out) {
         Op(kMul, 3), Dst(kTemp, Fr, 0x8), Src(kTemp, Fr, kSwzW), Src(kConst, cB, kSwzX),
         Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, Fr, kSwzW),
     };
-    // per-pixel lamps Q (same law as PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2, one constant per instruction)
+    // per-pixel lamps Q (same law as PatchObjectLampPs: colour x sat(N.l) x sat(1 - d^2/R^2)^2, one constant per instruction;
+    // the reach variant: the outdoor walls' law, AppendLampLaw, held under 1 like their texels)
     const DWORD pw = Src(kInput, V, 0xD8 /* xzyw: world x, y, z */);
     for (DWORD k = 0; k < kObjectPixelLamps; k++) {
         const DWORD cp = cL + 2 * k, cc = cp + 1;
-        v.insert(v.end(), {Op(kAdd, 3), Dst(kTemp, A, 0x7), Src(kConst, cp), pw | kNeg,
-                           Op(kDp3, 3), Dst(kTemp, A, 0x8), Src(kTemp, A), Src(kTemp, A),
-                           Op(kMax, 3), Dst(kTemp, A, 0x8), Src(kTemp, A, kSwzW), Src(kConst, cS, kSwzW),
-                           Op(0x07 /* rsq */, 2), Dst(kTemp, B, 0x8), Src(kTemp, A, kSwzW),
-                           Op(kMul, 3), Dst(kTemp, A, 0x7), Src(kTemp, A), Src(kTemp, B, kSwzW),
-                           Op(kDp3, 3), Dst(kTemp, B, 0x1, true), Src(kTemp, N), Src(kTemp, A),
-                           Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, A, kSwzW), Src(kConst, cp, kSwzW),
-                           Op(kAdd, 3), Dst(kTemp, B, 0x2, true), Src(kTemp, B, kSwzY) | kNeg, Src(kConst, cH, 0xAA /* 1 */),
-                           Op(kMul, 3), Dst(kTemp, B, 0x2), Src(kTemp, B, kSwzY), Src(kTemp, B, kSwzY),
-                           Op(kMul, 3), Dst(kTemp, B, 0x1), Src(kTemp, B, kSwzX), Src(kTemp, B, kSwzY)});
+        AppendLampLaw(v, A, B, N, pw | kNeg, cp, cS, cH, reach, cR, k);
         if (k == 0) v.insert(v.end(), {Op(kMul, 3), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX)});
         else v.insert(v.end(), {Op(kMad, 4), Dst(kTemp, Q, 0x7), Src(kConst, cc), Src(kTemp, B, kSwzX), Src(kTemp, Q)});
     }
+    if (reach) v.insert(v.end(), {Op(kMov, 2), Dst(kTemp, Q, 0x7, true), Src(kTemp, Q)});
     // outdoor = ground + lamps x cS.y, x w; the game's light is never lowered
     v.insert(v.end(), {Op(kMad, 4), Dst(kTemp, T, 0x7), Src(kTemp, Q), Src(kConst, cS, kSwzY), Src(kTemp, T),
                        Op(kMul, 3), Dst(kTemp, T, 0x7), Src(kTemp, T), Src(kTemp, P, kSwzW),

@@ -231,6 +231,8 @@
     <ClInclude Include="features\address_space.h" />
     <ClInclude Include="features\frame_profiler.h" />
     <ClInclude Include="features\level_light_share.h" />
+    <ClInclude Include="features\lamp_visibility.h" />
+    <ClInclude Include="features\lamp_reach.h" />
     <ClInclude Include="features\wall_heights.h" />
     <ClInclude Include="features\light_diag.h" />
     <ClInclude Include="features\light_probe.h" />

@@ -28,6 +28,14 @@ inline float WallLampScale(float native, float night, float gain) {
     if (night >= 1.0f) return previous;
     return previous + DayLampScale(night, std::min(gain, 1.0f) * kDaySurfaceResponse);
 }
+// Realistic lamp reach (12/10): the per-pixel lamps of objects, fences and windows then hold an outdoor wall texel's light
+// (lamp_reach.h), so they take the outdoor walls' scale: the native wall lamp scale with the walls' gain as DrawWallGain
+// applies it (walls on), or the native scale alone (walls off), times trim (an object slider over its default: 1 at the
+// defaults, the same light as the wall behind).
+inline float ReachLampScale(float native, float night, bool wallsOn, float wallGain, float trim) {
+    if (!std::isfinite(trim) || trim < 0) trim = 1.0f;
+    return (wallsOn ? WallLampScale(native, night, wallGain) : native) * trim;
+}
 inline float LampScale(float native, float night, float gain, bool squared) {
     if (!std::isfinite(native) || native < 0 || !std::isfinite(gain) || gain < 0 || !std::isfinite(night)) return native;
     const float n = std::clamp(night, 0.0f, 1.0f);

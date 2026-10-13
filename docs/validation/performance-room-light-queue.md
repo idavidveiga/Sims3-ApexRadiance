@@ -38,5 +38,12 @@ not identified.
 - Its status line has no menu location in the current menu (no Developer card calls `RenderDeveloperUI`).
 - Lamp switches all at once on other game builds (the solve end hook is Steam 1.67.2 only; elsewhere switches change
   room by room).
+- Lamp edits all at once (12/10, not yet tested in game): a switch on story 2 with the camera on story 1, an intensity
+  change, a 3 m drag, a lamp moved to another story, a lamp added and deleted, an edit on a neighbouring lot while
+  panning, and "all the lights" of a big lot. **Expected:** the lamp's own story within about 100 ms; the other stories
+  in one release within 1.5 s (switch, value) or 2 s after a drag is let go; `[AtriumHold] Lamp edit:` lines end in
+  `complete` (a timeout only on the big lot); no frame over 50 ms added (Frame Profiler).
+- `room_ambient_test` covers the hold's decision (`EditHoldOutcome`), the urgency rule (`UrgencyKept`), the safety-net
+  gap (`LampLotGap`) and the 200 ms move delay; the map hold itself has no offline harness.
 - Quick update for lamp switches (with *Lamp switches all at once* off): rooms show a quick light within a few frames
   and refine without a frame-rate drop.

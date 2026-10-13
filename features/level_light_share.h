@@ -42,16 +42,24 @@ bool FloorWallsActive();
 // takes none. Relights every room when changed. Active = on, installed, and "walls block light on floors" active too.
 void SetRealisticOpenings(bool on);
 bool RealisticOpeningsActive();
-// Light under balconies (option "luzSobSacadas", strength "forcaSobSacadas"): an outside wall of an upper story that a
-// lamp of a lower story sees only through a placed floor of that story (a balcony's slab) keeps a soft share of its light
-// (the light the slab and its parapet scatter), fading with how deep behind the slab's edge the ray comes up; real walls
-// still block. Relights every room when changed (call with the slider let go).
-void SetBalconyFill(bool on, float strength);
+// Realistic lamp reach (option "alcanceRealistaDasLampadas"): lamp light on outdoor walls fades with distance as it does
+// on the ground (no flat plateau out to 9 m, nothing past 6..20 m depending on the lamp). Relights every room when changed.
+void SetRealisticReach(bool on);
+// The walls are lit by that law now (on and installed): the per-pixel lamps of outdoor objects, fences and windows follow
+// the same law then (lot_light_bridge, lamp_reach.h). Any thread.
+bool RealisticReachActive();
 // Walls block light on objects: true when an outside wall stands between the lamp and the point at the height the ray
 // crosses it (render thread; a copy of each story's outside walls taken when room 0 is solved)
 // A wall crossed within nearSkip metres of the point is the wall the object sits in and does not block (0.2 m; Windows
 // take outdoor light passes more: a turned window's origin is half a tile inside its wall).
 bool WallBlocks(const float lamp[3], const float point[3], float nearSkip = 0.2f);
+// Buildings block light on objects (render thread, option "paredesBloqueiamLuzNosObjetos", SetObjectWalls): the share
+// (0..1) of a lamp's light that reaches the point.
+// 0 when WallBlocks; otherwise the placed floors of every loaded lot's stories >= 1 that a ray going up crosses stop it,
+// with the soft edge of a 0.3 m lantern at a slab's edge (lamp_visibility.h; a copy of the floors taken when each story's
+// room 0 is solved). Rays going down are not tested (1). The point is one point: an object standing on a slab is tested
+// where the caller puts it (on the slab's plane it is tested 5 cm toward the lamp).
+float LampVisibility(const float lamp[3], const float point[3], float nearSkip = 0.2f);
 // An outside wall running along (dirX, dirZ) (unit, within about 10 degrees) passes within maxDist metres of the point at
 // its height + 0.5 m (render thread): the object is set in that wall (Windows take outdoor light picks its lamps there)
 bool OnWallLine(const float point[3], float dirX, float dirZ, float maxDist);
@@ -79,7 +87,10 @@ void RelightAllRooms(const char* why);
 // With changedAt, fresh running/completed solves (gathered after it) are retained; 0 forces the normal refresh. With lamps,
 // only the rooms whose light list holds one of them (lamps that only moved).
 // Watches this lot's completion for a furniture refresh, with a 1500 ms fallback and bounded 6 s lifetime.
-int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0);
+// editNet (12/10): a lamp edit's safety net (LampMarkFilter): the rooms sent are tagged urgent (tier 2) and the lamp edit
+// hold (AtriumHold) shows them with the other stories
+int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt = 0, const uintptr_t* lamps = nullptr, int lampCount = 0,
+               bool editNet = false);
 // Render thread: RelightLot by the lot's 64-bit id (as LotLightBridge tracks lamps); -1 = not loaded. For a lamp deleted
 // in Build mode (07/10): no lamp entry update runs, so neither LampMarkFilter nor AfterChangedWalk's cross-story sends
 // always see it, and the outdoor rooms of the other stories (the walls) kept the deleted lamp in their light lists.
@@ -124,11 +135,17 @@ float CrossLampReach(const void* room, const void* light, const float* point);
 bool GroupPending(const void* room);
 // A lamp edit's rooms are waiting for or in their solve (RoomLightQueue: a larger budget per frame meanwhile)
 bool LampEditPending();
-// Lamp switches all at once (AtriumHold, render thread): of the rooms a lamp edit marked (the urgent list) on stories their
-// lot shows (its story, and an atrium's rooms below it), how many are still gathered or solved or ended no solve begun after
-// the switch whose LampMarkFilter::SwitchSerial is `since`;
-// `visible` gets how many there are
-int SwitchRoomsPending(unsigned long since, int* visible = nullptr);
+// Lamp edits all at once (AtriumHold, render thread; 12/10, was SwitchRoomsPending): of the rooms lamp edits marked (the urgent
+// list, the safety net's tier 2 included) whose latest mark has a LampMarkFilter::EditSerial above `after`, on a story other
+// than the lamps' own (OnEditStory), how many are still gathered or solved or ended no solve begun after their mark;
+// `others` gets how many such rooms there are, `ownPending` how many of the own stories' rooms still wait, `ownTotal` how many
+// own stories' rooms there are
+int EditRoomsPending(unsigned long after, int* others = nullptr, int* ownPending = nullptr, int* ownTotal = nullptr);
+// The room is on the story of a lamp an edit changed in the last 5 s (its own room's story, tier 0): the edit hold never
+// holds its maps (12/10). Any thread.
+bool OnEditStory(const void* room);
+// How many urgent rooms reached the 8 s cap still waiting for their solve (RoomLightQueue's "settled" log: urgency expired)
+long UrgentExpiredPending();
 // This thread is in step 1 of a room's solve, where the game locks the room's maps (AtriumHold keeps only those)
 bool InMapLockStep();
 // The solve's end and its map lock step are hooked: lamp switches can be shown all at once (else they change room by room)

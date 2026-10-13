@@ -4,12 +4,14 @@
 #include "features/terrain_lighting_policy.h"
 #include "features/native_terrain_sampler.h"
 #include "features/shader_patches.h"
+#include "features/lamp_reach.h"
 #include <d3dcompiler.h>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -570,16 +572,223 @@ O main(float4 p:POSITION,float2 uv:TEXCOORD0){O o;o.p=p;o.a=uv;o.b=float3(uv,1);
     Release(normal);Release(material);Release(mask);Release(white);Release(detail);Release(lamp);
 }
 
+// ---- Per-pixel lamp law of outdoor objects, fences and windows (12/10, realistic reach). ----
+// The law of an outdoor wall texel (lamp_reach.h) at distance d, before the texel clamp: Gain x N.l / d^2 x Share
+void ReachLawTable() {
+    const int before = checks;
+    float r0, R;
+    LampReach::Radii(85.f, r0, R);
+    // the garden post is a story-0 lot lamp: 2 entries in the outdoor rooms' light lists (LampReach::Entries)
+    Check(Near(r0, 3.5f) && Near(R, 15.f) && Near(LampReach::Gain(85.f, 2.f), 42.5f), "garden post (range 42.5 x intensity 2): r0 3.5 m, R 15 m, gain 42.5");
+    Check(Near(LampReach::Gain(42.5f * 3.4f, 2.f) * 3.4f, 245.65f), "the same post at intensity 3.40: E0 x gain 245.65 (fitted 246)");
+    Check(LampReach::Entries(true, 0) == 2.f && LampReach::Entries(true, 1) == 1.f && LampReach::Entries(false, 0) == 1.f && Near(LampReach::Gain(85.f, 1.f), 21.25f),
+          "one entry (a world lamp, a lot lamp of another story): half the story-0 lot lamp's gain");
+    // wall row (c3.x 0.309) of the object-law analysis for the post at intensity 2: .309 / .236 / .066 / .005 at 3 / 6 / 8 / 12 m
+    const float wall[4] = {.309f, .236f, .066f, .005f}, at[4] = {3, 6, 8, 12};
+    for (int i = 0; i < 4; ++i) {
+        const float texel = std::min(1.f, 2.f * LampReach::Gain(85.f, 2.f) / (at[i] * at[i]) * LampReach::Share(at[i], r0, R));
+        Check(std::fabs(texel * .309f - wall[i]) < .0015f, "reach law reproduces the analysis' wall row");
+    }
+    for (int i = 0; i <= 400; ++i) { // the form the shader evaluates: min(1, r0^2/d^2 x win^2) against Share
+        const float d = .05f + i * .05f, q = d * d / (R * R), win = std::clamp(1.f - q * q, 0.f, 1.f);
+        const float shader = std::min(1.f, r0 * r0 / (d * d) * win * win), cpu = LampReach::Share(d, r0, R);
+        Check(d <= r0 ? shader >= .975f * cpu : std::fabs(shader - cpu) <= 1e-5f + 1e-5f * cpu, "shader form of the reach share within 2.5% of the walls' (only up to r0)");
+    }
+    for (float w : {0.f, -1.f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        LampReach::Radii(w, r0, R);
+        Check(Near(r0, 3.5f) && Near(R, 15.f) && Near(LampReach::Gain(w, 2.f), 42.5f), "unreadable lamp weight counts as 85");
+    }
+    std::printf("Reach law table: %d checks\n", checks - before);
+}
+
+uint32_t Fnv(const std::vector<DWORD>& t) { DWORD h = 2166136261u; for (DWORD w : t) h = (h ^ w) * 16777619u; return h; }
+// "approximately N instruction slots used" of D3DDisassemble, -1 when it does not disassemble
+int Slots(const std::vector<DWORD>& t) {
+    ID3DBlob* dis = nullptr;
+    if (FAILED(D3DDisassemble(t.data(), t.size() * 4, 0, nullptr, &dis)) || !dis) return -1;
+    const std::string text(static_cast<const char*>(dis->GetBufferPointer()), dis->GetBufferSize());
+    Release(dis);
+    const auto at = text.find("approximately ");
+    return at == std::string::npos ? 0 : std::atoi(text.c_str() + at + 14);
+}
+// Both variants of the three patchers over every pixel shader under the roots (read-only: Light Probe captures, refused
+// shaders, census). Prints one FIRST line per shader with the first-law outputs' hashes, to compare with the same walk of
+// the previous source.
+void ObjectLawPatches(Gpu& gpu, const std::wstring& roots) {
+    const int before = checks;
+    std::vector<std::vector<DWORD>> shaders;
+    std::vector<uint32_t> seen;
+    size_t files = 0;
+    for (size_t from = 0; from <= roots.size();) {
+        size_t to = roots.find(L';', from);
+        if (to == std::wstring::npos) to = roots.size();
+        const std::filesystem::path root = roots.substr(from, to - from);
+        from = to + 1;
+        if (root.empty()) continue;
+        Check(std::filesystem::exists(root), "object law shader root exists");
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (!it->is_regular_file() || it->path().extension() != ".bin") continue;
+            const auto bytes = it->file_size();
+            if (bytes < 8 || bytes > 262144 || bytes % 4) continue;
+            std::ifstream f(it->path(), std::ios::binary);
+            std::vector<DWORD> code(static_cast<size_t>(bytes) / 4);
+            f.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(bytes));
+            if (!f || code[0] != 0xFFFF0300u) continue;
+            ++files;
+            const uint32_t h = Fnv(code);
+            if (std::find(seen.begin(), seen.end(), h) != seen.end()) continue;
+            seen.push_back(h);
+            shaders.push_back(std::move(code));
+        }
+    }
+    std::printf("Object law: %zu ps_3_0 files, %zu distinct shaders\n", files, shaders.size());
+    Check(!shaders.empty(), "object law shaders found");
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    constexpr size_t kDelta = N * (5 + 7 * 4 - 3 * 4) + 3; // per lamp 3 instructions (12 tokens) become 8 (a mad and 7 of 4 tokens), then mov_sat
+    struct Tally { int first = 0, reach = 0, refusedReach = 0, created = 0, maxSlots = 0; } tally[3];
+    const char* names[3] = {"fence", "object", "window"};
+    for (const auto& original : shaders) {
+        std::string line = std::format("FIRST {:08X}", Fnv(original));
+        for (int p = 0; p < 3; ++p) {
+            std::vector<DWORD> variant[2];
+            bool ok[2] = {};
+            DWORD reachConst = 0, expectReach = 0;
+            for (int reach = 0; reach < 2; ++reach) {
+                auto t = original;
+                const bool r = reach != 0;
+                if (p == 0) { ShaderPatches::InstancedPatch o; ok[reach] = ShaderPatches::PatchInstancedLamps(t, o, r) && (!r || o.pixelLamps);
+                    if (r && ok[reach]) { reachConst = o.reachConst; expectReach = o.coneConst + 2 * N; } }
+                else if (p == 1) { ShaderPatches::ObjectLampPatch o; ok[reach] = ShaderPatches::PatchObjectLampPs(t, o, r);
+                    if (r && ok[reach]) { reachConst = o.reachConst; expectReach = o.lampParamConst + 1 + 4 * N; } }
+                else { ShaderPatches::WindowOutdoorPatch o; ok[reach] = ShaderPatches::PatchWindowOutdoor(t, o, r);
+                    if (r && ok[reach]) { reachConst = o.reachConst; expectReach = o.planConst + 2; } }
+                if (!ok[reach]) { Check(t == original, "refused law patch leaves the shader unchanged"); continue; }
+                variant[reach] = std::move(t);
+                const int slots = Slots(variant[reach]);
+                Check(slots > 0, "patched law shader disassembles");
+                Check(slots <= 512, "patched law shader within the ps_3_0 512 instruction slots");
+                tally[p].maxSlots = std::max(tally[p].maxSlots, slots);
+                if (gpu.dev) { IDirect3DPixelShader9* s = nullptr; const bool created = SUCCEEDED(gpu.dev->CreatePixelShader(variant[reach].data(), &s));
+                    Check(created, "native D3D9 creates the patched law shader"); tally[p].created += created; Release(s); }
+                ++(reach ? tally[p].reach : tally[p].first);
+            }
+            Check(!ok[1] || ok[0], "the reach variant is accepted only where the first law is");
+            if (ok[0] && !ok[1]) ++tally[p].refusedReach;
+            if (ok[1]) {
+                Check(reachConst && reachConst == expectReach, "reach rows right after the lamp rows (one upload)");
+                Check(variant[1].size() == variant[0].size() + kDelta, "reach variant = first law + 5 instructions per lamp + the clamp");
+            }
+            line += std::format(" {}={}", names[p], ok[0] ? std::format("{:08X}", Fnv(variant[0])) : std::string("-"));
+        }
+        std::printf("%s\n", line.c_str());
+    }
+    for (int p = 0; p < 3; ++p)
+        std::printf("Object law %s: first law %d, reach %d (refused where the first is accepted: %d), created on D3D9 %d, most slots %d\n", names[p], tally[p].first,
+                    tally[p].reach, tally[p].refusedReach, tally[p].created, tally[p].maxSlots);
+    std::printf("Object law patches: %d checks\n", checks - before);
+}
+
+// GPU law: a synthetic fence-shaped shader (COLOR0 added once, TEXCOORD1.zw world xz, TEXCOORD2 normal and world y), patched
+// both ways, one lamp, a black atlas: the output is the lamp term, compared with the CPU law at every pixel (2 LSB).
+void ObjectLawPixels(Gpu& gpu) {
+    if (!gpu.dev) return;
+    const int before = checks;
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    auto ps = Compile(R"(
+sampler2D base:register(s0); float4 k:register(c0);
+float4 main(float4 c:COLOR0,float4 uv:TEXCOORD1,float4 n:TEXCOORD2):COLOR0{
+float3 s=max(tex2D(base,uv.xy).rgb,k.xyz);float3 t=s+c.rgb;return float4(t*k.w,n.w*k.w);}
+)", "ps_3_0");
+    const auto vsCode = Compile(R"(
+float4 rows[3]:register(c0);
+struct O{float4 p:POSITION;float4 c:COLOR0;float4 uv:TEXCOORD1;float4 n:TEXCOORD2;};
+O main(float4 p:POSITION,float2 uv:TEXCOORD0){O o;o.p=p;o.c=0;
+float3 w=rows[0].xyz+uv.x*rows[1].xyz+uv.y*rows[2].xyz;o.uv=float4(uv,w.x,w.z);o.n=float4(rows[0].w,rows[1].w,rows[2].w,w.y);return o;}
+)", "vs_3_0");
+    IDirect3DVertexShader9* vs = nullptr;
+    Check(!vsCode.empty() && SUCCEEDED(gpu.dev->CreateVertexShader(vsCode.data(), &vs)), "law fixture VS");
+    IDirect3DTexture9* black = nullptr;
+    Check(SUCCEEDED(gpu.dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &black, nullptr)), "law black texture");
+    if (black) { D3DLOCKED_RECT r{}; black->LockRect(0, &r, nullptr, 0); *static_cast<DWORD*>(r.pBits) = 0; black->UnlockRect(0); }
+    for (bool reach : {false, true}) {
+        auto code = ps;
+        ShaderPatches::InstancedPatch o;
+        const bool ok = !code.empty() && ShaderPatches::PatchInstancedLamps(code, o, reach) && o.pixelLamps;
+        Check(ok, "synthetic fence shader takes the per-pixel lamps");
+        if (!ok) { ID3DBlob* d = nullptr; if (!ps.empty() && SUCCEEDED(D3DDisassemble(ps.data(), ps.size() * 4, 0, nullptr, &d))) { std::printf("%s\n", static_cast<char*>(d->GetBufferPointer())); d->Release(); } continue; }
+        auto* shader = gpu.Shader(code);
+        if (!shader || !vs || !black) { Release(shader); continue; }
+        gpu.dev->SetTexture(0, black); gpu.dev->SetTexture(o.atlasSampler, black);
+        // pixel world position: x 0.5 .. 25 m along the image, z 0 .. 8 m down it, y 0; normal -x (N.l = x / d); lamp head at (0, 2, 0)
+        const float rows[3][4] = {{.5f, 0, 0, -1}, {24.5f, 0, 0, 0}, {0, 0, 8, 0}};
+        gpu.dev->SetVertexShaderConstantF(0, rows[0], 3);
+        for (float w : {85.f, 144.5f}) {
+            // reach: E0 x gain through the 8-bit range (w 85) and over the texel clamp near the lamp (w 144.5, red 4x over it);
+            // first law: the colour itself
+            const float reachMid[3] = {.05f, .02f, .01f}, reachHigh[3] = {1.f, .3f, .05f}, firstE0[3] = {.9f, .5f, .25f};
+            const float* e0 = !reach ? firstE0 : w < 100.f ? reachMid : reachHigh;
+            float r0, R; LampReach::Radii(w, r0, R);
+            const float g = reach ? LampReach::Gain(w, 2.f) : 1.f, radius = reach ? R : 7.8f;
+            const float base[4] = {0, 0, 0, 1}; // k: the base material term 0, the output scale 1
+            gpu.dev->SetPixelShaderConstantF(0, base, 1);
+            float atlas[4] = {1, 1, 0, 0}, strength[4] = {1, 0, 0, 0}, weight[4] = {1, 0, 1, 0};
+            gpu.dev->SetPixelShaderConstantF(o.atlasConst, atlas, 1); gpu.dev->SetPixelShaderConstantF(o.strengthConst, strength, 1);
+            gpu.dev->SetPixelShaderConstantF(o.groundWeightConst, weight, 1);
+            float lamps[1 + 4 * N + 2][4] = {};
+            lamps[0][0] = 1; lamps[0][1] = 1; lamps[0][3] = 1e-4f;
+            for (unsigned k = 0; k < N; ++k) { lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; lamps[2 + 2 * k][3] = lamps[1 + 2 * N + 2 * k][3] = lamps[2 + 2 * N + 2 * k][3] = 1; }
+            lamps[1][0] = 0; lamps[1][1] = 2; lamps[1][2] = 0; lamps[1][3] = 1.f / (radius * radius);
+            for (int i = 0; i < 3; ++i) lamps[2][i] = e0[i] * g;
+            lamps[1 + 4 * N][0] = r0 * r0;
+            gpu.dev->SetPixelShaderConstantF(o.lampParamConst, lamps[0], 1 + 4 * N + (reach ? 2 : 0));
+            const auto px = gpu.Render(shader, vs);
+            int worst = 0, wGot = 0, wWant = 0;
+            float wD = 0;
+            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                // D3D9 pixel centres lie on whole screen coordinates: clip -1 is pixel 0's centre (uv 0), not its left edge
+                const float u = x / 64.f, v = y / 64.f, wx = .5f + 24.5f * u, wz = 8 * v;
+                const float d2 = wx * wx + 4 + wz * wz, d = std::sqrt(d2), nl = std::clamp(wx / d, 0.f, 1.f);
+                for (int ch = 0; ch < 3; ++ch) {
+                    float q = reach ? e0[ch] * g * nl / d2 * std::min(1.f, r0 * r0 / d2 * std::pow(std::clamp(1.f - (d2 / (R * R)) * (d2 / (R * R)), 0.f, 1.f), 2.f))
+                                    : e0[ch] * nl * std::pow(std::clamp(1.f - d2 / (radius * radius), 0.f, 1.f), 2.f);
+                    q = std::clamp(q, 0.f, 1.f);
+                    const int got = int((px[y * 64 + x] >> (16 - 8 * ch)) & 255), want = int(std::lround(q * 255));
+                    if (std::abs(got - want) > worst) worst = std::abs(got - want), wGot = got, wWant = want, wD = d;                }
+            }
+            Check(worst <= 2, reach ? "GPU reach law matches the walls' law at every pixel (2 LSB)" : "GPU first law unchanged at every pixel (2 LSB)");
+            std::printf("GPU %s law, w %.1f: largest difference %d LSB over 64x64 pixels (d 2-25.9 m; at d %.2f m: %d for %d)\n", reach ? "reach" : "first", w, worst, wD, wGot, wWant);
+        }
+        gpu.dev->SetTexture(0, nullptr); gpu.dev->SetTexture(o.atlasSampler, nullptr);
+        gpu.dev->SetPixelShader(nullptr); gpu.dev->SetVertexShader(nullptr);
+        Release(shader);
+    }
+    Release(vs); Release(black);
+    std::printf("Object law pixels: %d checks\n", checks - before);
+}
+
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const auto start = std::chrono::steady_clock::now();
     Policies(); std::printf("Policies: %d checks, %d failures\n", checks, failures);
+    ReachLawTable();
     SamplerRestoration(); std::printf("Sampler restoration complete\n"); Gpu gpu;
     Patches(gpu, argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path());
     if (argc > 3 && argv[2][0] && argv[3][0]) LotPixels(gpu, argv[2], argv[3]);
     if (argc > 4 && argv[4][0]) WallPixels(gpu, argv[4]);
     if (argc > 5 && argv[5][0]) InstancedPixels(gpu, argv[5]);
     if (argc > 6 && argv[6][0]) TerrainCompositionPixels(gpu, argv[6]);
+    ObjectLawPixels(gpu);
+    // the shader roots of the object law coverage: argument 7, or APEX_OBJECT_LAW_ROOTS (run.ps1 -ObjectLawRoots); ';'-separated
+    std::wstring lawRoots = argc > 7 ? argv[7] : L"";
+    if (lawRoots.empty()) {
+        wchar_t buffer[4096] = {};
+        const DWORD n = GetEnvironmentVariableW(L"APEX_OBJECT_LAW_ROOTS", buffer, 4096);
+        if (n > 0 && n < 4096) lawRoots = buffer;
+    }
+    if (!lawRoots.empty()) ObjectLawPatches(gpu, lawRoots);
+    else std::printf("Object law coverage over captured shaders not run (no -ObjectLawRoots)\n");
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::printf("Terrain lighting: %d checks, %d failures; harness %.1f ms (not game FPS)\n", checks, failures, ms);
     return failures ? 1 : 0;

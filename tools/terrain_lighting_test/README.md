@@ -63,6 +63,22 @@ Coverage includes:
   new-world selection. Optional `WorldReferenceSource` reproduces the old cache
   behavior from an unchanged `lot_light_bridge.cpp` snapshot.
 
+Per-pixel lamp law of outdoor objects, fences and windows (12/10, realistic reach):
+
+- `ReachLawTable`: `features/lamp_reach.h` against the walls' row of the analysis (garden post, c3.x 0.309: 0.309 /
+  0.236 / 0.066 / 0.005 at 3 / 6 / 8 / 12 m), the shader form of the share within 2.5% of `ReachShareImpl` (only up to
+  r0), unreadable lamp weights.
+- `ObjectLawPixels` (native D3D9): a synthetic fence-shaped pixel shader patched both ways, one lamp at 2 m over a
+  64 x 64 sweep of positions (d 2 to 26 m, N.l from about 0.06 to 1), compared at every pixel with the CPU law: the first law
+  and the reach law (through the 8-bit range and over the texel clamp) within 1-2 LSB. D3D9 pixel centres lie on whole
+  screen coordinates: pixel x reads uv x / 64.
+- `ObjectLawPatches` (with `-ObjectLawRoots 'folder;folder'`, for example the Light Probe `Captures` and
+  `ShadersRecusados` folders): every distinct `ps_3_0` there through `PatchInstancedLamps`, `PatchObjectLampPs` and
+  `PatchWindowOutdoor`, both variants: a refusal leaves the shader unchanged, the reach variant only where the first law is
+  accepted, its rows right after the lamp rows and exactly 5 instructions per lamp plus the clamp more, `D3DDisassemble`
+  within 512 slots, `CreatePixelShader` on native D3D9. One `FIRST` line per shader gives the first-law outputs' FNV, to
+  compare with the same walk of the previous `shader_patches.cpp`.
+
 The reported sampler-guard cost is an isolated driver CPU benchmark, not game FPS
 or end-to-end lighting latency. A supported smooth terrain draw adds one native
 texture read and one alpha move. No smoothing means no native-alpha alias.
@@ -89,5 +105,7 @@ refusal of shared, mixed or saturated multipliers. Native D3D9 readback compares
 both multiplier equations at five day/night weights and eight brightness gains.
 The executable only reads captures and prints results; it does not install files.
 These checks do not substitute for visual gameplay validation.
+
+The resource suite also checks the realistic reach variant of the object and fence draws (the walls' scale times the slider trims, the reach R and lamp weight in the lamp rows, the r0^2 rows after the cones, every row restored, the first law's values with it off) and that a fence lamp is tested from the group's piece nearest it. Since the 12/10 review it also covers the lamp weight per list entry (`LampReach::Entries`: 2 for a story-0 lot lamp, else 1), the native wall scale's 2 s freshness (`NativeWallScale`, extracted with `DrawWallGain`; a stale daytime 0 gives the night value 1), a refused reach copy (the first law draws, the refusal is counted), fences without placed lamps keeping the first law, and draws without placed lamps not counted as reach draws. `DrawWindowOutdoor` is not extracted (its rows are checked by review only).
 
 The resource suite extracts the current object lamp picker and cone functions as well as the draw paths. Its fixture covers full-daylight native fallback, the expanded cone upload/restoration block, upward-only atlas mode, legacy centre-cone callers, and wall bloom alpha/depth/stencil restoration. Group discovery, wall blocking, atlas production and wet/mask resource construction are controlled fixture dependencies; these checks do not validate those producers or gameplay.

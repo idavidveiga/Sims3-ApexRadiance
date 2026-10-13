@@ -85,13 +85,13 @@ std::unordered_map<Key, LampState, KeyHash> g_sig; // (tree level, light) -> the
 // stories (05/10, F8: nothing sent its lot again, and the rooms that gathered while the game registered it missed it)
 std::unordered_map<uintptr_t, uintptr_t> g_lampStory; // light -> tree level (under g_mx)
 
-// A lamp switched on or off, or moved (the lighting is refreshed then too, kept cheap): a switch waits 120 ms; a move still waits 300 ms after its last change (a drag:
-// once when it stops). At most once per kLotGap per lot; never while dusk/dawn switches every lamp at once.
+// A lamp switched on or off, or moved (the lighting is refreshed then too, kept cheap): a switch waits 120 ms; a move still waits 200 ms after its last change (a drag:
+// once when it stops). At most once per RoomAmbientPolicy::LampLotGap per lot (2 s; 500 ms for a lamp into another room or
+// story, or many lamps, 12/10); never while dusk/dawn switches every lamp at once.
 // Not the whole world as the shortcut: only the rooms of that lot (every story), on the light tree thread, and the rigs.
 // Since 05/10 the rooms that take an edited lamp are sent at once by the edit itself (LevelLightShare, "Lamp edits first"),
 // so this is the safety net: rooms gathered after the change keep their solve, and for lamps that only moved (same room, on
 // or off as before) only the rooms whose list holds them are sent.
-constexpr DWORD kLotGap = 2000;
 constexpr float kMoveMin = 0.10f; // m: animated lamps wobble less
 constexpr DWORD kSelfWindow = 10000; // ms
 constexpr int kSelfMax = 3;          // more switches on or off than this within kSelfWindow: a light switching itself, left out
@@ -168,6 +168,19 @@ void NoteUserSwitch(DWORD tick) {
 // The night level at the last Present (-1 = no world): while dusk or dawn switches every lamp, switches are not lamp edits
 std::atomic<float> g_nightLevel{-1.0f};
 std::atomic<float>& NightLevelRef() { return g_nightLevel; }
+// 12/10, lamp edits all at once (AtriumHold): every player edit (switch, value, move, drag step, a lamp added or removed)
+// starts or extends the edit hold. The serial grows by one at each: the room solves are stamped with it (RoomLightQueue
+// NoteSolveStart), so a room counts as solved for an edit only by a solve begun after it, even in the same tick step.
+std::atomic<DWORD> g_editLast{0};
+std::atomic<unsigned long> g_editSerial{0};
+std::atomic<long> g_editEvents{0};
+void NoteEditNow(DWORD tick) {
+    const float night = g_nightLevel.load(std::memory_order_relaxed);
+    if (night < 0.0f || (night > 0.02f && night < 0.98f)) return; // no world, or dusk / dawn switching every lamp
+    g_editSerial.fetch_add(1, std::memory_order_relaxed);
+    g_editLast.store(tick | 1, std::memory_order_release); // after the serial: a reader of the tick sees its serial
+    g_editEvents.fetch_add(1, std::memory_order_relaxed);
+}
 
 inline void Mix(uint64_t& h, uint32_t v) { h = (h ^ v) * 1099511628211ull; }
 inline void MixDwords(uint64_t& h, uintptr_t at, int n) {
@@ -254,10 +267,14 @@ bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
                     LotDue& pending = g_lotDue[tracker];
                     const DWORD tick = GetTickCount();
                     pending.allRooms = true;
+                    // 12/10: marked as a relocation, so its safety net keeps the full resend (changedAt 0, the F8 bug
+                    // below) while other whole-lot refreshes now keep their fresh solves
+                    pending.relocated = true;
                     pending.switchOnly = false;
                     pending.changed = tick;
                     pending.due = (tick + RoomAmbientPolicy::LampRefreshDelay(false)) | 1;
                     g_lampEvents.fetch_add(1, std::memory_order_relaxed);
+                    NoteEditNow(tick); // a player's edit too: the edit hold covers the stories it leaves and enters
                 }
                 story = tl;
             }
@@ -338,6 +355,9 @@ bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
         g_kept.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
+    // 12/10: every edit that reaches its rooms (switch, value, move, drag step) starts or extends the edit hold, before the
+    // rooms are marked (MarkUrgent stamps them with this serial)
+    if (edit) NoteEditNow(GetTickCount());
     if (!g_on.load(std::memory_order_relaxed)) {
         g_off.fetch_add(1, std::memory_order_relaxed);
         if (edit) {
@@ -484,8 +504,9 @@ void OnPresent(float nightLevel) {
         std::lock_guard<std::mutex> lk(g_mx);
         for (auto& [tracker, d] : g_lotDue) {
             if (!d.due || static_cast<int32_t>(now - d.due) < 0) continue;
-            if (d.last && now - d.last < kLotGap) { // refreshed a moment ago: once more when the gap is over
-                d.due = (d.last + kLotGap) | 1;
+            // refreshed a moment ago: once more when the gap is over (12/10: 500 ms for a relocation or many lamps, 2 s for switches)
+            if (const DWORD gap = RoomAmbientPolicy::LampLotGap(d.relocated || d.allRooms); d.last && now - d.last < gap) {
+                d.due = (d.last + gap) | 1;
                 continue;
             }
             d.due = 0;
@@ -508,8 +529,10 @@ void OnPresent(float nightLevel) {
         const int sent = !r.allRooms && r.switchCount > 0
                              ? LevelLightShare::RelightLampSwitch(r.tracker, r.relocated ? "a lamp moved into another room" : r.lampCount ? "a lamp switched or moved" : "a lamp switched", r.relocated ? 0 : r.changed,
                                                                   r.switched, r.switchCount, r.lamps, r.lampCount)
-                             : LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
-                                                           r.switchOnly || !r.allRooms ? r.changed : 0, r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount);
+                             // 12/10: only a relocation (a lamp into another room or story) resends every room (the F8
+                             // bug above); the other whole-lot refreshes (more than kLotLamps lamps) keep the fresh solves
+                             : LevelLightShare::RelightLot(r.tracker, r.switchOnly ? "a lamp switched" : r.relocated ? "a lamp moved into another room or story" : r.allRooms ? "a lamp switched or moved" : "a lamp moved",
+                                                           r.relocated ? 0 : r.changed, r.allRooms ? nullptr : r.lamps, r.allRooms ? 0 : r.lampCount, true);
         if (sent >= 0) g_lotRefreshes.fetch_add(1, std::memory_order_relaxed);
     }
     if (!run.empty()) {
@@ -522,6 +545,17 @@ long SwitchEventId() { return g_switchEvents.load(std::memory_order_relaxed); }
 unsigned long SwitchEventStart() { return g_switchStart.load(std::memory_order_relaxed); }
 unsigned long SwitchLastTick() { return g_switchLast.load(std::memory_order_relaxed); }
 unsigned long SwitchSerial() { return g_switchSerial.load(std::memory_order_relaxed); }
+bool LotRefreshDueSoon(unsigned long withinMs) {
+    if (!g_installed) return false;
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_mx);
+    return std::any_of(g_lotDue.begin(), g_lotDue.end(), [&](const auto& kv) {
+        return kv.second.due && static_cast<int32_t>(kv.second.due - now) < static_cast<int32_t>(withinMs);
+    });
+}
+unsigned long EditLastTick() { return g_editLast.load(std::memory_order_acquire); }
+unsigned long EditSerial() { return g_editSerial.load(std::memory_order_relaxed); }
+void NoteEdit() { NoteEditNow(GetTickCount()); }
 bool SwitchActive() {
     const DWORD last = g_switchLast.load(std::memory_order_relaxed);
     return g_installed && last && GetTickCount() - last <= kMassHoldMs;

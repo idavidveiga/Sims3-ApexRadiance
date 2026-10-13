@@ -31,7 +31,25 @@ inline bool AmbientMapsCompatible(float norm, float nextNorm, float base, float 
 inline bool RigFallbackDue(std::uint32_t now, std::uint32_t armed, bool sent) {
     return !sent && static_cast<std::uint32_t>(now - armed) >= 1500;
 }
-inline std::uint32_t LampRefreshDelay(bool switchOnly) { return switchOnly ? 120u : 300u; }
+// 12/10: a move waits 200 ms, the same quiet time that ends a drag (LevelLightShare kDragQuietMs), not 300
+inline std::uint32_t LampRefreshDelay(bool switchOnly) { return switchOnly ? 120u : 200u; }
+// 12/10: the safety net of a lamp moved into another room or story, or of many lamps, may run again after 500 ms (the
+// whole lot is sent, and a drag across rooms should not wait 2 s for its last position); a switch keeps 2 s
+inline std::uint32_t LampLotGap(bool relocatedOrAll) { return relocatedOrAll ? 500u : 2000u; }
+// 12/10: an edit's room stays urgent while it still waits for or is in its solve (states 1-3), at most 8 s after its
+// latest mark (a room of a paused lot must not keep the scheduler's first place for ever)
+inline bool UrgencyKept(std::uint32_t now, std::uint32_t until, std::uint32_t marked, int state) {
+    if (static_cast<std::int32_t>(now - until) < 0) return true;
+    return state >= 1 && state <= 3 && static_cast<std::uint32_t>(now - marked) < 8000u;
+}
+// 12/10, lamp edits all at once (AtriumHold): 0 = keep holding, 1 = complete (every other story solved since the edit and
+// the ground's chunks written), 2 = timeout (2.5 s after the latest edit, 4 s after the first). A drag is never decided
+// while it goes on; its first edit is its release (the caller restarts `sinceFirst` then), so it times out 2.5 s after it.
+inline int EditHoldOutcome(int pending, bool groundPending, std::uint32_t sinceLatest, std::uint32_t sinceFirst, bool dragging) {
+    if (dragging || sinceLatest < 150u) return 0; // the game's marks and the safety net send the rooms first
+    if (pending <= 0 && !groundPending) return 1;
+    return sinceLatest >= 2500u || sinceFirst >= 4000u ? 2 : 0;
+}
 inline bool GatherAfterChange(std::uint32_t started, std::uint32_t changed) {
     return static_cast<std::int32_t>(started - changed) > 0;
 }

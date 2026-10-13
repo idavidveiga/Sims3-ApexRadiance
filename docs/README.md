@@ -66,7 +66,7 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | Feature | Status |
 |---|---|
 | [Performance](features/performance/README.md): fifteen switches against stutters (file lookups, lot lighting, texture and cache compression, object lookups, scene scheduling, memory, scripts) | Released |
-| [Faster room lighting](features/performance/room-light-queue.md) with *Lamp switches all at once*: one lamp or a whole house changes in a single frame | Released (lamp switches all at once: Experimental, 2.7.0) |
+| [Faster room lighting](features/performance/room-light-queue.md) with *Lamp edits all at once* (was *Lamp switches all at once*): the lamp's own story at once, the other stories together in a single frame | Released (lamp switches all at once: Experimental, 2.7.0) |
 | [Room to save](features/performance/room-to-save.md), [Lighter window updates](features/performance/lighter-window-updates.md), [Faster scripts](features/performance/faster-scripts.md) | Experimental (released in 2.7.0) |
 | [Lot Streaming](features/performance/lot-streaming.md): lot detail farther away and smoother lot streaming (idavidveiga), off by default | Experimental (released in 2.7.0) |
 

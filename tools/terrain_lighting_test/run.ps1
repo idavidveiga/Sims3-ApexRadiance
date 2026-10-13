@@ -1,5 +1,7 @@
-param([Parameter(Mandatory=$true)][string]$Captures, [string]$OutDir = (Join-Path $env:TEMP 'ApexTerrainLightingTests'), [string]$ReferenceSource = '', [string]$EditReferenceSource = '', [string]$WorldReferenceSource = '', [string]$WallCapture = '', [string]$InstancedCapture = '', [string]$CompositionCapture = '')
+param([Parameter(Mandatory=$true)][string]$Captures, [string]$OutDir = (Join-Path $env:TEMP 'ApexTerrainLightingTests'), [string]$ReferenceSource = '', [string]$EditReferenceSource = '', [string]$WorldReferenceSource = '', [string]$WallCapture = '', [string]$InstancedCapture = '', [string]$CompositionCapture = '', [string]$ObjectLawRoots = '')
 $ErrorActionPreference = 'Stop'
+# Object, fence and window lamp law coverage: every ps_3_0 under these ';'-separated folders (read-only)
+$env:APEX_OBJECT_LAW_ROOTS = $ObjectLawRoots
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $PSScriptRoot 'compiler_env.ps1')
 Initialize-TerrainCompiler

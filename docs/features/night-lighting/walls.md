@@ -31,7 +31,9 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
 
 1. **Lamps of every story** ([level-light-share.md](level-light-share.md)) put the outdoor lamps of every story into
    every story's room 0 list and test them against the walls of the lamp's own story, so the light continues past the
-   floor line.
+   floor line. A floor a player placed on an upper story (a balcony, a deck) blocks a lamp below it: the wall behind a
+   balcony gets nothing from a lamp under the slab, while a lamp in front of the balcony still lights it, with a soft
+   edge the width of a 0.3 m lantern where its light passes the slab's edge.
 2. **Wall gain** multiplies the baked lamp term of the 58 ExteriorWall pixel shaders for each draw. For each recognised
    draw, Apex reads the constant that scales the baked map, writes `native x Brightness + (1 - night) x min(Brightness, 1)
    x 0.08` into its `.x`, draws, and restores the constant. At full night this is exactly `native x Brightness`; by day a
@@ -48,9 +50,8 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Lamps light walls | `paredesComLuz` | bool | on | | Off keeps the game's walls, by day and night |
-| Brightness | `forcaNasParedes` | float | 84% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
-| Light behind balconies | `luzSobSacadas` | bool | on | | Walls behind a balcony get a soft share of the light of lamps below it (35 to 45% at the edge, less deeper in); real walls still block. Relights every room when changed |
-| Strength | `forcaSobSacadas` | float | 45% | 10 to 100% | The share at the balcony edge |
+| Brightness | `forcaNasParedes` | float | 30% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
+| Realistic lamp reach | `alcanceRealistaDasLampadas` | bool | on | | Lamp light on outside wall texels is kept up to 3.5 m from the lamp, then falls as (3.5 / d)^2 more inside a smooth window ending at 15 m, for a range 42.5 x intensity 2 post (both scaled with sqrt(range x intensity): 2 to 5 m, 6 to 20 m). Replaces the upper-story distance share and, since 12/10, the steep-ray dimming of upper-story walls (`UpwardShare`: F7 20-31-19 / 20-31-21 showed it alone left story 3 dim; the slabs between stories and this law cover what it stood for). While it is on, the per-pixel lamps of outdoor objects, fences and windows follow the same law at the walls' scale ([objects-and-rigs.md](objects-and-rigs.md#realistic-reach-on-objects-fences-and-windows)). Relights every room when changed (`LevelLightShare::SetRealisticReach`) |
 
 Both apply live (pushed every frame). The lamps of every story are controlled by *Outdoor light between floors*
 (`luzExternaEntreAndares`), documented in [level-light-share.md](level-light-share.md). The wall gain works with
@@ -70,7 +71,10 @@ Both apply live (pushed every frame). The lamps of every story are controlled by
 
 ## Limitations
 
-- A balcony slab on the upper story does not block light going down: a room's blockers are its own story's walls.
+- A balcony slab blocks only light going up: a lamp on a balcony still lights the wall under it, and story planes use
+  the story's nominal floor height (split levels may be off).
+- The wall behind a balcony gets nothing from a lamp under the slab; light bouncing off the slab or the ground is not
+  modelled, so with no other lamp in view that wall keeps only the game's ambient light.
 - The gain scales everything baked in the wall map. The map is a lamp and room solve, so window light baked into it, if
   any, is scaled too (inferred).
 - The gain adds no light where the game baked none: no new lamps, no change to wall occlusion.
@@ -145,6 +149,8 @@ share. F7 on a wall shows the PS (1372 bytes or another table entry) and the dra
 - A signature cascade between stories, and a cross-story test without batch culling or the wall-mode byte: see
   [level-light-share history](../../history/night-lighting-level-light-share.md).
 - A daytime wall term of 25% of the unboosted lamp scale: too saturated; reduced to 8%.
+- A balcony share (*Light behind balconies*) lit the wall behind a slab from a lamp beneath it (2026-10-12, captures
+  18-38-41): see [level-light-share history](../../history/night-lighting-level-light-share.md).
 
 ## See also
 

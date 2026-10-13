@@ -37,7 +37,7 @@ Six changes to the queue, each checked against the Steam bytes and left off when
 6. **Empty light maps.** An object removal from a level's five light maps returns at once when the five maps are
    empty (the game walks them for twelve levels per removal).
 
-Two further parts handle lamp switches, *Lamp switches all at once* and *Quick update for lamp switches* (below), and
+Two further parts handle lamp edits, *Lamp edits all at once* and *Quick update for lamp switches* (below), and
 the stories of an atrium (a double-height room is one room per story) always change together.
 
 ## Settings
@@ -45,35 +45,54 @@ the stories of an atrium (a double-height room is one room per story) always cha
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Faster room lighting | `[patches.RoomLightQueue] enabled` | bool | on | | Turns all six changes and the lamp switch parts on. A missing key reads as on |
-| Lamp switches all at once (Experimental) | `[patches.RoomLightQueue] switchAllAtOnce` | bool | on | | A player's switch is shown in one frame once the rooms on screen have their final light (see "Lamp switches all at once" below); the quick pass is not used meanwhile |
+| Lamp edits all at once (Experimental; was *Lamp switches all at once*) | `[patches.RoomLightQueue] switchAllAtOnce` | bool | on | | After any lamp edit the lamp's own story shows its new light when solved, and the other stories change in one frame once their final light is ready (see "Lamp edits all at once" below); the quick pass is not used meanwhile |
 | Quick update for lamp switches (Experimental; shown only while the row above is off) | `[patches.RoomLightQueue] quickPass` | bool | on | | An approximate light first, refined room by room |
 
-### Lamp switches all at once
+### Lamp edits all at once
 
 An approximate light first can never match the final one: class 0 samples 1 point per tile and class 2 four
 (`0xFF36AC`), so rooms shown with a quick light correct themselves afterwards, by up to 17 levels, over about 2 s. This
-part shows one change instead, once the final light is ready. With `switchAllAtOnce` on (`AtriumHold`,
-`features/atrium_hold.{h,cpp}`):
+part shows one change per story group instead, once the final light is ready. Until 12/10 it held only switches, and held
+the lamp's own story too; moves and value edits then showed the stories one at a time over 1 to 20 s. With
+`switchAllAtOnce` on (`AtriumHold`, `features/atrium_hold.{h,cpp}`):
 
-- A player's switch (`LampMarkFilter::SwitchLastTick`) starts a hold (`AtriumHold::SwitchHolding`, also true in the very
-  frame of the switch, before the next Present). The quick pass is off (`QuickPassRoom`); the drain gives the switch's rooms
-  16 ms a frame.
-- Every map the switch's rooms (lamp-edit urgency) write waits at the game's UnlockRect, as an atrium's maps do. A map is
-  taken only when the game locks it in step 1 of the room's solve (`0x0069FA40`, its call `0x006A3D26` hooked by
-  `LevelLightShare`, `InMapLockStep`), never another texture the render thread locks while a room is mid-solve; at most
-  192 maps and 96 MB of copies, and a map with no memory for its copies is left to the game. The
-  furniture of those rooms keeps its rig lights (`lot_light_bridge.cpp`, `HoldRig`); the ground keeps its smoothed chunk
-  maps (`LightmapSmooth`); the per-pixel lamps (roofs, water, outdoor objects, trees) keep their list (`LotLightBridge`).
-- It ends when every room the switch marked on the camera's story (and the atrium's rooms below it) has ended a solve
-  begun after the latest switch (`LevelLightShare::SwitchRoomsPending`, `RoomLightQueue::SolvedSince`, from the solve
-  start and end hooks; a solve start is stamped with `LampMarkFilter::SwitchSerial`, so a solve begun in the switch's
-  own tick step counts as after it), and the ground's chunks are re-rendered, at least 150 ms after the latest switch;
-  at most 2.5 s after it (4 s after the first). Then the maps take their content and the others follow in the same frame.
-- The lamp object itself (its lit model) is the game's and changes at once. Recordings note `[switch] lamp switch shown
-  all at once, N ms ...`; the status line counts the switches and the last one's time.
-- It needs both solve hooks (the end `0x006A3E65`, Steam 1.67.2 only, and the lock step): without them the switches
-  change room by room as with the option off (`AtriumHold::AllAtOnce`). Turning Faster Room Lighting off ends any hold and
-  stops new ones (`AtriumHold::Clear`).
+- Every player edit starts or extends a hold (`LampMarkFilter::EditLastTick` / `EditSerial`): a switch, a value change,
+  a move or drag step, a lamp moved into another story, and a lamp added or removed (`LevelLightShare::AfterChangedWalk`,
+  `NoteEdit`; not while the loaded lots settle after a load, never at dusk or dawn). The hold is on in the very frame of
+  the edit, before the next Present. The quick pass is off (`QuickPassRoom`); the drain gives the edit's rooms 16 ms a
+  frame (6 ms while a lamp is dragged).
+- **The lamp's own story is never held** (`LevelLightShare::OnEditStory`: the story of an edited lamp's own room, tier 0,
+  for 5 s after its latest mark): its maps show as soon as its rooms are solved and follow a dragged lamp live.
+- Every map an urgent room of **another** story writes (the rooms taking the lamp's light, tier 1, and the rooms the
+  edit's safety net sends, tier 2) waits at the game's UnlockRect, as an atrium's maps do. A map is taken only when the
+  game locks it in step 1 of the room's solve (`0x0069FA40`, its call `0x006A3D26` hooked by `LevelLightShare`,
+  `InMapLockStep`), never another texture the render thread locks while a room is mid-solve; at most 192 maps and 96 MB
+  of copies. For a switch, the furniture of those stories keeps its rig lights (`lot_light_bridge.cpp`, `HoldRig`; the
+  own story's furniture waits only for its own room's solve), the ground keeps its smoothed chunk maps (`LightmapSmooth`)
+  and the per-pixel lamps (roofs, water, outdoor objects, trees) keep their list (`LotLightBridge`).
+- It ends, releasing every held map in one frame, when every room the edits marked on another story (hidden stories
+  above the camera included) has ended a solve begun after its latest mark (`LevelLightShare::EditRoomsPending`,
+  `RoomLightQueue::SolvedSince`; solve starts are stamped with `EditSerial`), no lot's safety net is due within 600 ms,
+  and for a switch the ground's chunks are re-rendered; at least 150 ms after the latest edit, at most 2.5 s after it or
+  4 s after the first (`RoomAmbientPolicy::EditHoldOutcome`). A drag is never released while it goes on: its other
+  stories keep their maps from before it, and its hold ends after it is let go (one hold per settled drag; 2.5 s after
+  the release at most; 30 s in all). If the 192 maps or 96 MB are reached, everything held is released at once ("cap").
+- The lamp object itself (its lit model) is the game's and changes at once.
+- Log, one line per hold: `[AtriumHold] Lamp edit: own story shown N ms, others released together M ms (K maps, B MB;
+  complete|timeout|cap)`. Recordings note `[switch] lamp edit shown all at once, N ms ...`. The status line counts holds,
+  timeouts, cap releases and the most maps one hold kept.
+- It needs both solve hooks (the end `0x006A3E65`, Steam 1.67.2 only, and the lock step): without them every story
+  changes as it is solved, as with the option off (`AtriumHold::AllAtOnce`). Turning Faster Room Lighting off ends any
+  hold and stops new ones (`AtriumHold::Clear`); a world change clears the urgent rooms, so the hold releases at once.
+
+### An edit's rooms, sooner (12/10)
+
+- A lamp edit's room is drained on any lot, not only the priority lot (the finished-lot check still applies), and while
+  it is the current room the lot being played keeps the game's budget, at most 6 ms, while the camera moves
+  ([lot-lighting-motion.md](lot-lighting-motion.md)).
+- An urgent room stays urgent while it still waits for or is in its solve (states 1 to 3), at most 8 s after its latest
+  mark (`RoomAmbientPolicy::UrgencyKept`); the "settled" log line ends with `ended: complete` or `ended: urgency expired`.
+- A move's safety net comes 200 ms after it (was 300 ms), the drag's quiet time.
 
 ### Quick update for lamp switches
 
@@ -104,6 +123,9 @@ at or under the lamp's height), the rooms near the stair openings of its story a
 story's outdoor rooms for an outdoor lamp. A lamp moved into another room, moved and switched, or more than 8 lamps at
 once still send the whole lot. A room that is queued and has not started its solve is skipped (its gather reads the
 lamps as they are when it starts), and when only lamps switched off, a room with an empty light list is left alone.
+Since 12/10 the rooms it sends, and the fresh solves it keeps that are still running, are urgent (tier 2) and held with
+the edit's other stories; only a lamp moved into another room or story resends every room (fresh solves of the other
+whole-lot refreshes are kept), and such a refresh may run again 500 ms after the last (2 s for switches).
 
 ### An atrium's stories together
 
@@ -200,8 +222,8 @@ In [`features/level_light_share.cpp`](../../../features/level_light_share.cpp):
 
 `features/room_light_queue.{h,cpp}`: `Start`, `Stop`, `Running`, `PriorityHook`, `Factor`, `Stranded`, `PickHook`,
 `DrainableRoom`, `EmptyRemovalHook`, `SetQuickPass`, `NoteSolveEnd`, `StatusText`, `RenderDeveloperUI`. Group
-`RoomLightQueue`. `features/atrium_hold.{h,cpp}`: `SetAllAtOnce`, `AllAtOnce`, `SwitchHolding`, `OnPresent`, `Clear`,
-`Status`.
+`RoomLightQueue`. `features/atrium_hold.{h,cpp}`: `SetAllAtOnce`, `AllAtOnce`, `SwitchHolding`, `EditHolding`,
+`OnPresent`, `Clear`, `Status`.
 
 ## Rejected approaches
 
@@ -209,7 +231,8 @@ In [`features/level_light_share.cpp`](../../../features/level_light_share.cpp):
   changes at once. An old `lightFade` key is ignored.
 - Holding every story's maps until an edit's first solves end: the lamp's story waited for a cascade of 2 to 4 s;
   replaced by fixing the causes (one round per atrium, the quick pass looking like its refinement) and keeping the hold
-  for atriums only.
+  for atriums only. The 12/10 edit hold is not this approach: it never holds the lamp's own story, only the other
+  stories, which before showed one at a time (not yet validated in game).
 
 Details in [history](../../history/performance-room-light-queue.md).
 

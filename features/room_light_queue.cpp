@@ -162,8 +162,8 @@ constexpr int kQuickSetsMax = 3;
 std::atomic<bool> g_endsSeen{false};
 // Every room's last solve end (GetTickCount; render thread): a lamp switch's furniture waits for its room's (AwaitingSwitchLight)
 std::unordered_map<uintptr_t, DWORD> g_lastEnd;
-// Every room's last solve start, and the start of its last finished solve, as LampMarkFilter::SwitchSerial at that moment
-// (render thread): lamp switches all at once wait for a solve that began after the switch (SolvedSince; a solve running at
+// Every room's last solve start, and the start of its last finished solve, as LampMarkFilter::EditSerial at that moment
+// (render thread; 12/10, was the switch serial): lamp edits all at once wait for a solve that began after the edit (SolvedSince; a solve running at
 // the switch read the lamps as they were). A tick would not do: a solve begun in the switch's own tick step (the lamp's room,
 // often picked in the same light tree update) compared before it, and its switch waited the whole kSwitchHoldMs (review 06/10)
 std::unordered_map<uintptr_t, DWORD> g_solveStart, g_lastSolved;
@@ -293,16 +293,27 @@ float __fastcall PriorityHook(BYTE* room) {
 }
 
 // The current room, when it is a room of the priority lot in state 3 (picked, not started or budget left), else null
-BYTE* DrainableRoom(const BYTE* tree) {
+BYTE* DrainableRoomImpl(const BYTE* tree, bool anyLot) {
     __try {
         BYTE* room = *reinterpret_cast<BYTE* const*>(tree + 0x74);
         if (!room || *reinterpret_cast<const int*>(room + 0xF0) != 3) return nullptr;
         const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
-        if (!mgr || !*reinterpret_cast<const BYTE*>(mgr + 0x280) || !PriorityLot(mgr)) return nullptr;
+        if (!mgr || !*reinterpret_cast<const BYTE*>(mgr + 0x280) || (!anyLot && !PriorityLot(mgr))) return nullptr;
         return room;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }
+}
+std::atomic<long> g_drainOffLot{0};
+// 12/10: a lamp edit's room (LampUrgency > 1) is drained on any lot, not only the priority lot's (an edit on a neighbouring
+// lot, or a lot the camera left, waited for the game's one step a frame); Drain keeps the finished-lot check, so its lot's
+// pass ran this frame (that lot is not paused)
+BYTE* DrainableRoom(const BYTE* tree) {
+    if (BYTE* room = DrainableRoomImpl(tree, false)) return room;
+    BYTE* room = DrainableRoomImpl(tree, true);
+    if (!room || LevelLightShare::LampUrgency(room) <= 1.0f) return nullptr;
+    g_drainOffLot.fetch_add(1, std::memory_order_relaxed);
+    return room;
 }
 BYTE* CurrentRoom(const BYTE* tree) {
     __try {
@@ -336,6 +347,7 @@ struct EditBurst {
     double apexMs = -1.0; // LevelLightShare::ApexSolveMs at the start
     double partMs[LevelLightShare::kApexTestParts] = {}; // ApexTestPartMs at the start
     long partCalls[LevelLightShare::kApexTestParts] = {};
+    long expired = 0; // LevelLightShare::UrgentExpiredPending at the start (12/10: "ended: urgency expired")
 };
 EditBurst g_burst;
 float GameSolveMs() {
@@ -360,6 +372,7 @@ void NoteEditBurst(bool lampEdit) {
         if (!g_burst.on) {
             g_burst = EditBurst{true, GetTickCount(), 0, g_drainMicros.load(std::memory_order_relaxed), GameSolveMs(), g_quickRooms.load(std::memory_order_relaxed), LevelLightShare::ApexSolveMs()};
             LevelLightShare::ApexTestPartMs(g_burst.partMs, g_burst.partCalls);
+            g_burst.expired = LevelLightShare::UrgentExpiredPending();
         }
         g_burst.frames++;
         return;
@@ -369,9 +382,11 @@ void NoteEditBurst(bool lampEdit) {
     const DWORD ms = GetTickCount() - g_burst.start;
     const float solved = GameSolveMs() - g_burst.solved;
     const float drained = static_cast<float>(g_drainMicros.load(std::memory_order_relaxed) - g_burst.drainMicros) / 1000.0f;
-    LOG_INFO(std::format("[RoomLightQueue] Lamp edit: its rooms settled after {} ms over {} frames; the game solved rooms for {:.0f} ms ({:.1f} ms a frame), "
+    // 12/10: "complete" = every urgent room solved; "urgency expired" = a room reached the 8 s cap still waiting (a paused lot)
+    const bool expired = LevelLightShare::UrgentExpiredPending() != g_burst.expired;
+    LOG_INFO(std::format("[RoomLightQueue] Lamp edit: its rooms settled after {} ms over {} frames (ended: {}); the game solved rooms for {:.0f} ms ({:.1f} ms a frame), "
                          "{:.0f} ms of it right after the pick; {} rooms took the quick pass first; Apex's own tests inside those solves: {}",
-                         ms, g_burst.frames, solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained,
+                         ms, g_burst.frames, expired ? "urgency expired" : "complete", solved, g_burst.frames ? solved / static_cast<float>(g_burst.frames) : 0.0f, drained,
                          g_quickRooms.load(std::memory_order_relaxed) - g_burst.quick, ApexPart(g_burst.apexMs)));
 }
 
@@ -405,8 +420,9 @@ void Drain(BYTE* tree, BYTE* before) {
         // a lamp switch whose rooms already show their quick solve: 4 ms (refinement in the background, see CheckQuickShown)
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         // a switch shown all at once waits for its rooms' final light: they take 16 ms a frame meanwhile (AtriumHold)
+        // a lamp edit held all at once (12/10: switches, values, moves; not while dragged) gets the 16 ms too
         const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
-                             : AtriumHold::SwitchHolding() ? 16.0f
+                             : AtriumHold::EditHolding() && !LevelLightShare::LampDragging() ? 16.0f
                              : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
                                         : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f;
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
@@ -610,12 +626,20 @@ void NoteSolveEnd(const void* room) {
     g_lastEnd[reinterpret_cast<uintptr_t>(room)] = now;
     if (g_lastSolved.size() > 16384) g_lastSolved.clear();
     const auto s = g_solveStart.find(reinterpret_cast<uintptr_t>(room));
-    g_lastSolved[reinterpret_cast<uintptr_t>(room)] = s != g_solveStart.end() ? s->second : LampMarkFilter::SwitchSerial();
+    g_lastSolved[reinterpret_cast<uintptr_t>(room)] = s != g_solveStart.end() ? s->second : LampMarkFilter::EditSerial();
 }
+// 12/10: stamped with LampMarkFilter::EditSerial (every edit, not only switches): the edit hold waits for a solve begun after
+// each room's latest mark
 void NoteSolveStart(const void* room) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
     if (g_solveStart.size() > 16384) g_solveStart.clear();
-    g_solveStart[reinterpret_cast<uintptr_t>(room)] = LampMarkFilter::SwitchSerial();
+    g_solveStart[reinterpret_cast<uintptr_t>(room)] = LampMarkFilter::EditSerial();
+}
+bool CurrentRoomUrgent() {
+    if (ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return false;
+    const BYTE* tree = g_tree.load(std::memory_order_relaxed);
+    const BYTE* room = tree ? CurrentRoom(tree) : nullptr;
+    return room && LevelLightShare::LampUrgency(room) > 1.0f;
 }
 bool SolvedSince(const void* room, unsigned long since) {
     if (!room || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return true; // unknown: never waited for
@@ -659,10 +683,10 @@ std::string StatusText() {
     if (!Running()) return "Off";
     const long frames = g_drainFrames.load(), solves = g_drainSolves.load();
     return std::format("On | viewed lot first {} ({} of {} priorities raised; a lamp edit's rooms first {}, its atrium stories with the lamp's room {}), no middle step {}, requeues keep the class {}, several rooms per frame {} ({} frames, "
-                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting), empty removals skipped {} ({} of {}), "
+                       "{} extra solves, {} finished, {:.1f} ms in all; {} frames with a lamp edit's rooms waiting, {} edit rooms drained outside the priority lot), empty removals skipped {} ({} of {}), "
                        "quick pass for lamp switches {} ({} rooms){}",
                        g_prioOn ? "on" : "off", g_prioBoosted.load(), g_prioCalls.load(), g_prioUrgent.load(), g_prioStacked.load(), g_stepOn ? "on" : "off", g_keepOn ? "on" : "off",
-                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
+                       g_drainOn ? "on" : "off", frames, solves, g_drainFinished.load(), g_drainMicros.load() / 1000.0, g_drainUrgent.load(), g_drainOffLot.load(), g_emptyOn ? "on" : "off", g_emptySkipped.load(),
                        g_emptyCalls.load(), g_quickPass.load() ? "on" : "off", g_quickRooms.load(), SolveTimes()) +
            " | an atrium's stories together: " + AtriumHold::Status();
 }

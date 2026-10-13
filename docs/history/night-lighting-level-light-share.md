@@ -490,3 +490,20 @@ reported colour concern was subsequently withdrawn; it is not recorded as a conf
 **Finding:** shared fence-group lamp brightness and directionless ground light on vertical object faces can obscure spatial lamp response. Deferred wall refresh requests can already be covered by a newer generation.
 
 **Outcome:** retain spatial fence lighting with native fallback, per-pixel object cones, vertical ground-light isolation and generation-aware wall refresh. Offline CPU/GPU exploration remains research rather than a shipped companion DLL. Final release identity and gameplay coverage are recorded in the validation page.
+
+### 2026-10-12: slabs block lamps below them; balcony share removed
+
+**Context:** commits `2c6d41f` to `f134a51` (released in 2.10.0) added *Light behind balconies* (`luzSobSacadas`,
+`forcaSobSacadas`): walls behind a balcony kept a soft share (35 to 45% at the edge) of a lower lamp's light, because the
+wall behind a 3 m deep balcony had stayed black beside its lit neighbours.
+
+**Finding:** snapshot 18-38-41: a red post stands 0.5 m behind a balcony's front edge, under the story-2 slab, so every
+ray from its head to the story-2 wall behind the balcony crosses a placed floor. The share left a red pool on that wall
+(red excess up to 68 at pixel (1459, 960), 79% of a directly lit ground-floor wall), and a window frame behind the balcony
+was red too (77/13/13 at (1950, 800)): the per-pixel object lamps tested walls only (`WallBlocks`).
+
+**Outcome:** the share is rejected. A placed floor of an upper story blocks a lamp below it, in the room solve
+(`OutdoorEntry`, `LampVis::SlabGate`) and for windows, objects and fences on the render thread (`LampVisibility`, over a
+copy of each story's placed floors); a ray passing a slab's edge keeps the share of a 0.3 m lantern. Both settings are
+removed; their keys are ignored when a configuration, profile or preset is loaded. Objects and windows standing above
+every lamp head around also lose the ground term (the height gate fences already had). Not yet checked in game.

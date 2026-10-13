@@ -41,8 +41,9 @@ void SetLotLightingBudgetMs(int ms);
 // switches show all at once)
 bool RoomQuickPass();
 void SetRoomQuickPass(bool on);
-// "Lamp switches all at once" under Faster room lighting ([patches.RoomLightQueue] switchAllAtOnce, default on): rooms,
-// furniture, ground and per-pixel lamps wait for the switch's final light and change together (AtriumHold)
+// "Lamp edits all at once" under Faster room lighting ([patches.RoomLightQueue] switchAllAtOnce, default on; 12/10: every
+// lamp edit, was switches only): the lamp's own story shows its new light when solved; the other stories' rooms (and, for a
+// switch, furniture, ground and per-pixel lamps) wait for their final light and change together (AtriumHold)
 bool RoomAllAtOnce();
 void SetRoomAllAtOnce(bool on);
 

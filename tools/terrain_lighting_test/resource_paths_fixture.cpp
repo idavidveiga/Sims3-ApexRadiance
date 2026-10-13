@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 #include "features/terrain_lighting_policy.h"
+#include "features/lamp_reach.h"
 
 struct FakeTexture {
     int id = 0, refs = 1;
@@ -107,13 +108,22 @@ void SetVsConst(FakeDevice* d,UINT r,const float* v,UINT n) { ++d->writes; ++d->
 namespace RigTracker { int fixtureMode=2;int CurrentMode(){return fixtureMode;} }
 namespace ShaderPatches {
 constexpr unsigned kObjectPixelLamps=8;
-struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true,pixelLamps=true;UINT groundWeightConst=39;};
-bool PatchObjectLampPs(std::vector<DWORD>&,ObjectPatch&){return true;}
-bool PatchInstancedLamps(std::vector<DWORD>&,ObjectPatch&){return true;}
+struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true,pixelLamps=true;UINT groundWeightConst=39;UINT reachConst=0;};
+bool PatchObjectLampPs(std::vector<DWORD>&,ObjectPatch&,bool=false){return true;}
+bool PatchInstancedLamps(std::vector<DWORD>&,ObjectPatch&,bool=false){return true;}
 }
-struct PatchedPs { FakeShader* ps=&replacementPs;ShaderPatches::ObjectPatch obj,inst; } objectPatch;
-int g_objLampPs=0;
-int g_fencePs=0;
+struct PatchedPs { FakeShader* ps=&replacementPs;ShaderPatches::ObjectPatch obj,inst; } objectPatch,reachPatch,refusedPatch{nullptr};
+int g_objLampPs=0,g_objLampPsReach=0;
+int g_fencePs=0,g_fencePsReach=0;
+// realistic reach (12/10): the fixture's PatchedFor returns objectPatch for the first law and reachPatch (reachConst set,
+// ResetGlobals) for the variant copy, or refusedPatch (no shader) while fixtureReachRefused
+uint32_t g_reachObjDraws=0,g_reachFenceDraws=0,g_reachWindowDraws=0,g_reachLawRefused=0;
+DWORD g_lotDrawTick=0;
+float g_nativeWallScale=1.f;
+DWORD g_nativeWallTick=0;
+constexpr float kPixelLampTrimUnit=.75f;
+bool fixtureReach=false,fixtureReachRefused=false,fixtureNoGroup=false;
+std::string ReachLawText(bool,bool,bool,float,const float(*)[4],int){return {};}
 std::atomic<bool> g_fenceFix{true};
 std::atomic<float> g_fenceStrength{1};
 std::atomic<int> g_fenceDrawn{0};
@@ -124,20 +134,26 @@ struct ObjectVsInfo {bool contractedLotUv=false;struct {int vertexLight=20,world
 ObjectVsInfo* g_curVsInfo=&objectVsInfo;
 FakeShader nativeVs{3},replacementVs{4};FakeShader* g_curVs=&nativeVs;
 float g_lampData[33][4]{};
-template<class Patch> PatchedPs& PatchedFor(FakeDevice*,int&,const char*,Patch){return objectPatch;}
+template<class Patch> PatchedPs& PatchedFor(FakeDevice*,int&,const char*,Patch,bool variant=false){return !variant?objectPatch:fixtureReachRefused?refusedPatch:reachPatch;}
 FakeShader* ObjectVsFor(FakeDevice*,FakeShader*){return &replacementVs;}
 int SelectLamps(float,float,float){return 1;}
-struct LampCone {float c1[4]={0,0,0,1},c2[4]={0,0,0,1};float spill=1;};
+struct LampCone {float c1[4]={0,0,0,1},c2[4]={0,0,0,1};float spill=1;float w=0;float entries=1;};
 LampCone g_lampCone[16];
 bool g_fenceConeLogged=false,g_lampConeLogged=false;
 
 #define LOG_INFO(...) ((void)0)
-namespace LevelLightShare {bool WallBlocks(const float*,const float*,float=0){return false;}}
+float fixtureVisibility=1;
+int visCalls=0;float firstVis[3]{}; // the first point a draw tests (fences: the piece nearest the lamp, 12/10)
+namespace LevelLightShare {bool WallBlocks(const float*,const float*,float=0){return false;}
+float LampVisibility(const float*,const float* p,float=.2f){if(visCalls++==0)std::memcpy(firstVis,p,12);return fixtureVisibility;}
+bool RealisticReachActive(){return fixtureReach;}}
+uint32_t g_objLampsLeftOut=0,g_objLampsDimmed=0,g_fenceLampsLeftOut=0,g_fenceLampsDimmed=0,g_objGroundGated=0;
 constexpr float kWindowWallSkip=.75f;
 bool ObjectLampPoint(const float (&m)[3][4],float (&at)[3]){for(int k=0;k<3;++k)at[k]=m[k][3];return false;}
-struct GroupCentre {float x=0,y=0,z=0,ext=0,a[3]{},b[3]{};};
+constexpr unsigned kGroupPieces=32;
+struct GroupCentre {float x=0,y=0,z=0,ext=0,a[3]{},b[3]{};float piece[kGroupPieces][3]{};unsigned pieces=0;};
 GroupCentre fixtureGroup;
-const GroupCentre* InstancedGroupCentre(FakeDevice*){return &fixtureGroup;}
+const GroupCentre* InstancedGroupCentre(FakeDevice*){return fixtureNoGroup?nullptr:&fixtureGroup;}
 std::map<FakeShader*,int> g_wetLotPs;
 FakeShader* g_replacementWetPs=&replacementPs;
 void EnsureWetReplacement(FakeDevice*){}
@@ -156,6 +172,10 @@ void ResetGlobals() {
     g_softEdges=false;g_wallEnabled=true;g_inOwnCall=false;g_lotRectMiss=false;g_haveLastEdgeRect=false;g_objDrawInfo.clear();
     g_curPs=&nativePs;g_replacementPs=&replacementPs;g_wallConst.clear();g_wallConst[g_curPs]=7;g_chunks.clear();
     fixtureHasRect=false;fixtureCapture=false;fixtureFeather=false;fixtureAtlas=nullptr;lastEdgeUv={};
+    fixtureReach=false;fixtureReachRefused=false;fixtureNoGroup=false;objectPatch.obj.reachConst=objectPatch.inst.reachConst=0;
+    reachPatch=PatchedPs{};reachPatch.obj.reachConst=reachPatch.inst.reachConst=42+1+4*ShaderPatches::kObjectPixelLamps;
+    g_nativeWallScale=1.f;g_nativeWallTick=0;g_lotDrawTick=0;objectVsInfo.patched.worldK=8;
+    g_reachObjDraws=g_reachFenceDraws=g_reachWindowDraws=g_reachLawRefused=0;visCalls=0;
 }
 FakeDevice Device() {
     FakeDevice d; d.ps=g_curPs;
@@ -266,7 +286,8 @@ void ObjectChecks() {
         ResetGlobals();auto d=Device();fixtureAtlas=&atlas;d.textures[9]=&old;d.vs=&nativeVs;
         g_objPixel=true;g_objPixelLamps=pixel;g_objPixelStrength=strength;g_objPixelLampStrength=strength;
         g_night=night;RigTracker::fixtureMode=mode;g_objLampDrawn=0;
-        g_lampData[0][3]=10;g_lampData[16][0]=.2f;g_lampData[16][1]=.1f;g_lampData[16][2]=.05f;
+        // lamp head 2 m up, above the object (origin y .39): the ground gate stays 1
+        g_lampData[0][1]=2;g_lampData[0][3]=10;g_lampData[16][0]=.2f;g_lampData[16][1]=.1f;g_lampData[16][2]=.05f;
         const auto ps=d.pixel;const auto vs=d.vertex;const auto states=d.sampler;const auto textures=d.textures;int calls=0;
         const float day=std::min(strength,1.f)*.08f;
         const float expected=night==1?strength:day+(strength-day)*night;
@@ -363,8 +384,132 @@ void ExpandedStateChecks() {
     g_lampCone[0]=LampCone{};
     std::printf("Expanded wall state and cone upload: %d checks\n",checks-before);
 }
+// Buildings block light on objects (LampVisibility stubbed): the share scales a kept lamp's colour and the ground share,
+// under 1% drops it; the ground gate fades the ground term over 1.5 m above the highest lamp head within 15 m
+void VisibilityChecks() {
+    const int before=checks;FakeTexture atlas{40};
+    ResetGlobals();g_lampCone[0]=LampCone{};
+    g_lampData[0][0]=0;g_lampData[0][1]=2;g_lampData[0][2]=0;g_lampData[0][3]=10;g_lampData[16][0]=.7f;g_lampData[16][1]=.6f;g_lampData[16][2]=.5f;
+    float rows[33][4]{},cones[16][4]{};float share=1,top=-1e9f;
+    fixtureVisibility=.5f;
+    Check(PickObjectLamps(0,0,0,rows,share,.2f,cones,&top)==1,"half-visible lamp kept");
+    Check(Near(rows[2][0],.35f)&&Near(rows[2][1],.3f)&&Near(rows[2][2],.25f),"kept colour scaled by the visible share");
+    Check(Near(share,.5f),"ground share follows the visible share");
+    Check(top==2.f,"highest lamp head within 15 m reported");
+    fixtureVisibility=.005f;share=1;
+    Check(PickObjectLamps(0,0,0,rows,share,.2f,cones)==0&&share==0.f,"lamp under 1% visible left out and ground share zero");
+    fixtureVisibility=1;share=1;top=-1e9f;g_lampData[0][0]=20;
+    Check(PickObjectLamps(0,0,0,rows,share,.2f,cones,&top)==1&&top==-1e9f,"lamp beyond 15 m does not set the lamp top");
+    g_lampData[0][0]=0;
+    // ground gate: origin y .39 (VS c9.w), lamp head .75 below it: half the ground strength
+    ResetGlobals();auto d=Device();fixtureAtlas=&atlas;g_objPixel=true;g_objPixelLamps=true;g_objPixelStrength=1;g_objPixelLampStrength=1;g_night=1;
+    RigTracker::fixtureMode=2;g_lampData[0][1]=.39f-.75f;
+    Check(DrawObjectLamp(&d,[&]{Check(Near(d.pixel[41][0],.5f),"object 0.75 m above the highest lamp head keeps half the ground light");}),"gated object draws");
+    g_lampData[0][1]=.39f-2.f;d=Device();
+    Check(DrawObjectLamp(&d,[&]{Check(d.pixel[41][0]==0.f,"object 1.5 m or more above every lamp head takes no ground light");}),"fully gated object draws");
+    // fences: the colour of a kept lamp x the largest share of the three points; none left: the slot stays empty
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;g_fenceFix=true;g_fenceStrength=1;g_night=1;g_lampData[0][1]=2;fixtureGroup=GroupCentre{};
+    fixtureVisibility=.5f;
+    Check(DrawInstanced(&d,[&]{Check(Near(d.pixel[44][0],.35f)&&Near(d.pixel[44][2],.25f),"fence lamp colour scaled by the visible share");}),"fence draws with a dimmed lamp");
+    fixtureVisibility=0;d=Device();
+    Check(DrawInstanced(&d,[&]{Check(d.pixel[44][0]==0.f&&d.pixel[43][0]==1e6f,"blocked fence lamp leaves its slot empty");}),"fence draws with no lamp");
+    fixtureVisibility=1;
+    std::printf("Buildings block light on objects: %d checks\n",checks-before);
+}
+// Realistic reach (12/10): the reach variant gets the walls' scale x the slider trims, R and the lamp's weight in its rows
+// and the r0^2 rows right after the cones; every row restored; reach off keeps the first law's values
+void ReachChecks() {
+    const int before=checks;FakeTexture atlas{50};
+    constexpr unsigned N=ShaderPatches::kObjectPixelLamps;
+    constexpr UINT reachRow=42+1+4*N; // lampParamConst + 1 + 4N
+    for(bool walls:{false,true})for(float night:{.5f,1.f})for(float strength:{.75f,1.5f})for(bool reach:{false,true})for(float entries:{1.f,2.f}){
+        float r0,R;LampReach::Radii(144.5f,r0,R);const float weight=LampReach::Gain(144.5f,entries);
+        // the native wall scale read 1.5 s ago (fresh: NativeWallScale keeps it)
+        auto setup=[&]{g_wallEnabled=walls;g_wallGain=.3f;g_nativeWallScale=1.0304f;g_lotDrawTick=5000;g_nativeWallTick=3500;fixtureReach=reach;g_night=night;
+            g_lampData[0][0]=0;g_lampData[0][1]=2;g_lampData[0][2]=0;g_lampData[0][3]=10;g_lampData[16][0]=.2f;g_lampData[16][1]=.1f;g_lampData[16][2]=.05f;
+            g_lampCone[0]=LampCone{};g_lampCone[0].w=144.5f;g_lampCone[0].entries=entries;fixtureVisibility=1;};
+        ResetGlobals();auto d=Device();fixtureAtlas=&atlas;setup();
+        g_objPixel=true;g_objPixelLamps=true;g_objPixelStrength=1;g_objPixelLampStrength=strength;RigTracker::fixtureMode=2;
+        const float objScale=reach?TerrainLightingPolicy::ReachLampScale(1.0304f,night,walls,.3f,strength/.75f):TerrainLightingPolicy::SurfaceLampGain(night,strength);
+        auto ps=d.pixel;int calls=0;
+        Check(DrawObjectLamp(&d,[&]{++calls;
+            Check(d.pixel[42][1]==objScale,reach?"reach object: the walls' scale x the slider trim":"first-law object: its own strength as before");
+            Check(Near(d.pixel[43][3],reach?1.f/(R*R):1.f/100.f),reach?"reach object: the lamp row holds R of the reach law":"first-law object: 1/R^2 as before");
+            Check(Near(d.pixel[44][0],.2f*(reach?weight:1.f))&&Near(d.pixel[44][2],.05f*(reach?weight:1.f)),"object colour x the lamp's weight with reach only");
+            Check(reach?Near(d.pixel[reachRow][0],r0*r0)&&d.pixel[reachRow][1]==0.f&&d.pixel[reachRow+1][3]==0.f:Same(d.pixel[reachRow],ps[reachRow]),"r0^2 rows uploaded with reach only");
+        }),"object draws");
+        Check(calls==1&&Same(d.pixel,ps)&&g_reachObjDraws==uint32_t(reach),"object restores every row and counts reach draws");
+        // fences: both trims
+        ResetGlobals();d=Device();fixtureAtlas=&atlas;setup();
+        g_fenceFix=true;g_fenceStrength=1.5f;g_objPixelLamps=true;g_objPixelLampStrength=strength;fixtureGroup=GroupCentre{};
+        const float fenceScale=reach?TerrainLightingPolicy::ReachLampScale(1.0304f,night,walls,.3f,strength/.75f*(1.5f/.75f)):TerrainLightingPolicy::SurfaceLampGain(night,strength)*1.5f;
+        ps=d.pixel;calls=0;
+        Check(DrawInstanced(&d,[&]{++calls;
+            Check(d.pixel[42][1]==fenceScale,reach?"reach fence: the walls' scale x both trims":"first-law fence: its strength as before");
+            Check(Near(d.pixel[43][3],reach?1.f/(R*R):1.f/100.f)&&Near(d.pixel[44][0],.2f*(reach?weight:1.f)),"fence lamp row and colour follow the law");
+            Check(reach?Near(d.pixel[reachRow][0],r0*r0):Same(d.pixel[reachRow],ps[reachRow]),"fence r0^2 rows with reach only");
+        }),"fence draws");
+        Check(calls==1&&Same(d.pixel,ps)&&g_reachFenceDraws==uint32_t(reach),"fence restores every row and counts reach draws");
+    }
+    // fences test each lamp from the piece nearest it (12/10, F7 18-17-00 #393), the centre only with no piece read
+    ResetGlobals();auto d=Device();fixtureAtlas=&atlas;g_fenceFix=true;g_objPixelLamps=true;g_night=1;fixtureVisibility=1;
+    g_lampData[0][0]=-6;g_lampData[0][1]=2;g_lampData[0][2]=0;g_lampData[0][3]=10;g_lampData[16][0]=.2f;
+    fixtureGroup=GroupCentre{};fixtureGroup.y=1;fixtureGroup.pieces=2;
+    fixtureGroup.piece[0][0]=5;fixtureGroup.piece[1][0]=-5;fixtureGroup.piece[0][1]=fixtureGroup.piece[1][1]=1;
+    Check(DrawInstanced(&d,[]{})&&visCalls>=1&&firstVis[0]==-5.f&&firstVis[1]==1.5f&&firstVis[2]==0.f,"fence lamp tested from the piece nearest it, 0.5 m up");
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;g_fenceFix=true;g_objPixelLamps=true;g_night=1;fixtureGroup.pieces=0;fixtureGroup.x=3;
+    Check(DrawInstanced(&d,[]{})&&firstVis[0]==3.f&&firstVis[1]==1.5f,"no piece read: the group's centre as before");
+    fixtureGroup=GroupCentre{};
+    // (12/10 review) the lamp's list entries: 0.25 w each, 2 for a story-0 lot lamp (the fitted 0.5 w, bit for bit), else 1
+    Check(LampReach::Entries(true,0)==2.f&&LampReach::Entries(true,1)==1.f&&LampReach::Entries(true,-1)==1.f&&LampReach::Entries(false,0)==1.f,"entries: story-0 lot lamp 2, others 1");
+    for(float w:{12.75f,85.f,144.5f,1e-9f}) Check(LampReach::Gain(w,2.f)==.5f*w&&LampReach::Gain(w,1.f)==.25f*w,"gain per entry 0.25 w, two entries the fitted 0.5 w exactly");
+    Check(LampReach::Gain(-1.f,2.f)==42.5f&&LampReach::Gain(NAN,1.f)==21.25f,"unreadable w counts as 85");
+    // the native wall scale: trusted for 2 s after a wall draw read it, else (never read, stale, a daytime 0) the night value 1
+    ResetGlobals();g_nativeWallScale=0;
+    Check(NativeWallScale()==1.f&&!NativeWallFresh(),"native wall scale never read: night value 1");
+    g_nativeWallTick=1000;g_lotDrawTick=3000;Check(NativeWallScale()==0.f,"read 2 s ago: kept (a daytime 0 too)");
+    g_lotDrawTick=3001;Check(NativeWallScale()==1.f,"read over 2 s ago: night value 1");
+    g_nativeWallTick=0xFFFFFF00u;g_lotDrawTick=0x100u;Check(NativeWallScale()==0.f,"tick wrap handled");
+    ResetGlobals();d=Device();g_wallGain=2;g_lotDrawTick=7000;d.pixel[7]={.6f,.23f,-.5f,1.25f};
+    Check(DrawWallGain(&d,[]{})&&g_nativeWallScale==.6f&&g_nativeWallTick==7000u,"a wall draw records the native scale and its tick");
+    ResetGlobals();d=Device();g_wallGain=2;g_lotDrawTick=0;d.pixel[7]={.6f,.23f,-.5f,1.25f};
+    Check(DrawWallGain(&d,[]{})&&g_nativeWallTick==1u&&NativeWallScale()==1.f,"a read before the first Present tick is not trusted");
+    // a stale daytime 0 no longer leaves a reach object unlit at night
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureReach=true;g_night=1;g_wallEnabled=false;g_nativeWallScale=0;g_nativeWallTick=100;g_lotDrawTick=100000;
+    g_objPixel=true;g_objPixelLamps=true;g_objPixelLampStrength=.75f;RigTracker::fixtureMode=2;g_lampCone[0]=LampCone{};g_lampCone[0].w=85;
+    g_lampData[0][0]=0;g_lampData[0][1]=2;g_lampData[0][2]=0;g_lampData[0][3]=10;g_lampData[16][0]=.2f;
+    Check(DrawObjectLamp(&d,[&]{Check(d.pixel[42][1]==1.f,"stale native scale: the reach object takes the night value x its trim");}),"reach object draws");
+    // fences take the reach copy only when they place lamps (12/10 review): per-pixel lamps off, or no group read -> first law
+    for(int mode=0;mode<2;++mode){
+        ResetGlobals();d=Device();fixtureAtlas=&atlas;g_fenceFix=true;g_night=1;fixtureReach=true;fixtureGroup=GroupCentre{};
+        g_objPixelLamps=mode!=0;fixtureNoGroup=mode!=0;const auto ps=d.pixel;
+        Check(DrawInstanced(&d,[&]{Check(Same(d.pixel[reachRow],ps[reachRow])&&d.pixel[42][0]==0.f,"no lamps placed: no reach rows, cS.x 0");}),"fence without lamps draws");
+        Check(g_reachFenceDraws==0&&g_reachLawRefused==0,mode?"no group read: first law, not counted":"per-pixel lamps off: first law, not counted");
+    }
+    g_objPixelLamps=true;
+    // the reach copy refused (no room for its rows): the first law draws and the refusal is counted
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureReach=true;fixtureReachRefused=true;g_night=1;
+    g_objPixel=true;g_objPixelLamps=true;g_objPixelLampStrength=.75f;RigTracker::fixtureMode=2;g_lampCone[0]=LampCone{};g_lampCone[0].w=85;g_lampCone[0].entries=2;
+    Check(DrawObjectLamp(&d,[&]{Check(d.pixel[42][1]==TerrainLightingPolicy::SurfaceLampGain(1,.75f)&&Near(d.pixel[43][3],1.f/100.f)&&Near(d.pixel[44][0],.2f),"refused reach: object keeps the first law");}),"object draws");
+    Check(g_reachLawRefused==1&&g_reachObjDraws==0,"object refusal counted, no reach draw");
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureReach=true;fixtureReachRefused=true;g_fenceFix=true;g_fenceStrength=1;g_night=1;g_objPixelLamps=true;fixtureGroup=GroupCentre{};
+    Check(DrawInstanced(&d,[&]{Check(Near(d.pixel[43][3],1.f/100.f)&&Near(d.pixel[44][0],.2f),"refused reach: fence keeps the first law");}),"fence draws");
+    Check(g_reachLawRefused==1&&g_reachFenceDraws==0,"fence refusal counted, no reach draw");
+    // reach copy chosen but no world position read (no lamps placed): not counted as a reach draw
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureReach=true;g_night=1;objectVsInfo.patched.worldK=-1;
+    g_objPixel=true;g_objPixelLamps=true;RigTracker::fixtureMode=2;
+    Check(DrawObjectLamp(&d,[&]{Check(d.pixel[42][0]==0.f&&d.pixel[42][1]==0.f,"no lamps placed: cS.x and cS.y 0");}),"object without world position draws");
+    Check(g_reachObjDraws==0,"no lamps placed: not counted as a reach draw");
+    objectVsInfo.patched.worldK=8;g_lampCone[0]=LampCone{};
+    // F7 on a fence draw describes it (12/10 review), and the text does not outlive the draw
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureCapture=true;g_fenceFix=true;g_night=1;g_objPixelLamps=true;fixtureGroup=GroupCentre{};
+    Check(DrawInstanced(&d,[&]{Check(g_objDrawInfo.starts_with("FENCE/STAIRS (instanced) lit by the mod | per-pixel lamps: 1"),"F7 fence line during the draw");}),"captured fence draws");
+    Check(g_objDrawInfo.empty(),"F7 fence line cleared after the draw");
+    fixtureCapture=false;
+    std::printf("Realistic reach on objects and fences: %d checks\n",checks-before);
+}
 int main() {
-    WallChecks();LotChecks();NativeSamplerChecks();ObjectChecks();InstancedChecks();ExpandedStateChecks();
+    WallChecks();LotChecks();NativeSamplerChecks();ObjectChecks();InstancedChecks();ExpandedStateChecks();VisibilityChecks();ReachChecks();
     std::printf("Resource paths: %d checks, %d failures; extracted production, fake D3D9, no game/driver execution\n",checks,failures);
     return failures?1:0;
 }

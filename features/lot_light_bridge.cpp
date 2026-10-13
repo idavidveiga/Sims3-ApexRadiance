@@ -1,6 +1,7 @@
 #include "shader_lookup_cache.h"
 #include "world_lamp_policy.h"
 #include "terrain_lighting_policy.h"
+#include "lamp_reach.h"
 #include "native_terrain_sampler.h"
 // Lot light bridge (part of Night Lighting)
 //
@@ -836,6 +837,13 @@ int g_lampFrame = 0;
 struct LampCone {
     float c1[4] = {0.0f, 0.0f, 0.0f, 1.0f}, c2[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     float spill = 1.0f; // S as one value (its luminance) for the per-pixel lamps
+    // (12/10) range +0x130 x intensity +0x10, the w of the outdoor walls' reach law (lamp_reach.h): the per-pixel lamps of
+    // objects, fences and windows take its r0, R and weight while realistic reach is on. Kept here (not in g_allLamps, whose
+    // rows roofs and water upload as they are) so the SelectLamps memo carries it.
+    float w = 0.0f;
+    // (12/10, review) the lamp's entries in the outdoor rooms' light lists (LampReach::Entries: 2 for a story-0 lot lamp,
+    // else 1), so its reach weight is the one the walls give it
+    float entries = 1.0f;
 };
 LampCone g_lampCone[16];     // the cones of the lamps SelectLamps picked (as g_lampData[0..15])
 uintptr_t g_coneScaleAt = 0; // 0x011D11A0 on fixed Steam addresses, else s = 5 (the value the game sets)
@@ -992,6 +1000,8 @@ bool ReadLamp(uintptr_t L, float out[8], LampCone& cone) { // POD only (SEH)
         bool finite = std::isfinite(c.spill);
         for (int i = 0; i < 4; i++) finite = finite && std::isfinite(c.c1[i]) && std::isfinite(c.c2[i]);
         cone = finite ? c : LampCone{};
+        cone.w = range * inten; // the product ReachShareImpl reads (LampReach::Radii takes an unreadable one as 85)
+        cone.entries = LampReach::Entries(lotOwned, *reinterpret_cast<const int*>(L + 0xD0)); // +0xD0: the lamp's story (light_diag "d0")
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -2096,6 +2106,31 @@ std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_sno
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainAlphaPs;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainDayPs;
 std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
+// Buildings block light on objects (12/10; LevelLightShare::LampVisibility), render thread only (plain counters, read by
+// Status on the same thread): the lamps objects and windows (obj) and fences (fence) left out (a wall or a slab between, or
+// under 1% left at a slab's edge) or kept dimmed at a slab's edge, and the object and window draws whose ground light faded
+// because they stand above every lamp head around (the ground gate, below)
+uint32_t g_objLampsLeftOut = 0, g_objLampsDimmed = 0, g_fenceLampsLeftOut = 0, g_fenceLampsDimmed = 0, g_objGroundGated = 0;
+// Realistic lamp reach on objects, fences and windows (12/10, F7 20-31-19 / 20-31-21 at a red garden post: a balcony band
+// and a column 5.5-9.8 m away went black at the first law's R = 7.82 m while the outdoor wall behind them, on the reach law,
+// stayed lit). While LevelLightShare::RealisticReachActive(), the per-pixel lamps take the outdoor walls' law (lamp_reach.h,
+// ShaderPatches AppendLampLaw) from patched copies of their own (the caches below; the first law's copies stay for the
+// option off), and the walls' own scale (ReachLampScale). Render thread: the draws by the reach law (objects, fences,
+// windows) and those that kept the first law because the shader had no room for the 2 more rows.
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_objLampPsReach, g_fencePsReach;
+uint32_t g_reachObjDraws = 0, g_reachFenceDraws = 0, g_reachWindowDraws = 0, g_reachLawRefused = 0;
+// The game's lamp scale of the outdoor walls (the native cK.x DrawWallGain reads; F7 20-31-19 at night drew c3.x 0.309124 =
+// 1 x the walls' gain 0.309124 of that capture's settings), render thread. The reach law gives objects the walls' scale.
+// Read only while the walls' gain is on and a recognised wall is drawn (DrawWallGain), by day too, where it can be 0 (F7
+// 10:28:03, validation page). (12/10 review: a value kept from the day left every reach object, fence and window without
+// lamp light at night while no wall was drawn, or with the walls' gain off.) NativeWallScale() trusts it for 2 s after it
+// was read (g_lotDrawTick, the Present tick), else takes the night value 1 (F7 20-31-19; UNVERIFIED at dusk, where the lamp
+// colours carry the game's fade anyway, ReadLamp).
+float g_nativeWallScale = 1.0f;
+DWORD g_nativeWallTick = 0; // g_lotDrawTick when it was read; 0 = never
+bool NativeWallFresh() { return g_nativeWallTick && g_lotDrawTick - g_nativeWallTick <= 2000; }
+float NativeWallScale() { return NativeWallFresh() ? g_nativeWallScale : 1.0f; }
+constexpr float kPixelLampTrimUnit = 0.75f; // the default of the per-pixel lamp and fence sliders: x1 of the walls' scale (reach)
 std::atomic<bool> g_objPixel{true};
 std::atomic<float> g_objPixelStrength{1.0f};
 std::atomic<bool> g_objPixelLamps{true};          // outdoor rig objects: world lamps per pixel instead of the rig lamps
@@ -2149,8 +2184,11 @@ void SaveRefused(const char* what, const std::vector<DWORD>& ps) {
     }
 }
 
-// Patched copy of the current pixel shader, made once per shader with `patch`.
-template <typename PatchFn> PatchedPs& PatchedFor(IDirect3DDevice9* dev, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch) {
+// Patched copy of the current pixel shader, made once per shader with `patch`. variant (12/10, realistic reach): a second
+// copy of a shader another patch already took; refused, that first copy keeps drawing it, and the shader, saved under the
+// first patch's name when it was refused there, is not saved again.
+template <typename PatchFn>
+PatchedPs& PatchedFor(IDirect3DDevice9* dev, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>& cache, const char* what, PatchFn patch, bool variant = false) {
     PatchedPs& p = cache[g_curPs];
     if (!p.tried) {
         p.tried = true;
@@ -2161,9 +2199,13 @@ template <typename PatchFn> PatchedPs& PatchedFor(IDirect3DDevice9* dev, std::un
         if (matched && SUCCEEDED(hr)) LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} patched", what, reinterpret_cast<uintptr_t>(g_curPs)));
         else {
             p.ps = nullptr;
-            if (matched) LOG_WARNING(std::format("[LotLightBridge] {}: shader {:08X} refused by D3D ({:08X})", what, reinterpret_cast<uintptr_t>(g_curPs), static_cast<uint32_t>(hr)));
-            else LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} does not have the expected pattern, left as the game draws it", what, reinterpret_cast<uintptr_t>(g_curPs)));
-            if (!original.empty()) SaveRefused(what, original);
+            if (matched)
+                LOG_WARNING(std::format("[LotLightBridge] {}: shader {:08X} refused by D3D ({:08X}){}", what, reinterpret_cast<uintptr_t>(g_curPs), static_cast<uint32_t>(hr),
+                                        variant ? ", the first copy draws it" : ""));
+            else
+                LOG_INFO(std::format("[LotLightBridge] {}: shader {:08X} does not have the expected pattern, {}", what, reinterpret_cast<uintptr_t>(g_curPs),
+                                     variant ? "the first copy draws it" : "left as the game draws it"));
+            if (!original.empty() && !variant) SaveRefused(what, original);
         }
     }
     return p;
@@ -2220,9 +2262,14 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
 // The centre and half extent (xz) of an instanced group: the mean of its instance positions (stream 1, the first float3
 // of each record: world position, as the F7 capture reads them). Read once per (buffer, offset, count, stride) and again
 // every 5 s, since the game may refill a buffer; render thread.
+constexpr unsigned kGroupPieces = 32;
 struct GroupCentre {
     float x = 0, y = 0, z = 0, ext = 0;
     float a[3] = {}, b[3] = {}; // the group's two ends (the instance farthest from the centre, then the one farthest from it)
+    // (12/10, F7 18-17-00 #393: the centre of an L-shaped balcony band of 33 pieces stood in open air, 3.6 m from the nearest
+    // piece) up to kGroupPieces of its pieces, evenly through the buffer: DrawInstanced tests each lamp from the one nearest it
+    float piece[kGroupPieces][3] = {};
+    unsigned pieces = 0;
     DWORD at = 0;
     bool ok = false;
 };
@@ -2254,6 +2301,13 @@ bool ReadInstancePositions(const BYTE* p, UINT count, UINT stride, GroupCentre& 
         farthest(g.x, g.z, g.a);
         farthest(g.a[0], g.a[2], g.b);
         g.ext = 0.5f * std::sqrt((g.a[0] - g.b[0]) * (g.a[0] - g.b[0]) + (g.a[2] - g.b[2]) * (g.a[2] - g.b[2]));
+        const UINT step = (count + kGroupPieces - 1) / kGroupPieces;
+        g.pieces = 0;
+        for (UINT i = 0; i < count && g.pieces < kGroupPieces; i += step) {
+            const float* v = reinterpret_cast<const float*>(p + static_cast<size_t>(i) * stride);
+            g.piece[g.pieces][0] = v[0], g.piece[g.pieces][1] = v[1], g.piece[g.pieces][2] = v[2];
+            g.pieces++;
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -2284,6 +2338,11 @@ const GroupCentre* InstancedGroupCentre(IDirect3DDevice9* dev) {
     return result;
 }
 
+// Light probe detail (Ctrl+Shift+F7) of the draw the mod is making (objects, windows, fences; DescribeDraw), render thread,
+// only while a capture is recording; and the per-pixel lamps' law line (ReachLawText, below)
+std::string g_objDrawInfo;
+std::string ReachLawText(bool reach, bool refused, bool placed, float scale, const float (*r0Rows)[4], int nLamps);
+
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
     const float night = g_night.load(std::memory_order_relaxed);
@@ -2291,8 +2350,22 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
-    PatchedPs& p = PatchedFor(dev, g_fencePs, "Fence/stairs", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchInstancedLamps(t, pp.inst); });
-    if (!p.ps) return false;
+    PatchedPs* chosen = &PatchedFor(dev, g_fencePs, "Fence/stairs", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchInstancedLamps(t, pp.inst); });
+    if (!chosen->ps) return false;
+    // the group's pieces (per-pixel lamps on, a shader with them): read before the law is chosen, so a draw that will place
+    // no lamp (option off, or a group that cannot be read) keeps the first law's lighter copy (12/10 review)
+    const GroupCentre* g = chosen->inst.pixelLamps && g_objPixelLamps.load(std::memory_order_relaxed) ? InstancedGroupCentre(dev) : nullptr;
+    // realistic reach (12/10): the copy with the outdoor walls' law, made only from a shader the first law takes; refused
+    // (no room for its 2 rows), the first law stays (g_reachLawRefused)
+    bool reachRefused = false;
+    if (g && LevelLightShare::RealisticReachActive()) {
+        PatchedPs& r = PatchedFor(
+            dev, g_fencePsReach, "Fence/stairs (realistic reach)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchInstancedLamps(t, pp.inst, true); }, true);
+        if (r.ps) chosen = &r;
+        else reachRefused = true, g_reachLawRefused++;
+    }
+    PatchedPs& p = *chosen;
+    const bool reachLaw = p.inst.reachConst != 0;
     float oldA[4] = {}, oldB[4] = {};
     dev->GetPixelShaderConstantF(p.inst.atlasConst, oldA, 1);
     dev->GetPixelShaderConstantF(p.inst.strengthConst, oldB, 1);
@@ -2303,36 +2376,70 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
     // before.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
     // rows: (0, strength, 0, 1e-4), N x (pos, 1/R^2) (colour, spill), then N x the two cones (PatchInstancedLamps coneConst =
-    // lampConst + 2N: one upload covers both blocks)
+    // lampConst + 2N: one upload covers both blocks), then with reach the 2 rows of r0^2 (reachConst = coneConst + 2N)
     constexpr unsigned kLampRows = 1 + 4 * N;
-    float lamps[kLampRows][4] = {}, oldLamps[kLampRows][4] = {}, weight[4] = {0.0f, 1.0f, 1.0f, 0.0f}, oldWeight[4] = {};
+    const unsigned rows = kLampRows + (reachLaw ? 2u : 0u);
+    float lamps[kLampRows + 2][4] = {}, oldLamps[kLampRows + 2][4] = {}, weight[4] = {0.0f, 1.0f, 1.0f, 0.0f}, oldWeight[4] = {};
+    int used = 0; // the lamps placed
     if (p.inst.pixelLamps) {
         lamps[0][3] = 1e-4f;
         for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
         for (unsigned k = 0; k < N; k++) lamps[2 + 2 * k][3] = lamps[1 + 2 * N + 2 * k][3] = lamps[2 + 2 * N + 2 * k][3] = 1.0f; // no cone
-        const GroupCentre* g = g_objPixelLamps.load(std::memory_order_relaxed) ? InstancedGroupCentre(dev) : nullptr;
         if (g) {
             const int n = SelectLamps(g->x, g->z, 40.0f + std::min(g->ext, 60.0f));
-            // Walls block light on objects applies to fences too (a brick fence behind a tower took the wall
+            float lampTop = -1e9f; // the highest lamp head around: faces turned up above it see no lamp (below)
+            for (int k = 0; k < n; k++) {
+                const float dx = g_lampData[k][0] - g->x, dz = g_lampData[k][2] - g->z, reach = 15.0f + std::min(g->ext, 60.0f);
+                if (dx * dx + dz * dz <= reach * reach) lampTop = std::max(lampTop, g_lampData[k][1]); // lamps that can light its pool
+            }
+            // Buildings block light on objects applies to fences too (a brick fence behind a tower took the wall
             // lamp on the other side). One lamp list serves the whole group, so a lamp leaves it only when a wall stands
             // between it and the group's centre and both its ends (0.5 m above the pieces): a fence wholly behind a wall
-            // loses it, one that only runs past a wall keeps it.
+            // loses it, one that only runs past a wall keeps it. The placed floors of upper stories count too (12/10, the
+            // rule objects follow, PickObjectLamps): the lamp keeps the largest share (LampVisibility) of the three points, so
+            // a railing on a balcony loses a lamp under the slab and keeps one in front of it. (12/10, F7 18-17-00 #393: the
+            // group's centre is not always a piece: an L-shaped band's stood in open air 3.6 m from its nearest piece, where a
+            // lamp could be seen that no piece sees. The first point is the piece nearest the lamp instead; the centre only
+            // when no piece was read.)
             const float mid[3] = {g->x, g->y + 0.5f, g->z}, endA[3] = {g->a[0], g->a[1] + 0.5f, g->a[2]}, endB[3] = {g->b[0], g->b[1] + 0.5f, g->b[2]};
-            int used = 0;
             for (int k = 0; k < n && used < static_cast<int>(N); k++) {
                 const float* pr = g_lampData[k];
                 const float* col = g_lampData[16 + k];
-                if (LevelLightShare::WallBlocks(pr, mid) && LevelLightShare::WallBlocks(pr, endA) && LevelLightShare::WallBlocks(pr, endB)) continue;
+                float piece[3] = {mid[0], mid[1], mid[2]}, best = 3.0e38f;
+                for (unsigned i = 0; i < g->pieces && i < kGroupPieces; i++) {
+                    const float* q = g->piece[i];
+                    const float dx = q[0] - pr[0], dy = q[1] + 0.5f - pr[1], dz = q[2] - pr[2], d = dx * dx + dy * dy + dz * dz;
+                    if (d < best) {
+                        best = d;
+                        piece[0] = q[0], piece[1] = q[1] + 0.5f, piece[2] = q[2];
+                    }
+                }
+                float v = LevelLightShare::LampVisibility(pr, piece);
+                if (v < 1.0f) v = std::max(v, LevelLightShare::LampVisibility(pr, endA));
+                if (v < 1.0f) v = std::max(v, LevelLightShare::LampVisibility(pr, endB));
+                if (v < 0.01f) { // under 1% left: the slot goes to the next lamp
+                    g_fenceLampsLeftOut++;
+                    continue;
+                }
+                if (v < 1.0f) g_fenceLampsDimmed++;
                 const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
                 lamps[1 + 2 * used][0] = pr[0];
                 lamps[1 + 2 * used][1] = pr[1];
                 lamps[1 + 2 * used][2] = pr[2];
                 lamps[1 + 2 * used][3] = 1.0f / (r * r);
-                lamps[2 + 2 * used][0] = col[0];
-                lamps[2 + 2 * used][1] = col[1];
-                lamps[2 + 2 * used][2] = col[2];
                 // its cones (07/10): the fence face 47 deg or more off a sconce's axis takes only its spill, as in the game
                 const LampCone& cone = g_lampCone[k];
+                float colourScale = v;
+                if (reachLaw) { // the outdoor walls' law (lamp_reach.h): R, r0^2 and the game's weight of this lamp
+                    float r0, R;
+                    LampReach::Radii(cone.w, r0, R);
+                    lamps[1 + 2 * used][3] = 1.0f / (R * R);
+                    lamps[kLampRows + (used >> 2)][used & 3] = r0 * r0;
+                    colourScale *= LampReach::Gain(cone.w, cone.entries);
+                }
+                lamps[2 + 2 * used][0] = col[0] * colourScale;
+                lamps[2 + 2 * used][1] = col[1] * colourScale;
+                lamps[2 + 2 * used][2] = col[2] * colourScale;
                 lamps[2 + 2 * used][3] = cone.spill;
                 std::memcpy(lamps[1 + 2 * N + 2 * used], cone.c1, 16);
                 std::memcpy(lamps[2 + 2 * N + 2 * used], cone.c2, 16);
@@ -2344,6 +2451,12 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             }
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed), g_objPixelLampStrength.load(std::memory_order_relaxed)) *
                           std::max(g_fenceStrength.load(std::memory_order_relaxed), 0.0f);
+            // reach: the outdoor walls' scale, the two sliders as trims over their defaults (x1 at the defaults: a band in
+            // front of a wall takes the wall's light)
+            if (reachLaw)
+                lamps[0][1] = TerrainLightingPolicy::ReachLampScale(NativeWallScale(), night, g_wallEnabled.load(std::memory_order_relaxed), g_wallGain.load(std::memory_order_relaxed),
+                                                                    g_objPixelLampStrength.load(std::memory_order_relaxed) / kPixelLampTrimUnit *
+                                                                        (std::max(g_fenceStrength.load(std::memory_order_relaxed), 0.0f) / kPixelLampTrimUnit));
             // A valid per-instance group supplies world position/normal. Replace
             // its native group-wide estimate, including when wall tests reject
             // all selected lamps. Without a group or when pixel lights are off,
@@ -2357,10 +2470,23 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
             // no lamp reached it, about 6 times darker than the game's own fence lighting, in blotches)
             weight[0] = 1.0f;
             weight[1] = 0.0f;
+            // (12/10, screenshot with a red garden post: the top of a story-4 balustrade, 8 m above the post, glowed with the
+            // ground's lamp pool) The atlas is the light on the ground: a group standing above every lamp head around takes
+            // none of it on its tops, fading over the first 1.5 m above the highest head (lamp heads, not lanterns: game
+            // data). Ground fences and curbs, below the heads, keep it all.
+            if (lampTop > -1e8f) weight[0] = std::clamp(1.0f - (g->y - lampTop) / 1.5f, 0.0f, 1.0f);
         }
-        dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], kLampRows);
+        dev->GetPixelShaderConstantF(p.inst.lampParamConst, &oldLamps[0][0], rows);
         dev->GetPixelShaderConstantF(p.inst.groundWeightConst, oldWeight, 1);
     }
+    // Light probe (12/10 review: fence and balcony band draws showed only "mod draw (another fix)", so their law could not be
+    // read from an F7): the lamps placed, the strengths and the lamp law
+    if (LightProbe::Capturing())
+        g_objDrawInfo = std::format("FENCE/STAIRS (instanced) lit by the mod | per-pixel lamps: {}{} | lamp strength {:.4f} | ground light strength {:.2f}, atlas weight sat(N.y x {:.2f} + {:.2f})",
+                                    used, !p.inst.pixelLamps ? " (this shader has none: ground light only)" : g ? "" : " (group not read or option off: the game's vertex lights)",
+                                    lamps[0][1], s[0], weight[0], weight[1]) +
+                        (p.inst.pixelLamps ? ReachLawText(reachLaw, reachRefused, g != nullptr, lamps[0][1], lamps + kLampRows, used) : std::string());
+    if (reachLaw) g_reachFenceDraws++;
     IDirect3DPixelShader9* original = g_curPs;
     g_inOwnCall = true;
     {
@@ -2368,7 +2494,7 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPsConst(dev, p.inst.atlasConst, c, 1);
         SetPsConst(dev, p.inst.strengthConst, s, 1);
         if (p.inst.pixelLamps) {
-            SetPsConst(dev, p.inst.lampParamConst, &lamps[0][0], kLampRows);
+            SetPsConst(dev, p.inst.lampParamConst, &lamps[0][0], rows);
             SetPsConst(dev, p.inst.groundWeightConst, weight, 1);
         }
         SetPs(dev, p.ps);
@@ -2376,11 +2502,12 @@ template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw
         SetPs(dev, original);
         if (p.inst.pixelLamps) {
             SetPsConst(dev, p.inst.groundWeightConst, oldWeight, 1);
-            SetPsConst(dev, p.inst.lampParamConst, &oldLamps[0][0], kLampRows);
+            SetPsConst(dev, p.inst.lampParamConst, &oldLamps[0][0], rows);
         }
         SetPsConst(dev, p.inst.strengthConst, oldB, 1);
         SetPsConst(dev, p.inst.atlasConst, oldA, 1);
     }
+    g_objDrawInfo.clear();
     g_inOwnCall = false;
     g_fenceDrawn.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -2450,7 +2577,7 @@ IDirect3DVertexShader9* ObjectVsFor(IDirect3DDevice9* dev, IDirect3DVertexShader
 
 // Light probe detail (Ctrl+Shift+F7) for an object the mod lights: its position, the lamps it got and the game's own
 // rig values before they are zeroed, so two neighbouring pieces can be compared. Only while a capture is recording.
-std::string g_objDrawInfo;
+// (g_objDrawInfo itself is defined before DrawInstanced, which fills it for fences too.)
 std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::ObjectLampPatch& obj, int rigMode, bool pixelLamps, int wk, int vl, const float (*lamps)[4],
                                int nLamps) {
     auto v4 = [](const float* v) { return std::format("({:.4g} {:.4g} {:.4g} {:.4g})", v[0], v[1], v[2], v[3]); };
@@ -2482,13 +2609,37 @@ std::string DescribeObjectDraw(IDirect3DDevice9* dev, const ShaderPatches::Objec
     return s;
 }
 
-// The per-pixel lamps of an object at translation (x, y, z): SelectLamps there, then Walls block light on objects
-// (LevelLightShare::WallBlocks): a lamp with an outside wall between it and the object's middle (its origin +
-// 0.5 m) is left out, and the next one takes its slot. groundShare (left as it is when no lamp is near) = the share of
-// the nearby lamps' light that is not blocked: the ground light (the atlas, which has no walls) is scaled by it. Fills
-// lamps[1 + 2 k] = (pos, 1/R^2). With cone output, colour stays unscaled and
-// the shader evaluates each cone per pixel; otherwise colour uses the origin cone. Returns the lamp count.
-int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundShare, float nearSkip, float (*cones)[4] = nullptr) {
+// Light probe detail of the per-pixel lamps' law (12/10): the reach law's scale and each lamp's r0 (its R is the radius the
+// lamp list shows, its colour includes the lamp's weight), or why the first law stayed (refused: the reach copy had no room
+// for its rows; placed: the lamps were placed for this draw)
+std::string ReachLawText(bool reach, bool refused, bool placed, float scale, const float (*r0Rows)[4], int nLamps) {
+    if (!reach)
+        return refused                                  ? "\n      lamp law: first law, sat(1 - d^2/R^2)^2 (realistic reach on, but the reach copy of this shader was refused: no room for its rows, or D3D; see the log)"
+               : LevelLightShare::RealisticReachActive() ? "\n      lamp law: first law, sat(1 - d^2/R^2)^2 (realistic reach on, per-pixel lamps off or not placed for this draw)"
+                                                         : "\n      lamp law: first law, sat(1 - d^2/R^2)^2 (realistic reach off)";
+    if (!placed) return "\n      lamp law: realistic reach copy, but no lamp placed for this draw (world position not read): lamp strength 0";
+    std::string s = std::format("\n      lamp law: realistic reach, as outdoor walls: colour (F0 x intensity x fade x visible share x weight 0.25 w x the lamp's list "
+                                "entries, 2 for a story-0 lot lamp, else 1) x sat(N.l) / d^2 x min(1, r0^2/d^2 x (1 - (d/R)^4)^2), sum held under 1 | scale {:.4f} = "
+                                "the walls' native lamp scale {:.4f}{} x their gain {:.2f} ({}) x the slider trims | r0:",
+                                scale, NativeWallScale(), NativeWallFresh() ? "" : " (none read in the last 2 s: the night value)", g_wallGain.load(),
+                                g_wallEnabled.load() ? "walls on" : "walls off: gain unused");
+    for (int k = 0; k < nLamps && k < static_cast<int>(ShaderPatches::kObjectPixelLamps); k++) s += std::format(" [{}] {:.2f} m", k, std::sqrt(r0Rows[k >> 2][k & 3]));
+    return s;
+}
+
+// The per-pixel lamps of an object at translation (x, y, z): SelectLamps there, then Buildings block light on objects
+// (LevelLightShare::LampVisibility): a lamp with an outside wall between it and the object's middle (its origin +
+// 0.5 m), or with a placed floor of an upper story between it and a middle above it (12/10, F7 18-38-41: a window frame
+// behind a balcony showed the red of a ground post under the slab), is left out, and the next one takes its slot; one seen
+// past a slab's edge keeps the share v that reaches the middle (colour x v). groundShare (left as it is when no lamp is near)
+// = the share of the nearby lamps' light that is not blocked: the ground light (the atlas, which has no walls) is scaled
+// by it. lampTop, when given (left as it is when no lamp is near): the highest lamp head within 15 m along the ground
+// (DrawInstanced's rule for fences). Fills lamps[1 + 2 k] = (pos, 1/R^2). With cone output, colour stays unscaled and
+// the shader evaluates each cone per pixel; otherwise colour uses the origin cone. With reachRows (realistic reach, 12/10):
+// the outdoor walls' law (lamp_reach.h), R its R, the colour x the lamp's weight Gain(w, entries), and r0^2 at reachRows[k / 4][k % 4].
+// Returns the lamp count.
+int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundShare, float nearSkip, float (*cones)[4] = nullptr, float* lampTop = nullptr,
+                    float (*reachRows)[4] = nullptr) {
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
     int nLamps = 0;
     const int n = SelectLamps(x, z, 40.0f);
@@ -2499,6 +2650,7 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
         const float* col = g_lampData[16 + k];
         const float r = pr[3] > 0.1f ? pr[3] : 0.1f;
         const float dx = pr[0] - obj[0], dy = pr[1] - obj[1], dz = pr[2] - obj[2];
+        if (lampTop && dx * dx + dz * dz <= 15.0f * 15.0f) *lampTop = std::max(*lampTop, pr[1]); // lamps that can light its pool
         // the lamp's cones at the object's middle (07/10): one factor per object, as the game's own rule gives it
         const float cone = LampConeAt(g_lampCone[k], pr, obj);
         if (cone < 0.999f && !g_lampConeLogged) {
@@ -2507,15 +2659,28 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
         }
         const float w = (col[0] * 0.2126f + col[1] * 0.7152f + col[2] * 0.0722f) * cone / (1.0f + (dx * dx + dy * dy + dz * dz) / (r * r));
         all += w;
-        if (LevelLightShare::WallBlocks(pr, obj, nearSkip)) continue;
-        seen += w;
+        const float v = LevelLightShare::LampVisibility(pr, obj, nearSkip); // 1 while the option is off
+        if (v < 0.01f) { // under 1% left: the slot goes to the next lamp
+            g_objLampsLeftOut++;
+            continue;
+        }
+        if (v < 1.0f) g_objLampsDimmed++;
+        seen += w * v;
         if (nLamps >= static_cast<int>(N)) continue;
         const int slot = nLamps++;
         lamps[1 + 2 * slot][0] = pr[0];
         lamps[1 + 2 * slot][1] = pr[1];
         lamps[1 + 2 * slot][2] = pr[2];
         lamps[1 + 2 * slot][3] = 1.0f / (r * r);
-        const float colorFactor = cones ? 1.0f : cone;
+        float gain = 1.0f;
+        if (reachRows) {
+            float r0, R;
+            LampReach::Radii(g_lampCone[k].w, r0, R);
+            lamps[1 + 2 * slot][3] = 1.0f / (R * R);
+            reachRows[slot >> 2][slot & 3] = r0 * r0;
+            gain = LampReach::Gain(g_lampCone[k].w, g_lampCone[k].entries);
+        }
+        const float colorFactor = (cones ? 1.0f : cone) * v * gain;
         lamps[2 + 2 * slot][0] = col[0] * colorFactor;
         lamps[2 + 2 * slot][1] = col[1] * colorFactor;
         lamps[2 + 2 * slot][2] = col[2] * colorFactor;
@@ -2567,8 +2732,20 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
-    PatchedPs& p = PatchedFor(dev, g_objLampPs, "Outdoor object (ground light)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchObjectLampPs(t, pp.obj); });
-    if (!p.ps) return false;
+    PatchedPs* chosen = &PatchedFor(dev, g_objLampPs, "Outdoor object (ground light)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchObjectLampPs(t, pp.obj); });
+    if (!chosen->ps) return false;
+    const bool pixelLamps = g_objPixelLamps.load(std::memory_order_relaxed);
+    // realistic reach (12/10): the copy with the outdoor walls' law, made only from a shader the first law takes; refused
+    // (no room for its 2 rows), the first law stays (g_reachLawRefused)
+    bool reachRefused = false;
+    if (pixelLamps && LevelLightShare::RealisticReachActive()) {
+        PatchedPs& r = PatchedFor(
+            dev, g_objLampPsReach, "Outdoor object (realistic reach)", [](std::vector<DWORD>& t, PatchedPs& pp) { return ShaderPatches::PatchObjectLampPs(t, pp.obj, true); }, true);
+        if (r.ps) chosen = &r;
+        else reachRefused = true, g_reachLawRefused++;
+    }
+    PatchedPs& p = *chosen;
+    const bool reach = p.obj.reachConst != 0;
     IDirect3DVertexShader9* vs = ObjectVsFor(dev, g_curVs);
     if (!vs) return false;
     float oldA[4] = {}, oldB[4] = {};
@@ -2577,12 +2754,16 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     float s[4] = {TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
                        g_objPixelStrength.load(std::memory_order_relaxed)), 0, 0, 0};
     float groundShare = 1.0f; // the share of the nearby lamps' light no wall blocks (below)
+    float lampTop = -1e9f, originY = 0.0f; // the highest lamp head around and the object's origin (the ground gate, below)
     // Per-pixel lamps ("Counters" request): the same world lamps for every piece, chosen by the object's position (the
     // VS world triple's translation), so neighbouring pieces of a modular object get the same lamps.
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
-    float lamps[1 + 4 * N][4] = {};
-    float oldLamps[1 + 4 * N][4] = {};
-    const bool pixelLamps = g_objPixelLamps.load(std::memory_order_relaxed);
+    // rows from cS: the parameters, N x (pos, 1/R^2) (colour, spill), N x the two cones, then with reach the 2 rows of r0^2
+    // (ShaderPatches::ObjectLampPatch::reachConst = coneConst + 2N): one upload
+    constexpr unsigned kLampRows = 1 + 4 * N;
+    const unsigned rows = kLampRows + (reach ? 2u : 0u);
+    float lamps[kLampRows + 2][4] = {};
+    float oldLamps[kLampRows + 2][4] = {};
     bool zeroRig = false;
     float oldRig[3][4] = {}, oldVl[4][4] = {};
     const float noRig[4][4] = {};
@@ -2606,18 +2787,38 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
             float at[3];
             const bool inWall = ObjectLampPoint(m, at);
             const float nearSkip = inWall ? kWindowWallSkip : 0.2f;
-            nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, nearSkip, lamps + 1 + 2 * N);
+            nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, nearSkip, lamps + 1 + 2 * N, &lampTop, reach ? lamps + kLampRows : nullptr);
+            originY = at[1];
             // the rig goes: its 3 pixel lamps (PS c5..c7 = 0 below, diffuse and specular) and its 4 vertex lights (the VS
             // colour constants = 0; Phong's ambient term in COLOR0 stays)
             lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(g_night.load(std::memory_order_relaxed),
                               g_objPixelLampStrength.load(std::memory_order_relaxed));
+            // reach: the outdoor walls' scale, the slider a trim over its default (x1 at the default: a column takes the
+            // light of the wall behind it)
+            if (reach)
+                lamps[0][1] = TerrainLightingPolicy::ReachLampScale(NativeWallScale(), night, g_wallEnabled.load(std::memory_order_relaxed), g_wallGain.load(std::memory_order_relaxed),
+                                                                    g_objPixelLampStrength.load(std::memory_order_relaxed) / kPixelLampTrimUnit);
             zeroRig = true;
             lamps[0][0] = 1.0f; // no directionless ground light on vertical faces
         }
     }
-    s[0] *= groundShare;
-    if (LightProbe::Capturing()) g_objDrawInfo = DescribeObjectDraw(dev, p.obj, rigMode, zeroRig, wk, vl, lamps, nLamps);
-    dev->GetPixelShaderConstantF(p.obj.lampParamConst, &oldLamps[0][0], 1 + 4 * N);
+    // (12/10, F7 18-38-41: a window frame on story 2 stands 2.5 m above the only lamp head around, a red post's; how much of
+    // its red came through this term rather than the per-pixel lamps is UNVERIFIED) The ground light (the atlas) is the
+    // light lying on the ground, at no height: an object standing above every lamp head around takes none of it, fading over
+    // the first 1.5 m above the highest head (lamp heads, not lanterns: game data), the rule fences follow (DrawInstanced).
+    // Objects on the ground, below the heads, keep it all; with no lamp near it stays. Only with the per-pixel lamps (they
+    // find lampTop).
+    const float gate = lampTop > -1e8f ? std::clamp(1.0f - (originY - lampTop) / 1.5f, 0.0f, 1.0f) : 1.0f;
+    if (gate < 1.0f) g_objGroundGated++;
+    s[0] *= groundShare * gate;
+    if (LightProbe::Capturing()) {
+        g_objDrawInfo = DescribeObjectDraw(dev, p.obj, rigMode, zeroRig, wk, vl, lamps, nLamps);
+        g_objDrawInfo += std::format("\n      ground light: share not behind buildings {:.2f}, height gate {:.2f} (object origin y {:.2f}, highest lamp head within 15 m {})",
+                                     groundShare, gate, originY, lampTop > -1e8f ? std::format("{:.2f}", lampTop) : std::string("none"));
+        g_objDrawInfo += ReachLawText(reach, reachRefused, zeroRig, lamps[0][1], lamps + kLampRows, nLamps);
+    }
+    if (reach && zeroRig) g_reachObjDraws++; // zeroRig: the lamps were placed (else cS.x = 0 and the sum is not used)
+    dev->GetPixelShaderConstantF(p.obj.lampParamConst, &oldLamps[0][0], rows);
     IDirect3DPixelShader9* originalPs = g_curPs;
     IDirect3DVertexShader9* originalVs = g_curVs;
     g_inOwnCall = true;
@@ -2625,7 +2826,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
         SamplerBind bind(dev, p.obj.atlasSampler, atlas, D3DTEXF_NONE);
         SetPsConst(dev, p.obj.atlasConst, c, 1);
         SetPsConst(dev, p.obj.strengthConst, s, 1);
-        SetPsConst(dev, p.obj.lampParamConst, &lamps[0][0], 1 + 4 * N);
+        SetPsConst(dev, p.obj.lampParamConst, &lamps[0][0], rows);
         if (zeroRig && p.obj.rigLamps) {
             dev->GetPixelShaderConstantF(5, &oldRig[0][0], 3);
             SetPsConst(dev, 5, &noRig[0][0], 3);
@@ -2641,7 +2842,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
         SetVs(dev, originalVs);
         if (zeroRig && vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
         if (zeroRig && p.obj.rigLamps) SetPsConst(dev, 5, &oldRig[0][0], 3);
-        SetPsConst(dev, p.obj.lampParamConst, &oldLamps[0][0], 1 + 4 * N);
+        SetPsConst(dev, p.obj.lampParamConst, &oldLamps[0][0], rows);
         SetPsConst(dev, p.obj.strengthConst, oldB, 1);
         SetPsConst(dev, p.obj.atlasConst, oldA, 1);
     }
@@ -2662,7 +2863,7 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
 // the outdoor-object patch: the ground atlas and the per-pixel lamps around the window, at the same strengths, never
 // darker than the game. In full daylight the game's look stays. The frame of the same window (an outdoor rig, mode 2)
 // lost every lamp to its own wall; DrawObjectLamp passes a wall within kWindowWallSkip while the option is on. ----
-std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_windowPs;
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_windowPs, g_windowPsReach;
 std::atomic<int> g_windowDrawn{0}, g_windowRefused{0};
 
 template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn draw) {
@@ -2672,12 +2873,28 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
     float atlasMap[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasMap);
     if (!atlas) return false;
-    PatchedPs& p = PatchedFor(dev, g_windowPs, "Window (outdoor light)", [](std::vector<DWORD>& t, PatchedPs& pp) {
+    PatchedPs* chosen = &PatchedFor(dev, g_windowPs, "Window (outdoor light)", [](std::vector<DWORD>& t, PatchedPs& pp) {
         // Rooms at Night's blue tint on the cube, as the game's draw of this part gets it (OnDrawFurniture), when the shader has it
         if (!ShaderPatches::PatchCubeTint(t, pp.cubeTint)) pp.cubeTint = -1;
         return ShaderPatches::PatchWindowOutdoor(t, pp.window);
     });
-    if (!p.ps) return false;
+    if (!chosen->ps) return false;
+    // realistic reach (12/10): the copy with the outdoor walls' law, made only from a shader the first law takes; refused
+    // (no room for its 2 rows), the first law stays (g_reachLawRefused)
+    bool reachRefused = false;
+    if (g_objPixelLamps.load(std::memory_order_relaxed) && LevelLightShare::RealisticReachActive()) {
+        PatchedPs& r = PatchedFor(
+            dev, g_windowPsReach, "Window (outdoor light, realistic reach)",
+            [](std::vector<DWORD>& t, PatchedPs& pp) {
+                if (!ShaderPatches::PatchCubeTint(t, pp.cubeTint)) pp.cubeTint = -1;
+                return ShaderPatches::PatchWindowOutdoor(t, pp.window, true);
+            },
+            true);
+        if (r.ps) chosen = &r;
+        else reachRefused = true, g_reachLawRefused++;
+    }
+    PatchedPs& p = *chosen;
+    const bool reach = p.window.reachConst != 0;
     IDirect3DVertexShader9* vs = ObjectVsFor(dev, g_curVs);
     if (!vs) return false;
     VsInfo& vi = *g_curVsInfo;
@@ -2715,18 +2932,29 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
     // the same strengths and lamps as an outdoor object at this position (DrawObjectLamp)
     constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
     float lamps[1 + 2 * N][4] = {};
+    float reachRows[2][4] = {}, oldReach[2][4] = {}; // reach: r0^2 of the 8 lamps (WindowOutdoorPatch::reachConst = planConst + 2)
     lamps[0][3] = 1e-4f;
     for (unsigned k = 0; k < N; k++) lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f; // unused slot: far away, colour 0
-    float groundShare = 1.0f;
+    float groundShare = 1.0f, gate = 1.0f;
     int nLamps = 0;
+    bool placed = false; // the lamps were placed (else the lamp strength stays 0)
     float m[3][4] = {};
     if (g_objPixelLamps.load(std::memory_order_relaxed) && wk >= 0 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(wk), &m[0][0], 3))) {
-        float at[3];
+        placed = true;
+        float at[3], lampTop = -1e9f;
         ObjectLampPoint(m, at);
-        nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, kWindowWallSkip);
+        nLamps = PickObjectLamps(at[0], at[1], at[2], lamps, groundShare, kWindowWallSkip, nullptr, &lampTop, reach ? reachRows : nullptr);
         lamps[0][1] = TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelLampStrength.load(std::memory_order_relaxed));
+        // reach: the outdoor walls' scale, the slider a trim over its default (as DrawObjectLamp)
+        if (reach)
+            lamps[0][1] = TerrainLightingPolicy::ReachLampScale(NativeWallScale(), night, g_wallEnabled.load(std::memory_order_relaxed), g_wallGain.load(std::memory_order_relaxed),
+                                                                g_objPixelLampStrength.load(std::memory_order_relaxed) / kPixelLampTrimUnit);
+        // the ground gate of DrawObjectLamp (12/10): the sash's ground term (atlas x (0.5 + 0.5 N.y) on every face,
+        // PatchWindowOutdoor) takes no height into account, so a window above every lamp head around takes none of the pool
+        if (lampTop > -1e8f) gate = std::clamp(1.0f - (at[1] - lampTop) / 1.5f, 0.0f, 1.0f);
+        if (gate < 1.0f) g_objGroundGated++;
     }
-    const float strength[4] = {TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelStrength.load(std::memory_order_relaxed)) * groundShare, 0, 0, 0};
+    const float strength[4] = {TerrainLightingPolicy::SurfaceLampGain(night, g_objPixelStrength.load(std::memory_order_relaxed)) * groundShare * gate, 0, 0, 0};
     float tint[4] = {1, 1, 1, 1};
     if (p.cubeTint >= 0 && UnlitRooms::FurnitureActive()) {
         float cube[3];
@@ -2736,10 +2964,13 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
         tint[2] = cube[1];
         tint[3] = cube[2];
     }
-    if (LightProbe::Capturing())
+    if (LightProbe::Capturing()) {
         g_objDrawInfo = std::format("WINDOW lit outdoors by the mod (experimental) | rig mode 0 (room) | per-pixel lamps: {} used of {} | ground light strength {:.2f} "
-                                    "(share not behind walls {:.2f}) | lamp strength {:.2f} | object position ({:.2f} {:.2f} {:.2f}) | house plan read {:.2f} m out along the normal",
-                                    nLamps, g_lastLampCandidates, strength[0], groundShare, lamps[0][1], m[0][3], m[1][3], m[2][3], kWindowPlanReach);
+                                    "(share not behind buildings {:.2f}, height gate {:.2f}) | lamp strength {:.2f} | object position ({:.2f} {:.2f} {:.2f}) | house plan read {:.2f} m out along the normal",
+                                    nLamps, g_lastLampCandidates, strength[0], groundShare, gate, lamps[0][1], m[0][3], m[1][3], m[2][3], kWindowPlanReach);
+        g_objDrawInfo += ReachLawText(reach, reachRefused, placed, lamps[0][1], reachRows, nLamps);
+    }
+    if (reach && placed) g_reachWindowDraws++;
     float oldA[4] = {}, oldB[4] = {}, oldPlan[2][4] = {}, oldTint[4] = {};
     float oldLamps[1 + 2 * N][4] = {};
     const ShaderPatches::WindowOutdoorPatch& w = p.window;
@@ -2747,6 +2978,7 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
     dev->GetPixelShaderConstantF(w.strengthConst, oldB, 1);
     dev->GetPixelShaderConstantF(w.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
     dev->GetPixelShaderConstantF(w.planConst, &oldPlan[0][0], 2);
+    if (reach) dev->GetPixelShaderConstantF(w.reachConst, &oldReach[0][0], 2);
     if (p.cubeTint >= 0) dev->GetPixelShaderConstantF(static_cast<UINT>(p.cubeTint), oldTint, 1);
     IDirect3DPixelShader9* originalPs = g_curPs;
     IDirect3DVertexShader9* originalVs = g_curVs;
@@ -2757,6 +2989,7 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
         SetPsConst(dev, w.strengthConst, strength, 1);
         SetPsConst(dev, w.lampParamConst, &lamps[0][0], 1 + 2 * N);
         SetPsConst(dev, w.planConst, &plan[0][0], 2);
+        if (reach) SetPsConst(dev, w.reachConst, &reachRows[0][0], 2);
         if (p.cubeTint >= 0) SetPsConst(dev, static_cast<UINT>(p.cubeTint), tint, 1);
         SetVs(dev, vs);
         SetPs(dev, p.ps);
@@ -2764,6 +2997,7 @@ template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn 
         SetPs(dev, originalPs);
         SetVs(dev, originalVs);
         if (p.cubeTint >= 0) SetPsConst(dev, static_cast<UINT>(p.cubeTint), oldTint, 1);
+        if (reach) SetPsConst(dev, w.reachConst, &oldReach[0][0], 2);
         SetPsConst(dev, w.planConst, &oldPlan[0][0], 2);
         SetPsConst(dev, w.lampParamConst, &oldLamps[0][0], 1 + 2 * N);
         SetPsConst(dev, w.strengthConst, oldB, 1);
@@ -3001,6 +3235,8 @@ template <typename DrawFn> bool DrawWallGain(IDirect3DDevice9* dev, DrawFn draw)
     float c[4], old[4];
     if (FAILED(dev->GetPixelShaderConstantF(it->second, old, 1))) return false;
     if (!std::isfinite(old[0]) || old[0] < 0) return false;
+    g_nativeWallScale = old[0]; // the walls' native lamp scale, which the reach law gives objects too (NativeWallScale)
+    g_nativeWallTick = g_lotDrawTick ? g_lotDrawTick : 1;
     std::memcpy(c, old, sizeof(c));
     c[0] = TerrainLightingPolicy::WallLampScale(old[0], g_night.load(std::memory_order_relaxed), gain);
     if (c[0] == old[0]) return false; // unchanged lamp scale: retain the native draw
@@ -3906,10 +4142,11 @@ void HoldRig(IDirect3DDevice9* dev, float (*rig)[4], RigHeld& h) {
     const DWORD now = GetTickCount();
     const unsigned long lastSwitch = LampMarkFilter::SwitchLastTick();
     const void* room = LampMarkFilter::SwitchActive() || AtriumHold::SwitchHolding() ? ObjectLightBridge::RigRoom(rp) : nullptr;
-    // switches all at once: until the whole switch is released with the rooms' maps (AtriumHold); else until its own room ends
+    // switches all at once: until the whole switch is released with the rooms' maps (AtriumHold); else until its own room ends.
+    // 12/10: the lamp's own story is never held (its maps show once solved): its furniture waits for its own room's solve
     const bool wait = !room ? false
-                      : AtriumHold::AllAtOnce() ? AtriumHold::SwitchHolding() && LevelLightShare::LampUrgency(room) > 1.0f
-                                                : RoomLightQueue::AwaitingSwitchLight(room);
+                      : AtriumHold::AllAtOnce() && !LevelLightShare::OnEditStory(room) ? AtriumHold::SwitchHolding() && LevelLightShare::LampUrgency(room) > 1.0f
+                                                                                     : RoomLightQueue::AwaitingSwitchLight(room);
     if (!wait) { // the lights as the game set them, for the next switch (not just after one: the rig may hold its new lights)
         if (lastSwitch && now - lastSwitch < 100) return;
         if (g_rigSnaps.size() > 16384) g_rigSnaps.clear();
@@ -4133,6 +4370,80 @@ bool LightingBloomPosition(IDirect3DDevice9* dev, float& x, float& y, float& z) 
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::fabs(x) < 1e7f && std::fabs(y) < 1e7f && std::fabs(z) < 1e7f;
 }
 
+// ---- Exterior surface capture (developer, read-only): how every visible outdoor wall, fence, half wall, stair, floor,
+// ground and roof draw receives its light. One row per shader pair and 0.5 m position cell; the first draw of a row also
+// keeps its bound textures, render states and non-zero shader constants. ----
+struct ExteriorRow {
+    std::string path, psClass, tex, consts, states;
+    int draws = 0, claimed = 0, rig = 0, prims = 0;
+    uint32_t sources = 0;
+    float x = 0, y = 0, z = 0, night = 0;
+    bool havePos = false, lit = false;
+};
+std::atomic<int> g_exteriorFrames{0};
+bool g_exteriorPending = false;
+using ExteriorKey = std::tuple<IDirect3DVertexShader9*, IDirect3DPixelShader9*, int, int, int>;
+std::map<ExteriorKey, ExteriorRow> g_exterior;
+
+const char* PsClassName(PsClass c) {
+    static constexpr const char* n[] = {"Unknown", "Other", "WorldCandidate", "WorldMultiLight", "WorldCompact", "LotLight", "ObjectRig", "Roof", "Lake", "Sea",
+                                        "LakeWeather", "LotLightSnow", "LotLightSnowCut", "LotLightMelt", "RoofSnow", "WallGain", "FloorAtlas"};
+    const size_t i = static_cast<size_t>(c);
+    return i < std::size(n) ? n[i] : "?";
+}
+
+// The outdoor structure/ground families; "Other"/"IndoorObject" draws that bind a light map are kept as Unclassified
+// because unpatched wall variants (ExteriorWallAOSI, UnlitExteriorWall, ...) land there (docs/engine/shaders.md).
+const char* ExteriorPath(const char* path, bool litCandidate) {
+    static constexpr const char* keep[] = {"ExteriorWall", "Road", "Floor", "OutdoorFloor", "Fence/Stair/Instanced", "SnowOnStair", "SnowLot", "LotLight", "WorldCandidate", "Roof", "RoofSnow"};
+    for (const char* k : keep)
+        if (std::strcmp(path, k) == 0) return path;
+    if (litCandidate && (std::strcmp(path, "Other") == 0 || std::strcmp(path, "IndoorObject") == 0)) return "Unclassified(lit)";
+    return nullptr;
+}
+
+std::string DescribeAllTextures(IDirect3DDevice9* dev) {
+    std::string s;
+    for (DWORD st = 0; st < 16; st++) {
+        IDirect3DBaseTexture9* b = nullptr;
+        if (FAILED(dev->GetTexture(st, &b)) || !b) continue;
+        D3DSURFACE_DESC d{};
+        if (b->GetType() == D3DRTYPE_TEXTURE && SUCCEEDED(static_cast<IDirect3DTexture9*>(b)->GetLevelDesc(0, &d))) {
+            const DWORD levels = b->GetLevelCount();
+            const char* role = "";
+            if (d.Format == D3DFMT_A8R8G8B8 && d.Pool != D3DPOOL_DEFAULT && levels == 1 && d.Width <= 1024 && d.Height <= 1024) role = "=LIGHTMAP";
+            else if (d.Format == D3DFMT_DXT5 && d.Width == 256 && d.Height == 256 && levels <= 5) role = "=TERRAINMAP";
+            s += std::format(" s{}:fmt{:X} {}x{} L{} P{}{}", st, static_cast<unsigned>(d.Format), d.Width, d.Height, levels, static_cast<int>(d.Pool), role);
+        } else {
+            s += std::format(" s{}:type{}", st, static_cast<int>(b->GetType()));
+        }
+        b->Release();
+    }
+    return s;
+}
+
+std::string DescribeConstants(IDirect3DDevice9* dev) {
+    std::string s;
+    float c[64][4] = {};
+    auto dump = [&](const char* tag, int count, bool ps) {
+        if (FAILED(ps ? dev->GetPixelShaderConstantF(0, &c[0][0], count) : dev->GetVertexShaderConstantF(0, &c[0][0], count))) return;
+        for (int i = 0; i < count; i++) {
+            if (c[i][0] == 0 && c[i][1] == 0 && c[i][2] == 0 && c[i][3] == 0) continue;
+            s += std::format("\n      {}c{}=({:.9g},{:.9g},{:.9g},{:.9g})", tag, i, c[i][0], c[i][1], c[i][2], c[i][3]);
+        }
+    };
+    dump("PS ", 32, true);
+    dump("VS ", 64, false);
+    return s;
+}
+
+std::string DescribeStates(IDirect3DDevice9* dev) {
+    DWORD v[6] = {};
+    const D3DRENDERSTATETYPE rs[6] = {D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_DESTBLEND, D3DRS_ZWRITEENABLE, D3DRS_CULLMODE, D3DRS_ALPHATESTENABLE};
+    for (int i = 0; i < 6; i++) dev->GetRenderState(rs[i], &v[i]);
+    return std::format("blend={} src={} dst={} zwrite={} cull={} atest={}", v[0], v[1], v[2], v[3], v[4], v[5]);
+}
+
 bool PsIs3(IDirect3DPixelShader9* ps) {
     if (!ps) return false;
     auto it = g_psIs3.find(ps);
@@ -4153,15 +4464,45 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, D
     const bool fc = g_falseColor.load(std::memory_order_relaxed);
     const bool census = g_censusFrames.load(std::memory_order_relaxed) > 0;
     const bool lightingBloom = g_lightingBloomFrames.load(std::memory_order_relaxed) > 0;
-    if (kPublicBuild || (!fc && !census && !lightingBloom) || g_inOwnCall) return OnDrawTracked(dev, draw);
+    const bool exterior = g_exteriorFrames.load(std::memory_order_relaxed) > 0;
+    if (kPublicBuild || (!fc && !census && !lightingBloom && !exterior) || g_inOwnCall) return OnDrawTracked(dev, draw);
 
     std::string desc;
     const int rig = RigTracker::CurrentMode();
     const bool litCandidate = LitCandidate(dev, desc) || rig == 2;
     const int bloomFamily = lightingBloom ? LightingBloomFamily() : 0;
-    const bool candidate = litCandidate || bloomFamily != 0;
+    // Exterior capture: classify and read the state before the draw, since a handler may change it while re-issuing
+    const char* exteriorPath = exterior ? ExteriorPath(LightingBloomPath(rig), litCandidate) : nullptr;
+    ExteriorRow* exRow = nullptr;
+    if (exteriorPath) {
+        float x = 0, y = 0, z = 0;
+        const bool havePos = LightingBloomPosition(dev, x, y, z);
+        const ExteriorKey key{g_curVs, g_curPs, havePos ? static_cast<int>(std::lround(x * 2.0f)) : 0, havePos ? static_cast<int>(std::lround(y * 2.0f)) : 0,
+                              havePos ? static_cast<int>(std::lround(z * 2.0f)) : 0};
+        auto [it, added] = g_exterior.try_emplace(key);
+        exRow = &it->second;
+        if (added) {
+            exRow->path = exteriorPath;
+            exRow->psClass = PsClassName(g_curClass);
+            exRow->rig = rig;
+            exRow->lit = litCandidate;
+            exRow->havePos = havePos;
+            exRow->x = x, exRow->y = y, exRow->z = z;
+            exRow->night = g_night.load(std::memory_order_relaxed);
+            exRow->tex = DescribeAllTextures(dev);
+            exRow->consts = DescribeConstants(dev);
+            exRow->states = DescribeStates(dev);
+        }
+    }
+    const bool candidate = litCandidate || bloomFamily != 0 || exRow;
     g_claimSourceMask = 0;
     const D3D9Hooks::HookAction r = OnDrawTracked(dev, draw);
+    if (exRow) {
+        exRow->draws++;
+        exRow->claimed += r == D3D9Hooks::HookAction::Skip ? 1 : 0;
+        exRow->prims += g_curPrims;
+        exRow->sources |= g_claimSourceMask;
+    }
     if (!candidate) return r;
     const bool claimed = r == D3D9Hooks::HookAction::Skip;
 
@@ -4350,6 +4691,72 @@ void WriteLightingBloomCensus() {
     } catch (...) {
     }
     g_lightingBloom.clear();
+}
+
+void WriteExteriorCapture() {
+    try {
+        const std::filesystem::path base = std::filesystem::path(ApexPaths::ApexDirectory());
+        const std::filesystem::path dir = base / L"ExteriorSurfaces";
+        std::filesystem::create_directories(dir);
+        std::ofstream out(base / L"ApexRadiance_ExteriorSurfaces.txt", std::ios::trunc);
+        out << APEX_PRODUCT_NAME " Exterior Surface Capture (read-only diagnostic, 3 frames)\n"
+               "One row per VS/PS pair and 0.5 m cell of the position read from VS c8..c10 (or the object's world constant); for wall,\n"
+               "floor and terrain batches that position may be a batch origin, not a single surface.\n"
+               "fixed = draws Apex re-issued (Skip); sources = the Apex paths that acted; textures: fmt hex D3DFORMAT, L levels, P pool,\n"
+               "LIGHTMAP = A8R8G8B8 1-mip lot/room/wall map, TERRAINMAP = DXT5 256x256 terrain light map. Constants = first draw of the row.\n"
+               "Unclassified(lit) = a light-mapped draw no Apex class recognises (unpatched wall variants; may include interior surfaces).\n"
+               "For the CPU-side lights per lot/story, also save a Lighting snapshot (Light Diag) at the same moment.\n\n";
+        auto code = [](auto* sh, uint32_t& hash, UINT& size) {
+            std::vector<DWORD> t;
+            size = 0;
+            hash = 0;
+            if (sh && SUCCEEDED(sh->GetFunction(nullptr, &size)) && size >= 8 && size <= 65536) {
+                t.resize(size / 4);
+                if (FAILED(sh->GetFunction(t.data(), &size))) t.clear();
+            }
+            uint32_t h = 2166136261u;
+            for (DWORD d : t) h = (h ^ d) * 16777619u;
+            hash = t.empty() ? 0 : h;
+            return t;
+        };
+        std::map<std::string, std::vector<const std::pair<const ExteriorKey, ExteriorRow>*>> byPath;
+        for (const auto& item : g_exterior) byPath[item.second.path].push_back(&item);
+        out << "SUMMARY (rows / draws / fixed per family):\n";
+        for (const auto& [path, rows] : byPath) {
+            int d = 0, f = 0;
+            for (const auto* r : rows) d += r->second.draws, f += r->second.claimed;
+            out << std::format("  {:<22} {:5} rows {:6} draws {:6} fixed\n", path, rows.size(), d, f);
+        }
+        std::map<uint32_t, bool> saved;
+        int files = 0;
+        for (const auto& [path, rows] : byPath) {
+            out << std::format("\n==== {} ====\n", path);
+            for (const auto* item : rows) {
+                const ExteriorRow& row = item->second;
+                uint32_t vh, ph;
+                UINT vsz, psz;
+                const auto vs = code(std::get<0>(item->first), vh, vsz);
+                const auto ps = code(std::get<1>(item->first), ph, psz);
+                std::string sources;
+                for (size_t i = 0; i < kClaimSourceCount; i++)
+                    if (row.sources & (1u << static_cast<unsigned>(i))) sources += std::string(sources.empty() ? "" : ",") + kClaimSourceNames[i];
+                if (sources.empty()) sources = row.claimed ? "UNKNOWN" : "game only";
+                const std::string pos = row.havePos ? std::format("({:.2f},{:.2f},{:.2f})", row.x, row.y, row.z) : "(unknown)";
+                out << std::format("  VS {:08X}/{} PS {:08X}/{} class={} rig={} lit={} night={:.3f} pos={} draws={} fixed={} tris={} sources={}\n    {}\n    textures:{}",
+                                   vh, vsz, ph, psz, row.psClass, row.rig, row.lit ? 1 : 0, row.night, pos, row.draws, row.claimed, row.prims, sources, row.states, row.tex);
+                out << "\n    constants:" << row.consts << "\n";
+                for (auto [h, sz, t, tag] : {std::tuple{vh, vsz, &vs, "VS"}, std::tuple{ph, psz, &ps, "PS"}}) {
+                    if (t->empty() || files >= 300 || !saved.try_emplace(h, true).second) continue;
+                    std::ofstream(dir / std::format("{}_{:08X}.bin", tag, h), std::ios::binary).write(reinterpret_cast<const char*>(t->data()), sz);
+                    files++;
+                }
+            }
+        }
+        out << std::format("\n{} rows, {} shader files in Apex Radiance\\ExteriorSurfaces\n", g_exterior.size(), files);
+        LOG_INFO(std::format("[LotLightBridge] Exterior surface capture written: {} rows, {} shader files", g_exterior.size(), files));
+    } catch (...) {
+    }
+    g_exterior.clear();
 }
 
 bool g_keepChunks = false; // Shutdown(true): a reinstall keeps the chunk maps, smoothed maps and atlas (same world)
@@ -4604,6 +5011,15 @@ void RequestLightingBloomCensus() {
 
 std::string LightingBloomCensusStatus() { return g_lightingBloomPending ? "capturing..." : "ready"; }
 
+void RequestExteriorCapture() {
+    if (g_exteriorPending) return;
+    g_exterior.clear();
+    g_exteriorPending = true;
+    g_exteriorFrames = 3;
+}
+
+std::string ExteriorCaptureStatus() { return g_exteriorPending ? "capturing..." : "ready"; }
+
 void OnPresent() {
     g_lotDrawTick = GetTickCount();
     ReportHookFailure();
@@ -4615,6 +5031,10 @@ void OnPresent() {
     if (g_lightingBloomPending && g_lightingBloomFrames.load() > 0 && --g_lightingBloomFrames == 0) {
         WriteLightingBloomCensus();
         g_lightingBloomPending = false;
+    }
+    if (g_exteriorPending && g_exteriorFrames.load() > 0 && --g_exteriorFrames == 0) {
+        WriteExteriorCapture();
+        g_exteriorPending = false;
     }
     // Lot rectangles for the soft lot edges: every 20 frames, or 5 frames after a lot pass found none (a lot that
     // streamed in) so a new lot gets its feather within a few frames.
@@ -4837,6 +5257,11 @@ std::string RoofStatus() {
 std::string Status() {
     std::string s = std::format("{} | terrain chunks seen: {} | lot light fixed: {} draws (snow: {}, roads: {}, floors: {}, outdoor floors (summer): {}, snow on floors: {}, fences/stairs: {}, snow on objects: {}, snow with relief: {}, outdoor objects: {}) | without terrain texture: {}", g_status,
         g_chunks.size(), g_lotDrawn.load(), g_snowDrawn.load(), g_roadDrawn.load(), g_floorDrawn.load(), g_floorAtlasDrawn.load(), g_snowFloorDrawn.load(), g_fenceDrawn.load(), g_snowCoverDrawn.load(), g_snowReliefDrawn.load(), g_objLampDrawn.load(), g_lotMissing.load());
+    s += std::format(" | buildings block light: objects and windows {} lamps left out, {} dimmed at a slab's edge; fences {} left out, {} dimmed; "
+                     "ground light faded above the lamp heads: {} draws",
+                     g_objLampsLeftOut, g_objLampsDimmed, g_fenceLampsLeftOut, g_fenceLampsDimmed, g_objGroundGated);
+    s += std::format(" | lamps by the outdoor walls' law (realistic reach): objects {}, fences {}, windows {} draws; first law kept (no room in the shader) {}",
+                     g_reachObjDraws, g_reachFenceDraws, g_reachWindowDraws, g_reachLawRefused);
     if (!kPublicBuild) s += std::format(" | leftover textures skipped when looking for chunk light maps: {}", g_chunkStraySkipped.load());
     return s;
 }
@@ -4921,7 +5346,8 @@ void Shutdown(bool keepChunkMaps) {
         g_meltPs = nullptr;
     }
     g_meltTried = false;
-    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs, &g_windowPs}) {
+    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_cubeTintPs, &g_windowPs,
+                        &g_objLampPsReach, &g_fencePsReach, &g_windowPsReach}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();
         cache->clear();
