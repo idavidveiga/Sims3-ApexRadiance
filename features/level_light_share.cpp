@@ -102,6 +102,7 @@
 #include "build_flavor.h"
 #include "entry_chain.h"
 #include "light_detail.h"
+#include "terrain_lighting_policy.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -5561,8 +5562,97 @@ struct SolveCtx {
     // skipped (GameWallTest): it sees whole wall runs, no opening and no top for a full wall
     uintptr_t yardLight = 0;
     float yardLamp[3] = {};
+    // One daytime curve (12/10): the solving room is roofed (an indoor room, room+0x18 == 0) and its outdoor lamps take
+    // dayScale (TerrainLightingPolicy::SolveLampDay of the night level when the point was solved)
+    BYTE* roofed = nullptr;
+    float dayScale = 1.0f;
 };
 SolveCtx g_ctx;
+
+// ---- One daytime curve on the outdoor lamps of roofed rooms (12/10; a red garden post by day lit the story-2 window
+// glass). A roofed room's maps (its light maps and its directional maps) hold the outdoor lamps that reach it at their full
+// night colour: the game has no daytime factor there, unlike the outdoor surfaces (whose draws take
+// TerrainLightingPolicy::LampDay). In those solves an outdoor lamp (a street lamp, or a lot lamp of room 0) takes
+// SolveLampDay(night level): 3% by day, 1 at night, its level at twilight. The maps are baked: a roofed room an outdoor lamp
+// lit is noted with the factor of that solve, and once the night level has settled at day or night for 2 s the rooms noted
+// with another factor are sent to gather again, once (no per-frame solve, no rig re-gather). Indoor lamps are untouched. ----
+std::atomic<float> g_roomLampDay{1.0f}; // SolveLampDay of the night level, set by OnPresent (render thread), read by the solves
+struct DayRoomKey {
+    uintptr_t mgr; // the story manager (room+0)
+    int level, id;
+    bool operator==(const DayRoomKey&) const = default;
+};
+struct DayRoomHash {
+    size_t operator()(const DayRoomKey& k) const { return k.mgr ^ (static_cast<size_t>(k.level) * 0x9E3779B1u) ^ (static_cast<size_t>(k.id) * 0x85EBCA6Bu); }
+};
+std::mutex g_dayRoomsMx;
+std::unordered_map<DayRoomKey, float, DayRoomHash> g_dayRooms; // roofed rooms an outdoor lamp lit -> the factor of that solve
+std::atomic<uint32_t> g_dayRoomsSerial{0};
+std::atomic<long> g_dayScaled{0}, g_dayRoomsSent{0};
+BYTE* g_dayLastRoom = nullptr; // light tree thread: the last room noted, with its factor
+float g_dayLastScale = -1.0f;
+// A street lamp (type 11) or a lit-outdoors lot lamp of room 0 (ObjectLightBridge BoostRec's and LotLightBridge ReadLamp's rule)
+bool OutdoorLamp(const void* light) {
+    __try {
+        const BYTE* L = static_cast<const BYTE*>(light);
+        if (*reinterpret_cast<const int*>(L + 0xB0) == 0xB) return true;
+        return (L[0x100] & 0x04) && *reinterpret_cast<const int*>(L + 0x08) == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool LampLit(const void* light) { // alive and lit (+0x100 bits 0x01 and 0x20)
+    __try {
+        const BYTE f = static_cast<const BYTE*>(light)[0x100];
+        return (f & 0x01) && (f & 0x20);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// The room when it is a roofed room (id > 0, not roofless: room+0x18 == 0), else null
+BYTE* RoofedRoom(BYTE* room) {
+    __try {
+        return room && *reinterpret_cast<const int*>(room + 0xC) > 0 && room[0x18] == 0 ? room : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+bool ReadDayRoomKey(BYTE* room, DayRoomKey& key) {
+    __try {
+        key.mgr = *reinterpret_cast<const uintptr_t*>(room);
+        if (!key.mgr) return false;
+        key.level = *reinterpret_cast<const int*>(key.mgr + 0x88);
+        key.id = *reinterpret_cast<const int*>(room + 0xC);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+std::atomic<uint32_t> g_dayGen{1}; // bumped when the world changes (OnWorldChanged): the last-noted shortcut starts again
+uint32_t g_dayLastGen = 0;
+void NoteDayRoom(BYTE* room, float scale) { // light tree thread
+    const uint32_t gen = g_dayGen.load(std::memory_order_relaxed);
+    if (room == g_dayLastRoom && scale == g_dayLastScale && gen == g_dayLastGen) return;
+    g_dayLastRoom = room;
+    g_dayLastScale = scale;
+    g_dayLastGen = gen;
+    DayRoomKey key{};
+    if (!ReadDayRoomKey(room, key)) return;
+    std::lock_guard<std::mutex> lk(g_dayRoomsMx);
+    if (g_dayRooms.size() > 16384) g_dayRooms.clear();
+    const auto [it, fresh] = g_dayRooms.try_emplace(key, scale);
+    if (!fresh && it->second == scale) return;
+    it->second = scale;
+    g_dayRoomsSerial.fetch_add(1, std::memory_order_relaxed);
+}
+// An outdoor lamp's colour at a point of a roofed room's solve (colour: the game's evaluation, rgb + w): x the solve's factor
+void RoofedDay(void* light, float* colour) {
+    if (!(colour[0] > 0.0f || colour[1] > 0.0f || colour[2] > 0.0f) || !OutdoorLamp(light)) return;
+    NoteDayRoom(g_ctx.roofed, g_ctx.dayScale);
+    if (g_ctx.dayScale >= 1.0f) return;
+    for (int i = 0; i < 4; i++) colour[i] *= g_ctx.dayScale;
+    g_dayScaled.fetch_add(1, std::memory_order_relaxed);
+}
 bool g_enterReady = false; // GameWallTest is in (Install)
 std::atomic<long> g_enterTests{0}, g_outdoorEnters{0}, g_penumbraLifted{0};
 struct BatchCentre {
@@ -5748,6 +5838,8 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
     g_ctx.thr = *reinterpret_cast<const float*>(room + 0x63C);
     g_ctx.enterLight = 0;
     g_ctx.yardLight = 0;
+    g_ctx.roofed = RoofedRoom(room);
+    g_ctx.dayScale = g_roomLampDay.load(std::memory_order_relaxed);
     g_lastRec = -1;
     float* r =reinterpret_cast<SolvePoint_t>(kSolvePoint)(room, out, list2D, list3D, flags, sample);
     if (batch && !g_ghostSolve && g_recordSeams.load(std::memory_order_relaxed)) RecordRequestedSeam(room, out, static_cast<const float*>(sample));
@@ -6529,6 +6621,27 @@ void __fastcall BasisLightHook(BYTE* room, void*, const float* pos, void* light,
                 for (int i = 0; i < 16; ++i) acc[i] += contribution[i] * pass[0];
                 return; // attenuate this lamp alone; leave earlier lamps in the accumulator unchanged
             }
+        }
+    // one daytime curve (12/10): an outdoor lamp in a roofed room's directional maps (the window glass and the objects of
+    // the room read them) x the solve's factor, as in its light maps (RoofedDay)
+    if (g_installed.load(std::memory_order_relaxed) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
+        if (BYTE* roofed = RoofedRoom(room); roofed && OutdoorLamp(light)) {
+            const float scale = g_roomLampDay.load(std::memory_order_relaxed);
+            if (scale >= 1.0f) { // night: the game's own accumulation, bit for bit; the room is noted when the lamp is lit
+                if (LampLit(light)) NoteDayRoom(roofed, scale);
+                reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, acc);
+                return;
+            }
+            alignas(16) float contribution[16] = {};
+            reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, contribution);
+            bool lit = false;
+            for (int i = 0; i < 16 && !lit; ++i) lit = contribution[i] != 0.0f;
+            if (lit) {
+                NoteDayRoom(roofed, scale);
+                g_dayScaled.fetch_add(1, std::memory_order_relaxed);
+            }
+            for (int i = 0; i < 16; ++i) acc[i] += contribution[i] * scale;
+            return;
         }
     reinterpret_cast<BasisLight_t>(kBasisLight)(pos, light, acc);
 }
@@ -7541,6 +7654,9 @@ struct ApexCycles {
 
 template <int I> void __fastcall LightEvalHook(void* light, void*, const float* sample, const float* normal, float* colour) {
     reinterpret_cast<LightEval_t>(g_evalOrig[I])(light, sample, normal, colour);
+    // one daytime curve: an outdoor lamp in a roofed room's solve (any roofed room, recorded or not), before every other test
+    if (g_ctx.roofed && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed))
+        RoofedDay(light, colour);
     if (g_ctx.info && _ReturnAddress() == reinterpret_cast<void*>(kLightEvalReturn) && ThreadId() == g_gatherThread.load(std::memory_order_relaxed)) {
         const ApexCycles timed;
         g_ctx.enterLight = 0; // a lamp's entry point serves its own wall test only
@@ -9191,7 +9307,88 @@ bool BasisFloorGuardReady() {
 }
 
 int RelightLot(uintptr_t tracker, const char* why, unsigned long changedAt, const uintptr_t* lamps, int lampCount, bool editNet); // below
+// One daytime curve (render thread, every frame): the factor the solves give outdoor lamps in roofed rooms, and once the
+// night level has settled at day or night for kDaySettleMs, the roofed rooms noted with another factor gather again (once:
+// their next solve notes the settled factor). Nothing is sent at twilight.
+constexpr DWORD kDaySettleMs = 2000;
+TerrainLightingPolicy::Phase g_dayPhase = TerrainLightingPolicy::Phase::Twilight;
+DWORD g_dayPhaseAt = 0;
+uint32_t g_daySweptSerial = 0;
+DWORD g_daySweepAt = 0;
+DWORD g_dayWorldAt = 0; // GetTickCount at the last world change (OnWorldChanged)
+bool g_daySwept = false;
+bool ReadNightLevel(float& level) {
+    __try {
+        const uintptr_t root = kRootPtr ? *reinterpret_cast<const uintptr_t*>(kRootPtr) : 0;
+        const uintptr_t lightMgr = root ? *reinterpret_cast<const uintptr_t*>(root + 0x1C0) : 0;
+        if (!lightMgr) return false;
+        level = *reinterpret_cast<const float*>(lightMgr + 0xF0); // the night level (0 day, 1 night), as LotLightBridge reads it
+        return std::isfinite(level);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void SweepDayRooms() {
+    float level = 0.0f;
+    if (!ReadNightLevel(level)) return;
+    level = std::clamp(level, 0.0f, 1.0f);
+    const float scale = TerrainLightingPolicy::SolveLampDay(level);
+    g_roomLampDay.store(scale, std::memory_order_relaxed);
+    const auto phase = TerrainLightingPolicy::LevelPhase(level);
+    const DWORD now = GetTickCount();
+    if (phase != g_dayPhase) {
+        g_dayPhase = phase;
+        g_dayPhaseAt = now;
+        g_daySwept = false;
+        return;
+    }
+    if (phase == TerrainLightingPolicy::Phase::Twilight || now - g_dayPhaseAt < kDaySettleMs || !g_installed.load(std::memory_order_relaxed)) return;
+    const uint32_t serial = g_dayRoomsSerial.load(std::memory_order_relaxed);
+    if (g_daySwept && (serial == g_daySweptSerial || now - g_daySweepAt < 500)) return;
+    g_daySwept = true;
+    g_daySweepAt = now;
+    g_daySweptSerial = serial;
+    std::vector<DayRoomKey> stale;
+    {
+        std::lock_guard<std::mutex> lk(g_dayRoomsMx);
+        for (const auto& [key, noted] : g_dayRooms)
+            if (noted != scale && stale.size() < 4096) stale.push_back(key);
+    }
+    if (stale.empty()) return;
+    uintptr_t trackers[256];
+    const int lots = AllTrackers(trackers, 256);
+    std::unordered_map<uintptr_t, uintptr_t> trackerOf; // story manager -> its lot's tracker (stories -4..7 of every loaded lot)
+    for (int t = 0; t < lots; t++)
+        for (int level = -4; level <= 7; level++)
+            if (const uintptr_t m = SafeStoryManager(trackers[t], level)) trackerOf.emplace(m, trackers[t]);
+    std::vector<DayRoomKey> done; // found on a loaded lot (sent, or already waiting for its gather), or dropped as gone
+    const bool settledWorld = now - g_dayWorldAt > 60000; // a minute after a world change, an unknown story is gone: dropped
+    int sent = 0, found = 0;
+    for (const DayRoomKey& k : stale) {
+        const auto it = trackerOf.find(k.mgr);
+        if (it == trackerOf.end() || k.level < -4 || k.level > 7 || SafeStoryManager(it->second, k.level) != k.mgr) {
+            if (settledWorld) done.push_back(k);
+            continue;
+        }
+        sent += QueueRoomSafe(it->second, k.level, k.id) ? 1 : 0;
+        found++;
+        done.push_back(k);
+    }
+    {
+        // forget what was handled unless a solve noted the settled factor meanwhile; a room of no loaded lot stays noted for
+        // a minute after a world change (a lot still loading is swept again with the next note)
+        std::lock_guard<std::mutex> lk(g_dayRoomsMx);
+        for (const DayRoomKey& k : done)
+            if (const auto it = g_dayRooms.find(k); it != g_dayRooms.end() && it->second != scale) g_dayRooms.erase(it);
+    }
+    g_dayRoomsSent.fetch_add(sent, std::memory_order_relaxed);
+    if (found)
+        LOG_INFO(std::format("[LevelLightShare] Daytime curve: {} roofed rooms lit by outdoor lamps at another factor gather again at {} ({} sent)",
+                             found, phase == TerrainLightingPolicy::Phase::Night ? "night" : "day", sent));
+}
+
 void OnPresent() {
+    SweepDayRooms();
     if (const uintptr_t fm = g_focusRelightMgr.exchange(0)) { // an F7 focused the recording: its lot lights again now
         uintptr_t trackers[256];
         const int lots = AllTrackers(trackers, 256);
@@ -9292,6 +9489,11 @@ void OnPresent() {
 }
 
 void OnWorldChanged() {
+    // the daytime curve's notes are kept: rooms noted during the load must still be swept (a note of a gone story matches no
+    // loaded lot and is dropped by a sweep a minute after the change); only the last-noted shortcut starts again
+    g_dayGen.fetch_add(1, std::memory_order_relaxed);
+    g_daySwept = false;
+    g_dayWorldAt = GetTickCount();
     {
         std::lock_guard<std::mutex> lock(g_structureMx);
         g_roomStructures.clear();
@@ -10433,7 +10635,9 @@ std::string Status() {
                            ? std::format(" | rooms lit only by lamps of another story given no boost: {} (normalisation not finite: {})", g_normCrossOnly.load(), g_normNotFinite.load())
                            : "",
                        g_basisTests.load() ? std::format(" | directional maps: lamps of another story tested {}, behind a floor {}", g_basisTests.load(), g_basisBlocked.load()) : "",
-                       g_faults.load() ? std::format(" | failures: {}", g_faults.load()) : "") + OpeningsStatus();
+                       g_faults.load() ? std::format(" | failures: {}", g_faults.load()) : "") + OpeningsStatus() +
+           std::format(" | daytime curve in roofed rooms: outdoor lamps x {:.3f} in solves now, lamp points scaled {}, rooms gathered again at a settled day or night {}",
+                       g_roomLampDay.load(), g_dayScaled.load(), g_dayRoomsSent.load());
 }
 
 } // namespace LevelLightShare
