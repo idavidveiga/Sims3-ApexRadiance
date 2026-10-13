@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "A Fény az erkélyek mögött megszűnt; az erkélyek padlója most elzárja az alattuk lévő lámpákat"},
     {"A lamp under a balcony no longer lights walls and objects above it", "Az erkély alatti lámpa már nem világítja meg a felette lévő falakat és tárgyakat"},
     {"Fence and railing tops above the lamps no longer take ground light", "A kerítések és korlátok lámpák feletti felső része már nem kap talajfényt"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "A kültéri lámpák nappal már nem világítják meg a falakat, tárgyakat és a talajt"},
     {"Presets can have their own keyboard shortcuts", "Az előbeállításoknak saját gyorsbillentyűi lehetnek"},
     {"Keyboard shortcuts now apply presets instead of single filters", "A gyorsbillentyűk mostantól előbeállításokat alkalmaznak egyes szűrők helyett"},
     {"Exterior walls respond a little faster to lighting changes", "A külső falak kissé gyorsabban reagálnak a fény változásaira"},

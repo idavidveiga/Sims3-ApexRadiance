@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "移除“阳台后的光”；阳台地板现在会阻挡下方灯具的光"},
     {"A lamp under a balcony no longer lights walls and objects above it", "阳台下方的灯具不再照亮其上方的墙壁和物品"},
     {"Fence and railing tops above the lamps no longer take ground light", "高于灯具的围栏和栏杆顶部不再获得地面光照"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "室外灯具在白天不再照亮墙壁、物体和地面"},
     {"Presets can have their own keyboard shortcuts", "预设可以拥有自己的快捷键"},
     {"Keyboard shortcuts now apply presets instead of single filters", "快捷键现在应用预设，而不是单个滤镜"},
     {"Exterior walls respond a little faster to lighting changes", "外墙对灯光变化的响应稍快一些"},

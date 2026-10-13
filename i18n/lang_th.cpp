@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "นำ แสงหลังระเบียง ออกแล้ว พื้นระเบียงจะบังแสงโคมไฟที่อยู่ด้านล่าง"},
     {"A lamp under a balcony no longer lights walls and objects above it", "โคมไฟใต้ระเบียงจะไม่ส่องผนังและวัตถุที่อยู่ด้านบนอีกต่อไป"},
     {"Fence and railing tops above the lamps no longer take ground light", "ส่วนบนของรั้วและราวกันตกที่อยู่สูงกว่าโคมไฟจะไม่ได้รับแสงจากพื้นอีกต่อไป"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "โคมไฟภายนอกจะไม่ส่องสว่างผนัง วัตถุ และพื้นในเวลากลางวันอีกต่อไป"},
     {"Presets can have their own keyboard shortcuts", "ค่าที่ตั้งไว้แต่ละชุดมีปุ่มลัดของตัวเองได้"},
     {"Keyboard shortcuts now apply presets instead of single filters", "ปุ่มลัดใช้ค่าที่ตั้งไว้แทนฟิลเตอร์เดี่ยวแล้ว"},
     {"Exterior walls respond a little faster to lighting changes", "ผนังภายนอกตอบสนองต่อการเปลี่ยนแสงเร็วขึ้นเล็กน้อย"},

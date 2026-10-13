@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "'발코니 뒤의 빛' 제거됨; 이제 발코니 바닥이 아래 램프의 빛을 막음"},
     {"A lamp under a balcony no longer lights walls and objects above it", "발코니 아래 램프가 더 이상 위쪽 벽과 오브젝트를 비추지 않음"},
     {"Fence and railing tops above the lamps no longer take ground light", "램프보다 높은 울타리와 난간 윗부분이 더 이상 지면 빛을 받지 않음"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "실외 램프가 낮에 더 이상 벽, 오브젝트, 지면을 비추지 않음"},
     {"Presets can have their own keyboard shortcuts", "프리셋마다 단축키를 지정할 수 있습니다"},
     {"Keyboard shortcuts now apply presets instead of single filters", "단축키가 이제 개별 필터 대신 프리셋을 적용합니다"},
     {"Exterior walls respond a little faster to lighting changes", "외벽이 조명 변화에 조금 더 빠르게 반응합니다"},

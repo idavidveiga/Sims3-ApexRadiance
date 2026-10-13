@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "Licht hinter Balkonen entfernt; Balkonböden blockieren jetzt Lampen darunter"},
     {"A lamp under a balcony no longer lights walls and objects above it", "Eine Lampe unter einem Balkon beleuchtet keine Wände und Objekte darüber mehr"},
     {"Fence and railing tops above the lamps no longer take ground light", "Zaun- und Geländeroberseiten über den Lampen erhalten kein Bodenlicht mehr"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "Außenlampen beleuchten bei Tageslicht keine Wände, Objekte und den Boden mehr"},
     {"Presets can have their own keyboard shortcuts", "Voreinstellungen können eigene Tastenkürzel haben"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Tastenkürzel wenden jetzt Voreinstellungen statt einzelner Filter an"},
     {"Exterior walls respond a little faster to lighting changes", "Außenwände reagieren etwas schneller auf Lichtänderungen"},

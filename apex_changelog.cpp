@@ -18,6 +18,7 @@ constexpr const char* k2123Improved[] = {
 constexpr const char* k2123Fixed[] = {
     "A lamp under a balcony no longer lights walls and objects above it",
     "Fence and railing tops above the lamps no longer take ground light",
+    "Outdoor lamps no longer light walls, objects and ground in daylight",
     nullptr};
 
 constexpr const char* k2122Added[] = {"Presets can have their own keyboard shortcuts", nullptr};

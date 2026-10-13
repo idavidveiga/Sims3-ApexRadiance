@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "Αφαιρέθηκε το Φως πίσω από μπαλκόνια· τα δάπεδα μπαλκονιών εμποδίζουν τώρα τις λάμπες από κάτω"},
     {"A lamp under a balcony no longer lights walls and objects above it", "Μια λάμπα κάτω από μπαλκόνι δεν φωτίζει πια τοίχους και αντικείμενα από πάνω"},
     {"Fence and railing tops above the lamps no longer take ground light", "Οι κορυφές φραχτών και κιγκλιδωμάτων πάνω από τις λάμπες δεν παίρνουν πια φως από το έδαφος"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "Οι εξωτερικές λάμπες δεν φωτίζουν πια τοίχους, αντικείμενα και έδαφος στο φως της ημέρας"},
     {"Presets can have their own keyboard shortcuts", "Οι προρυθμίσεις μπορούν να έχουν δικές τους συντομεύσεις πληκτρολογίου"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Οι συντομεύσεις πληκτρολογίου εφαρμόζουν πλέον προρυθμίσεις αντί για μεμονωμένα φίλτρα"},
     {"Exterior walls respond a little faster to lighting changes", "Οι εξωτερικοί τοίχοι ανταποκρίνονται λίγο πιο γρήγορα στις αλλαγές φωτισμού"},

@@ -16,6 +16,7 @@ const I18n::Pair kPairs[] = {
     {"Removed Light behind balconies; balcony floors now block lamps below them", "Lys bak balkonger er fjernet; balkonggulv stopper nå lamper under dem"},
     {"A lamp under a balcony no longer lights walls and objects above it", "En lampe under en balkong lyser ikke lenger opp vegger og objekter over den"},
     {"Fence and railing tops above the lamps no longer take ground light", "Toppen av gjerder og rekkverk over lampene får ikke lenger lys fra bakken"},
+    {"Outdoor lamps no longer light walls, objects and ground in daylight", "Utendørslamper lyser ikke lenger opp vegger, objekter og bakken i dagslys"},
     {"Presets can have their own keyboard shortcuts", "Forhåndsinnstillinger kan ha egne hurtigtaster"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Hurtigtaster bruker nå forhåndsinnstillinger i stedet for enkeltfiltre"},
     {"Exterior walls respond a little faster to lighting changes", "Yttervegger reagerer litt raskere på endringer i lyset"},
