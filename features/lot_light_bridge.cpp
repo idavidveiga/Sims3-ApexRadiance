@@ -131,7 +131,8 @@ struct SamplerBind {
 // built on the CPU from VS c14/c15 and the lot matrix VS c8/c10); lot size W x D (tiles = metres) from room 0 of the
 // lot (+0xC0/+0xC4). c30 = (0, 1) turns it off (w = 1 everywhere): unmatched lot or option off.
 //   c28 = (dLx/du, dLx/dv, Lx0, W)   c29 = (dLz/du, dLz/dv, Lz0, D)   c30 = (1/band, bias, 0, 0)
-// c31.x = "Lot lamps" brightness on the lot's own light map (night-weighted; 1 = the game).
+// c31.x = "Lot lamps" brightness on the lot's own light map (night-weighted; 1 = the game). c31.y = 0 (12/10: before full
+// night c3.x itself is set to ground gain x LampDay(night), TerrainLightingPolicy::LotPass, so it is no longer needed).
 const char* kReplacementHlsl = R"(
 float4 c0 : register(c0);
 float4 c1 : register(c1);
@@ -308,6 +309,10 @@ float NightWeighted(float gain) { return 1.0f + (gain - 1.0f) * g_night.load(std
 float GroundGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed)); }
 float RoadGain() { return NightWeighted(g_groundGain.load(std::memory_order_relaxed) * g_roadGain.load(std::memory_order_relaxed)); }
 float LotMapGain() { return NightWeighted(g_lotMapGain.load(std::memory_order_relaxed)); }
+// Roads and outdoor floors keep the game's own lamp factor (cK.x x the gain) and take the daytime curve on top of it (12/10):
+// x LampDay(night), exactly 1 at night, so the previous night value stays bit for bit
+float RoadDayGain() { return RoadGain() * TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); }
+float FloorDayGain() { return GroundGain() * TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); }
 struct ConstGain {
     IDirect3DDevice9* dev;
     int k = -1;
@@ -324,6 +329,24 @@ struct ConstGain {
     }
     ConstGain(const ConstGain&) = delete;
     ConstGain& operator=(const ConstGain&) = delete;
+};
+// cK.x = value for one draw (on = false: nothing), restored afterwards
+struct ConstX {
+    IDirect3DDevice9* dev;
+    int k = -1;
+    float old[4] = {};
+    ConstX(IDirect3DDevice9* d, int reg, bool on, float value) : dev(d) {
+        if (!on || reg < 0 || !std::isfinite(value) || FAILED(dev->GetPixelShaderConstantF(static_cast<UINT>(reg), old, 1)) || old[0] == value) return;
+        const float c[4] = {value, old[1], old[2], old[3]};
+        SetPsConst(dev, static_cast<UINT>(reg), c, 1);
+        k = reg;
+        g_groundGainDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~ConstX() {
+        if (k >= 0) SetPsConst(dev, static_cast<UINT>(k), old, 1);
+    }
+    ConstX(const ConstX&) = delete;
+    ConstX& operator=(const ConstX&) = delete;
 };
 
 struct TerrainConst {
@@ -1683,7 +1706,7 @@ template <typename DrawFn> bool DrawRoof(IDirect3DDevice9* dev, DrawFn draw) {
     }
     if (!g_roofPs) return false;
     const int picked = SelectLamps(world[3], world[11], 80.0f);
-    g_lampData[32][0] = g_roofStrength.load(std::memory_order_relaxed);
+    g_lampData[32][0] = g_roofStrength.load(std::memory_order_relaxed) * TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); // x the daytime curve (12/10)
     g_lampData[32][1] = static_cast<float>(picked);
     float saved[33][4];
     dev->GetPixelShaderConstantF(20, &saved[0][0], 33);
@@ -1751,7 +1774,7 @@ template <typename DrawFn> bool DrawLake(IDirect3DDevice9* dev, DrawFn draw, boo
     draw(); // the game's water, unchanged
     const int picked = sea ? SelectLamps(cam[0], cam[2], 150.0f) : SelectLamps(world[3], world[11], 150.0f);
     {
-        g_lampData[32][0] = g_waterStrength.load(std::memory_order_relaxed);
+        g_lampData[32][0] = g_waterStrength.load(std::memory_order_relaxed) * TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); // x the daytime curve (12/10)
         g_lampData[32][1] = static_cast<float>(picked);
         g_lampData[32][2] = g_waterFilter.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
         g_lampData[32][3] = g_waterColorCompression.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
@@ -2111,6 +2134,9 @@ std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDra
 // under 1% left at a slab's edge) or kept dimmed at a slab's edge, and the object and window draws whose ground light faded
 // because they stand above every lamp head around (the ground gate, below)
 uint32_t g_objLampsLeftOut = 0, g_objLampsDimmed = 0, g_fenceLampsLeftOut = 0, g_fenceLampsDimmed = 0, g_objGroundGated = 0;
+// Outdoor object draws that placed no per-pixel lamp and kept the game's rig, its lamp colours scaled by the daytime curve
+// (DrawObjectLamp, 12/10), render thread
+uint32_t g_objRigDayScaled = 0;
 // Realistic lamp reach on objects, fences and windows (12/10, F7 20-31-19 / 20-31-21 at a red garden post: a balcony band
 // and a column 5.5-9.8 m away went black at the first law's R = 7.82 m while the outdoor wall behind them, on the reach law,
 // stayed lit). While LevelLightShare::RealisticReachActive(), the per-pixel lamps take the outdoor walls' law (lamp_reach.h,
@@ -2124,12 +2150,13 @@ uint32_t g_reachObjDraws = 0, g_reachFenceDraws = 0, g_reachWindowDraws = 0, g_r
 // Read only while the walls' gain is on and a recognised wall is drawn (DrawWallGain), by day too, where it can be 0 (F7
 // 10:28:03, validation page). (12/10 review: a value kept from the day left every reach object, fence and window without
 // lamp light at night while no wall was drawn, or with the walls' gain off.) NativeWallScale() trusts it for 2 s after it
-// was read (g_lotDrawTick, the Present tick), else takes the night value 1 (F7 20-31-19; UNVERIFIED at dusk, where the lamp
-// colours carry the game's fade anyway, ReadLamp).
+// was read (g_lotDrawTick, the Present tick), else takes the daytime curve's value LampDay(night), 1 at night (F7 20-31-19).
+// (12/10, one daytime curve: the fallback was 1 at any level, so at dusk with no wall drawn the columns took the night
+// scale while the walls took the day one; before full night WallLampScale no longer reads the native value anyway.)
 float g_nativeWallScale = 1.0f;
 DWORD g_nativeWallTick = 0; // g_lotDrawTick when it was read; 0 = never
 bool NativeWallFresh() { return g_nativeWallTick && g_lotDrawTick - g_nativeWallTick <= 2000; }
-float NativeWallScale() { return NativeWallFresh() ? g_nativeWallScale : 1.0f; }
+float NativeWallScale() { return NativeWallFresh() ? g_nativeWallScale : TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); }
 constexpr float kPixelLampTrimUnit = 0.75f; // the default of the per-pixel lamp and fence sliders: x1 of the walls' scale (reach)
 std::atomic<bool> g_objPixel{true};
 std::atomic<float> g_objPixelStrength{1.0f};
@@ -2238,7 +2265,7 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
         if (smooth) SetTex(dev, p.road.lightSampler, smooth);
         if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, c, 1);
         SetPs(dev, p.ps);
-        ConstGain lampGain(dev, p.road.scaleConst, RoadGain()); // the road's lamp scale, after the max with the terrain
+        ConstGain lampGain(dev, p.road.scaleConst, RoadDayGain()); // the road's lamp scale, after the max with the terrain
         draw();
         SetPs(dev, original);
         if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, oldC, 1);
@@ -2345,8 +2372,9 @@ std::string ReachLawText(bool reach, bool refused, bool placed, float scale, con
 
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
+    // (12/10, one daytime curve) No full-daylight gate any more: the pass runs at every level with its ground and lamp
+    // strengths x LampDay(night) (3% by day), so a lamp left on by day fades on fences as on the walls behind them.
     const float night = g_night.load(std::memory_order_relaxed);
-    if (night <= 0.01f) return false; // by day, keep the game's normal lighting on fences / railings / stairs
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -2620,8 +2648,8 @@ std::string ReachLawText(bool reach, bool refused, bool placed, float scale, con
     if (!placed) return "\n      lamp law: realistic reach copy, but no lamp placed for this draw (world position not read): lamp strength 0";
     std::string s = std::format("\n      lamp law: realistic reach, as outdoor walls: colour (F0 x intensity x fade x visible share x weight 0.25 w x the lamp's list "
                                 "entries, 2 for a story-0 lot lamp, else 1) x sat(N.l) / d^2 x min(1, r0^2/d^2 x (1 - (d/R)^4)^2), sum held under 1 | scale {:.4f} = "
-                                "the walls' native lamp scale {:.4f}{} x their gain {:.2f} ({}) x the slider trims | r0:",
-                                scale, NativeWallScale(), NativeWallFresh() ? "" : " (none read in the last 2 s: the night value)", g_wallGain.load(),
+                                "the walls' native lamp scale {:.4f}{} (before full night the daytime curve instead) x their gain {:.2f} ({}) x the slider trims | r0:",
+                                scale, NativeWallScale(), NativeWallFresh() ? "" : " (none read in the last 2 s: the daytime curve's value)", g_wallGain.load(),
                                 g_wallEnabled.load() ? "walls on" : "walls off: gain unused");
     for (int k = 0; k < nLamps && k < static_cast<int>(ShaderPatches::kObjectPixelLamps); k++) s += std::format(" [{}] {:.2f} m", k, std::sqrt(r0Rows[k >> 2][k & 3]));
     return s;
@@ -2727,8 +2755,11 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     // rig modes 2 (outdoors) and 1 (roofless fenced areas) both draw with the exterior technique (rig report 25/09)
     const int rigMode = RigTracker::CurrentMode();
     if (!g_objPixel.load(std::memory_order_relaxed) || (rigMode != 2 && rigMode != 1)) return false;
+    // (12/10, one daytime curve; a red garden post by day: salmon columns and window frames) No full-daylight gate any more:
+    // by day the game's rig lamps (and Apex's rig boost, ObjectLightBridge BoostRec) lit outdoor objects at full night
+    // strength. The pass runs at every level: the per-pixel lamps replace the rig at strength x LampDay(night), and a draw
+    // that places none keeps the rig scaled by LampDay(night) for that draw (below).
     const float night = g_night.load(std::memory_order_relaxed);
-    if (night <= 0.01f) return false; // full daylight: do not replace the game's object rig just because the smooth ground atlas exists
     float c[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(c);
     if (!atlas) return false;
@@ -2811,8 +2842,12 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
     const float gate = lampTop > -1e8f ? std::clamp(1.0f - (originY - lampTop) / 1.5f, 0.0f, 1.0f) : 1.0f;
     if (gate < 1.0f) g_objGroundGated++;
     s[0] *= groundShare * gate;
+    const float rigDayScale = TerrainLightingPolicy::LampDay(night);
+    const bool rigDay = !zeroRig && rigDayScale < 1.0f && (p.obj.rigLamps || vl >= 0); // the kept rig, scaled for this draw
+    if (rigDay) g_objRigDayScaled++;
     if (LightProbe::Capturing()) {
         g_objDrawInfo = DescribeObjectDraw(dev, p.obj, rigMode, zeroRig, wk, vl, lamps, nLamps);
+        if (rigDay) g_objDrawInfo += std::format("\n      no per-pixel lamps placed: the game's rig lamp colours x {:.4f} (daytime curve) for this draw", rigDayScale);
         g_objDrawInfo += std::format("\n      ground light: share not behind buildings {:.2f}, height gate {:.2f} (object origin y {:.2f}, highest lamp head within 15 m {})",
                                      groundShare, gate, originY, lampTop > -1e8f ? std::format("{:.2f}", lampTop) : std::string("none"));
         g_objDrawInfo += ReachLawText(reach, reachRefused, zeroRig, lamps[0][1], lamps + kLampRows, nLamps);
@@ -2835,13 +2870,32 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
             dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
             SetVsConst(dev, static_cast<UINT>(vl), &noRig[0][0], 4);
         }
+        // No per-pixel lamps placed (option off, or no world triple): the game's rig stays, its lamp colours (the same PS
+        // c5..c7 and VS vertex light colours zeroed above; rgb only) x LampDay(night) for this draw (12/10). The sun is not
+        // in these registers (DescribeObjectDraw). Night: x 1, untouched.
+        if (rigDay) {
+            if (p.obj.rigLamps) {
+                dev->GetPixelShaderConstantF(5, &oldRig[0][0], 3);
+                float scaled[3][4];
+                std::memcpy(scaled, oldRig, sizeof scaled);
+                for (auto& r : scaled) r[0] *= rigDayScale, r[1] *= rigDayScale, r[2] *= rigDayScale;
+                SetPsConst(dev, 5, &scaled[0][0], 3);
+            }
+            if (vl >= 0) {
+                dev->GetVertexShaderConstantF(static_cast<UINT>(vl), &oldVl[0][0], 4);
+                float scaled[4][4];
+                std::memcpy(scaled, oldVl, sizeof scaled);
+                for (auto& r : scaled) r[0] *= rigDayScale, r[1] *= rigDayScale, r[2] *= rigDayScale;
+                SetVsConst(dev, static_cast<UINT>(vl), &scaled[0][0], 4);
+            }
+        }
         SetVs(dev, vs);
         SetPs(dev, p.ps);
         draw();
         SetPs(dev, originalPs);
         SetVs(dev, originalVs);
-        if (zeroRig && vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
-        if (zeroRig && p.obj.rigLamps) SetPsConst(dev, 5, &oldRig[0][0], 3);
+        if ((zeroRig || rigDay) && vl >= 0) SetVsConst(dev, static_cast<UINT>(vl), &oldVl[0][0], 4);
+        if ((zeroRig || rigDay) && p.obj.rigLamps) SetPsConst(dev, 5, &oldRig[0][0], 3);
         SetPsConst(dev, p.obj.lampParamConst, &oldLamps[0][0], rows);
         SetPsConst(dev, p.obj.strengthConst, oldB, 1);
         SetPsConst(dev, p.obj.atlasConst, oldA, 1);
@@ -2861,15 +2915,15 @@ template <typename DrawFn> bool DrawObjectLamp(IDirect3DDevice9* dev, DrawFn dra
 // looked lit, so the window looked inverted. ShaderPatches::PatchWindowOutdoor keeps the game's light and lets the faces
 // that look out of the house plan (the basis maps' alpha read half a tile out along the normal) take the outdoor terms of
 // the outdoor-object patch: the ground atlas and the per-pixel lamps around the window, at the same strengths, never
-// darker than the game. In full daylight the game's look stays. The frame of the same window (an outdoor rig, mode 2)
+// darker than the game. By day those outdoor terms take the daytime curve (TerrainLightingPolicy::LampDay). The frame of the same window (an outdoor rig, mode 2)
 // lost every lamp to its own wall; DrawObjectLamp passes a wall within kWindowWallSkip while the option is on. ----
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_windowPs, g_windowPsReach;
 std::atomic<int> g_windowDrawn{0}, g_windowRefused{0};
 
 template <typename DrawFn> bool DrawWindowOutdoor(IDirect3DDevice9* dev, DrawFn draw) {
     if (!g_windowOutdoor.load(std::memory_order_relaxed) || !g_objPixel.load(std::memory_order_relaxed) || !g_curVsInfo || RigTracker::CurrentMode() != 0) return false;
+    // (12/10, one daytime curve) runs at every level; its outdoor terms take x LampDay(night)
     const float night = g_night.load(std::memory_order_relaxed);
-    if (night <= 0.01f) return false; // full daylight: the game's look
     float atlasMap[4];
     IDirect3DTexture9* atlas = LightmapSmooth::Atlas(atlasMap);
     if (!atlas) return false;
@@ -3348,7 +3402,7 @@ template <typename DrawFn> bool DrawFloor(IDirect3DDevice9* dev, DrawFn draw) {
         SetPsConst(dev, p.floor.atlasConst, c, 1);
         if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), weight, 1);
         SetPs(dev, p.ps);
-        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
+        ConstGain lampGain(dev, p.floor.scaleConst, FloorDayGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
@@ -3390,7 +3444,7 @@ template <typename DrawFn> bool DrawSnowFloor(IDirect3DDevice9* dev, DrawFn draw
         SetPsConst(dev, p.floor.atlasConst, half, 1);
         if (p.floor.heightConst >= 0) SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), weight, 1);
         SetPs(dev, p.ps);
-        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
+        ConstGain lampGain(dev, p.floor.scaleConst, FloorDayGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, original);
         SetPsConst(dev, p.floor.atlasConst, oldC, 1);
@@ -3451,7 +3505,7 @@ template <typename DrawFn> bool DrawFloorAtlas(IDirect3DDevice9* dev, DrawFn dra
         SetPsConst(dev, static_cast<UINT>(p.floor.heightConst), height, 1);
         SetVs(dev, fv.vs);
         SetPs(dev, p.ps);
-        ConstGain lampGain(dev, p.floor.scaleConst, GroundGain()); // the lamp scale of max(map, atlas)
+        ConstGain lampGain(dev, p.floor.scaleConst, FloorDayGain()); // the lamp scale of max(map, atlas)
         draw();
         SetPs(dev, originalPs);
         SetVs(dev, originalVs);
@@ -3523,7 +3577,7 @@ template <typename DrawFn> bool DrawRoofSnow(IDirect3DDevice9* dev, DrawFn draw)
     if (picked > 0 && std::fabs(vs15[0]) > 1e-6f) {
         float consts[34][4] = {};
         std::memcpy(consts, g_lampData, sizeof(float) * 4 * 33);
-        consts[32][0] = g_roofStrength.load(std::memory_order_relaxed);
+        consts[32][0] = g_roofStrength.load(std::memory_order_relaxed) * TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)); // x the daytime curve (12/10)
         consts[32][1] = static_cast<float>(picked);
         consts[33][0] = vs15[0]; // COLOR0 = world xz / VS c15.x
         float saved[34][4];
@@ -3864,8 +3918,11 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         g_objDrawInfo = feather ? std::format("mod draw: lot light pass | soft edges: lot {:08X}{:08X}, {:.0f} x {:.0f} m, origin ({:.2f}, {:.2f}), band {:.1f} m (PS c28..c30)",
                                               rect->lotHi, rect->lotLo, rect->w, rect->d, rect->tx, rect->tz, kEdgeBand)
                                 : std::string("mod draw: lot light pass | soft edges: ") + (g_softEdges.load() ? "NOT applied, lot rectangle not found" : "off (option)");
-    float lotGain[4] = {LotMapGain(), TerrainLightingPolicy::DayLampScale(g_night.load(std::memory_order_relaxed),
-                                                                                         g_groundGain.load(std::memory_order_relaxed)), 0, 0};
+    // Before full night (12/10, one daytime curve): c3.x = ground gain x LampDay(n) for the terrain and the lot map alike,
+    // c31.x = the lot map's night gain; at full night the previous constants (the game's c3.x x GroundGain(), LotMapGain())
+    const TerrainLightingPolicy::LotPassConstants dayPass = TerrainLightingPolicy::LotPass(
+        g_night.load(std::memory_order_relaxed), g_groundGain.load(std::memory_order_relaxed), g_lotMapGain.load(std::memory_order_relaxed));
+    float lotGain[4] = {dayPass.day ? dayPass.lotGain : LotMapGain(), 0, 0, 0};
     float lotUvScale[4]{};
     if (g_curVsInfo && g_curVsInfo->contractedLotUv && SUCCEEDED(dev->GetVertexShaderConstantF(12, lotUvScale, 1))
         && std::isfinite(lotUvScale[0]) && lotUvScale[0] > 0 && lotUvScale[0] <= 1
@@ -3889,7 +3946,9 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
         if (atlas) SetVsConst(dev, 14, atlasMap, 1);
         SetPsConst(dev, 28, edge, 3);
         SetPsConst(dev, 31, lotGain, 1);
-        ConstGain lampGain(dev, 3, GroundGain()); // c3.x scales only the lamp term of kReplacementHlsl
+        // c3.x scales only the lamp terms of kReplacementHlsl
+        ConstGain lampGain(dev, 3, dayPass.day ? 1.0f : GroundGain());
+        ConstX dayScale(dev, 3, dayPass.day, dayPass.c3x);
         draw();
         if (atlas) SetVsConst(dev, 14, v, 1);
         SetPsConst(dev, 28, savedEdge, 4);
@@ -5262,6 +5321,8 @@ std::string Status() {
                      g_objLampsLeftOut, g_objLampsDimmed, g_fenceLampsLeftOut, g_fenceLampsDimmed, g_objGroundGated);
     s += std::format(" | lamps by the outdoor walls' law (realistic reach): objects {}, fences {}, windows {} draws; first law kept (no room in the shader) {}",
                      g_reachObjDraws, g_reachFenceDraws, g_reachWindowDraws, g_reachLawRefused);
+    s += std::format(" | daytime curve: outdoor lamps x {:.3f} now; object draws with the game's rig scaled {}",
+                     TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)), g_objRigDayScaled);
     if (!kPublicBuild) s += std::format(" | leftover textures skipped when looking for chunk light maps: {}", g_chunkStraySkipped.load());
     return s;
 }

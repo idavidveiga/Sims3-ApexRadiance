@@ -147,7 +147,7 @@ int visCalls=0;float firstVis[3]{}; // the first point a draw tests (fences: the
 namespace LevelLightShare {bool WallBlocks(const float*,const float*,float=0){return false;}
 float LampVisibility(const float*,const float* p,float=.2f){if(visCalls++==0)std::memcpy(firstVis,p,12);return fixtureVisibility;}
 bool RealisticReachActive(){return fixtureReach;}}
-uint32_t g_objLampsLeftOut=0,g_objLampsDimmed=0,g_fenceLampsLeftOut=0,g_fenceLampsDimmed=0,g_objGroundGated=0;
+uint32_t g_objLampsLeftOut=0,g_objLampsDimmed=0,g_fenceLampsLeftOut=0,g_fenceLampsDimmed=0,g_objGroundGated=0,g_objRigDayScaled=0;
 constexpr float kWindowWallSkip=.75f;
 bool ObjectLampPoint(const float (&m)[3][4],float (&at)[3]){for(int k=0;k<3;++k)at[k]=m[k][3];return false;}
 constexpr unsigned kGroupPieces=32;
@@ -208,7 +208,7 @@ void WallChecks() {
     for(float night: {0.f,.25f,.5f,.75f,1.f}) for(float native: {0.f,.1f,.5f,1.f}) for(float gain: {.25f,1.f,2.021245f,4.f,8.f}) {
         ResetGlobals();d=Device();g_night=night;g_wallGain=gain;g_wallConst[g_curPs]=3;
         d.pixel[3]={native,.188235313f,0.f,0.f};const auto saved=d.pixel;int calls=0;
-        const float expected=night==1.f ? native*gain : native*gain+(1.f-night)*std::min(gain,1.f)*.08f;
+        const float expected=night==1.f ? native*gain : gain*TerrainLightingPolicy::LampDay(night);
         const bool claimed=DrawWallGain(&d,[&]{++calls;Check(d.pixel[3][0]==expected,"wall day/twilight scale includes lamp map");
             Check(d.pixel[3][1]==saved[3][1]&&d.pixel[3][2]==saved[3][2]&&d.pixel[3][3]==saved[3][3],"wall changes only lamp x");});
         const bool change=expected!=native;
@@ -254,8 +254,12 @@ void LotChecks() {
                 const float expected=haveAtlas?(c<2?fixtureAtlasC[c]:fixtureAtlasC[c]+originalVertex[15][c==2?0:2]*fixtureAtlasC[c-2]):originalVertex[14][c];
                 Check(d.vertex[14][c]==expected,"lot uses exact mapping or preserves chunk mapping");
             }
-            Check(d.pixel[31][0]==LotMapGain()&&d.pixel[31][1]==TerrainLightingPolicy::DayLampScale(night,gain),"lot production gain constants unchanged");
-            auto expected=originalPixel[3];expected[0]*=GroundGain();Check(Same(d.pixel[3],expected),"lot c3 equals production night-weighted previous formula");
+            // one daytime curve (12/10): before full night c3.x = ground gain x LampDay, c31.x = the lot map's night gain, c31.y = 0;
+            // at night the previous constants
+            Check(d.pixel[31][0]==(night<1?1.3f:LotMapGain())&&d.pixel[31][1]==0.f,"lot gain constants: night ones at night, the lot map's night gain before");
+            auto expected=originalPixel[3];
+            if(night<1)expected[0]=gain*TerrainLightingPolicy::LampDay(night);else expected[0]*=GroundGain();
+            Check(Same(d.pixel[3],expected),"lot c3: previous night-weighted formula at night, ground gain x the daytime curve before");
         });
         Check(result==D3D9Hooks::HookAction::Skip&&draws==1,"lot claims exactly one draw");
         Check(Same(d.pixel,originalPixel)&&Same(d.vertex,originalVertex),"lot restores all PS/VS constants exactly");
@@ -289,20 +293,30 @@ void ObjectChecks() {
         // lamp head 2 m up, above the object (origin y .39): the ground gate stays 1
         g_lampData[0][1]=2;g_lampData[0][3]=10;g_lampData[16][0]=.2f;g_lampData[16][1]=.1f;g_lampData[16][2]=.05f;
         const auto ps=d.pixel;const auto vs=d.vertex;const auto states=d.sampler;const auto textures=d.textures;int calls=0;
-        const float day=std::min(strength,1.f)*.08f;
-        const float expected=night==1?strength:day+(strength-day)*night;
+        const float f=TerrainLightingPolicy::LampDay(night);
+        const float expected=night==1?strength:strength*f;
         const bool claimed=DrawObjectLamp(&d,[&]{++calls;
-            Check(d.pixel[41][0]==expected,"actual object draw receives daytime-balanced ground strength");
-            Check(d.pixel[42][1]==(pixel?expected:0),"actual object draw receives balanced per-pixel strength");
+            Check(d.pixel[41][0]==expected,"actual object draw receives the daytime curve's ground strength");
+            Check(d.pixel[42][1]==(pixel?expected:0),"actual object draw receives the daytime curve's per-pixel strength");
             Check(d.pixel[42][0]==(pixel?1.f:0.f),"direct mode enables upward-only atlas; fallback retains old weighting");
             if(pixel){Check(d.pixel[44][3]==1.f,"non-cone lamp spill uploads unchanged");Check(d.pixel[59][3]==1.f&&d.pixel[60][3]==1.f,"two cone constants uploaded in expanded block");}
+            // the rig: zeroed with per-pixel lamps placed; kept without, its lamp colours (rgb) x the curve for the draw (12/10)
+            for(int r=0;r<3;++r){
+                if(pixel)Check(d.pixel[5+r][0]==0.f&&d.pixel[5+r][3]==0.f,"placed lamps zero the PS rig");
+                else Check(d.pixel[5+r][0]==ps[5+r][0]*f&&d.pixel[5+r][2]==ps[5+r][2]*f&&d.pixel[5+r][3]==ps[5+r][3],"kept PS rig colours x the daytime curve, w untouched");
+            }
+            for(int r=0;r<4;++r){
+                if(pixel)Check(d.vertex[20+r][0]==0.f,"placed lamps zero the VS vertex lights");
+                else Check(d.vertex[20+r][1]==vs[20+r][1]*f&&d.vertex[20+r][3]==vs[20+r][3],"kept VS vertex light colours x the daytime curve, w untouched");
+            }
+            if(night==1&&!pixel)Check(Same(d.pixel[5],ps[5])&&Same(d.vertex[20],vs[20]),"night: the kept rig is untouched");
 
             Check(Same(d.pixel[0],ps[0]),"object brightness does not change sunlight constants");
             Check(d.ps==&replacementPs&&d.vs==&replacementVs&&g_inOwnCall,"object uses one existing draw with guard");
         });
-        Check(claimed==(night>.01f)&&calls==int(night>.01f),"object draws at night and preserves native full daylight");
+        Check(claimed&&calls==1,"object draws at every level (no full-daylight gate, 12/10)");
         Check(Same(d.pixel,ps)&&Same(d.vertex,vs)&&Same(d.sampler,states)&&Same(d.textures,textures),"object restores every constant sampler and texture");
-        Check(d.ps==g_curPs&&d.vs==g_curVs&&!g_inOwnCall&&g_objDrawInfo.empty()&&g_objLampDrawn==int(night>.01f),"object restores shaders diagnostics and guard");
+        Check(d.ps==g_curPs&&d.vs==g_curVs&&!g_inOwnCall&&g_objDrawInfo.empty()&&g_objLampDrawn==1,"object restores shaders diagnostics and guard");
         Check(atlas.refs==1&&old.refs==1,"object retains exact texture ownership");
     }
     ResetGlobals();auto d=Device();fixtureAtlas=&atlas;g_objPixel=false;int calls=0;
@@ -317,14 +331,14 @@ void InstancedChecks() {
         ResetGlobals();auto d=Device();fixtureAtlas=&atlas;d.textures[9]=&old;
         g_fenceFix=true;g_fenceStrength=gain;g_night=night;g_fenceDrawn=0;
         const auto pixel=d.pixel;const auto vertex=d.vertex;const auto sampler=d.sampler;const auto textures=d.textures;int calls=0;
-        const float day=std::min(gain,1.f)*.08f,expected=night==1?gain:day+(gain-day)*night;
+        const float expected=night==1?gain:gain*TerrainLightingPolicy::LampDay(night);
         const bool claimed=DrawInstanced(&d,[&]{++calls;
-            Check(d.pixel[41][0]==expected,"captured bench path gets shared daytime lamp scale");
+            Check(d.pixel[41][0]==expected,"captured bench path gets the shared daytime curve");
             Check(Same(d.pixel[0],pixel[0])&&Same(d.pixel[1],pixel[1]),"bench path retains sunlight colour and direction");
         });
-        Check(claimed==(night>.01f)&&calls==int(night>.01f),"instanced surface draws at night and preserves native full daylight");
+        Check(claimed&&calls==1,"instanced surface draws at every level (no full-daylight gate, 12/10)");
         Check(Same(d.pixel,pixel)&&Same(d.vertex,vertex)&&Same(d.sampler,sampler)&&Same(d.textures,textures),"instanced surface restores all device states");
-        Check(!g_inOwnCall&&d.ps==g_curPs&&g_fenceDrawn==int(night>.01f)&&atlas.refs==1&&old.refs==1,"instanced surface restores shader guard counter and ownership");
+        Check(!g_inOwnCall&&d.ps==g_curPs&&g_fenceDrawn==1&&atlas.refs==1&&old.refs==1,"instanced surface restores shader guard counter and ownership");
     }
     ResetGlobals();auto d=Device();g_fenceFix=false;fixtureAtlas=&atlas;
     Check(!DrawInstanced(&d,[]{})&&d.writes==0,"disabled instanced path stays native");
@@ -469,6 +483,8 @@ void ReachChecks() {
     Check(NativeWallScale()==1.f&&!NativeWallFresh(),"native wall scale never read: night value 1");
     g_nativeWallTick=1000;g_lotDrawTick=3000;Check(NativeWallScale()==0.f,"read 2 s ago: kept (a daytime 0 too)");
     g_lotDrawTick=3001;Check(NativeWallScale()==1.f,"read over 2 s ago: night value 1");
+    g_night=0;Check(NativeWallScale()==TerrainLightingPolicy::kLampDayFloor,"read over 2 s ago by day: the daytime curve's 3%, not the night value (12/10)");
+    g_night=.5f;Check(NativeWallScale()==TerrainLightingPolicy::LampDay(.5f),"read over 2 s ago at dusk: the daytime curve");g_night=1;
     g_nativeWallTick=0xFFFFFF00u;g_lotDrawTick=0x100u;Check(NativeWallScale()==0.f,"tick wrap handled");
     ResetGlobals();d=Device();g_wallGain=2;g_lotDrawTick=7000;d.pixel[7]={.6f,.23f,-.5f,1.25f};
     Check(DrawWallGain(&d,[]{})&&g_nativeWallScale==.6f&&g_nativeWallTick==7000u,"a wall draw records the native scale and its tick");

@@ -41,14 +41,27 @@ std::vector<DWORD> Compile(const std::string& source, const char* profile) {
 }
 void Policies() {
     using namespace TerrainLightingPolicy;
+    // One daytime curve (12/10): LampDay(n) = 0.03 + 0.97 smoothstep(0, 1, n), 1 exactly at night, monotonic, the same
+    // factor on every outdoor surface
+    Check(LampDay(0)==kLampDayFloor&&LampDay(-1)==kLampDayFloor&&LampDay(std::numeric_limits<float>::quiet_NaN())==kLampDayFloor,"daytime curve floor 3% (invalid levels too)");
+    Check(LampDay(1)==1.f&&LampDay(2)==1.f,"daytime curve exactly 1 at night");
+    Check(Near(LampDay(.5f),.515f)&&Near(LampDay(.25f),.03f+.97f*.15625f),"daytime curve follows smoothstep");
+    for(int n=1;n<=1000;++n)Check(LampDay(n/1000.f)>=LampDay((n-1)/1000.f),"daytime curve monotonic");
     for(int n=0;n<=100;++n)for(int g=0;g<=80;++g){
         const float night=n/100.f,gain=g/10.f,effective=SurfaceLampGain(night,gain);
         Check(std::isfinite(effective)&&effective>=0,"surface gain finite and nonnegative");
-        Check(effective<=gain&&effective>=std::min(gain,1.f)*.08f,"surface gain stays within daytime and saved nighttime bounds");
-        if(n==0)Check(effective==std::min(gain,1.f)*.08f,"daytime surfaces use subdued lamp response");
+        Check(effective<=gain&&effective>=gain*kLampDayFloor*.999999f,"surface gain stays within daytime and saved nighttime bounds");
+        if(n==0)Check(effective==gain*kLampDayFloor,"daytime surfaces take the 3% floor of their night strength");
         if(n==100)Check(effective==gain,"nighttime surface gain stays bit exact");
-        if(gain<=1)Check(effective<=gain,"surface strengths below one are never increased");
+        if(n<100)Check(effective==gain*LampDay(night),"surface gain follows the shared curve");
+        // walls: before full night gain x LampDay whatever the native factor; at night native x gain bit exact
+        for(float native:{0.f,.188235313f,1.f})Check(WallLampScale(native,night,gain)==(n==100?native*gain:gain*LampDay(night)),"wall lamp scale follows the shared curve");
+        // the lot pass: c3.x = ground gain x LampDay before full night, the previous constants at night
+        const LotPassConstants lot=LotPass(night,gain,1.3f);
+        Check(lot.day==(n<100)&&(n==100||(lot.c3x==gain*LampDay(night)&&lot.lotGain==1.3f)),"lot pass follows the shared curve, previous constants at night");
     }
+    Check(!LotPass(.5f,std::numeric_limits<float>::quiet_NaN(),1).day&&!LotPass(std::numeric_limits<float>::quiet_NaN(),1,1).day&&!LotPass(.5f,1,-1).day,"invalid lot pass input keeps the previous constants");
+    Check(SolveLampDay(0)==kLampDayFloor&&SolveLampDay(.005f)==kLampDayFloor&&SolveLampDay(.995f)==1.f&&SolveLampDay(1)==1.f&&SolveLampDay(.5f)==LampDay(.5f),"room solves take exact endpoint factors, the curve at twilight");
     for (int n = 0; n <= 100; ++n)
         for (int g = 1; g <= 120; ++g)
             for (int v = 0; v <= 20; ++v) {
@@ -61,9 +74,13 @@ void Policies() {
                     Check(single == native * previousWeighted, "exact previous night scale");
                     Check(multi == native * std::sqrt(previousWeighted), "exact previous squared night scale");
                 }
+                if (n < 100) {
+                    Check(single == gain * LampDay(night), "terrain lamp scale follows the shared curve before full night");
+                    Check(Near(multi * multi, gain * LampDay(night)), "squared terrain lamp scale follows the shared curve");
+                }
                 if (v == 0 && n == 0) {
-                    Check(Near(single, gain), "captured c7.x=0 gets lamp light during day");
-                    Check(Near(multi * multi, gain), "captured c3.x=0 gets equivalent lamp light during day");
+                    Check(Near(single, gain * kLampDayFloor), "captured c7.x=0 by day: 3% of the night lamp light");
+                    Check(Near(multi * multi, gain * kLampDayFloor), "captured c3.x=0 by day: 3% of the night lamp light");
                 }
             }
     for (unsigned bits = 0; bits < 32; ++bits) {
@@ -80,8 +97,8 @@ void Policies() {
         Check(LampScale(1, 0, -1, squared) == 1, "invalid negative gain leaves native shader scale");
         Check(LampScale(1, 0, std::numeric_limits<float>::infinity(), squared) == 1, "infinite gain leaves native shader scale");
     }
-    Check(DayLampScale(0, std::numeric_limits<float>::quiet_NaN()) == 0, "invalid lot daylight gain cannot inject NaN");
-    Check(DayLampScale(std::numeric_limits<float>::quiet_NaN(), 1) == 0, "invalid lot daylight level cannot inject NaN");
+    Check(GroundLampTotal(0, std::numeric_limits<float>::quiet_NaN()) == 0, "invalid ground daylight gain cannot inject NaN");
+    Check(GroundLampTotal(std::numeric_limits<float>::quiet_NaN(), 1) == 0, "invalid ground daylight level cannot inject NaN");
     Cycle c; Phase output;
     c.Reset(0); c.Observe(1, 0, 2000, true, false);
     Check(c.pending && !c.Consume(1999, output), "dusk debounce");
@@ -439,10 +456,10 @@ o.shadow=float4(.5,.5,0,1);o.a=float4(0,0,0,1);o.b=0;return o;}
         scale[0]=TerrainLightingPolicy::WallLampScale(night,night,gain);gpu.dev->SetPixelShaderConstantF(3,scale,1);
         const auto current=gpu.Render(ps,vs);
         if(!lit||night==1)Check(previous==current,"captured wall GPU: empty map and night pixels unchanged");
-        const float expectedScale=night*gain+(1.f-night)*std::min(gain,1.f)*.08f;
+        const float expectedScale=night==1.f?night*gain:gain*TerrainLightingPolicy::LampDay(night);
         for(DWORD pixel:current)for(int channel=0;channel<3;++channel){const int expected=lit?int((32>>channel)*expectedScale):0;
-            Check(std::abs(int((pixel>>(16-channel*8))&255)-expected)<=2,"captured wall GPU: lamp RGB survives daytime scale");}
-        if(lit&&night==0)Check((previous[2000]&0xffffffu)==0&&(current[2000]&0xffffffu)!=0,"F7 regression reproduced then fixed on actual shader");
+            Check(std::abs(int((pixel>>(16-channel*8))&255)-expected)<=2,"captured wall GPU: lamp RGB follows the daytime curve");}
+        if(lit&&night==0)Check((previous[2000]&0xffffffu)==0&&int((current[2000]>>16)&255)<=int(32*gain*TerrainLightingPolicy::kLampDayFloor)+1,"captured wall GPU by day: native 0, Apex at most the 3% floor");
     }
     for(DWORD slot=0;slot<=8;++slot)gpu.dev->SetTexture(slot,nullptr);
     gpu.dev->SetVertexShader(nullptr);gpu.dev->SetPixelShader(nullptr);
