@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Thai}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "ระยะแสงโคมไฟที่สมจริง: แสงโคมไฟบนผนังด้านนอกจะลดลงตามระยะทาง"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "การเปลี่ยนโคมไฟพร้อมกันทั้งหมด: ชั้นของโคมไฟอัปเดตก่อน ชั้นอื่นเปลี่ยนพร้อมกัน"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "วัตถุ รั้ว และหน้าต่างได้รับแสงโคมไฟเท่ากับผนังที่อยู่ใกล้"},
+    {"Walls block light on objects is now called Buildings block light on objects", "ผนังบังแสงบนวัตถุ เปลี่ยนชื่อเป็น อาคารบังแสงบนวัตถุ"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "นำ แสงหลังระเบียง ออกแล้ว พื้นระเบียงจะบังแสงโคมไฟที่อยู่ด้านล่าง"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "โคมไฟใต้ระเบียงจะไม่ส่องผนังและวัตถุที่อยู่ด้านบนอีกต่อไป"},
+    {"Fence and railing tops above the lamps no longer take ground light", "ส่วนบนของรั้วและราวกันตกที่อยู่สูงกว่าโคมไฟจะไม่ได้รับแสงจากพื้นอีกต่อไป"},
     {"Presets can have their own keyboard shortcuts", "ค่าที่ตั้งไว้แต่ละชุดมีปุ่มลัดของตัวเองได้"},
     {"Keyboard shortcuts now apply presets instead of single filters", "ปุ่มลัดใช้ค่าที่ตั้งไว้แทนฟิลเตอร์เดี่ยวแล้ว"},
     {"Exterior walls respond a little faster to lighting changes", "ผนังภายนอกตอบสนองต่อการเปลี่ยนแสงเร็วขึ้นเล็กน้อย"},

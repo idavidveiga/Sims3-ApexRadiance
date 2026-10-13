@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Korean}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "사실적인 램프 도달 거리: 외벽의 램프 빛이 거리에 따라 약해짐"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "램프 변경을 한 번에: 램프가 있는 층이 먼저, 다른 층은 함께 갱신됨"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "오브젝트, 울타리, 창문이 근처 벽과 같은 램프 빛을 받음"},
+    {"Walls block light on objects is now called Buildings block light on objects", "'벽이 오브젝트의 빛을 막음'의 이름이 '건물이 오브젝트의 빛을 막음'으로 바뀜"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "'발코니 뒤의 빛' 제거됨; 이제 발코니 바닥이 아래 램프의 빛을 막음"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "발코니 아래 램프가 더 이상 위쪽 벽과 오브젝트를 비추지 않음"},
+    {"Fence and railing tops above the lamps no longer take ground light", "램프보다 높은 울타리와 난간 윗부분이 더 이상 지면 빛을 받지 않음"},
     {"Presets can have their own keyboard shortcuts", "프리셋마다 단축키를 지정할 수 있습니다"},
     {"Keyboard shortcuts now apply presets instead of single filters", "단축키가 이제 개별 필터 대신 프리셋을 적용합니다"},
     {"Exterior walls respond a little faster to lighting changes", "외벽이 조명 변화에 조금 더 빠르게 반응합니다"},

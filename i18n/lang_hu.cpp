@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Hungarian}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "Valósághű lámpahatótáv: a lámpafény a külső falakon a távolsággal gyengül"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "Lámpaváltozások egyszerre: a lámpa szintje előbb frissül, a többi szint együtt"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "A tárgyak, kerítések és ablakok ugyanazt a lámpafényt kapják, mint a közeli falak"},
+    {"Walls block light on objects is now called Buildings block light on objects", "A falak elzárják a fényt a tárgyakon új neve: Az épületek elzárják a fényt a tárgyakon"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "A Fény az erkélyek mögött megszűnt; az erkélyek padlója most elzárja az alattuk lévő lámpákat"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "Az erkély alatti lámpa már nem világítja meg a felette lévő falakat és tárgyakat"},
+    {"Fence and railing tops above the lamps no longer take ground light", "A kerítések és korlátok lámpák feletti felső része már nem kap talajfényt"},
     {"Presets can have their own keyboard shortcuts", "Az előbeállításoknak saját gyorsbillentyűi lehetnek"},
     {"Keyboard shortcuts now apply presets instead of single filters", "A gyorsbillentyűk mostantól előbeállításokat alkalmaznak egyes szűrők helyett"},
     {"Exterior walls respond a little faster to lighting changes", "A külső falak kissé gyorsabban reagálnak a fény változásaira"},

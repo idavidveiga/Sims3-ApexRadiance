@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Greek}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "Ρεαλιστική εμβέλεια λαμπών: το φως των λαμπών στους εξωτερικούς τοίχους μειώνεται με την απόσταση"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "Αλλαγές λαμπών όλες μαζί: ο όροφος της λάμπας ενημερώνεται πρώτος, οι άλλοι μαζί"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "Αντικείμενα, φράχτες και παράθυρα παίρνουν το ίδιο φως λαμπών με τους κοντινούς τοίχους"},
+    {"Walls block light on objects is now called Buildings block light on objects", "Η επιλογή Οι τοίχοι εμποδίζουν το φως στα αντικείμενα μετονομάστηκε σε Τα κτίρια εμποδίζουν το φως στα αντικείμενα"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "Αφαιρέθηκε το Φως πίσω από μπαλκόνια· τα δάπεδα μπαλκονιών εμποδίζουν τώρα τις λάμπες από κάτω"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "Μια λάμπα κάτω από μπαλκόνι δεν φωτίζει πια τοίχους και αντικείμενα από πάνω"},
+    {"Fence and railing tops above the lamps no longer take ground light", "Οι κορυφές φραχτών και κιγκλιδωμάτων πάνω από τις λάμπες δεν παίρνουν πια φως από το έδαφος"},
     {"Presets can have their own keyboard shortcuts", "Οι προρυθμίσεις μπορούν να έχουν δικές τους συντομεύσεις πληκτρολογίου"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Οι συντομεύσεις πληκτρολογίου εφαρμόζουν πλέον προρυθμίσεις αντί για μεμονωμένα φίλτρα"},
     {"Exterior walls respond a little faster to lighting changes", "Οι εξωτερικοί τοίχοι ανταποκρίνονται λίγο πιο γρήγορα στις αλλαγές φωτισμού"},

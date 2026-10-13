@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Finnish}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "Realistinen lamppujen kantama: lamppujen valo ulkoseinillä heikkenee etäisyyden mukaan"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "Lamppumuutokset kerralla: lampun kerros päivittyy ensin, muut kerrokset yhdessä"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "Esineet, aidat ja ikkunat saavat saman lamppujen valon kuin viereiset seinät"},
+    {"Walls block light on objects is now called Buildings block light on objects", "Seinät estävät valon esineillä on nyt nimeltään Rakennukset estävät valon esineillä"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "Valo parvekkeiden takana poistettu; parvekkeiden lattiat estävät nyt alla olevat lamput"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "Parvekkeen alla oleva lamppu ei enää valaise sen yläpuolella olevia seiniä ja esineitä"},
+    {"Fence and railing tops above the lamps no longer take ground light", "Lamppujen yläpuolella olevat aitojen ja kaiteiden yläosat eivät enää saa maan valoa"},
     {"Presets can have their own keyboard shortcuts", "Esiasetuksille voi antaa omat pikanäppäimet"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Pikanäppäimet ottavat nyt käyttöön esiasetuksia yksittäisten suodattimien sijaan"},
     {"Exterior walls respond a little faster to lighting changes", "Ulkoseinät reagoivat hieman nopeammin valaistuksen muutoksiin"},

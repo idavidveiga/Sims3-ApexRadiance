@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), German}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "Realistische Lampenreichweite: Lampenlicht auf Außenwänden nimmt mit der Entfernung ab"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "Lampenänderungen auf einmal: das Stockwerk der Lampe zuerst, die anderen gemeinsam"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "Objekte, Zäune und Fenster erhalten dasselbe Lampenlicht wie die Wände daneben"},
+    {"Walls block light on objects is now called Buildings block light on objects", "Wände blockieren Licht auf Objekten heißt jetzt Gebäude blockieren Licht auf Objekten"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "Licht hinter Balkonen entfernt; Balkonböden blockieren jetzt Lampen darunter"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "Eine Lampe unter einem Balkon beleuchtet keine Wände und Objekte darüber mehr"},
+    {"Fence and railing tops above the lamps no longer take ground light", "Zaun- und Geländeroberseiten über den Lampen erhalten kein Bodenlicht mehr"},
     {"Presets can have their own keyboard shortcuts", "Voreinstellungen können eigene Tastenkürzel haben"},
     {"Keyboard shortcuts now apply presets instead of single filters", "Tastenkürzel wenden jetzt Voreinstellungen statt einzelner Filter an"},
     {"Exterior walls respond a little faster to lighting changes", "Außenwände reagieren etwas schneller auf Lichtänderungen"},

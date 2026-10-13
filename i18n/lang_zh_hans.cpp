@@ -9,6 +9,13 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Chinese (Simplified, mainland China)}
 const I18n::Pair kPairs[] = {
+    {"Realistic lamp reach: lamp light on outside walls fades with distance", "逼真的灯光范围：外墙上的灯光随距离减弱"},
+    {"Lamp edits all at once: the lamp's floor updates first, other floors together", "灯具调整一次到位：灯具所在楼层先更新，其他楼层一起变化"},
+    {"Objects, fences and windows take the same lamp light as nearby walls", "物品、围栏和窗户获得与附近墙壁相同的灯光"},
+    {"Walls block light on objects is now called Buildings block light on objects", "“墙壁阻挡照向物品的光”现更名为“建筑阻挡照向物品的光”"},
+    {"Removed Light behind balconies; balcony floors now block lamps below them", "移除“阳台后的光”；阳台地板现在会阻挡下方灯具的光"},
+    {"A lamp under a balcony no longer lights walls and objects above it", "阳台下方的灯具不再照亮其上方的墙壁和物品"},
+    {"Fence and railing tops above the lamps no longer take ground light", "高于灯具的围栏和栏杆顶部不再获得地面光照"},
     {"Presets can have their own keyboard shortcuts", "预设可以拥有自己的快捷键"},
     {"Keyboard shortcuts now apply presets instead of single filters", "快捷键现在应用预设，而不是单个滤镜"},
     {"Exterior walls respond a little faster to lighting changes", "外墙对灯光变化的响应稍快一些"},
