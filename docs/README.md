@@ -42,10 +42,10 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | [World atlas and smoothed maps](features/night-lighting/world-atlas-and-smoothed-maps.md): smooth terrain light maps | Released |
 | [Terrain relight](features/night-lighting/terrain-relight.md): rebuilding terrain lighting at dusk and after edits | Released |
 | [World lamp response](features/night-lighting/world-lamp-response.md): terrain and rigs follow lamp edits | Released in 2.5.6 |
-| [Every-story light](features/night-lighting/level-light-share.md): lamps on any floor light the ground and the rooms they reach; walls block lamp light outdoors | Released (walls blocking light outdoors: 2.7.0); Released in 2.12.1: update corrections |
+| [Every-story light](features/night-lighting/level-light-share.md): lamps on any floor light the ground and the rooms they reach; walls and balcony floors block lamp light outdoors | Released (walls blocking light outdoors: 2.7.0); Released in 2.12.1: update corrections; Released in 2.12.3: balcony and upper floors block lamps below them |
 | [Rooms at Night](features/night-lighting/unlit-rooms.md): ambient light and tint of unlit rooms | Released |
-| [Walls](features/night-lighting/walls.md), [Floors](features/night-lighting/floors.md), [Roofs](features/night-lighting/roofs.md), [Roads](features/night-lighting/roads.md) | Released |
-| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released; Objects and Fences corrections: Released in 2.12.1 |
+| [Walls](features/night-lighting/walls.md), [Floors](features/night-lighting/floors.md), [Roofs](features/night-lighting/roofs.md), [Roads](features/night-lighting/roads.md) | Released; Realistic lamp reach on walls: Released in 2.12.3 |
+| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released; Objects and Fences corrections: Released in 2.12.1; the walls' lamp law and the height gate on objects, fences and windows: Released in 2.12.3 |
 | [Daytime bloom and wall bloom fixes](features/night-lighting/day-bloom-fixes.md): the game's daylight look and bloom kept (idavidveiga) | Released in 2.7.0 |
 | Light detail (Lighting option, in [Night Lighting](features/night-lighting/README.md#settings)): sharper lamp light on walls and floors | Experimental (released in 2.7.0) |
 
@@ -66,7 +66,7 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | Feature | Status |
 |---|---|
 | [Performance](features/performance/README.md): fifteen switches against stutters (file lookups, lot lighting, texture and cache compression, object lookups, scene scheduling, memory, scripts) | Released |
-| [Faster room lighting](features/performance/room-light-queue.md) with *Lamp edits all at once* (was *Lamp switches all at once*): the lamp's own story at once, the other stories together in a single frame | Released (lamp switches all at once: Experimental, 2.7.0) |
+| [Faster room lighting](features/performance/room-light-queue.md) with *Lamp edits all at once* (was *Lamp switches all at once*): the lamp's own story at once, the other stories together in a single frame | Released (lamp switches all at once: Experimental, 2.7.0); Released in 2.12.3: every lamp edit, own story first |
 | [Room to save](features/performance/room-to-save.md), [Lighter window updates](features/performance/lighter-window-updates.md), [Faster scripts](features/performance/faster-scripts.md) | Experimental (released in 2.7.0) |
 | [Lot Streaming](features/performance/lot-streaming.md): lot detail farther away and smoother lot streaming (idavidveiga), off by default | Experimental (released in 2.7.0) |
 
@@ -78,7 +78,7 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | [Developer mode](features/developer-mode.md): optional diagnostic tools in the unified build | Released in 2.5.5 |
 | [Frame Profiler](features/frame-profiler.md): per-service and per-hook timing, hitches | Developer mode |
 | [Light Probe](features/dev-tools/light-probe.md), [Light Diag](features/dev-tools/light-diag.md), [Recorder](features/dev-tools/recorder.md) | Released (player captures) |
-| [Frame Capture](features/dev-tools/frame-capture.md), [Census](features/dev-tools/census.md) | Developer mode |
+| [Frame Capture](features/dev-tools/frame-capture.md), [Census](features/dev-tools/census.md) (with the exterior surface capture, 2.12.3) | Developer mode |
 
 ### Removed
 
@@ -120,6 +120,7 @@ Project-wide history: [architecture](history/architecture.md), [workflow](histor
 
 - [Presets](features/presets.md): saved settings, portable ZIP packages with a LUT and keyboard shortcuts (Released in 2.12.2).
 - [Graphics recovery](features/graphics-recovery.md): restart image-effect resources without resetting settings.
+- [2.12.3](releases/2.12.3.md): Released in 2.12.3; realistic lamp reach, balconies blocking lamps below and faster lamp edits.
 - [2.12.2](releases/2.12.2.md): Released in 2.12.2; keyboard shortcuts for presets.
 - [2.12.1](releases/2.12.1.md): Released in 2.12.1; outdoor lighting corrections.
 - [2.12.0](releases/2.12.0.md): LUTs, presets and graphics improvements.

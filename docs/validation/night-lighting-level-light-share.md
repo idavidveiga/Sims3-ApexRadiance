@@ -33,6 +33,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `tools/room_ambient_test`; `run_resource_checks.ps1` | Builds passed; room ambient policy 102 checks, 0 failures; resource paths 14,154 checks, 0 failures (*Buildings block light on objects* 14). The extracted indoor-stories, world-pool, queue and dispatch harnesses no longer compile against the current source (the same failure at v2.12.2), so they were not run | None (mocks) / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Wall generation policy fixtures | Zero build warnings; Passed the clean source policy checks; no FPS or instantaneous-update guarantee | Native D3D9 fixtures / x86 build |
 | 2026-10-07 | v2.10.1 | Extracted exterior floor lookup against v2.10.0 | 86,364 checks passed; 84,000 to 7,000 full link searches in the fixed multi-story fixture | None (native accesses mocked) |
 | 2026-10-05 | PR #2 (`2584e01`) | Indoor stories fixture, raised-room wall veto | 18,992 extracted checks passed; the raised-wall fixture failed twice before the guard and passes after | None (mocks) |
@@ -126,6 +127,8 @@ topology mutation inside a point is not reproduced. This release does not promis
 
 ## Open checks
 
+- 2.12.3 public build, not yet tested in game: a balcony or deck with a lamp under it and walls, windows, objects and fences on it; a lamp on the balcony; a lamp seen past the slab's edge. **Expected:** nothing above the slab takes the lamp below it; the edge dims rather than cuts; the lamp on the balcony still lights the wall below it.
+- The indoor-stories, world-pool, queue and dispatch harnesses need their extractions updated to the current source.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
 - Wider fence/gate materials, fallback groups and daytime transitions

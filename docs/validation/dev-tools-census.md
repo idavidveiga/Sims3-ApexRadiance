@@ -56,6 +56,7 @@ Shader sources:
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings | Builds passed; the exterior surface capture has no offline harness | x86 build |
 | 2026-09-25 | Combined build | `test5.cpp` | 14 refused PS, 4 fixable | Offline |
 | 2026-09-25 | Combined build | `test7.cpp` | 77 VS / 99 PS: foliage VS 6 -> 8, leaf-shadow PS 2 -> 3, all valid | Offline |
 | 2026-09-25 | Combined build | `test8.cpp` to `test10.cpp` | Only the intended pairs match | Offline |
@@ -82,5 +83,6 @@ Acceptance for Night Lighting coverage: no outdoor object in magenta on a summer
 
 ## Open checks
 
+- Exterior surface capture (2.12.3): a capture at night on a lot with walls, fences, stairs, floors and roofs. **Expected:** `ApexRadiance_ExteriorSurfaces.txt` lists every family on screen with its Apex sources, the status returns to `ready`, and no more than 300 shader files are written.
 - Whether false colour changes what the Light Probe records for the same draw (inferred, not tested).
 - Whether the census counts the Light Probe's occlusion copies when both run in one frame (inferred, not tested).

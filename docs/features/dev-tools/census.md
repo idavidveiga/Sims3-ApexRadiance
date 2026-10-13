@@ -8,6 +8,8 @@ Lighting fix, and would a pattern patch accept them?
 - **Census** records the same classification for about three frames per (VS, PS) pair into `ApexRadiance_Censo.txt`,
   and saves the bytecode of every unfixed pair to `Censo\`.
 - **Refused shaders** saves, automatically, every shader a fix tried and refused to `ShadersRecusados\`.
+- **Exterior surface capture** records, for about three frames, how every visible outdoor wall, fence, stair, floor,
+  ground and roof draw is lit into `ApexRadiance_ExteriorSurfaces.txt`, with its shaders in `ExteriorSurfaces\`.
 
 The shaders saved by these tools feed offline coverage tests that run the shader patchers outside the game.
 
@@ -15,9 +17,9 @@ The shaders saved by these tools feed offline coverage tests that run the shader
 
 | | |
 |---|---|
-| Availability | Developer mode only. Released in 2.5.5 as part of the unified build (earlier: developer build only) |
-| Default | False colour off; census and refused-shader dump idle |
-| Menu | Developer > Lighting > Collect lighting evidence (false colour checkbox, census button) |
+| Availability | Developer mode only. Released in 2.5.5 as part of the unified build (earlier: developer build only). Exterior surface capture: Released in 2.12.3 (developer build only) |
+| Default | False colour off; census, exterior surface capture and refused-shader dump idle |
+| Menu | Developer > Lighting > Collect lighting evidence (false colour checkbox, census and exterior surface capture buttons) |
 | Configuration | False colour is saved as `false_color` in `[developer] controls`; no other keys |
 | Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp), [`features/lot_light_bridge.h`](../../../features/lot_light_bridge.h) |
 
@@ -41,6 +43,7 @@ lot.
 |---|---|---|
 | False colour: magenta = gets lamp light but no fix claimed it | Developer > Lighting > Collect lighting evidence | `LotLightBridge::SetFalseColor`; saved in `[developer] controls false_color` |
 | Census: write ApexRadiance_Censo.txt | Same card, with status `(ready)` / `(writing...)` | `LotLightBridge::RequestCensus()` |
+| Exterior surface capture | Same card, with its status | `LotLightBridge::RequestExteriorCapture()`; read-only, see *Exterior surface capture* below |
 
 Both need the bridge's draw hooks registered: Night Lights installed with at least one of the lot light bridge, the
 object fix, roofs, water or the wall fix enabled (`UpdateHooks`). Otherwise nothing is recorded or painted. In normal
@@ -126,6 +129,18 @@ SEM    26 |     0 |    1068 | -1 | VS 3A9A86BF/696 | PS 1E84E3E5/740 | s1:map32x
 
 For every `SEM` pair, `Censo\VS_<hash>.bin` and `Censo\PS_<hash>.bin` hold the raw bytecode, named by content hash and
 therefore stable across sessions. Log line: `[LotLightBridge] Census written: <pairs> pairs, <n> without a fix`.
+
+### Exterior surface capture (`WriteExteriorCapture`)
+
+Same three-frame window as the census (`g_exteriorFrames`). Draws of the outdoor structure and ground families
+(`ExteriorWall`, `Road`, `Floor`, `OutdoorFloor`, `Fence/Stair/Instanced`, `SnowOnStair`, `SnowLot`, `LotLight`,
+`WorldCandidate`, `Roof`, `RoofSnow`; a light-mapped `Other` or `IndoorObject` draw as `Unclassified(lit)`) are kept one
+row per VS/PS pair and 0.5 m cell of the position read from VS c8..c10 (or the object's world constant; for wall, floor
+and terrain batches a batch origin). The first draw of a row also keeps its bound textures, render states and non-zero
+shader constants; the row records draws, Apex-claimed draws and the Apex paths that acted. Output, in the Apex Radiance
+folder: `ApexRadiance_ExteriorSurfaces.txt` (a per-family summary, then the rows) and `ExteriorSurfaces\VS_<fnv>.bin` /
+`PS_<fnv>.bin`, at most 300 shader files per capture. Log line: `[LotLightBridge] Exterior surface capture written: N
+rows, M shader files`. For the CPU-side lights per lot and story, save Light Diag at the same moment.
 
 ### Refused shaders (`SaveRefused`)
 

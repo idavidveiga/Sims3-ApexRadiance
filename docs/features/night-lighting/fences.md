@@ -9,7 +9,7 @@ same switch and strength. By day the lamp term fades, and in full daylight fence
 
 | | |
 |---|---|
-| Availability | Released in 2.12.1: lighting corrections.  Released in 1.0.0. Subdued daytime lamp response: Released in 2.6.0. Per-pixel lamps, walls blocking them and the game's own lighting in full daylight: Released in 2.7.0 |
+| Availability | Released in 2.12.3: the outdoor walls' lamp law with *Realistic lamp reach*, slabs blocking lamps below and tops above the lamp heads without ground light. Released in 2.12.1: lighting corrections.  Released in 1.0.0. Subdued daytime lamp response: Released in 2.6.0. Per-pixel lamps, walls blocking them and the game's own lighting in full daylight: Released in 2.7.0 |
 | Default | On |
 | Menu | Lighting > Objects > *Doors, counters and fences* card |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |

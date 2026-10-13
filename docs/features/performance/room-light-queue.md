@@ -9,7 +9,7 @@ frame, once the new light is ready. The final lighting is the game's own.
 
 | | |
 |---|---|
-| Availability | Released in 2.1.0 or earlier (on by default since its introduction). Lamp switches all at once and Quick update for lamp switches (both Experimental), an atrium's stories changing together and the quick return of empty light object removals: Released in 2.7.0 |
+| Availability | Released in 2.1.0 or earlier (on by default since its introduction). Lamp switches all at once and Quick update for lamp switches (both Experimental), an atrium's stories changing together and the quick return of empty light object removals: Released in 2.7.0. Lamp edits all at once (was *Lamp switches all at once*; every lamp edit, the lamp's own story shown first) and shorter waits for an edit's rooms: Released in 2.12.3 |
 | Default | On |
 | Menu | System > Performance > Camera and lighting > *Faster room lighting* |
 | Configuration | `[patches.RoomLightQueue]` in `ApexRadiance.toml` |
