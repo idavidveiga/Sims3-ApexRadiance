@@ -70,6 +70,10 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <deque>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -591,9 +595,16 @@ bool LotEdgeConstants(const float k[4], const float c15[4], const float c8[4], c
 // alpha, the share of the nearby outdoor lamps' stamp that reaches each texel past the outside walls (GroundShadow, 4
 // texels a metre on the room mask's grid; 255 inside the rooms, whose own lamps light them). The lot pass multiplies its
 // whole lamp term by it (the atlas, the lot map and the soft edge's target); the snowy passes their max(lot map, atlas).
-// Built a slice at a time on the render thread (ShadeTick, kShadeBudgetMs a frame) from copies: the outside walls (the copy
+// Built a slice at a time on the render thread (ShadeTick, on a worker thread since 15/10) from copies: the outside walls (the copy
 // "Buildings block light on objects" tests) and the bake lamp snapshot; built again only when the walls' or slabs' copy,
 // the lot's nearby lamps (place, about 20% of light, in or out of the bake) or the lot's place changed, at most every 2 s.
+// A lot's shade over the world grass (15/10): the share per texel and the lamps' stamp weight it is a share of, so the lots
+// over one texel combine as sum M w / sum w (the lowest of them darkened a lamp's light past a gap with a neighbour's shade
+// of other lamps)
+struct ExtData {
+    std::vector<uint8_t> v;
+    std::vector<float> w;
+};
 struct LotMask {
     IDirect3DTexture9* tex = nullptr;
     uint64_t sig = 0;
@@ -606,6 +617,11 @@ struct LotMask {
     DWORD shadeAt = 0;              // when the last build for this lot was queued
     DWORD lastUse = 0;              // when a draw last asked for its texture (the cache drops the oldest, EvictLotMasks)
     bool dirty = false;             // room or shade changed: the texture is made again at the next draw
+    // (15/10) the shade on the grid it was built on: the lot and the world grass around it its lamps reach (ShadeGrid), for
+    // the world terrain pass (ChunkShadeTexture); empty when nothing there is shaded
+    GroundShadow::Grid extGrid;
+    std::shared_ptr<const ExtData> ext;
+    float ex0 = 0, ez0 = 0, ex1 = 0, ez1 = 0; // its world box
 };
 std::unordered_map<uint64_t, LotMask> g_lotMasks;
 IDirect3DTexture9* g_whiteMask = nullptr;
@@ -622,17 +638,7 @@ IDirect3DTexture9* WhiteMask(IDirect3DDevice9* dev) {
     return g_whiteMask;
 }
 
-constexpr double kShadeBudgetMs = 1.0;
 constexpr DWORD kShadeMinEveryMs = 2000;
-struct ShadeRun {
-    bool active = false;
-    uint64_t lot = 0, key = 0;
-    int w = 0, h = 0;
-    GroundShadow::ShadeJob job;
-    int frames = 0;
-    double ms = 0.0;
-};
-ShadeRun g_shadeRun;
 struct ShadeWant {
     uint64_t lot = 0, key = 0;
     LotRect rect{};
@@ -641,20 +647,311 @@ struct ShadeWant {
 std::vector<ShadeWant> g_shadeQueue; // render thread; one entry per lot
 std::atomic<long> g_shadeBuilt{0}, g_shadeDropped{0};
 long long g_shadeTests = 0, g_shadeThrough = 0; // texel tests; of them crossing a wall with patches (openings, lower cells) and keeping light
-int g_shadeLastPatches = 0;
+int g_shadeLastPatches = 0, g_shadeLastFences = 0;
 double g_shadeLastMs = 0.0, g_shadeMaxMs = 0.0;
-int g_shadeLastFrames = 0, g_shadeLastLamps = 0, g_shadeLastWalls = 0;
+int g_shadeLastLamps = 0, g_shadeLastWalls = 0;
 float g_shadeLastMin = 1.0f;
 bool g_shadeOn = true;
 
+// ---- The builds run on a worker thread (15/10: they ran 1 ms a frame on the render thread, so a lot's shade took up to a
+// couple of seconds to show and every frame paid for it). A lot's shade (GroundShadow::ShadeJob) and a chunk's texture
+// (its mips) are made there from copies; the render thread only makes the inputs, uploads and applies. One thread, tasks
+// in order; results carry the epoch they were asked in (ReleaseLotMasks starts a new one, older results are dropped).
+struct ExtSrc { // one lot's shade over the world grass, for a chunk build (shared, never changed once made)
+    GroundShadow::Grid grid;
+    std::shared_ptr<const ExtData> v;
+    float x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+};
+struct ShadeTask {
+    bool chunk = false;
+    uint32_t epoch = 0;
+    // a lot
+    uint64_t lot = 0, key = 0;
+    int w = 0, h = 0, ox = 0, oz = 0;
+    GroundShadow::Grid grid;
+    std::vector<GroundShadow::Lamp> lamps;
+    std::vector<GroundShadow::Wall> walls;
+    std::vector<WallOpenings::Patch> patches;
+    // a chunk
+    std::pair<int, int> chunkKey{};
+    std::vector<ExtSrc> srcs;
+};
+struct ShadeResult {
+    bool chunk = false;
+    uint32_t epoch = 0;
+    uint64_t lot = 0, key = 0;
+    int w = 0, h = 0, ox = 0, oz = 0;
+    GroundShadow::Grid grid;
+    std::vector<uint8_t> res;
+    std::vector<float> den;
+    double ms = 0.0;
+    long long tests = 0, through = 0;
+    std::pair<int, int> chunkKey{};
+    std::vector<std::vector<uint8_t>> mips; // empty: no lot shades the chunk
+};
+constexpr int kChunkShadeTexels = 1024;
+constexpr float kChunkSize = 256.0f;
+// The shade of one lot at the world point (bilinear on its grid); false outside its grid
+bool ExtShadeAt(const ExtSrc& m, float x, float z, float& v, float& wt) {
+    float fi, fj;
+    if (!GroundShadow::WorldTexel(m.grid, x, z, fi, fj)) return false;
+    const int W = m.grid.w, H = m.grid.h;
+    if (!(fi >= 0.0f) || !(fj >= 0.0f) || !(fi <= W) || !(fj <= H)) return false;
+    const float a = std::clamp(fi - 0.5f, 0.0f, W - 1.0f), b = std::clamp(fj - 0.5f, 0.0f, H - 1.0f);
+    const int i0 = static_cast<int>(a), j0 = static_cast<int>(b), i1 = std::min(i0 + 1, W - 1), j1 = std::min(j0 + 1, H - 1);
+    const float u = a - i0, t = b - j0;
+    const std::vector<uint8_t>& e = m.v->v;
+    const std::vector<float>& ww = m.v->w;
+    const auto at = [&](int i, int j) { return static_cast<float>(e[static_cast<size_t>(j) * W + i]); };
+    const auto wa = [&](int i, int j) { return ww[static_cast<size_t>(j) * W + i]; };
+    v = (at(i0, j0) * (1 - u) + at(i1, j0) * u) * (1 - t) + (at(i0, j1) * (1 - u) + at(i1, j1) * u) * t;
+    wt = (wa(i0, j0) * (1 - u) + wa(i1, j0) * u) * (1 - t) + (wa(i0, j1) * (1 - u) + wa(i1, j1) * u) * t;
+    return true;
+}
+// Worker: the chunk's texels (the lots' shades weighed by their lamps' light there, 255 where none) and their mips
+void BuildChunkMips(const ShadeTask& t, ShadeResult& r) {
+    constexpr int N = kChunkShadeTexels;
+    constexpr float tpm = N / kChunkSize; // texels a metre
+    const float wx0 = t.chunkKey.first - kChunkSize * 0.5f, wz0 = t.chunkKey.second - kChunkSize * 0.5f;
+    std::vector<float> sumW, sumMW;
+    bool any = false;
+    for (const ExtSrc& m : t.srcs) {
+        const size_t n = static_cast<size_t>(m.grid.w) * m.grid.h;
+        if (!m.v || m.v->v.size() != n || m.v->w.size() != n) continue;
+        if (sumW.empty()) sumW.assign(static_cast<size_t>(N) * N, 0.0f), sumMW.assign(static_cast<size_t>(N) * N, 0.0f);
+        const int i0 = std::max(0, static_cast<int>(std::floor((m.x0 - wx0) * tpm))), i1 = std::min(N - 1, static_cast<int>(std::ceil((m.x1 - wx0) * tpm)));
+        const int j0 = std::max(0, static_cast<int>(std::floor((m.z0 - wz0) * tpm))), j1 = std::min(N - 1, static_cast<int>(std::ceil((m.z1 - wz0) * tpm)));
+        for (int j = j0; j <= j1; j++)
+            for (int i = i0; i <= i1; i++) {
+                float v, wt;
+                if (!ExtShadeAt(m, wx0 + (i + 0.5f) / tpm, wz0 + (j + 0.5f) / tpm, v, wt)) continue;
+                const float w = std::max(wt, 0.0f) + 1e-4f; // (a lot with no lamp here weighs almost nothing)
+                const size_t at = static_cast<size_t>(j) * N + i;
+                sumW[at] += w;
+                sumMW[at] += w * v;
+            }
+    }
+    if (sumW.empty()) return;
+    std::vector<uint8_t> px(static_cast<size_t>(N) * N, 255);
+    for (size_t k = 0; k < px.size(); k++)
+        if (sumW[k] > 0.0f) {
+            const uint8_t q = static_cast<uint8_t>(std::lround(std::clamp(sumMW[k] / sumW[k], 0.0f, 255.0f)));
+            if (q < 255) px[k] = q, any = true;
+        }
+    if (!any) return; // nothing shaded: no texture
+    int n = N;
+    r.mips.push_back(std::move(px));
+    while (n > 1) { // 2 x 2 averages down to 1 x 1
+        const std::vector<uint8_t>& a = r.mips.back();
+        const int h = n / 2;
+        std::vector<uint8_t> next(static_cast<size_t>(h) * h);
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < h; i++) {
+                const size_t p = static_cast<size_t>(2 * j) * n + 2 * i, q = p + n;
+                next[static_cast<size_t>(j) * h + i] = static_cast<uint8_t>((a[p] + a[p + 1] + a[q] + a[q + 1] + 2) / 4);
+            }
+        r.mips.push_back(std::move(next));
+        n = h;
+    }
+}
+class ShadeWorker {
+public:
+    // (no join at unload: Shutdown stops it; a thread left at process exit is ended by the system)
+    ~ShadeWorker() {
+        if (th_.joinable()) th_.detach();
+    }
+    void Submit(ShadeTask&& t) {
+        {
+            std::lock_guard<std::mutex> lk(mx_);
+            in_.push_back(std::move(t));
+        }
+        Start();
+        cv_.notify_one();
+    }
+    // render thread: the finished results
+    std::vector<ShadeResult> Take() {
+        std::lock_guard<std::mutex> lk(mx_);
+        std::vector<ShadeResult> r;
+        r.swap(out_);
+        return r;
+    }
+    size_t Pending() {
+        std::lock_guard<std::mutex> lk(mx_);
+        return in_.size() + busy_;
+    }
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> lk(mx_);
+            stop_ = true;
+            in_.clear();
+        }
+        cv_.notify_all();
+        if (th_.joinable()) th_.join();
+        std::lock_guard<std::mutex> lk(mx_);
+        stop_ = false;
+        out_.clear();
+        busy_ = 0;
+    }
+
+private:
+    void Start() {
+        if (th_.joinable()) return;
+        th_ = std::thread([this] { Run(); });
+        SetThreadPriority(th_.native_handle(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+    void Run() {
+        for (;;) {
+            ShadeTask t;
+            {
+                std::unique_lock<std::mutex> lk(mx_);
+                cv_.wait(lk, [this] { return stop_ || !in_.empty(); });
+                if (stop_) return;
+                t = std::move(in_.front());
+                in_.pop_front();
+                busy_ = 1;
+            }
+            ShadeResult r;
+            r.chunk = t.chunk;
+            r.epoch = t.epoch;
+            LARGE_INTEGER f, t0, t1;
+            QueryPerformanceFrequency(&f);
+            QueryPerformanceCounter(&t0);
+            try {
+                if (t.chunk) {
+                    r.chunkKey = t.chunkKey;
+                    BuildChunkMips(t, r);
+                } else {
+                    r.lot = t.lot, r.key = t.key, r.w = t.w, r.h = t.h, r.ox = t.ox, r.oz = t.oz, r.grid = t.grid;
+                    GroundShadow::ShadeJob job;
+                    job.Init(t.grid, std::move(t.lamps), std::move(t.walls), std::move(t.patches));
+                    job.Step([this] { return !stop_; });
+                    r.res = job.Result();
+                    r.den = job.StampWeight();
+                    r.tests = job.Tests();
+                    r.through = job.Through();
+                }
+            } catch (...) {
+                r.res.clear();
+                r.mips.clear();
+            }
+            QueryPerformanceCounter(&t1);
+            r.ms = static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+            std::lock_guard<std::mutex> lk(mx_);
+            busy_ = 0;
+            if (!stop_) out_.push_back(std::move(r));
+        }
+    }
+    std::thread th_;
+    std::mutex mx_;
+    std::condition_variable cv_;
+    std::deque<ShadeTask> in_;
+    std::vector<ShadeResult> out_;
+    size_t busy_ = 0;
+    std::atomic<bool> stop_{false};
+};
+ShadeWorker g_shadeWorker;
+uint32_t g_shadeEpoch = 1;
+int g_lotsInFlight = 0;
+
+// ---- The shade on the world grass around lots (15/10). The world terrain pass lights the grass outside lots with the
+// terrain map (its bake lamps, lot lamps among them, with no wall), so a wall's shadow stopped at the lot's edge. One
+// texture per terrain chunk (L8, 4 texels a metre, 1024 x 1024 over the chunk's 256 m, full mips) holds the lowest of the
+// lots' shades over it (LotMask::ext, 255 where none); it shares the chunk light map's uv (uv = (world xz - centre) / 256 +
+// 0.5, RecordWorldChunk), and the patched terrain shader multiplies the lamp light by it (ShaderPatches::PatchTerrainShade).
+// A chunk is made again on the worker when a lot's shade over it changed; it keeps its texture until the new one is ready.
+struct ChunkShade {
+    IDirect3DTexture9* tex = nullptr;
+    bool dirty = true;
+    bool building = false;
+};
+std::map<std::pair<int, int>, ChunkShade> g_chunkShades; // key: chunk centre (x, z), as g_chunks
+std::atomic<long> g_chunkShadeBuilds{0};
+double g_chunkShadeLastMs = 0.0;
+std::map<std::pair<int, int>, ShadeResult> g_chunkReady; // finished chunk builds waiting for their chunk's draw
+void ReleaseChunkShades() {
+    for (auto& [k, c] : g_chunkShades)
+        if (c.tex) c.tex->Release();
+    g_chunkShades.clear();
+    g_chunkReady.clear();
+}
 void ReleaseLotMasks() {
     for (auto& [lot, m] : g_lotMasks)
         if (m.tex) m.tex->Release();
     g_lotMasks.clear();
+    ReleaseChunkShades();
     if (g_whiteMask) g_whiteMask->Release();
     g_whiteMask = nullptr;
-    g_shadeRun = ShadeRun{};
     g_shadeQueue.clear();
+    g_shadeEpoch++; // the builds in flight are dropped when they come back
+    g_lotsInFlight = 0;
+}
+// The chunks over a world box are made again at their next draw
+void MarkChunkShades(float x0, float z0, float x1, float z1) {
+    if (!(x1 >= x0) || !(z1 >= z0) || x1 - x0 > 4096.0f || z1 - z0 > 4096.0f) return;
+    const int i0 = static_cast<int>(std::floor(x0 / kChunkSize)), i1 = static_cast<int>(std::floor(x1 / kChunkSize));
+    const int j0 = static_cast<int>(std::floor(z0 / kChunkSize)), j1 = static_cast<int>(std::floor(z1 / kChunkSize));
+    for (int i = i0; i <= i1; i++)
+        for (int j = j0; j <= j1; j++) g_chunkShades[{i * 256 + 128, j * 256 + 128}].dirty = true;
+}
+void MarkLotChunkShades(const LotMask& m) {
+    if (m.ext) MarkChunkShades(m.ex0, m.ez0, m.ex1, m.ez1);
+}
+// The chunk's shade texture, or null where no lot shades it (the terrain draw is then left as it was). A changed chunk is
+// sent to the worker; its texture (or none) stays until the new one is uploaded (ShadeTick).
+void ApplyChunkResult(IDirect3DDevice9* dev, ShadeResult& r);
+IDirect3DTexture9* ChunkShadeTexture(IDirect3DDevice9* dev, const std::pair<int, int>& key) {
+    if (!g_shadeOn) return nullptr;
+    if (const auto ready = g_chunkReady.find(key); ready != g_chunkReady.end()) {
+        ShadeResult r = std::move(ready->second);
+        g_chunkReady.erase(ready);
+        ApplyChunkResult(dev, r);
+    }
+    const auto it = g_chunkShades.find(key);
+    if (it == g_chunkShades.end()) return nullptr;
+    ChunkShade& c = it->second;
+    if (c.dirty && !c.building) {
+        c.dirty = false;
+        c.building = true;
+        ShadeTask t;
+        t.chunk = true;
+        t.epoch = g_shadeEpoch;
+        t.chunkKey = key;
+        const float wx0 = key.first - kChunkSize * 0.5f, wz0 = key.second - kChunkSize * 0.5f;
+        for (const auto& [lot, m] : g_lotMasks)
+            if (m.ext && !(m.ex1 < wx0 || m.ez1 < wz0 || m.ex0 > wx0 + kChunkSize || m.ez0 > wz0 + kChunkSize))
+                t.srcs.push_back(ExtSrc{m.extGrid, m.ext, m.ex0, m.ez0, m.ex1, m.ez1});
+        g_shadeWorker.Submit(std::move(t));
+    }
+    return c.tex;
+}
+// Render thread: a chunk's new texels (mips) into its texture; none: its texture goes
+void ApplyChunkResult(IDirect3DDevice9* dev, ShadeResult& r) {
+    const auto it = g_chunkShades.find(r.chunkKey);
+    if (it == g_chunkShades.end()) return;
+    ChunkShade& c = it->second;
+    c.building = false;
+    g_chunkShadeLastMs = r.ms;
+    g_chunkShadeBuilds.fetch_add(1, std::memory_order_relaxed);
+    bool ok = !r.mips.empty();
+    if (ok && !c.tex && FAILED(dev->CreateTexture(kChunkShadeTexels, kChunkShadeTexels, 0, 0, D3DFMT_L8, D3DPOOL_MANAGED, &c.tex, nullptr))) c.tex = nullptr, ok = false;
+    if (ok) {
+        const DWORD levels = std::min<DWORD>(c.tex->GetLevelCount(), static_cast<DWORD>(r.mips.size()));
+        int n = kChunkShadeTexels;
+        for (DWORD l = 0; l < levels && ok; l++, n = std::max(n / 2, 1)) {
+            D3DLOCKED_RECT lr;
+            if (r.mips[l].size() != static_cast<size_t>(n) * n || FAILED(c.tex->LockRect(l, &lr, nullptr, 0))) {
+                ok = false;
+                break;
+            }
+            for (int j = 0; j < n; j++) std::memcpy(static_cast<BYTE*>(lr.pBits) + static_cast<size_t>(j) * lr.Pitch, &r.mips[l][static_cast<size_t>(j) * n], n);
+            c.tex->UnlockRect(l);
+        }
+    }
+    if (!ok) {
+        if (c.tex) c.tex->Release();
+        c.tex = nullptr;
+        if (!c.dirty) g_chunkShades.erase(it);
+    }
 }
 
 // The lot's world box (its rectangle through the lot matrix)
@@ -690,10 +987,305 @@ std::vector<GroundShadow::Lamp> ShadeLamps(const LotRect& r) {
     for (const auto& [w, L] : c) out.push_back(L);
     return out;
 }
-// The box the walls that can shade the lot lie in: the lot and its lamps' heads
+// The grid the shade is built on (15/10, F8/F7 2026-10-14 23-27: a wall's shadow stopped at the lot's edge and the lamp light
+// that reaches past the lot lay over it; the world grass takes the bake lamps from the terrain map, which knows no wall): the
+// lot's grid (w x h texels, 4 a metre) grown on each side as far as its lamps reach past it (GroundShadow::Reach), at most
+// kShadeMargin; the lot's texels start at (ox, oz) on it, at the same texel centres
+constexpr float kShadeMargin = 24.0f; // m
+GroundShadow::Grid ShadeGrid(const LotRect& r, int w, int h, const std::vector<GroundShadow::Lamp>& lamps, int& ox, int& oz) {
+    GroundShadow::Grid g;
+    g.m0 = r.m0, g.m2 = r.m2, g.m8 = r.m8, g.m10 = r.m10, g.tx = r.tx, g.tz = r.tz, g.ty = r.ty;
+    float lx0 = 0, lz0 = 0, lx1 = r.w, lz1 = r.d; // lot-local metres
+    const double det = static_cast<double>(r.m0) * r.m10 - static_cast<double>(r.m8) * r.m2;
+    if (std::fabs(det) > 1e-6)
+        for (const GroundShadow::Lamp& L : lamps) {
+            const double dx = L.x - r.tx, dz = L.z - r.tz;
+            const float lx = static_cast<float>((r.m10 * dx - r.m8 * dz) / det), lz = static_cast<float>((-r.m2 * dx + r.m0 * dz) / det);
+            const float R = GroundShadow::Reach(L, r.ty);
+            if (!std::isfinite(lx) || !std::isfinite(lz) || !(R > 0.0f)) continue;
+            lx0 = std::min(lx0, lx - R), lz0 = std::min(lz0, lz - R), lx1 = std::max(lx1, lx + R), lz1 = std::max(lz1, lz + R);
+        }
+    const auto texels = [](float m) { return static_cast<int>(std::ceil(std::clamp(m, 0.0f, kShadeMargin) * GroundShadow::kTexelsPerMetre)); };
+    ox = texels(-lx0);
+    oz = texels(-lz0);
+    g.w = w + ox + texels(lx1 - r.w);
+    g.h = h + oz + texels(lz1 - r.d);
+    const float sx = -ox / GroundShadow::kTexelsPerMetre, sz = -oz / GroundShadow::kTexelsPerMetre;
+    g.tx = r.tx + r.m0 * sx + r.m8 * sz;
+    g.tz = r.tz + r.m2 * sx + r.m10 * sz;
+    return g;
+}
+// A grid's world box
+void GridBox(const GroundShadow::Grid& g, float& x0, float& z0, float& x1, float& z1) {
+    x0 = z0 = 1e30f;
+    x1 = z1 = -1e30f;
+    const float W = g.w / GroundShadow::kTexelsPerMetre, H = g.h / GroundShadow::kTexelsPerMetre;
+    const float lx[4] = {0, W, 0, W}, lz[4] = {0, 0, H, H};
+    for (int c = 0; c < 4; c++) {
+        const float x = g.m0 * lx[c] + g.m8 * lz[c] + g.tx, z = g.m2 * lx[c] + g.m10 * lz[c] + g.tz;
+        x0 = std::min(x0, x), x1 = std::max(x1, x), z0 = std::min(z0, z), z1 = std::max(z1, z);
+    }
+}
+// The box the walls that can shade the lot lie in: the lot, the ground around it the shade covers and its lamps' heads
 void ShadeBox(const LotRect& r, const std::vector<GroundShadow::Lamp>& lamps, float& x0, float& z0, float& x1, float& z1) {
     LotBox(r, x0, z0, x1, z1);
     for (const GroundShadow::Lamp& L : lamps) x0 = std::min(x0, L.x), x1 = std::max(x1, L.x), z0 = std::min(z0, L.z), z1 = std::max(z1, L.z);
+    int ox, oz;
+    const GroundShadow::Grid g = ShadeGrid(r, static_cast<int>(std::lround(r.w * GroundShadow::kTexelsPerMetre)),
+                                           static_cast<int>(std::lround(r.d * GroundShadow::kTexelsPerMetre)), lamps, ox, oz);
+    float gx0, gz0, gx1, gz1;
+    GridBox(g, gx0, gz0, gx1, gz1);
+    x0 = std::min(x0, gx0), z0 = std::min(z0, gz0), x1 = std::max(x1, gx1), z1 = std::max(z1, gz1);
+}
+
+// ---- Garden walls and fences shade the ground too (15/10: a brick garden wall let the post's light over the grass
+// behind it). They are fences for the game (FenceRenderManager), not in the outside-wall copy, and only their instanced
+// draws know where they stand: each piece is an instance (POSITION1 = its place, POSITION2 = (cos, slope, sin) of its
+// turn; the vertex shader's world = (px c - pz s, py + px k, px s + pz c) + place, VS_21C41B90 of F7 2026-10-13 11-50-47)
+// of one mesh (POSITION0 / w). The mesh's box gives each piece a wall: along its longer side, from its base to its top, so
+// a low wall casts a short shadow and a tall one a long one (ShadeJob tests the lamp over each wall's top). Posts (under
+// 0.3 m both ways) and thick pieces (stairs, decks: over 0.6 m deep) are left out. Render thread (DrawInstanced notes the
+// groups it draws, read again every 5 s; a group not drawn for 5 min is dropped).
+struct FenceGroup {
+    std::vector<GroundShadow::Wall> walls;
+    float x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+    DWORD read = 0, seen = 0;
+};
+std::unordered_map<uint64_t, FenceGroup> g_fenceGroups;
+// mesh boxes by buffer, range and layout (a buffer address can be reused: emptied with the lots and on a world change)
+std::unordered_map<uint64_t, std::array<float, 7>> g_meshBoxes;
+std::atomic<long> g_fenceGroupReads{0}, g_fenceWalls{0};
+UINT g_curDipBase = 0, g_curDipMin = 0, g_curDipNum = 0; // the current DrawIndexedPrimitive's vertex range (0 vertices: DrawPrimitive)
+// The fence walls in a world box
+// (15/10) an 8 m grid of the fence walls, made again only when a group changed (each lot's check walked every group)
+uint32_t g_fenceGen = 1, g_fenceGridGen = 0;
+constexpr float kFenceCell = 8.0f;
+std::vector<GroundShadow::Wall> g_fenceAll;
+std::unordered_map<uint64_t, std::vector<uint32_t>> g_fenceCells;
+uint64_t FenceCellKey(int x, int z) { return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) | static_cast<uint32_t>(z); }
+void FenceWallsIn(float x0, float z0, float x1, float z1, std::vector<GroundShadow::Wall>& out) {
+    if (g_fenceGridGen != g_fenceGen) {
+        g_fenceGridGen = g_fenceGen;
+        g_fenceAll.clear();
+        g_fenceCells.clear();
+        for (const auto& [k, g] : g_fenceGroups)
+            for (const GroundShadow::Wall& w : g.walls) {
+                const uint32_t i = static_cast<uint32_t>(g_fenceAll.size());
+                g_fenceAll.push_back(w);
+                const int cx = static_cast<int>(std::floor(0.5f * (w.x0 + w.x1) / kFenceCell)), cz = static_cast<int>(std::floor(0.5f * (w.z0 + w.z1) / kFenceCell));
+                g_fenceCells[FenceCellKey(cx, cz)].push_back(i);
+            }
+    }
+    if (g_fenceAll.empty()) return;
+    // (pieces are at most 8 m long: their middle is within one cell of any point of them)
+    const int i0 = static_cast<int>(std::floor(x0 / kFenceCell)) - 1, i1 = static_cast<int>(std::floor(x1 / kFenceCell)) + 1;
+    const int j0 = static_cast<int>(std::floor(z0 / kFenceCell)) - 1, j1 = static_cast<int>(std::floor(z1 / kFenceCell)) + 1;
+    if (static_cast<int64_t>(i1 - i0 + 1) * (j1 - j0 + 1) > 4096) return;
+    for (int i = i0; i <= i1; i++)
+        for (int j = j0; j <= j1; j++) {
+            const auto it = g_fenceCells.find(FenceCellKey(i, j));
+            if (it == g_fenceCells.end()) continue;
+            for (uint32_t k : it->second) {
+                const GroundShadow::Wall& w = g_fenceAll[k];
+                if (!(std::max(w.x0, w.x1) < x0 || std::min(w.x0, w.x1) > x1 || std::max(w.z0, w.z1) < z0 || std::min(w.z0, w.z1) > z1)) out.push_back(w);
+            }
+        }
+}
+// The walls that shade a lot's ground in a box: the outside walls' copy (with their openings) and the garden walls and fences
+void ShadeWalls(float x0, float z0, float x1, float z1, std::vector<GroundShadow::Wall>& walls, std::vector<WallOpenings::Patch>& patches, int* fences = nullptr) {
+    LevelLightShare::OutsideWallsIn(x0, z0, x1, z1, walls, &patches);
+    const size_t before = walls.size();
+    FenceWallsIn(x0, z0, x1, z1, walls);
+    if (fences) *fences = static_cast<int>(walls.size() - before);
+}
+// One element of a vertex as 4 floats (types the instanced fences use; false for others)
+bool ReadElement(const BYTE* p, BYTE type, float out[4]) {
+    out[0] = out[1] = out[2] = 0.0f;
+    out[3] = 1.0f;
+    switch (type) {
+    case D3DDECLTYPE_FLOAT3: std::memcpy(out, p, 12); return true;
+    case D3DDECLTYPE_FLOAT4: std::memcpy(out, p, 16); return true;
+    case D3DDECLTYPE_SHORT4: {
+        const int16_t* s = reinterpret_cast<const int16_t*>(p);
+        for (int i = 0; i < 4; i++) out[i] = s[i];
+        return true;
+    }
+    case D3DDECLTYPE_SHORT4N: {
+        const int16_t* s = reinterpret_cast<const int16_t*>(p);
+        for (int i = 0; i < 4; i++) out[i] = std::max(s[i] / 32767.0f, -1.0f);
+        return true;
+    }
+    case D3DDECLTYPE_FLOAT16_4: {
+        const uint16_t* hf = reinterpret_cast<const uint16_t*>(p);
+        for (int i = 0; i < 4; i++) {
+            const uint32_t h = hf[i], sign = (h >> 15) & 1, ex = (h >> 10) & 0x1F, man = h & 0x3FF;
+            float f = ex == 0 ? std::ldexp(static_cast<float>(man), -24) : ex == 31 ? INFINITY : std::ldexp(static_cast<float>(man | 0x400), static_cast<int>(ex) - 25);
+            out[i] = sign ? -f : f;
+        }
+        return true;
+    }
+    default: return false;
+    }
+}
+struct FenceLayout {
+    WORD posOff = 0, placeOff = 0, turnOff = 0;
+    BYTE posType = 0, placeType = 0, turnType = 0;
+    bool ok = false;
+};
+FenceLayout ReadFenceLayout(IDirect3DDevice9* dev) {
+    FenceLayout f;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    if (FAILED(dev->GetVertexDeclaration(&decl)) || !decl) return f;
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT n = MAXD3DDECLLENGTH + 1;
+    bool pos = false, place = false, turn = false;
+    if (SUCCEEDED(decl->GetDeclaration(el, &n)))
+        for (UINT i = 0; i < n && el[i].Stream != 0xFF; i++) {
+            if (el[i].Usage != D3DDECLUSAGE_POSITION) continue;
+            if (el[i].Stream == 0 && el[i].UsageIndex == 0) f.posOff = el[i].Offset, f.posType = el[i].Type, pos = true;
+            if (el[i].Stream == 1 && el[i].UsageIndex == 1) f.placeOff = el[i].Offset, f.placeType = el[i].Type, place = true;
+            if (el[i].Stream == 1 && el[i].UsageIndex == 2) f.turnOff = el[i].Offset, f.turnType = el[i].Type, turn = true;
+        }
+    decl->Release();
+    f.ok = pos && place && turn;
+    return f;
+}
+// POD only (SEH): the mesh's box over its vertex range
+bool MeshBox(const BYTE* p, UINT count, UINT stride, const FenceLayout& L, float lo[3], float hi[3]) {
+    __try {
+        lo[0] = lo[1] = lo[2] = 1e30f;
+        hi[0] = hi[1] = hi[2] = -1e30f;
+        for (UINT i = 0; i < count; i++) {
+            float v[4];
+            if (!ReadElement(p + static_cast<size_t>(i) * stride + L.posOff, L.posType, v) || !(std::fabs(v[3]) > 1e-6f)) return false;
+            for (int k = 0; k < 3; k++) {
+                const float c = v[k] / v[3];
+                if (!std::isfinite(c)) return false;
+                lo[k] = std::min(lo[k], c), hi[k] = std::max(hi[k], c);
+            }
+        }
+        return count > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// POD only (SEH): one wall per piece of the group
+bool FencePieceWalls(const BYTE* p, UINT count, UINT stride, const FenceLayout& L, const float lo[3], const float hi[3], FenceGroup& g) {
+    __try {
+        const float ex = hi[0] - lo[0], ez = hi[2] - lo[2], ey = hi[1] - lo[1];
+        const bool alongX = ex >= ez;
+        const float len = alongX ? ex : ez, depth = alongX ? ez : ex;
+        if (len < 0.3f || len > 8.0f || depth > 0.6f || ey < 0.25f || ey > 6.0f) return true; // a post, a thick piece or no wall
+        const float a0[2] = {alongX ? lo[0] : 0.5f * (lo[0] + hi[0]), alongX ? 0.5f * (lo[2] + hi[2]) : lo[2]};
+        const float a1[2] = {alongX ? hi[0] : a0[0], alongX ? a0[1] : hi[2]};
+        g.x0 = g.z0 = 1e30f;
+        g.x1 = g.z1 = -1e30f;
+        for (UINT i = 0; i < count; i++) {
+            const BYTE* r = p + static_cast<size_t>(i) * stride;
+            float t[4], q[4];
+            if (!ReadElement(r + L.placeOff, L.placeType, t) || !ReadElement(r + L.turnOff, L.turnType, q)) return false;
+            const float c = q[0], k = q[1], s = q[2];
+            if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2]) || !std::isfinite(c) || !std::isfinite(s) || !std::isfinite(k)) return false;
+            const auto world = [&](const float l[2], float& x, float& z) {
+                x = l[0] * c - l[1] * s + t[0];
+                z = l[0] * s + l[1] * c + t[2];
+            };
+            GroundShadow::Wall w{};
+            world(a0, w.x0, w.z0);
+            world(a1, w.x1, w.z1);
+            const float lift = k * 0.5f * (a0[0] + a1[0]); // the slope at the piece's middle (a sloped run)
+            w.y0 = t[1] + lo[1] + lift;
+            w.y1 = t[1] + hi[1] + lift;
+            g.walls.push_back(w);
+            g.x0 = std::min({g.x0, w.x0, w.x1}), g.x1 = std::max({g.x1, w.x0, w.x1});
+            g.z0 = std::min({g.z0, w.z0, w.z1}), g.z1 = std::max({g.z1, w.z0, w.z1});
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// DrawInstanced: the group being drawn (an instanced DrawIndexedPrimitive)
+void NoteFenceGroup(IDirect3DDevice9* dev) {
+    if (!g_shadeOn || !g_curDipNum) return;
+    UINT freq = 0;
+    if (FAILED(dev->GetStreamSourceFreq(0, &freq)) || !(freq & D3DSTREAMSOURCE_INDEXEDDATA)) return;
+    const UINT count = freq & 0x3FFFFFFFu;
+    if (!count || count > 4096) return;
+    IDirect3DVertexBuffer9 *vb0 = nullptr, *vb1 = nullptr;
+    UINT off0 = 0, stride0 = 0, off1 = 0, stride1 = 0;
+    if (FAILED(dev->GetStreamSource(0, &vb0, &off0, &stride0)) || !vb0) return;
+    if (FAILED(dev->GetStreamSource(1, &vb1, &off1, &stride1)) || !vb1) {
+        vb0->Release();
+        return;
+    }
+    const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb1)) << 32) ^ (static_cast<uint64_t>(off1) << 12) ^ (static_cast<uint64_t>(count) << 1) ^ stride1 ^
+                         (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb0)) << 7) ^ (static_cast<uint64_t>(g_curDipBase + g_curDipMin) << 40) ^ g_curDipNum;
+    const DWORD now = GetTickCount();
+    FenceGroup& g = g_fenceGroups[key];
+    g.seen = now ? now : 1;
+    if (!g.read || now - g.read > 60000) {
+        g.read = now ? now : 1;
+        g_fenceGroupReads.fetch_add(1, std::memory_order_relaxed);
+        const FenceLayout L = ReadFenceLayout(dev);
+        FenceGroup fresh;
+        fresh.read = g.read, fresh.seen = g.seen;
+        float lo[3] = {}, hi[3] = {};
+        void *p0 = nullptr, *p1 = nullptr;
+        const UINT first = g_curDipBase + g_curDipMin;
+        // the mesh's box, read once per mesh (15/10: a locked buffer the GPU draws from makes the CPU wait)
+        if (g_meshBoxes.size() > 4096) g_meshBoxes.clear();
+        const uint64_t meshKey = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb0)) << 32) ^ (static_cast<uint64_t>(off0 + first * stride0) << 8) ^ g_curDipNum ^
+                                 (static_cast<uint64_t>(stride0) << 56) ^ (static_cast<uint64_t>(L.posType) << 50) ^ L.posOff;
+        bool ok = L.ok && stride0 >= 12 && stride0 <= 256 && stride1 >= 12 && stride1 <= 256 && g_curDipNum <= 65536;
+        if (ok) {
+            if (const auto mb = g_meshBoxes.find(meshKey); mb != g_meshBoxes.end()) {
+                ok = mb->second[6] > 0.5f;
+                for (int k = 0; k < 3; k++) lo[k] = mb->second[k], hi[k] = mb->second[3 + k];
+            } else {
+                ok = SUCCEEDED(vb0->Lock(off0 + first * stride0, g_curDipNum * stride0, &p0, D3DLOCK_READONLY)) && p0 &&
+                     MeshBox(static_cast<const BYTE*>(p0), g_curDipNum, stride0, L, lo, hi);
+                if (p0) vb0->Unlock();
+                g_meshBoxes[meshKey] = {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], ok ? 1.0f : 0.0f};
+            }
+        }
+        ok = ok && SUCCEEDED(vb1->Lock(off1, count * stride1, &p1, D3DLOCK_READONLY)) && p1 && FencePieceWalls(static_cast<const BYTE*>(p1), count, stride1, L, lo, hi, fresh);
+        if (p1) vb1->Unlock();
+        if (!ok) fresh.walls.clear();
+        g_fenceWalls.fetch_add(static_cast<long>(fresh.walls.size()) - static_cast<long>(g.walls.size()), std::memory_order_relaxed);
+        const bool newGroup = g.walls.empty() && !fresh.walls.empty();
+        if (fresh.walls.size() != g.walls.size() || (!fresh.walls.empty() && std::memcmp(fresh.walls.data(), g.walls.data(), fresh.walls.size() * sizeof(GroundShadow::Wall)) != 0))
+            g_fenceGen++;
+        g = std::move(fresh);
+        // (15/10: the ground took minutes to change after a fence was removed) a new group replaces at once the groups over the
+        // same place that are not drawn any more (the game makes a group again when a piece is added or removed)
+        if (newGroup) {
+            const FenceGroup& ng = g;
+            for (auto it = g_fenceGroups.begin(); it != g_fenceGroups.end();) {
+                const FenceGroup& o = it->second;
+                const bool stale = it->first != key && now - o.seen > 500 && // (review: 100 ms let two groups erase each other below 10 fps)
+                                    !(o.x1 < ng.x0 - 0.5f || o.x0 > ng.x1 + 0.5f || o.z1 < ng.z0 - 0.5f || o.z0 > ng.z1 + 0.5f);
+                if (stale) {
+                    g_fenceWalls.fetch_sub(static_cast<long>(o.walls.size()), std::memory_order_relaxed);
+                    g_fenceGen++;
+                    it = g_fenceGroups.erase(it);
+                } else ++it;
+            }
+        }
+    }
+    vb0->Release();
+    vb1->Release();
+    // groups not drawn for 20 s go (a fence removed whole; at most once a second)
+    static DWORD s_swept = 0;
+    if (now - s_swept > 1000) {
+        s_swept = now;
+        for (auto it = g_fenceGroups.begin(); it != g_fenceGroups.end();)
+            if (now - it->second.seen > 20000 || g_fenceGroups.size() > 4096) {
+                g_fenceWalls.fetch_sub(static_cast<long>(it->second.walls.size()), std::memory_order_relaxed);
+                if (!it->second.walls.empty()) g_fenceGen++;
+                it = g_fenceGroups.erase(it);
+            } else ++it;
+    }
 }
 // What the shade is made from: the lot's place and grid, its lamps (place; light in about 20% steps) and the outside walls in
 // its box (their copy, so walls changed on another lot do not build this one again). Render thread.
@@ -706,6 +1298,11 @@ uint64_t ShadeKey(const LotRect& r, int w, int h) {
     mixf(Penumbra::Radius(), 1000.0f); // the openings' penumbra (Shadow softness)
     mix(TesterToggles::groundSoftEdges.load(std::memory_order_relaxed) ? 0x50F7ull : 0ull); // soft wall ends and tops on the mask (GroundShadow::Grid::soft)
     const std::vector<GroundShadow::Lamp> lamps = ShadeLamps(r);
+    {
+        int ox, oz;
+        const GroundShadow::Grid g = ShadeGrid(r, w, h, lamps, ox, oz);
+        mix(static_cast<uint64_t>(g.w) << 48 | static_cast<uint64_t>(g.h) << 32 | static_cast<uint64_t>(ox) << 16 | static_cast<uint32_t>(oz));
+    }
     for (const GroundShadow::Lamp& L : lamps) {
         mixf(L.x, 50.0f), mixf(L.y, 50.0f), mixf(L.z, 50.0f);
         mix(static_cast<uint64_t>(static_cast<int64_t>(std::lround(std::log2(std::max(L.k, 1e-6f)) * 4.0f)))); // about 20% steps
@@ -715,7 +1312,7 @@ uint64_t ShadeKey(const LotRect& r, int w, int h) {
         ShadeBox(r, lamps, x0, z0, x1, z1);
         static std::vector<GroundShadow::Wall> walls;
         static std::vector<WallOpenings::Patch> patches;
-        LevelLightShare::OutsideWallsIn(x0, z0, x1, z1, walls, &patches);
+        ShadeWalls(x0, z0, x1, z1, walls, patches);
         uint64_t sum = 0; // in any order (the copy's order follows a hash map)
         for (const GroundShadow::Wall& wl : walls) {
             uint64_t e = 1469598103934665603ull;
@@ -734,70 +1331,80 @@ uint64_t ShadeKey(const LotRect& r, int w, int h) {
     }
     return s | 1;
 }
-// Render thread, every frame: the queued lot's build goes on for kShadeBudgetMs
+// Render thread, every frame: the worker's results applied, the next queued lots sent (at most 2 in flight, so the inputs
+// stay fresh)
+void ApplyLotResult(ShadeResult& r);
 void ShadeTick() {
-    if (!g_shadeOn || (!g_shadeRun.active && g_shadeQueue.empty())) return;
-    LARGE_INTEGER f, t0;
-    QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&t0);
-    const auto elapsedMs = [&] {
-        LARGE_INTEGER t;
-        QueryPerformanceCounter(&t);
-        return static_cast<double>(t.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
-    };
-    if (!g_shadeRun.active) {
+    for (ShadeResult& r : g_shadeWorker.Take()) {
+        if (r.epoch != g_shadeEpoch) continue;
+        if (r.chunk) g_chunkReady[r.chunkKey] = std::move(r); // uploaded at the chunk's next draw (ChunkShadeTexture)
+        else {
+            g_lotsInFlight = std::max(g_lotsInFlight - 1, 0);
+            ApplyLotResult(r);
+        }
+    }
+    if (!g_shadeOn) {
+        g_chunkReady.clear(); // (review: results held for chunks while the shade is off)
+        return;
+    }
+    while (g_lotsInFlight < 2 && !g_shadeQueue.empty()) {
         const ShadeWant want = g_shadeQueue.front();
         g_shadeQueue.erase(g_shadeQueue.begin());
-        GroundShadow::Grid g;
-        g.w = want.w, g.h = want.h;
-        g.m0 = want.rect.m0, g.m2 = want.rect.m2, g.m8 = want.rect.m8, g.m10 = want.rect.m10;
-        g.tx = want.rect.tx, g.tz = want.rect.tz, g.ty = want.rect.ty;
-        g.soft = TesterToggles::groundSoftEdges.load(std::memory_order_relaxed);
-        std::vector<GroundShadow::Lamp> lamps = ShadeLamps(want.rect);
+        ShadeTask t;
+        t.epoch = g_shadeEpoch;
+        t.lamps = ShadeLamps(want.rect);
+        t.grid = ShadeGrid(want.rect, want.w, want.h, t.lamps, t.ox, t.oz);
+        t.grid.soft = TesterToggles::groundSoftEdges.load(std::memory_order_relaxed);
         float x0, z0, x1, z1;
-        ShadeBox(want.rect, lamps, x0, z0, x1, z1);
-        std::vector<GroundShadow::Wall> walls;
-        std::vector<WallOpenings::Patch> patches;
-        if (!lamps.empty()) LevelLightShare::OutsideWallsIn(x0, z0, x1, z1, walls, &patches);
-        g_shadeLastLamps = static_cast<int>(lamps.size());
-        g_shadeLastWalls = static_cast<int>(walls.size());
-        if (walls.empty()) lamps.clear(); // nothing shades: 255 everywhere at once
-        g_shadeRun.active = true;
-        g_shadeRun.lot = want.lot;
-        g_shadeRun.key = want.key;
-        g_shadeRun.w = want.w;
-        g_shadeRun.h = want.h;
-        g_shadeRun.frames = 0;
-        g_shadeRun.ms = 0.0;
-        g_shadeLastPatches = static_cast<int>(patches.size());
-        g_shadeRun.job.Init(g, std::move(lamps), std::move(walls), std::move(patches));
+        ShadeBox(want.rect, t.lamps, x0, z0, x1, z1);
+        if (!t.lamps.empty()) ShadeWalls(x0, z0, x1, z1, t.walls, t.patches, &g_shadeLastFences);
+        g_shadeLastLamps = static_cast<int>(t.lamps.size());
+        g_shadeLastWalls = static_cast<int>(t.walls.size());
+        g_shadeLastPatches = static_cast<int>(t.patches.size());
+        if (t.walls.empty()) t.lamps.clear(); // nothing shades: 255 everywhere at once
+        t.lot = want.lot, t.key = want.key, t.w = want.w, t.h = want.h;
+        g_shadeWorker.Submit(std::move(t));
+        g_lotsInFlight++;
     }
-    g_shadeRun.frames++;
-    const long long before = g_shadeRun.job.Tests(), throughBefore = g_shadeRun.job.Through();
-    const bool done = g_shadeRun.job.Step([&] { return elapsedMs() < kShadeBudgetMs; });
-    g_shadeTests += g_shadeRun.job.Tests() - before;
-    g_shadeThrough += g_shadeRun.job.Through() - throughBefore;
-    g_shadeRun.ms += elapsedMs();
-    if (!done) return;
-    g_shadeRun.active = false;
-    g_shadeLastMs = g_shadeRun.ms;
-    g_shadeMaxMs = std::max(g_shadeMaxMs, g_shadeRun.ms);
-    g_shadeLastFrames = g_shadeRun.frames;
-    const auto it = g_lotMasks.find(g_shadeRun.lot);
-    if (it == g_lotMasks.end() || it->second.w != g_shadeRun.w || it->second.h != g_shadeRun.h) {
+}
+void ApplyLotResult(ShadeResult& r) {
+    g_shadeTests += r.tests;
+    g_shadeThrough += r.through;
+    g_shadeLastMs = r.ms;
+    g_shadeMaxMs = std::max(g_shadeMaxMs, r.ms);
+    const auto it = g_lotMasks.find(r.lot);
+    if (it == g_lotMasks.end() || it->second.w != r.w || it->second.h != r.h) {
         g_shadeDropped.fetch_add(1, std::memory_order_relaxed); // the lot left, or its grid changed meanwhile
         return;
     }
-    // (14/10) applied also when its inputs changed again meanwhile (a newer build is queued then): before, a lot whose key
-    // changed every couple of seconds never finished one
-    it->second.shadeKey = g_shadeRun.key;
-    if (it->second.queuedKey == g_shadeRun.key) it->second.queuedKey = 0;
-    const std::vector<uint8_t>& res = g_shadeRun.job.Result();
-    uint8_t lo = 255;
-    for (uint8_t v : res) lo = std::min(lo, v);
+    // (14/10) applied also when its inputs changed again meanwhile (a newer build is queued then)
+    LotMask& m = it->second;
+    m.shadeKey = r.key;
+    if (m.queuedKey == r.key) m.queuedKey = 0;
+    const GroundShadow::Grid& eg = r.grid;
+    const int W = r.w, H = r.h, ox = r.ox, oz = r.oz;
+    MarkLotChunkShades(m); // the chunks under the shade shown so far
+    m.ext.reset();
+    if (r.res.size() != static_cast<size_t>(eg.w) * eg.h || r.den.size() != r.res.size() || ox + W > eg.w || oz + H > eg.h) {
+        m.shade.clear(); // (no texel: 255 everywhere)
+        m.dirty = true;
+        return;
+    }
+    // the lot's part for the lot passes; the whole grid for the world grass when it shades any texel
+    std::vector<uint8_t> lotShade(static_cast<size_t>(W) * H);
+    for (int j = 0; j < H; j++) std::memcpy(&lotShade[static_cast<size_t>(j) * W], &r.res[static_cast<size_t>(j + oz) * eg.w + ox], W);
+    uint8_t lo = 255, extLo = 255;
+    for (uint8_t v : lotShade) lo = std::min(lo, v);
+    for (uint8_t v : r.res) extLo = std::min(extLo, v);
     g_shadeLastMin = lo / 255.0f;
-    it->second.shade = res;
-    it->second.dirty = true;
+    m.shade = std::move(lotShade);
+    m.dirty = true;
+    if (extLo < 255) {
+        m.extGrid = eg;
+        m.ext = std::make_shared<const ExtData>(ExtData{std::move(r.res), std::move(r.den)});
+        GridBox(eg, m.ex0, m.ez0, m.ex1, m.ez1);
+        MarkLotChunkShades(m);
+    }
     g_shadeBuilt.fetch_add(1, std::memory_order_relaxed);
 }
 // The lot's shade is wanted with these inputs: queued (or its queued entry updated); a running build of an older key is dropped
@@ -846,6 +1453,7 @@ void EvictLotMasks() {
         if (g_lotMasks.size() <= target) break;
         const auto it = g_lotMasks.find(lot);
         if (it->second.tex) it->second.tex->Release();
+        MarkLotChunkShades(it->second);
         g_lotMasks.erase(it);
         std::erase_if(g_shadeQueue, [lot](const ShadeWant& q) { return q.lot == lot; });
     }
@@ -911,7 +1519,11 @@ IDirect3DTexture9* LotMaskTexture(IDirect3DDevice9* dev, const LotRect& rect) {
         m.checked = now;
         LevelLightShare::GroundMask gm;
         if (LevelLightShare::LotGroundMask(lot, m.tex ? m.sig : 0, gm) && gm.w > 0 && gm.h > 0 && gm.px.size() == static_cast<size_t>(gm.w) * gm.h) {
-            if (gm.w != m.w || gm.h != m.h) m.shade.clear(); // another grid: the old shade does not fit
+            if (gm.w != m.w || gm.h != m.h) { // another grid: the old shade does not fit
+                m.shade.clear();
+                MarkLotChunkShades(m);
+                m.ext.reset();
+            }
             m.w = gm.w;
             m.h = gm.h;
             m.room = std::move(gm.px);
@@ -935,12 +1547,12 @@ IDirect3DTexture9* LotMaskFor(IDirect3DDevice9* dev, const float k[4], const flo
     return LotMaskForImpl(dev, k, c15, c8, c10, r, rows);
 }
 std::string LotShadeStatusText() {
-    return std::format("{} | lots shaded {}, builds dropped {} (inputs changed or lot gone), queued {}{} | last build: {} lamps, {} walls, {:.1f} ms over {} frames "
+    return std::format("{} | lots shaded {}, builds dropped {} (inputs changed or lot gone), queued {}{} | last build: {} lamps, {} walls ({} of garden walls and fences, {} noted), {:.1f} ms on the worker "
                        "(longest {:.1f} ms), darkest texel {:.0f}%, {} wall cells with an opening or a lower top | wall tests {} (crossing a wall through an opening or "
-                       "over a lower cell {})",
-                       g_shadeOn ? "on" : "off", g_shadeBuilt.load(), g_shadeDropped.load(), g_shadeQueue.size(), g_shadeRun.active ? " (one building)" : "",
-                       g_shadeLastLamps, g_shadeLastWalls, g_shadeLastMs, g_shadeLastFrames, g_shadeMaxMs, g_shadeLastMin * 100.0f, g_shadeLastPatches, g_shadeTests,
-                       g_shadeThrough);
+                       "over a lower cell {}) | world grass around lots: {} chunks shaded, {} chunk builds (last {:.1f} ms)",
+                       g_shadeOn ? "on" : "off", g_shadeBuilt.load(), g_shadeDropped.load(), g_shadeQueue.size(), g_lotsInFlight ? " (building)" : "",
+                       g_shadeLastLamps, g_shadeLastWalls, g_shadeLastFences, g_fenceWalls.load(), g_shadeLastMs, g_shadeMaxMs, g_shadeLastMin * 100.0f, g_shadeLastPatches, g_shadeTests,
+                       g_shadeThrough, g_chunkShades.size(), g_chunkShadeBuilds.load(), g_chunkShadeLastMs);
 }
 
 // ---- The same shade on the outdoor floors of story 0 (13/10, F7 2026-10-13 08-16-00: a paved path behind a free-standing
@@ -1893,7 +2505,8 @@ void TrackLotLampEdits() {
         }
         if (p.baked && s.baked && MovedApart(p.pos, s.pos)) {
             counts = moved = true; // user-driven (Build mode)
-            DragLite::NoteLampStep("lamp list: moved");
+            // (a lamp the GPU draws, Instant, is not a lamp the game solves: its drag keeps the Instant rules)
+            DragLite::NoteLampStep("lamp list: moved", DragLite::StepKind::Move, !LampMarkFilter::HandledLately(static_cast<uintptr_t>(L), 1500));
         } else if ((editing || (s.type == 11 && p.type == 11 && p.lot == s.lot &&
                     (s.lot != 0 || (p.baked && s.baked && LightChanged(pl, sl)) || ((p.flags ^ s.flags) & 0x40)
                      || ((p.inten <= 1e-3f) != (s.inten <= 1e-3f)))) || ObservedEnableSwitch(p, s)
@@ -1962,7 +2575,8 @@ void TrackLotLampEdits() {
             for (const LotLampState* a : added11) {
                 const float dx = a->pos[0] - p.pos[0], dy = a->pos[1] - p.pos[1], dz = a->pos[2] - p.pos[2];
                 if (a->lot == p.lot && dx * dx + dy * dy + dz * dz < 0.25f) {
-                    DragLite::NoteLampStep("lamp list: type 11 removed and added");
+                    DragLite::NoteLampStep("lamp list: type 11 removed and added", DragLite::StepKind::Move,
+                                           !LampMarkFilter::HandledLately(static_cast<uintptr_t>(L), 1500));
                     break;
                 }
             }
@@ -2666,6 +3280,7 @@ struct PatchedPs {
     DWORD nativeAlphaSampler = 0;
     DWORD nativeAlphaSource = 0;
     DWORD terrainDayConst = 0;
+    DWORD shadeSampler = 0; // PatchTerrainShade
 };
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_roadPs, g_floorPs, g_snowFloorPs, g_snowFloorPs0, g_leafPs, g_fencePs, g_snowCoverPs, g_snowReliefPs, g_objLampPs;
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainAlphaPs;
@@ -2674,7 +3289,9 @@ std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainAlphaPs;
 std::map<int, std::unordered_map<IDirect3DPixelShader9*, PatchedPs>> g_floorShadePs;
 int FloorShadeKey(int kind, const ShaderPatches::WorldY& y) { return (kind * 16 + y.texcoord) * 4 + y.comp; }
 std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainDayPs;
-std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_foliageDayScaled{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
+// the same two with the walls' shade on the world grass around lots (PatchTerrainShade, ChunkShadeTexture)
+std::unordered_map<IDirect3DPixelShader9*, PatchedPs> g_terrainShadePs, g_terrainDayShadePs, g_roadShadePs;
+std::atomic<int> g_roadDrawn{0}, g_floorDrawn{0}, g_snowFloorDrawn{0}, g_leafDrawn{0}, g_roofSnowDrawn{0}, g_foliageDrawn{0}, g_foliageDayScaled{0}, g_foliageReachLaw{0}, g_fenceDrawn{0}, g_snowCoverDrawn{0}, g_snowReliefDrawn{0}, g_objLampDrawn{0};
 // Buildings block light on objects (12/10; LevelLightShare::LampVisibility), render thread only (plain counters, read by
 // Status on the same thread): the lamps objects and windows (obj) and fences (fence) left out (a wall or a slab between, or
 // under 1% left at a slab's edge) or kept dimmed at a slab's edge, and the object and window draws whose ground light faded
@@ -2795,6 +3412,15 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
         g_lotMissing.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
+    // (15/10) the walls' shade on the lamp light around lots, as on the world grass next to the road (ChunkShadeTexture): the
+    // copy with the shade read after the max, when the chunk has one and the copy is accepted
+    IDirect3DTexture9* const shade = ChunkShadeTexture(dev, it->first);
+    PatchedPs* const shaded = shade ? &PatchedFor(dev, g_roadShadePs, "Road with wall shade", [](std::vector<DWORD>& t, PatchedPs& pp) {
+        return ShaderPatches::PatchRoad(t, pp.road, true);
+    }, true) : nullptr;
+    const bool useShade = shaded && shaded->ps && shaded->road.shadeSampler >= 0 && shaded->road.lightSampler == p.road.lightSampler &&
+                          shaded->road.extraSampler == p.road.extraSampler && shaded->road.sidewalkConst == p.road.sidewalkConst &&
+                          shaded->road.scaleConst == p.road.scaleConst;
     // With the smoothed map ready, the road's own copy (the blocky DXT5 one) is replaced by it too, so roads and
     // sidewalks get exactly the same clean light as the ground next to them.
     IDirect3DTexture9* smooth = LightmapSmooth::Find(it->first);
@@ -2808,9 +3434,11 @@ template <typename DrawFn> bool DrawRoad(IDirect3DDevice9* dev, DrawFn draw) {
     g_inOwnCall = true;
     {
         SamplerBind terrain(dev, p.road.extraSampler, ChunkTexture(it->first, it->second.tex));
+        std::optional<SamplerBind> shadeMap;
+        if (useShade) shadeMap.emplace(dev, static_cast<DWORD>(shaded->road.shadeSampler), shade, D3DTEXF_LINEAR);
         if (smooth) SetTex(dev, p.road.lightSampler, smooth);
         if (sidewalk) SetPsConst(dev, p.road.sidewalkConst, c, 1);
-        SetPs(dev, p.ps);
+        SetPs(dev, useShade ? shaded->ps : p.ps);
         ConstGain lampGain(dev, p.road.scaleConst, RoadDayGain()); // the road's lamp scale, after the max with the terrain
         draw();
         SetPs(dev, original);
@@ -2917,6 +3545,7 @@ std::string g_objDrawInfo;
 std::string ReachLawText(bool reach, bool refused, bool placed, float scale, const float (*r0Rows)[4], int nLamps);
 
 template <typename DrawFn> bool DrawInstanced(IDirect3DDevice9* dev, DrawFn draw) {
+    NoteFenceGroup(dev); // garden walls and fences shade the ground (ShadeWalls)
     if (!g_fenceFix.load(std::memory_order_relaxed)) return false;
     // (12/10, one daytime curve) No full-daylight gate any more: the pass runs at every level with its ground and lamp
     // strengths x LampDay(night) (3% by day), so a lamp left on by day fades on fences as on the walls behind them.
@@ -3294,12 +3923,17 @@ int PickObjectLamps(float x, float y, float z, float (*lamps)[4], float& groundS
 // strength), the lamp's cones, held under 1 per channel; before N.l and any wall test. False when the per-pixel lamps are
 // off or the lamp is none of theirs (an outdoor lamp, a street lamp, or an indoor lamp of the lamp classes shining out). Any
 // thread: the lamp is read under SEH, the settings atomically (the walls' native scale is the render thread's last read).
-bool ObjectLampColourAtImpl(const void* light, const float* point, float rgb[3]) {
-    if (!g_objPixel.load(std::memory_order_relaxed) || !g_objPixelLamps.load(std::memory_order_relaxed) || !light || !point) return false;
+bool ObjectLampColourAtImpl(const void* light, const float* centre, float rgb[3], const float* ext = nullptr) {
+    if (!g_objPixel.load(std::memory_order_relaxed) || !g_objPixelLamps.load(std::memory_order_relaxed) || !light || !centre) return false;
     float v[8];
     LampCone cone;
     const uintptr_t L = reinterpret_cast<uintptr_t>(light);
     if (!ReadLamp(L, v, cone) && !ReadExitLamp(L, v, cone)) return false;
+    // with a box (ext = its half extents around centre): its point nearest the lamp's head
+    float nearPt[3] = {centre[0], centre[1], centre[2]};
+    if (ext)
+        for (int k = 0; k < 3; k++) nearPt[k] = std::clamp(v[k], centre[k] - ext[k], centre[k] + ext[k]);
+    const float* point = nearPt;
     const float dx = v[0] - point[0], dy = v[1] - point[1], dz = v[2] - point[2], d2 = dx * dx + dy * dy + dz * dz;
     if (!std::isfinite(d2)) return false;
     const float night = g_night.load(std::memory_order_relaxed);
@@ -4600,19 +5234,22 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
             return D3D9Hooks::HookAction::Continue;
         }
         IDirect3DTexture9* smooth = LightmapSmooth::Get(key, static_cast<IDirect3DTexture9*>(chunk->tex));
+        // (15/10) the walls' shade on the lamp light of the world grass around lots (ChunkShadeTexture); with no smoothed map
+        // the game's own map is drawn through the same patched shader
+        IDirect3DTexture9* shade = ChunkShadeTexture(dev, key);
         // Native terrain alpha carries solar visibility. Smooth lamp RGB only.
         PatchedPs* alpha = nullptr;
-        if (smooth) {
+        if (smooth || shade) {
             alpha = &PatchedFor(dev, g_terrainAlphaPs, "Terrain native solar alpha", [s](std::vector<DWORD>& t, PatchedPs& p) {
                 p.nativeAlphaSource = s;
                 return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler);
             });
-            if (!alpha->ps || alpha->nativeAlphaSource != s) smooth = nullptr; // unsupported variant: preserve the game's shadow map
+            if (!alpha->ps || alpha->nativeAlphaSource != s) smooth = nullptr, shade = nullptr; // unsupported variant: preserve the game's shadow map
         }
         const float gain = GroundGain();
         const float dayWeight = 1.0f - g_night.load(std::memory_order_relaxed);
         PatchedPs* daylight = nullptr;
-        if (smooth && !multi && dayWeight > 0.0f) {
+        if ((smooth || shade) && !multi && dayWeight > 0.0f) {
             daylight = &PatchedFor(dev, g_terrainDayPs, "Terrain daylight range", [s](std::vector<DWORD>& t, PatchedPs& p) {
                 p.nativeAlphaSource = s;
                 return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler) &&
@@ -4620,18 +5257,43 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
             });
             if (!daylight->ps || daylight->nativeAlphaSource != s) daylight = nullptr;
         }
+        // the shaded copies of both (a variant: the copy without the shade draws when one is refused)
+        PatchedPs* alphaShade = nullptr;
+        PatchedPs* dayShade = nullptr;
+        if (shade) {
+            alphaShade = &PatchedFor(dev, g_terrainShadePs, "Terrain wall shade", [s](std::vector<DWORD>& t, PatchedPs& p) {
+                p.nativeAlphaSource = s;
+                return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler) && ShaderPatches::PatchTerrainShade(t, s, p.shadeSampler);
+            }, true);
+            if (!alphaShade->ps || alphaShade->nativeAlphaSource != s || alphaShade->nativeAlphaSampler != alpha->nativeAlphaSampler) alphaShade = nullptr;
+            if (daylight) {
+                dayShade = &PatchedFor(dev, g_terrainDayShadePs, "Terrain daylight range with wall shade", [s](std::vector<DWORD>& t, PatchedPs& p) {
+                    p.nativeAlphaSource = s;
+                    return ShaderPatches::PatchTerrainNativeAlpha(t, s, p.nativeAlphaSampler) && ShaderPatches::PatchTerrainDaylightRange(t, p.terrainDayConst) &&
+                           ShaderPatches::PatchTerrainShade(t, s, p.shadeSampler);
+                }, true);
+                if (!dayShade->ps || dayShade->nativeAlphaSource != s || dayShade->nativeAlphaSampler != alpha->nativeAlphaSampler ||
+                    dayShade->terrainDayConst != daylight->terrainDayConst)
+                    dayShade = nullptr;
+            }
+            if (!alphaShade) shade = nullptr;
+        }
         bool squared = multi;
         const int k = multi ? 3 : TerrainLampConst(g_curPs, s, squared);
-        if (!smooth && k < 0) return D3D9Hooks::HookAction::Continue;
+        if (!smooth && !shade && k < 0) return D3D9Hooks::HookAction::Continue;
         IDirect3DBaseTexture9* old = nullptr;
-        if (smooth && FAILED(dev->GetTexture(s, &old))) smooth = nullptr;
+        if ((smooth || shade) && FAILED(dev->GetTexture(s, &old))) smooth = nullptr, shade = nullptr, old = nullptr;
+        // the light map the patched shader reads: the smoothed one, else the game's own (bound already)
+        IDirect3DBaseTexture9* const lampMap = smooth ? smooth : (shade ? old : nullptr);
+        if (!lampMap) shade = nullptr;
         if (LightProbe::Capturing())
-            g_objDrawInfo = std::format("mod draw: world terrain | compact {} | multi-pass {} | lamp sampler s{} | gain {:.3f} | smoothed {} | daylight range candidate {}",
-                                       g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr, daylight != nullptr);
+            g_objDrawInfo = std::format("mod draw: world terrain | compact {} | multi-pass {} | lamp sampler s{} | gain {:.3f} | smoothed {} | daylight range candidate {} | wall shade {}",
+                                       g_curClass == PsClass::WorldCompact, multi, s, gain, smooth != nullptr, daylight != nullptr,
+                                       shade ? std::format("chunk ({}, {}), sampler s{}", key.first, key.second, alphaShade->shadeSampler) : std::string("none"));
         g_inOwnCall = true;
         {
             TerrainConst lampGain(dev, k, squared);
-            if (smooth) {
+            if (lampMap) {
                 NativeTerrainSampler native(dev, s, alpha->nativeAlphaSampler, old, D3D9Hooks::CallOriginalSetTexture);
                 if (native) {
                     float savedDay[4]{};
@@ -4640,11 +5302,15 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawInnerCore(IDirect3DDevice
                         const float range[4] = {dayWeight, 2.0f, 0, 0};
                         daySet = SUCCEEDED(D3D9Hooks::CallOriginalSetPixelShaderConstantF(dev, daylight->terrainDayConst, range, 1));
                     }
-                    SetPs(dev, daySet ? daylight->ps : alpha->ps);
-                    SetTex(dev, s, smooth);
+                    PatchedPs* const shaded = shade ? (daySet ? dayShade : alphaShade) : nullptr;
+                    std::optional<SamplerBind> shadeMap;
+                    if (shaded) shadeMap.emplace(dev, shaded->shadeSampler, shade, D3DTEXF_LINEAR);
+                    SetPs(dev, shaded ? shaded->ps : daySet ? daylight->ps : alpha->ps);
+                    SetTex(dev, s, lampMap);
                     draw();
                     SetTex(dev, s, old);
                     SetPs(dev, g_curPs);
+                    shadeMap.reset();
                     if (daySet) SetPsConst(dev, daylight->terrainDayConst, savedDay, 1);
                 } else draw();
             } else draw();
@@ -4989,15 +5655,62 @@ void TraceFurniture(IDirect3DDevice9* dev, const float (*rigIn)[4], bool rigChai
 // (PS c0..c7 and the vertex lights) while no switch is on; during a switch, while the rig's room still awaits its new
 // light (RoomLightQueue::AwaitingSwitchLight; the rig's room from its last gather, ObjectLightBridge::RigRoom), the part is
 // drawn with the lights it had before the switch (a snapshot taken at most 2 s before it), then with the game's.
+// 2.13.1 (Tester switch furnitureWithRoom, on): every lamp edit, not only switches. A recording (14/10, an indoor lamp
+// dragged): the furniture of the lamp's room followed the lamp at every step (+0.00 .. +0.66 s after the edit) while the
+// room's maps showed the new light only at +0.69 .. +1.05 s, and nothing was held ("held for a lamp switch 0"): the
+// snapshot had to be older than the latest switch, so a move or a colour never found one. Now the snapshot must be from a
+// frame before the edit's episode began (the first frame a switch or an edit hold was seen; frames, not GetTickCount, whose
+// 16 ms steps put a snapshot and the edit in the same tick), and the part waits while its room's maps do not show the edit
+// (AtriumHold::RoomShowsOldLight: held by the edit hold, trailing after it, or the own story's room not solved yet).
 struct RigSnap {
     float ps[8][4];
     float vs[8][4];
     bool haveVs;
     DWORD tick;
+    uint32_t frame = 0;     // g_roomMapFrame when taken
+    uint64_t heldGame = 0;  // the game's lights last seen while held (a hash: the changes held back are counted)
+    // (furnitureWithRoom) the snapshot from before the current episode, kept when a part not waiting yet is drawn during it
+    // (its room marked a few frames after the edit): used only while the part has shown no other lights since
+    float prePs[8][4];
+    float preVs[8][4];
+    bool preHaveVs = false;
+    DWORD preTick = 0;
+    uint32_t preEpisode = 0; // the episode (its first frame) it was kept for
 };
 std::unordered_map<uint64_t, RigSnap> g_rigSnaps; // (rig, vertex-light register) -> its lights before a switch (render thread)
 std::atomic<long> g_rigHeldDraws{0};
 constexpr DWORD kRigSnapFreshMs = 2000;
+// The current episode (render thread): a switch or an edit hold seen since g_rigEpisodeFrame; ended by OnPresent
+bool g_rigEpisodeOn = false;
+uint32_t g_rigEpisodeFrame = 0;
+DWORD g_rigEpisodeTick = 0;
+std::unordered_set<uint64_t> g_rigEpisodeParts; // parts held in this episode (the log)
+long g_rigEpisodeChanges = 0;                  // the game's light changes of held parts not shown (the log)
+long g_rigEpisodeLate = 0;                     // parts whose room waited only after they showed new lights: left as they are
+DWORD g_rigEpisodeLastHeld = 0;                // the last held draw (GetTickCount)
+bool g_rigTrailing = false; // AtriumHold::Trailing, read once a frame (OnPresent): it walks the urgent rooms
+bool RigEpisodeWanted() {
+    return LampMarkFilter::SwitchActive() || AtriumHold::SwitchHolding() ||
+           (TesterToggles::furnitureWithRoom.load(std::memory_order_relaxed) && (AtriumHold::EditHolding() || g_rigTrailing));
+}
+// AtriumHold::RoomShowsOldLight once per room and frame (it locks the urgent list; thousands of furniture draws a frame)
+std::unordered_map<const void*, bool> g_rigRoomWaits;
+uint32_t g_rigRoomWaitsFrame = 0;
+bool RoomShowsOldLightCached(const void* room) {
+    if (g_rigRoomWaitsFrame != g_roomMapFrame) {
+        g_rigRoomWaits.clear();
+        g_rigRoomWaitsFrame = g_roomMapFrame;
+    }
+    const auto [it, fresh] = g_rigRoomWaits.try_emplace(room, false);
+    if (fresh) it->second = AtriumHold::RoomShowsOldLight(room);
+    return it->second;
+}
+uint64_t RigHash(const float (*rig)[4]) {
+    uint64_t h = 1469598103934665603ull;
+    const auto* b = reinterpret_cast<const unsigned char*>(rig);
+    for (size_t i = 0; i < sizeof(float) * 32; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
 struct RigHeld {
     bool ps = false, vs = false;
     int vl = -1;
@@ -5011,34 +5724,90 @@ void HoldRig(IDirect3DDevice9* dev, float (*rig)[4], RigHeld& h) {
     const uint64_t key = (static_cast<uint64_t>(rp) << 8) ^ static_cast<uint64_t>(vl & 0xFF);
     const DWORD now = GetTickCount();
     const unsigned long lastSwitch = LampMarkFilter::SwitchLastTick();
-    const void* room = LampMarkFilter::SwitchActive() || AtriumHold::SwitchHolding() ? ObjectLightBridge::RigRoom(rp) : nullptr;
-    // switches all at once: until the whole switch is released with the rooms' maps (AtriumHold); else until its own room ends.
-    // 12/10: the lamp's own story is never held (its maps show once solved): its furniture waits for its own room's solve
-    // (14/10, Classic: show all floors together: the own story is held too, so its furniture waits for the release)
-    const bool wait = !room ? false
-                      : AtriumHold::AllAtOnce() && (AtriumHold::OwnStoryHeld() || !LevelLightShare::OnEditStory(room))
-                          ? AtriumHold::SwitchHolding() && LevelLightShare::LampUrgency(room) > 1.0f
-                                                                                     : RoomLightQueue::AwaitingSwitchLight(room);
+    const bool withRoom = TesterToggles::furnitureWithRoom.load(std::memory_order_relaxed);
+    const bool episode = RigEpisodeWanted();
+    if (episode && !g_rigEpisodeOn) { // (the first draw of the episode: snapshots from earlier frames only)
+        g_rigEpisodeOn = true;
+        g_rigEpisodeFrame = g_roomMapFrame;
+        g_rigEpisodeTick = now;
+        g_rigEpisodeParts.clear();
+        g_rigEpisodeChanges = 0;
+        g_rigEpisodeLate = 0;
+        g_rigEpisodeLastHeld = 0;
+    }
+    bool wait = false;
+    if (withRoom) {
+        const void* room = episode ? ObjectLightBridge::RigRoom(rp) : nullptr;
+        wait = room && (AtriumHold::AllAtOnce() ? RoomShowsOldLightCached(room) : RoomLightQueue::AwaitingSwitchLight(room));
+    } else { // (2.13.0: switches only)
+        const void* room = LampMarkFilter::SwitchActive() || AtriumHold::SwitchHolding() ? ObjectLightBridge::RigRoom(rp) : nullptr;
+        // switches all at once: until the whole switch is released with the rooms' maps (AtriumHold); else until its own room ends.
+        // 12/10: the lamp's own story is never held (its maps show once solved): its furniture waits for its own room's solve
+        // (14/10, Classic: show all floors together: the own story is held too, so its furniture waits for the release)
+        wait = !room ? false
+               : AtriumHold::AllAtOnce() && (AtriumHold::OwnStoryHeld() || !LevelLightShare::OnEditStory(room))
+                   ? AtriumHold::SwitchHolding() && LevelLightShare::LampUrgency(room) > 1.0f
+                   : RoomLightQueue::AwaitingSwitchLight(room);
+    }
     if (!wait) { // the lights as the game set them, for the next switch (not just after one: the rig may hold its new lights)
         if (lastSwitch && now - lastSwitch < 100) return;
         if (g_rigSnaps.size() > 16384) g_rigSnaps.clear();
         RigSnap& s = g_rigSnaps[key];
+        if (withRoom && g_rigEpisodeOn && s.tick && static_cast<int32_t>(s.frame - g_rigEpisodeFrame) < 0 && s.preEpisode != g_rigEpisodeFrame) {
+            std::memcpy(s.prePs, s.ps, sizeof s.prePs); // (the lights from before the episode, once per episode)
+            std::memcpy(s.preVs, s.vs, sizeof s.preVs);
+            s.preHaveVs = s.haveVs;
+            s.preTick = s.tick;
+            s.preEpisode = g_rigEpisodeFrame;
+        }
         std::memcpy(s.ps, rig, sizeof s.ps);
         s.haveVs = vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &s.vs[0][0], 8));
+        if (s.preEpisode == g_rigEpisodeFrame && g_rigEpisodeOn &&
+            (std::memcmp(s.ps, s.prePs, sizeof s.ps) != 0 || (s.haveVs && std::memcmp(s.vs, s.preVs, sizeof s.vs) != 0)))
+            s.preEpisode = 0; // (it showed other lights in this episode: holding it now would turn it back)
         s.tick = now;
+        s.frame = g_roomMapFrame;
+        s.heldGame = 0;
         return;
     }
     const auto it = g_rigSnaps.find(key);
     if (it == g_rigSnaps.end()) return;
-    const RigSnap& s = it->second;
-    // taken before the latest switch (the hold covers every switch since its first), and not long before it
-    if (static_cast<int32_t>(s.tick - lastSwitch) >= 0 || lastSwitch - s.tick > kRigSnapFreshMs + 4000) return;
+    RigSnap& s = it->second;
+    const float (*snapPs)[4] = s.ps;
+    const float (*snapVs)[4] = s.vs;
+    bool snapHaveVs = s.haveVs;
+    if (withRoom) { // taken in a frame before the episode began, and not long before it
+        DWORD snapTick = s.tick;
+        if (static_cast<int32_t>(s.frame - g_rigEpisodeFrame) >= 0) {
+            // drawn during the episode before its room waited: its lights from before the episode, if it showed no others
+            if (s.preEpisode != g_rigEpisodeFrame) {
+                if (!s.heldGame) {
+                    s.heldGame = 1; // (counted once)
+                    g_rigEpisodeLate++;
+                }
+                return;
+            }
+            snapPs = s.prePs;
+            snapVs = s.preVs;
+            snapHaveVs = s.preHaveVs;
+            snapTick = s.preTick;
+        }
+        if (static_cast<int32_t>(g_rigEpisodeTick - snapTick) > static_cast<int32_t>(kRigSnapFreshMs + 4000)) return; // (long before the edit)
+        const uint64_t game = RigHash(rig);
+        if (game != s.heldGame) { // the game's lights of this part changed while held: a change not shown
+            if (s.heldGame) g_rigEpisodeChanges++;
+            s.heldGame = game;
+        }
+        if (g_rigEpisodeParts.size() < 65536) g_rigEpisodeParts.insert(key);
+        g_rigEpisodeLastHeld = now;
+    } else if (static_cast<int32_t>(s.tick - lastSwitch) >= 0 || lastSwitch - s.tick > kRigSnapFreshMs + 4000)
+        return; // taken before the latest switch (the hold covers every switch since its first), and not long before it
     std::memcpy(h.psGame, rig, sizeof h.psGame);
-    SetPsConst(dev, 0, &s.ps[0][0], 8);
-    std::memcpy(rig, s.ps, sizeof s.ps);
+    SetPsConst(dev, 0, &snapPs[0][0], 8);
+    std::memcpy(rig, snapPs, sizeof s.ps);
     h.ps = true;
-    if (s.haveVs && vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &h.vsGame[0][0], 8))) {
-        SetVsConst(dev, static_cast<UINT>(vl - 4), &s.vs[0][0], 8);
+    if (snapHaveVs && vl >= 4 && SUCCEEDED(dev->GetVertexShaderConstantF(static_cast<UINT>(vl - 4), &h.vsGame[0][0], 8))) {
+        SetVsConst(dev, static_cast<UINT>(vl - 4), &snapVs[0][0], 8);
         h.vs = true;
         h.vl = vl;
     }
@@ -5119,15 +5888,22 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDrawTracked(IDirect3DDevice9*
     // The wrap constants (VS c255, PatchFoliageVs runtimeWrap) carry the daytime curve (13/10): the per-instance lamp colours
     // c54..c56 (the rig, boosted at the night strength) were drawn at full strength by day; now x LampDay(night), 3% by day
     // and exactly the earlier defined constants at night. Restored after the draw (another shader may read c255).
-    const float day = TesterToggles::foliageDayFix.load(std::memory_order_relaxed) ? TerrainLightingPolicy::LampDay(g_night.load(std::memory_order_relaxed)) : 1.0f;
-    const float wrap[4] = {day * (1.0f / 1.5f), day * (0.5f / 1.5f), 0.0f, 0.0f};
+    // (2.13.1) With the rigs' outdoor lamps on the reach law (ObjectReachLawScale, ObjectLightBridge ReachLawRec) the weight is
+    // the plain Lambert N.L, as on every per-pixel lamp: leaves turned away from a lamp take none of it (the moon's sky term
+    // stays), and the colours already carry the daytime curve (TerrainLightingPolicy::FoliageLampWeights).
+    const bool reachLaw = LotLightBridge::ObjectReachLawScale() >= 0.0f;
+    float weights[2];
+    TerrainLightingPolicy::FoliageLampWeights(g_night.load(std::memory_order_relaxed), reachLaw, TesterToggles::foliageDayFix.load(std::memory_order_relaxed), weights);
+    const bool dayScaled = !reachLaw && weights[0] < 1.0f / 1.5f; // the daytime curve scaled the wrap (status)
+    const float wrap[4] = {weights[0], weights[1], 0.0f, 0.0f};
+    if (reachLaw) g_foliageReachLaw.fetch_add(1, std::memory_order_relaxed);
     float oldWrap[4] = {};
     const bool wrapSaved = SUCCEEDED(dev->GetVertexShaderConstantF(ShaderPatches::kFoliageWrapConst, oldWrap, 1));
     g_inOwnCall = true;
     SetVs(dev, foliage);
     SetVsConst(dev, ShaderPatches::kFoliageWrapConst, wrap, 1);
     g_inOwnCall = false;
-    if (day < 1.0f) g_foliageDayScaled.fetch_add(1, std::memory_order_relaxed);
+    if (dayScaled) g_foliageDayScaled.fetch_add(1, std::memory_order_relaxed);
     if (OnDrawInner(dev, draw) == D3D9Hooks::HookAction::Continue) {
         g_inOwnCall = true;
         draw();
@@ -5699,6 +6475,7 @@ void UpdateHooks() {
                 DrawRigScope rigScope;
                 try {
                     g_curPrims = prims;
+                    g_curDipBase = static_cast<UINT>(bvi), g_curDipMin = minV, g_curDipNum = numV;
                     return OnDraw(ctx.device, [&]() {
                         drawn = true;
                         D3D9Hooks::ReissueScope reissue; // only the observers of re-issued draws run for it (d3d9_hooks.h)
@@ -5716,6 +6493,7 @@ void UpdateHooks() {
             DrawRigScope rigScope;
             try {
                 g_curPrims = prims;
+                g_curDipNum = 0;
                 return OnDraw(ctx.device, [&]() {
                     drawn = true;
                     D3D9Hooks::ReissueScope reissue;
@@ -5805,7 +6583,10 @@ void OnWorldChanged() {
     g_lotRectMiss = true;
     g_haveLastEdgeRect = false;
     g_shadeQueue.clear(); // the lamp shades waiting or building belong to the previous world's lots
-    g_shadeRun.active = false;
+    g_fenceGroups.clear(); // (garden walls of the old world)
+    g_fenceGen++;
+    g_meshBoxes.clear();
+    g_fenceWalls = 0;
     // (14/10) the rest of the old world: the lamps leaving roofed rooms (rows, cones, lights), the lots' masks and shades
     // (their keys would stop the same lot ids being built again), the instanced groups' centres (keyed by buffer address)
     g_exitLampRows.clear();
@@ -5858,7 +6639,12 @@ std::string LotShadeStatus() { return LotShadeStatusText(); }
 
 int ChunkCount() { return static_cast<int>(g_chunks.size()); }
 
-bool ObjectLampColourAt(const void* light, const float* point, float rgb[3]) { return ObjectLampColourAtImpl(light, point, rgb); }
+bool ObjectLampColourAt(const void* light, const float* point, float rgb[3], const float* ext) { return ObjectLampColourAtImpl(light, point, rgb, ext); }
+float ObjectReachLawScale() {
+    if (!g_objPixel.load(std::memory_order_relaxed) || !g_objPixelLamps.load(std::memory_order_relaxed) || !LevelLightShare::RealisticReachActive()) return -1.0f;
+    return TerrainLightingPolicy::ReachLampScale(NativeWallScale(), g_night.load(std::memory_order_relaxed), g_wallEnabled.load(std::memory_order_relaxed),
+                                                 g_wallGain.load(std::memory_order_relaxed), g_objPixelLampStrength.load(std::memory_order_relaxed) / kPixelLampTrimUnit);
+}
 void SetObjectPixelLamps(bool on, float strength) {
     g_objPixel = on;
     g_objPixelStrength = strength;
@@ -5930,6 +6716,20 @@ std::string ExteriorCaptureStatus() { return g_exteriorPending ? "capturing..." 
 void OnPresent() {
     ++g_roomMapFrame; // (the room map size memo is per frame)
     g_lotDrawTick = GetTickCount();
+    // the furniture's lamp edit episode is over once no switch, edit hold or trailing room remains (2.13.1: one log line)
+    g_rigTrailing = TesterToggles::furnitureWithRoom.load(std::memory_order_relaxed) && AtriumHold::Trailing();
+    if (g_rigEpisodeOn && !RigEpisodeWanted()) {
+        g_rigEpisodeOn = false;
+        if (!g_rigEpisodeParts.empty() || g_rigEpisodeLate > 0) {
+            const std::string text = std::format("Lamp edit furniture: {} object parts kept their lights until their room showed the new light, shown with it {} ms after the edit "
+                                                 "({} light changes of theirs not shown; {} parts had shown new lights before their room waited, left as they were)",
+                                                 g_rigEpisodeParts.size(), g_rigEpisodeLastHeld ? g_rigEpisodeLastHeld - g_rigEpisodeTick : 0, g_rigEpisodeChanges,
+                                                 g_rigEpisodeLate);
+            LOG_INFO("[LotLightBridge] " + text);
+            if (Recorder::Active()) Recorder::Note("[switch] " + text);
+        }
+        g_rigEpisodeParts.clear();
+    }
     ReportHookFailure();
     // the lamp shade on lot ground follows "Walls shade lamp light near the ground" (14/10; the same wall copy as "Buildings
     // block lamp light on trees and objects"); a switch remakes every lot's texture (without or with its shade)
@@ -5943,7 +6743,6 @@ void OnPresent() {
         }
         if (!shadeOn) {
             g_shadeQueue.clear();
-            g_shadeRun.active = false;
         }
     }
     if (g_enabled.load(std::memory_order_relaxed)) ShadeTick();
@@ -6246,9 +7045,9 @@ std::string FurnitureDiag() {
 }
 
 std::string ObjectStatus() {
-    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema day bloom suppressed: {} (centre panel: {}) | foliage (wrap light): {} (by the daytime curve: {}) | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
+    return std::format("moon shadow on objects: {} | draws fixed: {} | cinema day bloom suppressed: {} (centre panel: {}) | foliage (wrap light): {} (by the daytime curve: {}, Lambert on reach-law rigs: {}) | winter foliage without shadow: {} | Rooms at Night on furniture: {} draws ({} with the blue tint in the game's shader)",
                        g_objectFix.load() ? (g_objectPs ? "fixed" : "waiting") : "off", g_objectDrawn.load(), g_cinemaDayBloomSuppressed.load(),
-                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_foliageDayScaled.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load());
+                       g_cinemaPanelDayBloomSuppressed.load(), g_foliageDrawn.load(), g_foliageDayScaled.load(), g_foliageReachLaw.load(), g_leafDrawn.load(), g_nightFurniture.load(), g_nightFurnitureTinted.load());
 }
 
 void Shutdown(bool keepChunkMaps) {
@@ -6265,7 +7064,12 @@ void Shutdown(bool keepChunkMaps) {
         g_replacementPs->Release();
         g_replacementPs = nullptr;
     }
+    g_shadeWorker.Stop();
     ReleaseLotMasks();
+    g_fenceGroups.clear();
+    g_fenceGen++;
+    g_meshBoxes.clear();
+    g_fenceWalls = 0;
     if (g_snowPs) {
         g_snowPs->Release();
         g_snowPs = nullptr;
@@ -6281,7 +7085,7 @@ void Shutdown(bool keepChunkMaps) {
         g_meltPs = nullptr;
     }
     g_meltTried = false;
-    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_roomMapSmoothPs, &g_basisRoomPs, &g_cubeTintPs, &g_windowPs,
+    for (auto* cache : {&g_terrainAlphaPs, &g_terrainDayPs, &g_terrainShadePs, &g_terrainDayShadePs, &g_roadShadePs, &g_roadPs, &g_floorPs, &g_snowFloorPs, &g_snowFloorPs0, &g_leafPs, &g_fencePs, &g_snowCoverPs, &g_snowReliefPs, &g_objLampPs, &g_basisSmoothPs, &g_roomMapSmoothPs, &g_basisRoomPs, &g_cubeTintPs, &g_windowPs,
                         &g_objLampPsReach, &g_fencePsReach, &g_windowPsReach}) {
         for (auto& [k, p] : *cache)
             if (p.ps) p.ps->Release();

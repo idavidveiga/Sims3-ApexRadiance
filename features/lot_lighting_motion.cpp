@@ -73,6 +73,7 @@
 #include "slot_chain.h"
 #include "imgui.h"
 #include "drag_lite.h"
+#include "tester_toggles.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -261,6 +262,11 @@ float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
         g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
         return out;
     }
+    // (2.13.1) while the lamps' own rooms take the edit budget after a drag (no spread cap: DragLite::OwnRoomsWaiting), the
+    // other lots keep the least, as under the cap
+    if (game > 0.0f && game < kPriorityMs && TesterToggles::dragSpreadCap.load(std::memory_order_relaxed) && DragLite::OwnRoomsWaiting() &&
+        DragLite::Settling())
+        return std::min(game, kMinMs);
     if (!g_on.load(std::memory_order_acquire)) return game;
     c_calls.fetch_add(1, std::memory_order_relaxed);
     const uint64_t now = GetTickCount64();

@@ -36,7 +36,7 @@ unsigned long EditSerial();
 bool LotRefreshDueSoon(unsigned long withinMs);
 // Notes an edit LampMarkFilter's room marks do not see (a lamp added or removed: LevelLightShare's changed-room walk)
 void NoteEdit();
-// Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default on; Developer page)
+// Render thread: on = a lamp entry update marks its room changed only when the lamp changed (default off since 2.13.1; Developer page)
 void SetEnabled(bool on);
 bool Enabled();
 // Any thread: an edit of that light was taken by the GPU (Lamp lighting: Instant, Real-time outdoor lamps) within withinMs

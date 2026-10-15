@@ -1804,8 +1804,8 @@ class NightTerrainRelightPatch : public ApexPatch {
             S3SS_TR("Intensidade da luz das lampadas nas paredes externas, durante o dia e a noite.",
                     "Intensity of lamp light on outside walls, by day and night."));
         RegisterBoolSetting(&g_realisticReach, "alcanceRealistaDasLampadas", true,
-            "Lamp light on outside walls fades with distance as it does on the ground, instead of staying at full brightness "
-            "for about 9 m and reaching upper stories far away (relights every room when changed).");
+            "Lamp light on outside walls, trees and bushes fades with distance as it does on the ground, instead of staying at full "
+            "brightness for about 9 m and reaching upper stories far away (relights every room when changed).");
         RegisterBoolSetting(&g_levelShare, "luzExternaEntreAndares", true,
             S3SS_TR("Luminarias externas iluminam as paredes e pisos de todos os andares (a luz nao corta mais na linha do piso).",
                     "Outdoor lights reach the walls and floors of every story (no cut at the floor line)."));
@@ -1848,8 +1848,9 @@ class NightTerrainRelightPatch : public ApexPatch {
             "in a yard without a roof behind a wall stays dark, and a lamp under a balcony does not light what stands on it; trees and bushes behind a building "
             "take no garden lamp light.");
         RegisterBoolSetting(&g_groundShade, "paredesSombreiamOChao", true,
-            "Walls shade lamp light on the lot ground near them: grass, paths, decks, curbs, stairs and low fences behind a wall stay dark, "
-            "with soft edges at wall ends and tops.");
+            "Walls and garden walls shade lamp light on the ground: grass, paths, decks, curbs and stairs behind them stay dark, on "
+            "the lot and on the grass, streets and sidewalks around it, with soft edges at wall ends and tops. Each wall shades by its "
+            "own height.");
         RegisterEnumSetting(&g_lightDetail, "detalheDaLuz", 0,
             "How sharp the game's lamp light is on walls and floors. High doubles its detail: rooms take longer to light and use more memory "
             "(experimental; takes effect after restarting the game).",
@@ -2530,6 +2531,9 @@ class NightTerrainRelightPatch : public ApexPatch {
                     ApexUi::ReportChange("Lighting balance restored");
                 }
             }
+            // (2.13.1) it shapes walls, trees and bushes, not only buildings: here, beside the balance
+            ApexUi::CardDivider();
+            changed |= ApexUi::SwitchRow("Realistic lamp reach", &g_realisticReach, "Lamp light on outside walls, trees and bushes fades with distance like on the ground", true);
             return changed;
         });
     }
@@ -2559,8 +2563,8 @@ class NightTerrainRelightPatch : public ApexPatch {
                                              kRealisticOpeningsDefault);
                 ImGui::EndDisabled();
                 // (the light through openings, doors, shadow softness and smooth light maps: Buildings tab, Rooms at Night)
-                changed |= ApexUi::SwitchRow("Wall lamps at the right height", &g_foundationWalls, "Fixes a game bug: wall light too high on tall walls and foundations", true);
-                if (ApexUi::BeginAdvanced("StoryDetail", "Floor detail")) {
+                if (ApexUi::BeginAdvanced("StoryDetail", "Game fixes")) {
+                    changed |= ApexUi::SwitchRow("Wall lamps at the right height", &g_foundationWalls, "Fixes a game bug: wall light too high on tall walls and foundations", true);
                     changed |= ApexUi::SwitchRow("Seamless walls between floors", &g_wallAlign, "Walls above and below the floor line meet with no step in the light", true);
                     changed |= ApexUi::SwitchRow("Every floor in full detail", &g_allFloors, "Changing floors keeps the light; entering a lot takes a little longer", true);
                     ApexUi::EndAdvanced();
@@ -2580,20 +2584,24 @@ class NightTerrainRelightPatch : public ApexPatch {
             ApexUi::CardHeader(IconId::LandPlot, "Ground & Lots", "Lamp light on grass, streets and lots", nullptr, nullptr);
             ApexUi::CardDivider();
             Edit([] {
-                bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
-                changed |= ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
-                changed |= ApexUi::SwitchRow("Lamp colors stay near lamps", &g_neutralProbe, "A colored lamp no longer tints far floors, roofs and shiny objects", true);
-                changed |= ApexUi::SwitchRow("Walls shade lamp light near the ground", &g_groundShade, "Grass, paths, decks, curbs and low fences behind a wall stay dark", true);
+                bool changed = ApexUi::SwitchRow("Lot lamps light the street", &g_lotLamps, "Outdoor lot lamps also light the grass and street nearby", true);
+                changed |= ApexUi::SwitchRow("Walls shade lamp light near the ground", &g_groundShade, "Walls and garden walls shade lamp light on grass, paths and streets, also past the lot", true);
                 return changed;
             });
-            // Smooth ground light only chooses which map the draws read (idavidveiga's fork, 04/10): no lighting refresh, no
-            // terrain, lot, room or wall solve and no object rig gather; the next draw reads the smoothed or the raw map
-            if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
-                NotifySettingChanged();
-                LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
-            }
-            // When the ground light is rebuilt (lamp changes are always followed; this is the rebuild at dusk)
-            if (ApexUi::BeginAdvanced("Updates##NightGround", "Updates")) {
+            // (2.13.1) the game's fixes and the dusk update: on by default, kept switchable in one folded block
+            if (ApexUi::BeginAdvanced("Updates##NightGround", "Game fixes")) {
+                Edit([] {
+                    bool changed = ApexUi::SwitchRow("Street lamps light lots", &g_bridge, "Street lamp light flows onto lots with no hard edge", true);
+                    changed |= ApexUi::SwitchRow("Lamp colors stay near lamps", &g_neutralProbe, "A colored lamp no longer tints far floors, roofs and shiny objects", true);
+                    return changed;
+                });
+                // Smooth ground light only chooses which map the draws read (idavidveiga's fork, 04/10): no lighting refresh, no
+                // terrain, lot, room or wall solve and no object rig gather; the next draw reads the smoothed or the raw map
+                if (ApexUi::SwitchRow("Smooth ground light", &g_smoothMaps, "Soft lamp light on the ground, without blocky steps or specks", true)) {
+                    NotifySettingChanged();
+                    LOG_INFO("[NightTerrainRelight] Smooth ground light changed: draw maps only; object rigs, terrain, lots, rooms and walls left untouched");
+                }
+                // When the ground light is rebuilt (lamp changes are always followed; this is the rebuild at dusk)
                 Edit([] {
                     bool changed = ApexUi::SwitchRow("Update at dusk", &g_autoDusk, "When night falls, the ground light is rebuilt with every lamp on", true);
                     ImGui::BeginDisabled(!g_autoDusk);
@@ -2644,59 +2652,46 @@ class NightTerrainRelightPatch : public ApexPatch {
                 bool changed = ApexUi::SwitchRow("Lamps light objects", &g_objLamps, "Outdoor objects get lamp light, even in the shade of walls", true);
                 if (g_objLamps)
                     changed |= ApexUi::SliderPercent("Brightness##Objects", &g_objStrength, 0.25f, 3.0f, "Raise it if objects look dark next to lamps", 0.75f);
-                ImGui::BeginDisabled(!g_objLamps);
-                ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // the game builds these pieces' light when a world loads
-                changed |= ApexUi::SwitchRow("Light stairs, railings, columns", &g_objAll, "Pieces the game leaves unlit", true);
-                ImGui::EndDisabled();
                 changed |= ApexUi::SwitchRow("Buildings block lamp light on trees and objects", &g_objectWalls, "Trees, objects and fences behind a wall or balcony get no lamp light", true);
-
                 return changed;
             });
-        }
-        ApexUi::EndCard();
-        if (ApexUi::BeginCard("##Pieces")) {
-            ApexUi::CardHeader(IconId::Fence, "Doors, counters and fences", "Match connected pieces to the surrounding light", nullptr, nullptr);
-            ApexUi::CardDivider();
-            Edit([] {
-                bool changed = false;
-                // These read the ground light of two Ground & Lots options (lot light bridge + smoothed maps)
-                const bool groundLight = g_bridge && g_smoothMaps;
-                if (!groundLight) {
-                    const bool both = !g_bridge && !g_smoothMaps;
-                    ApexUi::IconNote(IconId::Info, both ? "Needs \"Street lamps light lots\" and \"Smooth ground light\" (Ground tab)"
-                                                        : !g_bridge ? "Needs \"Street lamps light lots\" (Ground tab)" : "Needs \"Smooth ground light\" (Ground tab)");
-                    if (ApexUi::IconTextButton(both ? "Turn both on##GroundLight" : "Turn it on##GroundLight", IconId::LandPlot, nullptr, ApexUi::ButtonKind::Primary)) {
-                        ApexUi::ReportChange(both ? "Ground light turned on" : !g_bridge ? "Street lamps light lots turned on" : "Smooth ground light turned on");
-                        g_bridge = true;
-                        g_smoothMaps = true;
-                        changed = true;
+            // (2.13.1) the game's fixes on stairs, doors, counters, fences and indoor furniture: on by default, folded
+            if (ApexUi::BeginAdvanced("ObjectFixes##NightObjects", "Game fixes")) {
+                Edit([] {
+                    ImGui::BeginDisabled(!g_objLamps);
+                    ApexUi::SetNextRowBadge(kReloadBadge, kReloadTip); // the game builds these pieces' light when a world loads
+                    bool changed = ApexUi::SwitchRow("Light stairs, railings, columns", &g_objAll, "Pieces the game leaves unlit", true);
+                    ImGui::EndDisabled();
+                    // These read the ground light of two Ground options (lot light bridge + smoothed maps)
+                    const bool groundLight = g_bridge && g_smoothMaps;
+                    if (!groundLight) {
+                        const bool both = !g_bridge && !g_smoothMaps;
+                        ApexUi::IconNote(ApexUi::IconId::Info, both ? "Needs \"Street lamps light lots\" and \"Smooth ground light\" (Ground tab)"
+                                                                    : !g_bridge ? "Needs \"Street lamps light lots\" (Ground tab)" : "Needs \"Smooth ground light\" (Ground tab)");
+                        if (ApexUi::IconTextButton(both ? "Turn both on##GroundLight" : "Turn it on##GroundLight", ApexUi::IconId::LandPlot, nullptr, ApexUi::ButtonKind::Primary)) {
+                            ApexUi::ReportChange(both ? "Ground light turned on" : !g_bridge ? "Street lamps light lots turned on" : "Smooth ground light turned on");
+                            g_bridge = true;
+                            g_smoothMaps = true;
+                            changed = true;
+                        }
                     }
-                }
-                ImGui::BeginDisabled(!groundLight);
-                changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
-                ImGui::BeginDisabled(!g_objPixel);
-                changed |= ApexUi::SwitchRow("Windows take outdoor light", &g_windowOutdoor, "The outer side of windows lit by the room takes the outdoor light", true);
-                ImGui::EndDisabled();
-                changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
-                if (g_objPixelLights)
-                    changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "Intensity on counters and modular pieces", 0.75f);
-                changed |= ApexUi::SwitchRow("Fences and stairs catch light", &g_fenceGround, "Fences, posts, stairs and their snow match the lit ground", true);
-                if (g_fenceGround)
-                    changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "Balance fences against the surrounding ground", 0.75f);
-                ImGui::EndDisabled();
-
-                return changed;
-            });
-        }
-        ApexUi::EndCard();
-        if (ApexUi::BeginCard("##IndoorObjects")) {
-            ApexUi::CardHeader(IconId::Lightbulb, "Indoor objects", "Furniture and stairs inside rooms", nullptr, nullptr);
-            ApexUi::CardDivider();
-            Edit([] {
-                bool changed = false;
-                changed |= ApexUi::SwitchRow("Smooth indoor light", &g_edgePad, "Light changes smoothly on stairs, curtains and furniture; no dark sides", true);
-                return changed;
-            });
+                    ImGui::BeginDisabled(!groundLight);
+                    changed |= ApexUi::SwitchRow("Doors and windows stay lit", &g_objPixel, "A front door is never darker than the wall around it", true);
+                    ImGui::BeginDisabled(!g_objPixel);
+                    changed |= ApexUi::SwitchRow("Windows take outdoor light", &g_windowOutdoor, "The outer side of windows lit by the room takes the outdoor light", true);
+                    ImGui::EndDisabled();
+                    changed |= ApexUi::SwitchRow("Seamless light on pieces", &g_objPixelLights, "Counters and modular pieces outside show no color steps", true);
+                    if (g_objPixelLights)
+                        changed |= ApexUi::SliderPercent("Seamless light brightness", &g_objPixelLightStrength, 0.25f, 3.0f, "Intensity on counters and modular pieces", 0.75f);
+                    changed |= ApexUi::SwitchRow("Fences and stairs catch light", &g_fenceGround, "Fences, posts, stairs and their snow match the lit ground", true);
+                    if (g_fenceGround)
+                        changed |= ApexUi::SliderPercent("Fence brightness", &g_fenceGroundStrength, 0.25f, 2.0f, "Balance fences against the surrounding ground", 0.75f);
+                    ImGui::EndDisabled();
+                    changed |= ApexUi::SwitchRow("Smooth indoor light", &g_edgePad, "Light changes smoothly on stairs, curtains and furniture; no dark sides", true);
+                    return changed;
+                });
+                ApexUi::EndAdvanced();
+            }
         }
         ApexUi::EndCard();
         ImGui::PopID();
@@ -2713,7 +2708,6 @@ class NightTerrainRelightPatch : public ApexPatch {
                 bool changed = ApexUi::SwitchRow("Lamps light walls", &g_walls, "Outside walls near lamps get brighter; off keeps the game's dim walls", true);
                 if (g_walls)
                     changed |= ApexUi::SliderPercent("Brightness##Walls", &g_wallStrength, 0.25f, 4.0f, "Intensity of lamp light on outside walls, by day and night", 0.30f);
-                changed |= ApexUi::SwitchRow("Realistic lamp reach", &g_realisticReach, "Lamp light on outside walls fades with distance like on the ground", true);
                 ApexUi::GroupLabel("ROOFS");
                 changed |= ApexUi::SwitchRow("Lamps light roofs", &g_roofs, "Roofs no longer stay black at night; softer roof shadows too", true);
                 if (g_roofs)
@@ -2735,7 +2729,6 @@ class NightTerrainRelightPatch : public ApexPatch {
             Edit([] {
                 static const char* const kLevels[] = {"Game", "High"};
                 static const char* const kTips[] = {"The game's own detail", "Twice the detail: rooms take longer to light and use more memory"};
-                ApexUi::SetNextRowBadge("Experimental", "Rooms take about four times longer to light and use more memory");
                 const bool changed = ApexUi::SegmentedRow("Detail", "Sharper light pools and shadow edges on walls and floors", "##LightDetail", &g_lightDetail, kLevels, 2, kTips,
                                                           nullptr, 0);
                 if (g_lightDetail != LightDetail::Active()) ApexUi::IconNote(ApexUi::IconId::Info, "Restart the game to apply");
@@ -2792,9 +2785,12 @@ class NightTerrainRelightPatch : public ApexPatch {
                 o.defaultValue = 0.15f;
                 if (ApexUi::Slider("Shadow softness", &g_shadowSoftness, 0.02f, 0.5f, o)) NotifySettingChanged();
             }
-            ImGui::BeginDisabled(!g_levelShare);
-            Edit([] { return ApexUi::SwitchRow("Smooth light maps", &g_smoothRoomMaps, "Lamp light in rooms without blocks, bands or rings", true); });
-            ImGui::EndDisabled();
+            if (ApexUi::BeginAdvanced("RoomFixes##NightRooms", "Game fixes")) {
+                ImGui::BeginDisabled(!g_levelShare);
+                Edit([] { return ApexUi::SwitchRow("Smooth light maps", &g_smoothRoomMaps, "Lamp light in rooms without blocks, bands or rings", true); });
+                ImGui::EndDisabled();
+                ApexUi::EndAdvanced();
+            }
             // A button to recalculate the lights when they go wrong: the "Refresh the lighting" shortcut as a button
             const std::string key = ApexConfig::KeyChordText(Hotkeys::Key(Hotkeys::Action::Refresh));
             const float gap = ImGui::GetStyle().ItemSpacing.x;

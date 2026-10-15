@@ -42,6 +42,7 @@
 #include <vector>
 #include "tester_toggles.h"
 #include "rig_cut.h"
+#include "terrain_lighting_policy.h"
 
 namespace {
 
@@ -692,6 +693,61 @@ bool OpeningLawRec(const void* L, const float* pos, float* rec) {
     g_openLaw.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
+// Outdoor lamps on rigs by the realistic reach law (2.13.1, trees and bushes at night lit almost evenly by a garden post): with
+// the per-pixel lamps and Realistic lamp reach on, an outdoor lamp's record (the lamps BoostRec raises: a street lamp, or a
+// lit and enabled room-0 lamp of type 3..6) is the per-pixel lamps' law at the rig's centre (ObjectLampColourAt: the outdoor
+// walls' law and scale, the daytime curve, the cones, at most 1 per channel), as the outdoor objects, fences and the lamps
+// through openings take it, instead of the ground footprint's boost (about the lamp's whole colour x the object strength
+// anywhere within half the lamp's bounds, horizontal distance only). The game's direction is kept. Foliage is drawn by its
+// rig (per-instance colours c54..c56, foliage.md), so a bush 2 m from a post now differs from a tree 9 m away by the walls'
+// law. Outdoor objects that draw per-pixel lamps zero their rig (DrawObjectLamp) and are unchanged. ShadeRec follows.
+std::atomic<bool> g_reachLawOn{false}; // ObjectReachLawScale() >= 0, refreshed by OnPresent
+std::atomic<long> g_reachLaw{0};
+float g_reachLawScale = -1.0f;         // render thread: the scale the rigs were gathered with
+bool ReachLawCandidate(const BYTE* L, bool street) { // POD only (SEH): BoostRec's lamp rule
+    __try {
+        const BYTE f = L[0x100];
+        if (!(f & 0x20) || (!(f & 0x40) && TesterToggles::disabledLampFix.load(std::memory_order_relaxed))) return false;
+        if (street) return true;
+        const int type = *reinterpret_cast<const int*>(L + 0xB0);
+        return (f & 0x04) && *reinterpret_cast<const int*>(L + 0x08) == 0 && type >= 3 && type <= 6;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// (15/10, the player's report: a big tree next to a post took no light, its centre being metres from the lamp while its
+// canopy touched it) The rig keeps its model's box (rig+0x150 min, +0x160 max, local) and world rows (+0x170 x, +0x180 y,
+// +0x190 z, +0x1A0 translation), from which FUN_006B76B0 makes the centre +0x140 (Steam 1.67.2, dumpbin). When pos is that
+// centre: the box's world half extents, sum |row_i| x half size_i, so the lamp is evaluated at the box's point nearest its
+// head. False (the centre, as before) when pos is not a rig's centre or the box is unreadable. POD only (SEH).
+bool RigBoxExtents(const float* pos, float e[3]) {
+    __try {
+        const BYTE* rig = reinterpret_cast<const BYTE*>(pos) - 0x140;
+        if (!kRigVtable || *reinterpret_cast<const uint32_t*>(rig) != kRigVtable) return false;
+        const float* lo = reinterpret_cast<const float*>(rig + 0x150);
+        const float* hi = reinterpret_cast<const float*>(rig + 0x160);
+        e[0] = e[1] = e[2] = 0.0f;
+        for (int i = 0; i < 3; i++) {
+            const float* row = reinterpret_cast<const float*>(rig + 0x170 + 0x10 * i);
+            const float h = 0.5f * (hi[i] - lo[i]);
+            if (!(h >= 0.0f && h < 200.0f)) return false;
+            for (int k = 0; k < 3; k++) e[k] += std::fabs(row[k]) * h;
+        }
+        return std::isfinite(e[0]) && std::isfinite(e[1]) && std::isfinite(e[2]) && e[0] < 400.0f && e[1] < 400.0f && e[2] < 400.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool ReachLawRec(void* L, const float* pos, float* rec, bool street) {
+    if (!kLumaWeights || !ReachLawCandidate(static_cast<const BYTE*>(L), street)) return false;
+    float rgb[3], ext[3];
+    if (!LotLightBridge::ObjectLampColourAt(L, pos, rgb, RigBoxExtents(pos, ext) ? ext : nullptr)) return false;
+    for (int c = 0; c < 3; c++) rec[4 + c] = rgb[c];
+    const float* luma = reinterpret_cast<const float*>(kLumaWeights);
+    rec[10] = rec[4] * luma[0] + rec[5] * luma[1] + rec[6] * luma[2];
+    g_reachLaw.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
 // A lamp through a roofed room's openings keeps its light under the game's luminance cut (14/10, F7 in game: a column inside an
 // arcade, 4 m behind the arch from a garden post, drew black while the floor around it and the columns outside were lit).
 // Its record is the per-pixel lamps' law at the rig's centre (OpeningLawRec), which the outdoor objects take with no cut; the
@@ -725,7 +781,9 @@ template <int I> void __fastcall ClassColour(void* L, void* edx, const float* po
         if (law) KeepOverCut(t_openShade.rig, rec);
         return;
     }
-    BoostRec(static_cast<BYTE*>(L), pos, rec, I == kStreetClass);
+    bool law = false;
+    if (g_reachLawOn.load(std::memory_order_relaxed)) HookGuard::Run("ObjectLightBridge reach law", [&] { law = ReachLawRec(L, pos, rec, I == kStreetClass); });
+    if (!law) BoostRec(static_cast<BYTE*>(L), pos, rec, I == kStreetClass);
     HookGuard::Run("ObjectLightBridge lamp visibility", [=] { ShadeRec(static_cast<const BYTE*>(L), pos, rec, I == kStreetClass); });
 }
 
@@ -1080,6 +1138,13 @@ void OnPresent() {
         g_capScaled = *reinterpret_cast<const float*>(kCapGlobal) * std::max(1.0f, g_strength); // original cap unless the user raises the strength
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    // the reach law on rigs (ReachLawRec): gather again when it is turned on or off, or its scale (night, sliders) moved by 2%
+    const float lawScale = LotLightBridge::ObjectReachLawScale();
+    g_reachLawOn.store(lawScale >= 0.0f, std::memory_order_relaxed);
+    if (TerrainLightingPolicy::RigLawChanged(g_reachLawScale, lawScale)) {
+        g_reachLawScale = lawScale;
+        g_refreshRequested = true;
+    }
     if (g_refreshRequested.exchange(false)) {
         DirtyAllRigs();
         g_regatherLevel = -1.0f; // also the room-mode rigs
@@ -1118,10 +1183,10 @@ const void* RigRoom(uintptr_t rig) {
 std::string Status() {
     return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {} | "
                        "indoor objects given lamps of another story: {} ({} lamps offered) | indoor objects given outdoor lamps through openings: {} ({} lamps "
-                       "offered, {} kept, {} by the per-pixel lamps' law, {} kept under the game's cut{}) | outdoor lamps behind buildings: tested {}, left out {}, dimmed {}",
+                       "offered, {} kept, {} by the per-pixel lamps' law, {} kept under the game's cut{}) | outdoor lamps on rigs by the reach law: {} | outdoor lamps behind buildings: tested {}, left out {}, dimmed {}",
                        g_installed ? "Active" : "Off", g_classesPatched.load(), std::size(kClasses), g_boosted.load(), g_forcedRigs.load(),
                        g_rigPatches.empty() && g_installed ? " (not installed)" : "", g_roomRigs.load(), g_crossRigs.load(), g_crossLamps.load(), g_openRigs.load(),
-                       g_openLamps.load(), g_openKept.load(), g_openLaw.load(), g_openOverCut.load(), kRigLightTest || !g_installed ? "" : "; the per-light test differs: off", g_shadeTests.load(),
+                       g_openLamps.load(), g_openKept.load(), g_openLaw.load(), g_openOverCut.load(), kRigLightTest || !g_installed ? "" : "; the per-light test differs: off", g_reachLaw.load(), g_shadeTests.load(),
                        g_shadeBlocked.load(), g_shadeDimmed.load()) +
            " (" + LevelLightShare::SharedVisibilityStatus() + ")";
 }

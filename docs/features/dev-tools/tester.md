@@ -41,6 +41,10 @@ and off, for frame time and for look, without another build.
 | | Spread the update after the stop | `drag_spread_cap` | The 3.5 ms cap after a drag (`DragLite::SolveCapMs`) |
 | | Keep the terrain rebuild idle | `drag_terrain_idle` | The terrain countdown reset at night |
 | | Slower lamp refresh while dragging | `drag_slow_refresh` | The 250 ms lamp list and local terrain pace |
+| | Fast own-room relight after edits | `fast_own_relight` | The lamp's own rooms keep the edit budget after any edit; Instant drags of indoor lamps follow the Classic rules (`DragLite::OwnRoomsWaiting`, `ClassicRulesForDrag`) |
+| | Relight when the lamp is let go | `drag_let_go` | Releasing the mouse button ends a drag at once, without the 400 ms still time (`DragLite::LetGo`) |
+| | Show the lamp's room as soon as it is solved | `own_room_at_once` | No 300 ms grace for the rooms around the lamp; a room not solved since its mark keeps its maps until it is (`AtriumHold`, trailing) |
+| | Furniture changes with its room | `furniture_with_room` | Any lamp edit, not only switches, holds the furniture's lights until its room's maps show the edit (`HoldRig`, `AtriumHold::RoomShowsOldLight`) |
 | Per-frame work | Story grid memo, and the ten `PerfToggles` caches and filters | `grid_memo`, `perf_*` | The cache or filter; the earlier per-frame path gives the same result |
 
 A switch that changes the story grids (Colonnades) builds them again and relights every room; Roofed rooms from the

@@ -38,7 +38,7 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | Feature | Status |
 |---|---|
 | [Night Lighting](features/night-lighting/README.md): lamps that really light the world at night | Released |
-| [Lot light pass](features/night-lighting/lot-light-pass.md): lot and street lamps on lot grass | Released; Released in 2.13.0: lamp shade on lot ground (walls shade lamp light near the ground) |
+| [Lot light pass](features/night-lighting/lot-light-pass.md): lot and street lamps on lot grass | Released; Released in 2.13.0: lamp shade on lot ground (walls shade lamp light near the ground); Released in 2.13.1: the shade past the lot (world grass, roads), garden walls and fences, smooth ground shade with Instant |
 | [World atlas and smoothed maps](features/night-lighting/world-atlas-and-smoothed-maps.md): smooth terrain light maps | Released |
 | [Terrain relight](features/night-lighting/terrain-relight.md): rebuilding terrain lighting at dusk and after edits | Released |
 | [World lamp response](features/night-lighting/world-lamp-response.md): terrain and rigs follow lamp edits | Released in 2.5.6 |
@@ -49,7 +49,7 @@ Steam 1.67.2 (image base 0x00400000) unless stated otherwise.
 | [Smooth light maps](features/night-lighting/room-map-smoothing.md): room lamp light without blocks, bands or rings | Released in 2.13.0 |
 | [Rooms at Night](features/night-lighting/unlit-rooms.md): ambient light and tint of unlit rooms | Released; Released in 2.13.0: *Background light* and *Lamp light* groups |
 | [Walls](features/night-lighting/walls.md), [Floors](features/night-lighting/floors.md), [Roofs](features/night-lighting/roofs.md), [Roads](features/night-lighting/roads.md) | Released; Realistic lamp reach on walls: Released in 2.12.3; Released in 2.13.0: ground lamp shade on story-0 floors, soft edges by the lamp's size |
-| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released; Objects and Fences corrections: Released in 2.12.1; the walls' lamp law and the height gate on objects, fences and windows: Released in 2.12.3; Released in 2.13.0: buildings block lamp light on trees and objects, disabled lamps, foliage by day, colonnades on foundations, arcade columns and upper-story railing tops fixed |
+| [Objects and rigs](features/night-lighting/objects-and-rigs.md), [Fences](features/night-lighting/fences.md), [Foliage](features/night-lighting/foliage.md) | Released; Objects and Fences corrections: Released in 2.12.1; the walls' lamp law and the height gate on objects, fences and windows: Released in 2.12.3; Released in 2.13.0: buildings block lamp light on trees and objects, disabled lamps, foliage by day, colonnades on foundations, arcade columns and upper-story railing tops fixed; Released in 2.13.1: realistic lamp reach on trees and bushes |
 | [Daytime bloom and wall bloom fixes](features/night-lighting/day-bloom-fixes.md): the game's daylight look and bloom kept (idavidveiga) | Released in 2.7.0 |
 | Light detail (Lighting option, in [Night Lighting](features/night-lighting/README.md#settings)): sharper lamp light on walls and floors | Experimental (released in 2.7.0) |
 

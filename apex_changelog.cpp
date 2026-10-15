@@ -6,6 +6,19 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k2131Improved[] = {
+    "Walls shade lamp light on grass, streets and sidewalks outside the lot too",
+    "Garden walls and fences shade lamp light on the ground by their height",
+    "Lamp light on lot grass has smooth shadow edges with Instant (GPU)",
+    "Realistic lamp reach also dims lamp light on trees and bushes by distance",
+    "Indoor lamp edits show the lamp's room and furniture sooner",
+    "Lighting tabs show the main choices and fold the game fixes",
+    nullptr};
+constexpr const char* k2131Fixed[] = {
+    "Large trees next to a lamp take its light",
+    nullptr};
+constexpr const char* k2131Added[] = {nullptr};
+
 constexpr const char* k2130Added[] = {
     "Lamp lighting: Instant (GPU) updates every floor at once with real shadows",
     "Outdoor light through openings: garden lamps light rooms through doors, windows and arches",
@@ -230,6 +243,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.13.1", "2026-10-15", k2131Added, k2131Improved, k2131Fixed},
     {"2.13.0", "2026-10-14", k2130Added, k2130Improved, k2130Fixed},
     {"2.12.3", "2026-10-13", k2123Added, k2123Improved, k2123Fixed},
     {"2.12.2", "2026-10-12", k2122Added, k2122Improved, k2122Fixed},

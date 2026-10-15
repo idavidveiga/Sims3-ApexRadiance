@@ -32,6 +32,18 @@ inline std::atomic<bool> dragRepickThrottle{true}; // the room priority call hol
 inline std::atomic<bool> dragSpreadCap{true};    // the stop's sends are spread under 3.5 ms a frame
 inline std::atomic<bool> dragTerrainIdle{true};  // the game's terrain countdown a drag arms is left idle at night
 inline std::atomic<bool> dragSlowRefresh{true};  // while dragged: lamp list re-reads and local terrain relights every 250 ms
+// 2.13.1: after any lamp edit the lamp's own rooms (urgency tier 0) take the normal edit budget, never the spread cap; only
+// the extra sends (neighbours, openings, dependents) are spread. With Lamp lighting Instant, a dragged lamp the game solves
+// (an indoor lamp) follows the Classic drag rules; a colour, intensity or switch is never taken for a drag (DragLite)
+inline std::atomic<bool> fastOwnRelight{true};
+// 2.13.1: the mouse button letting go of a dragged lamp ends the drag at once, without the 400 ms still time (DragLite)
+inline std::atomic<bool> dragLetGo{true};
+// 2.13.1: all floors together shows the lamp's own rooms as soon as they are solved (was up to 300 ms later); the rooms
+// around them keep their maps until each one's own solve ends (AtriumHold)
+inline std::atomic<bool> ownRoomAtOnce{true};
+// 2.13.1: after any lamp edit (moves and colours too, not only switches) the furniture keeps its lights until its room's
+// maps show the new light (lot_light_bridge.cpp, HoldRig)
+inline std::atomic<bool> furnitureWithRoom{true};
 // Soft light (2.12.3-rt-plus2; the player options Shadow softness and Smooth light maps keep their own settings: these
 // switch each part off within them)
 inline std::atomic<bool> smoothCut{true};       // lamps fade out at the room light cut (LevelLightShare::SetSoftLightCut)

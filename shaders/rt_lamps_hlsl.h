@@ -260,6 +260,9 @@ R"RAW(float4 Acc(TexelIn i, float2 vpos, int kSearch, int kEmit, int kWalk) {
     const float3 P = i.p.xyz;
     const float3 N = normalize(i.n.xyz);
     const bool masked = fmod(i.p.w, 2.0) >= 1.0 && gE.y > 0.5;
+    // (15/10) the lot's ground (bit 4): no wall test, as the game's own solve of ground texels; the lot passes shade it with the
+    // lot's smooth ground shade (lot_light_bridge.cpp LotMask), which stepped against the map's texel-sized shadow edges
+    const bool ground = i.p.w >= 4.0;
     const float wallReach = gA.w > 0.5 ? Sat((0.5 - abs(N.y)) * 1e4) : 0.0;
     const int count = (int)gA.x;
     const float thr = gA.y;
@@ -275,7 +278,7 @@ R"RAW(float4 Acc(TexelIn i, float2 vpos, int kSearch, int kEmit, int kWalk) {
         }
         const bool maskOn = masked && thr <= (wrapped.b + wrapped.g) + wrapped.r;
         if (l < count && ((law.r + law.g + law.b) > 0 || maskOn)) {
-            const float sh = Shadow(lamp, P, N, kSearch, kEmit, kWalk);
+            const float sh = ground ? 1.0 : Shadow(lamp, P, N, kSearch, kEmit, kWalk);
             if (abs(gE.w - l) < 0.5) dbg = float4(sh, Lum3(law), 0, 1); // debug: the share alone
             float3 c = law * sh;
             const float cs = (c.b + c.g) + c.r;
@@ -324,7 +327,7 @@ float4 ComposePS(TexelIn i, float2 vpos : VPOS) : COLOR0 {
     float alpha = i.n.w;
     const float flags = i.p.w;
     if (fmod(flags, 2.0) >= 1.0) {
-        const float under = flags >= 2.0 ? i.dyn.y : -1.0;
+        const float under = fmod(flags, 4.0) >= 2.0 ? i.dyn.y : -1.0;
         const float vis = i.mask.x + acc.a, all = i.mask.y + (gF.x > 0.5 ? MaskAll(i.p.xyz) : i.dyn.x);
         if (under >= 0.999) alpha = 1.0;
         else {

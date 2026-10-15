@@ -1674,6 +1674,10 @@ void DevTesterTab() {
         TesterSwitch("Spread the update after the stop", "The rooms that waited take at most 3.5 ms of each frame", TesterToggles::dragSpreadCap, Effect::None);
         TesterSwitch("Keep the terrain rebuild idle", "At night the moved lamps relight the ground locally", TesterToggles::dragTerrainIdle, Effect::None);
         TesterSwitch("Slower lamp refresh while dragging", "Lamp lists and ground light refresh 4 times a second", TesterToggles::dragSlowRefresh, Effect::None);
+        TesterSwitch("Fast own-room relight after edits", "The lamp's own rooms update at full speed; only the rooms around it are spread", TesterToggles::fastOwnRelight, Effect::None);
+        TesterSwitch("Relight when the lamp is let go", "Releasing the mouse button ends a lamp drag at once, without the 0.4 s wait", TesterToggles::dragLetGo, Effect::None);
+        TesterSwitch("Show the lamp's room as soon as it is solved", "Each room around it keeps its light until its own update ends", TesterToggles::ownRoomAtOnce, Effect::None);
+        TesterSwitch("Furniture changes with its room", "After any lamp edit, objects keep their light until their room shows the new light", TesterToggles::furnitureWithRoom, Effect::None);
     });
     DevCard("TesterPerf", IconId::SlidersHorizontal, "Per-frame work", "Caches and filters with the same result", true, [] {
         TesterSwitch("Story grid memo", "A story's walls are looked up once per frame", TesterToggles::gridMemo, Effect::None);

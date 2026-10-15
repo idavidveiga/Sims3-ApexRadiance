@@ -19,8 +19,10 @@ struct RoadPatch {
     DWORD extraSampler = 0;
     int sidewalkConst = -1;
     int scaleConst = -1; // N of the lamp scale cN.x after the inserted max, when no other instruction reads cN, else -1
+    int shadeSampler = -1; // shade: the walls' shade map read at the light map's uv after the max (PatchTerrainShade), else -1
 };
-bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out);
+// shade (15/10): also "texld rT, v1, s<E+1>; mul rX.xyz, rX, rT.x" after the max, the walls' shade on the lamp light around lots
+bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out, bool shade = false);
 
 // World terrain chunks: an exclusive cK.x lamp-map multiplier, either linear or
 // squared through a scalar temporary. Unknown/shared layouts return -1.
@@ -31,6 +33,10 @@ int LightMapScaleConst(const std::vector<DWORD>& t, DWORD sampler, bool* squared
 bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraSampler);
 // Captured single-pass variant: match the native multipass lighting range in daylight.
 bool PatchTerrainDaylightRange(std::vector<DWORD>& t, DWORD& blendConst);
+// Walls' shade on the lamp light of the world grass around lots (15/10): right after the single light-map read
+// "texld rD, uv, s<sampler>", "texld rT, uv, s<shade>; mul rD.xyz, rD, rT.x". The shade map shares the light map's uv (one
+// per terrain chunk, lot_light_bridge.cpp ChunkShade). Run after the two patches above (the daylight one matches exact bytes).
+bool PatchTerrainShade(std::vector<DWORD>& t, DWORD sampler, DWORD& shadeSampler);
 
 // TS3 object materials that write bloom as "add_sat oC0.w, rL.w, -cK.x": returns K only when that is the shader's
 // sole alpha write and cK is not defined/read anywhere else, so temporarily changing cK.x cannot alter RGB.

@@ -114,4 +114,30 @@ struct Cycle {
         return true;
     }
 };
+
+// Outdoor rigs take their outdoor lamps by the per-pixel lamps' reach law (ObjectLightBridge ReachLawRec), whose scale
+// carries the night level: the rigs gather again when the law is turned on or off (a negative scale = off) or its scale
+// moved by more than 5% (about 70 gathers from day to night; between them a rig's lamps are at most 5% off).
+inline constexpr float kRigLawStep = 0.05f;
+inline bool RigLawChanged(float gathered, float now) {
+    if (!std::isfinite(now)) return false;
+    if ((gathered >= 0.0f) != (now >= 0.0f)) return true;
+    if (now < 0.0f) return false;
+    return std::fabs(now - gathered) > kRigLawStep * std::max(gathered, 1e-4f);
+}
+
+// The foliage vertex shader's lamp weight (PatchFoliageVs, VS c255): weight = max(N.L x c255.x + c255.y, 0).
+//  - Rig lamps by the reach law (reachLaw): the plain Lambert term N.L, the rule the per-pixel lamps of objects, fences and
+//    walls follow; the per-instance colours already carry the daytime curve (the law's scale), so no second factor;
+//  - otherwise the wrap of 1.0.0 (N.L / 1.5 + 1/3) on the boosted colours, x LampDay(night) when dayFix.
+inline void FoliageLampWeights(float night, bool reachLaw, bool dayFix, float out[2]) {
+    if (reachLaw) {
+        out[0] = 1.0f;
+        out[1] = 0.0f;
+        return;
+    }
+    const float day = dayFix ? LampDay(night) : 1.0f;
+    out[0] = day * (1.0f / 1.5f);
+    out[1] = day * (0.5f / 1.5f);
+}
 }

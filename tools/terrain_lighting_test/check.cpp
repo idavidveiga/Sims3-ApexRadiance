@@ -325,6 +325,47 @@ void Patches(Gpu& gpu, const std::filesystem::path& captures) {
         IDirect3DBaseTexture9* restored = nullptr;
         Check(SUCCEEDED(gpu.dev->GetTexture(spare, &restored)) && restored == smooth, "real previous spare texture binding restored");
         Release(restored);
+        // Walls' shade on the world grass (PatchTerrainShade, on top of the native alpha patch): lamp RGB x the shade map's
+        // value at the light map's uv, solar alpha untouched
+        {
+            auto shaded = code; DWORD shadeSampler = 999, ignored = 999;
+            Check(ShaderPatches::PatchTerrainShade(shaded, 2, shadeSampler) && shadeSampler == spare + 1, "shade patch after native alpha, next free sampler");
+            auto missing = code; const auto before = missing;
+            Check(!ShaderPatches::PatchTerrainShade(missing, 15, ignored) && missing == before && ignored == 999, "shade patch: missing sampler unchanged");
+            for (size_t size = 0; size < code.size(); ++size) {
+                std::vector<DWORD> cut(code.begin(), code.begin() + size); const auto kept = cut;
+                Check(!ShaderPatches::PatchTerrainShade(cut, 2, ignored) && cut == kept, "shade patch: every truncated instruction fails closed");
+            }
+            if (gpu.dev) {
+                IDirect3DTexture9* map = nullptr;
+                Check(SUCCEEDED(gpu.dev->CreateTexture(4, 4, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED, &map, nullptr)), "L8 shade texture");
+                D3DLOCKED_RECT lr;
+                if (map && SUCCEEDED(map->LockRect(0, &lr, nullptr, 0))) {
+                    for (int j = 0; j < 4; j++) std::memset(static_cast<BYTE*>(lr.pBits) + j * lr.Pitch, 128, 4);
+                    map->UnlockRect(0);
+                }
+                auto* shadedPs = gpu.Shader(shaded);
+                {
+                    NativeTerrainSampler guard(gpu.dev, 2, spare, native, [](auto* d, DWORD slot, auto* t) { return d->SetTexture(slot, t); });
+                    gpu.dev->SetTexture(2, smooth);
+                    gpu.dev->SetTexture(shadeSampler, map);
+                    const auto result = gpu.Render(shadedPs);
+                    int worst = 0;
+                    for (size_t px = 0; px < result.size(); ++px) {
+                        for (int ch = 0; ch < 3; ch++) {
+                            const int want = static_cast<int>(std::lround(((smoothPixels[px] >> (8 * ch)) & 0xFF) * 128.0 / 255.0));
+                            worst = std::max(worst, std::abs(static_cast<int>((result[px] >> (8 * ch)) & 0xFF) - want));
+                        }
+                        Check((result[px] & 0xFF000000u) == (nativePixels[px] & 0xFF000000u), "shade patch: solar alpha equals original");
+                    }
+                    Check(worst <= 2, "shade patch: lamp RGB x shade (within 2 of 255)");
+                    std::printf("Wall shade patch (%s): sampler s%lu, worst RGB error %d of 255\n", profile, shadeSampler, worst);
+                    gpu.dev->SetTexture(shadeSampler, nullptr);
+                    gpu.dev->SetTexture(2, native);
+                }
+                Release(shadedPs); Release(map);
+            }
+        }
         // CPU guard cost with the real driver, no game hooks. The render tests
         // above provide correctness; this small benchmark cannot predict FPS.
         const auto begin = std::chrono::steady_clock::now();
@@ -342,6 +383,15 @@ void Patches(Gpu& gpu, const std::filesystem::path& captures) {
     if (std::filesystem::exists(captures)) for (const auto& e : std::filesystem::recursive_directory_iterator(captures)) {
         const std::string name = e.path().filename().string();
         DWORD sampler;
+        if (name == "PS_8D0F5300.bin") { // 2026-10-14 23-27-59 F7: the multi-pass world shader as drawn (native alpha in, s2)
+            std::ifstream f(e.path(), std::ios::binary); std::vector<char> raw((std::istreambuf_iterator<char>(f)), {});
+            std::vector<DWORD> code(raw.size() / 4); if (!raw.empty()) std::memcpy(code.data(), raw.data(), code.size() * 4);
+            DWORD shadeSampler = 999;
+            Check(ShaderPatches::PatchTerrainShade(code, 2, shadeSampler) && shadeSampler == 7, "drawn multi-pass shader takes the wall shade (s7)");
+            if (gpu.dev) { auto* shader = gpu.Shader(code); Release(shader); }
+            std::printf("Drawn shader %s: wall shade s%lu, %zu -> %zu tokens\n", name.c_str(), shadeSampler, raw.size() / 4, code.size());
+            continue;
+        }
         if (name == "PS_2BA33118.bin") sampler = 7;
         else if (name == "PS_2BA62940.bin") sampler = 2;
         else continue;
@@ -354,7 +404,11 @@ void Patches(Gpu& gpu, const std::filesystem::path& captures) {
         ID3DBlob* dis = nullptr;
         Check(SUCCEEDED(D3DDisassemble(code.data(), code.size() * 4, 0, nullptr, &dis)), "captured patched bytecode disassembles"); Release(dis);
         if (gpu.dev) { auto* shader = gpu.Shader(code); Release(shader); }
-        std::printf("Captured shader %s: %zu -> %zu tokens; native alpha sampler s%lu\n", name.c_str(), original.size(), code.size(), spare);
+        DWORD shadeSampler = 999; auto shaded = code;
+        Check(ShaderPatches::PatchTerrainShade(shaded, sampler, shadeSampler) && shadeSampler == spare + 1, "captured terrain shader takes the wall shade");
+        if (gpu.dev) { auto* shader = gpu.Shader(shaded); Release(shader); }
+        std::printf("Captured shader %s: %zu -> %zu tokens; native alpha sampler s%lu; wall shade s%lu (%zu tokens)\n", name.c_str(), original.size(), code.size(), spare,
+                    shadeSampler, shaded.size());
         ++found;
     }
     Check(found >= 2, "both captured terrain variants tested");
@@ -904,14 +958,96 @@ void FoliageWrapChecks(const std::wstring& roots) {
     std::printf("Foliage wrap: %d foliage vertex shaders, %d checks\n", found, checks - before);
 }
 
+// Foliage under the reach law (2.13.1): the rigs' outdoor lamps take the per-pixel lamps' law at the rig's centre instead of
+// the ground footprint's boost, and the foliage VS weight (c255) becomes the plain Lambert N.L. Pure policy checks.
+void FoliageReachChecks() {
+    const int before = checks;
+    using namespace TerrainLightingPolicy;
+    float w[2];
+    // the shader's weight: max(N.L x c255.x + c255.y, 0)
+    auto weight = [&](float ndl) { return std::max(ndl * w[0] + w[1], 0.0f); };
+    for (float night : {0.0f, 0.5f, 1.0f})
+        for (bool dayFix : {false, true}) {
+            FoliageLampWeights(night, true, dayFix, w);
+            Check(weight(1.0f) == 1.0f && weight(0.5f) == 0.5f && weight(0.0f) == 0.0f && weight(-0.5f) == 0.0f, "foliage reach: Lambert weight, leaves turned away take none");
+        }
+    FoliageLampWeights(1.0f, false, true, w);
+    Check(w[0] == 1.0f / 1.5f && w[1] == 0.5f / 1.5f, "foliage reach off: the 1.0.0 wrap at night, unchanged");
+    FoliageLampWeights(0.0f, false, true, w);
+    Check(std::fabs(w[0] - LampDay(0.0f) / 1.5f) < 1e-7f && std::fabs(weight(-1.0f) - LampDay(0.0f) * 0.0f) < 1e-7f, "foliage reach off: the wrap x the daytime curve by day");
+    FoliageLampWeights(0.0f, false, false, w);
+    Check(w[0] == 1.0f / 1.5f, "foliage reach off, day fix off: the wrap at full strength");
+    // regather policy
+    Check(RigLawChanged(-1.0f, 0.8f) && RigLawChanged(0.8f, -1.0f), "rig law: on / off gathers again");
+    Check(!RigLawChanged(-1.0f, -1.0f) && !RigLawChanged(0.8f, 0.8f) && !RigLawChanged(1.0f, 1.04f) && RigLawChanged(1.0f, 1.06f) && RigLawChanged(1.0f, 0.94f),
+          "rig law: gathers again past a 5% change only");
+    Check(!RigLawChanged(1.0f, std::numeric_limits<float>::quiet_NaN()), "rig law: a NaN scale changes nothing");
+    int steps = 0;
+    float gathered = LampDay(0.0f);
+    for (int i = 0; i <= 1000; i++) {
+        const float s = LampDay(i / 1000.0f);
+        if (RigLawChanged(gathered, s)) gathered = s, steps++;
+    }
+    Check(steps > 10 && steps < 120 && std::fabs(gathered - 1.0f) <= kRigLawStep, "rig law: day to night in a bounded number of gathers, ending within 5% of night");
+    // the law against the footprint boost on the 12/10 garden post (w = 85, a story-0 lot lamp: 2 entries; bounds half-width
+    // 34.6 m for range 47 in BoostRec's note): a bush 2 m from the post and a tree 9 m away
+    const float lawNear = LampReach::PixelLaw(2.0f * 2.0f, 85.0f, 2.0f), lawFar = LampReach::PixelLaw(9.0f * 9.0f, 85.0f, 2.0f);
+    auto boost = [](float h) { const float q = 1.0f - h * h / (34.6f * 34.6f); return q * q; };
+    Check(lawNear / lawFar > 5.0f && boost(2.0f) / boost(9.0f) < 1.2f, "foliage reach: the law separates 2 m and 9 m (the boost did not)");
+    Check(LampReach::PixelLaw(15.5f * 15.5f, 85.0f, 2.0f) == 0.0f, "foliage reach: nothing past R");
+    std::printf("Foliage reach law: %d checks (2 m / 9 m: law x%.1f, footprint boost x%.2f; %d gathers day to night)\n", checks - before, lawNear / lawFar, boost(2.0f) / boost(9.0f), steps);
+}
+
+// Roads and sidewalks with the walls' shade (PatchRoad shade = true): max(road map, terrain) x shade x the lamp scale
+void RoadShadePixels(Gpu& gpu) {
+    if (!gpu.dev) return;
+    auto code = Compile("sampler2D light:register(s0); float4 k:register(c0); float4 main(float4 c:COLOR0, float2 uv:TEXCOORD0):COLOR0{float3 l=tex2D(light,uv).rgb*k.x;return float4(l/(1+c.rgb*k.y),c.a);}", "ps_3_0");
+    if (code.empty()) { Check(false, "road fixture compiles"); return; }
+    auto plain = code, shaded = code;
+    ShaderPatches::RoadPatch a, b;
+    const bool pa = ShaderPatches::PatchRoad(plain, a), pb = ShaderPatches::PatchRoad(shaded, b, true);
+    Check(pa && pb, "road fixture patched with and without the shade");
+    if (!pa || !pb) {
+        ID3DBlob* dis = nullptr; D3DDisassemble(code.data(), code.size() * 4, 0, nullptr, &dis);
+        if (dis) { std::printf("%s\n", static_cast<char*>(dis->GetBufferPointer())); dis->Release(); }
+        return;
+    }
+    Check(a.shadeSampler == -1 && b.shadeSampler == static_cast<int>(b.extraSampler) + 1 && a.extraSampler == b.extraSampler && a.scaleConst == b.scaleConst,
+          "road shade: next sampler, the rest as the plain copy");
+    auto* light = gpu.Texture(false); auto* terrain = gpu.Texture(true);
+    IDirect3DTexture9* map = nullptr;
+    Check(SUCCEEDED(gpu.dev->CreateTexture(4, 4, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED, &map, nullptr)), "road shade texture");
+    D3DLOCKED_RECT lr;
+    if (map && SUCCEEDED(map->LockRect(0, &lr, nullptr, 0))) {
+        for (int j = 0; j < 4; j++) std::memset(static_cast<BYTE*>(lr.pBits) + j * lr.Pitch, 128, 4);
+        map->UnlockRect(0);
+    }
+    const float k[4] = {1, 0, 0, 0}; gpu.dev->SetPixelShaderConstantF(0, k, 1);
+    gpu.dev->SetTexture(0, light); gpu.dev->SetTexture(a.extraSampler, terrain); gpu.dev->SetTexture(b.shadeSampler, map);
+    auto* psA = gpu.Shader(plain); auto* psB = gpu.Shader(shaded);
+    const auto ra = gpu.Render(psA), rb = gpu.Render(psB);
+    int worst = 0;
+    for (size_t px = 0; px < ra.size(); ++px)
+        for (int ch = 0; ch < 3; ch++) {
+            const int want = static_cast<int>(std::lround(((ra[px] >> (8 * ch)) & 0xFF) * 128.0 / 255.0));
+            worst = std::max(worst, std::abs(static_cast<int>((rb[px] >> (8 * ch)) & 0xFF) - want));
+        }
+    Check(worst <= 2 && (ra[0] & 0xFFFFFF) != 0, "road shade: plain road light x shade (within 2 of 255)");
+    std::printf("Road wall shade: s%d, worst RGB error %d of 255 (plain pixel %08lX, shaded %08lX)\n", b.shadeSampler, worst, ra[0], rb[0]);
+    for (DWORD st : {0ul, a.extraSampler, static_cast<DWORD>(b.shadeSampler)}) gpu.dev->SetTexture(st, nullptr);
+    Release(psA); Release(psB); Release(light); Release(terrain); Release(map);
+}
+
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const auto start = std::chrono::steady_clock::now();
     Policies(); std::printf("Policies: %d checks, %d failures\n", checks, failures);
     GroundShadowChecks();
     ReachLawTable();
+    FoliageReachChecks();
     SamplerRestoration(); std::printf("Sampler restoration complete\n"); Gpu gpu;
     Patches(gpu, argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path());
+    RoadShadePixels(gpu);
     if (argc > 3 && argv[2][0] && argv[3][0]) LotPixels(gpu, argv[2], argv[3]);
     if (argc > 4 && argv[4][0]) WallPixels(gpu, argv[4]);
     if (argc > 5 && argv[5][0]) InstancedPixels(gpu, argv[5]);

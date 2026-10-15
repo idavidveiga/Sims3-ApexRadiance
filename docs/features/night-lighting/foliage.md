@@ -47,6 +47,41 @@ Lamps behind buildings: the rig gather scales an outdoor lamp's per-instance col
 instance's centre past the outside walls (and the slabs above the lamp), with *Buildings block lamp light on trees and objects*; trees
 behind a house no longer take a garden post's light through it ([objects-and-rigs.md](objects-and-rigs.md)).
 
+### Lamp reach on foliage (2.13.1)
+
+Study (F7/Full captures, 2026-10-13 `16-12-45 Full capture` draw #279, VS `A0E8EBA2` / PS `0A2D0BE4`):
+
+- Foliage takes lamp light only per vertex from its rig: the directions are `c27..c29[i]` and the colours `c54..c56[i]`, one
+  set per instance and computed at the rig's centre. Lamp light is summed into `oT2` and multiplied by `c143.x`. Foliage has no
+  atlas term and no per-pixel lamps.
+- The CPU rig boost (`BoostRec`) raised every outdoor lamp's record to `F0 x intensity x strength x (1 - h^2/R^2)^2`, with R
+  half the light's bounds (about 35 m for a garden post). A bush 2 m from a post and a tree 9 m away got almost the same colour
+  (x1.14). Together with the wrap (`N.L/1.5 + 1/3`), this lit canopies almost evenly.
+- The outdoor objects' per-pixel machinery (lamp list per draw, `TEXCOORD8` world position, `ps_3_0` law) does not
+  transfer directly. The foliage shaders are `vs_2_0`/`ps_2_0`, instanced through `a0` (up to 9 instances per draw). In
+  `A0E8EBA2` the position sent to `oPos` is relative to the tree's origin (`c142`), not a world position, and the variants
+  differ in shape (tree 2 strip, winter, m63). A per-vertex lamp list would need a world position recovered per variant
+  and free constants. That was not done: no night foliage draw is in the current captures to verify it.
+
+What changed, with *Seamless light on pieces* (per-pixel lamps) and *Realistic lamp reach* on:
+
+1. **Rig records by the reach law** (`ObjectLightBridge::ReachLawRec`). Each outdoor lamp's record for a rig (street lamp,
+   or lit and enabled room-0 lamp of type 3..6, `BoostRec`'s rule) is set to `ObjectLampColourAt` at the rig's centre: the
+   outdoor walls' law (`LampReach::PixelLaw`), their scale, the daytime curve, the cones, at most 1 per channel. This
+   replaces the footprint boost. *Outdoor lamps through openings* already used the same rule. `ShadeRec` (walls and slabs)
+   still follows. Outdoor objects that draw per-pixel lamps zero their rig and are unaffected. The rigs gather again when
+   the law is turned on or off or its scale changes by more than 5% (`TerrainLightingPolicy::RigLawChanged`; about 67
+   gathers from day to night).
+2. **Lambert weight** (`TerrainLightingPolicy::FoliageLampWeights`). The foliage draw sets VS `c255 = (1, 0)`, so each
+   lamp's weight is `max(N.L, 0)`, as on every per-pixel lamp. Leaves turned away from a lamp take none of it, and the game's
+   sky (moon) term stays as drawn. The colours already carry the daytime curve, so no second factor is applied.
+
+With either option off, the earlier boost and wrap stay. Status: Objects *outdoor lamps on rigs by the reach law: N*;
+foliage *Lambert on reach-law rigs: N*. Offline: `FoliageReachChecks` in `tools/terrain_lighting_test`.
+
+Limits: distance is evaluated at each instance's rig centre, not per leaf, so inside one large canopy the falloff comes only
+from N.L. Height in the canopy is not used (the vertex shaders carry no canopy bounds). UNVERIFIED in game.
+
 ## Settings
 
 | Menu label | TOML key | Type | Default | Range | Effect |

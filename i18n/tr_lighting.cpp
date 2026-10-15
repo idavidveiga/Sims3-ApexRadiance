@@ -318,7 +318,7 @@ const I18n::Entry kEntries[] = {
     {"Intensity of lamp light on outside walls, by day and night", "Intensidade da luz das lâmpadas nas paredes externas, de dia e à noite",
      "Intensidad de la luz de las lámparas en las paredes exteriores, de día y de noche", "Intensité de la lumière des lampes sur les murs extérieurs, de jour comme de nuit"},
     {"Realistic lamp reach", "Alcance realista das lâmpadas", "Alcance realista de las lámparas", "Portée réaliste des lampes"},
-    {"Lamp light on outside walls fades with distance like on the ground", "A luz das lâmpadas nas paredes externas diminui com a distância como no chão", "La luz de las lámparas en las paredes exteriores se atenúa con la distancia como en el suelo", "La lumière des lampes sur les murs extérieurs diminue avec la distance comme au sol"},
+    {"Lamp light on outside walls, trees and bushes fades with distance like on the ground", "A luz das lâmpadas nas paredes externas, árvores e arbustos diminui com a distância como no chão", "La luz de las lámparas en las paredes exteriores, los árboles y los arbustos se atenúa con la distancia como en el suelo", "La lumière des lampes sur les murs extérieurs, les arbres et les buissons diminue avec la distance comme au sol"},
     {"ROOFS", "TELHADOS", "TECHOS", "TOITS"},
     {"Lamps light roofs", "Lâmpadas iluminam telhados", "Las lámparas iluminan los techos", "Les lampes éclairent les toits"},
     {"Roofs no longer stay black at night; softer roof shadows too", "Telhados não ficam mais pretos à noite; sombras mais suaves também",
@@ -349,7 +349,7 @@ const I18n::Entry kEntries[] = {
     {"BACKGROUND LIGHT", "LUZ DE FUNDO", "LUZ DE FONDO", "LUMIÈRE DE FOND"},
     {"Needs \"Outdoor light between floors\" (Stories tab)", "Requer \"Luz externa entre andares\" (aba Andares)", "Requiere \"Luz exterior entre pisos\" (pestaña Pisos)", "Nécessite « Lumière extérieure entre étages » (onglet Étages)"},
     {"Walls shade lamp light near the ground", "Paredes escurecem a luz no chão", "Las paredes oscurecen la luz en el suelo", "Les murs assombrissent la lumière au sol"},
-    {"Grass, paths, decks, curbs and low fences behind a wall stay dark", "Grama, caminhos, decks, meios-fios e cercas baixas atrás de uma parede ficam escuros", "El césped, los caminos, las terrazas, los bordillos y las vallas bajas tras una pared quedan oscuros", "L'herbe, les allées, les terrasses, les bordures et les clôtures basses derrière un mur restent sombres"},
+    {"Walls and garden walls shade lamp light on grass, paths and streets, also past the lot", "Paredes e muros fazem sombra da luz das lâmpadas na grama, caminhos e ruas, também fora do lote", "Las paredes y los muros dan sombra a la luz de las lámparas en el césped, los caminos y las calles, también fuera del solar", "Les murs et murets projettent l'ombre de la lumière des lampes sur l'herbe, les allées et les rues, même hors du terrain"},
     {"Buildings block lamp light on trees and objects", "Prédios bloqueiam a luz em árvores e objetos", "Los edificios bloquean la luz en árboles y objetos", "Les bâtiments bloquent la lumière sur les arbres et les objets"},
     {"Trees, objects and fences behind a wall or balcony get no lamp light", "Árvores, objetos e cercas atrás de uma parede ou sacada não recebem luz das lâmpadas", "Los árboles, objetos y vallas tras una pared o un balcón no reciben luz de las lámparas", "Les arbres, objets et clôtures derrière un mur ou un balcon ne reçoivent pas la lumière des lampes"},
 };

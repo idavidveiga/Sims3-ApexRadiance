@@ -661,6 +661,7 @@ struct Job {
     float base = 0.0f;
 };
 void PrepareJob(Job& j) {
+    const bool groundShade = LevelLightShare::GroundShadeOn();
     LARGE_INTEGER a{}, b{};
     QueryPerformanceCounter(&a);
     OutdoorDelta::Room0Export ex;
@@ -691,6 +692,9 @@ void PrepareJob(Job& j) {
             const float nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
             for (int k = 0; k < 3; k++) tv.n[k] = nl > 1e-6f ? n[k] / nl : 0.0f;
             tv.p[3] = static_cast<float>(t.bits & 3);
+            // (15/10) the lot's ground on story 0 (turned up, within 1 m of the lot's ground, not a masked floor): bit 4, no wall
+            // test on the GPU; the lot passes shade it with the smooth ground shade (unverified: lot space y 0 = the lot's ground)
+            if (groundShade && j.story == 0 && !(t.bits & 1) && tv.n[1] > 0.9f && std::fabs(tv.p[1]) < 1.0f) tv.p[3] += 4.0f;
             tv.n[3] = static_cast<float>(t.packed >> 24) / 255.0f;
             for (int k = 0; k < 3; k++) tv.base[k] = std::isfinite(t.base[k]) ? t.base[k] : 0.0f;
             tv.base[3] = ex.dither ? RoomMapDither::Offset(t.x, t.y) / 255.0f : 0.0f;

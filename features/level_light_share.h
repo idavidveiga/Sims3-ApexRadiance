@@ -219,6 +219,13 @@ bool LampEditPending();
 // `others` gets how many such rooms there are, `ownPending` how many of the own stories' rooms still wait, `ownTotal` how many
 // own stories' rooms there are
 int EditRoomsPending(unsigned long after, int* others = nullptr, int* ownPending = nullptr, int* ownTotal = nullptr);
+// Of the rooms lamp edits marked with urgency tier 0 (an edited lamp's own room and its story's rooms that hold it), how many
+// still wait for or are in their solve, or ended no solve begun after their latest mark; `total` gets how many there are.
+// Render thread (DragLite: these rooms are never under the spread cap).
+int OwnRoomsPending(int* total = nullptr);
+// This room is a lamp edit's (urgent, any tier) and still waits for or is in its solve, or ended no solve begun after its
+// latest mark: its maps do not show the edit yet. Render thread (AtriumHold: maps and furniture kept until its solve ends)
+bool EditRoomWaiting(const void* room);
 // The room is on the story of a lamp an edit changed in the last 5 s (its own room's story, tier 0): the edit hold never
 // holds its maps (12/10). Any thread.
 bool OnEditStory(const void* room);
@@ -237,7 +244,8 @@ const char* ApexTestPartName(int i);
 // From LampMarkFilter: a lamp edit was noted; continuous = it moved or a value changed (a drag), not switched on or off
 void NoteLampEditing(bool continuous);
 // A lamp is being dragged (moved or a value changed within the last 200 ms). The one-go solve once an edit ended
-// (05/10, option A) was taken out the same day: 300-1300 ms frames while moving lamps in Build mode (log)
+// (05/10, option A) was taken out the same day: 300-1300 ms frames while moving lamps in Build mode (log). False once the
+// mouse button let go of the lamp (DragLite::LetGo)
 bool LampDragging();
 // The room's lamp-edit urgency tier (0 = a lamp's own room or story, 1 = a room taking its light, 2 = the edit's safety net;
 // -1 = none). Render thread (DragLite's re-pick throttle).

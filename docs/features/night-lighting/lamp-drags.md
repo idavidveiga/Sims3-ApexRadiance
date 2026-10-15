@@ -7,8 +7,9 @@ causes to the lamp's own rooms and spreads the rest over the frames after the la
 
 | | |
 |---|---|
-| Availability | Released in 2.13.0 |
+| Availability | Released in 2.13.0. Fast own-room relight, let go, the own room at once, the furniture with its room: In development (branch `fix/2.13.1-indoor-speed`) |
 | Default | On; each measure has a switch on Developer > [Tester](../dev-tools/tester.md) |
+| Source (2.13.1) | Also [`features/atrium_hold.cpp`](../../../features/atrium_hold.cpp), [`features/level_light_share.cpp`](../../../features/level_light_share.cpp) (`OwnRoomsPending`) |
 | Menu | None (developer switches only) |
 | Source | [`features/drag_lite.h`](../../../features/drag_lite.h), [`features/drag_lite.cpp`](../../../features/drag_lite.cpp), [`features/room_light_queue.cpp`](../../../features/room_light_queue.cpp), [`features/lot_lighting_motion.cpp`](../../../features/lot_lighting_motion.cpp), [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp) |
 
@@ -36,6 +37,64 @@ same lot within 0.5 m (`LotLightBridge::TrackLotLampEdits`). A step within 750 m
 
 The log line `[DragLite] Lamp drag ended` gives the solves during the drag, the re-picks held, the sends left out and
 sent, and the average and worst frame of the drag.
+
+### Fast own-room relight
+
+Tester switch *Fast own-room relight after edits* (`fast_own_relight`, on). Added in 2.13.1: in 2.13.0 the spread cap
+also held the lamp's own rooms, so a drag's stop took 9 s over 810 frames (5.0 ms of solves a frame) to settle, and with
+Lamp lighting Instant an indoor lamp, which the game still solves, took the outdoor drag rules (2,519 re-picks held in one
+drag).
+
+- **Own rooms first, after any edit.** While a room the edit marked with urgency tier 0 (the lamp's own room and the rooms
+  of its story that hold it, `LevelLightShare::OwnRoomsPending`) still waits for its solve, there is no spread cap: the
+  lot pass and Faster room lighting's drain keep their normal edit budgets (25 ms and 12-16 ms with the camera still);
+  other lots keep 0.25 ms, as under the cap.
+  Only the rooms around the lamp (the deferred sends, other stories, the rooms lit through openings) are solved under
+  the 3.5 ms cap once the own rooms are done.
+- **A value is not a drag.** A colour, intensity or switch change no longer starts the Classic hold; only moves do.
+- **Instant, indoor lamps.** A dragged lamp the GPU does not draw (an indoor lamp, or an outdoor lamp the Instant path
+  does not cover) follows the Classic rules: no solve during the drag, its own rooms first at the release, and *show all
+  floors together*. The lamps the GPU draws keep the measures above.
+- **All floors together.** Once the own rooms are solved, the hold waits at most 300 ms more for the others, then shows
+  what is ready; the rest change as each is solved.
+- Log, one line per edit with own rooms: `[DragLite] Lamp edit relight: the lamp's own rooms (N) solved after T ms, the
+  rooms around them settled U ms after the edit; F frames, C under the spread cap`. If an own room is still not
+  solved 3 s after the edit, one more line gives the drag hold and spread cap state (log only).
+
+### The lamp's room together with its furniture, at the release
+
+Added in 2.13.1 after a recording of an indoor lamp dragged on story 2 (Lamp lighting Instant, so the Classic rules):
+the lamp's room showed its new light 0.69 to 1.05 s after the drag's first step, while the furniture had followed the lamp
+from +0.00 s. Of the 0.8 s between the last step and the new light, the room's solve took 31 ms (S to E); the rest was the
+400 ms still time, 200 ms more of `LampDragging`, and the 300 ms grace of *show all floors together*. The quick pass was
+never used: it is off while *Lamp edits all at once* is on, and drags and value edits never take it. With the solve
+itself at 31 ms (two frames) it is not needed, and it would add a change of its own (class 0 against class 2).
+
+- **Let go** (Tester switch *Relight when the lamp is let go*, `drag_let_go`, on): the primary mouse button, polled once
+  a frame while the game's window is in front, going up after a move made while it was down ends the drag at once
+  (`DragLite::LetGo`): `ClassicHolding`, `Engaged` and `LevelLightShare::LampDragging` end in that frame, so the own rooms,
+  the left-out sends and the local terrain relight (`EditReady`, 50 ms later) start then. Steps within 300 ms after it
+  (`kPlaceGraceMs`: the placement, the lamp list's last read) do not start a new drag; a later step does. A lamp moved with
+  the button up (picked up by a click, rotated with the keys) keeps the 400 ms still time.
+- **The own room at once** (Tester switch *Show the lamp's room as soon as it is solved*, `own_room_at_once`, on): the
+  hold shows the own rooms in the frame after their solve ends (the 300 ms grace is 0; still at least 150 ms after the
+  latest edit). Any hold that ends (not at the cap) keeps the maps of a room whose solve has not ended since its mark until
+  it has (at most 8 s; "trailing"), and keeps the maps that room's solve locks later the same way: a solve thrown away by
+  an invalidate (the game unlocks its maps half written) or one begun before the mark is never shown.
+- **The furniture with its room** (Tester switch *Furniture changes with its room*, `furniture_with_room`, on): every lamp
+  edit, not only a switch, holds the furniture's rig lights until its room's maps show the edit
+  (`AtriumHold::RoomShowsOldLight`). Before, the snapshot of the lights had to be older than the latest switch, so a move
+  or a colour never found one ("held for a lamp switch 0" in the recording). The snapshot is now from a frame before the
+  edit began; a part whose room is marked later and that already showed new lights is left as it is (holding it would turn
+  it back).
+- Logs: the Classic drag line ends with "ended when let go, N ms after its last step" (or "by the still time"); the
+  `[AtriumHold]` line adds "shown N ms after the lamp was let go", the map writes kept back and the maps still trailing;
+  `[LotLightBridge] Lamp edit furniture: N object parts kept their lights ... shown with it T ms after the edit (C light
+  changes of theirs not shown; L parts ... left as they were)`.
+
+Expected: the own room and its furniture change together 60 to 150 ms after the button is let go (one frame to see it,
+the solve's two or three frames, at least 150 ms after the latest step). The rooms around the lamp (other stories, room 0,
+through openings) still follow under the spread cap, each keeping its light until its own solve ends.
 
 ### Classic: relight only after release
 

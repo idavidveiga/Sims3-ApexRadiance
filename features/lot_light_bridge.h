@@ -116,7 +116,12 @@ void SetObjectPixelLamps(bool on, float strength);
 // before N.l and any wall test; false when the per-pixel lamps are off or the lamp is none of theirs. Any thread: the rigs of
 // a roofed room take an outdoor lamp through its openings by it (ObjectLightBridge), so the columns inside an arcade match
 // those outside it.
-bool ObjectLampColourAt(const void* light, const float* point, float rgb[3]);
+bool ObjectLampColourAt(const void* light, const float* point, float rgb[3], const float* ext = nullptr); // ext: a box's half extents around point (its point nearest the lamp)
+// The scale of the realistic reach law ObjectLampColourAt uses now (the outdoor walls' scale, the daytime curve, the slider
+// as a trim), or -1 when that law is not in use (per-pixel lamps off, or Realistic lamp reach off). Any thread. Outdoor rigs
+// (trees, bushes, objects drawn by their rig) take their outdoor lamps by this law (ObjectLightBridge) and gather again when
+// it changes.
+float ObjectReachLawScale();
 // Windows take outdoor light (experimental, off by default): the faces of a room-lit window part that look out of the house
 // take the outdoor ground light and lamps (DrawWindowOutdoor); outdoor objects pass the wall they sit in (0.75 m)
 void SetWindowOutdoor(bool on);
