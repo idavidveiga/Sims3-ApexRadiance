@@ -5,11 +5,15 @@
 #include "hook_guard.h"
 #include "lamp_mark_filter.h"
 #include "level_light_share.h"
+#include "outdoor_delta.h"
+#include "rt_outdoor_lamps.h"
 #include "room_light_queue.h"
 #include "lightmap_smooth.h"
 #include "recorder.h"
 #include "memory_patch.h"
 #include "room_ambient_policy.h"
+#include "tester_toggles.h"
+#include "drag_lite.h"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
@@ -66,6 +70,19 @@ std::atomic<DWORD> g_holdUpdated{0}; // the last UpdateEditHold: a hold not upda
 // On, and the game's solve hooks are in (its end and its map lock step): without them no room would ever count as solved
 // and every edit would wait the whole timeout (other game builds: the stories change one by one)
 bool AllAtOnceUsable() { return g_allAtOnce.load(std::memory_order_relaxed) && LevelLightShare::SolveHooksReady(); }
+// ---- Classic: show all floors together (14/10, Tester switch classicTogether, on; Classic lamp lighting only) ----
+// After a lamp edit (a drag's release, a switch, a colour) several stories still changed one after another: the lamp's own
+// story first, then the others, and with the drag's deferred sends some rooms after the release of the hold. Now, in Classic
+// (DragLite::ClassicLighting: Instant (GPU) keeps the rules above), the lamp's own story is held like the others (its maps
+// keep what was on screen too), every edit holds the furniture, the ground and the per-pixel lamps as a switch did, and the
+// hold ends only when every room of the edit, the own story's included, has ended a solve begun after its mark. A room that
+// never finishes ends the hold kTogetherMaxMs after the edit (a drag: after its release): what is ready is shown, logged
+// once. The kept maps stay in the same budget (kMaxMaps / kMaxBytes; past it everything is shown at once, "cap").
+constexpr DWORD kTogetherMaxMs = 6000;
+bool TogetherNow() {
+    return DragLite::ClassicLighting() && TesterToggles::classicTogether.load(std::memory_order_relaxed);
+}
+std::atomic<bool> g_holdTogether{false}; // the current hold runs under "show all floors together" (fixed at its start)
 // An edit is held, or one happened that UpdateEditHold has not seen yet: a room's solve may lock its maps in the very frame
 // of the edit, before the next Present starts the hold (render thread). Never once the queue stopped (Clear) or stopped
 // calling UpdateEditHold: nothing would release what waits.
@@ -77,10 +94,15 @@ bool EditPendingNow() {
     const unsigned long last = LampMarkFilter::EditLastTick();
     return last && last != g_editSeen.load(std::memory_order_relaxed) && now - last < 1000;
 }
-// The edit hold covers a switch (the furniture, the ground and the per-pixel lamps wait too)
+// The lamp's own story waits with the others (show all floors together): fixed for a hold at its start, else as now
+bool HoldsOwnStory() {
+    return g_editHolding.load(std::memory_order_relaxed) ? g_holdTogether.load(std::memory_order_relaxed) : TogetherNow();
+}
+// The edit hold covers a switch (the furniture, the ground and the per-pixel lamps wait too); under "show all floors
+// together" every edit does
 bool SwitchPendingNow() {
     if (!EditPendingNow()) return false;
-    if (g_holdHasSwitch.load(std::memory_order_relaxed)) return true;
+    if (g_holdHasSwitch.load(std::memory_order_relaxed) || HoldsOwnStory()) return true;
     const unsigned long last = LampMarkFilter::SwitchLastTick();
     return last && last != g_switchSeen.load(std::memory_order_relaxed) && GetTickCount() - last < 1000;
 }
@@ -180,7 +202,7 @@ HRESULT LockHookBody(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out, cons
         // Present starts the hold (review, H2). 12/10: never a map of the lamp's own story (OnEditStory) while an edit is
         // held: that story shows its new light as soon as it is solved. (`solving` is always an urgent room: SolvingRoom.)
         const bool editing = solving && EditPendingNow();
-        const bool own = editing && LevelLightShare::OnEditStory(solving);
+        const bool own = editing && !HoldsOwnStory() && LevelLightShare::OnEditStory(solving);
         const bool editRoom = editing && !own;
         const bool want = editRoom || (solving && !own && g_active.load(std::memory_order_relaxed) && LevelLightShare::InAtrium(solving));
         bool fits = false;
@@ -276,6 +298,7 @@ HRESULT __stdcall LockHook(IDirect3DTexture9* t, UINT level, D3DLOCKED_RECT* out
 }
 
 HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
+    if (level == 0 && RtOutdoorLamps::Watching()) RtOutdoorLamps::NoteUnlock(t); // (Instant: a relit copy starts from the map again)
     if (t_own || level != 0 || !g_count.load(std::memory_order_relaxed)) return g_origUnlock(t, level);
     {
         std::lock_guard<std::mutex> lk(g_mx);
@@ -294,9 +317,12 @@ HRESULT __stdcall UnlockHook(IDirect3DTexture9* t, UINT level) {
                 // edit hold's release (a drag too: those stories keep their maps from before it); else an atrium's for its
                 // stories. 12/10: the lamp's own story never waits while an edit is held (OnEditStory).
                 const bool editing = m.room && EditPendingNow();
-                const bool own = editing && LevelLightShare::OnEditStory(m.room);
-                m.sw = editing && !own && LevelLightShare::LampUrgency(m.room) > 1.0f;
-                const bool wait = m.room && (m.sw || (!own && !LevelLightShare::LampDragging() && LevelLightShare::GroupPending(m.room)));
+                const bool own = editing && !HoldsOwnStory() && LevelLightShare::OnEditStory(m.room);
+                // Quick outdoor lamp edits (Lamp lighting: Instant only, outdoor_delta.h): a room 0 brought up to date by a delta
+                // shows at once, on every story (its solve costs no more than a frame, so nothing is gained by waiting)
+                const bool delta = OutdoorDelta::Enabled() && (OutdoorDelta::DirectWriting() || (m.room && OutdoorDelta::DeltaSolving(m.room)));
+                m.sw = editing && !own && !delta && LevelLightShare::LampUrgency(m.room) > 1.0f;
+                const bool wait = m.room && !delta && (m.sw || (!own && !LevelLightShare::LampDragging() && LevelLightShare::GroupPending(m.room)));
                 if (wait) { // what was on screen goes back until the atrium's other stories are solved
                     if (m.bits) ToMemory(m, m.shown, m.rect, m.bits, m.pitch);
                     if (!m.held) {
@@ -389,6 +415,7 @@ struct HoldResult {
     DWORD sinceFirst = 0;
     long ownMs = -1;
     int others = 0, pending = 0;
+    bool together = false; // the hold ran under "show all floors together" (others then counts the own story's rooms too)
 };
 
 // Render thread, every frame: a new player edit starts (or extends) the hold; it ends once every room the edits marked on
@@ -417,6 +444,7 @@ HoldResult UpdateEditHold() {
                 g_holdDragged = false;
                 g_holdPeakMaps = 0;
                 g_capHit.store(false, std::memory_order_relaxed);
+                g_holdTogether.store(TogetherNow(), std::memory_order_relaxed);
                 g_editHolds.fetch_add(1, std::memory_order_relaxed);
             }
             g_holdLatest = last;
@@ -444,17 +472,30 @@ HoldResult UpdateEditHold() {
     const int pending = LevelLightShare::EditRoomsPending(g_holdFrom, &others, &ownPending, &ownTotal);
     // the own story's time (the log): its rooms marked and all solved (before kEditMinMs too, once one of them is marked)
     if (g_ownShownMs < 0 && ownPending == 0 && (ownTotal > 0 || sinceLatest >= kEditMinMs)) g_ownShownMs = static_cast<long>(now - g_holdFirst);
-    const bool ground = g_holdHasSwitch.load(std::memory_order_relaxed) && LightmapSmooth::HoldPending(); // held only for switches
+    // held only for switches (and every edit under "show all floors together")
+    const bool ground = (g_holdHasSwitch.load(std::memory_order_relaxed) || g_holdTogether.load(std::memory_order_relaxed)) && LightmapSmooth::HoldPending();
     // the edit's safety net (LampMarkFilter::OnPresent, 120-500 ms after the edit) still to send its rooms: they are tagged
     // urgent then and held with the others (a net later than kNetWaitMs, a lot refreshed a moment ago, is not waited for)
     const bool net = LampMarkFilter::LotRefreshDueSoon(kNetWaitMs);
-    const int outcome = cap ? 3 : endless ? 2 : RoomAmbientPolicy::EditHoldOutcome(pending + (net ? 1 : 0), ground, sinceLatest, sinceFirst, dragging);
+    const bool together = g_holdTogether.load(std::memory_order_relaxed);
+    // show all floors together: the own story's rooms count too, with the longer bound (kTogetherMaxMs from the first edit,
+    // a drag: from its release)
+    const int waiting = pending + (together ? ownPending : 0);
+    int outcome = cap ? 3 : endless ? 2
+                : together ? RoomAmbientPolicy::EditHoldOutcomeTogether(waiting + (net ? 1 : 0), ground, sinceLatest, sinceFirst, dragging, kTogetherMaxMs)
+                           : RoomAmbientPolicy::EditHoldOutcome(pending + (net ? 1 : 0), ground, sinceLatest, sinceFirst, dragging);
+    // (14/10, drag solves) a dragged lamp's hold ends once its own story's rooms show: the rooms that waited for the stop
+    // (other stories, through openings; DragLite) are solved under the spread cap afterwards and show as each is solved
+    // (not under "show all floors together": those rooms are the edit's then, and the hold waits for them)
+    if (!outcome && !together && g_holdDragged && !dragging && TesterToggles::dragDeferSends.load(std::memory_order_relaxed) && ownTotal > 0 && ownPending == 0)
+        outcome = 1;
     if (!outcome) return r;
     r.end = outcome == 1 ? HoldEnd::Complete : outcome == 2 ? HoldEnd::Timeout : HoldEnd::Cap;
     r.sinceFirst = sinceFirst;
     r.ownMs = g_ownShownMs;
-    r.others = others;
-    r.pending = pending + (ground ? 1 : 0);
+    r.others = others + (together ? ownTotal : 0);
+    r.pending = waiting + (ground ? 1 : 0);
+    r.together = together;
     g_doneSerial = serialNow;
     g_editHolding.store(false, std::memory_order_relaxed);
     g_holdHasSwitch.store(false, std::memory_order_relaxed);
@@ -475,6 +516,7 @@ bool AllAtOnce() { return AllAtOnceUsable() && g_hooked.load(std::memory_order_r
 // held, or a switch in this very frame, before the next Present starts the hold: the furniture and lamps already wait
 bool SwitchHolding() { return g_hooked.load(std::memory_order_relaxed) && SwitchPendingNow(); }
 bool EditHolding() { return g_hooked.load(std::memory_order_relaxed) && EditPendingNow(); }
+bool OwnStoryHeld() { return g_hooked.load(std::memory_order_relaxed) && EditPendingNow() && HoldsOwnStory(); }
 
 void OnPresent(IDirect3DDevice9* dev) {
     if (!g_hookTried.exchange(true)) {
@@ -525,7 +567,12 @@ void OnPresent(IDirect3DDevice9* dev) {
     g_editLastRooms.store(ended.others, std::memory_order_relaxed);
     g_editPeakMaps.store(std::max<long>(g_editPeakMaps.load(std::memory_order_relaxed), static_cast<long>(g_holdPeakMaps)), std::memory_order_relaxed);
     const std::string own = ended.ownMs >= 0 ? std::format("{} ms", ended.ownMs) : std::string("not yet");
-    LOG_INFO(std::format("[AtriumHold] Lamp edit{}: own story shown {}, others released together {} ms ({} maps, {:.1f} MB; {}){}",
+    if (ended.together) // Classic: show all floors together (one line per edit; a timeout is this line, once)
+        LOG_INFO(std::format("[AtriumHold] Classic lamp edit{}, all floors together: {} maps held ({:.1f} MB), {} after {} ms{}",
+                             g_holdDragged ? " (drag, from its release)" : "", releasedMaps, static_cast<double>(releasedBytes) / (1024.0 * 1024.0),
+                             ended.end == HoldEnd::Complete ? "everything ready" : ended.end == HoldEnd::Timeout ? "timed out" : how, ended.sinceFirst,
+                             ended.pending > 0 ? std::format(" ({} of {} rooms not ready: what was ready is shown)", ended.pending, ended.others) : std::string()));
+    else LOG_INFO(std::format("[AtriumHold] Lamp edit{}: own story shown {}, others released together {} ms ({} maps, {:.1f} MB; {}){}",
                          g_holdDragged ? " (drag, from its release)" : "", own, ended.sinceFirst, releasedMaps,
                          static_cast<double>(releasedBytes) / (1024.0 * 1024.0), how,
                          ended.pending > 0 ? std::format(", {} of {} rooms still waiting", ended.pending, ended.others) : std::string()));

@@ -337,7 +337,11 @@ void ResetCaptureData() {
     g.backBuffer = nullptr;
 }
 
+// The draw and render-target callbacks are registered only while a capture runs: idle, no draw pays for them
+void RegisterDrawHooks();
+void UnregisterDrawHooks();
 void StartCapture(IDirect3DDevice9* dev) {
+    RegisterDrawHooks();
     ResetCaptureData();
     g.armed = false;
     g.capturing = true;
@@ -354,6 +358,7 @@ void OnPresentBoundary(IDirect3DDevice9* dev) {
         Event(std::format("==== Present (end of frame {}, {} draws) ====", g.frameNumber, g.drawIndex));
         if (--g.framesLeft <= 0) {
             g.capturing = false;
+            UnregisterDrawHooks();
             WriteFile();
             return;
         }
@@ -401,6 +406,35 @@ void ObserveDrawUP(IDirect3DDevice9* dev, const char* kind, D3DPRIMITIVETYPE typ
 
 void EnsureDetours(IDirect3DDevice9* dev) { ExtraHooks::EnsureInstalled(dev); }
 
+constexpr const char* kDrawHookName = "FrameCapture draws";
+bool g_drawHooks = false;
+void RegisterDrawHooks() {
+    if (g_drawHooks) return;
+    using namespace D3D9Hooks;
+    RegisterSetRenderTarget(kDrawHookName, [](DeviceContext&, DWORD index, IDirect3DSurface9* rt) {
+        if (g.capturing) {
+            std::string id = SurfId(rt);
+            Event(std::format("  SetRenderTarget[{}] = {}", index, id));
+        }
+        return HookAction::Continue;
+    }, Priority::Last);
+    ObserveReissuedDraws(kDrawHookName); // lists the replaced draws as drawn (as before)
+    RegisterDrawIndexedPrimitive(kDrawHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT, UINT, UINT, UINT, UINT prims) {
+        OnDraw(ctx.device, "DIP", type, prims);
+        return HookAction::Continue;
+    }, Priority::Last);
+    RegisterDrawPrimitive(kDrawHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT, UINT prims) {
+        OnDraw(ctx.device, "DP", type, prims);
+        return HookAction::Continue;
+    }, Priority::Last);
+    g_drawHooks = true;
+}
+void UnregisterDrawHooks() {
+    if (!g_drawHooks) return;
+    D3D9Hooks::UnregisterAll(kDrawHookName);
+    g_drawHooks = false;
+}
+
 void Arm() {
     if (g.capturing || g.armed) return;
     g.armed = true;
@@ -443,24 +477,6 @@ class FrameCapturePatch : public ApexPatch {
             return HookAction::Continue;
         }, Priority::Last);
 
-        RegisterSetRenderTarget(kHookName, [](DeviceContext&, DWORD index, IDirect3DSurface9* rt) {
-            if (g.capturing) {
-                std::string id = SurfId(rt);
-                Event(std::format("  SetRenderTarget[{}] = {}", index, id));
-            }
-            return HookAction::Continue;
-        }, Priority::Last);
-
-        RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT, UINT, UINT, UINT, UINT prims) {
-            OnDraw(ctx.device, "DIP", type, prims);
-            return HookAction::Continue;
-        }, Priority::Last);
-
-        RegisterDrawPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, UINT, UINT prims) {
-            OnDraw(ctx.device, "DP", type, prims);
-            return HookAction::Continue;
-        }, Priority::Last);
-
         RegisterPresent(kHookName, [](DeviceContext& ctx, const RECT*, const RECT*, HWND, const RGNDATA*) {
             OnPresentBoundary(ctx.device);
             return HookAction::Continue;
@@ -489,6 +505,7 @@ class FrameCapturePatch : public ApexPatch {
         }
         RenderCallbacks::Remove(RenderCallbacks::endSceneBeforeOverlay, OnEndScene);
         D3D9Hooks::UnregisterAll(kHookName);
+        UnregisterDrawHooks();
         ExtraHooks::SetClearObserver(nullptr);
         ExtraHooks::SetSetDepthStencilObserver(nullptr);
         ExtraHooks::SetStretchRectObserver(nullptr);

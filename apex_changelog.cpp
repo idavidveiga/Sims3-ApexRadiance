@@ -6,6 +6,30 @@ namespace ApexChangelog {
 
 namespace {
 
+constexpr const char* k2130Added[] = {
+    "Lamp lighting: Instant (GPU) updates every floor at once with real shadows",
+    "Outdoor light through openings: garden lamps light rooms through doors, windows and arches",
+    "Indoor light through openings: lit rooms shine onto the garden and the next room",
+    "Doors block light: closed doors stop lamp light, glass doors let it through",
+    "Walls shade lamp light near the ground: grass, paths and curbs behind walls stay dark",
+    "Shadow softness: light edges soften with the lamp's size",
+    "Smooth light maps: lamp light in rooms without blocks, bands or rings",
+    nullptr};
+constexpr const char* k2130Improved[] = {
+    "Classic lamp lighting is lighter: light updates after release, all floors together",
+    "Bushes and trees behind walls and houses get no garden lamp light",
+    "Dragging a lamp is smoother",
+    "Less work per frame for drawing and lighting",
+    nullptr};
+constexpr const char* k2130Fixed[] = {
+    "Disabled lamps no longer light nearby objects",
+    "Outdoor lamps no longer light foliage by day",
+    "Garden lamps reach colonnades and porches on a foundation",
+    "Columns inside arches get lamp light",
+    "Light under houses on foundations is no longer stopped by a false ceiling",
+    "Upper-story railings no longer pick up light from ground lamps",
+    nullptr};
+
 constexpr const char* k2123Added[] = {
     "Realistic lamp reach: lamp light on outside walls fades with distance",
     nullptr};
@@ -206,6 +230,7 @@ constexpr const char* k256Improved[] = {"Rendering optimizations are on by defau
 constexpr const char* k256Fixed[] = {"Street lamps outside lots update the lighting after their color changes", nullptr};
 
 constexpr Release kReleases[] = {
+    {"2.13.0", "2026-10-14", k2130Added, k2130Improved, k2130Fixed},
     {"2.12.3", "2026-10-13", k2123Added, k2123Improved, k2123Fixed},
     {"2.12.2", "2026-10-12", k2122Added, k2122Improved, k2122Fixed},
     {"2.12.1", "2026-10-12", k2121Added, k2121Improved, k2121Fixed},

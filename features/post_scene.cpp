@@ -340,6 +340,9 @@ void RegisterHooks() {
         if (index == 0) g_curRT0 = rt;
         return HookAction::Continue;
     }, Priority::First);
+    // (its scene draw counts include Night Lighting's re-issued draws, as they always did: Depth Blur's frozen-screen gate and
+    // the minimum scene draws read them)
+    ObserveReissuedDraws(kHookName);
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT) {
         OnGameDraw(ctx);
         return HookAction::Continue;

@@ -53,4 +53,20 @@ inline float EntryGain(float w) {
 inline float Entries(bool lotLamp, int story) { return lotLamp && story == 0 ? 2.0f : 1.0f; }
 inline float Gain(float w, float entries) { return EntryGain(w) * entries; }
 
+// The per-pixel lamps' laws (ShaderPatches AppendLampLaw) at d^2 from the lamp's head, before N.l and the cones, per unit of
+// the colour the per-pixel lamps keep (F0 x intensity x fade), so a law evaluated on the CPU (a rig's record) matches them:
+//  - reach: Gain(w, entries) / d^2 x min(1, r0^2 / d^2 x sat(1 - (d^2 / R^2)^2)^2), d^2 at least minD2 (the shader's cS.w);
+//  - the first law: sat(1 - d^2 / radius^2)^2 (radius = 1.2 sqrt(range), 2..25 m, lot_light_bridge ReadLamp).
+inline float PixelLaw(float d2, float w, float entries, float minD2 = 1e-4f) {
+    float r0, R;
+    Radii(w, r0, R);
+    d2 = std::max(d2, minD2);
+    const float q = d2 / (R * R), win = std::clamp(1.0f - q * q, 0.0f, 1.0f);
+    return Gain(w, entries) / d2 * std::min(1.0f, r0 * r0 / d2 * win * win);
+}
+inline float FirstLaw(float d2, float radius) {
+    const float s = std::clamp(1.0f - d2 / std::max(radius * radius, 1e-6f), 0.0f, 1.0f);
+    return s * s;
+}
+
 } // namespace LampReach

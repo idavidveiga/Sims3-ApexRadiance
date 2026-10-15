@@ -72,6 +72,7 @@
 #include "memory_patch.h"
 #include "slot_chain.h"
 #include "imgui.h"
+#include "drag_lite.h"
 #include <windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -245,8 +246,21 @@ bool MovingAt(uint64_t now) {
 }
 
 // The lot lighting update's budget call (thiscall, ret, ST0): a float return is ST0 in every x86 convention
+std::atomic<uint32_t> g_drainSpent{0}; // float bits: Faster room lighting's drain time this frame (NoteDrainSpent)
+std::atomic<long> c_spreadCapped{0};
 float __fastcall Hook_LotLightBudget(void* mgr, void* edx) {
     const float game = reinterpret_cast<BudgetFn>(g_budgetFn)(mgr, edx);
+    // (14/10, drag solves) the flush once a dragged lamp is still (the rooms that waited for the stop, the sends left out):
+    // the frame's solves together stay under the spread cap, with no edit boost; the lot being played gets what the drain
+    // left of it, the others the least (DragLite::SolveCapMs)
+    if (const float cap = game > 0.0f && game < kLeaveAloneMs ? DragLite::SolveCapMs() : 0.0f; cap > 0.0f) {
+        const float drain = std::bit_cast<float>(g_drainSpent.load(std::memory_order_relaxed));
+        const float out = game >= kPriorityMs ? std::max(kMinMs, cap - drain) : std::min(game, kMinMs);
+        c_spreadCapped.fetch_add(1, std::memory_order_relaxed);
+        g_lastGame.store(std::bit_cast<uint32_t>(game), std::memory_order_relaxed);
+        g_lastOut.store(std::bit_cast<uint32_t>(out), std::memory_order_relaxed);
+        return out;
+    }
     if (!g_on.load(std::memory_order_acquire)) return game;
     c_calls.fetch_add(1, std::memory_order_relaxed);
     const uint64_t now = GetTickCount64();
@@ -570,6 +584,12 @@ void Stop() {
 }
 
 bool Running() { return g_on.load(std::memory_order_acquire); }
+
+void NoteDrainSpent(float ms) { g_drainSpent.store(std::bit_cast<uint32_t>(ms), std::memory_order_relaxed); }
+float DrainBudget(float wanted) {
+    const float cap = DragLite::SolveCapMs();
+    return cap > 0.0f ? std::min(wanted, cap) : wanted;
+}
 
 void SetBudgetMs(int ms) { g_budgetMs.store(std::clamp(ms, 1, 15)); }
 

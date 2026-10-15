@@ -27,13 +27,16 @@
 #include "hook_guard.h"
 #include "build_flavor.h"
 #include "level_light_share.h"
+#include "rt_outdoor_lamps.h"
 #include "recorder.h"
 #include "object_light_bridge.h"
 #include "unlit_rooms.h"
 #include "room_ambient_policy.h"
+#include "drag_lite.h"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -219,6 +222,90 @@ bool Signature(uintptr_t entry, uintptr_t light, int room, uint64_t& h, int& typ
     }
 }
 
+// ---- Lamp lighting: Instant (2.12.3 + RT). The occluder mark of a GPU-handled lamp's own object (14/10 review, in-game) ----
+// Dragging a lamp the GPU draws marked no room through its lamp entry, yet room 0 of every story and the rooms through its
+// openings were solved 0.7-3 s after the release. The lamp's object also has an occluder entry: its update FUN_006c78e0
+// (esi = the entry) finds the room under the object ([entry+0x24] +0x2C / +0x30, x and z, as FUN_006a4ee0 takes them;
+// dumpbin 14/10) and marks it at 0x006C7939 ("mov ecx,[esi+14h]; push eax; mov [esi+1Ch],eax; call 0x006C7160") on every
+// drag step, whatever moved. An occluder whose point is within kOwnObjectM (horizontally) of a lamp head the GPU handled on
+// the same story within kOwnObjectMs is taken as that lamp's object: its mark is dropped (the GPU draws the lamp). While
+// Lamp lighting is Classic no edit is GPU-handled: every occluder mark goes through as the game makes it.
+// UNVERIFIED that every lamp object has an occluder entry: the counters tell.
+constexpr uintptr_t kOccMarkCall = 0x006C7939;
+constexpr float kOwnObjectM = 1.5f;
+constexpr DWORD kOwnObjectMs = 600;
+struct HandledEdit {
+    uintptr_t tl = 0;
+    float pos[3] = {};
+    DWORD at = 0;
+};
+HandledEdit g_handled[16]; // (under g_mx)
+int g_handledNext = 0;
+std::atomic<DWORD> g_handledAt{0};
+std::atomic<long> g_occMarks{0}, g_occDropped{0};
+bool g_occInstalled = false;
+// The lights whose edits the GPU took lately (any kind): the changed-room walk tells a GPU edit's rooms from a real edit's
+struct HandledLight {
+    std::atomic<uintptr_t> light{0};
+    std::atomic<DWORD> at{0};
+};
+HandledLight g_handledLights[64];
+std::atomic<uint32_t> g_handledLightNext{0};
+void NoteHandledLight(uintptr_t light) {
+    HandledLight& h = g_handledLights[g_handledLightNext.fetch_add(1, std::memory_order_relaxed) % std::size(g_handledLights)];
+    h.at.store(0, std::memory_order_relaxed);
+    h.light.store(light, std::memory_order_relaxed);
+    h.at.store(GetTickCount() | 1, std::memory_order_release);
+}
+void NoteHandledEdit(uintptr_t tl, const float pos[3]) {
+    const DWORD now = GetTickCount() | 1;
+    std::lock_guard<std::mutex> lk(g_mx);
+    HandledEdit& h = g_handled[g_handledNext];
+    g_handledNext = (g_handledNext + 1) % static_cast<int>(std::size(g_handled));
+    h.tl = tl, h.at = now;
+    std::memcpy(h.pos, pos, sizeof h.pos);
+    g_handledAt.store(now, std::memory_order_relaxed);
+}
+bool OccluderPoint(uintptr_t entry, float& x, float& z) { // POD (SEH)
+    __try {
+        const uintptr_t occ = *reinterpret_cast<const uintptr_t*>(entry + 0x24);
+        if (!occ) return false;
+        x = *reinterpret_cast<const float*>(occ + 0x2C);
+        z = *reinterpret_cast<const float*>(occ + 0x30);
+        return std::isfinite(x) && std::isfinite(z);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// true = mark the room (the game's call)
+bool OccDecideImpl(uintptr_t tl, int room, uintptr_t entry) {
+    const DWORD last = g_handledAt.load(std::memory_order_relaxed);
+    if (!last) return true; // (no GPU-handled edit yet: always while Classic)
+    g_occMarks.fetch_add(1, std::memory_order_relaxed);
+    const DWORD now = GetTickCount();
+    if (now - last > kOwnObjectMs || !g_on.load(std::memory_order_relaxed)) return true;
+    float x = 0.0f, z = 0.0f;
+    if (!OccluderPoint(entry, x, z)) return true;
+    bool own = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (const HandledEdit& h : g_handled)
+            if (h.tl == tl && h.at && now - h.at <= kOwnObjectMs) {
+                const float dx = h.pos[0] - x, dz = h.pos[2] - z;
+                if (dx * dx + dz * dz <= kOwnObjectM * kOwnObjectM) own = true;
+            }
+    }
+    if (!own) return true;
+    const long n = g_occDropped.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 3 || (n & (n - 1)) == 0)
+        LOG_INFO(std::format("[LampMarkFilter] Occluder mark of room {} dropped: the object of a lamp the GPU draws, moved with it ({} so far)", room, n));
+    return false;
+}
+bool __cdecl OccDecide(uintptr_t tl, int room, uintptr_t entry) {
+    if (!g_handledAt.load(std::memory_order_relaxed)) return true; // (Classic: the game's mark, nothing else)
+    return HookGuard::Run("LampMarkFilter occluder mark", true, [=] { return OccDecideImpl(tl, room, entry); });
+}
+
 // The lot of a story tree level (tl+4: its tracker, as level_light_share reads it); 0 when unreadable
 uintptr_t TrackerOf(uintptr_t tl) {
     __try {
@@ -243,6 +330,56 @@ bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
         g_windows.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
+    // Real-time outdoor lamps (Lamp lighting: Instant only, rt_outdoor_lamps.h): an outdoor lamp the GPU draws on every story of
+    // its lot from its current values. Its edit (moved in room 0, recoloured, dimmed, switched) marks no room: no room 0 of any
+    // story is solved again, and no edit hold, quick pass or lot safety net starts. The rooms that take room 0's lamps are sent
+    // after the room update (RtOutdoorLamps::AfterRoomUpdate). A move into another room is the game's own mark (the lamp leaves
+    // room 0's list). A lamp switched on is the exception: while it was off its rooms gathered again without it (the other
+    // stories' room 0s no longer list it), so its switch takes the usual path below, which sends those stories to gather it.
+    bool rtSwitchOn = false;
+    if (RtOutdoorLamps::Watching()) {
+        std::lock_guard<std::mutex> lk(g_mx);
+        const auto it = g_sig.find(Key{tl, light});
+        rtSwitchOn = it != g_sig.end() && !it->second.on && on;
+    }
+    if (!rtSwitchOn && RtOutdoorLamps::Watching() && RtOutdoorLamps::HandlesLamp(tl, light, room)) {
+        int kind = -1;
+        bool known = false, playerEdit = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            const auto it = g_sig.find(Key{tl, light});
+            if (it != g_sig.end()) {
+                known = true;
+                LampState& was = it->second;
+                const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
+                const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin;
+                const bool valueChanged = std::memcmp(was.editable, editable, sizeof editable) != 0 || was.on != on;
+                kind = was.room != room ? 2 : moved ? 1 : valueChanged ? 0 : -1;
+                // (14/10 review) a player's edit: a move, or a colour, intensity or enable change (a switch by a Sim or a
+                // timer, or an animated fade, is not one)
+                playerEdit = moved || std::memcmp(was.editable, editable, sizeof editable) != 0;
+                if (moved || kind == 2) std::memcpy(was.pos, pos, sizeof was.pos);
+                std::memcpy(was.editable, editable, sizeof editable);
+                was.on = on;
+                was.room = room;
+                was.sig = h;
+                was.editUntil = 0;
+            }
+        }
+        if (known) {
+            if (kind == 2) return true; // into another room: the game's mark of that room
+            if (kind >= 0) {
+                if (kind == 1) g_editRefresh.store(true, std::memory_order_relaxed); // the per-pixel object lamps read the list again
+                RtOutdoorLamps::NoteLampEdit(tl, light, kind);
+                NoteHandledLight(light);
+                if (playerEdit) LevelLightShare::NoteGpuEdit();
+                if (kind == 1) NoteHandledEdit(tl, pos); // (only a move carries the lamp's object along)
+            }
+            g_kept.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
+    if (rtSwitchOn) RtOutdoorLamps::NoteSwitchOn(tl, light);
     // Lamp edits first (05/10, LevelLightShare): an edit (moved, recoloured, dimmed, switched) marks its room as urgent;
     // `user` = a value a player or a Sim sets (colour, intensity, on / off), sent to the other stories at once; `pure` = the
     // same room, on or off as before (a move or a value change): a solve in progress keeps going, the mark is held;
@@ -291,6 +428,7 @@ bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
         same = was.sig == h;
         const float dx = pos[0] - was.pos[0], dy = pos[1] - was.pos[1], dz = pos[2] - was.pos[2];
         const bool moved = dx * dx + dy * dy + dz * dz > kMoveMin * kMoveMin; // NaN: not a move
+        if (moved) DragLite::NoteLampStep("lamp entry: moved"); // (a lamp drag, drag_lite.h)
         stayed = was.room == room;
         pure = was.on == on && stayed;
         if (was.on != on || moved || was.room != room) { // the player sees this: its lot lights again (OnPresent)
@@ -341,7 +479,10 @@ bool MarkDecideImpl(uintptr_t tl, int room, uintptr_t entry, uintptr_t light) {
         }
         // the steps of a drag between its 10 cm events are the same edit (an animated lamp never moves 10 cm: never one)
         if (edit) was.editUntil = (tick + kEditHoldMs) | 1;
-        else if (!same && was.editUntil && static_cast<int32_t>(tick - was.editUntil) < 0) edit = true;
+        else if (!same && was.editUntil && static_cast<int32_t>(tick - was.editUntil) < 0) {
+            edit = true;
+            DragLite::NoteLampStep("lamp entry: a step of the same edit");
+        }
         was.sig = h;
     }
     // dusk and dawn switch every lamp of every lot: those switches go through the game's own pace (an edit's rooms are solved
@@ -402,6 +543,25 @@ __declspec(naked) void MarkThunk() {
     }
 }
 
+// At 0x006C7939 (Lamp lighting: Instant; Classic lets every mark through): ecx = the tree level, [esp+4] = the room, esi =
+// the occluder entry
+__declspec(naked) void OccThunk() {
+    __asm {
+        push ecx
+        push esi
+        push dword ptr [esp + 12]
+        push ecx
+        call OccDecide
+        add esp, 12
+        pop ecx
+        test al, al
+        jz keep
+        jmp dword ptr [g_markTarget]
+    keep:
+        ret 4
+    }
+}
+
 // The light manager's messages that flag light entries: counted, then the game's call
 __declspec(naked) void FlagThunk0() { __asm { lock inc dword ptr [g_flagCount + 0] } __asm { jmp dword ptr [g_flagTarget] } }
 __declspec(naked) void FlagThunk1() { __asm { lock inc dword ptr [g_flagCount + 4] } __asm { jmp dword ptr [g_flagTarget] } }
@@ -449,6 +609,15 @@ bool Install(std::string& why) {
         g_patches.clear();
         why = "Rooms keep their light: could not patch the game";
         return false;
+    }
+    // the occluder mark (Steam 1.67.2 only; checked byte by byte): with Lamp lighting: Instant, a GPU-drawn lamp's own object
+    // marks no room while it is dragged; with Classic every occluder mark goes through as the game makes it (OccDecide)
+    g_occInstalled = false;
+    if (GameAddr::IsFixed() && kMark == 0x006C7160) {
+        const BYTE occArg[] = {0x8B, 0x4E, 0x14, 0x50, 0x89, 0x46, 0x1C};
+        if (std::memcmp(reinterpret_cast<const void*>(kOccMarkCall - sizeof occArg), occArg, sizeof occArg) == 0 && CallsTarget(kOccMarkCall, kMark))
+            g_occInstalled = Redirect(kOccMarkCall, kMark, reinterpret_cast<const void*>(&OccThunk));
+        if (!g_occInstalled) LOG_WARNING("[LampMarkFilter] The occluder mark (0x006C7939) differs: a GPU-drawn lamp's own object still marks its room when it moves");
     }
     g_flagsCounted = false;
     if (!kPublicBuild && GameAddr::IsFixed()) { // (Steam addresses only) which messages flag the entries (the floor switch's trigger): all five or none
@@ -566,6 +735,15 @@ bool MassSwitchActive() {
 }
 void SetEnabled(bool on) { g_on.store(on, std::memory_order_relaxed); }
 bool Enabled() { return g_on.load(std::memory_order_relaxed); }
+bool HandledLately(uintptr_t light, unsigned long withinMs) {
+    if (!light) return false;
+    const DWORD now = GetTickCount();
+    for (const HandledLight& h : g_handledLights) {
+        const DWORD at = h.at.load(std::memory_order_acquire);
+        if (at && now - at < withinMs && h.light.load(std::memory_order_relaxed) == light) return true;
+    }
+    return false;
+}
 
 std::string Status() {
     if (!g_installed) return "not installed";
@@ -573,6 +751,7 @@ std::string Status() {
                                 "while off {}, held while their room was solved {}",
                                 g_on.load() ? "on" : "off", g_kept.load(), g_first.load(), g_changed.load(), g_windows.load(), g_unread.load(), g_off.load(), g_held.load());
     s += std::format(" | lamps switched or moved {}, lots lit again {} (skipped at dusk or dawn {})", g_lampEvents.load(), g_lotRefreshes.load(), g_lotSkippedDusk.load());
+    if (g_occInstalled) s += std::format(" | occluder marks seen after a GPU edit {}, dropped as a GPU-drawn lamp's own object {}", g_occMarks.load(), g_occDropped.load());
     if (g_flagsCounted) {
         s += " | light entries flagged by message:";
         for (int i = 0; i < 5; i++) s += std::format(" {} {}", kFlagNames[i], static_cast<long>(g_flagCount[i]));

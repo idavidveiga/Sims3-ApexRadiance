@@ -371,3 +371,21 @@ keeps the optional DXVK and Sims3SettingsSetter recommendations, which no longer
 **Outcome:** the hint starts only once the menu is available, pauses during another load, and counts at most 100 ms per
 frame; `WorldSession::LoaderDismissed()` adds the loading-window check, and Depth Blur defers while the loading UI is
 attached (commit f575f0a).
+
+### 2026-10-14: player structure for lamp light (2.12.3 + RT)
+
+**Context:** the 2.12.4 parts ported onto 2.12.3 + Real-time outdoor lamps had player rows scattered on the Stories tab
+and many developer-only Tester switches; Lamp lighting was Classic by default and Instant carried an Experimental badge.
+
+**Finding:** the approved structure groups what a player sees about lamp light in rooms on one card, keeps one switch per
+visible effect and leaves fixes, drag measures and caches without a player switch.
+
+**Outcome:** Performance > Lamp lighting: *Lamp updates* defaults to Instant (GPU), no badge (a saved choice is kept).
+Lighting > Buildings > Rooms at Night: groups BACKGROUND LIGHT and LAMP LIGHT (*Outdoor light through openings*, which
+covers roofed rooms taking the story below's lamps; *Indoor light through openings*; *Doors block light*; *Shadow
+softness*; *Smooth light maps*), moved from the Stories tab. Lighting > Ground: *Walls shade lamp light near the ground*
+(new key `paredesSombreiamOChao`, was part of the objects option). Lighting > Objects: *Buildings block lamp light on
+trees and objects* (`paredesBloqueiamLuzNosObjetos`, was on Stories). Every default on. Tester switches that share an
+option are the option itself or a sub-part of it ([tester.md](../features/dev-tools/tester.md#player-options-and-tester-switches)).
+Two approved labels exceed the 32-character guideline (*Walls shade lamp light near the ground*, *Buildings block lamp
+light on trees and objects*); kept as approved.

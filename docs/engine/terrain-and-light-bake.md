@@ -190,7 +190,8 @@ Stamp law: the shader itself was never disassembled (ground_report section 6). F
 street-lamp pair, the ground follows `2 · w · cos / d²` with `w = 0.2 · range · intensity` (shader_patches.cpp comment above
 `AppendPixelLamps`, 28/09), saturated at 1 next to the lamp. The per-pixel plan (private notes)'s Design B wrote it as
 `E = c0.rgb · sat(c0.w / d²) · (N·L ≥ 0 ? sat(sqrt(N·L)) : 0)` (unverified). The bake has **no occluder input** (only the
-normal and height maps are bound; ground_report section 5, inferred), so walls never block terrain light.
+normal and height maps are bound; ground_report section 5, inferred), so walls never block terrain light. Apex shades it
+texture-side on lot ground only (the lot pass's lamp shade, [lot-light-pass.md](../features/night-lighting/lot-light-pass.md)).
 
 The map format: the world file ships a 256×256 DXT5 map with 4 mips per chunk (bound via `0x00C321B0` while `chunk+0xD8`
 is 0). A rebuilt map `+0xD8` is also a managed 256×256 DXT5 with **4 mips**: `0x00C296E0` renders into the

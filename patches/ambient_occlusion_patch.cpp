@@ -44,6 +44,7 @@
 #include "shader_patches.h"
 #include "sim_receiver_ids.h"
 #include "sim_occlusion.h"
+#include "perf_toggles.h"
 #include <unordered_map>
 #include <atomic>
 #include <d3d9.h>
@@ -394,6 +395,11 @@ struct SimMaskState {
     bool blendChecked = false, minBlend = false;
     bool hairCleared = false;
     bool shaderKnown = false, shaderIsSim = false;
+    // the last bound pixel shader's IsSimReceiver answer (the game binds the same shader again and again); reset with the
+    // rest of this state, when the shaders pinned in `known` are released
+    IDirect3DPixelShader9* lastPs = nullptr;
+    int lastSim = 0;
+    bool haveLast = false;
     unsigned draws = 0, lastDraws = 0, refused = 0;
     std::unordered_map<IDirect3DPixelShader9*, int> known;
     std::vector<SimMaskCopy> copies;
@@ -1233,7 +1239,10 @@ class AmbientOcclusionPatch : public ApexPatch {
             if (GetCurrentThreadId() != simRenderThread.load(std::memory_order_relaxed)) return D3D9Hooks::HookAction::Continue;
             if (g.active && g.ready && WantSimMask() && !simMask.failed) {
                 try {
-                    simMask.shaderIsSim = IsSimReceiver(ps);
+                    // (the last shader's answer kept: the game binds the same shader again and again)
+                    if (!PerfToggles::AoLastShaderCache.load(std::memory_order_relaxed)) simMask.haveLast = false;
+                    if (!simMask.haveLast || ps != simMask.lastPs) simMask.lastSim = IsSimReceiver(ps), simMask.lastPs = ps, simMask.haveLast = true;
+                    simMask.shaderIsSim = simMask.lastSim;
                     simMask.shaderKnown = true;
                 } catch (...) { simMask.failed = true; }
             }

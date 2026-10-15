@@ -1,4 +1,9 @@
 #include "developer_settings.h"
+#include "drag_lite.h"
+#include "outdoor_delta.h"
+#include "object_light_bridge.h"
+#include "perf_toggles.h"
+#include "penumbra.h"
 // The Apex menu (see apex_gui.h).
 #include "apex_gui.h"
 #include "apex_config.h"
@@ -874,7 +879,54 @@ bool FeatureSwitchRow(const char* patchName, const char* label, const char* text
     return patch->IsEnabled() || ApexUi::FilterActive();
 }
 
+// Lamp lighting (first card): how lamp edits reach the lot's light. The mode is Night Lighting's (lampLightingMode)
+constexpr const char* kLampLightingDescription =
+    "How lot lamps update when you switch, recolor or move one. Classic: the game recalculates the rooms' light after each edit, "
+    "with all of Apex's corrections. Instant (GPU): your graphics card draws the lot's outdoor lamps and their shadows, so every "
+    "floor updates within a frame or two; indoor lamps use the game's calculation. Part of " APEX_PRODUCT_NAME ". Credits: @loinyx";
+
+void LampLightingCard() {
+    ImGui::PushID("PerformanceLampLighting");
+    if (ApexUi::BeginCard("##Card")) {
+        // (14/10: a header and one row; the GPU time of the last edit is on Developer > Tester)
+        ApexUi::CardHeader(IconId::Lamp, "Lamp lighting", "How lot lamps update when you switch, recolor or move one", kLampLightingDescription, nullptr);
+        ApexUi::CardDivider();
+        constexpr int kInstant = 1;
+        const std::string unavailable = NightLighting::InstantUnavailable(); // (English: the note translates it)
+        int mode = NightLighting::LampMode();
+        static const char* const kModes[] = {"Classic", "Instant (GPU)"};
+        // (the search reads the label and description: there it names both modes)
+        const char* description = ApexUi::FilterActive() ? "Classic or Instant (GPU): how lot lamps relight after you edit one"
+                                  : mode == kInstant     ? "Your graphics card updates outdoor lamp light instantly; moving lamps may dip FPS a little"
+                                                         : "Lighter: lamp light updates after you release or change a lamp";
+        // Instant (GPU) is the default (14/10; a saved lampLightingMode keeps its choice). Instant cannot be chosen on a device
+        // that cannot run it (it stays selectable back to Classic if it was chosen before, or by default; the note says why)
+        ImGui::BeginDisabled(!unavailable.empty() && mode != kInstant);
+        if (ApexUi::SegmentedRow("Lamp updates", description, "LampLightingMode", &mode, kModes, 2, nullptr, nullptr, kInstant) &&
+            (mode != kInstant || unavailable.empty()))
+            NightLighting::SetLampMode(mode);
+        ImGui::EndDisabled();
+        mode = NightLighting::LampMode();
+        // only when Instant cannot run on this device (the lamps then work as Classic)
+        if (!unavailable.empty()) ApexUi::IconNote(IconId::TriangleAlert, unavailable.c_str(), VioletTheme::kWarning);
+        // Instant chosen but doing nothing now (an option it needs is off, or its lamp edits could not start)
+        else if (mode == kInstant && !ApexUi::FilterActive()) {
+            const std::string inactive = NightLighting::InstantInactive();
+            if (!inactive.empty()) ApexUi::IconNote(IconId::TriangleAlert, inactive.c_str(), VioletTheme::kWarning);
+        }
+        // Instant runs inside Night Lights
+        ApexPatch* ntr = Find(kNightLighting);
+        if (ntr && !ntr->IsEnabled() && !ApexUi::FilterActive() && mode == kInstant) {
+            CardNote("Needs Night Lights (Lighting page)");
+            TurnOnButton(ntr, "Turn on Night Lights", IconId::MoonStar, "Night Lights turned on");
+        }
+    }
+    ApexUi::EndCard();
+    ImGui::PopID();
+}
+
 void PerformanceCard() {
+    LampLightingCard();
     ImGui::PushID("PerformanceLighting");
     if (ApexUi::BeginCard("##Card")) {
         ApexUi::CardHeader(IconId::Gauge, "Camera and lighting", "Smoother movement while rooms and lots update", nullptr, nullptr);
@@ -1523,14 +1575,129 @@ void DevDebugViewsTab() {
     DevCard("DebugPicture", IconId::Image, "Image adjustments", "Review image precision and the time the effect uses on the graphics card.", true, [] { Picture::Get().RenderDeveloperUI(); });
 }
 
+// Developer > Tester: every part ported onto 2.12.3 + Real-time outdoor lamps switched on and off live, so the same scene
+// and the same lamp drag can be compared (features/tester_toggles.h). The player options shown here (Outdoor / Indoor light
+// through openings, Doors block light, Smooth light maps, Real-time outdoor lamps = Lamp lighting) write their own settings;
+// the other switches are saved in [developer.controls.tester]: always-on parts for players (fixes, drag measures, caches)
+// or sub-parts of a player option, on by default, that switch one part off inside it (tester_toggles.h lists which).
+void TesterSwitch(const char* label, const char* description, std::atomic<bool>& value, TesterToggles::Effect effect) {
+    bool on = value.load(std::memory_order_relaxed);
+    if (!ApexUi::SwitchRow(label, &on, description, ApexUi::BoolDefault(true))) return;
+    value.store(on, std::memory_order_relaxed);
+    switch (effect) {
+    case TesterToggles::Effect::Rigs: ObjectLightBridge::RequestRigRefresh(); break;
+    case TesterToggles::Effect::Grids:
+        LevelLightShare::TesterGridsChanged();
+        LevelLightShare::RelightAllRooms("Tester switch");
+        ObjectLightBridge::RequestRigRefresh();
+        break;
+    case TesterToggles::Effect::Rooms:
+        LevelLightShare::RelightAllRooms("Tester switch");
+        ObjectLightBridge::RequestRigRefresh();
+        break;
+    default: break;
+    }
+}
+void TesterOptionSwitch(const char* label, const char* description, const char* key) {
+    bool on = NightLighting::TesterOption(key);
+    if (ApexUi::SwitchRow(label, &on, description, ApexUi::BoolDefault(true))) NightLighting::SetTesterOption(key, on);
+}
+void TesterValueRow(const char* label, const std::string& value) {
+    if (ApexUi::BeginControlRow(label, nullptr, ImGui::CalcTextSize(value.c_str()).x)) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", value.c_str());
+        ApexUi::EndControlRow();
+    }
+}
+
+void DevTesterTab() {
+    using TesterToggles::Effect;
+    ApexUi::MutedText("Switch each ported part off and on in the same scene to compare its frame time and look. Changes apply at once and are saved.");
+    const bool night = Find(kNightLighting) && Find(kNightLighting)->IsEnabled();
+    DevCard("TesterReadout", IconId::FlaskConical, "Frame time", "Drag the same lamp with a part on and off", true, [] {
+        const float now = DragLite::FrameMs(), avg = DragLite::LastDragAvgMs(), worst = DragLite::LastDragMaxMs();
+        const int frames = DragLite::LastDragFrames();
+        TesterValueRow("Frame time now", now > 0.0f ? std::format("{:.2f} ms", now) : std::string("-"));
+        TesterValueRow("Last drag, average frame", frames ? std::format("{:.2f} ms", avg) : I18n::Tr("No drag yet"));
+        TesterValueRow("Last drag, worst frame", frames ? std::format("{:.1f} ms", worst) : I18n::Tr("No drag yet"));
+        TesterValueRow("Frames in the last drag", frames ? std::to_string(frames) : I18n::Tr("No drag yet"));
+        // (Instant: the room-0 solves kept for the GPU relight, against the active lot's ceiling; outdoor_delta.cpp)
+        {
+            const float gpuMs = NightLighting::InstantGpuMs(); // (was the Lamp lighting card's chip)
+            TesterValueRow("GPU time of the last lamp edit", gpuMs >= 0.0f ? std::format("{:.2f} ms", gpuMs) : std::string("-"));
+        }
+        TesterValueRow("Instant (GPU) kept data", std::format("{:.1f} / {} MB ({})", static_cast<double>(OutdoorDelta::KeptBytes()) / (1 << 20),
+                                                               OutdoorDelta::PinnedBudgetBytes() >> 20, OutdoorDelta::KeptRooms()));
+        const float actionsW = ApexUi::ButtonWidth("Restore defaults", true);
+        if (ApexUi::BeginControlRow("Every switch of this tab", "On, as in the normal build", actionsW)) {
+            if (ApexUi::IconTextButton("Restore defaults", IconId::RotateCcw)) {
+                TesterToggles::RestoreDefaults();
+                for (const char* key : {"luzDeForaPelasAberturas", "luzInternaPelasAberturas", "portasBloqueiamLuz", "mapasDosComodosSuaves"}) NightLighting::SetTesterOption(key, true);
+                if (NightLighting::InstantUnavailable().empty()) NightLighting::SetLampMode(1); // Real-time outdoor lamps (the default)
+                LevelLightShare::TesterGridsChanged();
+                LevelLightShare::RelightAllRooms("Tester defaults");
+                ObjectLightBridge::RequestRigRefresh();
+            }
+            ApexUi::EndControlRow();
+        }
+    });
+    DevCard("TesterLighting", IconId::Lamp, "Lamp light features", "Ported from 2.12.4", night, [] {
+        TesterSwitch("Walls shade ground and curbs", "Lot grass, decks, paths, curbs, stairs and low fences behind a wall stay dark", TesterToggles::groundShade, Effect::None);
+        TesterSwitch("Buildings block light on trees and objects", "Trees, bushes and objects behind a building take no garden lamp light", TesterToggles::rigBuildingBlock, Effect::Rigs);
+        TesterOptionSwitch("Outdoor light through openings", "Garden lamps light rooms through doors, windows and arches", "luzDeForaPelasAberturas");
+        TesterOptionSwitch("Indoor light through openings", "Lit rooms shine through arches and windows onto the garden and the next room", "luzInternaPelasAberturas");
+        TesterSwitch("Roofed rooms take lamps from the story below", "A house on a foundation takes the garden posts beside it", TesterToggles::roofedFromBelow, Effect::Rooms);
+        TesterOptionSwitch("Doors block light", "Closed doors stop lamp light; windows, arches and glass doors let it through", "portasBloqueiamLuz");
+        bool instant = NightLighting::LampMode() == 1;
+        if (ApexUi::SwitchRow("Real-time outdoor lamps", &instant, "Lamp lighting set to Instant, as on the Performance page", ApexUi::BoolDefault(true)))
+            NightLighting::SetLampMode(instant ? 1 : 0);
+    });
+    DevCard("TesterFixes", IconId::Wrench, "Fixes", "Ported from 2.12.4", night, [] {
+        TesterSwitch("Disabled lamps fix", "Lamps a player disabled no longer light nearby objects", TesterToggles::disabledLampFix, Effect::Rigs);
+        TesterSwitch("Foliage by day fix", "Outdoor lamps no longer light foliage by day", TesterToggles::foliageDayFix, Effect::None);
+        TesterSwitch("Colonnades on a foundation fix", "Garden lamps reach colonnades and porches on a foundation", TesterToggles::colonnadeFix, Effect::Grids);
+        TesterSwitch("Lamps through arches on indoor objects", "An object inside an arcade keeps a garden lamp's dim light", TesterToggles::openingLampCut, Effect::Rigs);
+    });
+    DevCard("TesterSoft", IconId::Blend, "Soft light", "Ported from 2.12.4", night, [] {
+        TesterSwitch("Soft edges from the lamp's size", "Openings, wall ends and balcony edges cast a penumbra as wide as Shadow softness", Penumbra::g_on, Effect::Rooms);
+        TesterOptionSwitch("Smooth light maps", "Lamp light in rooms without blocks, bands or rings", "mapasDosComodosSuaves");
+        TesterSwitch("Fade at the light cut", "A lamp's light fades out instead of ending in a ring", TesterToggles::smoothCut, Effect::None);
+        TesterSwitch("Dither the light maps", "A fine grain instead of 8-bit bands", TesterToggles::smoothDither, Effect::None);
+        TesterSwitch("Smooth light map reads", "Room light maps are read as a smooth curve instead of texel steps", TesterToggles::smoothBSpline, Effect::None);
+        TesterSwitch("Soft ground shade", "The shade of walls on lot ground has soft edges, without texel steps", TesterToggles::groundSoftEdges, Effect::None);
+    });
+    DevCard("TesterDrag", IconId::Gauge, "While a lamp is dragged", "Each measure that keeps a drag smooth", night, [] {
+        TesterSwitch("Classic: relight only after release", "A dragged lamp's rooms are solved once, after it is let go", TesterToggles::classicAfterRelease, Effect::None);
+        TesterSwitch("Classic: show all floors together", "After a lamp edit every floor shows its new light in the same frame", TesterToggles::classicTogether, Effect::None);
+        TesterSwitch("Defer extra room sends", "Rooms lit through openings or from another story update once the lamp stops", TesterToggles::dragDeferSends, Effect::None);
+        TesterSwitch("Hold rooms solved moments ago", "A room is solved again at most every 400 ms while dragging", TesterToggles::dragRepickThrottle, Effect::None);
+        TesterSwitch("Spread the update after the stop", "The rooms that waited take at most 3.5 ms of each frame", TesterToggles::dragSpreadCap, Effect::None);
+        TesterSwitch("Keep the terrain rebuild idle", "At night the moved lamps relight the ground locally", TesterToggles::dragTerrainIdle, Effect::None);
+        TesterSwitch("Slower lamp refresh while dragging", "Lamp lists and ground light refresh 4 times a second", TesterToggles::dragSlowRefresh, Effect::None);
+    });
+    DevCard("TesterPerf", IconId::SlidersHorizontal, "Per-frame work", "Caches and filters with the same result", true, [] {
+        TesterSwitch("Story grid memo", "A story's walls are looked up once per frame", TesterToggles::gridMemo, Effect::None);
+        TesterSwitch("Re-issued draw filter", "Only observers run for draws drawn again", PerfToggles::ReissueFilter, Effect::None);
+        TesterSwitch("Follow bound shaders", "Shader reads answered without asking the device", PerfToggles::FollowBoundShaders, Effect::None);
+        TesterSwitch("Sampled dispatch timing", "Developer timing measures one call in 16", PerfToggles::SampledDispatchTiming, Effect::None);
+        TesterSwitch("Shader precompile answer", "Kept once every job is done", PerfToggles::PrecompileAnswerCache, Effect::None);
+        TesterSwitch("Ambient shadows shader cache", "The last shader's answer is kept", PerfToggles::AoLastShaderCache, Effect::None);
+        TesterSwitch("Gradient correction front cache", "Shader copies found without a lock", PerfToggles::SceneDitherFrontCache, Effect::None);
+        TesterSwitch("Night Lights shader facts", "One lookup per pixel shader change", PerfToggles::NightLightingPsFacts, Effect::None);
+        TesterSwitch("Rig mode once per draw", "Read once instead of at every check", PerfToggles::RigModeOncePerDraw, Effect::None);
+        TesterSwitch("Indoor object sampler scan", "Only declared samplers are checked", PerfToggles::IndoorSamplerScan, Effect::None);
+        TesterSwitch("Room record lookup cache", "Kept while no room record changed", PerfToggles::SolveInfoCache, Effect::None);
+    });
+}
+
 void DeveloperPage() {
     const toml::table preferencesBefore = DeveloperSettings::Capture();
     toml::table profilerBefore; FrameProfiler::SaveToToml(profilerBefore);
     ApexUi::PageTitle("Developer", "Inspect a problem, collect evidence and compare the result");
     static int tab = 0;
-    constexpr const char* labels[] = {"Lighting", "Performance", "Captures", "Visual effects", "Translations"};
-    constexpr IconId icons[] = {IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type};
-    ApexUi::TabBar("##DeveloperTabs", &tab, labels, 5, icons);
+    constexpr const char* labels[] = {"Lighting", "Performance", "Captures", "Visual effects", "Translations", "Tester"};
+    constexpr IconId icons[] = {IconId::Lightbulb, IconId::Activity, IconId::Camera, IconId::Eye, IconId::Type, IconId::FlaskConical};
+    ApexUi::TabBar("##DeveloperTabs", &tab, labels, 6, icons);
     if (tab == 0) DevLightingTab();
     else if (tab == 1) DevProfilerTab();
     else if (tab == 2) {
@@ -1540,6 +1707,7 @@ void DeveloperPage() {
         FeatureCard("FrameCapture", IconId::Camera, "Capture two drawn frames", "Save two frames of rendering operations for detailed investigation.");
         ReportListCard();
     } else if (tab == 3) DevDebugViewsTab();
+    else if (tab == 5) DevTesterTab();
     else {
         ApexUi::MutedText("Open the affected screens in the language you want to check. Save the missing-text list and placeholder errors to the log.");
         DevCard("TranslationReview", IconId::Type, "Review translations", "Collect missing text while visiting menu screens", true, [] {

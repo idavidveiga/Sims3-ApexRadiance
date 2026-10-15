@@ -297,19 +297,11 @@ void OnPresent() {
 void Install() {
     if (g_installed) return;
     using namespace D3D9Hooks;
+    ObserveReissuedDraws(kHookName); // runs after Night Lighting: a wall it replaces is seen only in the re-issued draw
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT bvi, UINT minV, UINT numV, UINT, UINT) {
-        IDirect3DVertexShader9* vs = nullptr;
-        if (SUCCEEDED(ctx.device->GetVertexShader(&vs)) && vs) {
-            bool wall = false;
-            try {
-                wall = IsWallVs(vs);
-            } catch (...) { // the shader's reference is given back before the dispatch's safety net takes the exception (07/10)
-                vs->Release();
-                throw;
-            }
-            vs->Release();
-            if (wall) OnWallDraw(ctx.device, static_cast<UINT>(bvi + static_cast<INT>(minV)), numV);
-        }
+        // (14/10: the bound shader as the registry follows it, no GetVertexShader + Release per draw; the device holds it)
+        if (IDirect3DVertexShader9* vs = BoundVertexShader(ctx.device))
+            if (IsWallVs(vs)) OnWallDraw(ctx.device, static_cast<UINT>(bvi + static_cast<INT>(minV)), numV);
         return HookAction::Continue;
     }, Priority::Last);
     RegisterPresent(kHookName, [](DeviceContext&, const RECT*, const RECT*, HWND, const RGNDATA*) {

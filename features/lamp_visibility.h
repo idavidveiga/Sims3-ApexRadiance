@@ -10,6 +10,7 @@
 // `bool Placed(int ix, int iz, int q) const` (a floor a player placed in that quadrant).
 #include <algorithm>
 #include <cmath>
+#include "penumbra.h"
 
 namespace LampVis {
 
@@ -21,8 +22,7 @@ inline int Quadrant(float fx, float fz) {
 constexpr float kOnPlane = 0.02f;     // m: a point this close to a plane lies on it (the rule OutdoorEntryImpl had for its story)
 constexpr float kOnPlaneStep = 0.05f; // m: such a point is tested this far toward the lamp, so a wall's foot row on a flush
                                       // facade looks past its own floor's edge and the seam between two stories stays open
-constexpr float kLantern = 0.3f;      // m: the lantern's width (level_light_share.cpp, the note on t_gridSoft)
-constexpr float kMinRim = 0.04f;      // m: the narrowest half rim (kGridSoft there)
+constexpr float kMinRim = 0.04f;      // m: the narrowest half rim of a slab's edge (its floor quadrants' stairs)
 
 template <class View> bool PlacedAt(const View& v, float x, float z) {
     const float fx = std::floor(x), fz = std::floor(z);
@@ -65,12 +65,14 @@ template <class View> float OpenFraction(const View& v, float ax, float az, floa
 
 // A ray going up from the lamp P to the point Q (lot space): the share of the lamp's light that no placed floor of the planes
 // st[0..n) stops (1 = clear, 0 = blocked); blocked = the index of the plane that stopped it, -1 when none did. A plane
-// counts when it lies above the lamp and below the point (or within kOnPlane over it). The soft edge is that of a lantern
-// kLantern wide: at the crossing (t = 0 at the lamp, 1 at the point) the point sees the lantern through a band
-// kLantern x (1 - t) wide (similar triangles), so the light kept is the share of that band over open air, centred on the
-// crossing along the ray's horizontal direction (half width at least kMinRim). Only along that direction: a slab edge the
-// ray runs along stays hard. Rays going down (lamp above the point) are not tested here: 1.
-template <class View> float SlabGate(const View* st, int n, const float* P, const float* Q, int* blocked = nullptr) {
+// counts when it lies above the lamp and below the point (or within kOnPlane over it). The soft edge is that of the lamp's
+// ball, `radius` (Shadow softness, penumbra.h): at the crossing (t = 0 at the lamp, 1 at the point) the point sees it
+// through a band 2 radius (1 - t) wide (similar triangles), so the light kept is the share of that band over open air,
+// centred on the crossing along the ray's horizontal direction (half width at least kMinRim, and aa t for a light map's
+// texel: Penumbra::Half). Only along that direction: a slab edge the ray runs along stays hard. Rays going down (lamp
+// above the point) are not tested here: 1.
+template <class View>
+float SlabGate(const View* st, int n, const float* P, const float* Q, int* blocked = nullptr, float radius = Penumbra::Radius(), float aa = 0.0f) {
     if (blocked) *blocked = -1;
     const float dy = Q[1] - P[1];
     if (!(dy > 1e-4f)) return 1.0f;
@@ -93,7 +95,8 @@ template <class View> float SlabGate(const View* st, int n, const float* P, cons
             x = P[0] + t * (Q[0] - P[0]);
             z = P[2] + t * (Q[2] - P[2]);
         }
-        const float rho = std::max(kMinRim, 0.5f * kLantern * (1.0f - t));
+        // (penumbra off, the Tester switch: the 0.3 m lantern of 2.12.3, max(0.04, 0.15 (1 - t)))
+        const float rho = Penumbra::g_on.load(std::memory_order_relaxed) ? std::max(kMinRim, Penumbra::Half(radius, t, aa)) : std::max(kMinRim, 0.15f * (1.0f - t));
         const float f = across ? OpenFraction(st[i], x - rho * ux, z - rho * uz, x + rho * ux, z + rho * uz) : (PlacedAt(st[i], x, z) ? 0.0f : 1.0f);
         v *= f;
         if (v <= 0.0f) {

@@ -23,6 +23,9 @@ namespace RoomLightQueue {
 bool Start(std::string* error);
 void Stop();
 bool Running();
+// (14/10, drag solves) The room priority CALL goes through Apex even while this feature is off, for the re-pick throttle of a
+// lamp drag (DragLite::HoldRepick); idempotent and cheap after the first call (Night Lighting calls it every frame)
+void EnsureDragThrottle();
 std::string StatusText();
 // Quick pass after a player's lamp switch (06/10; one lamp or many): while LampMarkFilter::SwitchActive, a lamp edit's room still waiting for
 // its solve at a class above 0 goes back to class 0 (the game's own fast first solve, ~1/20 of class 2), so every room of

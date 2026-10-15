@@ -228,7 +228,10 @@ registered:
 
 ### 3.2 Registration, order and results
 
-- **Register:** `D3D9Hooks::Register<Method>(name, std::function, Priority = Normal)`. `UnregisterAll(name)` removes
+- **Register:** `D3D9Hooks::Register<Method>(name, callback, Priority = Normal)`. The callback is any callable taking
+  `(DeviceContext&, args...)` and returning `HookAction`; it is stored as a plain function pointer and an object
+  pointer (`D3D9Hooks::Callback`): a lambda without captures is called through a function made for its type, any other
+  callable is copied to the heap. `UnregisterAll(name)` removes
   every callback with that name from all chains. Convention: one name per module (`kHookName`, for example
   `"LotLightBridge"`, `"PostScene"`, `"NightTerrainRelight"`). A module may register several callbacks of one type under
   one name.
@@ -255,7 +258,22 @@ registered:
 - **Lock-free chains.** DrawIndexedPrimitive, DrawPrimitive, SetRenderTarget, SetViewport, SetPixelShader,
   SetVertexShader, SetTexture and Set{Pixel,Vertex}ShaderConstantF publish an immutable list through an atomic pointer
   (`Chain::list`). On the render thread (the thread of the first EndScene) they are dispatched with no lock: one relaxed
-  count test, one acquire load, the callbacks. A chain with no callback ends at the count test.
+  count test, one acquire load, the callbacks. A chain with no callback ends at the count test. The callbacks of one
+  dispatch run inside one exception frame (re-entered at the next callback after one threw), the thread's CallOriginal*
+  counter is read through a pointer taken once per dispatch, each callback's off flag through a raw pointer, and the
+  developer and timing flags once per dispatch.
+- **Dispatch cost (developer build).** Every dispatch with callbacks is counted and one in 16 is timed with the time
+  stamp counter; every 10 s the Present hook logs `[D3D9Hooks] Dispatch cost over 10 s: N dispatches with callbacks a
+  frame, X us each (sampled 1 in 16, callbacks included), about Y ms a frame`.
+- **Bound shaders.** `BoundPixelShader(device)` / `BoundVertexShader(device)` give the shaders bound now on the render
+  thread without a device call: they are followed through the Set*Shader dispatches and `CallOriginalSet*Shader`, and
+  read back from the device when not known (another thread, a device call from another thread, every BeginScene and
+  Present, after `ShaderStateChanged()`, which RtLampGpu calls after applying its state block). The Banding Fix and Wall
+  Heights use them on every scene draw.
+- **Performance switches.** `features/perf_toggles.h` (`PerfToggles`) holds one atomic switch, on by default, per
+  per-frame cache or filter (re-issued draw filter, followed shaders, sampled timing, precompile answer, Ambient
+  Occlusion's last shader, Banding Fix front caches, Night Lighting's shader facts, rig mode and indoor sampler scan,
+  the room solve's record lookup). Off restores the earlier path live, so frame rates can be compared.
 - **Locked chains.** Present, BeginScene and the four Create* chains, and any chain called from **another thread**, run
   under one recursive registration lock. Off-thread dispatches of the lock-free chains are counted
   (`D3D9Hooks::OffThreadDispatches()`, shown by the Frame Profiler); the first one per method is logged
@@ -275,9 +293,10 @@ registered:
   unregistering first, and prefer the render thread.
 - **Profiler counters (developer mode).** The detours of SetTexture, Set{Vertex,Pixel}Shader,
   Set{Vertex,Pixel}ShaderConstantF and SetRenderTarget count their calls with plain per-method counters
-  (`ReadStateCallCounts`). The outermost dispatch on a thread (all chains but Present) is booked as the profiler's
-  "D3D hooks (mod)" (`FrameProfiler::BeginModTime` / `EndModTime`, keyed by the dispatch's stack address), also when a
-  callback returns Skip or Block; a nested dispatch is part of the outer one. Every Present callback is timed by name
+  (`ReadStateCallCounts`). One outermost dispatch on a thread in 16 (all chains but Present) is booked, 16 times, as the
+  profiler's "D3D hooks (mod)" (`FrameProfiler::BeginModTimeSampled` / `EndModTime`, keyed by the dispatch's stack
+  address), also when a callback returns Skip or Block; a nested dispatch is part of the outer one, except the driver
+  call of a re-issued draw, booked as "Re-issued draw (driver)" (`ModTime::ReissuedDraw`). Every Present callback is timed by name
   while the profiler is on (`"<name> (Present)"`); draw and state callbacks are timed per hook only with Advanced >
   "Per-hook registry timing", separated by method ([features/frame-profiler.md](features/frame-profiler.md)).
 
@@ -288,16 +307,21 @@ draw it handles:
 
 1. It changes state for its own shader and constants through `CallOriginal*`, so its state changes never re-enter
    Apex's chains.
-2. It re-issues the draw through the device (`ctx.device->DrawIndexedPrimitive(...)`), a nested dispatch on the same
-   thread. In the nested dispatch its own callback returns `Continue` at once (own-call flag), and the call reaches the
-   driver.
+2. It re-issues the draw through the device (`ctx.device->DrawIndexedPrimitive(...)`) inside a `D3D9Hooks::ReissueScope`,
+   a nested dispatch on the same thread. In it only the callbacks registered under a name passed to
+   `ObserveReissuedDraws` run: the Banding Fix (it dithers the replacement shader), Wall Heights (after `Normal`: it sees
+   a replaced wall only there), PostScene and Picture (their scene draw counts, which Depth Blur's frozen-screen gate
+   and the minimum scene draws read, keep counting the re-issue) and the developer observers (Frame Profiler, Light
+   Probe, Frame Capture). The others (Ambient Occlusion's receiver replay, Night Lighting itself) already
+   ran for the game's call of the same draw with the same state; their nested run changed nothing. The call then
+   reaches the driver.
 3. It restores state and returns `Skip` for the outer call. The game's original draw is never issued and the outer chain
    stops at `Normal`.
 
-Consequences: hooks before `Normal` (PostScene, Picture, Ambient Occlusion's receiver replay) see a replaced draw twice,
-once as the original and once as the re-issue. Hooks after `Normal` (Light Probe, Frame Capture, Banding Fix) see only
-the re-issued draw, with the mod's shader bound. Light Probe uses the same re-issue-and-Skip pattern. The profiler
-recognises a dispatch cut short by Skip or Block by its stack address.
+Consequences: hooks before `Normal` that do not observe re-issued draws (Ambient Occlusion's receiver replay) see a
+replaced draw once, as the original. Hooks after `Normal` see only the re-issued draw, with the mod's shader bound, and must observe
+re-issued draws to see it at all. Light Probe uses the same re-issue-and-Skip pattern (without a ReissueScope). The
+profiler recognises a dispatch cut short by Skip or Block by its stack address.
 
 **Rule:** a callback may register or unregister callbacks of any type; the running chain keeps its list. Still, prefer
 registering in `Install` and unregistering in `Uninstall`.

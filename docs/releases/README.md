@@ -5,6 +5,7 @@ One page per published version of Apex Radiance (`ApexRadiance.asi`, repository
 GitHub release text in a common layout. Unreleased work is described in the feature pages with the status
 "In development"; it gets a page here only when it is published.
 
+- [2.13.0](2.13.0.md): Instant lamp lighting and lamp light through doors, windows and arches.
 - [2.12.3](2.12.3.md): realistic lamp reach, balconies blocking lamps below and faster lamp edits.
 - [2.12.2](2.12.2.md): keyboard shortcuts for presets.
 - [2.12.0](2.12.0.md): LUTs, presets and graphics improvements.
@@ -33,6 +34,7 @@ tests, publication) is in [workflow.md](../workflow.md#6-release).
 
 | Version | Published | Headline |
 |---|---|---|
+| [2.13.0](2.13.0.md) | 2026-10-14 | Instant lamp lighting on the graphics card, and lamp light through doors, windows and arches |
 | [2.12.3](2.12.3.md) | 2026-10-13 | Outdoor lamp light that follows distance and buildings, and faster lamp edits |
 | [2.12.2](2.12.2.md) | 2026-10-12 | Keyboard shortcuts for presets |
 | [2.12.1](2.12.1.md) | 2026-10-12 | Outdoor lighting corrections |

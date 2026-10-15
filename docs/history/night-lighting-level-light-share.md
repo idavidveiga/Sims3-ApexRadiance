@@ -507,3 +507,195 @@ was red too (77/13/13 at (1950, 800)): the per-pixel object lamps tested walls o
 copy of each story's placed floors); a ray passing a slab's edge keeps the share of a 0.3 m lantern. Both settings are
 removed; their keys are ignored when a configuration, profile or preset is loaded. Objects and windows standing above
 every lamp head around also lose the ground term (the height gate fences already had). Not yet checked in game.
+
+### 2026-10-13: wall openings filed under the posting lot's id
+
+**Context:** a roofed arcade on lot `B1280029950F0CA0`, streamed in after the world, showed no opening. Its log had
+every checked cutout post marked as differing from its story manager's lot id, and no opening on the story's grid. The
+lots loaded with the world were not affected.
+
+**Finding:** the capture filed cuts under the story manager's `+0x90/+0x94` id. The first post whose manager carried
+another id made a permanent alias and moved every earlier cut of that lot under the manager's id, and the grid asked
+for the id its manager carried when it was built. Unverified which read was wrong; most likely the manager's id, read
+while the lot was still being built. The
+payload's id is the posting lot's `+0x48/+0x4C`, the id the game routes the message by (`0x00C52AA0`). Rejected posts
+were not logged with a reason, and a 300-line log cap was used up by the lots loaded with the world. Story 0 had a
+grid only when it held a roofless room: grids were built only for roofless rooms and for the stories lit from below.
+
+**Outcome:** cuts are filed under the post's own id and looked up under the id of the lot that owns the grid's story
+manager (its floor's owner lot `+0x214`, `+0x48/+0x4C`). The manager's own id is accepted only when it is not 0 and a
+post carried it. Room 0's gather of any story builds the grid of a story with openings, in a cache of its own, so no
+lighting changes yet. Developer mode logs the first 10 posts of each lot with their rejection reasons and each lot id
+whose manager carried another id; F8 lists the cuts per lot and story and where each loaded story looks them up.
+Not yet checked in game: that the owner lot's id equals the posts' id on a lot streamed in late.
+
+### 2026-10-13: outdoor light through openings into roofed rooms
+
+**Context:** a colonnade on lot `B1280029950F0CA0`, story 0: the inside of its roofed room (room 48, the columns' room)
+stayed dark next to a garden post (type 11, room 0) that stood in front of its arches. The room's list held its own
+lamps only, and the F7 of a column listed the room's lamps without the post.
+
+**Finding:** a roofed room gathers only the lamps registered for its id (only room 0 takes a story's outdoor lights,
+`0x006C6B0D`), and the game's 2D wall test sees whole wall runs (an arch's wall blocks like a solid one). The object
+rigs of the room have the same limits and more: the room-list gather `FUN_006bb2f0` skips the street-lamp class
+(`vfunc+0x20` true) and pops a candidate whose ray from the rig's centre crosses a wall of the room (`0x0069D4C0`,
+`0x006BB3B7`), decompiled 2026-10-13.
+
+**Outcome:** with the new option *Outdoor light through openings* (on in the 2.12.4 development branch) a roofed room
+with a door, window or arch noted on its outline toward room 0 or a roofless room takes room 0's lamps of its story that
+see one of those openings, tested per point through the openings' holes and under its roof, with the game's wall test
+of those lamps skipped, as the yards' lamps are. Its objects take them through the game's per-light test
+`FUN_006bb270` alone, scaled by the same share. A room with no known opening takes none. The offline check written for
+it found a half-dark line where a ray crossed the seam between two cells of one wide opening (the soft rim was applied
+on a side with no jamb); that rim is gone. Not yet checked in game.
+
+### 2026-10-13: openings found on streamed lots; light through the outside walls' openings
+
+**Context:** with the build above in game (log 10:42), the colonnade lot `B1280029950F0CA0` built its grids of stories
+1..4 with no wall edge (79 / 98 / 38 / 8 noted cuts with no wall) while it streamed in, and no room of those stories
+gathered again; once its walls were readable its grids looked their cuts up under its owner lot's id `3647CD2033346670`
+and found none (the same on lot `7975270033346670`, whose posts carried `B128002B8215A110`). Every roofed room logged no
+door to the outside. With a garden post moved inside the arcade (F8 10:44:26: type 11, room 0 of story 0), the grass in
+front of the arches took hard lit rectangles and the columns, the facade and the ground further out stayed dark.
+
+**Finding:** the owner lot's `+0x48` is not always the id the posts carry; the story manager's `+0x90` was, on both lots.
+A grid built before its walls are readable was kept until something sent its rooms again. The post is an outdoor lamp
+(room 0): the ground shade, the objects and fences and room 0's own solve tested it against walls that the copies and
+the game's 2D test both saw whole, so its light left the arcade only past wall ends.
+
+**Outcome:** the cuts are looked up under whichever of the two ids a post carried; a grid with no wall edge on a story
+with cuts or roofed tiles is not kept and its rooms gather again every second, at most 12 times. The outside walls'
+copies carry each wall's openings and half-wall cells from the story grid, used by objects, fences, windows, the object
+rigs and the ground shade, and room 0's wall test lets a ray through when the grid walk passed an opening. Opening
+shapes stay the kinds' defaults: no resource read path exists for the cutout masks. Not yet checked in game.
+
+### 2026-10-13: roofed rooms on a foundation take the garden posts of the story below
+
+**Context:** with the build above in game (log 11:18 to 11:21, F8 11:20:15 and 11:21:29, F7 11:20:10 to 11:21:31) the
+post inside the colonnade of lot `B1280029950F0CA0` lit the grass through the arches, but the columns and the floor on
+the foundation stayed dark. A mismatch between the story in the cut posts and the lighting stories was suspected.
+
+**Finding:** the cuts are filed on the right story. That lot's cuts sit on stories -1 and 1 to 4 and every one of them lies
+on a wall edge of the grid of the same story (story 1: 79 of 79, story 2: 98 of 98); story 0 has no cut. As noted for
+foundation houses in [room-light-maps.md](../engine/room-light-maps.md), the ground floor on the foundation is story 1:
+its colonnade rooms 4, 7, 11 and 16 found 13 to 16 doors each (the arches) and considered 0 lamps, because the post is a
+room 0 lamp of story 0 and only the room's own story was walked.
+
+**Outcome:** a roofed room of story S also takes room 0's lamps of story S - 1 that see one of its doors past the walls
+of both stories, and per point they are also stopped by the floors of story S (the slab gate; the objects use the slab
+copy). Lamp edits on a story also send the roofed rooms of the story above. The floor on the foundation stays dark when
+the bulb is under its plane. Not yet checked in game.
+
+### 2026-10-13: doors block lamp light
+
+**Context:** the openings of walls were all open holes, doors included, while the game keeps a door closed except during
+its open animation: a garden post lit a room through its closed front door.
+
+**Finding:** every post carries the product's kind (`+0xD0`); in the logs of 13/10 every post was a door (`00000002`,
+`80000002`), a window (`00000004`) or an arch (`00000100`).
+
+**Outcome:** a new option, *Doors block light* (`portasBloqueiamLuz`, default on): the story grids leave doors, gates and
+cuts of unknown kind closed, so the yards, the roofed rooms' doors, the outside walls' copies (objects, the ground shade,
+the rigs) and room 0's wall test all see the same holes; arches and windows stay open. A change sends again only the
+stories with doors. A door seen open during its animation and glass doors are not modelled: the first belongs to
+per-pixel lighting on the GPU, the second needs the cutout mask's shape. Not yet checked in game.
+
+### 2026-10-13: walls ending at a floor above in the story grids
+
+**Context:** a colonnade on a foundation (lighting story 1), a garden post on the terrain in front of its arches: the
+floor, the columns and the back wall inside stayed dark (F7 of the floor: the room's light map; of a column: its rig with
+only the fill light). The post's head stands 0.5 m over the foundation's top.
+
+**Finding:** the story grids gave the foundation's sides, walls of story 0 drawn only up to the floor on the foundation,
+a full story's 3 m. The roofed room's per-point test of a lamp of the story below walks that story's grid, so every ray
+from the post to a point inside crossed a side under its top; the rigs' copy did the same. The render copy and the room
+solve's wall test already capped such walls (`CapFoundationSides`, `PassesOverLowerWall`). Separately, the colonnade's
+gather took the post at 11:48:25 and lost it at 11:48:29 with the same grids of its story and of the story below ("no
+door in sight"): only the story above's grid can have changed between them, and a wall of that story whose drawn foot
+reached past its floor was asked as a wall of the story below.
+
+**Outcome:** the grids cap such walls at the floor beside them (`CapLowerWalls`) and ask the story above only above its
+floor. The gather's log names the grid that hides a lamp's nearest door. Not yet checked in game.
+
+### 2026-10-13: indoor light through openings
+
+**Context:** a lit room behind an arch or a window left the terrace, the garden, the outside walls and the next room dark:
+the game gathers into a room only the lamps registered for its own id, and room 0 only room 0's.
+
+**Outcome:** a new option, *Indoor light through openings* (`luzInternaPelasAberturas`, on in the 2.12.4 development
+branch): room 0, the roofless rooms and the roofed rooms take the lamps of the story's roofed rooms that see an opening on
+their outline into those rooms, each lit per point only through the opening and past every wall of the story; room 0 of
+the story below takes those shining out of the story above. The objects and fences outside take them as per-pixel lamps,
+a roofed neighbour's objects through their rigs. One opening only. Offline: `tools/roofed_openings_test`. Not yet checked
+in game.
+
+### 2026-10-13: the balcony outside a lit window dim
+
+**Context:** a floor lamp inside an upper-story room beside an arched window; the balcony floor outside stayed almost dark
+(F7 of the floor: the outdoor floor draw, the floor map's own light used).
+
+**Finding:** the story's floor map held the patch through the window (room 0 took the lamp through the opening, the
+`[InnerLamps]` lines), 0.20 at the F7 point 0.45 m outside, about half the room's own floor at the same distance from the
+lamp: the game multiplies an indoor room's sum by its normalisation (`room+0x160`) and room 0's by nothing. The strip
+within about 0.3 m of the wall was dark under the window's default sill (0.85 m; no cutout mask is read).
+
+**Outcome:** a lamp shining out of a roofed room is scaled by its room's normalisation over the solving room's (1
+outdoors). Offline: `tools/roofed_openings_test` (the normalisation checks). Not yet checked in game; the window's real sill
+is not known.
+
+### 2026-10-13: the columns inside an arcade brighter than those outside
+
+**Context:** at night a garden post on the terrain in front of a colonnade on a foundation: the columns inside, seen
+through the arches, were almost white, far brighter than the outer columns and the facade facing the post.
+
+**Finding:** the rigs of the roofed room took the post through the per-light test with the game's colour raised by the
+ground footprint's boost (`BoostRec`, the lamp's whole colour x the object strength within half its bounds), while the
+outer columns are drawn with the per-pixel lamps on the outdoor walls' reach law and scale: at 6 to 10 m the boost is at
+least 6x that law.
+
+**Outcome:** the record of an outdoor lamp taken through openings is the per-pixel law at the rig's centre
+(`LotLightBridge::ObjectLampColourAt`), times its share through the openings. Offline: the rig's colour equals the shader's
+steps at the same point within 1e-5 and the wall texels' law beyond r0 (`tools/roofed_openings_test`). Not yet checked in
+game; the rig shader's own use of the record (N.l per vertex or per pixel) is not compared.
+
+### 2026-10-13: a lamp put down after a drag left the next room dark
+
+**Context:** a floor lamp moved inside a room next to a doorway; after one release the next room stayed fully dark. The log
+showed room 56 (the next room) and both rooms 0 gathering with no lamp considered while the lamp was lifted; room 0 gathered
+again 180 ms later and took it back, room 56 never did.
+
+**Finding:** the game takes a dragged lamp out of its room's registry until it is put down. The sends after the drop
+reached only the rooms holding the lamp (the move's safety net) or, for a value change, the rooms that took one of its
+lamps at their last gather: a room that lost the lamp was in neither.
+
+**Outcome:** a room that misses a source room's lamps it took before gathers again after 0.7, 1.5, 3 and 6 s while it
+keeps missing them; a value change of the source room sends it too; a lamp's switch or move sends every room with an
+opening into its room that holds none of the lamps. Offline: `tools/roofed_openings_test` (the retry list). Not yet checked
+in game.
+
+### 2026-10-13: penumbra from the lamp's size
+
+**Context:** the light of a lamp through an arch into the next room ended in a hard, stair-stepped edge on the floor. Every
+opening, wall top and wall end had a fixed 4 cm rim (the stories in between 0.3 m, a slab's edge a 0.3 m lantern), so an
+edge 3 m behind a jamb was as sharp as one at the jamb, and on a light map of 4 texels a metre a 4 cm edge draws as texel
+stairs.
+
+**Outcome:** every edge takes the penumbra of a lamp of radius R (*Shadow softness*, 0.15 m by default): half width
+R (1 - t) at the crossing, measured on the wall by the ray's slant, spread over the cells beside where the wall goes on and
+past a wall's free end, never across an L or T joint; on a light map at least 1.5 texels at the point. Offline: the
+penumbra 10-90% width behind a jamb 3 m from the lamp is 0.027, 0.067, 0.133 and 0.265 m at 0.05, 1, 2 and 4 m behind it
+(linear, sharp at the jamb), the light rises monotonically, no step at the cells' seams, the outside walls' copy within
+0.03 of the grid walk, no light through a closed room's corners at R = 0.5 m (`tools/roofed_openings_test`). Not yet
+checked in game.
+
+### 2026-10-14: soft edges of the lot ground shade
+
+**Context:** in game the shade walls cast on lot grass and paving next to an opening ended in steps of the shade mask's
+texels (4 a metre), while the room maps' edges had the lamp's penumbra.
+
+**Outcome:** the mask (`ground_lamp_shadow.h`, `Grid::soft`) takes the same penumbra: at each wall's free end, top and
+opening the ray's spot of the lamp's ball (*Shadow softness*) is spread over the wall's run, at least 1.5 mask texels at
+the ground; a joint or a corner keeps the shadow whole and the base stays hard. Built a slice at a time as before (more
+tests per texel, no frame cost beyond the slice budget). Offline: the edge 3 m behind a free end is 0.32 m wide (10-90%)
+instead of hard, monotonic, no light through a joint (`tools/roofed_openings_test`). Developer Tester switch *Soft ground
+shade*. Not yet checked in game.

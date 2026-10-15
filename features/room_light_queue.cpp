@@ -49,6 +49,7 @@
 #include "atrium_hold.h"
 #include "room_ambient_policy.h"
 #include "memory_patch.h"
+#include "drag_lite.h"
 #include "imgui.h"
 #include <windows.h>
 #include <algorithm>
@@ -285,9 +286,31 @@ float Prioritise(BYTE* room, float p) {
 
 // 07/10, players' Runtime Error: Apex's parts around the game's priority call are caught on their own (HookGuard); on a C++
 // exception the room keeps the game's own priority and that part stays off
+// The priority-lot helpers' bytes were checked (Start, or EnsureDragThrottle when Faster room lighting is off)
+std::atomic<bool> g_prioLotOk{false};
+// A room of the lot being played (the priority lot); false when unreadable or the helpers are missing or differ
+bool OnPlayedLot(const BYTE* room) {
+    if (!kSomGet || !kPrioLot || !g_prioLotOk.load(std::memory_order_relaxed)) return false;
+    __try {
+        const uintptr_t mgr = *reinterpret_cast<const uintptr_t*>(room);
+        return mgr && PriorityLot(mgr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 float __fastcall PriorityHook(BYTE* room) {
     if (room && g_prioOn) HookGuard::Run("RoomLightQueue quick pass", [room] { QuickPassRoom(room); });
     const float p = reinterpret_cast<Priority_t>(kPriority)(room);
+    // (14/10, Classic: relight only after release) while a lamp is dragged no room of the drag's edit or of the lot being
+    // played is picked: each keeps its state and invalidations and is solved once after the release (drag_lite.h)
+    if (room && DragLite::ClassicHolding() &&
+        HookGuard::Run("RoomLightQueue drag hold", false, [room] { return DragLite::HoldUntilRelease(room, OnPlayedLot(room)); }))
+        return p > 0.0f ? 0.0f : p;
+    // (14/10, drag solves) while a lamp is dragged a room solved moments ago is not picked again yet (drag_lite.h): it keeps
+    // its state and its invalidations and is picked once the gap ends, so the scheduler and the drain re-solve the same rooms
+    // at most every 400 ms instead of on every step of the drag
+    if (room && p > 0.0f && DragLite::HoldRepick(room)) return 0.0f;
     if (!room || !g_prioOn) return p;
     return HookGuard::Run("RoomLightQueue room priority", p, [room, p] { return Prioritise(room, p); });
 }
@@ -421,10 +444,11 @@ void Drain(BYTE* tree, BYTE* before) {
         // the first seconds after a load (LevelLightShare::SettlingAfterLoad): 12 ms, the loaded lot corrects itself sooner
         // a switch shown all at once waits for its rooms' final light: they take 16 ms a frame meanwhile (AtriumHold)
         // a lamp edit held all at once (12/10: switches, values, moves; not while dragged) gets the 16 ms too
-        const float budget = LotLightingMotion::SampleCameraMoving() ? 1.0f
+        // (14/10, drag solves) the flush once a dragged lamp is still: the spread cap, no boost (LotLightingMotion::DrainBudget)
+        const float budget = LotLightingMotion::DrainBudget(LotLightingMotion::SampleCameraMoving() ? 1.0f
                              : AtriumHold::EditHolding() && !LevelLightShare::LampDragging() ? 16.0f
                              : lampEdit ? (g_refining ? 4.0f : LevelLightShare::LampDragging() ? 6.0f : 12.0f)
-                                        : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f;
+                                        : LevelLightShare::SettlingAfterLoad() ? 12.0f : 4.0f);
         if (lampEdit) g_drainUrgent.fetch_add(1, std::memory_order_relaxed);
         alignas(16) BYTE sw[32] = {};
         reinterpret_cast<SwCtor_t>(kSwCtor)(sw, 4, 0);
@@ -442,7 +466,9 @@ void Drain(BYTE* tree, BYTE* before) {
             room = DrainableRoom(tree);
             if (room && LotOf(room) != finishedLot) room = nullptr;
         }
-        g_drainMicros.fetch_add(static_cast<long long>(elapsed(sw) * 1000.0f), std::memory_order_relaxed);
+        const float spent = elapsed(sw);
+        g_drainMicros.fetch_add(static_cast<long long>(spent * 1000.0f), std::memory_order_relaxed);
+        LotLightingMotion::NoteDrainSpent(spent);
     }
     g_lastLot = LotOf(CurrentRoom(tree));
 }
@@ -454,6 +480,7 @@ void __fastcall PickHook(BYTE* tree) {
     const auto pick = reinterpret_cast<Pick_t>(kPick);
     BYTE* before = tree ? CurrentRoom(tree) : nullptr;
     g_editNow = g_prioOn && HookGuard::Run("RoomLightQueue edit check", false, [] { return LevelLightShare::LampEditPending(); }); // for the priority calls of this pick
+    if (tree && ThreadId() == g_renderThread.load(std::memory_order_relaxed)) LotLightingMotion::NoteDrainSpent(0.0f); // (a new frame: the drain books what it spends)
     pick(tree);
     if (!g_drainOn || !tree || ThreadId() != g_renderThread.load(std::memory_order_relaxed)) return;
     HookGuard::Run("RoomLightQueue drain", [tree, before] { Drain(tree, before); });
@@ -493,7 +520,23 @@ void LoadAddresses() {
     kSomGet = Get(Id::PriorityLotObject), kPrioLot = Get(Id::PriorityLotTest);
 }
 
+// (14/10, drag solves) the priority CALL alone, also while this feature is off: the re-pick throttle of a lamp drag
+// (DragLite::HoldRepick) lives in PriorityHook, which passes the game's priority through untouched otherwise. g_ctrl held.
+bool g_throttleWanted = false, g_throttleTried = false;
+std::atomic<bool> g_throttleReady{false};
+bool InstallPriorityCall() {
+    if (g_writes[0].done) return true;
+    using GameAddr::Id;
+    if (!GameAddr::Have({Id::RoomPriorityCall, Id::RoomPriority}) || !Bytes(kPriority, "\x83\xEC\x0C\x56\x8B\xF1\x57\x8B\x3E", 9)) return false;
+    BYTE b[5];
+    Rel32(kPriorityCall, reinterpret_cast<uintptr_t>(&PriorityHook), 0xE8, b);
+    BYTE cur[5];
+    return MemPatch::ReadBytes(kPriorityCall, cur, 5) && cur[0] == 0xE8 && kPriorityCall + 5 + *reinterpret_cast<int32_t*>(cur + 1) == kPriority &&
+           Put(g_writes[0], kPriorityCall, b, 5);
+}
 void RestoreAll() {
+    g_throttleReady.store(false, std::memory_order_relaxed); // (the priority CALL goes back too: EnsureDragThrottle puts it again)
+    g_throttleTried = false;
     for (int i = 4; i >= 0; i--) {
         Write& w = g_writes[i];
         if (!w.done) continue;
@@ -522,14 +565,9 @@ bool Start(std::string* error) {
         if (error) *error = "Faster room lighting: " + (why.empty() ? std::string("the game code differs (different game version?)") : GameAddr::NotAvailable(why));
         return false;
     }
-    // 1. priority
-    if (GameAddr::Have({Id::RoomPriorityCall, Id::RoomPriority}) && Bytes(kPriority, "\x83\xEC\x0C\x56\x8B\xF1\x57\x8B\x3E", 9)) {
-        BYTE b[5];
-        Rel32(kPriorityCall, reinterpret_cast<uintptr_t>(&PriorityHook), 0xE8, b);
-        BYTE cur[5];
-        g_prioOn = MemPatch::ReadBytes(kPriorityCall, cur, 5) && cur[0] == 0xE8 && kPriorityCall + 5 + *reinterpret_cast<int32_t*>(cur + 1) == kPriority &&
-                   Put(g_writes[0], kPriorityCall, b, 5);
-    }
+    g_prioLotOk.store(true, std::memory_order_relaxed);
+    // 1. priority (the CALL may already be Apex's: the drag throttle alone, EnsureDragThrottle)
+    g_prioOn = InstallPriorityCall();
     // 2. class 0 -> target in one step
     if (GameAddr::Have({Id::LodStepSite}) && Bytes(kStepSite, "\xBF\x01\x00\x00\x00\x8D\x5F\x01\xEB\x0C", 10)) {
         const BYTE b[8] = {0x8B, 0xF8, 0xBB, 0x02, 0x00, 0x00, 0x00, 0x90};
@@ -583,8 +621,32 @@ void Stop() {
     D3D9Hooks::UnregisterAll(kHoldPresentName);
     AtriumHold::Clear();
     RestoreAll();
-    g_running = std::any_of(std::begin(g_writes), std::end(g_writes), [](const Write& w) { return w.done; });
+    if (g_throttleWanted) g_throttleReady.store(InstallPriorityCall(), std::memory_order_relaxed); // (the drag throttle stays)
+    g_running = std::any_of(std::begin(g_writes) + (g_throttleWanted ? 1 : 0), std::end(g_writes), [](const Write& w) { return w.done; });
     LOG_INFO(g_running ? "[RoomLightQueue] Stopped, but some game code could not be put back" : "[RoomLightQueue] Stopped");
+}
+
+void EnsureDragThrottle() {
+    if (g_throttleReady.load(std::memory_order_relaxed)) return;
+    // (called inside the Present chain: never wait for Start / Stop, which register Present callbacks under g_ctrl)
+    std::unique_lock<std::mutex> lk(g_ctrl, std::try_to_lock);
+    if (!lk) return;
+    g_throttleWanted = true;
+    if (g_writes[0].done) {
+        g_throttleReady.store(true, std::memory_order_relaxed);
+        return;
+    }
+    if (g_throttleTried) return; // (the game code differs: tried once)
+    g_throttleTried = true;
+    LoadAddresses();
+    // (the classic drag hold asks whether a room is on the lot being played: only with the helpers Start checks too)
+    g_prioLotOk.store(GameAddr::Have({GameAddr::Id::PriorityLotObject, GameAddr::Id::PriorityLotTest}) && Bytes(kSomGet, "\xA1", 1) &&
+                          Bytes(kPrioLot, "\x8B\x44\x24\x04", 4),
+                      std::memory_order_relaxed);
+    const bool ok = InstallPriorityCall();
+    g_throttleReady.store(ok, std::memory_order_relaxed);
+    LOG_INFO(ok ? "[RoomLightQueue] Drag throttle ready: the room priority call goes through Apex (the game's priority, untouched outside a lamp drag)"
+                : "[RoomLightQueue] Drag throttle not available: the room priority call differs");
 }
 
 bool Running() {

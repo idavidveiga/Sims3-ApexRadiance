@@ -10,7 +10,7 @@ short per-capture ids (`S12`, `T141`, `PS41`) with a one-line definition at firs
 
 | | |
 |---|---|
-| Availability | Developer mode only. Released in 2.5.5 as part of the unified build (earlier: developer build only) |
+| Availability | Developer mode only. Released in 2.5.5 as part of the unified build (earlier: developer build only). Draw hooks registered only while a capture runs: Released in 2.13.0 |
 | Default | Off |
 | Menu | Developer > Captures > Capture two drawn frames (header switch, Capture two frames, advanced "File and shortcut") |
 | Configuration | `[patches.FrameCapture]` in `ApexRadiance.toml`; shortcut `[ui] frame_capture_key` (see [ui.md](../../ui.md#shortcuts)) |
@@ -83,8 +83,9 @@ In normal mode `Install` fails with "Enable developer mode and restart the game 
 All state lives in an anonymous namespace (`CaptureState g`).
 
 1. **Install** registers, all at `Priority::Last` under the name `FrameCapture`: `RegisterBeginScene` (which also calls
-   `ExtraHooks::EnsureInstalled`), `RegisterSetRenderTarget`, `RegisterDrawIndexedPrimitive`, `RegisterDrawPrimitive`
-   and `RegisterPresent`; adds `OnEndScene` to `RenderCallbacks::endSceneBeforeOverlay` (fired inside the game's
+   `ExtraHooks::EnsureInstalled`) and `RegisterPresent`. `RegisterSetRenderTarget`, `RegisterDrawIndexedPrimitive` and
+   `RegisterDrawPrimitive` (name `FrameCapture draws`) are registered when a capture starts and removed when it ends, so
+   no draw pays for them while idle; adds `OnEndScene` to `RenderCallbacks::endSceneBeforeOverlay` (fired inside the game's
    EndScene before the overlay draws); sets the four ExtraHooks observers. Log `[FrameCapture] Installing...` then
    `[FrameCapture] Installed (press the button or Ctrl+Shift+F9 to capture)`.
 2. **Arming**: the button or the shortcut sets `armed`. If 300 EndScenes pass while armed and no Present was ever seen,

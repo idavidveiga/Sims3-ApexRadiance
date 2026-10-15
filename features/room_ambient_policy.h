@@ -50,6 +50,13 @@ inline int EditHoldOutcome(int pending, bool groundPending, std::uint32_t sinceL
     if (pending <= 0 && !groundPending) return 1;
     return sinceLatest >= 2500u || sinceFirst >= 4000u ? 2 : 0;
 }
+// 14/10, Classic: show all floors together (AtriumHold): every room of the edit, the lamp's own story's too, is counted in
+// pending; the only bound is maxMs from the hold's first edit (a drag: its release), never during a drag
+inline int EditHoldOutcomeTogether(int pending, bool groundPending, std::uint32_t sinceLatest, std::uint32_t sinceFirst, bool dragging, std::uint32_t maxMs) {
+    if (dragging || sinceLatest < 150u) return 0;
+    if (pending <= 0 && !groundPending) return 1;
+    return sinceFirst >= maxMs ? 2 : 0;
+}
 inline bool GatherAfterChange(std::uint32_t started, std::uint32_t changed) {
     return static_cast<std::int32_t>(started - changed) > 0;
 }

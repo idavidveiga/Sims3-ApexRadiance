@@ -176,6 +176,44 @@ class EnumOption final : public PatchSetting {
     std::vector<std::string> choices_;
 };
 
+// An enum saved as its choice's name (a TOML string; an unknown name or another type keeps the current value)
+class NamedEnumOption final : public PatchSetting {
+  public:
+    NamedEnumOption(int* v, std::string key, int def, std::string desc, std::vector<std::string> names)
+        : PatchSetting(std::move(key), std::move(desc)), v_(v), def_(def), names_(std::move(names)) {
+        *v_ = def_;
+    }
+    void Reset() override { *v_ = def_; }
+    void Save(toml::table& t) const override { t.insert_or_assign(key_, Name(*v_)); }
+    void SaveDefault(toml::table& t) const override { t.insert_or_assign(key_, Name(def_)); }
+    void Load(const toml::table& t) override {
+        if (auto s = t[key_].value<std::string>())
+            for (int i = 0; i < static_cast<int>(names_.size()); i++)
+                if (names_[i] == *s) *v_ = i;
+    }
+    bool Draw() override {
+        bool changed = false;
+        ImGui::TextUnformatted(description_.empty() ? key_.c_str() : description_.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo(("##" + key_).c_str(), Name(*v_).c_str())) {
+            for (int i = 0; i < static_cast<int>(names_.size()); i++) {
+                if (ImGui::Selectable(names_[i].c_str(), *v_ == i)) {
+                    *v_ = i;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+  private:
+    std::string Name(int i) const { return i >= 0 && i < static_cast<int>(names_.size()) ? names_[i] : names_.empty() ? std::string() : names_[0]; }
+    int* v_;
+    int def_;
+    std::vector<std::string> names_;
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -233,6 +271,10 @@ void ApexPatch::RegisterBoolSetting(bool* value, const std::string& key, bool de
 
 void ApexPatch::RegisterEnumSetting(int* value, const std::string& key, int def, const std::string& description, const std::vector<std::string>& choices) {
     settings.push_back(std::make_unique<EnumOption>(value, key, def, description, choices));
+}
+
+void ApexPatch::RegisterNamedEnumSetting(int* value, const std::string& key, int def, const std::string& description, const std::vector<std::string>& names) {
+    settings.push_back(std::make_unique<NamedEnumOption>(value, key, def, description, names));
 }
 
 void ApexPatch::NotifySettingChanged() {

@@ -30,8 +30,10 @@ namespace FrameProfiler {
 // Mod time measured outside the profiler's own hooks (development build; no-ops in the public build):
 //  - D3DDispatch: the registry times its outermost dispatch of every chain but Present (framework/d3d9_hooks.cpp),
 //    booked as "D3D hooks (mod)", also when a callback returns Skip / Block;
-//  - LampRefresh: Night Lighting's lamp list refresh (every 20 frames, lot_light_bridge.cpp), "Lamp refresh (mod)".
-enum class ModTime : int { D3DDispatch, LampRefresh };
+//  - LampRefresh: Night Lighting's lamp list refresh (every 20 frames, lot_light_bridge.cpp), "Lamp refresh (mod)";
+//  - ReissuedDraw: the driver call of a draw Night Lighting re-issued (framework/d3d9_hooks.cpp TimedReissueDraw), inside
+//    a D3DDispatch sample, "Re-issued draw (driver)": the game would have paid it for its own call.
+enum class ModTime : int { D3DDispatch, LampRefresh, ReissuedDraw };
 
 
 // Turns the profiler on (registers the D3D9 hooks, starts the file writer; the timed game functions are resolved and
@@ -67,6 +69,9 @@ bool PresentHookTimingActive();
 // EndModTime(token, key) closes it. Nesting follows the usual self / inclusive rules.
 bool ModTimeActive();
 int BeginModTime(ModTime what, const void* key);
+// A sample standing for `scale` calls: its time and the time of every frame pushed inside it are booked x scale, and its
+// parent loses the scaled time (the registry times one outermost dispatch in 16). Closed by EndModTime. -1 inside a sample.
+int BeginModTimeSampled(ModTime what, const void* key, uint32_t scale);
 void EndModTime(int token, const void* key);
 
 // RAII form for a scope on one thread

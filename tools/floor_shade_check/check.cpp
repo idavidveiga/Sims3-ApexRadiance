@@ -1,0 +1,832 @@
+// Offline check of the ground lamp shade on outdoor floors (ShaderPatches PatchBakedAtlasPs / PatchFloor / PatchSnowFloor
+// with the shade, WorldYOutput, GroundShadow::FloorShadeRows). Read-only: prints to stdout, writes no file.
+//   check.exe <Shaders_Win32.precomp> [F7 capture folder ...]
+// 1. Summer outdoor floors: every pixel shader of floor_atlas_table.h, with the TEXCOORD each paired vertex shader's copy
+//    (PatchObjectLampVs) exports: patched with and without the shade; the shade is exactly the patch without it plus one
+//    sampler declaration and the shade block right after the atlas max; D3DDisassemble within 512 slots; native D3D9 accepts it.
+// 2. Winter floor tiles (kFloorVs, IsFloorVs) and snow on floors (IsSnowFloorVs, in the production classification order):
+//    where their vertex shader writes world y (WorldYOutput), and their pixel shaders patched with and without the shade.
+// 3. FloorShadeRows against GroundShadow::WorldTexel on a straight and a rotated lot, the gate and the off switch.
+// 4. Native D3D9 pixels: a synthetic floor-shaped shader patched with the shade, a mask with a known alpha pattern (point
+//    sampled), several heights over the lot's ground: out = map x (1 + gate (M - 1)) at every pixel (2 LSB).
+// 5. Optional F7 capture folders: a captured summer floor copy (PS_*.bin) is found again as the patch of a table shader,
+//    which takes the shaded patch.
+// 6. Instanced lot structures (PatchInstancedLamps): every precomp pixel shader paired with an instanced vertex shader, both
+//    laws, with and without the shade (as 1); native D3D9 pixels of a synthetic fence shader (ground light and one lamp, x the
+//    shade); captured fence copies (PS_*.bin under the capture folders, recursively) found again.
+#define NOMINMAX
+#include <windows.h>
+#include <d3d9.h>
+#include <d3dcompiler.h>
+#include "../../features/ground_lamp_shadow.h"
+#include "../../features/shader_patches.h"
+#include "../../shaders/floor_atlas_table.h"
+#include "../../shaders/shader_ids.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+
+int g_checks = 0, g_failures = 0;
+void Check(bool ok, const char* what) {
+    g_checks++;
+    if (!ok) {
+        g_failures++;
+        if (g_failures < 40) std::printf("  FAIL %s\n", what);
+    }
+}
+template <class T> void Release(T*& p) {
+    if (p) p->Release();
+    p = nullptr;
+}
+
+// ---- Shaders_Win32.precomp (docs/engine/shaders.md) ----
+struct Blob {
+    bool vs = false;
+    std::vector<DWORD> code;
+};
+struct Tech {
+    std::vector<std::pair<uint32_t, uint32_t>> passes; // (vs, ps), 1-based blob indices
+};
+std::vector<DWORD> Trim(const unsigned char* p, size_t n) {
+    for (size_t k = 0; k + 4 <= std::min<size_t>(n, 12); k += 4) {
+        DWORD v;
+        std::memcpy(&v, p + k, 4);
+        if ((v & 0xFFFE0000u) != 0xFFFE0000u) continue;
+        size_t j = k + 4;
+        while (j + 4 <= n) {
+            DWORD tok;
+            std::memcpy(&tok, p + j, 4);
+            if (tok == 0x0000FFFFu) {
+                std::vector<DWORD> c((j + 4 - k) / 4);
+                std::memcpy(c.data(), p + k, c.size() * 4);
+                return c;
+            }
+            j += ((tok & 0xFFFF) == 0xFFFE) ? 4 + 4 * ((tok >> 16) & 0x7FFF) : 4 + 4 * ((tok >> 24) & 0xF);
+        }
+    }
+    return {};
+}
+bool LoadPrecomp(const std::vector<unsigned char>& d, std::vector<Blob>& blobs, std::vector<Tech>& techs) {
+    auto find = [&](const char* tag, size_t from, size_t to) -> size_t {
+        for (size_t i = from; i + 4 <= to; i++)
+            if (std::memcmp(&d[i], tag, 4) == 0) return i;
+        return std::string::npos;
+    };
+    const size_t shdb = find("SHDB", 0, d.size());
+    if (shdb == std::string::npos) return false;
+    uint32_t size;
+    std::memcpy(&size, &d[shdb + 4], 4);
+    const size_t end = std::min(d.size(), shdb + 8 + size);
+    for (size_t j = shdb + 8; j + 8 <= end;) {
+        const bool v = std::memcmp(&d[j], "VSHD", 4) == 0, p = std::memcmp(&d[j], "PSHD", 4) == 0;
+        if (!v && !p) {
+            j++;
+            continue;
+        }
+        uint32_t n;
+        std::memcpy(&n, &d[j + 4], 4);
+        blobs.push_back({v, Trim(&d[j + 8], std::min<size_t>(n, d.size() - j - 8))});
+        j += 8 + n;
+    }
+    std::vector<size_t> at;
+    for (size_t i = end; i + 4 <= d.size(); i++)
+        if (std::memcmp(&d[i], "TECH", 4) == 0) at.push_back(i);
+    for (size_t k = 0; k < at.size(); k++) {
+        const size_t lim = k + 1 < at.size() ? at[k + 1] : d.size();
+        Tech t;
+        uint32_t np;
+        std::memcpy(&np, &d[at[k] + 8], 4);
+        size_t q = at[k] + 12;
+        for (uint32_t i = 0; i < np && i < 64; i++) {
+            q = find("PASS", q, lim);
+            if (q == std::string::npos || q + 20 > lim) break;
+            uint32_t vs, ps;
+            std::memcpy(&vs, &d[q + 12], 4);
+            std::memcpy(&ps, &d[q + 16], 4);
+            t.passes.push_back({vs, ps});
+            q += 4;
+        }
+        techs.push_back(std::move(t));
+    }
+    return !blobs.empty();
+}
+
+uint32_t Hash(const std::vector<DWORD>& t) { return ShaderHash(t.data(), t.size() * 4); }
+bool InFloorTable(const std::vector<DWORD>& t) {
+    const uint32_t h = Hash(t);
+    for (const FloorAtlasEntry& e : kFloorAtlasTable)
+        if (e.size == t.size() * 4 && e.hash == h) return true;
+    return false;
+}
+
+std::string Disasm(const std::vector<DWORD>& t) {
+    ID3DBlob* b = nullptr;
+    if (t.empty() || FAILED(D3DDisassemble(t.data(), t.size() * 4, 0, nullptr, &b)) || !b) return {};
+    std::string s(static_cast<const char*>(b->GetBufferPointer()), b->GetBufferSize());
+    b->Release();
+    return s;
+}
+int Slots(const std::string& text) {
+    const auto at = text.find("approximately ");
+    return at == std::string::npos ? -1 : std::atoi(text.c_str() + at + 14);
+}
+
+// ---- hidden D3D9 device (64 x 64 target) ----
+struct Gpu {
+    HWND window = nullptr;
+    IDirect3D9* api = nullptr;
+    IDirect3DDevice9* dev = nullptr;
+    IDirect3DSurface9 *target = nullptr, *readback = nullptr;
+    Gpu() {
+        window = CreateWindowExW(0, L"STATIC", L"Apex floor shade check", WS_OVERLAPPED, 0, 0, 64, 64, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        api = Direct3DCreate9(D3D_SDK_VERSION);
+        D3DPRESENT_PARAMETERS p{};
+        p.Windowed = TRUE;
+        p.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        p.hDeviceWindow = window;
+        p.BackBufferFormat = D3DFMT_UNKNOWN;
+        p.BackBufferWidth = p.BackBufferHeight = 64;
+        if (api) api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &p, &dev);
+        Check(dev != nullptr, "native D3D9 device available");
+        if (!dev) return;
+        Check(SUCCEEDED(dev->CreateRenderTarget(64, 64, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &target, nullptr)), "readback target");
+        Check(SUCCEEDED(dev->CreateOffscreenPlainSurface(64, 64, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &readback, nullptr)), "readback surface");
+        dev->SetRenderTarget(0, target);
+        dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+        dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    }
+    ~Gpu() {
+        Release(target);
+        Release(readback);
+        Release(dev);
+        Release(api);
+        if (window) DestroyWindow(window);
+    }
+    bool AcceptsPs(const std::vector<DWORD>& t) {
+        IDirect3DPixelShader9* s = nullptr;
+        const bool ok = dev && SUCCEEDED(dev->CreatePixelShader(t.data(), &s));
+        Release(s);
+        return ok;
+    }
+    bool AcceptsVs(const std::vector<DWORD>& t) {
+        IDirect3DVertexShader9* s = nullptr;
+        const bool ok = dev && SUCCEEDED(dev->CreateVertexShader(t.data(), &s));
+        Release(s);
+        return ok;
+    }
+    // a full-screen quad, TEXCOORD0 = (0, 0) top left .. (1, 1) bottom right; D3D9 pixel centres: pixel x reads uv x / 64
+    std::vector<DWORD> Render(IDirect3DPixelShader9* ps, IDirect3DVertexShader9* vs) {
+        struct Vertex {
+            float x, y, z, w, u, v;
+        };
+        const Vertex q[4] = {{-1, 1, 0, 1, 0, 0}, {1, 1, 0, 1, 1, 0}, {-1, -1, 0, 1, 0, 1}, {1, -1, 0, 1, 1, 1}};
+        IDirect3DVertexDeclaration9* decl = nullptr;
+        const D3DVERTEXELEMENT9 el[] = {{0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+                                        {0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+                                        D3DDECL_END()};
+        Check(SUCCEEDED(dev->CreateVertexDeclaration(el, &decl)), "test vertex layout");
+        dev->SetVertexDeclaration(decl);
+        dev->SetVertexShader(vs);
+        dev->SetPixelShader(ps);
+        dev->BeginScene();
+        Check(SUCCEEDED(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(Vertex))), "test quad draw");
+        dev->EndScene();
+        std::vector<DWORD> px(4096);
+        D3DLOCKED_RECT r{};
+        if (SUCCEEDED(dev->GetRenderTargetData(target, readback)) && SUCCEEDED(readback->LockRect(&r, nullptr, D3DLOCK_READONLY))) {
+            for (int y = 0; y < 64; y++) std::memcpy(px.data() + y * 64, static_cast<char*>(r.pBits) + y * r.Pitch, 256);
+            readback->UnlockRect();
+        } else
+            Check(false, "GPU readback");
+        Release(decl);
+        return px;
+    }
+};
+
+std::vector<DWORD> Compile(const char* src, const char* profile) {
+    ID3DBlob *code = nullptr, *err = nullptr;
+    const HRESULT hr = D3DCompile(src, std::strlen(src), nullptr, nullptr, nullptr, "main", profile, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &err);
+    if (FAILED(hr) && err) std::printf("%s\n", static_cast<const char*>(err->GetBufferPointer()));
+    std::vector<DWORD> out;
+    if (code) out.assign(static_cast<const DWORD*>(code->GetBufferPointer()), static_cast<const DWORD*>(code->GetBufferPointer()) + code->GetBufferSize() / 4);
+    Release(code);
+    Release(err);
+    return out;
+}
+
+constexpr DWORD kDclSampler = 0x0200001Fu, kMaxOp = 0x0300000Bu, kMadOp = 0x04000004u, kMulOp = 0x03000005u;
+constexpr size_t kShadeTokens = 36; // mad 5, mad 5, texld 4, add 4, mad 5, add 4, mad 5, mul 4
+
+// with = without + (the sampler dcl: 3 tokens) + (the shade block: kShadeTokens, right after an atlas max, ending with the
+// multiply of that max's destination). B = the destination register token's number.
+bool ShadeIsExactInsertion(const std::vector<DWORD>& with, const std::vector<DWORD>& without, DWORD S) {
+    if (with.size() != without.size() + 3 + kShadeTokens) return false;
+    size_t i = 0;
+    while (i < without.size() && with[i] == without[i]) i++;
+    if (i >= 2 && with[i - 2] == kDclSampler && with[i - 1] == 0x90000000u) i -= 2; // a dcl before another: the same first tokens
+    std::vector<DWORD> rest(with.begin(), with.end());
+    // the dcl is inserted at the first difference (the samplers' declarations)
+    if (i + 3 > rest.size() || rest[i] != kDclSampler || rest[i + 1] != 0x90000000u || (rest[i + 2] & 0x7FF) != S) return false;
+    rest.erase(rest.begin() + static_cast<ptrdiff_t>(i), rest.begin() + static_cast<ptrdiff_t>(i) + 3);
+    size_t j = 0;
+    while (j < without.size() && rest[j] == without[j]) j++;
+    if (j > 0 && rest[j - 1] == kMadOp) j--; // the block's first opcode is the same as the game's mad after it
+    if (j < 4 || j + kShadeTokens > rest.size() || without[j - 4] != kMaxOp) return false;
+    const DWORD maxDst = without[j - 3];
+    const DWORD* blk = &rest[j];
+    if (blk[0] != kMadOp || blk[kShadeTokens - 4] != kMulOp || (blk[kShadeTokens - 3] & 0x7FF) != (maxDst & 0x7FF) || ((blk[kShadeTokens - 3] >> 16) & 0xF) != 0x7) return false;
+    rest.erase(rest.begin() + static_cast<ptrdiff_t>(j), rest.begin() + static_cast<ptrdiff_t>(j + kShadeTokens));
+    return rest == without;
+}
+
+// ---- 1. summer outdoor floors ----
+void SummerFloors(Gpu& gpu, const std::vector<Blob>& blobs, const std::vector<Tech>& techs) {
+    std::printf("Summer outdoor floors (floor_atlas_table.h, %zu entries)\n", std::size(kFloorAtlasTable));
+    std::map<uint32_t, std::set<uint32_t>> vsOf; // ps -> its vertex shaders
+    for (const Tech& t : techs)
+        for (auto [vs, ps] : t.passes)
+            if (ps >= 1 && ps <= blobs.size() && vs >= 1 && vs <= blobs.size()) vsOf[ps].insert(vs);
+    std::set<uint32_t> tableHashes;
+    int found = 0, pairs = 0, shaded = 0, accepted = 0, maxSlots = 0, noRoom = 0;
+    std::map<int, int> tcCount, wkCount;
+    std::map<uint32_t, int> vsTc; // vs index -> TEXCOORD of its copy (-1 none)
+    for (size_t i = 0; i < blobs.size(); i++) {
+        const Blob& b = blobs[i];
+        if (b.vs || b.code.empty() || !InFloorTable(b.code)) continue;
+        if (!tableHashes.insert(Hash(b.code)).second) continue; // the same shader twice in the file
+        found++;
+        std::set<int> tcs;
+        for (uint32_t v : vsOf[static_cast<uint32_t>(i + 1)]) {
+            auto it = vsTc.find(v);
+            if (it == vsTc.end()) {
+                std::vector<DWORD> c = blobs[v - 1].code;
+                int tc = -1, wk = -1;
+                const bool ok = !c.empty() && ShaderPatches::PatchObjectLampVs(c, false, &tc, &wk);
+                if (ok) {
+                    Check(gpu.AcceptsVs(c), "summer floor: native D3D9 accepts the vertex shader copy");
+                    wkCount[wk]++;
+                }
+                it = vsTc.emplace(v, ok ? tc : -1).first;
+            }
+            if (it->second >= 0) tcs.insert(it->second);
+        }
+        Check(!tcs.empty(), "summer floor: a paired vertex shader exports world xzy");
+        for (int tc : tcs) {
+            pairs++;
+            tcCount[tc]++;
+            std::vector<DWORD> a = b.code, n = b.code;
+            ShaderPatches::FloorPatch fa, fn;
+            const bool pa = ShaderPatches::PatchBakedAtlasPs(a, tc, fa, true), pn = ShaderPatches::PatchBakedAtlasPs(n, tc, fn, false);
+            Check(pa && pn, "summer floor: the table's shader takes the patch, with and without the shade");
+            if (!pa || !pn) continue;
+            accepted++;
+            Check(fn.shadeSampler == -1 && fn.shadeConst == -1, "summer floor: no shade fields without the shade");
+            Check(fa.atlasSampler == fn.atlasSampler && fa.atlasConst == fn.atlasConst && fa.heightConst == fn.heightConst && fa.scaleConst == fn.scaleConst &&
+                      fa.maskAlpha == fn.maskAlpha,
+                  "summer floor: the shade leaves the atlas, weight and scale registers alone");
+            if (fa.shadeSampler < 0) { // no sampler or constants to spare: the floor as before
+                noRoom++;
+                Check(a == n, "summer floor: without room the patch is the one before the shade");
+                Check(gpu.AcceptsPs(n), "summer floor: native D3D9 accepts the copy without the shade");
+                continue;
+            }
+            shaded++;
+            Check(fa.shadeSampler == static_cast<int>(fa.atlasSampler) + 1 && fa.shadeConst == fa.heightConst + 1, "summer floor: shade registers after the atlas ones");
+            const bool exact = ShadeIsExactInsertion(a, n, static_cast<DWORD>(fa.shadeSampler));
+            Check(exact, "summer floor: the shade is the sampler dcl plus the block after the atlas max");
+            const std::string text = Disasm(a);
+            Check(!text.empty(), "summer floor: patched shader disassembles");
+            Check(text.find("dcl_2d s" + std::to_string(fa.shadeSampler)) != std::string::npos && text.find("_abs") != std::string::npos,
+                  "summer floor: the disassembly shows the mask sampler and the gate");
+            const int slots = Slots(text);
+            maxSlots = std::max(maxSlots, slots);
+            Check(slots > 0 && slots <= 512, "summer floor: within 512 instruction slots");
+            Check(Disasm(n) != "" && gpu.AcceptsPs(n), "summer floor: the patch without the shade still assembles");
+            Check(gpu.AcceptsPs(a), "summer floor: native D3D9 accepts the shaded copy");
+        }
+    }
+    Check(found == static_cast<int>(std::size(kFloorAtlasTable)), "summer floor: every table entry is in the precomp");
+    std::printf("  table shaders found %d, (shader, TEXCOORD) pairs %d, patched %d, shaded %d (no sampler to spare %d), most slots %d; TEXCOORD:", found, pairs,
+                accepted, shaded, noRoom, maxSlots);
+    for (auto [tc, n] : tcCount) std::printf(" %d x%d", tc, n);
+    std::printf("; vertex shader copies' world rows from:");
+    for (auto [wk, n] : wkCount) std::printf(" c%d x%d", wk, n);
+    std::printf("\n");
+}
+
+// ---- 2. winter floor tiles and snow on floors ----
+// The production classification (lot_light_bridge ClassifyVs) before a vertex shader is a snow floor (class 11)
+bool ClaimedBeforeSnowFloor(std::vector<DWORD> t) {
+    DWORD m = 0;
+    if (ShaderPatches::IsRoadVs(t, m) || ShaderPatches::IsInstancedStructureVs(t) || ShaderPatches::IsSnowCoverVs(t) || ShaderPatches::IsSnowReliefVs(t) ||
+        ShaderPatches::IsFloorVs(t))
+        return true;
+    std::vector<DWORD> f = t;
+    if (ShaderPatches::PatchFoliageVs(f)) return true;
+    std::vector<DWORD> o = t;
+    int wk = -1, vl = -1;
+    return ShaderPatches::PatchObjectLampVs(o, true, nullptr, &wk, &vl);
+}
+void WinterFloors(Gpu& gpu, const std::vector<Blob>& blobs, const std::vector<Tech>& techs) {
+    std::map<uint32_t, std::set<uint32_t>> psOf; // vs -> its pixel shaders
+    for (const Tech& t : techs)
+        for (auto [vs, ps] : t.passes)
+            if (ps >= 1 && ps <= blobs.size() && vs >= 1 && vs <= blobs.size()) psOf[vs].insert(ps);
+    for (int kind = 0; kind < 2; kind++) {
+        const char* name = kind == 0 ? "Winter floor tiles" : "Snow on floors";
+        int vsN = 0, vsY = 0, psN = 0, psShaded = 0, psRefusedBoth = 0, psNoRoom = 0;
+        std::set<uint32_t> seenVs;
+        std::map<std::string, int> yAt;
+        for (size_t i = 0; i < blobs.size(); i++) {
+            const Blob& b = blobs[i];
+            if (!b.vs || b.code.empty() || !seenVs.insert(Hash(b.code)).second) continue;
+            int tc = 7;
+            const bool isFloor = IsShader(kFloorVs, b.code.data(), b.code.size() * 4) || ShaderPatches::IsFloorVs(b.code);
+            const bool isSnow = !isFloor && ShaderPatches::IsSnowFloorVs(b.code, tc) && !ClaimedBeforeSnowFloor(b.code);
+            if (kind == 0 ? !isFloor : !isSnow) continue;
+            vsN++;
+            ShaderPatches::WorldY y;
+            const bool hasY = ShaderPatches::WorldYOutput(b.code, y);
+            if (hasY) {
+                vsY++;
+                yAt[std::string("TEXCOORD") + std::to_string(y.texcoord) + "." + "xyzw"[y.comp]]++;
+            }
+            for (uint32_t p : psOf[static_cast<uint32_t>(i + 1)]) {
+                const std::vector<DWORD>& ps = blobs[p - 1].code;
+                if (ps.empty() || ps[0] != 0xFFFF0300u) continue;
+                std::vector<DWORD> a = ps, n = ps;
+                ShaderPatches::FloorPatch fa, fn;
+                const bool pa = kind == 0 ? ShaderPatches::PatchFloor(a, fa, y) : ShaderPatches::PatchSnowFloor(a, tc, fa, y);
+                const bool pn = kind == 0 ? ShaderPatches::PatchFloor(n, fn) : ShaderPatches::PatchSnowFloor(n, tc, fn);
+                Check(pa == pn, "winter: the shade never changes which shaders the patch takes");
+                if (!pn) {
+                    Check(a == ps, "winter: a refused shader is left unchanged");
+                    psRefusedBoth++;
+                    continue;
+                }
+                psN++;
+                Check(fn.shadeSampler == -1, "winter: no shade without world y");
+                Check(fa.atlasSampler == fn.atlasSampler && fa.atlasConst == fn.atlasConst && fa.heightConst == fn.heightConst && fa.scaleConst == fn.scaleConst,
+                      "winter: the shade leaves the atlas, weight and scale registers alone");
+                if (!hasY) {
+                    Check(a == n && fa.shadeSampler == -1, "winter: without world y the patch is the one before the shade");
+                    continue;
+                }
+                if (fa.shadeSampler < 0) { // no sampler or constants to spare: the floor as before
+                    psNoRoom++;
+                    Check(a == n, "winter: without room the patch is the one before the shade");
+                    continue;
+                }
+                psShaded++;
+                Check(fa.shadeSampler == static_cast<int>(fa.atlasSampler) + 1 && fa.shadeConst == static_cast<int>(fa.atlasConst) + 2, "winter: shade registers");
+                const std::string text = Disasm(a);
+                Check(!text.empty() && Slots(text) > 0 && Slots(text) <= 512, "winter: patched shader disassembles within 512 slots");
+                // world y read from the TEXCOORD the vertex shader writes it to
+                Check(text.find(std::string("dcl_texcoord") + (y.texcoord ? std::to_string(y.texcoord) : std::string())) != std::string::npos,
+                      "winter: the pixel shader declares the world y TEXCOORD");
+                Check(gpu.AcceptsPs(a), "winter: native D3D9 accepts the shaded copy");
+                Check(gpu.AcceptsPs(n), "winter: native D3D9 accepts the copy without the shade");
+            }
+        }
+        std::printf("%s: %d vertex shaders, %d write world y (", name, vsN, vsY);
+        for (auto& [k, v] : yAt) std::printf(" %s x%d", k.c_str(), v);
+        std::printf(" ); pixel shaders patched %d, shaded %d (no sampler to spare %d), refused by the patch %d\n", psN, psShaded, psNoRoom, psRefusedBoth);
+    }
+}
+
+// ---- 3. CPU rows ----
+void Rows() {
+    using namespace GroundShadow;
+    const int before = g_checks;
+    Grid straight;
+    straight.w = 160, straight.h = 120, straight.tx = 100.0f, straight.tz = 50.0f, straight.ty = 3.0f;
+    Grid rot = straight;
+    rot.m0 = 0, rot.m2 = 1, rot.m8 = -1, rot.m10 = 0, rot.tx = 140.0f; // world x = 140 - lz, world z = 50 + lx
+    for (const Grid* g : {&straight, &rot})
+        for (float s : {1.0f, 2.0f}) {
+            float rows[12];
+            Check(FloorShadeRows(*g, s, true, rows), "rows: a lot grid gives rows");
+            float worst = 0;
+            for (int k = 0; k < 50; k++) {
+                const float lx = 0.37f + k * 0.71f, lz = 0.11f + k * 0.53f;
+                const float wx = g->m0 * lx + g->m8 * lz + g->tx, wz = g->m2 * lx + g->m10 * lz + g->tz;
+                float fi, fj;
+                WorldTexel(*g, wx, wz, fi, fj);
+                const float u = wx / s * rows[0] + wz / s * rows[4] + rows[2], v = wx / s * rows[1] + wz / s * rows[5] + rows[3];
+                worst = std::max({worst, std::fabs(u * g->w - fi), std::fabs(v * g->h - fj)});
+            }
+            Check(worst < 2e-3f, "rows: mask uv x size = WorldTexel (straight and rotated lots, world xz and xz / 2)");
+            const auto gate = [&](float dy) { return std::clamp(std::fabs(g->ty + dy + rows[6]) * rows[9] + rows[8], 0.0f, 1.0f); };
+            Check(rows[7] == 1.0f && gate(0) == 1.0f && gate(-0.9f) == 1.0f && std::fabs(gate(1.0f) - 1.0f) < 1e-5f && gate(1.25f) == 0.0f && gate(3.0f) == 0.0f &&
+                      gate(-2.9f) == 0.0f && std::fabs(gate(1.125f) - 0.5f) < 1e-5f,
+                  "rows: gate 1 within 1 m of the ground, 0 from 1.25 m, linear between");
+            Check(FloorShadeRows(*g, s, false, rows) && rows[8] == 0.0f && rows[9] == 0.0f, "rows: off = gate 0 everywhere");
+        }
+    Grid bad;
+    float rows[12];
+    bad.m0 = bad.m10 = 0;
+    bad.w = bad.h = 4;
+    Check(!FloorShadeRows(bad, 1.0f, true, rows) && rows[8] == 0.0f && rows[9] == 0.0f, "rows: a singular matrix gives the floor as before");
+    std::printf("FloorShadeRows: %d checks\n", g_checks - before);
+}
+
+// ---- 4. GPU pixels ----
+void Pixels(Gpu& gpu) {
+    if (!gpu.dev) return;
+    const int before = g_checks;
+    // a floor-shaped shader: "texld rL, v0, s0" then "mad rX.xyz, rL, c0.x, rB" (rB = a second texture)
+    const std::vector<DWORD> ps = Compile("sampler2D map:register(s0); sampler2D base:register(s1); float4 k:register(c0); float4 s:register(c2);\n"
+                                          "float4 main(float2 uv:TEXCOORD0):COLOR0{float4 m=tex2D(map,uv);float3 b=tex2D(base,uv).rgb;return float4((m.rgb*k.x+b)*s.x,1);}",
+                                          "ps_3_0");
+    const std::vector<DWORD> vsCode = Compile("float4 rows[3]:register(c0);\n"
+                                              "struct O{float4 p:POSITION;float2 uv:TEXCOORD0;float3 w:TEXCOORD7;};\n"
+                                              "O main(float4 p:POSITION,float2 uv:TEXCOORD0){O o;o.p=p;o.uv=uv;o.w=rows[0].xyz+uv.x*rows[1].xyz+uv.y*rows[2].xyz;return o;}",
+                                              "vs_3_0");
+    std::vector<DWORD> code = ps;
+    ShaderPatches::FloorPatch f;
+    const bool ok = !code.empty() && ShaderPatches::PatchBakedAtlasPs(code, 7, f, true) && f.shadeSampler >= 0;
+    Check(ok, "pixels: the synthetic floor shader takes the shaded patch");
+    if (!ok) {
+        std::printf("%s\n", Disasm(ps).c_str());
+        return;
+    }
+    IDirect3DPixelShader9* shader = nullptr;
+    IDirect3DVertexShader9* vs = nullptr;
+    Check(SUCCEEDED(gpu.dev->CreatePixelShader(code.data(), &shader)), "pixels: D3D9 accepts the patched synthetic shader");
+    Check(!vsCode.empty() && SUCCEEDED(gpu.dev->CreateVertexShader(vsCode.data(), &vs)), "pixels: fixture vertex shader");
+    // textures: the map 0.8 grey (alpha 0: the atlas weight's input), the base and the atlas black, the mask's alpha a pattern
+    const auto solid = [&](DWORD argb, int w, int h, auto fill) {
+        IDirect3DTexture9* t = nullptr;
+        if (FAILED(gpu.dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, nullptr))) return t;
+        D3DLOCKED_RECT r{};
+        t->LockRect(0, &r, nullptr, 0);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) reinterpret_cast<DWORD*>(static_cast<char*>(r.pBits) + y * r.Pitch)[x] = fill ? fill(x, y) : argb;
+        t->UnlockRect(0);
+        return t;
+    };
+    using Fill = DWORD (*)(int, int);
+    IDirect3DTexture9* map = solid(0x00CCCCCCu, 4, 4, Fill(nullptr));
+    IDirect3DTexture9* black = solid(0x00000000u, 4, 4, Fill(nullptr));
+    IDirect3DTexture9* white = solid(0xFFFFFFFFu, 1, 1, Fill(nullptr));
+    const auto alphaOf = [](int i, int j) { return static_cast<DWORD>((i * 37 + j * 91 + (i * j) % 17 * 13) & 255); };
+    IDirect3DTexture9* mask = solid(0, 160, 120, +[](int i, int j) { return ((static_cast<DWORD>((i * 37 + j * 91 + (i * j) % 17 * 13) & 255)) << 24) | 0xFFFFFFu; });
+    if (!shader || !vs || !map || !black || !white || !mask) {
+        Check(false, "pixels: fixture resources");
+    } else {
+        gpu.dev->SetTexture(0, map);
+        gpu.dev->SetTexture(1, black);
+        gpu.dev->SetTexture(f.atlasSampler, black);
+        const DWORD samplers[] = {0, 1, f.atlasSampler, static_cast<DWORD>(f.shadeSampler)};
+        for (DWORD s : samplers) {
+            gpu.dev->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+            gpu.dev->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+            gpu.dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            gpu.dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+        const float k[4] = {1, 0, 0, 0}, one[4] = {1, 0, 0, 0}, atlasC[4] = {0, 0, 0, 0}, weight[4] = {1, 0, 0, 0};
+        gpu.dev->SetPixelShaderConstantF(0, k, 1);
+        gpu.dev->SetPixelShaderConstantF(2, one, 1);
+        gpu.dev->SetPixelShaderConstantF(f.atlasConst, atlasC, 1);
+        gpu.dev->SetPixelShaderConstantF(static_cast<UINT>(f.heightConst), weight, 1);
+        GroundShadow::Grid straight;
+        straight.w = 160, straight.h = 120, straight.tx = 100.0f, straight.tz = 50.0f, straight.ty = 3.0f;
+        GroundShadow::Grid rot = straight;
+        rot.m0 = 0, rot.m2 = 1, rot.m8 = -1, rot.m10 = 0, rot.tx = 140.0f;
+        for (const GroundShadow::Grid* g : {&straight, &rot})
+            for (int mode = 0; mode < 3; mode++)        // 0 shade, 1 off (gate 0), 2 white mask
+                for (float dy : {0.0f, -0.6f, 0.9f, 1.1f, 1.2f, 2.0f, 3.0f}) {
+                    if (mode && dy != 0.0f) continue;
+                    float rows[12];
+                    GroundShadow::FloorShadeRows(*g, 1.0f, mode != 1, rows);
+                    gpu.dev->SetPixelShaderConstantF(static_cast<UINT>(f.shadeConst), rows, 3);
+                    gpu.dev->SetTexture(static_cast<DWORD>(f.shadeSampler), mode == 2 ? white : mask);
+                    // pixel (x, y) at lot-local (0.3 + 39 u, 0.3 + 29 v): world (x, z, y) through the lot matrix
+                    const float lx0 = 0.3f, lz0 = 0.3f, du = 39.0f, dv = 29.0f, y = g->ty + dy;
+                    const float vrows[3][4] = {{g->m0 * lx0 + g->m8 * lz0 + g->tx, g->m2 * lx0 + g->m10 * lz0 + g->tz, y, 0},
+                                               {g->m0 * du, g->m2 * du, 0, 0},
+                                               {g->m8 * dv, g->m10 * dv, 0, 0}};
+                    gpu.dev->SetVertexShaderConstantF(0, vrows[0], 3);
+                    const auto px = gpu.Render(shader, vs);
+                    const float gate = mode == 0 ? std::clamp(5.0f - 4.0f * std::fabs(dy), 0.0f, 1.0f) : 0.0f;
+                    int worst = 0;
+                    for (int py = 0; py < 64; py++)
+                        for (int pxi = 0; pxi < 64; pxi++) {
+                            const float lx = lx0 + du * pxi / 64.0f, lz = lz0 + dv * py / 64.0f;
+                            const int i = std::min(159, static_cast<int>(lx * 4.0f)), j = std::min(119, static_cast<int>(lz * 4.0f));
+                            const float M = mode == 2 ? 1.0f : alphaOf(i, j) / 255.0f;
+                            const float want = 0.8f * (1.0f + gate * (M - 1.0f));
+                            const int got = static_cast<int>((px[py * 64 + pxi] >> 8) & 255);
+                            worst = std::max(worst, std::abs(got - static_cast<int>(std::lround(want * 255.0f))));
+                        }
+                    char what[160];
+                    std::snprintf(what, sizeof what, "pixels: %s lot, %s, %.1f m over the ground: out = map x (1 + gate (M - 1)) within 2 LSB (worst %d)",
+                                  g == &straight ? "straight" : "rotated", mode == 0 ? "shade" : mode == 1 ? "off" : "white mask", dy, worst);
+                    Check(worst <= 2, what);
+                    if (worst > 2) std::printf("  %s\n", what);
+                }
+    }
+    for (DWORD s = 0; s < 16; s++) gpu.dev->SetTexture(s, nullptr);
+    gpu.dev->SetPixelShader(nullptr);
+    gpu.dev->SetVertexShader(nullptr);
+    Release(shader);
+    Release(vs);
+    Release(map);
+    Release(black);
+    Release(white);
+    Release(mask);
+    std::printf("Floor shade pixels: %d checks\n", g_checks - before);
+}
+
+// ---- 5. captured outdoor floor copies (optional F7 folders): each PS_*.bin that is the summer floor patch (without the
+// shade) of a table shader is found again, and that shader takes the shaded patch
+void Captured(const std::vector<Blob>& blobs, const char* folder) {
+    int tested = 0, matched = 0;
+    for (const auto& e : std::filesystem::directory_iterator(folder)) {
+        const std::string name = e.path().filename().string();
+        if (name.rfind("PS_", 0) != 0 || e.path().extension() != ".bin") continue;
+        std::ifstream f(e.path(), std::ios::binary);
+        const std::vector<unsigned char> raw((std::istreambuf_iterator<char>(f)), {});
+        if (raw.size() < 8 || raw.size() % 4) continue;
+        std::vector<DWORD> cap(raw.size() / 4);
+        std::memcpy(cap.data(), raw.data(), raw.size());
+        tested++;
+        for (const Blob& b : blobs) {
+            if (b.vs || b.code.empty() || !InFloorTable(b.code)) continue;
+            for (int tc = 7; tc <= 9; tc++) {
+                std::vector<DWORD> n = b.code, a = b.code;
+                ShaderPatches::FloorPatch fn, fa;
+                if (!ShaderPatches::PatchBakedAtlasPs(n, tc, fn, false) || n != cap) continue;
+                matched++;
+                const bool ok = ShaderPatches::PatchBakedAtlasPs(a, tc, fa, true) && fa.shadeSampler >= 0;
+                Check(ok, "captured: the captured floor's shader takes the shaded patch");
+                std::printf("Captured %s: the summer floor copy of a %zu-byte table shader (TEXCOORD%d); shaded copy: mask s%d, rows c%d..c%d\n", name.c_str(),
+                            b.code.size() * 4, tc, fa.shadeSampler, fa.shadeConst, fa.shadeConst + 2);
+            }
+        }
+    }
+    std::printf("Captured %s: %d pixel shaders, %d summer floor copies recognised\n", folder, tested, matched);
+}
+
+// ---- 6. instanced lot structures (fences, curbs, railings, stairs: PatchInstancedLamps) ----
+// Every pixel shader the precomp pairs with an instanced structure vertex shader (IsInstancedStructureVs), both laws, with
+// and without the shade: the shade never changes which shaders are taken; the shaded copy is the copy without it plus one
+// sampler declaration and the shade block after the lamp max; within 512 slots; native D3D9 accepts both.
+std::vector<std::vector<DWORD>> InstancedPs(const std::vector<Blob>& blobs, const std::vector<Tech>& techs) {
+    std::set<uint32_t> instVs, seen;
+    for (size_t i = 0; i < blobs.size(); i++)
+        if (blobs[i].vs && !blobs[i].code.empty() && ShaderPatches::IsInstancedStructureVs(blobs[i].code)) instVs.insert(static_cast<uint32_t>(i + 1));
+    std::vector<std::vector<DWORD>> out;
+    for (const Tech& t : techs)
+        for (auto [vs, ps] : t.passes)
+            if (instVs.count(vs) && ps >= 1 && ps <= blobs.size() && !blobs[ps - 1].code.empty() && blobs[ps - 1].code[0] == 0xFFFF0300u &&
+                seen.insert(Hash(blobs[ps - 1].code)).second)
+                out.push_back(blobs[ps - 1].code);
+    return out;
+}
+// what: the line's label; returns the number of shaders shaded by the first law
+int Instanced(Gpu& gpu, const std::vector<std::vector<DWORD>>& shaders, const char* what) {
+    constexpr DWORD N = ShaderPatches::kObjectPixelLamps;
+    int patched[2] = {}, shaded[2] = {}, noLamps[2] = {}, refused[2] = {}, maxSlots = 0;
+    for (const auto& ps : shaders)
+        for (int reach = 0; reach < 2; reach++) {
+            std::vector<DWORD> a = ps, n = ps;
+            ShaderPatches::InstancedPatch ia, in;
+            const bool pa = ShaderPatches::PatchInstancedLamps(a, ia, reach != 0, true), pn = ShaderPatches::PatchInstancedLamps(n, in, reach != 0, false);
+            Check(pa == pn, "instanced: the shade never changes which shaders the patch takes");
+            if (!pn) {
+                Check(a == ps && n == ps, "instanced: a refused shader is left unchanged");
+                refused[reach]++;
+                continue;
+            }
+            patched[reach]++;
+            Check(in.shadeSampler == -1 && in.shadeConst == -1, "instanced: no shade fields without the shade");
+            Check(ia.atlasSampler == in.atlasSampler && ia.atlasConst == in.atlasConst && ia.strengthConst == in.strengthConst && ia.pixelLamps == in.pixelLamps &&
+                      ia.lampParamConst == in.lampParamConst && ia.lampConst == in.lampConst && ia.groundWeightConst == in.groundWeightConst &&
+                      ia.coneConst == in.coneConst && ia.reachConst == in.reachConst,
+                  "instanced: the shade leaves the atlas, lamp, cone and reach registers alone");
+            if (ia.shadeSampler < 0) { // no per-pixel lamps (no world y), or no room: the copy as before
+                noLamps[reach] += !ia.pixelLamps;
+                Check(a == n, "instanced: without the shade the copy is the one before it");
+                Check(gpu.AcceptsPs(n), "instanced: native D3D9 accepts the copy without the shade");
+                continue;
+            }
+            shaded[reach]++;
+            Check(ia.pixelLamps, "instanced: the shade only with the per-pixel lamps");
+            Check(ia.shadeSampler == static_cast<int>(ia.atlasSampler) + 1 &&
+                      ia.shadeConst == static_cast<int>(reach ? ia.reachConst + 2 : ia.coneConst + 2 * N),
+                  "instanced: shade registers after the atlas sampler and after the last lamp rows (one more upload)");
+            Check(ShadeIsExactInsertion(a, n, static_cast<DWORD>(ia.shadeSampler)), "instanced: the shade is the sampler dcl plus the block after the lamp max");
+            const std::string text = Disasm(a);
+            const int slots = Slots(text);
+            maxSlots = std::max(maxSlots, slots);
+            Check(slots > 0 && slots <= 512, "instanced: shaded copy within 512 instruction slots");
+            Check(text.find("dcl_2d s" + std::to_string(ia.shadeSampler)) != std::string::npos && text.find("_abs") != std::string::npos,
+                  "instanced: the disassembly shows the mask sampler and the gate");
+            Check(gpu.AcceptsPs(a), "instanced: native D3D9 accepts the shaded copy");
+            Check(gpu.AcceptsPs(n), "instanced: native D3D9 accepts the copy without the shade");
+        }
+    std::printf("Instanced structures (%s): %zu pixel shaders; first law patched %d, shaded %d (no per-pixel lamps %d), refused %d; reach patched %d, shaded %d "
+                "(no per-pixel lamps %d), refused %d; most slots %d\n",
+                what, shaders.size(), patched[0], shaded[0], noLamps[0], refused[0], patched[1], shaded[1], noLamps[1], refused[1], maxSlots);
+    return shaded[0];
+}
+// Captured shaders (optional folders, searched recursively: F7 captures, refused shaders): every distinct ps_3_0 *.bin
+// through the same checks as the precomp's; and each PS_*.bin that is a precomp instanced shader's copy without the shade
+// (either law) is found again; that shader takes the shaded copy of the same law
+void InstancedCaptured(Gpu& gpu, const std::vector<Blob>& blobs, const std::vector<Tech>& techs, const char* folder) {
+    const auto shaders = InstancedPs(blobs, techs);
+    std::map<uint32_t, std::pair<size_t, int>> copies; // hash of the copy without the shade -> (shader, law)
+    for (size_t i = 0; i < shaders.size(); i++)
+        for (int reach = 0; reach < 2; reach++) {
+            std::vector<DWORD> n = shaders[i];
+            ShaderPatches::InstancedPatch in;
+            if (ShaderPatches::PatchInstancedLamps(n, in, reach != 0, false)) copies[Hash(n)] = {i, reach};
+        }
+    int tested = 0, matched = 0;
+    std::set<uint32_t> seen;
+    std::vector<std::vector<DWORD>> all;
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(folder, std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file() || it->path().extension() != ".bin" || it->file_size() > 262144) continue;
+        std::ifstream f(it->path(), std::ios::binary);
+        const std::vector<unsigned char> raw((std::istreambuf_iterator<char>(f)), {});
+        if (raw.size() < 8 || raw.size() % 4) continue;
+        std::vector<DWORD> cap(raw.size() / 4);
+        std::memcpy(cap.data(), raw.data(), raw.size());
+        if (cap[0] != 0xFFFF0300u || !seen.insert(Hash(cap)).second) continue;
+        tested++;
+        all.push_back(cap);
+        const auto m = copies.find(Hash(cap));
+        if (m == copies.end()) continue;
+        std::vector<DWORD> n = shaders[m->second.first], a = n;
+        ShaderPatches::InstancedPatch in, ia;
+        ShaderPatches::PatchInstancedLamps(n, in, m->second.second != 0, false);
+        if (n != cap) continue;
+        matched++;
+        const bool ok = ShaderPatches::PatchInstancedLamps(a, ia, m->second.second != 0, true) && ia.shadeSampler >= 0;
+        Check(ok, "instanced captured: the captured copy's shader takes the shaded copy");
+        std::printf("  %s (%s law): shaded copy mask s%d, rows c%d..c%d\n", it->path().string().c_str(), m->second.second ? "reach" : "first", ia.shadeSampler,
+                    ia.shadeConst, ia.shadeConst + 2);
+    }
+    std::printf("Instanced captured %s: %d distinct ps_3_0 shaders, %d fence/stairs copies recognised\n", folder, tested, matched);
+    Instanced(gpu, all, folder);
+}
+// Native D3D9 pixels: a synthetic fence-shaped shader (COLOR0 added once, TEXCOORD1.zw world xz, TEXCOORD2 normal and world
+// y) patched with the shade, over the mask pattern of Pixels. Ground light only (the atlas white x 0.8 on a face turned up):
+// out = 0.8 (1 + gate (M - 1)). One lamp only: out = the copy's own output with the white mask x (1 + gate (M - 1)). 2 LSB.
+void InstancedPixels(Gpu& gpu) {
+    if (!gpu.dev) return;
+    const int before = g_checks;
+    constexpr unsigned N = ShaderPatches::kObjectPixelLamps;
+    const std::vector<DWORD> ps = Compile("sampler2D base:register(s0); float4 k:register(c0);\n"
+                                          "float4 main(float4 c:COLOR0,float4 uv:TEXCOORD1,float4 n:TEXCOORD2):COLOR0{\n"
+                                          "float3 s=max(tex2D(base,uv.xy).rgb,k.xyz);float3 t=s+c.rgb;return float4(t*k.w,n.w*k.w);}",
+                                          "ps_3_0");
+    const std::vector<DWORD> vsCode = Compile("float4 rows[3]:register(c0);\n"
+                                              "struct O{float4 p:POSITION;float4 c:COLOR0;float4 uv:TEXCOORD1;float4 n:TEXCOORD2;};\n"
+                                              "O main(float4 p:POSITION,float2 uv:TEXCOORD0){O o;o.p=p;o.c=0;\n"
+                                              "float3 w=rows[0].xyz+uv.x*rows[1].xyz+uv.y*rows[2].xyz;o.uv=float4(uv,w.x,w.z);o.n=float4(rows[0].w,rows[1].w,rows[2].w,w.y);return o;}",
+                                              "vs_3_0");
+    IDirect3DVertexShader9* vs = nullptr;
+    Check(!vsCode.empty() && SUCCEEDED(gpu.dev->CreateVertexShader(vsCode.data(), &vs)), "instanced pixels: fixture vertex shader");
+    const auto make = [&](int w, int h, bool pattern, DWORD argb) {
+        IDirect3DTexture9* t = nullptr;
+        if (FAILED(gpu.dev->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, nullptr))) return t;
+        D3DLOCKED_RECT r{};
+        t->LockRect(0, &r, nullptr, 0);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                reinterpret_cast<DWORD*>(static_cast<char*>(r.pBits) + y * r.Pitch)[x] = pattern ? ((static_cast<DWORD>((x * 37 + y * 91 + (x * y) % 17 * 13) & 255)) << 24) | 0xFFFFFFu : argb;
+        t->UnlockRect(0);
+        return t;
+    };
+    const auto alphaOf = [](int i, int j) { return static_cast<DWORD>((i * 37 + j * 91 + (i * j) % 17 * 13) & 255); };
+    IDirect3DTexture9 *black = make(1, 1, false, 0), *white = make(1, 1, false, 0xFFFFFFFFu), *mask = make(160, 120, true, 0);
+    for (bool reach : {false, true}) {
+        std::vector<DWORD> code = ps;
+        ShaderPatches::InstancedPatch o;
+        const bool ok = !code.empty() && ShaderPatches::PatchInstancedLamps(code, o, reach, true) && o.pixelLamps && o.shadeSampler >= 0;
+        Check(ok, "instanced pixels: the synthetic fence shader takes the shaded copy");
+        IDirect3DPixelShader9* shader = nullptr;
+        if (!ok || !vs || !black || !white || !mask || FAILED(gpu.dev->CreatePixelShader(code.data(), &shader))) {
+            Check(false, "instanced pixels: fixture resources");
+            Release(shader);
+            continue;
+        }
+        const DWORD samplers[] = {0, o.atlasSampler, static_cast<DWORD>(o.shadeSampler)};
+        for (DWORD s : samplers) {
+            gpu.dev->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+            gpu.dev->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+            gpu.dev->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            gpu.dev->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+        gpu.dev->SetTexture(0, black);
+        const float base[4] = {0, 0, 0, 1}, atlasC[4] = {1, 1, 0, 0}, weight[4] = {1, 0, 1, 0};
+        gpu.dev->SetPixelShaderConstantF(0, base, 1);
+        gpu.dev->SetPixelShaderConstantF(o.atlasConst, atlasC, 1);
+        gpu.dev->SetPixelShaderConstantF(o.groundWeightConst, weight, 1);
+        GroundShadow::Grid g;
+        g.w = 160, g.h = 120, g.tx = 100.0f, g.tz = 50.0f, g.ty = 3.0f;
+        const float lx0 = 0.3f, lz0 = 0.3f, du = 39.0f, dv = 29.0f;
+        for (int lampMode = 0; lampMode < 2; lampMode++)
+            for (float dy : {0.0f, 0.6f, 1.1f, 2.0f}) {
+                // the lamps: none (ground light only) or one 2 m over the middle, 40 m reach, colour 0.6 (first law; under 1, so
+                // the white-mask reference is not clipped) or 30 (reach law: its sum is held under 1), on a face turned up
+                float lamps[1 + 4 * N + 2][4] = {};
+                lamps[0][0] = 1, lamps[0][1] = 1, lamps[0][3] = 1e-4f;
+                for (unsigned k = 0; k < N; k++) {
+                    lamps[1 + 2 * k][0] = lamps[1 + 2 * k][2] = 1e6f;
+                    lamps[2 + 2 * k][3] = lamps[1 + 2 * N + 2 * k][3] = lamps[2 + 2 * N + 2 * k][3] = 1.0f;
+                }
+                if (lampMode) {
+                    lamps[1][0] = g.tx + 20.0f, lamps[1][1] = g.ty + dy + 2.0f, lamps[1][2] = g.tz + 15.0f, lamps[1][3] = 1.0f / (40.0f * 40.0f);
+                    lamps[2][0] = lamps[2][1] = lamps[2][2] = reach ? 30.0f : 0.6f;
+                    lamps[1 + 4 * N][0] = 100.0f;
+                }
+                const float strength[4] = {lampMode ? 0.0f : 0.8f, 0, 0, 0};
+                gpu.dev->SetPixelShaderConstantF(o.strengthConst, strength, 1);
+                gpu.dev->SetPixelShaderConstantF(o.lampParamConst, lamps[0], 1 + 4 * N + (reach ? 2 : 0));
+                gpu.dev->SetTexture(o.atlasSampler, white);
+                const float vrows[3][4] = {{g.tx + lx0, g.ty + dy, g.tz + lz0, 0}, {du, 0, 0, 1}, {0, 0, dv, 0}}; // normal (0, 1, 0)
+                gpu.dev->SetVertexShaderConstantF(0, vrows[0], 3);
+                float rows[12];
+                GroundShadow::FloorShadeRows(g, 1.0f, true, rows);
+                gpu.dev->SetPixelShaderConstantF(static_cast<UINT>(o.shadeConst), rows, 3);
+                gpu.dev->SetTexture(static_cast<DWORD>(o.shadeSampler), white);
+                const auto ref = gpu.Render(shader, vs);
+                gpu.dev->SetTexture(static_cast<DWORD>(o.shadeSampler), mask);
+                const auto px = gpu.Render(shader, vs);
+                const float gate = std::clamp(5.0f - 4.0f * std::fabs(dy), 0.0f, 1.0f);
+                int worst = 0, lit = 0;
+                for (int py = 0; py < 64; py++)
+                    for (int pxi = 0; pxi < 64; pxi++) {
+                        const float lx = lx0 + du * pxi / 64.0f, lz = lz0 + dv * py / 64.0f;
+                        const int i = std::min(159, static_cast<int>(lx * 4.0f)), j = std::min(119, static_cast<int>(lz * 4.0f));
+                        const float f = 1.0f + gate * (alphaOf(i, j) / 255.0f - 1.0f);
+                        const int r = static_cast<int>((ref[py * 64 + pxi] >> 8) & 255);
+                        lit += r > 8;
+                        const float want = lampMode ? r / 255.0f * f : 0.8f * f;
+                        if (!lampMode) worst = std::max(worst, std::abs(r - 204)); // the white mask: the sum unchanged
+                        worst = std::max(worst, std::abs(static_cast<int>((px[py * 64 + pxi] >> 8) & 255) - static_cast<int>(std::lround(want * 255.0f))));
+                    }
+                char what[200];
+                std::snprintf(what, sizeof what, "instanced pixels: %s law, %s, %.1f m over the ground: out = sum x (1 + gate (M - 1)) within 2 LSB (worst %d, lit %d)",
+                              reach ? "reach" : "first", lampMode ? "one lamp" : "ground light", dy, worst, lit);
+                Check(worst <= 2 && lit > 1000, what);
+                if (worst > 2 || lit <= 1000) std::printf("  %s\n", what);
+            }
+        for (DWORD s = 0; s < 16; s++) gpu.dev->SetTexture(s, nullptr);
+        gpu.dev->SetPixelShader(nullptr);
+        gpu.dev->SetVertexShader(nullptr);
+        Release(shader);
+    }
+    Release(vs);
+    Release(black);
+    Release(white);
+    Release(mask);
+    std::printf("Instanced shade pixels: %d checks\n", g_checks - before);
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc < 2) {
+        std::puts("usage: check <Shaders_Win32.precomp> [F7 capture folder ...]");
+        return 2;
+    }
+    std::ifstream f(argv[1], std::ios::binary);
+    const std::vector<unsigned char> d((std::istreambuf_iterator<char>(f)), {});
+    std::vector<Blob> blobs;
+    std::vector<Tech> techs;
+    Check(LoadPrecomp(d, blobs, techs), "precomp read");
+    std::printf("%zu shaders, %zu techniques in %s\n", blobs.size(), techs.size(), argv[1]);
+    Gpu gpu;
+    SummerFloors(gpu, blobs, techs);
+    WinterFloors(gpu, blobs, techs);
+    Rows();
+    Pixels(gpu);
+    Check(Instanced(gpu, InstancedPs(blobs, techs), "precomp") > 0, "instanced: the precomp has instanced shaders that take the shade");
+    InstancedPixels(gpu);
+    for (int i = 2; i < argc; i++) {
+        Captured(blobs, argv[i]);
+        InstancedCaptured(gpu, blobs, techs, argv[i]);
+    }
+    std::printf("%d checks, %d failures\n%s\n", g_checks, g_failures, g_failures ? "PROBLEMS" : "OK");
+    return g_failures ? 1 : 0;
+}

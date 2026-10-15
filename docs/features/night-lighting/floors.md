@@ -9,11 +9,11 @@ story. Interior floors are unchanged. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository) |
+| Availability | Released (present since 2.1.0, the first version in this repository). The lot's ground lamp shade on story-0 floors (*Walls shade lamp light near the ground*): Released in 2.13.0 |
 | Default | On (follows the Ground & Lots switches) |
 | Menu | No card of its own: Lighting > Ground (*Street lamps light lots*, *Smooth ground light*, *Ground brightness*) and Lighting > Stories |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
-| Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawFloor`, `DrawFloorAtlas`), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchFloor`, `PatchBakedAtlasPs`), [`shaders/floor_atlas_table.h`](../../../shaders/floor_atlas_table.h), [`shaders/shader_ids.h`](../../../shaders/shader_ids.h) |
+| Source | [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawFloor`, `DrawFloorAtlas`, `FloorShadeBind`), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchFloor`, `PatchBakedAtlasPs`, `WorldYOutput`), [`features/ground_lamp_shadow.h`](../../../features/ground_lamp_shadow.h) (`FloorShadeRows`), [`shaders/floor_atlas_table.h`](../../../shaders/floor_atlas_table.h), [`shaders/shader_ids.h`](../../../shaders/shader_ids.h) |
 
 ## The problem
 
@@ -43,6 +43,9 @@ The game's lamp scale after that `max` is multiplied by *Ground brightness*, ble
    `PatchBakedAtlasPs` inserts the atlas read and the `max` before the map's scale, for the 261 ExteriorFloors pixel
    shaders in `floor_atlas_table.h`.
 3. **Floors of upper stories** get the outdoor lamps of every story through [level-light-share.md](level-light-share.md).
+4. **Floors on the ground (story 0)** take the lot's ground lamp shade, the factor the lot pass gives the grass beside
+   them ([lot-light-pass.md](lot-light-pass.md)): a deck or path behind a free-standing wall is no longer lit by a
+   lamp on the other side.
 
 ## Settings
 
@@ -54,6 +57,7 @@ Floors have no setting of their own. They depend on:
 | Smooth ground light | `mapaDeLuzSuavizado` | The atlas exists only with it |
 | Ground brightness | `brilhoNoChao` | Scales the floor's lamp constant after the `max` (`GroundGain`, `1 + (gain - 1) x night`) |
 | Outdoor light between floors | `luzExternaEntreAndares` | Floors of other stories get the outdoor lamps |
+| Walls shade lamp light near the ground | `paredesSombreiamOChao` | The lot's ground lamp shade, on story-0 floors too (off: gate 0, the floor as before) |
 
 These settings are documented on their own pages ([lot-light-pass.md](lot-light-pass.md),
 [world-atlas-and-smoothed-maps.md](world-atlas-and-smoothed-maps.md), [level-light-share.md](level-light-share.md)).
@@ -70,8 +74,15 @@ These settings are documented on their own pages ([lot-light-pass.md](lot-light-
 
 ## Limitations
 
-- The atlas crosses walls: a bright pool from a lamp beside a garden wall reaches the tiles behind it. The game never
-  occlusion-tests floor samples either (1179 floor samples observed, none tested).
+- The game never occlusion-tests floor samples (1179 floor samples observed, none tested), and the atlas has no walls.
+  Story 0 floors take the lot's ground lamp shade, stories 1 and up the floor map's alpha; floors not covered:
+  12 of the 285 summer (shader, TEXCOORD) pairs and 2 of the 8 winter floor pixel shaders the patch takes use every
+  sampler up to s14 (no room for the mask); snow lying on floors (its 2 vertex shaders write no world y); 4 of the 16
+  winter floor vertex shaders write no world y; a floor draw whose world rows match no lot. These keep the light of before.
+- The ground lamp shade is the lot ground's (outside walls only, computed at the lot's ground height): a floor raised on a
+  foundation (within 1 m of the ground) is shaded as the ground under it; fences, plants and objects do not shade. It is
+  one factor for all lamps: a floor lit by a second lamp that no wall hides is dimmed as much as the first lamp's shade
+  there. Fences, curbs and stairs near the ground take the same shade ([fences.md](fences.md)).
 - The 235 ps_2_0 ExteriorFloors pixel shaders, and any ps_3_0 variant the pattern refuses, keep the game's look.
 - Ground under an up-pointing type-4 spot 0.1 m above the tile is dark under the game's own law; it is the wrong place to
   judge floor light.
@@ -126,8 +137,51 @@ These settings are documented on their own pages ([lot-light-pass.md](lot-light-
 
 | Patch | Registers added | Coordinates |
 |---|---|---|
-| `PatchFloor` | sE = max sampler + 1, cA = max const + 1, T = max temp + 1 | v0.zw (widened dcl) |
-| `PatchBakedAtlasPs` | new input vV = max input + 1 declared as TEXCOORDn.xy, sE, cA, T | TEXCOORDn from the VS copy, n >= 7 |
+| `PatchFloor` | sE = max sampler + 1, cA = max const + 1, T = max temp + 1; shade: sS = sE + 1, cA + 2 .. cA + 4, T + 1 | v0.zw (widened dcl); world y from the VS's output (`WorldYOutput`, TEXCOORD1.w) |
+| `PatchBakedAtlasPs` | new input vV = max input + 1 declared as TEXCOORDn.xyz, sE, cA, cH = cA + 1, T, T + 1; shade: sS = sE + 1, cH + 1 .. cH + 3 | TEXCOORDn = world (x, z, y) from the VS copy, n >= 7 |
+| `PatchSnowFloor` | as `PatchFloor`; no shade in practice (no world y) | TEXCOORD7.xy or TEXCOORD0.zw = world xz / 2 |
+
+### Ground lamp shade on story-0 floors
+
+F7 2026-10-13 08-16-00: a paved path (summer floor, draw #278, the 1044-byte `1788C5B6` copy) behind a free-standing wall
+was fully lit by a garden post on the other side while the grass beside it was correctly shaded. Its lamp term
+`max(floor map s2, atlas s7 x sat(1 - a)) x c3.x` has no wall test on story 0: the floor map is room 0's solve, which
+level_light_share masks for floor texels from story 1 up only (`MaskedFloorRoom0`), and `a` is 0 there.
+
+- **Shader** (`AppendGroundShade`, after the atlas `max` into the lamp term `rB`):
+  ```
+  mad   T.xy, x, cM.xyyy, cM.zwww        // mask uv = x cM.xy + z cM1.xy + cM.zw
+  mad   T.xy, z, cM1.xyyy, T
+  texld T, T, sS                          // M = T.w, the lot mask's alpha
+  add   T2.x, y, cM1.z                    // y - ground
+  mad_sat T2.x, |T2.x|, cM2.y, cM2.x      // gate
+  add   T.w, T.w, -cM1.w                  // M - 1
+  mad   T2.x, T2.x, T.w, cM1.w            // 1 + gate (M - 1)
+  mul   rB.xyz, rB, T2.x
+  ```
+  One constant per instruction. Summer floors read world (x, z, y) from the VS copy's TEXCOORDn.xyz; winter floor
+  tiles world xz from TEXCOORD0.zw and world y from the game VS's own TEXCOORD1.w (`mov o2.w, r0.y`, r0.y = `dp4 c9`;
+  `WorldYOutput`, kept in `VsInfo::worldY`); the declaration read is widened to `.xyzw` at full precision. Without a
+  sampler (s15 at most) or 3 constants to spare the copy is the one of before (`shadeSampler = -1`).
+- **Constants** (`GroundShadow::FloorShadeRows`, ground_lamp_shadow.h): from the lot's room-0 matrix (`m0, m2, m8, m10`,
+  origin `tx, tz`) and its grid (4 texels a metre), `cM = (du/dx, dv/dx, u0, v0)`, `cM1 = (du/dz, dv/dz, -ty, 1)`,
+  `cM2 = (5, -4, 0, 0)`: gate 1 up to 1 m from the lot's ground `ty`, 0 from 1.25 m (stories above keep the floor map's
+  alpha). Snow-on-floor shaders read world xz / 2: the x / z rows are doubled. Off (no lot, singular matrix, *Walls shade
+  lamp light near the ground* off): `cM2 = 0`, the white 1 x 1 mask.
+- **Draw** (`FloorShadeBind`, in `DrawFloorAtlas`, `DrawFloor`, `DrawSnowFloor`): reads the game VS's world rows
+  (`FloorVs::worldConst` for the summer copy: c4, c7, c8 or c11 over the precomp; c8 for the winter floors), finds the lot
+  (`FindFloorLot`), binds `LotMaskTexture(lot)` to sS (CLAMP, LINEAR, no mip) and the 3 rows, and restores both after the
+  draw. The mask is the lot pass's own texture (room mask in rgb, lamp shade in alpha, 255 inside rooms). Unverified in
+  game: that every floor draw's world rows are its lot's room-0 matrix (the capture's are); the developer counters show
+  the draws that found no lot.
+- In the capture: TEXCOORD7 copy, atlas s7, mask s8, rows c14..c16; VS c8 = `(0, 0, 1, 942)`, c10 = `(-1, 0, 0, 949)`,
+  c9.w = 34.696 = the story-0 walls' lit base (the lot's ground).
+- **Offline** (`tools/floor_shade_check`, read-only): all 261 table shaders over their 285 (shader, TEXCOORD) pairs patch
+  with and without the shade; 273 take it, and the shaded copy is exactly the copy of before plus the sampler declaration
+  and the block above (at most 171 slots); `D3DDisassemble` and native D3D9 accept every copy; the winter and snow-floor
+  families as listed under Limitations; `FloorShadeRows` against `WorldTexel` on straight and rotated lots; native D3D9
+  pixels of a synthetic floor shader equal `map x (1 + gate (M - 1))` within 2 LSB on both lots at seven heights, off and
+  with the white mask; the captured copy `PS_2ADA0AF0` is found again as the 1044-byte table shader's patch.
 
 ### Engine facts
 
@@ -144,7 +198,9 @@ No game code is patched for floors.
 ### Diagnostics (developer mode)
 
 Developer status *Street lamps on lots*: counters `floors: N` (`DrawFloor`) and `outdoor floors (summer): N`
-(`DrawFloorAtlas`). F7 on a floor shows the `mod:` line and PS size. Log kinds `Floor` and `Outdoor floor` in
+(`DrawFloorAtlas`), and `ground lamp shade on floors: N draws with their lot, M without it`. F7 on a floor shows the
+`mod:` line (the floor kind, the atlas weight and the ground lamp shade: the lot, its ground height, or why there is
+none) and PS size. Log kinds `Floor` and `Outdoor floor` in
 `[LotLightBridge] Shaders at their first draw`; in developer mode refused shaders are saved to
 `Apex Radiance\ShadersRecusados`.
 
@@ -155,6 +211,8 @@ Developer status *Street lamps on lots*: counters `floors: N` (`DrawFloor`) and 
 - Per-pixel floor lamps with HLSL replicas of `1788C5B6` / `9BF0A41E` (PASSO3 increment 2): planned, replaced by the
   pattern approach.
 - Writing world xz to TEXCOORD7 unconditionally: many ExteriorFloors VS already use it.
+- Wall-testing story 0's room-0 solve for floor texels (level_light_share, as for stories >= 1) to shade story-0 floors:
+  that map is also the lot pass's lot map, which the pass already multiplies by the ground lamp shade, so the grass would be shaded twice. The floor shaders take the shade instead.
 
 ## See also
 

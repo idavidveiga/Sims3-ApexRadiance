@@ -18,6 +18,7 @@ $nativeScale=Extract-Block '(?m)^bool NativeWallFresh\(.*\r?\nfloat NativeWallSc
 $wall=Extract-Block '(?s)template <typename DrawFn> bool DrawWallGain\(.*?\r?\n\}'
 $cone=Extract-Block '(?s)float LampConeAt\(.*?\r?\n\}'
 $hasCone=Extract-Block '(?m)^bool HasCone\(.*'
+$picked=Extract-Block '(?s)float PickedLampVisibility\(.*?\r?\n\}'
 $picker=Extract-Block '(?s)int PickObjectLamps\(.*?\r?\n\}'
 $object=Extract-Block '(?s)template <typename DrawFn> bool DrawObjectLamp\(.*?\r?\n\}'
 $instanced=Extract-Block '(?s)template <typename DrawFn> bool DrawInstanced\(.*?\r?\n\}'
@@ -29,7 +30,7 @@ if($lotStart -lt 0 -or $lotEnd -lt 0) { throw 'Lot branch boundaries missing' }
 $lot=$source.Substring($lotStart,$lotEnd-$lotStart).TrimEnd()
 if(-not $lot.StartsWith('    EnsureReplacement(dev);') -or -not $lot.EndsWith('}')) { throw 'Unexpected lot branch bounds' }
 $prefix="template <typename DrawFn> D3D9Hooks::HookAction ExtractedLotBranch(IDirect3DDevice9* dev, DrawFn draw) {`n    constexpr auto kContinue = D3D9Hooks::HookAction::Continue;`n"
-$extracted=$sampler+"`n"+$gain+"`n"+$constX+"`n"+$weighted+"`n"+$nativeScale+"`n"+$wall+"`n"+$cone+"`n"+$hasCone+"`n"+$picker+"`n"+$object+"`n"+$instanced+"`n"+$prefix+$lot+"`n"
+$extracted=$sampler+"`n"+$gain+"`n"+$constX+"`n"+$weighted+"`n"+$nativeScale+"`n"+$wall+"`n"+$cone+"`n"+$hasCone+"`n"+$picked+"`n"+$picker+"`n"+$object+"`n"+$instanced+"`n"+$prefix+$lot+"`n"
 $header=Join-Path $OutDir 'extracted_resource_paths.h'
 Set-Content -LiteralPath $header -Value $extracted -Encoding UTF8
 $sourceHash=(Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash

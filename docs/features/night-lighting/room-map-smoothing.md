@@ -1,0 +1,97 @@
+# Smooth light maps
+
+Lamp light inside rooms changes in smooth curves on floors and walls: the square steps of the room light maps' texels,
+the bands of their 8-bit levels and the ring where the game cuts a lamp's light off are gone. The shadows of walls
+and openings keep their shape; only the way the baked light is stored and read changes.
+
+## Status
+
+| | |
+|---|---|
+| Availability | Released in 2.13.0 |
+| Default | On |
+| Menu | Lighting > Buildings > Rooms at Night, group LAMP LIGHT (needs *Outdoor light between floors*) |
+| Configuration | `mapasDosComodosSuaves` under `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
+| Source | [`features/room_map_dither.cpp`](../../../features/room_map_dither.cpp), [`features/level_light_share.cpp`](../../../features/level_light_share.cpp) (`FadeAtThreshold`), [`features/shader_patches.cpp`](../../../features/shader_patches.cpp) (`PatchRoomMapSmooth`), [`features/lot_light_bridge.cpp`](../../../features/lot_light_bridge.cpp) (`DrawRoomMapSmooth`) |
+
+## The problem
+
+The room solve ([engine/room-light-maps.md](../../engine/room-light-maps.md)) stores lamp light per texel: 1, 2 or 4
+texels per metre by lighting class (twice that with *Light detail* High). Three things make that light look blocky:
+
+- **Bilinear reads.** The InteriorFloor and InteriorWall shaders read the map with the bilinear filter, so the light
+  changes in straight ramps between texel centres and every texel shows as a diamond or a step, most visibly at shadow
+  edges.
+- **8-bit levels.** Each texel is packed to 8 bits per channel (`0x0060CD10`); a lamp's slow falloff becomes rings of
+  one level each.
+- **The light cut.** The solve drops a lamp whose `r + g + b` at a point is under the room's threshold (`room+0x63C`,
+  3/255 at class 2, 6/255 below): the lamp's circle ends in a step of that size.
+
+## How Apex Radiance solves it
+
+1. **B-spline reads.** Every pixel shader of the room-lit techniques (InteriorFloor, InteriorWall and their siblings that
+   read the same map: FloorWith\*, InteriorWallWith\*, Hideable, FloorTileCeiling) is found by pattern and drawn with a
+   copy whose map read is a cubic B-spline (four bilinear taps). The paired vertex shader tells walls from floors by its uv
+   scale (1/4096 for the wall atlas, 1/32767 for the floor maps). On walls, each tap stays in the atlas block of its row
+   (3n + 1 texel rows, n = atlas width / 256), so no light comes in from the wall stored above or below.
+2. **Dither.** Before the game packs a texel, Apex adds up to half an 8-bit level of interleaved gradient noise taken from
+   the texel's position: the mean light stays, the rings become a fine grain the B-spline smooths out. The same texel
+   always gets the same offset, so a room lit again does not shimmer.
+3. **Soft light cut.** In the solves Apex wraps, the room's threshold is lowered for the game's call and each lamp's
+   colour, after Apex's own tests, takes `smoothstep(thr, 2 thr, r + g + b)`: 0 where the game cut it (still dropped
+   before any test), the full colour from twice the threshold.
+
+## Settings
+
+| Menu label | TOML key | Type | Default | Range | Effect |
+|---|---|---|---|---|---|
+| Rooms at Night > Smooth light maps | `mapasDosComodosSuaves` | bool | on | | B-spline reads of the room maps (per draw), the texel dither and the soft light cut (baked); relights every room when changed |
+
+## Compatibility and interactions
+
+- The wall, opening and floor tests of [level light share](level-light-share.md) are unchanged: the soft cut is applied
+  after them, the dither after the game's clamp to 1.
+- [Real-time outdoor lamps](rt-outdoor-lamps.md) and quick outdoor lamp edits ([outdoor-lamp-delta](outdoor-lamp-delta.md))
+  relight room 0's maps with the same soft cut and dither, so a relit texel matches the solve.
+- Developer > Tester switches each part off on its own (*Fade at the light cut*, *Dither the light maps*, *Smooth light
+  map reads*) to compare frame time and look. Players have the one switch; the parts are sub-parts of it, on by
+  default (each part runs while the option AND its switch are on).
+- Banding Fix makes its own dithered copy of the B-spline copy, as of any other drawn shader.
+- A ps_2_0 shader's copy is ps_2_x (about 45 more instructions, 11 more temporaries, arbitrary swizzles): drawn only when
+  the device's `PS20Caps` allow it, else the game's shader draws.
+- Steam 1.67.2 only for the dither (the pack call is checked byte by byte); the reads and the soft cut follow the
+  shaders and the wrapped solves.
+
+## Limitations
+
+- The B-spline is wider than the bilinear filter: at the ends of a wall (columns of the atlas packed side by side) and at
+  the edge of a room's floor area a texel of the neighbouring block weighs up to 1/6.
+- A room solved on the render thread (the room queue solving at once) keeps the game's hard cut.
+- A room whose light list holds a light of a class whose evaluation Apex does not wrap keeps the hard cut.
+- Walls are drawn with the bilinear read again for the session if a wall block is seen off the 3n + 1 grid.
+
+## Technical reference
+
+| Site | What | Source |
+|---|---|---|
+| `0x006A34DB` (Steam 1.67.2) | CALL of the texel pack `0x0060CD10` in the batch solve `0x006A31D0`; redirected to `PackThunk`, which reads the texel's (x, y) from `edi` (its address) and the map's `{base, pitch}` at `[ebp+0Ch]`, adds the offset and calls the game's pack | `room_map_dither.cpp` |
+| `0x0069FE40` | `movss xmm0,[ebx+63Ch]; comiss; ja`: the light cut; `room+0x63C` is set to 1e-6 for the wrapped call, its real value restored after | `level_light_share.cpp` `SolvePoint`, `FadeAtThreshold` |
+| Pixel shaders | `texld rL, <TEXCOORD1>, sM` then (after at most one `mul rL, rS.c, rL`) `mad rD.xyz, rL.w, cA, rL`, `cA` not defined: replaced by the B-spline; constants size `(w, h, 1/w, 1/h)` and band `(1/S, S, 0.5, S - 1)` per draw | `shader_patches.cpp` `PatchRoomMapSmooth` |
+| Vertex shaders | `mul o<TEXCOORD1>.xy, v#, cK.c`: 1/4096 wall atlas, 1/32767 floor maps | `shader_patches.cpp` `RoomMapUvScale` |
+| Wall blocks | `wall + cls*0x20 + 0x58` `{x0, y0, x1, y1}`; `y0 % rows` checked for every piece laid out | `level_light_share.cpp` `NoteWallBand` |
+
+Cost: the reads add about 45 ALU and 3 texture instructions per room-lit pixel; the dither one call per texel solved; the
+soft cut a list walk per solved point and a multiply per lamp kept.
+
+## Rejected approaches
+
+- Raising the map density to 16 texels per metre: four times the memory and the solve time of High, and past the game's
+  2048 size cap on large lots.
+- Screen-space shadows: the per-frame relighting this needs was removed earlier for its cost and flicker.
+  Details in [history](../../history/night-lighting-room-map-smoothing.md).
+
+## See also
+
+- [Validation](../../validation/night-lighting-room-map-smoothing.md)
+- [History](../../history/night-lighting-room-map-smoothing.md)
+- [Room light maps](../../engine/room-light-maps.md)

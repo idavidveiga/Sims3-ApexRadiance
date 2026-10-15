@@ -8,7 +8,7 @@ sun and shadows; only the lamp light baked into each wall is scaled. Part of [Ni
 
 | | |
 |---|---|
-| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: Released in 2.6.0. The game's bloom alpha kept on lit walls and the rebalanced style brightness (84% for Soft): Released in 2.7.0. Realistic lamp reach and balcony floors blocking a lamp below them (replacing *Light behind balconies*), the shared daytime curve: Released in 2.12.3 |
+| Availability | Released (present since 2.1.0, the first version in this repository). Daytime lamp term on walls: Released in 2.6.0. The game's bloom alpha kept on lit walls and the rebalanced style brightness (84% for Soft): Released in 2.7.0. Realistic lamp reach and balcony floors blocking a lamp below them (replacing *Light behind balconies*), the shared daytime curve: Released in 2.12.3. Soft edges by the lamp's size (*Shadow softness*) and lamp light through openings: Released in 2.13.0 |
 | Default | On, Brightness 30%, Realistic lamp reach on |
 | Menu | Lighting > Buildings > Buildings card, group *WALLS* (lamps of every story: Lighting > Stories) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -33,7 +33,7 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
    every story's room 0 list and test them against the walls of the lamp's own story, so the light continues past the
    floor line. A floor a player placed on an upper story (a balcony, a deck) blocks a lamp below it: the wall behind a
    balcony gets nothing from a lamp under the slab, while a lamp in front of the balcony still lights it, with a soft
-   edge the width of a 0.3 m lantern where its light passes the slab's edge.
+   edge where its light passes the slab's edge as wide as the lamp's ball (*Shadow softness*) makes it there.
 2. **Wall gain** multiplies the baked lamp term of the 58 ExteriorWall pixel shaders for each draw. For each recognised
    draw, Apex reads the constant that scales the baked map, writes into its `.x` `native x Brightness` at full night
    (unchanged) and `Brightness x LampDay(night)` before it (the shared daytime curve, 3% of the night strength by day,
@@ -52,7 +52,7 @@ Two Night Lighting parts act on walls; no wall shader is rewritten.
 |---|---|---|---|---|---|
 | Lamps light walls | `paredesComLuz` | bool | on | | Off keeps the game's walls, by day and night |
 | Brightness | `forcaNasParedes` | float | 30% | 25 to 400% | Lamp light on outside walls, by day and night. `LotLightBridge::SetWallGain` clamps to 25 to 800% |
-| Realistic lamp reach | `alcanceRealistaDasLampadas` | bool | on | | Lamp light on outside wall texels is kept up to 3.5 m from the lamp, then falls as (3.5 / d)^2 more inside a smooth window ending at 15 m, for a range 42.5 x intensity 2 post (both scaled with sqrt(range x intensity): 2 to 5 m, 6 to 20 m). Replaces the upper-story distance share and, since 12/10, the steep-ray dimming of upper-story walls (`UpwardShare`: F7 20-31-19 / 20-31-21 showed it alone left story 3 dim; the slabs between stories and this law cover what it stood for). While it is on, the per-pixel lamps of outdoor objects, fences and windows follow the same law at the walls' scale ([objects-and-rigs.md](objects-and-rigs.md#realistic-reach-on-objects-fences-and-windows)). Relights every room when changed (`LevelLightShare::SetRealisticReach`) |
+| Realistic lamp reach | `alcanceRealistaDasLampadas` | bool | on | | Lamp light on outside wall texels is kept up to 3.5 m from the lamp, then falls as (3.5 / d)^2 more inside a smooth window ending at 15 m, for a range 42.5 x intensity 2 post (both scaled with sqrt(range x intensity): 2 to 5 m, 6 to 20 m). Replaces the upper-story distance share and the steep-ray dimming of upper-story walls (`UpwardShare`: F7 20-31-19 / 20-31-21 showed it alone left story 3 dim; the slabs between stories and this law cover what it stood for). While it is on, the per-pixel lamps of outdoor objects, fences and windows follow the same law at the walls' scale ([objects-and-rigs.md](objects-and-rigs.md#realistic-reach-on-objects-fences-and-windows)). Relights every room when changed (`LevelLightShare::SetRealisticReach`) |
 
 Both apply live (pushed every frame). The lamps of every story are controlled by *Outdoor light between floors*
 (`luzExternaEntreAndares`), documented in [level-light-share.md](level-light-share.md). The wall gain works with
@@ -109,7 +109,7 @@ LightProbe captures `andar2-b` (m44), `andar1-b` (m45), `passo3-parede` (m59) an
   / 1 = the V at vertex `+0x12` / `+0x1E`, x 4096) maps the bottom vertices to the light base and the top ones to
   base + 3 (1 - f), `f = max(0, int16 +0x0A / 512 - 8)` from the top vertices' wallpaper V (`0x00C385AB..DB`; the wall
   builders write `+0x0A = (V + 8) x 512` at `0x00C3C587` / `0x00C3C8B9`). Walls taller than 3 m get their light samples
-  stretched (`StretchTallWall`, 07/10). Short walls (07/10, F8 10-57-41): on a foundation face (story 0, drawn from the
+  stretched (`StretchTallWall`). Short walls (F8 10-57-41): on a foundation face (story 0, drawn from the
   terrain to the foundation's top, about 0.75 m) that V is about 0, so the game squeezed the whole 3 m block onto it and
   the top of the stone showed light computed well under a sconce. With *Wall lamps at the right height*
   (`paredesExternasNaAlturaDesenhada`), `WallUvHook` writes a short cell (under 2.98 m) whose game mapping is more than
@@ -153,7 +153,7 @@ share. F7 on a wall shows the PS (1372 bytes or another table entry) and the dra
   [level-light-share history](../../history/night-lighting-level-light-share.md).
 - A daytime wall term of 25% of the unboosted lamp scale: too saturated; reduced to 8%, then (2.12.3) replaced by the
   shared 3% curve: the 8% term was still a visibly lit wall next to a lamp by day.
-- A balcony share (*Light behind balconies*) lit the wall behind a slab from a lamp beneath it (2026-10-12, captures
+- A balcony share (*Light behind balconies*) lit the wall behind a slab from a lamp beneath it (captures
   18-38-41): see [level-light-share history](../../history/night-lighting-level-light-share.md).
 
 ## See also

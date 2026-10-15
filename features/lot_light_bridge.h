@@ -112,6 +112,11 @@ void SetWallGain(float gain, bool enabled);
 std::string WallStatus();
 // Outdoor objects lit by a rig (doors, windows, counters) also get the ground light per pixel (max with the rig lamps).
 void SetObjectPixelLamps(bool on, float strength);
+// The colour an outdoor object's per-pixel lamp gives at `point` (world), by the law and scale DrawObjectLamp uploads now,
+// before N.l and any wall test; false when the per-pixel lamps are off or the lamp is none of theirs. Any thread: the rigs of
+// a roofed room take an outdoor lamp through its openings by it (ObjectLightBridge), so the columns inside an arcade match
+// those outside it.
+bool ObjectLampColourAt(const void* light, const float* point, float rgb[3]);
 // Windows take outdoor light (experimental, off by default): the faces of a room-lit window part that look out of the house
 // take the outdoor ground light and lamps (DrawWindowOutdoor); outdoor objects pass the wall they sit in (0.75 m)
 void SetWindowOutdoor(bool on);
@@ -126,10 +131,16 @@ void SetGroundBrightness(float ground, float roads, float lotLamps); // lotLamps
 // objects get them per pixel instead of one light per object). Live.
 void SetIndoorSmooth(bool on);
 std::string IndoorSmoothStatus();
+// Smooth light maps (2.12.4): the room-lit shaders (InteriorFloor, InteriorWall and their siblings) read the room light map
+// as a cubic B-spline (render thread; per draw, no relight)
+void SetSmoothRoomMaps(bool on);
+std::string RoomMapSmoothStatus();
 std::string GroundBrightnessStatus();
 // Every light the game has (its light enumeration), render thread. False when the enumeration is not available.
 bool EnumerateAllLights(std::vector<uintptr_t>& out);
 std::string LotEdgeStatus();
+// Walls shade lamp light on lot ground (the lot pass's mask alpha, GroundShadow): builds, queue, cost of the last build
+std::string LotShadeStatus();
 // A new world was loaded (render thread): forget the previous world's chunk light maps.
 void OnWorldChanged();
 std::string Status();

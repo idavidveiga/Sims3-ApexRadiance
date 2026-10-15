@@ -138,6 +138,8 @@ keep in-game confirmation as a separate item.
 | `tools/report_check/` | Report a problem: capture storage, recorder, overlay clock and loading gate, menu rendering in four languages |
 | `tools/room_ambient_test/` | Room updater policy and Rooms at Night recovery (`run.ps1`) |
 | `tools/room_structure_test/` | Structural room edits (`run.ps1`) |
+| `tools/room_map_smooth_check/` | Smooth light maps: the room-lit shader pattern over the precomp and captures, the copies (disassembly, native creation under the device's caps), the paired vertex shaders' uv scale, GPU pixels against a CPU B-spline with the wall band clamp, the dither offset (`run.ps1 -Precomp <Shaders_Win32.precomp> [-Captures <folder>]`) |
+| `tools/roofed_openings_test/` | Outdoor and indoor light through openings: story grid walk, roofed rooms' doors, openings into roofed rooms, foundation sides (`run.ps1`) |
 | `tools/spatial_aa_check/` | Spatial SMAA compilation and rendering |
 | `tools/temporal_check/` | Temporal jitter refusal and reprojection for Edge Smoothing |
 | `tools/terrain_lighting_test/` | Terrain lighting policies, shader patches, sampler guard, queue, resources, lamp state, dispatch, world pool, indoor stories, lot UV, ground scale (`run.ps1` and `run_*.ps1`) |

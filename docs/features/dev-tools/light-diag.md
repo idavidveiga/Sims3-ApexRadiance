@@ -10,7 +10,7 @@ changes.
 
 | | |
 |---|---|
-| Availability | Released in 2.5.0 as a player capture (Report a problem); always read-only |
+| Availability | Released in 2.5.0 as a player capture (Report a problem); always read-only. Openings of walls section: Released in 2.13.0 |
 | Default | Available whenever Night Lights is installed and the game addresses validate; no switch |
 | Menu | System > Report a problem > Save a capture > Lighting snapshot (Save). Developer > Lighting > Collect lighting evidence > Save light diagnostics |
 | Configuration | No feature table. Shortcut `[ui] diagnostics_key` in `ApexRadiance.toml` (see [ui.md](../../ui.md#shortcuts)) |
@@ -162,7 +162,9 @@ relight (or use "Relight lots now") and save the diagnostics again." Records are
 toggled (`RefreshAllLots`).
 
 The section continues with `==== STORIES INDOORS (indoor lamps through stair openings) ====` (`IndoorDiagText`: floor
-objects known and linked to a story through their lot), `==== SEAM (atrium walls at the floor line, N samples) ====`
+objects known and linked to a story through their lot), `-- openings of walls (light through doors and windows) --`
+(`OpeningsDiagText`: cut cells per post lot id and story, lot ids whose story manager carried another id, and where each
+loaded lot and story looks its cuts up), `==== SEAM (atrium walls at the floor line, N samples) ====`
 (`SeamDiagText`: pairs of wall samples just under and just over the floor line of an atrium group, with LOD class, y,
 summed light, normalisation and value after the curve, latest solves first) and the solve journal (`JournalText`).
 
@@ -225,7 +227,7 @@ Structure offsets for Light, lot manager, room and tree are in the tables above;
 | | `PixelLampDiag` | Section 5 |
 | | `EnumerateLights`, `VisitLight`, `g_visitor` | Game enumerator with a fake visitor |
 | | `LightLine`, `Vec4`, `Floats`, `SafeCopy`, `Rd<T>` | Formatting and guarded reads |
-| `features/level_light_share.cpp` | `DiagText`, `Diag`, `IndoorDiagText`, `SeamDiagText`, `JournalText`, `SetDiagArmed` | Section 4 |
+| `features/level_light_share.cpp` | `DiagText`, `Diag`, `IndoorDiagText`, `OpeningsDiagText`, `SeamDiagText`, `JournalText`, `SetDiagArmed` | Section 4 |
 | `patches/night_terrain_relight_patch.cpp` | `Install` (`LightDiag::Init`), `OnPresent`, `DrawDeveloper` (button, checkbox, status) | Host |
 | `apex_gui.cpp` | Report page, Lighting snapshot row | Player request |
 
