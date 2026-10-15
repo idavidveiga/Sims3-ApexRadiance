@@ -756,13 +756,15 @@ bool ReachLawRec(void* L, const float* pos, float* rec, bool street) {
 // whose law gives at least one 8-bit level of light gets rec[10] raised to the cut: it is kept, last in the rank, with the
 // law's own colour (rec[4..6] untouched). After the cut rec[10] only ranks the candidates (FUN_006bb190 copies the record,
 // the sort's compare 0x006B8807 reads +0x28); the rig's colours come from rec[4..6]. UNVERIFIED: that no later step weighs
-// a light by rec[10]. Steam 1.67.2 addresses only; TesterToggles::openingLampCut switches it off.
+// a light by rec[10]. The two cuts from GameAddr RigCutFlagged / RigCut (0x01158D64 / 0x01158D60 on Steam 1.67.2);
+// TesterToggles::openingLampCut switches it off.
 void KeepOverCut(const BYTE* rig, float* rec) {
-    if (!rig || !GameAddr::IsFixed() || !TesterToggles::openingLampCut.load(std::memory_order_relaxed)) return;
+    const uintptr_t cutFlagged = GameAddr::Get(GameAddr::Id::RigCutFlagged), cutOther = GameAddr::Get(GameAddr::Id::RigCut);
+    if (!rig || !cutFlagged || !cutOther || !TesterToggles::openingLampCut.load(std::memory_order_relaxed)) return;
     if (!(rec[10] >= RigCut::kMinLuma)) return; // (also NaN)
     __try {
         const bool flagged = *reinterpret_cast<const int*>(rig + 8) != 0;
-        const float cut = *reinterpret_cast<const float*>(flagged ? 0x01158D64 : 0x01158D60);
+        const float cut = *reinterpret_cast<const float*>(flagged ? cutFlagged : cutOther);
         const float kept = RigCut::KeptLuma(rec[10], cut); // (the game keeps it: "comiss cut, rec[10]; ja drop" is false at equality)
         if (kept == rec[10]) return;
         rec[10] = kept;
@@ -929,7 +931,7 @@ void LoadAddresses() {
     const uint32_t cap = static_cast<uint32_t>(kCapGlobal);
     kCapOrig = {0xB9, static_cast<BYTE>(cap), static_cast<BYTE>(cap >> 8), static_cast<BYTE>(cap >> 16), static_cast<BYTE>(cap >> 24)};
     kLumaWeights = Get(Id::LumaWeights);
-    kTypeFiveScale = GameAddr::IsFixed() ? 0x011D11A0 : 0; // the type-5 cone sharpness FUN_006BC940 reads
+    kTypeFiveScale = Get(Id::ConeScale5); // the type-5 cone sharpness FUN_006BC940 reads (0x011D11A0 on Steam 1.67.2)
     kDirtyAllRigs = Get(Id::DirtyAllRigs);
     kRootPtr = Get(Id::RootPtr);
     kRigCtor = Get(Id::RigCtor);

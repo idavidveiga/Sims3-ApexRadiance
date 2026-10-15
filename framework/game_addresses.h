@@ -281,6 +281,64 @@ enum class Id : uint16_t {
     LotBuildBudgetLoad, // 0x00AEA6D8 in FUN_00aea680 (a lot's per-frame build slice): "mov eax,[0x011ECBC4]" right after its budget [esp+14h] (20 / 35 ms) is set
     ProbeDiffuseWrite,  // 0x006B4720 thiscall(lightProbe), ret: writes the new diffuse cube (+0x2C60, or +0x2C50 when not double-buffered)
     ProbeSpecularWrite, // 0x006B4B10 thiscall(lightProbe, rt), ret 4, al: writes the new specular cube and its mips (+0x2C64 / +0x2C5C)
+    // ---- Formerly Steam-only addresses (2.13.2 EA port; docs/engine/game-versions.md "Formerly Steam-only addresses") ----
+    // light law constants read by the light evaluations (outdoor_delta, rt_outdoor_lamps, light_diag)
+    LampK1,             // float 0x011D0A60 ("mov ecx, imm32" before the pow call in the light evaluations)
+    LampK2,             // float 0x011D0A68
+    LampCmax,           // float[4] 0x011D1160 (movaps xmm0,[imm32] in the light evaluations)
+    StreetLampScale,    // float 0x01158DA8: the street lamp colour scale (in LightEval5, after LampColourSite)
+    ConeScale5,         // float[4] 0x011D11A0: the type-5 cone sharpness FUN_006bc940 reads (object_light_bridge, lot_light_bridge)
+    RigCutFlagged,      // float 0x01158D64: the rig light cut for a rig with +8 set (FUN_006bb270, after RigGatherReturn)
+    RigCut,             // float 0x01158D60: the cut otherwise
+    SolveTimeByClass,   // float[3] 0x011D1200: the game's cumulative room solve time per LOD class (ms)
+    MapSlots,           // 0x011D0460: the per-class room map slots (FUN_006a4640: shl eax,4; add eax,imm32)
+    MapLocker,          // 0x011D0508: the room that holds the class's working maps locked (FUN_006a4660: mov [imm32],eax)
+    // room solve finalize and its steps (level_light_share: FinalizeHook, the outdoor delta's own finalize)
+    Finalize,           // FUN_006a0e00 thiscall(room): step 8 of the budgeted solve
+    FinalizeCall,       // its call in FUN_006a3c90 (0x006A3E65)
+    MapEdges,           // FUN_006a8ca0 thiscall(classEntry) -> al (its first call)
+    EdgeCopy,           // FUN_0069efc0 thiscall(room, bits, classEntry) (called twice)
+    MapUnlock,          // FUN_0069e950 thiscall(room, char commit)
+    RoomLitNote,        // FUN_006a08e0 thiscall(room)
+    // LOD class tables (level_light_share QuickLikeRefinement / threshold; light_detail)
+    ThresholdFn,        // FUN_006a8e50: fld [idx*4+factor]; fmul [scale]; ret
+    ThresholdFactor,    // float[3] 0x00FF36F4
+    ThresholdScale,     // float 0x00FF3700
+    ClassWallModeFn,    // FUN_006a8cb0: mov al,[idx+table]; ret
+    ClassWallMode,      // byte[3] 0x00FF36A4
+    ClassWallsFn,       // FUN_006a8ce0 thiscall(pass) ret 4 (2 functions, by address)
+    ClassObjectsFn,     // FUN_006a8d00
+    ClassWalls2D,       // byte[3][4] 0x00FF36C4
+    ClassObjects3D,     // byte[3][4] 0x00FF36D0
+    TexelsGetter,       // FUN_006a8d20: mov eax,[idx*4+table]; ret
+    TexelsPerTile,      // int[3] 0x00FF36AC
+    AtlasReads,         // 0x006A90FC in FUN_006a90e0: mov edi,[eax+eax+W]; mov ebx,[eax+eax+H]
+    WallAtlasW,         // int[3] 0x00FF36DC
+    WallAtlasH,         // int[3] 0x00FF36E8
+    OriginPush,         // 0x006A7E5E in FUN_006a7cf0: mov ecx,[esp+14h]; push 4; ... (the push imm8 at +5)
+    CopyPush,           // 0x006AA322 in FUN_006aa2e0: mov [ecx+74h],eax; push 4; ... (the push imm8 at +4)
+    CopyBuild,          // FUN_006a9ad0 stdcall(int n): the border copy table (its call at CopyPush + 0x10)
+    CopyBuilt,          // byte 0x011D0510: the table was built
+    // walls taller than a story, openings, outdoor alpha, wall bases (level_light_share)
+    WallUvCall0,        // call FUN_00c38530 (0x00C387B5)
+    WallUvCall1,        // the second call (0x00C387CC)
+    WallUv,             // FUN_00c38530: the wall light-UV writer
+    WallEdgeFn,         // FUN_006a43b0 cdecl(dir) -> edge
+    CutPostSite0,       // "push 6257EB4h" of the wall cutout message in the cutout Add (0x00B0D866)
+    CutPostSite1,       //  ... and Remove (0x00B0DD15)
+    OutdoorAlphaSite,   // 0x006A333B in FUN_006a31d0: cmp byte [ebx+18h],0; xorps xmm1,xmm1; jne
+    WallBaseSite,       // 0x006AB32C in FUN_006ab280: movss xmm0,[ebp+10h] of the outdoor branch
+    IndoorBaseSite,     // 0x006AB340: movss xmm0,[eax+78h] of the indoor branch
+    // room map dither (features/room_map_dither.cpp)
+    TexelPackCall,      // 0x006A34DB: call FUN_0060cd10 in FUN_006a31d0
+    TexelPack,          // FUN_0060cd10
+    TexelAddrSite,      // 0x006A330C: the texel address code in FUN_006a31d0
+    PackConst255,       // float 0x00FA312C (255.0) the pack reads at +0x16
+    PackMagic,          // float 0x00FE774C (12582912.0) at +0x5A
+    // lamp mark filter (features/lamp_mark_filter.cpp)
+    OccMarkCall,        // 0x006C7939: the occluder's call of FUN_006c7160 in FUN_006c78e0
+    EntryFlag,          // FUN_006c4cf0(objId): flags every light and occluder entry of an object
+    EntryFlagCall0, EntryFlagCall1, EntryFlagCall2, EntryFlagCall3, EntryFlagCall4, // its 5 callers, by address (development build counters)
     Count
 };
 

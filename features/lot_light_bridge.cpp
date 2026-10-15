@@ -2015,7 +2015,7 @@ bool EnumerateLights() {
         g_enumFn = GameAddr::Get(GameAddr::Id::EnumLights);
         static const BYTE expect[] = {0xE8, 0x2B, 0x36, 0x00, 0x00, 0x8B, 0x4C, 0x24, 0x04, 0x51, 0x68, 0x40, 0xCF, 0x6A, 0x00}; // Steam (checked on Steam)
         g_enumOk = g_enumFn && (!GameAddr::IsFixed() || std::memcmp(reinterpret_cast<const void*>(g_enumFn), expect, sizeof(expect)) == 0);
-        g_coneScaleAt = GameAddr::IsFixed() ? 0x011D11A0 : 0; // the cone scale (LampCone), read where the Steam build keeps it
+        g_coneScaleAt = GameAddr::Get(GameAddr::Id::ConeScale5); // the cone scale (LampCone; 0x011D11A0 on Steam 1.67.2)
     }
     if (!g_enumOk) return false;
     g_enumLights.clear();

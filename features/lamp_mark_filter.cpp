@@ -50,10 +50,11 @@ namespace {
 uintptr_t kMarkCall = 0x006C7CD6;             // in FUN_006c7ba0: CALL FUN_006c7160, ecx = entry+0x14 (tree level), push entry+0x1C
 uintptr_t kMark = 0x006C7160;                 // FUN_006c7160: thiscall(treeLevel, int room) ret 4: the room goes into tl+8
 uintptr_t kLitCall = 0x006C7CB6;              // "mov ecx, edi; call FUN_006bdca0": edi = the light, esi = the entry
-constexpr uintptr_t kEntryFlag = 0x006C4CF0;  // FUN_006c4cf0(objId): flags every light and occluder entry of an object
+uintptr_t kEntryFlag = 0x006C4CF0;            // FUN_006c4cf0(objId): flags every light and occluder entry of an object
 // The light manager's message handlers that flag entries (development build: counted, then the game's call)
-constexpr uintptr_t kFlagSites[5] = {0x006B0A8D, 0x006B0BFA, 0x006B0B33, 0x006B0C9A, 0x006B0D26};
-constexpr const char* kFlagNames[5] = {"transform", "colour", "intensity", "enable", "alpha"};
+// (GameAddr EntryFlagCall0..4, by address; Steam 1.67.2: 0x006B0A8D, 0x006B0B33, 0x006B0BFA, 0x006B0C9A, 0x006B0D26)
+uintptr_t kFlagSites[5] = {};
+constexpr const char* kFlagNames[5] = {"transform", "intensity", "colour", "enable", "alpha"};
 
 std::vector<MemPatch::PatchLocation> g_patches;
 bool g_installed = false, g_flagsCounted = false;
@@ -231,7 +232,7 @@ bool Signature(uintptr_t entry, uintptr_t light, int room, uint64_t& h, int& typ
 // the same story within kOwnObjectMs is taken as that lamp's object: its mark is dropped (the GPU draws the lamp). While
 // Lamp lighting is Classic no edit is GPU-handled: every occluder mark goes through as the game makes it.
 // UNVERIFIED that every lamp object has an occluder entry: the counters tell.
-constexpr uintptr_t kOccMarkCall = 0x006C7939;
+uintptr_t kOccMarkCall = 0x006C7939; // GameAddr OccMarkCall
 constexpr float kOwnObjectM = 1.5f;
 constexpr DWORD kOwnObjectMs = 600;
 struct HandledEdit {
@@ -610,18 +611,25 @@ bool Install(std::string& why) {
         why = "Rooms keep their light: could not patch the game";
         return false;
     }
-    // the occluder mark (Steam 1.67.2 only; checked byte by byte): with Lamp lighting: Instant, a GPU-drawn lamp's own object
+    // the occluder mark (GameAddr OccMarkCall; checked byte by byte): with Lamp lighting: Instant, a GPU-drawn lamp's own object
     // marks no room while it is dragged; with Classic every occluder mark goes through as the game makes it (OccDecide)
     g_occInstalled = false;
-    if (GameAddr::IsFixed() && kMark == 0x006C7160) {
+    kOccMarkCall = GameAddr::Get(GameAddr::Id::OccMarkCall);
+    if (kOccMarkCall) {
         const BYTE occArg[] = {0x8B, 0x4E, 0x14, 0x50, 0x89, 0x46, 0x1C};
         if (std::memcmp(reinterpret_cast<const void*>(kOccMarkCall - sizeof occArg), occArg, sizeof occArg) == 0 && CallsTarget(kOccMarkCall, kMark))
             g_occInstalled = Redirect(kOccMarkCall, kMark, reinterpret_cast<const void*>(&OccThunk));
-        if (!g_occInstalled) LOG_WARNING("[LampMarkFilter] The occluder mark (0x006C7939) differs: a GPU-drawn lamp's own object still marks its room when it moves");
+        if (!g_occInstalled) LOG_WARNING(std::format("[LampMarkFilter] The occluder mark ({:#010x}) differs: a GPU-drawn lamp's own object still marks its room when it moves", kOccMarkCall));
+    } else {
+        LOG_WARNING("[LampMarkFilter] The occluder mark: " + GameAddr::NotAvailable("OccMarkCall") + "; a GPU-drawn lamp's own object still marks its room when it moves");
     }
     g_flagsCounted = false;
-    if (!kPublicBuild && GameAddr::IsFixed()) { // (Steam addresses only) which messages flag the entries (the floor switch's trigger): all five or none
-        bool all = true;
+    if (!kPublicBuild) { // which messages flag the entries (the floor switch's trigger): all five or none
+        using GameAddr::Id;
+        bool all = GameAddr::Have({Id::EntryFlag, Id::EntryFlagCall0, Id::EntryFlagCall1, Id::EntryFlagCall2, Id::EntryFlagCall3, Id::EntryFlagCall4});
+        kEntryFlag = GameAddr::Get(Id::EntryFlag);
+        g_flagTarget = kEntryFlag;
+        for (int i = 0; i < 5; i++) kFlagSites[i] = GameAddr::Get(static_cast<Id>(static_cast<int>(Id::EntryFlagCall0) + i));
         for (uintptr_t s : kFlagSites) all = all && CallsTarget(s, kEntryFlag);
         std::vector<MemPatch::PatchLocation> before = g_patches;
         for (int i = 0; i < 5 && all; i++) all = Redirect(kFlagSites[i], kEntryFlag, reinterpret_cast<const void*>(kFlagThunks[i]));

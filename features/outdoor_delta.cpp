@@ -52,9 +52,10 @@ using namespace OutdoorDeltaModel;
 constexpr uint32_t kMapDesc[4] = {0x680, 0x1C4, 0x2B4, 0x3A4}; // walls, floor, ceiling, objects (room+0xEC - 2)
 constexpr int kSlotIdx[4] = {3, 0, 1, 2};
 constexpr const char* kMapName[4] = {"wall", "floor", "ceiling", "object"};
-constexpr uintptr_t kBatchVec = 0x01158AC8; // the batch vector the solve's callers pass (LevelLightShare kBatchSamples)
-constexpr uintptr_t kSlots = 0x011D0460;
-constexpr uintptr_t kPack = 0x0060CD10;
+// Game addresses (Steam 1.67.2 values; GameAddr on every build, required by LevelLightShare::DeltaReady)
+uintptr_t BatchVec() { return GameAddr::Get(GameAddr::Id::BatchSamples); } // 0x01158AC8: the batch vector the solve's callers pass
+uintptr_t Slots() { return GameAddr::Get(GameAddr::Id::MapSlots); }        // 0x011D0460: the per-class room map slots
+uintptr_t Pack() { return GameAddr::Get(GameAddr::Id::TexelPack); }        // 0x0060CD10: the texel pack
 constexpr int kMaxChanged = 8;                    // more changed lights: solved in full
 // (14/10: 160 MB, 256 MB pinned; with the game's saves failing on a fragmented address space below 2 GB, the parts are
 // kept above 2 GB (HighAllocator) and within a lower budget)
@@ -396,7 +397,7 @@ bool ReadDesc(const BYTE* room, int m, Desc& d) {
 uintptr_t SlotTexture(int cls, int m) {
     __try {
         if (cls < 0 || cls > 2) return 0;
-        const uintptr_t wrapper = *reinterpret_cast<const uintptr_t*>(kSlots + static_cast<uintptr_t>(cls) * 16 + static_cast<uintptr_t>(kSlotIdx[m]) * 4);
+        const uintptr_t wrapper = *reinterpret_cast<const uintptr_t*>(Slots() + static_cast<uintptr_t>(cls) * 16 + static_cast<uintptr_t>(kSlotIdx[m]) * 4);
         if (!wrapper || *reinterpret_cast<const uint32_t*>(wrapper + 0x2C) != 0) return 0;
         return *reinterpret_cast<const uintptr_t*>(wrapper + 0x30);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -431,8 +432,9 @@ bool WriteRows(const Desc& d, int x0, int y0, int n, int rows, const uint32_t* s
 }
 bool ReadBatchVec(uintptr_t& b, uintptr_t& e) {
     __try {
-        b = *reinterpret_cast<const uintptr_t*>(kBatchVec);
-        e = *reinterpret_cast<const uintptr_t*>(kBatchVec + 4);
+        const uintptr_t vec = BatchVec();
+        b = *reinterpret_cast<const uintptr_t*>(vec);
+        e = *reinterpret_cast<const uintptr_t*>(vec + 4);
         return b && e > b && (e - b) % 0x30 == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -452,7 +454,10 @@ struct Consts {
 Consts ReadConsts() {
     Consts c;
     __try {
-        const float k1 = *reinterpret_cast<const float*>(0x011D0A60), k2 = *reinterpret_cast<const float*>(0x011D0A68), st = *reinterpret_cast<const float*>(0x01158DA8);
+        // the light law constants (Steam 1.67.2: 0x011D0A60, 0x011D0A68, 0x01158DA8); the defaults when one was not found
+        const uintptr_t k1At = GameAddr::Get(GameAddr::Id::LampK1), k2At = GameAddr::Get(GameAddr::Id::LampK2), stAt = GameAddr::Get(GameAddr::Id::StreetLampScale);
+        const float k1 = k1At ? *reinterpret_cast<const float*>(k1At) : c.k1, k2 = k2At ? *reinterpret_cast<const float*>(k2At) : c.k2,
+                    st = stAt ? *reinterpret_cast<const float*>(stAt) : c.street;
         if (k1 > 1e-6f && k1 < 1e6f) c.k1 = k1;
         if (k2 > 0.0f && k2 < 1e3f) c.k2 = k2;
         if (st > 0.0f && st < 100.0f) c.street = st;
@@ -467,7 +472,7 @@ uint32_t PackGame(const float* colour, unsigned x, unsigned y, bool dither) {
     std::memcpy(c, colour, sizeof c);
     if (dither) Dither(c, RoomMapDither::Offset(x, y) / 255.0f);
     DWORD out = 0;
-    reinterpret_cast<Pack_t>(kPack)(&out, nullptr, c);
+    reinterpret_cast<Pack_t>(Pack())(&out, nullptr, c);
     return out;
 }
 bool DitherNow() { return RoomMapDither::Running() && RoomMapDither::Enabled(); }

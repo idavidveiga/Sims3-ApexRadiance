@@ -358,7 +358,7 @@ uint64_t LotOf(const BYTE* room) {
 uint64_t g_lastLot = 0; // the lot of the room that was current at the end of the last pick (render thread)
 
 // A lamp edit's rooms from the first waiting one to the last solved (05/10, to tune "Lamp edits first"): the time, the
-// frames and how long the game solved rooms meanwhile (its own per-class solve time 0x011D1200..08, Steam addresses), one
+// frames and how long the game solved rooms meanwhile (its own per-class solve time, GameAddr SolveTimeByClass: 0x011D1200..08 on Steam), one
 // log line per edit (a drag is one edit while its rooms keep waiting). Render thread.
 struct EditBurst {
     bool on = false;
@@ -375,7 +375,8 @@ struct EditBurst {
 EditBurst g_burst;
 float GameSolveMs() {
     float t[3] = {};
-    return GameAddr::IsFixed() && MemPatch::ReadBytes(0x011D1200, t, sizeof t) ? t[0] + t[1] + t[2] : 0.0f;
+    const uintptr_t at = GameAddr::Get(GameAddr::Id::SolveTimeByClass); // 0x011D1200 on Steam 1.67.2
+    return at && MemPatch::ReadBytes(at, t, sizeof t) ? t[0] + t[1] + t[2] : 0.0f;
 }
 std::string ApexPart(double startMs) {
     const double now = LevelLightShare::ApexSolveMs();
@@ -737,7 +738,8 @@ bool SolveRefiningUp() {
 // The game's own cumulative solve time per class (0x011D1200/04/08, ms; 0x006C2380 adds each finished solve)
 std::string SolveTimes() {
     float t[3] = {};
-    if (!MemPatch::ReadBytes(0x011D1200, t, sizeof t) || !GameAddr::IsFixed()) return "";
+    const uintptr_t at = GameAddr::Get(GameAddr::Id::SolveTimeByClass); // 0x011D1200 on Steam 1.67.2
+    if (!at || !MemPatch::ReadBytes(at, t, sizeof t)) return "";
     return std::format(" | the game's solve time by class: {:.1f} / {:.1f} / {:.1f} s", t[0] / 1000.0f, t[1] / 1000.0f, t[2] / 1000.0f);
 }
 

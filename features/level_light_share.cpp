@@ -1991,11 +1991,17 @@ void NoteClassThreshold(const BYTE* room) {
 // sent its rooms to solve once more (entering the lot, the light took long to correct)
 float g_thrTable = -1.0f;
 void ReadThresholdTable() {
-    const BYTE code[] = {0x8B, 0x41, 0x08, 0xD9, 0x04, 0x85, 0xF4, 0x36, 0xFF, 0x00, 0xD8, 0x0D, 0x00, 0x37, 0xFF, 0x00, 0xC3};
+    using GameAddr::Id;
+    if (!GameAddr::Have({Id::ThresholdFn, Id::ThresholdFactor, Id::ThresholdScale})) return;
+    const uintptr_t fn = GameAddr::Get(Id::ThresholdFn), factorAt = GameAddr::Get(Id::ThresholdFactor), scaleAt = GameAddr::Get(Id::ThresholdScale);
+    // mov eax,[ecx+8]; fld [eax*4+factor]; fmul [scale]; ret (Steam: 0x006A8E50, 0x00FF36F4, 0x00FF3700)
+    BYTE code[] = {0x8B, 0x41, 0x08, 0xD9, 0x04, 0x85, 0, 0, 0, 0, 0xD8, 0x0D, 0, 0, 0, 0, 0xC3};
+    std::memcpy(code + 6, &factorAt, 4);
+    std::memcpy(code + 12, &scaleAt, 4);
     BYTE got[sizeof code] = {};
     float factor[3] = {}, scale = 0.0f;
-    if (!GameAddr::IsFixed() || !MemPatch::ReadBytes(0x006A8E50, got, sizeof got) || std::memcmp(got, code, sizeof code) != 0) return;
-    if (!MemPatch::ReadBytes(0x00FF36F4, factor, sizeof factor) || !MemPatch::ReadBytes(0x00FF3700, &scale, sizeof scale)) return;
+    if (!MemPatch::ReadBytes(fn, got, sizeof got) || std::memcmp(got, code, sizeof code) != 0) return;
+    if (!MemPatch::ReadBytes(factorAt, factor, sizeof factor) || !MemPatch::ReadBytes(scaleAt, &scale, sizeof scale)) return;
     const float thr = factor[2] * scale;
     if (std::isfinite(thr) && thr > 0.0f) g_thrTable = thr;
 }
@@ -2273,21 +2279,32 @@ void MergeStackedAmbient(BYTE* room) {
 // (the wall pass's ones around each wall step, WallPassHook), and its ambient is taken again with that threshold
 // (FUN_006a0f50; its copy in the sampler +0x650 as state 0 makes it with FUN_006ab110). Class 0 has few texels, so the
 // tests cost little.
-constexpr uintptr_t kClassWallMode = 0x00FF36A4, kClassWalls2D = 0x00FF36C4, kClassObjects3D = 0x00FF36D0;
+// Steam 1.67.2: tables 0x00FF36A4 / 0x00FF36C4 / 0x00FF36D0, read by 0x006A8CB0 / 0x006A8CE0 / 0x006A8D00 (GameAddr ClassWallMode*,
+// ClassWalls*, ClassObjects*; set by CheckClassTables)
+uintptr_t kClassWallMode = 0, kClassWalls2D = 0, kClassObjects3D = 0;
 bool g_classTables = false; // the code above checked (and the pass tables made writable) at install
 bool CheckClassTables() {
-    if (!GameAddr::IsFixed()) return false;
-    const BYTE mode[] = {0x8B, 0x41, 0x08, 0x8A, 0x80, 0xA4, 0x36, 0xFF, 0x00, 0xC3};
-    const BYTE walls[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x49, 0x08, 0x8D, 0x04, 0x40, 0x8A, 0x84, 0x08, 0xC4, 0x36, 0xFF, 0x00, 0xC2, 0x04, 0x00};
+    using GameAddr::Id;
+    if (!GameAddr::Have({Id::ClassWallModeFn, Id::ClassWallMode, Id::ClassWallsFn, Id::ClassObjectsFn, Id::ClassWalls2D, Id::ClassObjects3D})) return false;
+    const uintptr_t modeAt = GameAddr::Get(Id::ClassWallMode), wallsAt = GameAddr::Get(Id::ClassWalls2D), objectsAt = GameAddr::Get(Id::ClassObjects3D);
+    BYTE mode[] = {0x8B, 0x41, 0x08, 0x8A, 0x80, 0, 0, 0, 0, 0xC3};
+    BYTE walls[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x49, 0x08, 0x8D, 0x04, 0x40, 0x8A, 0x84, 0x08, 0, 0, 0, 0, 0xC2, 0x04, 0x00};
+    std::memcpy(mode + 5, &modeAt, 4);
     BYTE objects[sizeof walls];
     std::memcpy(objects, walls, sizeof walls);
-    objects[13] = 0xD0;
+    std::memcpy(walls + 13, &wallsAt, 4);
+    std::memcpy(objects + 13, &objectsAt, 4);
     BYTE got[sizeof walls] = {};
-    if (!MemPatch::ReadBytes(0x006A8CB0, got, sizeof mode) || std::memcmp(got, mode, sizeof mode) != 0) return false;
-    if (!MemPatch::ReadBytes(0x006A8CE0, got, sizeof walls) || std::memcmp(got, walls, sizeof walls) != 0) return false;
-    if (!MemPatch::ReadBytes(0x006A8D00, got, sizeof walls) || std::memcmp(got, objects, sizeof walls) != 0) return false;
+    if (!MemPatch::ReadBytes(GameAddr::Get(Id::ClassWallModeFn), got, sizeof mode) || std::memcmp(got, mode, sizeof mode) != 0) return false;
+    if (!MemPatch::ReadBytes(GameAddr::Get(Id::ClassWallsFn), got, sizeof walls) || std::memcmp(got, walls, sizeof walls) != 0) return false;
+    if (!MemPatch::ReadBytes(GameAddr::Get(Id::ClassObjectsFn), got, sizeof walls) || std::memcmp(got, objects, sizeof walls) != 0) return false;
+    kClassWallMode = modeAt;
+    kClassWalls2D = wallsAt;
+    kClassObjects3D = objectsAt;
     DWORD old = 0;
-    return VirtualProtect(reinterpret_cast<void*>(kClassWalls2D), 0x18, PAGE_READWRITE, &old) != 0;
+    if (kClassObjects3D == kClassWalls2D + 0xC) return VirtualProtect(reinterpret_cast<void*>(kClassWalls2D), 0x18, PAGE_READWRITE, &old) != 0; // Steam: both in one call
+    return VirtualProtect(reinterpret_cast<void*>(kClassWalls2D), 0xC, PAGE_READWRITE, &old) != 0 &&
+           VirtualProtect(reinterpret_cast<void*>(kClassObjects3D), 0xC, PAGE_READWRITE, &old) != 0;
 }
 int ClassIndex(const BYTE* room, int cls) {
     __try {
@@ -2720,8 +2737,9 @@ void DropWallSamples(uintptr_t batch, float dy) {
 // lot space at +0; 0 bottom-left, 2 bottom-right, 3 top-right, 4 top middle, 5 top-left) note each cell's drawn foot and
 // tops on the wall the game takes for it (tile +0x58 + edge * 4, edge = 0x006A43B0(dir)); the wall's samples then spread
 // its rows over the drawn height of their column, as the block is drawn (WallSamplesHook).
-constexpr uintptr_t kWallUv = 0x00C38530;
-constexpr uintptr_t kWallUvCalls[2] = {0x00C387B5, 0x00C387CC};
+uintptr_t kWallUv = 0;            // 0x00C38530 (GameAddr WallUv, set at install)
+uintptr_t kWallUvCalls[2] = {};    // 0x00C387B5, 0x00C387CC (WallUvCall0/1)
+uintptr_t kWallEdge = 0;           // 0x006A43B0 (WallEdgeFn)
 const BYTE kWallUvCallBytes[2][5] = {{0xE8, 0x76, 0xFD, 0xFF, 0xFF}, {0xE8, 0x5F, 0xFD, 0xFF, 0xFF}};
 using WallUv_t = void(__thiscall*)(void* geo, uintptr_t mgr, int x, int z, int dir, int mode);
 bool g_wallUvReady = false;
@@ -2782,7 +2800,7 @@ bool ReadWallCell(void* geo, uintptr_t mgr, int x, int z, int dir, WallCellRead&
         float P[6][3];
         for (int i = 0; i < 6; i++)
             for (int a = 0; a < 3; a++) P[i][a] = *reinterpret_cast<const int16_t*>(v + i * 0x2C + a * 2) / 256.0f;
-        c.edge = reinterpret_cast<int(__cdecl*)(int)>(0x006A43B0)(dir);
+        c.edge = reinterpret_cast<int(__cdecl*)(int)>(kWallEdge)(dir);
         if (c.edge < 0 || c.edge > 7) return false;
         const uintptr_t tile = LightTile(mgr, x, z);
         if (!tile) return false;
@@ -3113,7 +3131,7 @@ uint32_t EdgeKey(int x0, int z0, int x1, int z1) {
 // mov edx,[esi]; push eax (the payload); mov eax,[edx+1Ch]; push 6257EB4h; mov ecx,esi; call eax (the message bus,
 // thiscall(bus, id, payload, 0, 0) ret 10h). The 5-byte push at +6 becomes a call of the thunk, which notes the payload and
 // pushes the id itself; every register is kept but ecx, which the next instruction loads anyway.
-constexpr uintptr_t kCutPostSites[2] = {0x00B0D866, 0x00B0DD15};
+uintptr_t kCutPostSites[2] = {}; // 0x00B0D866, 0x00B0DD15 (GameAddr CutPostSite0/1, set by InstallCutoutCapture)
 const BYTE kCutPostBytes[15] = {0x8B, 0x16, 0x50, 0x8B, 0x42, 0x1C, 0x68, 0xB4, 0x7E, 0x25, 0x06, 0x8B, 0xCE, 0xFF, 0xD0};
 // From esp at the replaced push (three pushes since the function's own frame: two zeros and the payload): the catalog
 // product that Add keeps at [esp+34h] (0x00B0D48F) and Remove at [esp+24h] (0x00B0D94F); the lot that Remove keeps at
@@ -3295,11 +3313,15 @@ __declspec(naked) void CutRemoveThunk() {
         jmp ecx
     }
 }
-// Install (Steam 1.67.2 only): both sites or none. Installed with the module whatever the option, so the lots loaded while
-// the option is off still know their openings when it is turned on
+// Install: both sites or none (every byte of both checked). Installed with the module whatever the option, so the lots
+// loaded while the option is off still know their openings when it is turned on. UNVERIFIED on builds other than Steam
+// 1.67.2: the stack slots kCutProductAt / kCutLotAt the thunks read (the signature pins only the 15 bytes around the push).
 bool InstallCutoutCapture() {
     if (g_cutReady) return true;
-    if (!GameAddr::IsFixed()) return false;
+    using GameAddr::Id;
+    if (!GameAddr::Have({Id::CutPostSite0, Id::CutPostSite1})) return false;
+    kCutPostSites[0] = GameAddr::Get(Id::CutPostSite0);
+    kCutPostSites[1] = GameAddr::Get(Id::CutPostSite1);
     for (uintptr_t site : kCutPostSites)
         if (!MemPatch::ValidateBytes(reinterpret_cast<LPCVOID>(site - 6), kCutPostBytes, sizeof kCutPostBytes)) return false;
     const void* const thunks[2] = {reinterpret_cast<const void*>(&CutAddThunk), reinterpret_cast<const void*>(&CutRemoveThunk)};
@@ -6326,8 +6348,8 @@ void __fastcall InvalidateFlagNoteHook(BYTE* room, void*, char flag) {
 // The end of a room's solve (06/10, light update trace): FUN_006a0e00, step 8 of the budgeted solve (its call at
 // 0x6A3E65 in FUN_006a3c90), unlocks the maps the solve wrote and gives them back to the room, which shows them from the
 // next frame. Noted 'E' in the solve journal while a recording runs, and told to Faster Room Lighting: a quick pass is
-// shown only once its room's solve ended (RoomLightQueue::NoteSolveEnd). Steam 1.67.2 (the call checked at install).
-constexpr uintptr_t kFinalizeCall = 0x006A3E65, kFinalize = 0x006A0E00;
+// shown only once its room's solve ended (RoomLightQueue::NoteSolveEnd). GameAddr Finalize / FinalizeCall (the call checked at install).
+uintptr_t kFinalizeCall = 0, kFinalize = 0; // 0x006A3E65, 0x006A0E00 on Steam 1.67.2
 using Finalize_t = void(__thiscall*)(void* room);
 void __fastcall FinalizeHook(BYTE* room) {
     // Quick outdoor lamp edits (Instant only): the last texel the solve packed is read while the maps are still locked
@@ -7980,10 +8002,10 @@ void RecordRequestedSeam(BYTE* room, const float* out, const float* sample) {
 // The half width (m) an edge is spread over at a texel of the room's light maps (t_mapAA): 0.75 of its texel, so an edge
 // covers at least 1.5 texels and a map shows it without stairs. Texels per 1 m tile edge from the game's table by the
 // room's LOD class (room+0xF4; 0x00FF36AC int[3] = {1, 2, 4}, Light detail doubles it, light_detail.cpp); 0 when unknown.
-constexpr uintptr_t kTexelsPerTileTable = 0x00FF36AC;
 constexpr float kMapAATexels = 0.75f;
 float MapHalfTexel(const BYTE* room) {
-    if (!GameAddr::IsFixed()) return 0.0f;
+    const uintptr_t kTexelsPerTileTable = GameAddr::Get(GameAddr::Id::TexelsPerTile); // 0x00FF36AC on Steam 1.67.2
+    if (!kTexelsPerTileTable) return 0.0f;
     const int cls = *reinterpret_cast<const int*>(room + 0xF4);
     if (cls < 0 || cls > 2) return 0.0f;
     const int n = *reinterpret_cast<const int*>(kTexelsPerTileTable + 4u * static_cast<uintptr_t>(cls));
@@ -8153,7 +8175,7 @@ float* SolvePoint(BYTE* room, float* out, void* list2D, void* list3D, void* flag
 // atlas x (1 - alpha). Maps solved before keep alpha 0 and the whole atlas.
 // The alpha reaches the texel through kOutdoorAlpha (0x006A333B: "cmp byte [ebx+18h],0; xorps xmm1,xmm1", xmm1 = an
 // outdoor texel's alpha), which now loads out[3]; out[3] = 0 for every other outdoor sample, as the game had it.
-constexpr uintptr_t kOutdoorAlpha = 0x006A333B;
+uintptr_t kOutdoorAlpha = 0; // 0x006A333B (GameAddr OutdoorAlphaSite)
 const BYTE kOutdoorAlphaBytes[] = {0x80, 0x7B, 0x18, 0x00, 0x0F, 0x57, 0xC9, 0x0F, 0x85}; // cmp byte [ebx+18h],0; xorps xmm1,xmm1; jne
 bool g_floorMaskReady = false;
 std::atomic<bool> g_floorWallsOn{true};
@@ -8197,7 +8219,7 @@ bool InnerOpeningsOn() {
 // the tiles at its cell and the cells before it on x and z (a wall lies on a tile edge) from 3.2 m under story * 3 to
 // 0.3 m over it (the story above never; pools and odd values never); none: story * 3 as before. The call replaces the
 // "movss xmm0,[ebp+10h]" of the outdoor branch; the parameter slot carries the result (it is read only there).
-constexpr uintptr_t kWallBaseSite = 0x006AB32C;
+uintptr_t kWallBaseSite = 0; // 0x006AB32C (GameAddr WallBaseSite)
 const BYTE kWallBaseBytes[] = {0x84, 0xC0, 0x74, 0x07, 0xF3, 0x0F, 0x10, 0x45, 0x10, 0xEB, 0x12}; // test al,al; je +7; movss xmm0,[ebp+10h]; jmp +0x12
 bool g_wallBaseReady = false;
 std::atomic<long> g_wallBaseRaised{0}, g_wallBaseKept{0}, g_wallBaseLogged{0};
@@ -8263,7 +8285,7 @@ extern "C" float __cdecl IndoorWallBase(const BYTE* wall, float tile) {
 // [eax+78h]"), but diagonal walls are drawn at story * 3 like their outdoor faces (a recording: the two faces
 // of one diagonal were lit from 63.325 outside and 61.314 inside, 2 m apart; the floor for the outside face lifted its
 // light above the sconce). With the option, a diagonal's indoor face takes story * 3 ([ebp+10h]) as its outdoor face does.
-constexpr uintptr_t kIndoorBaseSite = 0x006AB340;
+uintptr_t kIndoorBaseSite = 0; // 0x006AB340 (GameAddr IndoorBaseSite)
 const BYTE kIndoorBaseBytes[] = {0xF3, 0x0F, 0x10, 0x40, 0x78}; // movss xmm0,[eax+78h]
 volatile bool g_wallBaseFlag = false; // g_foundationWallsOn as a plain byte for the thunk
 bool g_indoorBaseReady = false;
@@ -10666,7 +10688,9 @@ bool InstallIndoor(std::string& why) {
     g_classTables = amb && CheckClassTables(); // the quick pass takes its refinement's wall tests (QuickLikeRefinement)
     ReadThresholdTable();
     // the end of every room solve, for the quick pass and the recorder's light update trace (FinalizeHook)
-    if (GameAddr::IsFixed() && CallsTarget(kFinalizeCall, kFinalize))
+    kFinalizeCall = GameAddr::Get(Id::FinalizeCall);
+    kFinalize = GameAddr::Get(Id::Finalize);
+    if (kFinalizeCall && kFinalize && CallsTarget(kFinalizeCall, kFinalize))
         g_finalizeReady = Redirect(kFinalizeCall, kFinalize, reinterpret_cast<const void*>(&FinalizeHook), &g_lodPatches);
     // the solve's step 1, where it locks the maps a lamp switch or an atrium holds (LockStepHook)
     if (const uintptr_t site = kRoomSolveStartCall ? kRoomSolveStartCall + 0x1B : 0;
@@ -12129,8 +12153,11 @@ bool Install(std::string& error) {
             !EntryChain::Install(EntryChain::Site::RoomInvalidateFlag, EntryChain::Layer::LevelLightShare, reinterpret_cast<void*>(&InvalidateFlagNoteHook), &why))
             LOG_WARNING("[LevelLightShare] Invalidate notes for the F8 journal not installed: " + why);
     }
-    // Walls block light on outdoor floors (see SolvePointBatch): needs the batch call redirected; Steam bytes only
-    g_floorMaskReady = solveOk && GameAddr::IsFixed() && kBatchSolveCall == 0x006A3336 && kRoomById &&
+    // Walls block light on outdoor floors (see SolvePointBatch): needs the batch call redirected, right before the site (its
+    // signature: "call; cmp byte [ebx+18h],0; xorps xmm1,xmm1; jne"). UNVERIFIED on builds other than Steam 1.67.2: the thunk's
+    // [esp+30h] (out[3] in FUN_006a31d0's frame)
+    kOutdoorAlpha = GameAddr::Get(Id::OutdoorAlphaSite);
+    g_floorMaskReady = solveOk && kOutdoorAlpha && kBatchSolveCall == kOutdoorAlpha - 5 && (!GameAddr::IsFixed() || kBatchSolveCall == 0x006A3336) && kRoomById &&
                        MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kOutdoorAlpha), kOutdoorAlphaBytes, sizeof(kOutdoorAlphaBytes));
     if (g_floorMaskReady) {
         BYTE call[7] = {0xE8, 0, 0, 0, 0, 0x90, 0x90};
@@ -12139,8 +12166,11 @@ bool Install(std::string& error) {
         g_floorMaskReady = MemPatch::WriteBytes(kOutdoorAlpha, std::vector<BYTE>(call, call + 7), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Walls block light on floors: ") + (g_floorMaskReady ? "ready" : "left as before (code differs)"));
-    // Outside walls on foundations: an outdoor room's walls take the floor they stand on (OutdoorWallBase); Steam bytes only
-    g_wallBaseReady = GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallBaseSite - 4), kWallBaseBytes, sizeof(kWallBaseBytes));
+    // Outside walls on foundations: an outdoor room's walls take the floor they stand on (OutdoorWallBase); the bytes checked.
+    // UNVERIFIED on builds other than Steam 1.67.2: the thunks' registers and frame (esi = the wall, [ebp+10h])
+    kWallBaseSite = GameAddr::Get(Id::WallBaseSite);
+    kIndoorBaseSite = GameAddr::Get(Id::IndoorBaseSite);
+    g_wallBaseReady = kWallBaseSite && kIndoorBaseSite && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallBaseSite - 4), kWallBaseBytes, sizeof(kWallBaseBytes));
     if (g_wallBaseReady) {
         BYTE call[5] = {0xE8, 0, 0, 0, 0};
         const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&OutdoorWallBaseThunk) - (kWallBaseSite + 5));
@@ -12156,9 +12186,15 @@ bool Install(std::string& error) {
         g_indoorBaseReady = MemPatch::WriteBytes(kIndoorBaseSite, std::vector<BYTE>(call, call + 5), &g_patches);
     }
     LOG_INFO(std::string("[LevelLightShare] Indoor faces of diagonal walls on foundations: ") + (g_indoorBaseReady ? "ready" : "not available"));
-    // Walls taller than a story: the light-UV writer's two calls note each drawn wall cell (WallUvHook); Steam bytes only
-    g_wallUvReady = g_alignReady && GameAddr::IsFixed() && MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[0]), kWallUvCallBytes[0], 5) &&
-                    MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[1]), kWallUvCallBytes[1], 5);
+    // Walls taller than a story: the light-UV writer's two calls note each drawn wall cell (WallUvHook)
+    kWallUv = GameAddr::Get(Id::WallUv);
+    kWallUvCalls[0] = GameAddr::Get(Id::WallUvCall0);
+    kWallUvCalls[1] = GameAddr::Get(Id::WallUvCall1);
+    kWallEdge = GameAddr::Get(Id::WallEdgeFn);
+    g_wallUvReady = g_alignReady && GameAddr::Have({Id::WallUv, Id::WallUvCall0, Id::WallUvCall1, Id::WallEdgeFn}) &&
+                    (GameAddr::IsFixed() ? MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[0]), kWallUvCallBytes[0], 5) &&
+                                               MemPatch::ValidateBytes(reinterpret_cast<LPVOID>(kWallUvCalls[1]), kWallUvCallBytes[1], 5)
+                                         : CallsTarget(kWallUvCalls[0], kWallUv) && CallsTarget(kWallUvCalls[1], kWallUv));
     for (int k = 0; k < 2 && g_wallUvReady; k++) {
         BYTE call[5] = {0xE8, 0, 0, 0, 0};
         const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&WallUvHook) - (kWallUvCalls[k] + 5));
@@ -12167,7 +12203,7 @@ bool Install(std::string& error) {
     }
     LOG_INFO(std::string("[LevelLightShare] Walls taller than a story: ") + (g_wallUvReady ? "ready (their light spreads over the drawn height)" : "not available (code differs)"));
     // Light through doors and windows: the wall cutouts posted from now on (doors, windows, arches; lot loads included),
-    // whatever the option, so lots loaded while it is off know their openings when it is turned on; Steam bytes only
+    // whatever the option, so lots loaded while it is off know their openings when it is turned on
     const bool cuts = InstallCutoutCapture();
     LOG_INFO(std::string("[LevelLightShare] Openings of walls (light through doors and windows): ") +
              (!cuts ? "not available (code differs)"
@@ -14481,16 +14517,29 @@ int SendRoom0DependentsTry(uintptr_t tracker, unsigned mask, bool tail) {
 // The finalize's own steps, for a room 0 whose maps the delta locked outside a solve (FUN_006a0e00 without its state
 // change: the class-2 tile edge copies, the unlock that copies the class's working maps back into the room's own, the
 // room's lighting message)
-constexpr uintptr_t kMapEdges = 0x006A8CA0, kEdgeCopy = 0x0069EFC0, kMapUnlock = 0x0069E950, kRoomLitNote = 0x006A08E0, kMapLocker = 0x011D0508;
+// Steam 1.67.2: 0x006A8CA0, 0x0069EFC0, 0x0069E950, 0x006A08E0, 0x011D0508 (GameAddr MapEdges, EdgeCopy, MapUnlock, RoomLitNote,
+// MapLocker: the first four are the calls of the finalize FUN_006a0e00, the locker the global FUN_006a4660 stores)
+uintptr_t kMapEdges = 0, kEdgeCopy = 0, kMapUnlock = 0, kRoomLitNote = 0, kMapLocker = 0;
 bool g_mapStepsChecked = false, g_mapStepsOk = false;
-bool ReadMapSteps() { // POD (SEH)
+bool ReadMapStepsSteam() { // POD (SEH)
     __try {
-        return GameAddr::IsFixed() && kLockStep == 0x0069FA40 && CallsTarget(0x006A0E12, kMapEdges) && CallsTarget(0x006A0E25, kEdgeCopy) &&
+        return kLockStep == 0x0069FA40 && CallsTarget(0x006A0E12, kMapEdges) && CallsTarget(0x006A0E25, kEdgeCopy) &&
                CallsTarget(0x006A0E34, kEdgeCopy) && CallsTarget(0x006A0E3D, kMapUnlock) && CallsTarget(0x006A0E44, kRoomLitNote) &&
                *reinterpret_cast<const BYTE*>(0x006A4664) == 0xA3 && *reinterpret_cast<const uint32_t*>(0x006A4665) == 0x011D0508u;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+bool ReadMapSteps() {
+    using GameAddr::Id;
+    if (!kLockStep || !GameAddr::Have({Id::Finalize, Id::MapEdges, Id::EdgeCopy, Id::MapUnlock, Id::RoomLitNote, Id::MapLocker})) return false;
+    kMapEdges = GameAddr::Get(Id::MapEdges);
+    kEdgeCopy = GameAddr::Get(Id::EdgeCopy);
+    kMapUnlock = GameAddr::Get(Id::MapUnlock);
+    kRoomLitNote = GameAddr::Get(Id::RoomLitNote);
+    kMapLocker = GameAddr::Get(Id::MapLocker);
+    // other builds: the four calls were found inside the finalize (their signatures), the locker from its setter
+    return GameAddr::IsFixed() ? ReadMapStepsSteam() : true;
 }
 bool CheckMapSteps() {
     if (!g_mapStepsChecked) {
@@ -14574,7 +14623,8 @@ void GridEdgeTo(const StoryGrid& g, int32_t idx, float x0, float z0, float x1, f
 namespace LevelLightShare {
 bool DeltaReady() {
     return g_installed.load(std::memory_order_relaxed) && g_ambReady && g_finalizeReady.load(std::memory_order_relaxed) && g_lockStepReady.load(std::memory_order_relaxed) &&
-           g_alignReady.load(std::memory_order_relaxed) && kWallSolve && kBatchSamples && kRoomById && GameAddr::IsFixed() &&
+           g_alignReady.load(std::memory_order_relaxed) && kWallSolve && kBatchSamples && kRoomById &&
+           GameAddr::Have({GameAddr::Id::MapSlots, GameAddr::Id::TexelPack}) && // the outdoor delta's map slots and texel pack
            g_evalClasses.load(std::memory_order_relaxed) == static_cast<int>(std::size(kClasses));
 }
 bool ReplayBatch(unsigned char* room, const unsigned char* samples, int count, const char* flags, uintptr_t light, int mult) {

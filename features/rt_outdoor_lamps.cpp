@@ -250,10 +250,14 @@ struct GameConsts {
 };
 GameConsts ReadConsts() {
     GameConsts g;
-    if (!GameAddr::IsFixed()) return g;
+    // the light law constants (Steam 1.67.2: 0x011D0A60, 0x011D0A68, 0x011D1160, 0x01158DA8, 0x011D11A0)
+    using GameAddr::Id;
+    const uintptr_t k1At = GameAddr::Get(Id::LampK1), k2At = GameAddr::Get(Id::LampK2), cmaxAt = GameAddr::Get(Id::LampCmax), streetAt = GameAddr::Get(Id::StreetLampScale),
+                    s5At = GameAddr::Get(Id::ConeScale5);
+    if (!k1At || !k2At || !cmaxAt || !streetAt || !s5At) return g;
     __try {
-        const float k1 = *reinterpret_cast<const float*>(0x011D0A60), k2 = *reinterpret_cast<const float*>(0x011D0A68);
-        const float cmax = *reinterpret_cast<const float*>(0x011D1160), street = *reinterpret_cast<const float*>(0x01158DA8), s5 = *reinterpret_cast<const float*>(0x011D11A0);
+        const float k1 = *reinterpret_cast<const float*>(k1At), k2 = *reinterpret_cast<const float*>(k2At);
+        const float cmax = *reinterpret_cast<const float*>(cmaxAt), street = *reinterpret_cast<const float*>(streetAt), s5 = *reinterpret_cast<const float*>(s5At);
         if (k1 > 1e-6f && k1 < 1e6f) g.k1 = k1;
         if (k2 > 0.0f && k2 < 1e3f) g.k2 = k2;
         if (cmax > 0.0f && cmax < 1e3f) g.cmax = cmax;
@@ -956,7 +960,9 @@ void Frame(IDirect3DDevice9* dev) {
         Inactive(why);
     };
     if (g_ps3 == 0) return off("the device has no shader model 3");
-    if (!GameAddr::IsFixed()) return off("Steam 1.67.2 only (the room maps' texture sets are read at fixed offsets)");
+    // (the room maps' texture sets are read at the struct offsets studied on Steam 1.67.2; UNVERIFIED on other builds)
+    if (std::string missing; !GameAddr::Have({GameAddr::Id::LampK1, GameAddr::Id::LampK2, GameAddr::Id::LampCmax, GameAddr::Id::StreetLampScale, GameAddr::Id::ConeScale5}, &missing))
+        return off(GameAddr::NotAvailable(missing));
     if (!LevelLightShare::IsInstalled() || !LevelLightShare::DeltaReady()) return off("the room solve hooks are not in (Night Lighting's Outdoor light between floors)");
     if (!OutdoorDelta::Enabled()) return off("Quick outdoor lamp edits keep no room-0 parts (it is off or not installed)");
     if (!g_texVt) {
@@ -2092,7 +2098,9 @@ std::string InactiveNote() {
 }
 float GpuMs() { return g_option.load(std::memory_order_relaxed) ? g_lastGpuMs.load(std::memory_order_relaxed) : -1.0f; }
 std::string Unsupported() {
-    if (GameAddr::Resolved() && !GameAddr::IsFixed()) return "Not available: Instant works only on The Sims 3 Steam 1.67.2";
+    if (std::string missing; GameAddr::Resolved() &&
+                             !GameAddr::Have({GameAddr::Id::LampK1, GameAddr::Id::LampK2, GameAddr::Id::LampCmax, GameAddr::Id::StreetLampScale, GameAddr::Id::ConeScale5}, &missing))
+        return GameAddr::NotAvailable(missing);
     if (g_ps3 == 0) return "Not available: your graphics card cannot draw the lamps' shadows";
     if (g_compiled.state.load() == 3) return "Not available: Instant could not start on this graphics card (see ApexRadiance_LOG.txt)";
     return {};

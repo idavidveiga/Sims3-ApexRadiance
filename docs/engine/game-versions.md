@@ -174,6 +174,10 @@ for uniqueness on Steam with `sigcheck.pl` (it must still resolve every id to th
 | Frame Profiler texture load counters (developer mode) | TexCreateCall, TexCreate, TexFillCall, TexFill | those counters are not installed |
 | Loaded-world gate (`features/world_session.h`: start note, Depth Blur) | WorldManagerPtr, UiServiceGetter (its first bytes must be `A1 imm32 ... C3`) | the world counts as not loaded: no start note and no Depth Blur |
 
+The lighting parts that were Steam-only until 2.13.1 (light detail, smooth light maps, quick outdoor lamp edits, real-time
+outdoor lamps, the finalize and map lock steps, walls on foundations, walls taller than a story, openings, the occluder mark)
+and their ids: [Formerly Steam-only addresses](#formerly-steam-only-addresses).
+
 Not part of this table: the map view probe (`features/map_view.cpp`) already finds its function at run time through the
 script binding name in `.rdata` and its `{function, name}` table, on any build; the Frame Profiler (developer mode)
 keeps its own Steam targets (address plus pattern), except the targets that name a table id (the performance hooks and
@@ -461,6 +465,87 @@ SetColourCall1..6 (0x006C051D, 0x006C05C1, 0x006C1251, 0x006C15D1, 0x006C1891, 0
 (0x006C7094), LevelGatherCall1 (0x006C6B2D), SolvePointCall1..2 (0x006A126F, 0x006A3336), FloorSetCall1..3 (0x00AA0CCC,
 0x00AA0E4A, 0x00AA0F72), LodChoiceCall1..3 (0x0069EA86, 0x0069EF46, 0x0069F1B3), DimAmbientCall1 (0x006A1410),
 ResFindProviderSlot1 (0x00FFE290), ResSetDbPrioritySlot1 (0x00FFE28C), ResDbChangedSlot1 (0x00FFE29C).
+
+## Formerly Steam-only addresses
+
+Until 2.13.1 some lighting parts used fixed Steam 1.67.2 addresses (`constexpr` constants or literals) or were gated by
+`GameAddr::IsFixed()`, so they stayed off on every other build. Since the EA port branch (2.13.2) each of these addresses is a
+`GameAddr::Id` with its own signature, built from the Steam `TS3W.exe` bytes with relocated operands and rel32s as
+wildcards; globals come from the instruction that reads them (`M::Dword`, or `Deref` of a function found first). On Steam the
+fixed values stay and the signatures are only the self-check, as for every other id, and the features keep the exact byte
+checks they had. On other builds the same checks run with bytes built from the resolved addresses, and a part whose ids
+were not found stays off with `Not available on <version>: missing ...` (menu status or log warning).
+
+All 55 ids resolve to the fixed Steam address with the table's own rules (offline check over `TS3W.exe`, 2026-10-15: 327 of
+327 ids). Match counts below are on Steam: primary signature over `.text` (or over the range for `InRange`).
+
+| Steam VA | What | Used by | Use | Id | Signature / kind | Steam matches |
+|---|---|---|---|---|---|---|
+| 0x011D0A60 | light law k1 (float) | outdoor_delta, rt_outdoor_lamps, light_diag | data read | LampK1 | `0F 52 C0 B9 ?? ?? ?? ?? 0F 29 44 24 20 E8` dword at +4 | 2 (same value) |
+| 0x011D0A68 | light law k2 (float) | same | data read | LampK2 | `B9 ?? ?? ?? ?? F3 0F 11 44 24 0C E8 ?? ?? ?? ?? F3 0F 10 44 24 0C F3 0F 59 00` dword at +1 | 3 (same value) |
+| 0x011D1160 | light colour cap (float[4]) | rt_outdoor_lamps, light_diag | data read | LampCmax | `F3 0F 11 44 24 30 0F 28 05 ?? ?? ?? ?? F3 0F 11 44 24 20` dword at +9 | 2 (same value) |
+| 0x01158DA8 | street lamp scale (float) | outdoor_delta, rt_outdoor_lamps, light_diag | data read | StreetLampScale | `0F 59 C8 F3 0F 10 05 ?? ?? ?? ?? 0F C6 C0 00 0F 59 C8 0F 29 0A` dword at +7 | 1 |
+| 0x011D11A0 | type-5 cone sharpness (FUN_006bc940) | object_light_bridge, lot_light_bridge, rt_outdoor_lamps, light_diag | data read | ConeScale5 | `0F 28 89 A0 01 00 00 F3 0F 10 05 ?? ?? ?? ?? 0F 28 35 ?? ?? ?? ?? 0F 59 CB` dword at +18 | 1 |
+| 0x01158D64 / 0x01158D60 | rig light cuts (flagged / other) | object_light_bridge KeepOverCut | data read | RigCutFlagged / RigCut | `83 7E 08 00 74 0A F3 0F 10 05 ?? ?? ?? ?? EB 08 F3 0F 10 05 ?? ?? ?? ?? 0F 2F 44 24 38` dword at +10 / +20 | 1 |
+| 0x011D1200 | the game's solve time per class (float[3]) | room_light_queue (log) | data read | SolveTimeByClass | `89 35 ?? ?? ?? ?? 89 35 ?? ?? ?? ?? A3 ?? ?? ?? ?? A3 ?? ?? ?? ?? A3 ?? ?? ?? ?? E8` dword at +13 | 1 |
+| 0x011D0460 | per-class room map slots | outdoor_delta | data read | MapSlots | FUN_006a4640..006a4669 (getter, two setters): `8B 44 24 04 C1 E0 04 05 ?? ?? ?? ?? C3 CC CC CC 8B 44 24 04 A3 ?? ?? ?? ?? C3 CC CC CC CC CC CC 8B 44 24 04 A3 ?? ?? ?? ?? C3` dword at +8 | 1 |
+| 0x011D0508 | room holding the class maps locked | level_light_share (outdoor delta map steps) | data read | MapLocker | the same, dword at +0x25; alt: `8B 44 24 04 A3 ?? ?? ?? ?? C3 CC CC CC CC CC CC 8B 44 24 04 A3 ?? ?? ?? ?? C3` dword at +0x15 | 1 / 1 |
+| 0x006A0E00 | room solve finalize | level_light_share FinalizeHook, map steps | call target | Finalize | `56 8B F1 57 8B BE F4 00 00 00 C1 E7 06 03 7E 04 8B CF E8` | 1 |
+| 0x006A3E65 | its call in FUN_006a3c90 | level_light_share | call redirected | FinalizeCall | `8B CE DD D8 E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 8B CF DD D8` +4 | 1 |
+| 0x006A8CA0, 0x0069EFC0, 0x0069E950, 0x006A08E0 | the finalize's steps (map edges, edge copy, unlock, lit note) | level_light_share (outdoor delta) | called | MapEdges, EdgeCopy, MapUnlock, RoomLitNote | InRange(Finalize): `8B CF E8 ?? ?? ?? ?? 84 C0 74` call at +2; `57 50 8B CE E8` call at +4; `6A 01 8B CE E8` call at +4; `8B CE E8 ?? ?? ?? ?? 8B 0E 85 C9` call at +2 | 1 each |
+| 0x006A8E50 | light threshold getter | level_light_share ReadThresholdTable | bytes checked | ThresholdFn | `8B 41 08 D9 04 85 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? C3` | 1 |
+| 0x00FF36F4 / 0x00FF3700 | threshold factor table / scale | same | data read | ThresholdFactor / ThresholdScale | Deref(ThresholdFn, 6 / 0xC) | - |
+| 0x006A8CB0 / 0x00FF36A4 | wall mode per class: getter / table | level_light_share CheckClassTables | bytes checked / data read and written | ClassWallModeFn / ClassWallMode | `8B 41 08 8A 80 ?? ?? ?? ?? C3 CC CC CC CC CC CC 8B 41 08 33 C9 38 88`; Deref(+5) | 1 |
+| 0x006A8CE0, 0x006A8D00 / 0x00FF36C4, 0x00FF36D0 | 2D wall and 3D object pass switches: getters / tables | same | bytes checked / tables written | ClassWallsFn, ClassObjectsFn / ClassWalls2D, ClassObjects3D | Multi(2) `8B 44 24 04 8B 49 08 8D 04 40 8A 84 08 ?? ?? ?? ?? C2 04 00`; Deref(+13) | 2 |
+| 0x006A8D20 / 0x00FF36AC | texels per tile: getter / int[3] | light_detail, level_light_share MapHalfTexel | bytes checked / table written | TexelsGetter / TexelsPerTile | `8B 41 08 8B 04 85 ?? ?? ?? ?? C3`; Deref(+6) | 1 |
+| 0x006A90FC / 0x00FF36DC, 0x00FF36E8 | wall atlas size reads / int[3] tables | light_detail | bytes checked / tables written | AtlasReads / WallAtlasW, WallAtlasH | `03 C0 8B BC 00 ?? ?? ?? ?? 8B 9C 00 ?? ?? ?? ??` +2; Deref(+3 / +10) | 1 |
+| 0x006A7E5E | `push 4` of the class-2 tile origin | light_detail | imm8 written (+5) | OriginPush | `8B 4C 24 14 6A 04 51 8D 96 00 02 00 00 52 8B CF E8` | 1 |
+| 0x006AA322 | `push 4` of the border copy table | light_detail | imm8 written (+4) | CopyPush | `89 41 74 6A 04 F3 0F 11 41 78 88 81 CC 00 00 00 E8` | 1 |
+| 0x006A9AD0 / 0x011D0510 | copy table builder / its "built" byte | light_detail | called / data written | CopyBuild / CopyBuilt | call at CopyPush + 16 (alt: `83 EC 24 53 33 DB 38 1D ?? ?? ?? ?? 0F 85`); Deref(CopyBuild, 8) | 1 / 1 |
+| 0x00C387B5, 0x00C387CC / 0x00C38530 | the wall light-UV writer's two calls / the writer | level_light_share (walls taller than a story) | calls redirected / called | WallUvCall0, WallUvCall1 / WallUv | `57 8B CE E8 ?? ?? ?? ?? 0F BE 4C 24 0D 0F BE 54 24 0C` +3; InRange(WallUvCall0, 0x30) `57 8B CE E8 ?? ?? ?? ?? 5D 5F` +3; Target(WallUvCall0) | 1 / 1 |
+| 0x006A43B0 | wall edge of a direction | level_light_share ReadWallCell | called | WallEdgeFn | `8B 4C 24 04 83 C1 FF 33 C0 83 F9 22 77` | 1 |
+| 0x00B0D866, 0x00B0DD15 | `push 6257EB4h` of the wall cutout message (Add, Remove) | level_light_share (openings) | push replaced by a call | CutPostSite0, CutPostSite1 | Multi(2) `8B 16 50 8B 42 1C 68 B4 7E 25 06 8B CE FF D0` +6 | 2 |
+| 0x006A333B | outdoor texel alpha in FUN_006a31d0 | level_light_share (walls block light on floors) | 7 bytes replaced by a call | OutdoorAlphaSite | InRange(WallSolve, 0x400) `E8 ?? ?? ?? ?? 80 7B 18 00 0F 57 C9 0F 85` +5 | 1 |
+| 0x006AB32C / 0x006AB340 | outdoor / indoor wall base in FUN_006ab280 | level_light_share (walls on foundations) | 5 bytes replaced by a call | WallBaseSite / IndoorBaseSite | `E8 ?? ?? ?? ?? 84 C0 74 07 F3 0F 10 45 10 EB 12 8B 0E 53 57 E8 ?? ?? ?? ?? 85 C0 74 0B F3 0F 10 40 78` +9 / +29 | 1 |
+| 0x006A34DB / 0x0060CD10 | the texel pack call / the pack | room_map_dither, outdoor_delta | rel32 redirected / called | TexelPackCall / TexelPack | InRange(WallSolve, 0x400) `0F 5D 44 24 70 8D 84 24 90 00 00 00 50 8D 4C 24 58 0F 29 84 24 94 00 00 00 E8 ?? ?? ?? ?? 8B 4C 24 54 83 44 24 0C 30 83 6C 24 18 01 89 0F` +25; Target | 1 |
+| 0x006A330C | texel address code | room_map_dither | bytes checked | TexelAddrSite | InRange(WallSolve, 0x400) `8B 45 0C 0F B7 56 22 0F AF 50 04 0F B7 4E 20 8D 3C 8A 8B 55 10 03 38` | 1 |
+| 0x00FA312C / 0x00FE774C | the pack's 255.0 and 12582912.0 | room_map_dither | data checked | PackConst255 / PackMagic | Deref(TexelPack, 0x1A / 0x5E) | - |
+| 0x006C7939 | the occluder's room mark call | lamp_mark_filter | call redirected | OccMarkCall | `8B 4E 14 50 89 46 1C E8` +7 | 1 |
+| 0x006C4CF0 / 0x006B0A8D, 0x006B0B33, 0x006B0BFA, 0x006B0C9A, 0x006B0D26 | entry flag function / its five callers | lamp_mark_filter (developer counters) | calls redirected | EntryFlag / EntryFlagCall0..4 | LowestOf2 `8B 44 24 08 8B 54 24 04 50 52 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? C2 08 00`; CallersOf(EntryFlag, 5) | 2 / 5 |
+
+Already resolved before the port (only their Steam-only gate was removed): BatchSamples (0x01158AC8, outdoor_delta),
+WallBlurPasses / WallBlurMode (light_diag), WallSolve (0x006A31D0, room_map_dither), the memory guard's five ids, the lamp
+mark filter's LampLitCall / LampMarkCall / LampMark. The lock step 0x0069FA40 keeps being read from the CALL 0x1B after
+RoomSolveStartCall.
+
+Gates removed: Real-time outdoor lamps (Instant), Quick outdoor lamp edits (`LevelLightShare::DeltaReady` now needs MapSlots
+and TexelPack instead of the Steam build), the finalize hook, the map lock steps, the class tables of the quick pass, the
+threshold table, Light detail, Smooth light maps (dither), walls block light on floors, walls on foundations, walls taller
+than a story, openings of walls, the occluder mark, the entry-flag counters, the rig light cut, the cone scale, the solve
+time log and the light diag's globals.
+
+Still Steam-only, by design:
+
+- Exact byte checks that pin Steam's rel32s or register allocation (`kBatchPushesSteam`, the `call edx` before
+  LightEvalReturn, the finalize's call offsets, the light detail origin call's target): other builds check what the patch
+  needs instead.
+- The Frame Profiler (developer mode only) keeps its own Steam targets (address plus pattern) for the targets that do not
+  name a table id; on other builds those counters report that their bytes do not match.
+
+UNVERIFIED on EA 1.69.47 (nothing has run there): the thunks of OutdoorAlphaSite (`[esp+30h]` = out[3]), WallBaseSite /
+IndoorBaseSite (`esi` = the wall, `[ebp+10h]`), the cutout capture (`kCutProductAt` / `kCutLotAt` stack slots) and the
+dither pack thunk (`ebp` / `edi` at the call) assume Steam's frame. Their signatures pin the surrounding bytes, not the
+caller's frame. The struct offsets of room maps and texture sets are assumed as everywhere else.
+
+### What the first EA log must show
+
+- `[Addr] Not found on EA 1.69.47.024017 (N of 327): ...`: the ids whose signature failed. For each, the attempt lines
+  above it (`[Addr] <Id>: N matches at ...` and the 16 bytes around each match) give what to refine.
+- `[LevelLightShare]` lines: "Walls block light on floors: ready", "Outside walls on foundations: ready", "Walls taller than
+  a story: ready", "Openings of walls ...: noted from now on", no "The room solve's map lock and finalize steps differ".
+- `[LightDetail]`, `[RoomMapDither] On: ...`, `[LampMarkFilter] Installed ...` without "Not available" or "differs".
+- Real-time outdoor lamps: its status no longer says "Not available"; any `Not available on EA 1.69.47...: missing ...`
+  names the ids to fix.
 
 ## See also
 

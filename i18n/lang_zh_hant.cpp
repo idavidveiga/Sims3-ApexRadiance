@@ -9,6 +9,7 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Chinese (Traditional, Taiwan / Hong Kong)}
 const I18n::Pair kPairs[] = {
+    {"The latest lighting features also work on the EA app version 1.69", "最新的照明功能也適用於 EA app 版本 1.69"},
     {"Walls shade lamp light on grass, streets and sidewalks outside the lot too", "牆壁也會在地塊外的草地、街道和人行道上遮擋燈光"},
     {"Garden walls and fences shade lamp light on the ground by their height", "圍牆和柵欄會按高度在地面上遮擋燈光"},
     {"Lamp light on lot grass has smooth shadow edges with Instant (GPU)", "在即時（GPU）模式下，地塊草地上的燈光陰影邊緣更平滑"},

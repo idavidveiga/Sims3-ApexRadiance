@@ -9,6 +9,7 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Norwegian (Bokmal)}
 const I18n::Pair kPairs[] = {
+    {"The latest lighting features also work on the EA app version 1.69", "De nyeste belysningsfunksjonene virker også i EA-appversjon 1.69"},
     {"Walls shade lamp light on grass, streets and sidewalks outside the lot too", "Vegger skygger også for lampelyset på gress, gater og fortau utenfor tomten"},
     {"Garden walls and fences shade lamp light on the ground by their height", "Hagemurer og gjerder skygger for lampelyset på bakken etter høyden sin"},
     {"Lamp light on lot grass has smooth shadow edges with Instant (GPU)", "Lampelyset på tomtens gress har myke skyggekanter med Umiddelbar (GPU)"},
