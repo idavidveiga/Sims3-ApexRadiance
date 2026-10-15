@@ -5,6 +5,7 @@ One page per published version of Apex Radiance (`ApexRadiance.asi`, repository
 GitHub release text in a common layout. Unreleased work is described in the feature pages with the status
 "In development"; it gets a page here only when it is published.
 
+- [2.13.1](2.13.1.md): wall and garden wall shadows past the lot, smoother ground light, trees lit by distance.
 - [2.13.0](2.13.0.md): Instant lamp lighting and lamp light through doors, windows and arches.
 - [2.12.3](2.12.3.md): realistic lamp reach, balconies blocking lamps below and faster lamp edits.
 - [2.12.2](2.12.2.md): keyboard shortcuts for presets.
@@ -24,7 +25,7 @@ sections.
 | `## Changes` | Changed behaviour, defaults, menu organisation, diagnostics |
 | `## Fixes` | Bugs fixed |
 | `## Known limitations` | What is not supported, still unverified or pending validation at publication |
-| `## Upgrade notes` | Installation and update steps, settings carried over or reset, corrections to the published text |
+| `## Upgrade notes` | Not used since 2.13.1 (install steps live on the download pages); kept only for a reset setting or a correction to the published text |
 
 The pages of earlier versions reproduce the published GitHub release text, sorted into these sections. Write the
 GitHub release body from the same sections; the Nexus changelog is derived from it. The release process (review,
@@ -34,6 +35,7 @@ tests, publication) is in [workflow.md](../workflow.md#6-release).
 
 | Version | Published | Headline |
 |---|---|---|
+| [2.13.1](2.13.1.md) | 2026-10-15 | Wall and garden wall shadows that continue past the lot, smoother lamp light on the ground, and trees lit by distance |
 | [2.13.0](2.13.0.md) | 2026-10-14 | Instant lamp lighting on the graphics card, and lamp light through doors, windows and arches |
 | [2.12.3](2.12.3.md) | 2026-10-13 | Outdoor lamp light that follows distance and buildings, and faster lamp edits |
 | [2.12.2](2.12.2.md) | 2026-10-12 | Keyboard shortcuts for presets |

@@ -46,12 +46,15 @@ The changelog opened from the version in the menu footer (`apex_changelog.cpp`):
 
 ## 4. Build and publish
 
-1. Build the public flavor once from the reviewed commit ([workflow.md](workflow.md#1-build)); run `tools/i18n_check`
-   and `perl tools/menu_audit.pl .`.
+1. Build the standard flavor (with the developer tools, no `APEX_NO_DEV_TOOLS`) once from the reviewed commit
+   ([workflow.md](workflow.md#1-build)); run `tools/i18n_check` and `perl tools/menu_audit.pl .`. Since 2.13.1 the release
+   asset is this build: developer mode ships off (`developer_mode = false`, enabling it asks for confirmation), and while it
+   is off the build runs and logs as the players' build. (2.13.1 testing: a game session with the `APEX_NO_DEV_TOOLS` build
+   behaved differently from the standard one with developer mode off; the cause was not found.)
 2. Test the build in game and record the results in the validation pages.
 3. The release PR is titled `release: X.Y.Z`; merging and publishing are maintainer actions.
-4. Publish `Public\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance` as `Apex Radiance X.Y.Z`, with
-   player-facing notes (a short headline, `- **Title:** description` bullets and an `## Install` section) checked with
+4. Publish `Release\ApexRadiance.asi` to `loinyx/Sims3-ApexRadiance` as `Apex Radiance X.Y.Z`, with
+   player-facing notes (a short headline and `- **Title:** description` bullets; no install or upgrade section) checked with
    `python tools/public_text_check.py --text-file`. The Nexus workflow derives its changelog from that body.
 5. After publication, verify that the published asset matches the reviewed build (version and SHA-256) and that the
    Nexus workflow succeeded. Publication does not validate gameplay.

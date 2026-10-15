@@ -39,6 +39,13 @@ bool AllAtOnce();     // on, and the texture lock hooks are installed
 bool SwitchHolding(); // an edit hold covering a switch (or any edit, all floors together) is on now (any thread)
 bool EditHolding();   // an edit hold is on now, or an edit happened this frame (any thread)
 bool OwnStoryHeld();  // an edit hold is on that holds the lamp's own story too (show all floors together; any thread)
+// 2.13.1 (Tester switch ownRoomAtOnce): after an edit hold, rooms not yet solved since their mark keep their maps until
+// they are ("trailing"); true while that can happen (any thread)
+bool Trailing();
+// 2.13.1 (Tester switch furnitureWithRoom): this room's maps do not show the current lamp edit yet: held by the edit hold
+// (its story held, an urgent room), trailing after it, or on the lamp's own story and not solved since its mark when that
+// story is not held. Its furniture keeps its lights meanwhile (lot_light_bridge.cpp). Render thread
+bool RoomShowsOldLight(const void* room);
 // Render thread (Present): installs the texture lock hooks once (false: not available, logged), updates the switch hold,
 // then releases the maps whose atrium is solved or whose switch is over
 void OnPresent(IDirect3DDevice9* dev);

@@ -272,7 +272,7 @@ bool IsRoadVs(const std::vector<DWORD>& t, DWORD& mapConst) {
     return found == 1 && (tc1Mask == 0x3 || alphaUv == 1);
 }
 
-bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
+bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out, bool shade) {
     if (t.empty() || t[0] != 0xFFFF0300) return false;
     const auto ins = Parse(t);
     if (ins.empty()) return false;
@@ -297,7 +297,7 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
             if (uses || (m.len >= 1 && IsReg(t[m.at + 1], kTemp, X) && (WMask(t[m.at + 1]) & 0x7))) break; // rX.xyz overwritten (rX.w is fine)
         }
     }
-    if (light < 0 || u.maxSampler < 0 || u.maxSampler >= 15 || !u.afterLastSamplerDcl) return false;
+    if (light < 0 || u.maxSampler < 0 || u.maxSampler >= (shade ? 14 : 15) || !u.afterLastSamplerDcl) return false;
     const Ins& L = ins[light];
     const DWORD X = Num(t[L.at + 1]);
     const DWORD E = static_cast<DWORD>(u.maxSampler + 1);
@@ -305,13 +305,20 @@ bool PatchRoad(std::vector<DWORD>& t, RoadPatch& out) {
     out.lightSampler = Num(t[L.at + 3]);
     out.extraSampler = E;
     out.sidewalkConst = -1;
+    out.shadeSampler = shade ? static_cast<int>(E + 1) : -1;
     // the lamp scale after the max inserted below (c4.x in the 4 winter variants, c3.x in summer; each read once)
     out.scaleConst = LampScaleAfter(t, ins, static_cast<size_t>(light), X);
 
     std::vector<Edit> edits;
     edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E)}});
-    edits.push_back({End(L), {Op(kTexld, 3), Dst(kTemp, T0), Src(kInput, 1), Src(kSampler, E),
-                              Op(kMax, 3), Dst(kTemp, X, 0x7), Src(kTemp, X), Src(kTemp, T0)}});
+    Edit lightEdit{End(L), {Op(kTexld, 3), Dst(kTemp, T0), Src(kInput, 1), Src(kSampler, E),
+                            Op(kMax, 3), Dst(kTemp, X, 0x7), Src(kTemp, X), Src(kTemp, T0)}};
+    if (shade) { // (in the same edit: edits at one place are inserted in reverse order)
+        edits.push_back({u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, E + 1)}});
+        lightEdit.tok.insert(lightEdit.tok.end(), {Op(kTexld, 3), Dst(kTemp, T0), Src(kInput, 1), Src(kSampler, E + 1),
+                                                   Op(kMul, 3), Dst(kTemp, X, 0x7), Src(kTemp, X), Src(kTemp, T0, kSwzX)});
+    }
+    edits.push_back(std::move(lightEdit));
 
     // Sidewalk under snow: "mul r1.w, rA.x, rA.y" (brightness of the road texture rA) ... "lrp r1.xyz, v2.w, r0, r3" (snow).
     int albedo = -1, blend = -1;
@@ -451,6 +458,34 @@ bool PatchTerrainNativeAlpha(std::vector<DWORD>& t, DWORD sampler, DWORD& extraS
               {End(*fetch), {Op(kTexld, 3), Dst(kTemp, temp) | (dest & 0x00200000u), uv, Src(kSampler, spare),
                              Op(kMov, 2), Dst(kTemp, Num(dest), 8), Src(kTemp, temp, kSwzW)}}});
     extraSampler = spare;
+    return true;
+}
+
+bool PatchTerrainShade(std::vector<DWORD>& t, DWORD sampler, DWORD& shadeSampler) {
+    if (t.empty() || (t[0] != 0xFFFF0200 && t[0] != 0xFFFF0300) || sampler >= 16) return false;
+    const auto ins = Parse(t);
+    if (ins.empty()) return false;
+    for (const Ins& x : ins)
+        if ((x.op == kDcl && x.len != 2) || ((x.op == kDef || x.op == kDefI) && x.len != 5) ||
+            (x.op == kDefB && x.len != 2) || IsFlow(x.op) || (t[x.at] & 0x10000000u)) return false;
+    const Usage u = Scan(t, ins);
+    const int tempLimit = t[0] == 0xFFFF0200 ? 12 : 32;
+    if (u.maxTemp + 1 >= tempLimit || u.maxSampler + 1 >= 16 || !u.afterLastSamplerDcl) return false;
+    const Ins* fetch = nullptr;
+    for (const Ins& x : ins) {
+        if (x.op != kTexld || x.len != 3 || !IsReg(t[x.at + 3], kSampler, sampler)) continue;
+        if (fetch) return false; // one read only
+        fetch = &x;
+    }
+    if (!fetch || (t[fetch->at] & 0x00FF0000u)) return false;
+    const DWORD dest = t[fetch->at + 1], uv = t[fetch->at + 2];
+    if (Type(dest) != kTemp || WMask(dest) != 0xF || (dest & 0x00100000u) ||
+        (Type(uv) != kInput && Type(uv) != kTexture) || (uv & 0x0F002000u) || Swz(uv) != kSwzXYZW) return false;
+    const DWORD S = static_cast<DWORD>(u.maxSampler + 1), T = static_cast<DWORD>(u.maxTemp + 1), pp = dest & 0x00200000u;
+    Apply(t, {{u.afterLastSamplerDcl, {Op(kDcl, 2), 0x90000000u, Dst(kSampler, S)}},
+              {End(*fetch), {Op(kTexld, 3), Dst(kTemp, T) | pp, uv, Src(kSampler, S),
+                             Op(kMul, 3), Dst(kTemp, Num(dest), 0x7) | pp, Src(kTemp, Num(dest)), Src(kTemp, T, kSwzX)}}});
+    shadeSampler = S;
     return true;
 }
 

@@ -91,8 +91,8 @@ The full table is in the [Night Lighting overview](README.md#settings).
 - The terrain stamp has no wall occlusion. A per-lot room mask (4 texels a metre from the rooms of the two
   lowest stories, `LevelLightShare::LotGroundMask`, s3 + PS c32/c33; the snowy passes s13/s14/s15 + PS c200/c201) keeps it
   out of rooms, roofless walled yards included; fences still let it through. The mask's alpha carries the lamp
-  shade (below): outside walls shade the lamp term; fences, plants and objects do not, and the world grass beyond the lot
-  edge is not shaded, so a shadow that reaches the lot edge ends there.
+  shade (below): outside walls shade the lamp term; fences, plants and objects do not. The world grass around the lot takes
+  the same shade, and so do roads and sidewalks (2.13.1, "World grass around lots" below).
 - The walls' doors, windows, arches and half-wall cells let the lamps through (`OutsideWallsIn` with the
   walls' patches, [level-light-share.md](level-light-share.md#openings-in-the-outside-walls-copies)): each texel keeps
   each lamp's share past every wall (an opening's rim gives part of it) instead of a blocked bit; a wall with no known
@@ -186,6 +186,36 @@ finds its lot by its world rows (`FindFloorLot`: `FindLotRect`, else the same ro
 lot rectangle). Fences, curbs, railings and stairs (instanced groups) take it too, on their per-pixel lamp sum and within
 the same 1 m: their lot is the one under the group's centre (`FindLotAt`; [fences.md](fences.md)). The alpha is
 one factor for all lamps, so a surface it shades is dimmed for every lamp, also one that no wall hides from it.
+
+**World grass around lots** (2.13.1; F8 and F7 2026-10-14 23-27: a wall's shadow stopped at the lot edge and the lamp
+light that reaches past the lot lay over it). The world grass takes the bake lamps from the terrain chunk's light map,
+with no wall. The shade is now built on the lot's grid grown on each side as far as its lamps reach past the lot
+(`GroundShadow::Reach`, at most 24 m; `ShadeGrid`), at the same texel centres: the lot's part feeds the mask's alpha as
+before, and the whole grid, when it shades any texel, goes to the world pass. One texture per terrain chunk (`ChunkShade`,
+L8, 1024 x 1024 over the chunk's 256 m, CPU mips) holds the lowest of the lots' shades over it; it shares the chunk light
+map's uv (`(world xz - centre) / 256 + 0.5`), so the world terrain shader only reads it at the light map's uv and multiplies
+the lamp RGB (`ShaderPatches::PatchTerrainShade`, after the native-alpha patch and the daylight-range patch; the solar alpha
+is untouched). A chunk is made again when a lot's shade over it changes, at most one a frame; a chunk no lot shades draws
+as before. Without a smoothed map the game's own map is drawn through the same patched shader. Roads and sidewalks read
+the chunk map at the same uv: their patched copy (`PatchRoad(..., shade = true)`, `g_roadShadePs`) multiplies
+`max(road map, terrain)` by the same texture before the lamp scale. Developer status: *world
+grass around lots: N chunks shaded*. Checked offline (`tools/terrain_lighting_test`): RGB x shade exact on SM2 and SM3, solar
+alpha bit-exact, every truncation refused, the drawn multi-pass shader of the F7 accepted by D3D; a road fixture's light x
+shade exact.
+
+**Garden walls and fences** (2.13.1). A brick garden wall let a post's light over the grass behind it: garden walls are
+fences for the game, not in the outside-wall copy. `DrawInstanced` notes each instanced group it draws (`NoteFenceGroup`,
+read again every 5 s, dropped after 5 min unseen): the mesh's box over the draw's vertex range (POSITION0 / w) and, per
+instance, its place (POSITION1) and turn (POSITION2 = cos, slope, sin; world = (px c - pz s, py + px k, px s + pz c) + place,
+VS_21C41B90 of F7 2026-10-13 11-50-47). Each piece becomes a wall along its longer side from its base to its top, so the
+shade follows each wall's own height (the lamp is tested over every wall's top). Posts (under 0.3 m both ways) and thick
+pieces (over 0.6 m deep: stairs, decks) are left out; a railing with gaps shades as a solid wall (unverified look).
+`ShadeWalls` gives the job both lists.
+
+**Worker thread** (2.13.1). The lot builds (`GroundShadow::ShadeJob`) and the chunk textures' texels and mips run on one
+worker thread (`ShadeWorker`, below-normal priority); the render thread makes the inputs, uploads and applies. Before, a
+build ran 1 ms a frame on the render thread and a shade could take seconds to show. At most two lots in flight; a lot is
+checked again at most every 500 ms (was 2 s). Results carry an epoch; `ReleaseLotMasks` starts a new one.
 
 ### Soft lot edges
 

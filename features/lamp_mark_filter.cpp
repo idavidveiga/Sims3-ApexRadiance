@@ -57,7 +57,7 @@ constexpr const char* kFlagNames[5] = {"transform", "colour", "intensity", "enab
 
 std::vector<MemPatch::PatchLocation> g_patches;
 bool g_installed = false, g_flagsCounted = false;
-std::atomic<bool> g_on{true};
+std::atomic<bool> g_on{false}; // (15/10: off by default, the maintainer's tested setting for 2.13.1; Developer page "Rooms keep their light...")
 uintptr_t g_markTarget = kMark;
 uintptr_t g_flagTarget = kEntryFlag;
 std::atomic<long> g_first{0}, g_changed{0}, g_kept{0}, g_windows{0}, g_unread{0}, g_off{0}, g_held{0};

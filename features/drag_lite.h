@@ -20,7 +20,25 @@
 // kSpreadCapMs spread cap. The terrain's local relight (NightTerrainRelight::EditReady) and the per-pixel lamp list
 // (LotLightBridge) wait for the release too; the lamp list is still read at the drag pace for the drag's own detection.
 // One log line per drag: rooms held, solves after the release and the time until every room of the edit was solved.
-// Instant (GPU) keeps the measures above unchanged.
+// Instant (GPU) keeps the measures above unchanged for the lamps the GPU draws.
+//
+// 2.13.1, fast own-room relight (Tester switch fastOwnRelight, on): the spread cap made the lamp's own rooms wait too (a
+// drag's stop: 9 s over 810 frames at 5 ms a frame, log 14/10), and in Instant an indoor lamp, which the game still solves,
+// took the outdoor drag rules (its rooms re-picked under the throttle during the drag). Now:
+//   - the cap never applies while one of the lamps' own rooms (urgency tier 0, LevelLightShare::OwnRoomsPending) still waits:
+//     those take Faster room lighting's normal edit budget, after any edit (switch, colour, intensity, a drag's stop); only
+//     the rooms around them (the extra sends, other stories, through openings) are spread afterwards;
+//   - a colour or intensity change is never taken for a drag (StepKind::Value): only moves hold the solves;
+//   - with Lamp lighting Instant, a dragged lamp the game solves (not drawn by the GPU) follows the Classic rules above (no
+//     solve during the drag, the own rooms first at the stop, all floors together); the GPU's lamps keep the Instant rules.
+// One log line per edit: the own rooms' time until solved and the time until the rooms around them settled.
+//
+// 2.13.1, let go (Tester switch dragLetGo, on): the release rule waited kReleaseMs of stillness after the last step, and
+// LevelLightShare::LampDragging 200 ms more for the edit hold (a recording, 14/10: the lamp's own room shown 0.8 s after the
+// last step, of which 0.4 s the still time). Now the mouse button that held a lamp move being released ends the drag at
+// once (LetGo): a move step seen while the button was down, then the button up, with the game's window in front. Steps
+// within kPlaceGraceMs after it are the placement; a later step is a new drag. Lamps moved with the button up (picked up by
+// a click, rotated with the keys) keep the still time.
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -39,21 +57,40 @@ constexpr float kSpreadCapMs = 3.5f;       // the frame's room solves while the 
 constexpr unsigned long kReleaseMs = 400;  // Classic, relight only after release: the lamp still this long is let go
 constexpr unsigned long kMaxHoldMs = 20000; // Classic: steps that go on longer than this without a pause no longer hold
                                             // the room solves (a lamp that keeps moving never starves the lot's rooms)
+constexpr unsigned long kPlaceGraceMs = 300; // let go: steps this soon after the button's release are the placement (and
+                                             // the lamp list's last read, every 250 ms while dragged)
+constexpr unsigned long kLetGoMs = 1000;     // let go: counts this long at most (the still time has passed by then)
 
-// A step of a lamp being dragged (any thread). source: for the log
-void NoteLampStep(const char* source);
+// A step of a lamp edit (any thread). source: for the log. kind: a move (a drag) or a value change (colour, intensity: never a
+// drag while fastOwnRelight is on). gameSolved: the lamp's light is the game's room solve (false: a lamp the GPU draws)
+enum class StepKind { Move, Value };
+void NoteLampStep(const char* source, StepKind kind = StepKind::Move, bool gameSolved = true);
 // Lamp lighting is Classic in effect (Classic chosen, or Instant unable to run); Night Lighting sets it every frame
 void SetClassicLighting(bool on);
 bool ClassicLighting();
-// Classic with its Tester switch "Classic: relight only after release" on (any thread)
+// The Tester switch "Classic: relight only after release" is on and can apply: Lamp lighting Classic, or (fastOwnRelight)
+// Instant, for the lamps the game solves (any thread)
 bool ClassicReleaseOn();
-// ClassicReleaseOn and a lamp is being dragged now (a step within kReleaseMs): no room solve begins (any thread)
+// A lamp the game solves is being dragged now (a move within kReleaseMs; Classic: any lamp) and the switch above is on: no
+// room solve begins (any thread)
 bool ClassicHolding();
+// The latest drag is of a lamp the game solves (a move within kStillMs): with Instant, its edit takes the Classic rules
+// (AtriumHold's "show all floors together" too). Classic: true. Any thread
+bool ClassicRulesForDrag();
+// fastOwnRelight: the lamps' own rooms of the current edit still wait (render thread writes, any thread reads)
+bool OwnRoomsWaiting();
 // The priority call while ClassicHolding: true = this room waits for the release (an edit's room of any tier, or any room
 // of the lot being played: onPlayedLot); the rooms held are counted for the drag's log line
 bool HoldUntilRelease(const void* room, bool onPlayedLot);
 // The latest step of this drag stream is within ms (any thread; LevelLightShare::LampDragging reads it)
 bool StepWithin(unsigned long ms);
+// dragLetGo: the button that held the latest lamp move was released and no move followed after kPlaceGraceMs: the drag is
+// over now (ClassicHolding, Engaged and LevelLightShare::LampDragging end at once). Any thread
+bool LetGo();
+// The latest drag's end (GetTickCount | 1, 0 = none) and how it was seen (true: let go; false: the still time). Render thread
+// writes it at the end of a drag (OnPresent); the edit hold's log reads it
+unsigned long LastReleaseTick();
+bool LastReleaseLetGo();
 // A lamp step within kDragMs (any source, also LevelLightShare::LampDragging)
 bool Dragging();
 // A lamp step within kStillMs (the drag and its settle time; kReleaseMs while ClassicReleaseOn)
@@ -61,8 +98,9 @@ bool Engaged();
 // The flush after a drag (any thread): from the drag's end while a lamp edit's rooms still wait, at most kSettleMs; the
 // frame's room solves stay under kSpreadCapMs meanwhile (LotLightingMotion, RoomLightQueue's drain), with no edit boosts
 bool Settling();
-// The frame's room solve cap now (ms; 0 = none): kSpreadCapMs while Settling and its Tester switch is on. With
-// ClassicReleaseOn, none while the lamp's own story still waits for its solve (the edit budget takes it first)
+// The frame's room solve cap now (ms; 0 = none): kSpreadCapMs while Settling and its Tester switch is on. None while the
+// lamps' own rooms still wait (fastOwnRelight: OwnRoomsWaiting; without it, only after a Classic drag's release while the
+// lamp's own story waits): the edit budget takes them first
 float SolveCapMs();
 
 // The re-pick throttle (RoomLightQueue's priority hook; LevelLightShare's solve start hook notes the starts): while a lamp

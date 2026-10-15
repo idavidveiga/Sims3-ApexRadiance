@@ -259,6 +259,8 @@ public:
     }
     bool Done() const { return done_; }
     const std::vector<uint8_t>& Result() const { return out_; }
+    // the lamps' total stamp weight per texel (sum w_i, after the build): how much bake light the shade is a share of
+    const std::vector<float>& StampWeight() const { return den_; }
     long long Tests() const { return tests_; }
     long long Through() const { return through_; } // texel tests that crossed a wall with patches and kept some light
     const Grid& GetGrid() const { return grid_; }

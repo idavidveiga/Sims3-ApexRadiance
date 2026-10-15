@@ -101,6 +101,16 @@ release, a switch, a colour) every story changes in the same frame:
 - one log line per edit: `[AtriumHold] Classic lamp edit, all floors together: N maps held (MB), everything ready after T
   ms` or `timed out after T ms (K of R rooms not ready: what was ready is shown)`.
 
+Since 2.13.1 (Tester switch *Fast own-room relight after edits*, on): once every room of the lamps' own (urgency tier 0)
+is solved, the hold waits at most 300 ms more (`kTogetherOwnGraceMs`) for the rooms around them, which the spread cap
+solves over many frames; then what is ready is shown and the rest changes as each room is solved (log: "the lamp's own
+rooms ready ... follow as each is solved"). With Lamp lighting Instant, a drag of a lamp the game solves takes these
+rules too ([lamp-drags.md](../night-lighting/lamp-drags.md#fast-own-room-relight)).
+
+Since 2.13.1 (Tester switch *Show the lamp's room as soon as it is solved*, on) that grace is 0, and at any hold's end a
+map of a room not solved since its mark keeps what was on screen until that room's solve ends (at most 8 s), with its
+furniture; see [lamp-drags.md](../night-lighting/lamp-drags.md#the-lamps-room-together-with-its-furniture-at-the-release).
+
 Holding the lamp's own story was rejected for the default rules (it waited 2-4 s, see *Rejected approaches*); in Classic
 one change for every floor, shown once it is final, is the intended result.
 

@@ -14001,6 +14001,54 @@ int EditRoomsPending(unsigned long after, int* others, int* ownPending, int* own
     return pending;
 }
 
+// The lamps' own rooms (urgency tier 0: an edited lamp's own room and its story's rooms that hold it) still waiting for
+// or in their solve, or with no solve begun after their latest mark. DragLite: the spread cap never applies to these.
+int OwnRoomsPending(int* total) {
+    struct Entry {
+        uintptr_t room, mgr;
+        int id;
+        unsigned long serial;
+    };
+    Entry rooms[kUrgentMax];
+    int n = 0;
+    if (g_urgentSize.load(std::memory_order_relaxed)) {
+        const DWORD now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_urgentMx);
+        for (UrgentRoom& u : g_urgent)
+            if (u.tier == 0 && n < static_cast<int>(std::size(rooms)) && UrgentLive(u, now)) rooms[n++] = Entry{u.room, u.mgr, u.id, u.serial};
+    }
+    int pending = 0, counted = 0;
+    for (int k = 0; k < n; k++) {
+        int level = 0, cam = 0, state = 0;
+        if (!RoomViewState(rooms[k].room, rooms[k].mgr, rooms[k].id, level, cam, state)) continue; // gone: nothing to wait for
+        counted++;
+        pending += (state >= 1 && state <= 3) || !RoomLightQueue::SolvedSince(reinterpret_cast<const void*>(rooms[k].room), rooms[k].serial);
+    }
+    if (total) *total = counted;
+    return pending;
+}
+
+bool EditRoomWaiting(const void* room) {
+    uintptr_t mgr = 0;
+    int id = 0;
+    if (!room || !g_urgentSize.load(std::memory_order_relaxed) || !RoomKey(room, mgr, id)) return false;
+    unsigned long serial = 0;
+    bool found = false;
+    {
+        const DWORD now = GetTickCount();
+        std::lock_guard<std::mutex> lk(g_urgentMx);
+        for (UrgentRoom& u : g_urgent)
+            if (u.room == reinterpret_cast<uintptr_t>(room) && u.mgr == mgr && u.id == id && UrgentLive(u, now)) {
+                serial = u.serial;
+                found = true;
+                break;
+            }
+    }
+    if (!found) return false;
+    const int state = RoomState(room);
+    return (state >= 1 && state <= 3) || !RoomLightQueue::SolvedSince(room, serial);
+}
+
 bool OnEditStory(const void* room) {
     uintptr_t mgr = 0;
     int id = 0;
@@ -14037,13 +14085,15 @@ bool LampEditPending() {
 std::atomic<DWORD> g_continuousEditAt{0};
 constexpr DWORD kDragQuietMs = 200;
 void NoteLampEditing(bool continuous) {
-    if (continuous) DragLite::NoteLampStep("lamp mark");
+    // (a move of the lamp is also noted as a move by LampMarkFilter; this mark may be a colour or intensity change)
+    if (continuous) DragLite::NoteLampStep("lamp mark", DragLite::StepKind::Value);
     const DWORD now = GetTickCount() | 1;
     g_lampEditAt.store(now, std::memory_order_relaxed); // AuditTakers waits for the edit's own sends
     if (continuous) g_continuousEditAt.store(now, std::memory_order_relaxed);
 }
 int UrgentTierOf(const void* room) { return UrgentTier(room); }
 bool LampDragging() {
+    if (DragLite::LetGo()) return false; // (2.13.1: the button let go of the lamp; its placement steps are no drag)
     const DWORD at = g_continuousEditAt.load(std::memory_order_relaxed);
     // (14/10, drag solves) also every other step of a lamp drag (DragLite: a lamp the lamp list sees move, a type-11 light
     // registered again nearby): before, such a drag counted as no drag at all
