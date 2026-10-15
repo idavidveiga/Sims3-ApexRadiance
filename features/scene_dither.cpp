@@ -36,6 +36,7 @@
 #include "ui/violet_theme.h"
 #include "ui/widgets.h"
 #include "build_flavor.h"
+#include "perf_toggles.h"
 #include <d3d9.h>
 #include <algorithm>
 #include <atomic>
@@ -67,6 +68,23 @@ std::unordered_map<IDirect3DPixelShader9*, Copy> g_copies; // game pixel shader 
 std::unordered_map<uint64_t, IDirect3DVertexShader9*> g_vsCopies;
 ShaderLookupCache<Copy> g_pixelLookup;
 ShaderLookupCache<IDirect3DVertexShader9*> g_vertexLookup;
+// Render-thread front caches checked without the lock (14/10: two mutexes on every scene draw): direct-mapped, valid
+// while their generation equals g_copyGen, which every change of the copies bumps (under g_lock, after the change).
+std::atomic<uint32_t> g_copyGen{1};
+struct PsFront {
+    IDirect3DPixelShader9* ps = nullptr;
+    uint32_t gen = 0;
+    Copy copy;
+};
+struct VsFront {
+    uint64_t key = 0;
+    uint32_t gen = 0;
+    IDirect3DVertexShader9* copy = nullptr;
+};
+constexpr size_t kFront = 64;
+PsFront g_psFront[kFront];
+VsFront g_vsFront[kFront];
+inline size_t FrontSlot(uint64_t k) { return static_cast<size_t>((static_cast<uint32_t>(k ^ (k >> 32)) * 2654435761u) >> 26) & (kFront - 1); }
 float g_strength = 1.0f;                  // the grain in 8-bit steps (triangular, peak): 1 = +-1 step
 bool g_moving = false;                    // a new grain pattern every frame (high frame rates average it away)
 unsigned g_frameIndex = 0;                // counts frames for the moving grain
@@ -175,6 +193,7 @@ void Remember(IDirect3DPixelShader9* game, const Copy& copy) {
         if (it->second.ps) it->second.ps->Release();
         it->second = copy;
     }
+    g_copyGen.fetch_add(1, std::memory_order_release);
 }
 
 void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
@@ -185,12 +204,14 @@ void RememberVs(uint64_t key, IDirect3DVertexShader9* copy) {
         if (it->second) it->second->Release();
         it->second = copy;
     }
+    g_copyGen.fetch_add(1, std::memory_order_release);
 }
 
 // A new game pixel shader at an address: its old copy goes
 void Forget(IDirect3DPixelShader9* ps) {
     std::lock_guard<std::mutex> lock(g_lock);
     g_pixelLookup.Clear();
+    g_copyGen.fetch_add(1, std::memory_order_release); // (also with no copy: a front entry may hold this address)
     const auto it = g_copies.find(ps);
     if (it == g_copies.end()) return;
     if (it->second.ps) it->second.ps->Release();
@@ -201,6 +222,7 @@ void Forget(IDirect3DPixelShader9* ps) {
 void ForgetVs(IDirect3DVertexShader9* vs) {
     std::lock_guard<std::mutex> lock(g_lock);
     g_vertexLookup.Clear();
+    g_copyGen.fetch_add(1, std::memory_order_release);
     for (int j = 0; j < 2; j++)
         for (int k = -1; k < 8; k++) {
             const auto it = g_vsCopies.find(VsKey(vs, k, j != 0));
@@ -213,6 +235,7 @@ void ForgetVs(IDirect3DVertexShader9* vs) {
 void ReleaseCopies() {
     std::lock_guard<std::mutex> lock(g_lock);
     g_pixelLookup.Clear(); g_vertexLookup.Clear();
+    g_copyGen.fetch_add(1, std::memory_order_release);
     for (auto& [game, copy] : g_copies)
         if (copy.ps) copy.ps->Release();
     g_copies.clear();
@@ -223,13 +246,23 @@ void ReleaseCopies() {
 
 // Render thread: the copy for the bound pixel shader (made now when the shader is older than the feature)
 Copy CopyOf(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
+    const uint32_t gen = g_copyGen.load(std::memory_order_acquire); // (read before the lookup: a change after it makes the entry stale)
+    PsFront& front = g_psFront[FrontSlot(reinterpret_cast<std::uintptr_t>(ps))];
+    if (front.ps == ps && front.gen == gen && PerfToggles::SceneDitherFrontCache.load(std::memory_order_relaxed)) return front.copy;
     {
         std::lock_guard<std::mutex> lock(g_lock);
         Copy cached;
         const auto key = reinterpret_cast<std::uintptr_t>(ps);
-        if (g_pixelLookup.Find(key, cached)) return cached;
+        if (g_pixelLookup.Find(key, cached)) {
+            front.ps = ps, front.gen = gen, front.copy = cached;
+            return cached;
+        }
         const auto it = g_copies.find(ps);
-        if (it != g_copies.end()) { g_pixelLookup.Store(key, it->second); return it->second; }
+        if (it != g_copies.end()) {
+            g_pixelLookup.Store(key, it->second);
+            front.ps = ps, front.gen = gen, front.copy = it->second;
+            return it->second;
+        }
     }
     const Copy copy = MakeCopy(dev, ReadCode(ps));
     Remember(ps, copy);
@@ -239,12 +272,22 @@ Copy CopyOf(IDirect3DDevice9* dev, IDirect3DPixelShader9* ps) {
 // Render thread: the vertex copy writing TEXCOORDk (k -1: none) and / or moved by the jitter (made now when missing)
 IDirect3DVertexShader9* VsCopyOf(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs, int k, bool jitter) {
     const uint64_t key = VsKey(vs, k, jitter);
+    const uint32_t gen = g_copyGen.load(std::memory_order_acquire);
+    VsFront& front = g_vsFront[FrontSlot(key)];
+    if (front.key == key && front.gen == gen && PerfToggles::SceneDitherFrontCache.load(std::memory_order_relaxed)) return front.copy;
     {
         std::lock_guard<std::mutex> lock(g_lock);
         IDirect3DVertexShader9* cached = nullptr;
-        if (g_vertexLookup.Find(key, cached)) return cached;
+        if (g_vertexLookup.Find(key, cached)) {
+            front.key = key, front.gen = gen, front.copy = cached;
+            return cached;
+        }
         const auto it = g_vsCopies.find(key);
-        if (it != g_vsCopies.end()) { g_vertexLookup.Store(key, it->second); return it->second; }
+        if (it != g_vsCopies.end()) {
+            g_vertexLookup.Store(key, it->second);
+            front.key = key, front.gen = gen, front.copy = it->second;
+            return it->second;
+        }
     }
     IDirect3DVertexShader9* copy = MakeVsCopy(dev, ReadCode(vs), k, jitter);
     RememberVs(key, copy);
@@ -261,9 +304,8 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(D3D9Hooks::DeviceContext
     IDirect3DPixelShader9* ps = nullptr;
     Copy copy;
     if (dither) {
-        dev->GetPixelShader(&ps);
+        ps = D3D9Hooks::BoundPixelShader(dev); // (followed through Set*Shader; the device keeps it alive)
         if (ps) {
-            ps->Release(); // the device keeps it alive
             copy = CopyOf(dev, ps);
             if (!copy.ps) {
                 const DWORD major = (copy.version >> 8) & 0xFF;
@@ -281,8 +323,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(D3D9Hooks::DeviceContext
     // ZENABLE alone does not identify a projected 3D surface (pool capture #202).
     bool useJitter = jitter && zfunc != D3DCMP_ALWAYS;
     if (useJitter || k >= 0) {
-        dev->GetVertexShader(&vs);
-        if (vs) vs->Release();
+        vs = D3D9Hooks::BoundVertexShader(dev);
         if (!vs && useJitter) {
             g_frame.jitterNoShader++;
             useJitter = false;
@@ -391,6 +432,7 @@ void RegisterHooks() {
         ForgetVs(*out); // a reused address: the old shader's copies go; new ones are made at its first 3D scene draw (VsCopyOf)
         return HookAction::Skip;
     }, kAfterEveryone);
+    ObserveReissuedDraws(kHookName); // dithers Night Lighting's replacement shaders too (they run in the re-issued draw)
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
         return OnDraw(ctx, [&] { CallOriginalDrawIndexedPrimitive(ctx.device, type, bvi, minV, numV, start, prims); });
     }, kAfterEveryone);

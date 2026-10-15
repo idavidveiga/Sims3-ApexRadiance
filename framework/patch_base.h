@@ -114,6 +114,8 @@ class ApexPatch {
                             const std::vector<std::pair<std::string, int>>& presets = {}, SettingWidget ui = SettingWidget::Slider);
     void RegisterBoolSetting(bool* value, const std::string& key, bool def, const std::string& description = "");
     void RegisterEnumSetting(int* value, const std::string& key, int def, const std::string& description, const std::vector<std::string>& choices);
+    // The same, saved as the choice's name (a TOML string); an unknown name or another type keeps the current value
+    void RegisterNamedEnumSetting(int* value, const std::string& key, int def, const std::string& description, const std::vector<std::string>& names);
 
     std::string patchName;
     std::atomic<bool> isEnabled{false};

@@ -5,6 +5,7 @@
 #include "lamp_mark_filter.h"
 #include "level_light_share.h"
 #include "lot_light_bridge.h"
+#include "tester_settings.h"
 // Persistent developer preferences only. Never records running measurements or one-shot actions.
 namespace FastDxt { void SaveDeveloperState(toml::table&); void LoadDeveloperState(const toml::table&); }
 namespace FastRefPack { void SaveDeveloperState(toml::table&); void LoadDeveloperState(const toml::table&); }
@@ -23,6 +24,7 @@ inline toml::table Capture() {
     { toml::table t; ObjectIndex::SaveDeveloperState(t); result.insert("object_index", std::move(t)); }
     { toml::table t; SceneBudget::SaveDeveloperState(t); result.insert("scene_budget", std::move(t)); }
     { toml::table t; LotLightingMotion::SaveDeveloperState(t); result.insert("lot_lighting_motion", std::move(t)); }
+    { toml::table t; TesterToggles::SaveDeveloperState(t); result.insert("tester", std::move(t)); }
     result.insert("keep_room_light", LampMarkFilter::Enabled());
     result.insert("story_samples", LevelLightShare::DiagArmed());
     result.insert("false_color", LotLightBridge::FalseColor());
@@ -39,5 +41,6 @@ inline void Apply(const toml::table& t) {
     if (const auto* p = t["object_index"].as_table()) ObjectIndex::LoadDeveloperState(*p);
     if (const auto* p = t["scene_budget"].as_table()) SceneBudget::LoadDeveloperState(*p);
     if (const auto* p = t["lot_lighting_motion"].as_table()) LotLightingMotion::LoadDeveloperState(*p);
+    if (const auto* p = t["tester"].as_table()) TesterToggles::LoadDeveloperState(*p);
 }
 }

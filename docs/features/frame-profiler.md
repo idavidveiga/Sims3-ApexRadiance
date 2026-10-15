@@ -10,7 +10,7 @@ appear in live tables in the menu and in `ApexRadiance_Hitches.txt`. Nothing is 
 
 | | |
 |---|---|
-| Availability | Developer mode only (included in the unified ASI; the normal runtime mode never loads or starts it) |
+| Availability | Developer mode only (included in the unified ASI; the normal runtime mode never loads or starts it). Sampled D3D dispatch timing and the *Re-issued draw (driver)* row: since 2.13.0 |
 | Default | Off; never started automatically, also when the saved file says `enabled = true` |
 | Menu | Developer > Performance > *Frame times and stutters* |
 | Configuration | `[qol.frame_profiler]` in `ApexRadiance.toml`; profiles with the Development part store a copy under `[developer.frame_profiler]` |
@@ -327,10 +327,11 @@ none.
   "end-of-frame draw" (overlays and post passes inside EndScene), else a game draw (primitives summed).
 - **D3D hooks (mod):** the registry ([`framework/d3d9_hooks.cpp`](../../framework/d3d9_hooks.cpp) `Run`) books its
   outermost dispatch on a thread, for every chain except Present, with `BeginModTime(ModTime::D3DDispatch)` /
-  `EndModTime` around the whole chain, also when a callback returns Skip or Block. Nested dispatches (a draw Night
-  Lighting replaces is re-issued inside its own dispatch) are part of the outer one, so its driver call is counted too.
-  The time includes the bookkeeping (two clock reads and a push / pop per outermost dispatch, about 20 to 40 ns, also for
-  every SetPixelShader / SetVertexShader of the game), so expect a few tenths of a ms of measurement overhead per frame.
+  `EndModTime` around the whole chain, also when a callback returns Skip or Block. One outermost dispatch in
+  16 is timed (`BeginModTimeSampled`) and booked 16 times, with every frame timed inside it; its parent loses the scaled
+  time. Nested dispatches (a draw Night Lighting replaces is re-issued inside its own dispatch) are part of the outer
+  one, except the driver call of the re-issued draw, booked as **Re-issued draw (driver)** (the game would have paid it
+  for its own call). Per frame the figure is an estimate from about 1 in 16 dispatches; over a second it averages out.
 - **Present hooks (mod):** the -1000 Present hook is the frame boundary and pushes a `kPresentHooks` frame; the +1000
   hook pops it. It includes every module's Present hooks and the profiler's own per-frame bookkeeping.
 - **Lamp refresh (mod):** Night Lighting's 20-frame lamp list refresh (`LotLightBridge::OnPresent`,

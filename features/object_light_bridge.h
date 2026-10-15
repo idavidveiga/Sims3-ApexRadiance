@@ -23,4 +23,7 @@ void RequestRigRefresh();
 std::string LampColourStatus();
 // The room a room-mode rig gathered its lights for (its last gather; null when not seen). Any thread.
 const void* RigRoom(uintptr_t rig);
+// (F7) the outdoor lamps a room-mode rig took through its room's openings at its last gather, with their share and whether
+// the game kept them over its luminance cut; empty when none. Any thread.
+std::string RigOpeningNote(uintptr_t rig);
 }

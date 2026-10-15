@@ -31,6 +31,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-14 | `release/2.13.0` (`2aefeb7`) | Developer and public Release x86 builds; `tools/roofed_openings_test`; `tools/floor_shade_check -Precomp` | Both builds: 0 errors; 173 and 5842 checks, 0 failures | native D3D9 |
 | 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `run_resource_checks.ps1` | Builds passed; resource paths 14,154 checks, 0 failures (extracted `DrawObjectLamp` 386, realistic reach on objects and fences 386, *Buildings block light on objects* 14). `DrawWindowOutdoor` is not extracted; the captured-shader law checks (`run.ps1`) were not re-run | Fake D3D9 / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Reconstructed gate shader fixture | Zero build warnings; Passed per-pixel cones and vertical/upward/fallback ground masks; material diversity and gameplay are not exhaustive | Native D3D9 fixtures / x86 build |
 | 2026-10-04 | PR #2 | Resource and GPU fixtures (object, wall, instanced paths) with the 8% daytime endpoint | Passed under controlled inputs; not a visual check of a scene | Native D3D9 |
@@ -68,6 +69,8 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 ## Open checks
 
 - 2.12.3 public build, not yet tested in game: with *Realistic lamp reach* on, a column, a balcony band and a window frame beside a lit wall, and objects standing above every lamp head around. **Expected:** they take the light of the wall behind them; objects above the lamps take no ground light; *Buildings block light on objects* off restores the previous light.
+- 2.13.0 build, in game: Ambient Occlusion next to Sims beside objects that Night Lighting redraws at night, with the Tester switch *Re-issued draw filter* on and off. **Expected:** the same Sim shade in both.
+- 2.13.0 build, in game: bushes and trees behind a free-standing wall with a garden post on the other side, and a lamp a player disabled next to objects. **Expected:** no lamp light on either.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
 - Wider fence/gate materials, fallback groups and daytime transitions
@@ -88,3 +91,7 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
   ([history](../history/night-lighting-objects-and-rigs.md)).
 
 The updated resource-path fixture passed 13,754 checks. Geometry producers are fixture-controlled; state restoration and cone upload are verified, without claiming scene-wide visual parity.
+
+- Arcade column (not checked in game): a column or object inside a roofed arcade, a few metres behind an arch from a
+  garden post, takes the post's dim light instead of drawing black; the F7 note says "kept" for that lamp, and the
+  Night Lighting status counts "kept under the game's cut" (offline: `tools/roofed_openings_test`, the rig cut checks).

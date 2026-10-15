@@ -17,6 +17,9 @@ std::string g_editReason, g_lastEditOutcome;
 int refreshes = 0, assertions = 0, failures = 0;
 namespace ObjectLightBridge { void RequestRigRefresh() { refreshes++; } }
 namespace Recorder { bool Verbose() { return true; } }
+namespace DragLite { bool Dragging() { return false; } bool ClassicHolding() { return false; } } // (EditReady: a lamp drag paces the terrain relight; none here)
+#include <atomic>
+namespace TesterToggles { inline std::atomic<bool> dragSlowRefresh{true}; }
 #define LOG_INFO(message) ((void)(message))
 /* PRODUCTION_FUNCTIONS */
 /* BASELINE_FUNCTION */

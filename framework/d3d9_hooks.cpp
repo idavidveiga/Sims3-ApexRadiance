@@ -5,6 +5,7 @@
 #include "memory_patch.h"
 #include "frame_profiler.h"
 #include "hook_guard.h"
+#include "perf_toggles.h"
 #include <detours/detours.h>
 #include <intrin.h>
 #include <algorithm>
@@ -27,15 +28,26 @@ std::recursive_mutex g_lock;
 uint64_t g_sequence = 0; // registration order (ties between equal priorities)
 
 template <typename Fn> struct Entry {
+    // read by every dispatch (first, together): the plain call, the "off" flag and the re-issued draw filter
+    typename Fn::Raw fn = nullptr;
+    void* self = nullptr;
+    std::atomic<bool>* offFlag = nullptr; // off.get() (the dispatch reads it without the shared pointer's indirection)
+    bool observeReissue = false;          // runs for draws re-issued inside a ReissueScope (ObserveReissuedDraws)
     std::string name;
     std::string timingName; // the name the per-name timing reports ("<name> (Present)" on the Present chain)
-    Fn fn;
-    int priority;
-    uint64_t sequence;
+    Fn hook;                // owns the callable behind fn / self
+    int priority = 0;
+    uint64_t sequence = 0;
     // Set when the callback threw (07/10, players' Runtime Error): it is skipped from then on. Shared by every copy of the
     // entry in later lists, so a re-published list keeps it off.
     std::shared_ptr<std::atomic<bool>> off;
 };
+
+// Names whose draw callbacks observe re-issued draws (guarded by g_lock)
+std::vector<std::string> g_reissueObservers;
+bool ObservesReissue(const std::string& name) {
+    return std::find(g_reissueObservers.begin(), g_reissueObservers.end(), name) != g_reissueObservers.end();
+}
 
 // Per-name timing of a chain's callbacks (Frame Profiler, development build)
 enum class Timing : uint8_t {
@@ -57,6 +69,7 @@ template <typename Fn> struct Chain {
     using List = std::vector<Entry<Fn>>;
     const char* method;
     bool lockFree;            // dispatched without g_lock on the render thread (draw and state chains)
+    bool reissueFilter;       // draw chains: inside a ReissueScope only the entries that observe re-issued draws run
     bool modTimed;            // its outermost dispatch is booked as "D3D hooks (mod)" (every chain but Present)
     Timing timing;
     const char* timingSuffix; // appended to the name for the per-name timing
@@ -66,8 +79,8 @@ template <typename Fn> struct Chain {
     std::vector<std::unique_ptr<List>> lists; // every list published, the last one current (guarded by g_lock)
     std::atomic<bool> offThreadLogged{false};
 
-    Chain(const char* m, bool lf, bool mt, Timing t, const char* suffix, int slot = kOrigNone)
-        : method(m), lockFree(lf), modTimed(mt), timing(t), timingSuffix(suffix), origSlot(slot) {
+    Chain(const char* m, bool lf, bool mt, Timing t, const char* suffix, int slot = kOrigNone, bool reissueDraws = false)
+        : method(m), lockFree(lf), reissueFilter(reissueDraws), modTimed(mt), timing(t), timingSuffix(suffix), origSlot(slot) {
         lists.push_back(std::make_unique<List>());
         list.store(lists.back().get());
     }
@@ -88,8 +101,18 @@ template <typename Fn> bool Add(Chain<Fn>& chain, const std::string& name, Fn fn
     if (!fn) return false;
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     auto next = std::make_unique<typename Chain<Fn>::List>(*chain.list.load(std::memory_order_relaxed));
-    next->push_back({name, chain.timingSuffix ? name + chain.timingSuffix : name, std::move(fn), static_cast<int>(priority), ++g_sequence,
-                     std::make_shared<std::atomic<bool>>(false)});
+    Entry<Fn> e;
+    e.fn = fn.fn();
+    e.self = fn.self();
+    e.off = std::make_shared<std::atomic<bool>>(false);
+    e.offFlag = e.off.get();
+    e.observeReissue = chain.reissueFilter && ObservesReissue(name);
+    e.name = name;
+    e.timingName = chain.timingSuffix ? name + chain.timingSuffix : name;
+    e.hook = std::move(fn);
+    e.priority = static_cast<int>(priority);
+    e.sequence = ++g_sequence;
+    next->push_back(std::move(e));
     std::stable_sort(next->begin(), next->end(), [](const Entry<Fn>& a, const Entry<Fn>& b) {
         return a.priority != b.priority ? a.priority < b.priority : a.sequence < b.sequence;
     });
@@ -124,6 +147,8 @@ std::atomic<uint32_t> g_offThread{0};       // lock-free chains dispatched from 
 int g_lockedDepth = 0;                    // guarded by g_lock: dispatches running under the lock (the lock's owner only)
 std::mutex g_timingLock;                    // FrameProfiler::AddRegistryHookTime is not thread-safe on its own
 thread_local int t_dispatchDepth = 0;       // development build: nesting of dispatches on this thread (the mod time)
+thread_local int t_reissue = 0;             // ReissueScope nesting on this thread (lot_light_bridge.cpp's re-issued draws)
+thread_local bool t_sampled = false;        // development build: the outermost dispatch on this thread is a timed sample
 
 // Render thread, around a lock-free dispatch. The "inside" store must precede the list load: the compiler barrier keeps
 // that order in the code, the other thread's FlushProcessWriteBuffers covers the processor's store buffer.
@@ -175,25 +200,54 @@ template <typename Fn> void NoteOffThread(Chain<Fn>& chain) {
 
 // Development build: the outermost dispatch on a thread is booked as mod time ("D3D hooks (mod)") by the Frame Profiler,
 // from before the first callback to after the last one, also when a callback returns Skip / Block. Nested dispatches (a
-// callback calling the device, e.g. a replaced draw re-issued by Night Lighting) are part of it.
+// callback calling the device, e.g. a replaced draw re-issued by Night Lighting) are part of it, except the driver's
+// own time for a re-issued draw ("Re-issued draw (driver)", TimedReissueDraw).
+// 14/10 (dispatch cost): one outermost dispatch in kModSample is timed and booked kModSample times (the profiler scales
+// the sample and everything timed inside it); the others cost one counter increment.
+constexpr uint32_t kModSample = 16;
+// development build: which outermost dispatch is sampled, from a per-thread xorshift (a fixed stride would keep hitting the
+// same method of the game's periodic SetVS / SetPS / SetTexture / draw sequence)
+thread_local uint32_t t_sampleRng = 0x9E3779B9u;
+inline bool SampleThisDispatch() {
+    uint32_t x = t_sampleRng;
+    x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+    t_sampleRng = x;
+    return (x & (kModSample - 1)) == 0;
+}
 struct ModTimeGuard {
     int token = -1;
     const void* key;
-    const bool developer; // same gate for entry/exit even while startup reads the setting
-    ModTimeGuard(bool modTimed, const void* k) : key(k), developer(!kPublicBuild) {
-        if (developer) {
-            if (t_dispatchDepth++ == 0 && modTimed && FrameProfiler::ModTimeActive()) token = FrameProfiler::BeginModTime(FrameProfiler::ModTime::D3DDispatch, key);
-        }
+    bool outer = false;
+    bool dev = false; // (read once: entry and exit use the same gate even while startup stores the setting)
+    ModTimeGuard(bool modTimed, const void* k) : key(k), dev(!kPublicBuild) {
+        if (!dev) return;
+        if (t_dispatchDepth++ != 0) return;
+        outer = true;
+        // (PerfToggles::SampledDispatchTiming off: every outermost dispatch is timed, weight 1, as before the sampling)
+        const bool sampled = PerfToggles::SampledDispatchTiming.load(std::memory_order_relaxed);
+        if ((sampled && !SampleThisDispatch()) || !modTimed || !FrameProfiler::ModTimeActive()) return;
+        token = FrameProfiler::BeginModTimeSampled(FrameProfiler::ModTime::D3DDispatch, key, sampled ? kModSample : 1);
+        t_sampled = token >= 0;
     }
     ~ModTimeGuard() {
-        if (developer) {
-            --t_dispatchDepth;
-            if (token >= 0) FrameProfiler::EndModTime(token, key);
-        }
+        if (!dev) return;
+        --t_dispatchDepth;
+        if (token >= 0) FrameProfiler::EndModTime(token, key);
+        if (outer) t_sampled = false;
     }
     ModTimeGuard(const ModTimeGuard&) = delete;
     ModTimeGuard& operator=(const ModTimeGuard&) = delete;
 };
+
+// Development build: the driver call of a re-issued draw inside a timed sample, booked as "Re-issued draw (driver)"
+template <typename Call> HRESULT TimedReissueDraw(Call call) {
+    if (kPublicBuild || !t_reissue || !t_sampled) return call();
+    int anchor = 0;
+    const int token = FrameProfiler::BeginModTime(FrameProfiler::ModTime::ReissuedDraw, &anchor);
+    const HRESULT hr = call();
+    if (token >= 0) FrameProfiler::EndModTime(token, &anchor);
+    return hr;
+}
 
 // From a catch block: names the callback without allocating
 void NoteCallbackThrew(const char* method, const char* name) noexcept {
@@ -203,32 +257,47 @@ void NoteCallbackThrew(const char* method, const char* name) noexcept {
 }
 
 // Runs one list. false = a callback asked to skip the device call; result then holds what the game gets back.
-template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, const typename Chain<Fn>::List& list, DeviceContext& ctx, HRESULT& result, Args... args) {
-    bool timed = false;
-    if (!kPublicBuild)
-        timed = chain.timing == Timing::Always ? FrameProfiler::PresentHookTimingActive() : (chain.timing == Timing::Option && FrameProfiler::RegistryHookTimingActive());
-    for (const auto& e : list) {
-        if (e.off->load(std::memory_order_relaxed)) continue;
+// 07/10, players' Runtime Error: a callback's C++ exception would unwind into the game's device call and end the game. It is
+// caught and that callback is skipped from now on. The chain goes on as if it had returned Continue, unless it had already
+// made the game's call itself (CallOriginal*): then as if it had returned Skip. Either way the device call is made once.
+// 14/10 (dispatch cost): one exception frame around the whole list instead of one per callback (re-entered after a
+// callback threw, at the next one), and this thread's CallOriginal* counter read through a pointer taken once per dispatch.
+// timed: per-name timing (development build); reissue: inside a ReissueScope on a draw chain (only observers run). Both
+// are read once per dispatch by Run.
+template <typename Fn, typename... Args>
+bool RunList(const Chain<Fn>& chain, const typename Chain<Fn>::List& list, DeviceContext& ctx, HRESULT& result, const uint32_t* origCount, bool timed, bool reissue,
+             Args... args) {
+    const Entry<Fn>* const entries = list.data();
+    const size_t n = list.size();
+    size_t i = 0;
+    while (i < n) {
         HookAction r = HookAction::Continue;
         bool returned = false;
-        const uint32_t orig0 = chain.origSlot >= 0 ? t_origCalls[chain.origSlot] : 0;
-        // 07/10, players' Runtime Error: a callback's C++ exception would unwind into the game's device call and end the
-        // game. It is caught and that callback is skipped from now on. The chain goes on as if it had returned Continue,
-        // unless it had already made the game's call itself (CallOriginal*): then as if it had returned Skip. Either way the
-        // device call is made once.
+        uint32_t orig0 = 0;
         try {
-            const uint64_t t0 = timed ? FrameProfiler::Ticks() : 0;
-            r = e.fn(ctx, args...);
-            returned = true;
-            if (timed) {
-                const uint64_t dt = FrameProfiler::Ticks() - t0;
-                std::lock_guard<std::mutex> tl(g_timingLock);
-                FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+            for (; i < n; ++i) {
+                const Entry<Fn>& e = entries[i];
+                if (e.offFlag->load(std::memory_order_relaxed) || (reissue && !e.observeReissue)) continue;
+                returned = false;
+                orig0 = origCount ? *origCount : 0;
+                if (timed) {
+                    const uint64_t t0 = FrameProfiler::Ticks();
+                    r = e.fn(e.self, ctx, args...);
+                    returned = true;
+                    const uint64_t dt = FrameProfiler::Ticks() - t0;
+                    std::lock_guard<std::mutex> tl(g_timingLock);
+                    FrameProfiler::AddRegistryHookTime(e.timingName, dt);
+                } else {
+                    r = e.fn(e.self, ctx, args...);
+                    returned = true;
+                }
+                if (r != HookAction::Continue) break;
             }
         } catch (...) {
-            e.off->store(true, std::memory_order_relaxed);
+            const Entry<Fn>& e = entries[i];
+            e.offFlag->store(true, std::memory_order_relaxed);
             NoteCallbackThrew(chain.method, e.name.c_str());
-            if (!returned) r = chain.origSlot >= 0 && t_origCalls[chain.origSlot] != orig0 ? HookAction::Skip : HookAction::Continue;
+            if (!returned) r = origCount && *origCount != orig0 ? HookAction::Skip : HookAction::Continue;
         }
         if (r == HookAction::Skip) {
             result = S_OK;
@@ -238,25 +307,46 @@ template <typename Fn, typename... Args> bool RunList(const Chain<Fn>& chain, co
             result = E_FAIL;
             return false;
         }
+        ++i; // (after a callback that threw and continues: the next one; after the whole list: past its end)
     }
     return true;
 }
+
+// Development build: the dispatch cost, sampled (one dispatch in 16 is timed with the time stamp counter; every dispatch is
+// counted). Read and logged every 10 s by the Present hook.
+uint32_t g_dispatchCount = 0;   // render thread mostly (a statistic: plain increments)
+uint64_t g_dispatchSampled = 0, g_dispatchCycles = 0;
 
 // Runs the chain. false = a callback asked to skip the device call; result then holds what the game gets back.
 template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDevice9* device, HRESULT& result, Args... args) {
     if (chain.count.load(std::memory_order_relaxed) == 0) return true;
     // a nested dispatch (a callback calling the hooked device) must not move the outer callback's CallOriginal* count
+    uint32_t* const origCount = chain.origSlot >= 0 ? &t_origCalls[chain.origSlot] : nullptr;
     struct OrigScope {
-        int s; uint32_t v;
-        ~OrigScope() { if (s >= 0) t_origCalls[s] = v; }
-    } origScope{chain.origSlot, chain.origSlot >= 0 ? t_origCalls[chain.origSlot] : 0u};
+        uint32_t* p; uint32_t v;
+        ~OrigScope() { if (p) *p = v; }
+    } origScope{origCount, origCount ? *origCount : 0u};
     DeviceContext ctx{device};
     ModTimeGuard mod(chain.modTimed, &ctx);
+    // the development and timing flags, once per dispatch
+    bool timed = false;
+    uint64_t c0 = 0;
+    if (!kPublicBuild) {
+        timed = chain.timing == Timing::Always ? FrameProfiler::PresentHookTimingActive() : (chain.timing == Timing::Option && FrameProfiler::RegistryHookTimingActive());
+        if ((++g_dispatchCount & 15) == 0) c0 = __rdtsc();
+    }
+    const bool reissue = chain.reissueFilter && t_reissue != 0 && PerfToggles::ReissueFilter.load(std::memory_order_relaxed);
+    struct Sample {
+        uint64_t c0;
+        ~Sample() {
+            if (c0) g_dispatchCycles += __rdtsc() - c0, g_dispatchSampled++;
+        }
+    } sample{c0};
     if (chain.lockFree) {
         if (ThreadId() == g_renderTid.load(std::memory_order_relaxed)) {
             RenderInside inside;
             const auto* list = chain.list.load(std::memory_order_acquire);
-            return RunList(chain, *list, ctx, result, args...);
+            return RunList(chain, *list, ctx, result, origCount, timed, reissue, args...);
         }
         NoteOffThread(chain);
     }
@@ -266,11 +356,41 @@ template <typename Fn, typename... Args> bool Run(Chain<Fn>& chain, IDirect3DDev
         ~LockedDepth() { --g_lockedDepth; }
     } depth;
     const auto* list = chain.list.load(std::memory_order_relaxed);
-    return RunList(chain, *list, ctx, result, args...);
+    return RunList(chain, *list, ctx, result, origCount, timed, reissue, args...);
 }
 
-Chain<DrawIndexedPrimitiveHook> g_dip("DrawIndexedPrimitive", true, true, Timing::Option, nullptr, kOrigDIP);
-Chain<DrawPrimitiveHook> g_dp("DrawPrimitive", true, true, Timing::Option, nullptr, kOrigDP);
+// Development build, at Present: every 10 s a line with the dispatches a frame and their sampled cost
+void LogDispatchCost() {
+    if (kPublicBuild) return;
+    static uint32_t s_frames = 0, s_count0 = 0;
+    static uint64_t s_sampled0 = 0, s_cycles0 = 0, s_tsc0 = 0;
+    static LARGE_INTEGER s_qpc0{};
+    if (!s_tsc0) {
+        s_tsc0 = __rdtsc();
+        QueryPerformanceCounter(&s_qpc0);
+        s_count0 = g_dispatchCount, s_sampled0 = g_dispatchSampled, s_cycles0 = g_dispatchCycles;
+        return;
+    }
+    s_frames++;
+    LARGE_INTEGER now{}, freq{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    const double sec = freq.QuadPart ? static_cast<double>(now.QuadPart - s_qpc0.QuadPart) / static_cast<double>(freq.QuadPart) : 0.0;
+    if (sec < 10.0) return;
+    const uint64_t tsc = __rdtsc();
+    const double cyclesPerMs = static_cast<double>(tsc - s_tsc0) / (sec * 1000.0);
+    const uint32_t calls = g_dispatchCount - s_count0;
+    const uint64_t sampled = g_dispatchSampled - s_sampled0, cycles = g_dispatchCycles - s_cycles0;
+    const double perCallUs = sampled && cyclesPerMs > 0.0 ? static_cast<double>(cycles) / static_cast<double>(sampled) / cyclesPerMs * 1000.0 : 0.0;
+    const double perFrame = s_frames ? static_cast<double>(calls) / s_frames : 0.0;
+    LOG_INFO(std::format("[D3D9Hooks] Dispatch cost over {:.0f} s: {:.0f} dispatches with callbacks a frame, {:.3f} us each (sampled 1 in 16, callbacks "
+                         "included), about {:.3f} ms a frame",
+                         sec, perFrame, perCallUs, perFrame * perCallUs / 1000.0));
+    s_frames = 0, s_tsc0 = tsc, s_qpc0 = now, s_count0 = g_dispatchCount, s_sampled0 = g_dispatchSampled, s_cycles0 = g_dispatchCycles;
+}
+
+Chain<DrawIndexedPrimitiveHook> g_dip("DrawIndexedPrimitive", true, true, Timing::Option, nullptr, kOrigDIP, true);
+Chain<DrawPrimitiveHook> g_dp("DrawPrimitive", true, true, Timing::Option, nullptr, kOrigDP, true);
 Chain<SetRenderTargetHook> g_srt("SetRenderTarget", true, true, Timing::Option, " (SetRenderTarget)", kOrigSRT);
 Chain<SetPixelShaderHook> g_sps("SetPixelShader", true, true, Timing::Option, " (SetPixelShader)", kOrigSPS);
 Chain<SetVertexShaderHook> g_svs("SetVertexShader", true, true, Timing::Option, " (SetVertexShader)", kOrigSVS);
@@ -374,14 +494,44 @@ SetShaderConstantF_t o_vsc = nullptr;
 
 std::atomic<bool> g_installed{false};
 
+// ---- the shaders bound now (BoundPixelShader / BoundVertexShader) ----
+// Render thread only; another thread's Set*Shader (or ShaderStateChanged) raises g_shadersDirty and the render thread
+// reads them back at its next look.
+// (per device: the detours serve every device, a second one's shaders are not the main device's; g_boundDev = the device
+// whose shaders are followed, the last one read back)
+IDirect3DDevice9* g_boundDev = nullptr;
+IDirect3DPixelShader9* g_boundPs = nullptr;
+IDirect3DVertexShader9* g_boundVs = nullptr;
+bool g_boundPsKnown = false, g_boundVsKnown = false;
+std::atomic<bool> g_shadersDirty{false};
+inline bool OnRenderThread() { return ThreadId() == g_renderTid.load(std::memory_order_relaxed); }
+inline void ForgetBoundShaders() {
+    if (OnRenderThread()) g_boundPsKnown = g_boundVsKnown = false;
+    else g_shadersDirty.store(true, std::memory_order_relaxed);
+}
+inline void NoteBoundPs(IDirect3DDevice9* d, IDirect3DPixelShader9* s) {
+    if (!OnRenderThread()) g_shadersDirty.store(true, std::memory_order_relaxed);
+    else if (d == g_boundDev) g_boundPs = s, g_boundPsKnown = true;
+}
+inline void NoteBoundVs(IDirect3DDevice9* d, IDirect3DVertexShader9* s) {
+    if (!OnRenderThread()) g_shadersDirty.store(true, std::memory_order_relaxed);
+    else if (d == g_boundDev) g_boundVs = s, g_boundVsKnown = true;
+}
+// Render thread: follow this device's shaders from now on (another device's were followed)
+inline void TakeBoundDevice(IDirect3DDevice9* d) {
+    if (d != g_boundDev) g_boundDev = d, g_boundPsKnown = g_boundVsKnown = false;
+}
+
 HRESULT STDMETHODCALLTYPE H_DrawIndexedPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, INT bv, UINT mv, UINT nv, UINT si, UINT pc) {
     HRESULT hr = S_OK;
     if (!Run(g_dip, d, hr, t, bv, mv, nv, si, pc)) return hr;
+    if (!kPublicBuild && t_reissue) return TimedReissueDraw([&] { return o_dip(d, t, bv, mv, nv, si, pc); });
     return o_dip(d, t, bv, mv, nv, si, pc);
 }
 HRESULT STDMETHODCALLTYPE H_DrawPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT sv, UINT pc) {
     HRESULT hr = S_OK;
     if (!Run(g_dp, d, hr, t, sv, pc)) return hr;
+    if (!kPublicBuild && t_reissue) return TimedReissueDraw([&] { return o_dp(d, t, sv, pc); });
     return o_dp(d, t, sv, pc);
 }
 HRESULT STDMETHODCALLTYPE H_SetRenderTarget(IDirect3DDevice9* d, DWORD i, IDirect3DSurface9* s) {
@@ -393,14 +543,18 @@ HRESULT STDMETHODCALLTYPE H_SetRenderTarget(IDirect3DDevice9* d, DWORD i, IDirec
 HRESULT STDMETHODCALLTYPE H_SetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* s) {
     CountCall(kCallSetPS);
     HRESULT hr = S_OK;
-    if (!Run(g_sps, d, hr, s)) return hr;
-    return o_sps(d, s);
+    if (!Run(g_sps, d, hr, s)) return hr; // (a callback that skipped it and set one itself did so through CallOriginal*: followed there)
+    hr = o_sps(d, s);
+    if (SUCCEEDED(hr)) NoteBoundPs(d, s);
+    return hr;
 }
 HRESULT STDMETHODCALLTYPE H_SetVertexShader(IDirect3DDevice9* d, IDirect3DVertexShader9* s) {
     CountCall(kCallSetVS);
     HRESULT hr = S_OK;
     if (!Run(g_svs, d, hr, s)) return hr;
-    return o_svs(d, s);
+    hr = o_svs(d, s);
+    if (SUCCEEDED(hr)) NoteBoundVs(d, s);
+    return hr;
 }
 HRESULT STDMETHODCALLTYPE H_SetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DBaseTexture9* t) {
     CountCall(kCallSetTexture);
@@ -410,12 +564,15 @@ HRESULT STDMETHODCALLTYPE H_SetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DB
 }
 HRESULT STDMETHODCALLTYPE H_Present(IDirect3DDevice9* d, const RECT* sr, const RECT* dr, HWND w, const RGNDATA* rg) {
     HRESULT hr = S_OK;
+    ForgetBoundShaders(); // (the menu overlay's state block restored them at EndScene; a Reset may follow)
     ReclaimRetired();
+    if (!kPublicBuild && ThreadId() == g_renderTid.load(std::memory_order_relaxed)) LogDispatchCost();
     if (!Run(g_present, d, hr, sr, dr, w, rg)) return hr;
     return o_present(d, sr, dr, w, rg);
 }
 HRESULT STDMETHODCALLTYPE H_BeginScene(IDirect3DDevice9* d) {
     HRESULT hr = S_OK;
+    ForgetBoundShaders();
     if (!Run(g_begin, d, hr)) return hr;
     return o_begin(d);
 }
@@ -532,6 +689,28 @@ void UnregisterAll(const std::string& name) {
     if (lockFreeChanged && ThreadId() != g_renderTid.load(std::memory_order_relaxed)) WaitForRenderThread("UnregisterAll(\"" + name + "\")");
 }
 
+// Marks the draw callbacks of this name (registered now or later) as observers of re-issued draws. Caller holds g_lock.
+template <typename Fn> void MarkObserver(Chain<Fn>& chain, const std::string& name) {
+    const auto* cur = chain.list.load(std::memory_order_relaxed);
+    bool any = false;
+    for (const auto& e : *cur) any |= e.name == name && !e.observeReissue;
+    if (!any) return;
+    auto next = std::make_unique<typename Chain<Fn>::List>(*cur);
+    for (auto& e : *next)
+        if (e.name == name) e.observeReissue = true;
+    Publish(chain, std::move(next));
+}
+
+void ObserveReissuedDraws(const std::string& name) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (!ObservesReissue(name)) g_reissueObservers.push_back(name);
+    MarkObserver(g_dip, name);
+    MarkObserver(g_dp, name);
+}
+
+void BeginReissue() { ++t_reissue; }
+void EndReissue() { --t_reissue; }
+
 // ---- originals ----
 HRESULT CallOriginalCreateRenderTarget(IDirect3DDevice9* d, UINT w, UINT h, D3DFORMAT f, D3DMULTISAMPLE_TYPE m, DWORD q, BOOL lk, IDirect3DSurface9** s, HANDLE* sh) {
     ++t_origCalls[kOrigCRT];
@@ -547,10 +726,12 @@ HRESULT CallOriginalSetViewport(IDirect3DDevice9* d, const D3DVIEWPORT9* v) {
 }
 HRESULT CallOriginalDrawIndexedPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, INT bv, UINT mv, UINT nv, UINT si, UINT pc) {
     ++t_origCalls[kOrigDIP];
+    if (!kPublicBuild && t_reissue) return TimedReissueDraw([&] { return o_dip ? o_dip(d, t, bv, mv, nv, si, pc) : d->DrawIndexedPrimitive(t, bv, mv, nv, si, pc); });
     return o_dip ? o_dip(d, t, bv, mv, nv, si, pc) : d->DrawIndexedPrimitive(t, bv, mv, nv, si, pc);
 }
 HRESULT CallOriginalDrawPrimitive(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT sv, UINT pc) {
     ++t_origCalls[kOrigDP];
+    if (!kPublicBuild && t_reissue) return TimedReissueDraw([&] { return o_dp ? o_dp(d, t, sv, pc) : d->DrawPrimitive(t, sv, pc); });
     return o_dp ? o_dp(d, t, sv, pc) : d->DrawPrimitive(t, sv, pc);
 }
 HRESULT CallOriginalSetVertexShaderConstantF(IDirect3DDevice9* d, UINT r, const float* c, UINT n) {
@@ -563,7 +744,10 @@ HRESULT CallOriginalSetPixelShaderConstantF(IDirect3DDevice9* d, UINT r, const f
 }
 HRESULT CallOriginalSetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* s) {
     ++t_origCalls[kOrigSPS];
-    return o_sps ? o_sps(d, s) : d->SetPixelShader(s);
+    const HRESULT hr = o_sps ? o_sps(d, s) : d->SetPixelShader(s);
+    if (SUCCEEDED(hr)) NoteBoundPs(d, s);
+    else ForgetBoundShaders();
+    return hr;
 }
 HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* d, const DWORD* fn, IDirect3DPixelShader9** s) {
     ++t_origCalls[kOrigCPS];
@@ -575,8 +759,37 @@ HRESULT CallOriginalCreateVertexShader(IDirect3DDevice9* d, const DWORD* fn, IDi
 }
 HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* d, IDirect3DVertexShader9* s) {
     ++t_origCalls[kOrigSVS];
-    return o_svs ? o_svs(d, s) : d->SetVertexShader(s);
+    const HRESULT hr = o_svs ? o_svs(d, s) : d->SetVertexShader(s);
+    if (SUCCEEDED(hr)) NoteBoundVs(d, s);
+    else ForgetBoundShaders();
+    return hr;
 }
+
+IDirect3DPixelShader9* BoundPixelShader(IDirect3DDevice9* d) {
+    const bool render = OnRenderThread();
+    if (render && g_shadersDirty.load(std::memory_order_relaxed) && g_shadersDirty.exchange(false)) g_boundPsKnown = g_boundVsKnown = false;
+    if (render) TakeBoundDevice(d);
+    if (render && g_boundPsKnown && PerfToggles::FollowBoundShaders.load(std::memory_order_relaxed)) return g_boundPs;
+    IDirect3DPixelShader9* s = nullptr;
+    if (FAILED(d->GetPixelShader(&s))) s = nullptr;
+    if (s) s->Release(); // the device keeps it alive
+    if (render) g_boundPs = s, g_boundPsKnown = true;
+    return s;
+}
+
+IDirect3DVertexShader9* BoundVertexShader(IDirect3DDevice9* d) {
+    const bool render = OnRenderThread();
+    if (render && g_shadersDirty.load(std::memory_order_relaxed) && g_shadersDirty.exchange(false)) g_boundPsKnown = g_boundVsKnown = false;
+    if (render) TakeBoundDevice(d);
+    if (render && g_boundVsKnown && PerfToggles::FollowBoundShaders.load(std::memory_order_relaxed)) return g_boundVs;
+    IDirect3DVertexShader9* s = nullptr;
+    if (FAILED(d->GetVertexShader(&s))) s = nullptr;
+    if (s) s->Release();
+    if (render) g_boundVs = s, g_boundVsKnown = true;
+    return s;
+}
+
+void ShaderStateChanged() { ForgetBoundShaders(); }
 HRESULT CallOriginalSetTexture(IDirect3DDevice9* d, DWORD st, IDirect3DBaseTexture9* t) {
     ++t_origCalls[kOrigSTex];
     return o_stex ? o_stex(d, st, t) : d->SetTexture(st, t);

@@ -112,6 +112,9 @@ void GroupLabel(const char* text);
 // IconId::Info and the default muted colour, warnings IconId::TriangleAlert and VioletTheme::kWarning, errors
 // IconId::TriangleAlert and VioletTheme::kError. The box is one item: hover it for a Tooltip.
 void IconNote(IconId icon, const char* text, unsigned rgb = 0x8B8C96);
+// Short read-only facts side by side (one under the other when narrow): each a small muted label over its value, both
+// translated. Not a setting row: hidden in the search results like notes
+void FactRow(const char* const* labels, const char* const* values, int count);
 // A small vertical gap
 void Gap(float units = 4.0f);
 
@@ -252,6 +255,7 @@ struct HeaderExtra {
     bool held = false; // set by CardHeader
     const char* badge = nullptr; // optional warning-colour chip immediately left of the header switch
     const char* badgeTooltip = nullptr;
+    const char* chipTooltip = nullptr; // the cost chip's tooltip (null: kCostChipTooltip)
 };
 // Tooltip of the performance chips
 inline constexpr const char* kCostChipTooltip = "Measured cost on your GPU per frame";

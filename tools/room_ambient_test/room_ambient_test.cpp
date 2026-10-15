@@ -82,6 +82,11 @@ int main() {
     check(EditHoldOutcome(3, false, 2500, 2500, false) == 2, "timeout 2.5 s after the latest edit");
     check(EditHoldOutcome(3, false, 600, 4000, false) == 2, "timeout 4 s after the first edit");
     check(EditHoldOutcome(0, false, 5000, 9000, true) == 0, "never released during a drag");
+    check(EditHoldOutcomeTogether(1, false, 2600, 4100, false, 6000) == 0, "all floors together: a pending room waits past the old 2.5 s / 4 s bounds");
+    check(EditHoldOutcomeTogether(0, false, 300, 300, false, 6000) == 1, "all floors together: released once every room is solved");
+    check(EditHoldOutcomeTogether(2, false, 900, 6000, false, 6000) == 2, "all floors together: bounded timeout");
+    check(EditHoldOutcomeTogether(0, false, 9000, 9000, true, 6000) == 0, "all floors together: never during a drag");
+    check(EditHoldOutcomeTogether(0, false, 100, 100, false, 6000) == 0, "all floors together: the first marks come first");
     check(GatherAfterChange(1001, 1000), "gather started after final switch can be retained");
     check(!GatherAfterChange(999, 1000), "gather started before switch cannot be retained");
     check(!GatherAfterChange(1000, 1000), "same millisecond is ambiguous and requeues");

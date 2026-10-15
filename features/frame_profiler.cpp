@@ -275,6 +275,7 @@ enum Cat : int {
     kFileFlush,
     kRefPackRead,
     kLampRefresh, // mod time: Night Lighting's lamp list refresh (FrameProfiler::ModTime::LampRefresh)
+    kReissuedDraw, // the driver's time for a draw Night Lighting re-issued, inside "D3D hooks (mod)" (FrameProfiler::ModTime::ReissuedDraw)
     // counters (research\perf2\plan.md section 8): timed on every thread, with per-bucket calls, longest call and an extra count
     kResLookup,
     kScenePending,
@@ -316,7 +317,8 @@ const CatInfo kCats[kCatCount] = {
     {"Present (driver)", "IDirect3DDevice9::Present itself (DXVK): submission, GPU back-pressure and vsync wait. High = GPU or vsync bound."},
     {"Frame limiter", "After Present in FUN_00EC9F00: the Smooth Patch frame limiter, or the game's own ~30 ms sleep while the window is inactive."},
     {"D3D hooks (mod)", "Time inside the D3D9 hook registry: every outermost dispatch of the draw, state and resource-creation chains (all Apex modules' "
-                        "callbacks, also when one skips the game's call; a draw Night Lighting replaces is re-issued inside it, driver call included). Present hooks are separate."},
+                        "callbacks, also when one skips the game's call; a draw Night Lighting replaces is re-issued inside it, its driver call booked as \"Re-issued draw (driver)\"). "
+                        "Sampled: one outermost dispatch in 16 is timed and counted 16 times. Present hooks are separate."},
     {"Lot LOD scoring", "FUN_00C6C290 (from WorldManager::Update): scores the lots around the camera and requests detailed view or demotion."},
     {"Lot detail request", "FUN_00AC20E0: sets a lot's detailed-view flag and posts Lot::AddLotObjectsToScene (run inline when posted from its own thread)."},
     {"Lot renderer update", "FUN_00AEB2E0: per-lot renderer update; drives the lot load state machine."},
@@ -344,6 +346,8 @@ const CatInfo kCats[kCatCount] = {
     {"RefPack read", "RefPack stream read + decompression (FUN_004EC010) on the render thread."},
     {"Lamp refresh (mod)", "Night Lighting's lamp list refresh, every 20 frames inside its Present hook (lot_light_bridge.cpp OnPresent): light enumeration, the "
                            "lit outdoor lamps for roofs / water / objects and the lot lamp change tracking. Part of the mod time."},
+    {"Re-issued draw (driver)", "The driver call of a draw Night Lighting replaced and re-issued (lot_light_bridge.cpp), taken out of \"D3D hooks (mod)\": the game "
+                                "would have paid it for its own call. Sampled with the registry's dispatches (one in 16, scaled)."},
     {"Resource lookup", "ResourceMgr::FindProvider (FUN_004AFFC0, through its two vtable slots): which package holds a resource key. It asks every registered package "
                         "in turn (two critical sections and a hash probe each; about 290 packages with the user's mods). Materials, async-load finalize jobs, CAS "
                         "and lot loading go through it. All threads."},
@@ -456,6 +460,8 @@ struct Frame {
     uint8_t flags;
 };
 
+enum : uint8_t { kScaleRoot = 8 }; // FrameFlags: a sampled frame whose time (and that of every frame inside it) is booked x scale
+
 struct alignas(64) ThreadSlot {
     std::atomic<DWORD> tid{0};
     // written by the owning thread only (load + store, no locked instruction), read at frame boundaries
@@ -466,6 +472,7 @@ struct alignas(64) ThreadSlot {
     // owner only
     Frame stack[kMaxDepth]{};
     int depth = 0;
+    uint32_t scale = 1; // inside a sampled frame (kScaleRoot): the sample's weight, else 1
     int open[kCatCount]{};
     uint32_t presentFnExits = 0;
     uint64_t lastPresentFnExit = 0;
@@ -505,6 +512,7 @@ inline void Add32(std::atomic<uint32_t>& a, uint32_t v) {
 inline void Discard(ThreadSlot* s) {
     Frame& f = s->stack[--s->depth];
     s->open[f.cat]--;
+    if (f.flags & kScaleRoot) s->scale = 1;
 }
 
 // Drops registry dispatches left open by a hook that returned Skip / Block: their frame lies at the same or a
@@ -542,13 +550,18 @@ inline void Pop(ThreadSlot* s, int idx, const void* sp, uint64_t end, uint64_t c
     const uint64_t inclT = end > f.start ? end - f.start : 0;
     const uint64_t rest = inclT > f.child ? inclT - f.child : 0;
     if (carve > rest) carve = rest;
-    Add64(s->excl[f.cat], rest - carve);
-    if (carve) Add64(s->excl[carveCat], carve);
-    if (f.flags & kOuter) Add64(s->incl[f.cat], inclT);
-    Add32(s->calls[f.cat], 1);
+    // a sampled frame and the frames inside it stand for `scale` calls (BeginModTimeSampled); its parent, outside the
+    // sample, loses the scaled time, while frames inside it pass their real time to the sampled frame
+    const uint32_t k = s->scale;
+    Add64(s->excl[f.cat], (rest - carve) * k);
+    if (carve) Add64(s->excl[carveCat], carve * k);
+    if (f.flags & kOuter) Add64(s->incl[f.cat], inclT * k);
+    Add32(s->calls[f.cat], k);
     s->open[f.cat]--;
     s->depth = idx;
-    if (idx > 0) s->stack[idx - 1].child += inclT;
+    const bool root = (f.flags & kScaleRoot) != 0;
+    if (root) s->scale = 1;
+    if (idx > 0) s->stack[idx - 1].child += root ? inclT * k : inclT;
     if (inclOut) *inclOut = inclT;
     if (selfOut) *selfOut = rest - carve;
 }
@@ -3343,6 +3356,7 @@ void RegisterD3DHooks() {
         EndDispatch(&ctx);
         return HookAction::Continue;
     }, end);
+    ObserveReissuedDraws(kHookName); // counts every draw, the re-issued ones too (as before)
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext&, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT primCount) {
         OnDrawStart(true, primCount);
         return HookAction::Continue;
@@ -4978,7 +4992,18 @@ int BeginModTime(ModTime what, const void* key) {
     if (!g_enabled.load(std::memory_order_relaxed)) return -1;
     ThreadSlot* s = GetSlot();
     if (!s) return -1;
-    return Push(s, what == ModTime::LampRefresh ? kLampRefresh : kModD3DHooks, key, 0);
+    const int cat = what == ModTime::LampRefresh ? kLampRefresh : what == ModTime::ReissuedDraw ? kReissuedDraw : kModD3DHooks;
+    return Push(s, cat, key, 0);
+}
+
+int BeginModTimeSampled(ModTime what, const void* key, uint32_t scale) {
+    if (!g_enabled.load(std::memory_order_relaxed)) return -1;
+    ThreadSlot* s = GetSlot();
+    if (!s || s->scale != 1 || scale < 1) return -1; // no sample inside a sample
+    const int cat = what == ModTime::LampRefresh ? kLampRefresh : what == ModTime::ReissuedDraw ? kReissuedDraw : kModD3DHooks;
+    const int idx = Push(s, cat, key, kScaleRoot);
+    if (idx >= 0) s->scale = scale;
+    return idx;
 }
 
 void EndModTime(int token, const void* key) {
@@ -5036,6 +5061,7 @@ void AddRegistryHookTime(const std::string&, uint64_t) {}
 bool PresentHookTimingActive() { return false; }
 bool ModTimeActive() { return false; }
 int BeginModTime(ModTime, const void*) { return -1; }
+int BeginModTimeSampled(ModTime, const void*, uint32_t) { return -1; }
 void EndModTime(int, const void*) {}
 } // namespace FrameProfiler
 #endif

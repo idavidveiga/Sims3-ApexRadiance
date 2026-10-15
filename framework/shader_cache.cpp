@@ -8,6 +8,7 @@
 #include "apex_log.h"
 #include "hook_guard.h"
 #include "apex_paths.h"
+#include "perf_toggles.h"
 #include <windows.h>
 #include <d3dcompiler.h>
 #include <condition_variable>
@@ -38,6 +39,7 @@ struct Job {
     bool fromDisk = false; // its bytecode came from the disk cache (not compiled this session)
 };
 
+std::atomic<long> g_jobsAdded{0}, g_allDoneAt{-1};
 struct Registry {
     std::mutex m;
     std::condition_variable cv;
@@ -400,6 +402,7 @@ Id Add(Desc desc) {
     job->key = KeyOf(job->d);
     if (r.started) TakeFromDiskLocked(r, *job);
     r.jobs.push_back(std::move(job));
+    g_jobsAdded.fetch_add(1, std::memory_order_release); // (PrecompileComplete looks again)
     if (r.started && !r.running && !r.stop && r.jobs.back()->state == Job::Queued) StartLocked(r); // added after the precompile finished: compile it too
     return static_cast<Id>(r.jobs.size() - 1);
 }
@@ -421,11 +424,15 @@ void Start() {
 }
 
 bool PrecompileComplete() {
+    // (called on every draw: once every job is done, the answer is kept until a job is added; 14/10, 150-400 us a frame)
+    const long added = g_jobsAdded.load(std::memory_order_acquire);
+    if (g_allDoneAt.load(std::memory_order_acquire) == added && PerfToggles::PrecompileAnswerCache.load(std::memory_order_relaxed)) return true;
     Registry& r = R();
     std::unique_lock<std::mutex> lk(r.m, std::try_to_lock);
     if (!lk.owns_lock() || !r.started) return false;
     for (const auto& j : r.jobs)
         if (j->state != Job::Done) return false;
+    g_allDoneAt.store(added, std::memory_order_release);
     return true;
 }
 

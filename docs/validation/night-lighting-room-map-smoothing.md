@@ -1,0 +1,44 @@
+# Smooth light maps: validation
+
+Smooth light maps must read every room-lit shader's map as a B-spline and nothing else, keep each wall's taps in its own
+atlas block, fall back to the game's shader where the device cannot run the copy, dither texels without changing their mean
+or shimmering, and fade a lamp at the light cut without lighting anything the game would not. The feature is described in
+[features/night-lighting/room-map-smoothing.md](../features/night-lighting/room-map-smoothing.md).
+
+## Automated tests
+
+| Harness | Covers | Run | Needs |
+|---|---|---|---|
+| `tools/room_map_smooth_check/` | The pattern over every precomp pixel shader (only room-lit techniques match; every InteriorWall, every InteriorFloor with a room map); each copy disassembles, has four taps for the read and is created by native D3D9 when the device's `PS20Caps` allow it; the paired vertex shaders' uv scale; GPU pixels of a synthetic room-lit shader against a CPU B-spline with and without the wall band clamp; captured shaders; the dither offset (range, mean, same texel same offset) | `run.ps1 -Precomp <Shaders_Win32.precomp> [-Captures <folder>]` | the game's precomp (read-only), a D3D9 device |
+| `tools/i18n_check/` | The new row's translations | see the file header | none |
+
+## Latest results
+
+| Date | Commit | Harness | Result | Backend |
+|---|---|---|---|---|
+| 2026-10-14 | `release/2.13.0` (`2aefeb7`) | `tools/room_map_smooth_check -Precomp` (the game's Shaders_Win32.precomp) | 957 checks, 0 failures; pixels within 1 LSB of the CPU B-spline | native D3D9 |
+| 2026-10-14 | feature/v2.12.3-rt | `tools/room_map_smooth_check` | 957 checks, 0 failures | native D3D9 |
+| 2026-10-13 | smooth light maps commits on release/2.12.4-arriscada | `tools/room_map_smooth_check` | 972 checks, 0 failures: 186 of 8016 precomp pixel shaders match (InteriorFloor 48/58, InteriorWall 21/21, InteriorWallWith\* 33/33, FloorWith\* 104/104, Hideable 40/42, FloorTileCeiling 12/40; ExteriorWall, Ceiling, TerrainLight_Indoor\* 0), all 186 created natively; 24 paired vertex shaders (9 walls, 15 floors); pixels within 1 LSB of the CPU B-spline in both modes; 3 of 64 captured pixel shaders match | native D3D9 (PS 3.0, PS20Caps 32 temps, 512 slots) |
+
+## In-game test plan
+
+1. A room at night with a ceiling lamp, *Smooth light maps* off then on. **Expected:** on, the floor and walls show no
+   texel steps or diamond pattern; shadow edges of walls and furniture keep their place.
+2. A lamp's circle on a large floor. **Expected:** no ring where the light ends; a fine grain at most, not visible at a
+   normal distance.
+3. Walls of two rooms stored above each other in the atlas (a light wall next to a dark one). **Expected:** no light of
+   one at the top or bottom of the other.
+4. Developer > Night Lighting status, *Smooth light maps* line. **Expected:** wall and floor draws counting; "caps",
+   "unknown vertex shader" and "wall blocks off the grid" at 0; dither texels counting; soft cut points counting.
+5. A lamp switched on and off twice. **Expected:** the room looks the same after each relight (no shimmer).
+
+## Confirmed in game
+
+- Nothing yet.
+
+## Open checks
+
+- *Unverified:* every wall block starts on the 3n + 1 grid (the developer status counts the pieces off it).
+- *Unverified:* the light between wall blocks packed side by side and at the edge of a room's floor area (1/6 bleed).
+- *Unverified:* the game binds the room maps with the bilinear filter (a point filter keeps the game's read; counted).
+- *Unverified:* a device with ps_2_x but without arbitrary swizzle or 32 temps (the copy is not used; counted as caps).

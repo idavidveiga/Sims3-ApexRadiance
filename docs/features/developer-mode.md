@@ -9,7 +9,7 @@ Report a problem tools stay available to every player in both modes.
 
 | | |
 |---|---|
-| Availability | Released in 2.5.5 |
+| Availability | Released in 2.5.5. Tester tab: Developer mode, since 2.13.0 |
 | Default | Off (`[ui] developer_mode = false`) |
 | Menu | Settings > Menu > Settings and maintenance > Enable developer mode. Developer page in the sidebar (System group) while active |
 | Configuration | `[ui] developer_mode` and the `[developer]` table in `ApexRadiance.toml`; optional Developer part in profiles |
@@ -51,7 +51,7 @@ The `[developer]` section holds:
 | Key | Content |
 |---|---|
 | `enabled` | The requested mode |
-| `controls` | `DeveloperSettings::Capture()`: tables `fast_dxt`, `fast_refpack`, `fast_cas`, `resource_cache`, `object_index`, `scene_budget`, `lot_lighting_motion` (verification frequencies, texture workers, scene-node budgets, wall-shading wait), plus `keep_room_light`, `story_samples`, `false_color` |
+| `controls` | `DeveloperSettings::Capture()`: tables `fast_dxt`, `fast_refpack`, `fast_cas`, `resource_cache`, `object_index`, `scene_budget`, `lot_lighting_motion`, `tester` (the [Tester tab](dev-tools/tester.md) switches; verification frequencies, texture workers, scene-node budgets, wall-shading wait), plus `keep_room_light`, `story_samples`, `false_color` |
 | `patches` | Each feature's preferences without its `enabled` flag (Frame Capture excluded) |
 | `frame_profiler` | Profiler tuning and sampling preferences, always with `enabled = false` |
 
@@ -98,7 +98,7 @@ and defaults.
 
 ### Developer page
 
-Five tabs. The Developer page shows the existing game diagnostics only, without example values.
+Six tabs. The Developer page shows the existing game diagnostics only, without example values.
 
 | Tab | Cards |
 |---|---|
@@ -107,6 +107,7 @@ Five tabs. The Developer page shows the existing game diagnostics only, without 
 | Captures | Capture session; Save a capture; Capture two drawn frames ([Frame Capture](dev-tools/frame-capture.md)); Your captures |
 | Visual effects | Edge smoothing, Depth blur, Ambient shadows, Gradient correction coverage, Image adjustments (debug views and readouts) |
 | Translations | Review translations (language, missing count, Clear, Write the list to the log); Missing text (filter); Placeholder checks |
+| Tester | Frame time (readout, Restore defaults: every switch on, Lamp lighting Instant); Lamp light features; Fixes; Soft light; While a lamp is dragged (with the two Classic switches); Per-frame work ([Tester tab](dev-tools/tester.md)). Switches that share a player option are the option itself or a part inside it, on by default ([which](dev-tools/tester.md#player-options-and-tester-switches)) |
 
 Developer switches are excluded from the menu's undo history (`SetChangeReporting(false)`).
 

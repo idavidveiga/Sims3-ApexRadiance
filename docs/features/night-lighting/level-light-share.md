@@ -10,9 +10,9 @@ their own story. Part of [Night Lighting](README.md).
 
 | | |
 |---|---|
-| Availability | Released in 2.12.3: placed floors of balconies and upper stories block a lamp below them (walls, floors, windows, objects, fences) and *Buildings block light on objects* (was *Walls block light on objects*). Released in 2.12.1: lighting corrections.  Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together, and the lit story's wall test from where an outdoor lamp's ray enters it (upper half walls): Released in 2.7.0 |
-| Default | On (all six switches) |
-| Menu | Lighting > Stories (*Seamless walls between floors* and *Every floor in full detail* under Advanced > *Floor detail*) |
+| Availability | Released in 2.13.0: outdoor light through openings into roofed rooms (garden lamps of the story below included), indoor light through openings, *Doors block light*, lamp light through openings in the outside walls' copies (objects, fences, windows, lot ground) and room 0's own wall test, *Walls shade lamp light near the ground*, *Buildings block lamp light on trees and objects* (was *Buildings block light on objects*), *Shadow softness* (penumbra), walls ending at a floor above (colonnades on a foundation). Released in 2.12.3: placed floors of balconies and upper stories block a lamp below them (walls, floors, windows, objects, fences) and *Buildings block light on objects* (was *Walls block light on objects*). Released in 2.12.1: lighting corrections.  Outdoor and indoor light between stories: released (present since 2.1.0, the first version in this repository). Indoor light through openings across more than one floor, the raised-room wall veto, structure-change refresh and the *Wall seams.csv* recording: Released in 2.6.0. Walls block light on floors and objects, indoor objects lit by lamps of another story and an atrium's stories changing together, and the lit story's wall test from where an outdoor lamp's ray enters it (upper half walls): Released in 2.7.0 |
+| Default | On (every switch except *Light through doors and windows*, which is off) |
+| Menu | Lighting > Stories (*Seamless walls between floors* and *Every floor in full detail* under Advanced > *Floor detail*); Lighting > Buildings > Rooms at Night, group LAMP LIGHT (*Outdoor light through openings*, *Indoor light through openings*, *Doors block light*, *Shadow softness*, *Smooth light maps*); Lighting > Objects (*Buildings block lamp light on trees and objects*); Lighting > Ground (*Walls shade lamp light near the ground*) |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
 | Source | [`features/level_light_share.cpp`](../../../features/level_light_share.cpp), [`features/lamp_visibility.h`](../../../features/lamp_visibility.h), [`features/lamp_mark_filter.cpp`](../../../features/lamp_mark_filter.cpp), [`features/room_ambient_policy.h`](../../../features/room_ambient_policy.h), driven by [`patches/night_terrain_relight_patch.cpp`](../../../patches/night_terrain_relight_patch.cpp) |
 
@@ -54,6 +54,15 @@ test. The light solve itself, lamp ranges and attenuation are the game's.
    the floor line as one wall.
 7. **Updates.** Lamp changes, floor edits, wall or roof changes, lot rebuilds and world loads send exactly the affected
    rooms to gather again, without loops and without re-solving rooms whose lamps did not change.
+8. **Outdoor light through openings** (2.13.0). A roofed room with a door, window or arch to the outside also takes the
+   outdoor lamps of room 0 of its own story that see one of those openings. Every point of the room is lit by such a lamp
+   only through the openings' holes, past every wall of the story and under the room's own roof; the room's own lamps
+   keep the game's tests. A room with no known opening takes none.
+9. **Indoor light through openings** (2.13.0). A lit lamp of a roofed room shines through its arches and windows (doors
+   while doors do not block light) onto the outside walls, the outdoor floors and the lot ground of its story (and of the
+   story below, for a house on a foundation), onto its roofless yards, onto the objects and fences outside, and into a
+   roofed room next door through an opening between them. Each point is lit only through the opening's hole and past every
+   wall of the story; one opening only.
 
 ## Settings
 
@@ -63,12 +72,18 @@ test. The light solve itself, lamp ranges and attenuation are the game's.
 | Indoor light between floors | `luzInternaEntreAndares` | bool | on | | Indoor lamps light other stories through openings (part 4). A change sends every lot's rooms near openings to gather again |
 | Walls block light on floors | `paredesBloqueiamLuzNosPisos` | bool | on | | Decks and yards without a roof stay dark behind a wall: the outdoor floor texels of stories >= 1 store in their map alpha the share of room 0's lamp light that walls block (normal wrapped, 2D and cross-story wall tests); the floor atlas shader takes atlas x (1 - alpha). Steam bytes at 0x006A333B. A change relights every room |
 | Light through doors and windows (Experimental) | `luzRealistaPorAberturas` | bool | off (on in a build with `APEX_REALISTIC_OPENINGS`) | | A walled roofless room (a yard, a light well, a deck behind a half wall) also takes the outdoor lamps of its own story that can reach it. Each is tested per point against every wall of the story (`StoryGrid`, from the 1 m lighting tiles): through the doors, windows and arches noted from the game's wall cutout posts (0x00B0D866 / 0x00B0DD15; default sill and head per kind), over walls lower than the lamp (drawn tops of walls taller than a story), and under no roof; the game's own 2D wall test of those lamps is skipped (`GameWallTest`). A yard closed all round takes none. Snow on floors takes the walls' mask too. Needs *Walls block light on floors*. A change relights every room |
-| Buildings block light on objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Outdoor objects, windows and fences drop a per-pixel lamp when an outside wall of the lot, or a placed floor of an upper story above a lamp below them, stands between the lamp and them (a lamp seen past a slab's edge is dimmed), and their ground light is scaled by the share of the nearby lamps' light that is not blocked (`LampVisibility`, see *Walls block light outdoors*) |
+| Rooms at Night > Outdoor light through openings | `luzDeForaPelasAberturas` | bool | on | | A roofed room (id > 0, `+0x18` clear) with an opening noted on its outline whose other side is room 0 or a roofless room takes the lamps of room 0 of its story that see one of those openings (part 8, *Outdoor light through openings into roofed rooms*). Each is tested per point against every wall of the story through the openings' holes and under the room's roof, with the game's own wall test of those lamps skipped; the room's objects take them too. A room with no known opening takes none. It also covers a roofed room on a foundation taking the garden lamps of the story below (Developer > Tester sub-part *Roofed rooms take lamps from the story below*, on). A change relights every room |
+| Rooms at Night > Doors block light | `portasBloqueiamLuz` | bool | on | | Doors and gates count as closed for lamp light, as the game keeps them closed except while their open animation plays; a cut of unknown kind counts as a door. Arches and windows (light through the glass) stay open. Every reader of the openings follows it: the story grids of the yards and the stories in between, the roofed rooms' doors (a roofed room whose only openings are doors takes no outdoor lamp), the outside walls' copies (objects, fences, windows, the ground shade, the object rigs) and room 0's wall test (*Openings of walls*, `PlaceGridOpenings`). Disabled while neither openings option is on. A change sends again only the stories with such a cut noted |
+| Rooms at Night > Indoor light through openings | `luzInternaPelasAberturas` | bool | on | | A lit lamp of a roofed room (id > 0, `+0x18` clear) lights room 0 and the roofless rooms of its story, and a roofed neighbour, through an opening on their outline into its room (part 9, *Indoor light through openings*): tested per point against every wall of the story through the opening's hole, the game's own wall test of it skipped; room 0 of the story below takes those shining out onto room 0 of the story above (a house on a foundation). The outdoor objects and fences take them as per-pixel lamps; a roofed neighbour's objects through their rigs. One opening only. A change relights every room |
+| Objects > Buildings block lamp light on trees and objects | `paredesBloqueiamLuzNosObjetos` | bool | on | | Outdoor objects, windows and fences drop a per-pixel lamp when an outside wall of the lot, or a placed floor of an upper story above a lamp below them, stands between the lamp and them (a lamp seen past a slab's edge is dimmed), and their ground light is scaled by the share of the nearby lamps' light that is not blocked (`LampVisibility`, see *Walls block light outdoors*); trees, bushes and rig objects behind a building take no garden lamp (Tester sub-part *Buildings block light on trees and objects*). Was *Stories > Buildings block light on objects* |
+| Ground > Walls shade lamp light near the ground | `paredesSombreiamOChao` | bool | on | | The lot's ground lamp shade (grass, paths, decks, curbs, stairs and low fences behind an outside wall; soft edges at wall ends and tops) from the same outside-wall copy (`GroundShadeOn`). Tester sub-parts *Walls shade ground and curbs* and *Soft ground shade* |
+| Rooms at Night > Shadow softness | `suavidadeDasSombras` | float | 0.15 | 0.02 .. 0.5 | A lamp's radius in metres (the game keeps no bulb or shade size): the penumbra of every edge the walls and slabs give lamp light (*Penumbra*). 0.02 keeps the 4 cm rim of earlier builds next to a perpendicular wall. Applied once the slider is let go; a change sends room 0, the roofless rooms and the roofed rooms with openings of every loaded lot (`SetShadowSoftness`), the object rigs and the ground shade, not every room |
 | Advanced > Seamless walls between floors | `paredesSemEmendaEntreAndares` | bool | on | | Wall samples at their drawn height and atrium walls blurred across the floor line (part 5). A change relights every room |
 | Advanced > Every floor in full detail | `todosOsAndaresEmDetalhe` | bool | on | | Every room of the played lot gets the top lighting detail on every story, so changing floors keeps the light. More solve work when entering a lot. A change relights every room |
 
-All seven are applied live (`LevelLightShare::Install`/`Uninstall`, `SetIndoor`, `SetWallAlign`, `SetAllFloors`,
-`SetObjectWalls`, `SetRealisticOpenings`) and reset to their defaults (on; *Light through doors and windows* off). There is no strength: borrowed lamps keep the game's weight. The module is installed only while Night
+All are applied live (`LevelLightShare::Install`/`Uninstall`, `SetIndoor`, `SetWallAlign`, `SetAllFloors`,
+`SetObjectWalls`, `SetRealisticOpenings`, `SetOutdoorThroughOpenings`, `SetDoorsBlockLight`, `SetIndoorThroughOpenings`) and reset to their defaults (on; *Light through
+doors and windows* off). There is no strength: borrowed lamps keep the game's weight. The module is installed only while Night
 Lighting is on. The *Lighting > Stories* card also hosts *Every-Story Ground Light* (`SplitLevelGroundLight`), a separate
 patch.
 
@@ -114,7 +129,6 @@ patch.
   thread, and the cost of that one-time gather at dawn on large lots.
 
 - Synchronized generation updates do not guarantee instantaneous map calculation; the native solve still has a cost.
-- Release cleanup has not yet received gameplay confirmation on the exact release artifact; see validation.
 
 - A balcony slab blocks only outdoor light going up (a lamp below it): light going down from a lamp on a balcony is not
   tested against slabs, as occluders are per story. The same holds for type-11 lights under the Split-Level fix. Slab
@@ -133,6 +147,25 @@ patch.
   light for a moment. The menu notes that changing floors forces the shown rooms to update.
 - The game's other basis-map readers (stairs, instanced objects drawn by game shaders) read the directional maps as
   the game builds them, without Apex's per-object cap.
+- Outdoor light through openings reaches a roofed room only through an opening on its own outline to room 0 or a
+  roofless room: a room behind another roofed room (light through two doors in a row) takes none. Only room 0's lamps of
+  the room's own story and of the story below go in (not those of roofless rooms, whose daytime curve in a roofed room's
+  solve is not applied, nor those of stories further down or above). A lamp whose bulb stands under the room's floor
+  plane (a post as tall as the foundation) lights the columns and walls inside, not the floor (the game weighs each lamp
+  by the texel's N.L). Openings take default shapes per kind, not the game's masks. With *Doors block light* on a door
+  is closed whether the Sim is walking through it or not (the open animation is not followed) and a glass door lets no
+  light through; off, a door is an open hole whether the door object is open or closed (the cut stays while the door
+  stands). A cut noted in an earlier load of the same lot (a save loaded again without that door) stays noted: the notes are not cleared when a save is loaded again.
+- Indoor light through openings goes through one opening only: a lamp two rooms away (through two arches in a row), or
+  light leaving through one opening and coming back in through another, is not taken. Only room 0 of the story below takes
+  the story above's lamps shining out (not its roofless rooms, not further stories). The lot ground and the story-0 outdoor
+  floors carry these lamps in story 0's room-0 map, which the lot pass and those floors' shaders multiply by the ground lamp
+  shade (one factor for the bake's lamps): next to an outdoor lamp the shade hides, the light from a window is dimmed as
+  much. Outdoor draws of room 0's maps take the draws' daytime factor (3% by day) for these lamps too. A lamp added to a
+  room's list counts in the game's normalisation of that room (its strongest lamp), as the other borrowed lamps do; a room
+  lit only by borrowed lamps gets no boost. The objects outside take such a lamp only below its story's floor where the
+  slab copy is known (*Buildings block lamp light on trees and objects*). Cost not measured in game: each lit texel of room 0 within a
+  lamp's range walks the grid once per such lamp.
 - Steam 1.67.2 only. The optional parts (detail boost, ambient merge, normalisation guard, directional-map guard,
   seamless walls) each install only when their bytes match and otherwise leave the game's behaviour.
 
@@ -284,8 +317,8 @@ walls and lit the lower side wall around the corner.
    balcony dark beside the lit wall next to it (in a recording, all 21 half-wall points were blocked by the game and
    passed by WallPass). A ray that comes up through a floor a player placed on that story or on a story in between (a
    deck, a balcony; `PlacedFloorAt`, not the bare `0x40000000` air key or never-built space) is blocked, also in batches
-   without the game's wall test; one passing beside or over a slab's edge keeps the share of a 0.3 m lantern the edge
-   leaves (`LampVis::SlabGate`, [`features/lamp_visibility.h`](../../../features/lamp_visibility.h)). Each story's plane
+   without the game's wall test; one passing beside or over a slab's edge keeps the share of the lamp's ball (*Shadow softness*, 0.15 m by default:
+   the 0.3 m lantern of earlier builds) the edge leaves (`LampVis::SlabGate`, [`features/lamp_visibility.h`](../../../features/lamp_visibility.h)). Each story's plane
    is its lowest floor; the lamp is the game's own head position.
    The soft mode (`+0x639` = 1, class 2) tests each wall's widened segment (`0x0069AA90` with the soft index, wall `+0x40`
    + `0x30`) and shades by where the ray crosses it (`0x0069A8C0`): a ray rising past a wall's end loses light without
@@ -488,6 +521,9 @@ half wall and the objects in them.
   (the texel's own solve weighs it by N.L; on floors more than 2 m over the lot base the atlas share of such lamps is
   removed separately). 0x006A333B (`cmp byte [ebx+18h],0; xorps xmm1,xmm1`, the load of `out[3]`) becomes a
   call that supplies it. The floor atlas shader takes `atlas x (1 - alpha)`. A change relights every room.
+  Story 0 is not masked here (`MaskedFloorRoom0` returns nothing below story 1): its room 0 also lights the outdoor floors
+  placed on the ground, with no wall test, but its map is the lot pass's lot map too. Those floors are shaded in their
+  shaders by the lot's ground lamp shade instead ([floors.md](floors.md)).
 - **Objects** (`paredesBloqueiamLuzNosObjetos`, `SetObjectWalls`, `WallBlocks`): room 0's outside walls of each story
   (the LightingWall list: centre line from `+0x110` and `+0xF0` behind the `+0x150` normal, 3 m high) are copied when
   that room is solved, on the light tree thread (`g_wallSnap`, per story manager). The render thread tests a
@@ -498,6 +534,257 @@ half wall and the objects in them.
   with room 0's walls (`CaptureStoryFloors`, `g_floorSnapGen`), and a lamp below the tested point loses what the floors
   of every loaded lot stop (`LampVis::SlabGate`, the room solve's rule): left out at 0, its colour scaled by the share
   left at a slab's edge (fences keep the largest share of their three points).
+  The same copy also serves the object rigs' gather from any thread (`LampVisibilityShared`: an immutable
+  copy published by `OnPresent` when the walls or slabs change, [objects-and-rigs.md](objects-and-rigs.md)) and the lamp shade
+  of lot ground (`OutsideWallsIn`, [lot-light-pass.md](lot-light-pass.md)). Since 2.13.0 each copied wall carries its
+  doors, windows, arches and half-wall cells (*Openings in the outside walls' copies* below).
+
+### Openings of walls (light through doors and windows)
+
+- **Capture** (installed with the module whatever the option, Steam bytes only): `Lot::AddWallAndFenceCutouts`
+  `0x00B0D460` and its removal `0x00B0D920` post message `0x06257EB4` for each wall cell an object cuts. The push of the
+  id at `0x00B0D866` / `0x00B0DD15` becomes a call of `CutAddThunk` / `CutRemoveThunk`, which note the payload (lot id
+  `+0x08/+0x0C`, edge key `+0x10` {x0, z0, story, x1, z1, story}, mask `+0x18`, all zero = closed again) with the
+  product's kind (`+0xD0`: door, window, gate, arch).
+- **Lot id:** a cut is filed under the post's own lot id (`g_cuts`, per lot id and story). That id is the posting lot's
+  `+0x48/+0x4C` (`0x00B0D792`), the one the game routes the message by (`0x00C52AA0`). A post with no lot id, with an
+  unreadable payload or with a key that is not one side edge of a cell is rejected. The lot's story manager
+  (`lot+0x23C` -> `0x00ADBCC0`) is read apart from the payload, for the notes only.
+- **Lookup:** a story's grid asks for the cuts under one of two ids (`CutLotFor`): the id of the lot that owns its story
+  manager (the story's own floor object, `LevelFor`, its owner lot `+0x214`, that lot's `+0x48/+0x4C`) or the manager's
+  own `+0x90/+0x94`, whichever some post carried (the owner lot's when both did). With neither the story has no opening
+  and its walls stay closed. In game the owner lot's id differed from the posts' on several lots (the owner lot
+  `3647CD2033346670` of the posts' `B1280029950F0CA0`), and the owner lot alone found no opening on any of their stories.
+- **Grids:** `StoryGrid` holds every wall of a story from its 1 m lighting tiles, with each noted cut placed on its edge
+  (`PlaceGridOpenings`, `OpeningDefaults`: sill and head per kind; the mask shapes are not read yet). Roofless rooms and the stories lit from
+  below build theirs as before. Since 2.13.0 room 0's gather of any story, 0 included, also builds the grid of a story
+  with openings noted (`RoomZeroOpenGrids`, with either openings option), and the stories whose openings change are built at the next gather
+  (`DrainWarmStories`). These grids stay in their own cache (`g_warmGrids`): the floor mask's visibility test
+  (`OutdoorFloorVisibility`) reads only the grids of the room paths; these serve the openings (roofed rooms, the outside walls' copies, room 0's wall test). A later request of
+  the same story takes the grid over without building it again.
+- **Doors block light** (`portasBloqueiamLuz`, 2.13.0, default on): `PlaceGridOpenings` counts each cut on a wall by kind
+  (`StoryGrid::kinds`) and leaves a door, a gate or a cut of unknown kind closed (`CutOpensForLamps`): the wall stays
+  whole there for every reader of the grid. A window or an arch keeps its hole; a window beside a closed door keeps its
+  jamb on that side. The kinds come from the product's `+0xD0` (`CutKind`: `0x100` arch, `0x2` door, `0x8` gate, `0x4`
+  window); in the game logs of several lots every post had one of `00000002`, `80000002`, `00000004` or `00000100`, none of
+  unknown kind. The state is part of a grid's stamp (`StoryGrid::doorsBlock`) and of the outside walls' copy
+  (`StoryWallCopy::doorsBlock`). A change (`SetDoorsBlockLight`) gives every story with such a cut a new cut generation
+  and sends it as a story whose openings changed (`RequeueCutStories`: its roofless rooms and its room 0; then
+  `DrainWarmStories`: its grid, its walls' copy, the roofed rooms whose doors changed); at most 512 stories, no other
+  room. The game opens a door only during its animation; a door seen open at that moment, and glass doors, are not
+  modelled: real-time door state belongs to per-pixel lighting on the GPU, and a glass door would need the cutout mask's
+  shape (no resource read path yet).
+- **Grids built too early:** a grid built while its lot streams in can have no wall edge yet (in game: stories 1..4
+  of `B1280029950F0CA0` with 79 / 98 / 38 / 8 noted cuts and no wall, and no room of theirs gathered again). A grid with
+  no wall edge on a story with noted cuts or roofed tiles is not kept (`NoteGridReadiness`); the rooms on its tiles (at
+  most 64) gather again every second, at most 12 times (`RequeueGridRetries`, render thread), and their stories' openings
+  are looked at again on the light tree thread. The first grid with walls is logged (`[YardGrid] ... rebuilt with N wall
+  edges and M openings after K retries`); after 12 tries the grid is kept as it is.
+- **Shapes:** each opening takes its kind's sill, head (5 heights across it, flat) and jambs (`OpeningDefaults`). A
+  cache of shapes per cutout mask (`MaskShapeFor`, the post's TGI and piece) and the scan of a mask's alpha
+  (`WallOpenings::ShapeFromAlpha`: span, sill and the head's curve) are in place, but nothing fills the cache: no path in
+  the codebase reads a resource's bytes (the resource cache only answers which package holds a key), and the record and
+  stream layouts such a read needs are not verified, so every opening keeps its kind's defaults.
+- **Sends:** the stories whose openings changed send their roofless rooms once their posts are quiet for 250 ms
+  (`RequeueCutStories`), matching each loaded lot by its managers' id, else by its owner lot's id. With *Outdoor light
+  through openings* the same stories go to the light tree thread (`DrainWarmStories` -> `RequeueRoofedDoors`).
+- **Jambs:** an opening's side with no jamb (`u0 = 0` / `u1 = 1`: the next cell of a wide door, window or arch is cut
+  too) has no soft rim since 2.13.0 (`GridEdgePass`); the rim there left a half-dark line where a ray crossed the seam
+  between two cells of one opening (found by the offline check `tools/roofed_openings_test`).
+
+### Openings in the outside walls' copies
+
+Since 2.13.0, with either *Light through doors and windows* or *Outdoor light through openings* active. The copy of room 0's
+outside walls (`CaptureStoryWalls`, *Walls block light outdoors* above) treated every wall as solid from its base to 3 m,
+so a lamp lit nothing past a door, window or arch: a garden post inside an arcade left the grass, the columns and the
+fences outside dark except where a ray slipped past the end of a wall (hard lit rectangles in front of the arcade).
+
+- **Patches** (`StoreStoryWalls` -> `FillWallPatches`, light tree thread): each copied wall is laid on its story grid
+  (its line `x = X` or `z = Z` in lot space, within 15 cm; a diagonal wall keeps none). Per 1 m cell with a grid wall, a
+  patch (`WallOpenings::Patch`, [`wall_openings.h`](../../../features/wall_openings.h)) where the grid's top of that cell
+  is lower than the copy's (a half wall: its base + 1 m; a drawn top under the copy's) or the cell holds an opening (its
+  span between the jambs, sill and head, from the edge's base, in world y). A cell with no grid wall, a story with no
+  grid or no wall read yet, and a diagonal wall keep the copy's whole wall (fail closed). The patches are taken again
+  when the walls, the story's cuts (`CopyStoryCuts` generation), the drawn tops (`g_wallTopGen`) or the option change, a
+  story with no grid tries again every 2 s, and a story whose openings changed takes them from the light tree thread
+  (`DrainWarmStories` -> `RefreshStoryWallPatches`); any change moves `g_wallSnapGen`.
+- **Test** (`WallOpenings::CrossPass`): a ray crossing a wall between its base and top passes over a patch's own top, and
+  through its opening with the grid walk's penumbra (*Penumbra*: the lamp's spot at the crossing, spread over the patches
+  beside, so two cut cells side by side leave no seam; not past the copy's ends). Elsewhere it is stopped as before.
+- **Users:** objects, fences and windows on the render thread (`WallPass` in `LampVisibility`; the share is multiplied
+  into the slab gate's), the object rigs' copy (`LampVisibilityShared`, the published `VisSnap` carries the patches; a
+  wall listed in several 4 m cells is counted once, in the cell of its crossing point), and the ground lamp shade
+  (`OutsideWallsIn` hands the patches to `GroundShadow::ShadeJob`, which keeps a share per texel instead of a blocked
+  bit, [lot-light-pass.md](lot-light-pass.md)).
+- **Room 0's own wall test** (`GameWallTest` -> `OpenWallRetest`): room 0 of a story with openings on its walls keeps its
+  story's grid and the one above (`RoomZeroOpenGrids`, at its gather). When the game's test shades a ray (blocked or
+  partly) the ray is walked on those grids (`GridPassImpl`: every wall at its height, the roofed quadrants); only when
+  the walk passed through an opening does its share replace the game's, if larger. The walls behind an arch take a
+  lamp's light as the ground and objects do.
+- **Diagnostics:** the status line *outside walls' openings* (stories copied, with a grid, cells with an opening or a
+  lower top, render and rig tests through an opening, room 0's shaded rays walked and lit); the lot pass status counts
+  the ground shade's tests through a wall's patches; developer mode logs `[WallCopy] lot L story S: N outside walls
+  copied ..., C cells with an opening and H lower than the copy` when a story's copy changes; F8 lists the stories, the
+  first 40 walls with an opening (span, sill, head, jambs) and the last 24 lamp tests through an opening (lamp, point,
+  share, wall, where it crossed); the Full capture prints every copied wall with its patches.
+
+### Outdoor light through openings into roofed rooms
+
+Option `luzDeForaPelasAberturas` (`SetOutdoorThroughOpenings`, 2.13.0). Active (`RoofedOpeningsOn`) when on, installed,
+with the room update hooks, `GameWallTest`, the wrapped light evaluation and the cutout capture (`g_cutReady`; without
+it no opening is known and nothing is taken). It does not need *Walls block light on floors*: a roofed room has no
+floor mask.
+
+- **Gather** (`ShareRoofedOpenings`, from `OutdoorGather` after the indoor and roofless shares, light tree thread): for a
+  roofed room (id > 0, `+0x18` clear) of stories 0..7 whose story has cuts noted, its story's grid (and the story
+  above's) is taken from the openings cache (`EnsureStoryGrid(mgr, warm = true)`: `g_grids` stays the yards' and the
+  floor mask's). Its doors (`RoofedDoors`) are the edges of its outline with an opening whose other side (the next tile's
+  quadrant) is room 0 or a roofless room; with none, nothing is taken and its record and copies go. The story's registry
+  is walked as `GatherSameStory` walks it, room 0's entries only: not a window light (types 7, 8), a wrapped class
+  (`EvalWrapped`), an outdoor lamp (`OutdoorLamp`: type 11, or `+0x100 & 0x04` with room `+0x08 == 0`, so the daytime
+  curve applies to it in the room's solve), not already in the list, not a lamp of another story the indoor share took;
+  within its range (`LampReach`, `+0x130`, else 16 m) of the outline's box and of a door; and seeing a door's hole
+  (`DoorSeen`: 3 x 3 points between the jambs, from sill to head, on the edge line, each ray through `GridPassImpl` on the
+  story's grid and the story above's). Then the game's own checks (`GameTakesLight`); a lamp that sees a door but is off
+  is noted for the sends, not taken. At most 64 lamps. The room's record (`RoomInfo`, `openings = true`, the lamps in
+  `same`, the grids) is written before the first lamp goes in with the game's adder `FUN_006a2060`, story 0's room-0
+  lamps twice (their weight there, as for the yards). The indoor share's record of the same gather is kept (`indoor`
+  stays true: the room's own lamps and the lamps of other stories keep their tests).
+- **The story below's lamps** (2.13.0): a house on a foundation has its ground floor on story 1 and its garden posts on
+  story 0 (in game, lot `B1280029950F0CA0`: the colonnade rooms of story 1 found 13 to 16 doors each and
+  considered no lamp). A roofed room of story S >= 1 also walks room 0's entries of story S - 1, with the same checks;
+  `DoorSeen` then also tests the walls of story S - 1 (its grid from the openings cache; none readable: no such lamp is
+  taken). Those lamps are listed in `RoomInfo::lower` with that grid (`below`).
+- **Per point** (`LightEvalApex`): `RoofedDay` first (the solve's `SolveLampDay` factor, as for every outdoor lamp of a
+  roofed room); on wall texels with *Realistic lamp reach* the outside walls' distance law (`LampReach::Share`), so a wall
+  just inside the arch and the outside wall next to it fall off alike; then `YardShadow` -> `YardPass`: the walls of the
+  story at the ray's height, through the openings' holes (jambs, sill, head), the roofed quadrants' ceiling (floor + 3 m;
+  a ray over a wall's top meets the room's own roof), the story above for a ray that high. The game's own wall test of
+  that lamp is skipped (`GameWallTest`). A lamp of the story below (`OpenLampPass`) also passes the walls of its story
+  and the floors of the room's story (`OutdoorEntry`'s slab gate: a lamp under a deck or a floor of the room's story stays
+  out). Directional maps (`BasisLightHook`): the same test at the basis sample, the contribution scaled by it (0: left
+  out), then the day factor. Normalisation (`RoomNormHook`): a room whose list holds
+  only borrowed lamps (other stories' or these) gets no boost.
+- **Walls ending at a floor above** (2.13.0, `CapLowerWalls`): a story's grid caps a full straight wall with a placed
+  floor of the story above beside it, over its foot and lower than a story, at that floor (the rule of `PassesOverLowerWall`
+  and `CapFoundationSides`). A foundation's sides are walls of story 0 drawn only up to the floor on the foundation; at 3 m
+  they hid every point of a colonnade on the foundation from a post on the terrain (in game: the floor, the columns
+  and the back wall dark). The grids are built again after a floor edit (`g_floorEditGen`) and once the lot's stories are
+  known. The story above's grid is asked only above its own floor (`StoryGrid::plane`, `GridEdgePass`'s floor): a wall of
+  that story drawn down past its floor stands in the story below, whose grid holds its walls. The `[RoofedLamps]` line
+  names the story above's grid and the capped walls of the story below's, and for a lamp hidden from every door which grid
+  hides its nearest door.
+- **Objects:** each room's lamps and its grids are published as an immutable copy (`PublishOpenRig`, a shared pointer
+  under a short lock) that the object rigs read on any thread (`OpeningLampReach`, [objects-and-rigs.md](objects-and-rigs.md#cpu-fixes-objectlightbridge)).
+  A lamp of the story below also passes that story's grid and the slab copy of the room's story (`FloorSnap`,
+  `LampVis::SlabGate`); with no slab copy yet the objects take none of it.
+- **Sends:** a room with doors is noted (`g_roofedRecs`: its outline's box, its doors' signature `DoorSig`, the lamps
+  that saw a door). A change of room 0's lamps of its story sends it (`SameStoryRoofed`, from `AfterChangedWalk`, let
+  through with the yards' sends): when the change is known lamp by lamp (`LampChange`'s exact pairs), only the rooms one
+  of the changed lamps saw (and, for a move or a player's edit, those it can reach now); else (a lamp added or removed, a
+  wall changed) the rooms that took one or that one can reach. The roofed rooms of the story above are sent the same way
+  for a change of room 0's lamps. A lamp switch's safety net (`RelightLampSwitch`) sends
+  every noted room of the lamp's lot for an outdoor lamp. The cutout posts send, once quiet, the roofed rooms beside an
+  opening whose doors are not the ones their last gather saw (`RequeueRoofedDoors`; the room whose gather is running is
+  left alone).
+- **Diagnostics (doors):** each `[YardGrid]` line counts the story's cuts on walls by kind (doors, windows, arches,
+  gates, unknown) and those closed for lamps, with the rule's state; F8 (*openings of walls*) prints the rule, how often
+  it was switched and the stories sent, the closed cuts per lot and story, and per loaded story the grid's kinds, closed
+  cuts and the state it was built with. The F7 notes of a lamp through an opening are unchanged: a closed door makes no
+  opening, so a lamp behind it is not listed.
+- **Diagnostics:** the log line `[RoofedLamps] Room solve: story S room R: N outdoor lights through its openings: L... (D
+  doors to the outside, C room 0 lamps considered (of them of the story below, and taken), B beyond reach, H with no door
+  in sight)` when a room's count or
+  doors change (developer mode also logs a room with no door to the outside); the status *outdoor light through
+  openings* (rooms, lamps, points tested and lit, directional-map samples, sends, copies published); F8 lists every room
+  of the copy with its lamps; the F7 wall block marks such a lamp with its share at the pixel.
+
+### Indoor light through openings
+
+Option `luzInternaPelasAberturas` (`SetIndoorThroughOpenings`, 2.13.0). Active (`InnerOpeningsOn`) with the same parts as
+*Outdoor light through openings*: installed, the room update hooks, `GameWallTest`, the wrapped light evaluation and the
+cutout capture.
+
+- **Gather** (`ShareInnerLamps`, last in `OutdoorGather`, light tree thread): for any room of stories 0..7 whose story has
+  cuts noted, its openings into roofed rooms are the edges of its outline with an opening the grid keeps open whose other
+  side is a roofed room (id > 0, not roofless, not itself; `InnerDoors`, at most 256). The story's registry is walked for
+  the entries of those rooms: not window lights (types 7, 8), not street lamps (11), not outdoor lamps (`OutdoorLamp`), a
+  wrapped class, not in the list (`ListHolds`), not taken by another share (`cross`, `same`); within their range of one
+  of their room's openings (`LampReach`); seeing its hole from the lamp's side (`DoorSeen`). Then the game's checks
+  (`GameTakesLight`), at most 64, added once with the game's adder (its weight in its own room). Room 0 also walks the
+  openings of story S + 1 onto its room 0 and those lamps (`innerUp`). The record is written before the first lamp goes
+  in (`RoomInfo::inner`, `innerUp`, the grids); a fresh record of a roofed or roofless room is an indoor one, so its own
+  lamps keep the game's tests.
+- **Per point** (`InnerShadow` -> `InnerPass`): `YardPass` on the story's grid and the one above (asked only above its
+  floor); a lamp of the story above also passes its own story's grid, goes down through that story's plane only outside
+  its roofed quadrants and off any placed floor (`InnerDownGate`, the live floor grid), then the walls of this story. The
+  game's wall test of the lamp is skipped (`GameWallTest`). In the floor mask's copies of room 0 these lamps give 0
+  (the ground atlas holds none of them; the room's own map carries them). Realistic reach applies on room 0's and the
+  roofless rooms' wall texels as for any lamp there; not in a roofed room. No daytime curve (`RoofedDay` is for outdoor
+  lamps). Directional maps (`BasisLightHook`): the same test at the basis sample. Normalisation (`RoomNormHook`): these
+  lamps count as borrowed (`CrossOnly`).
+- **Objects:** a roofed room's lamps of its neighbours are published with its rig copy (`OpenRigRoom::inner`); the rigs
+  take them through the game's per-light test with `rig+0x1E0` set to the lamp's room for the call (`RigLightTestAsRoom`,
+  their share from `OpeningLampReach`), as the room-list gather's wall test would pop them. The lamps room 0 and the
+  roofless rooms take are published for the render thread (`ExitLamps`, `ExitLampVisibility`): outdoor objects and fences
+  pick them with the outdoor lamps (`SelectLamps(..., true)`; not windows, roofs, water or glass), tested on the lamp's
+  story grid, below its floor through the roofed quadrants and the slab copy, then the outside walls' copy
+  (`LampVisibility`); they stay out of an object's ground share (the atlas holds none of them).
+- **Sends:** each room's openings into roofed rooms are noted (`g_innerRecs`: their signature, the rooms behind them, those
+  whose lamps it took). A change of a source room's lamps sends the rooms with an opening into it, a value change only
+  those that took one (`SameStoryInner`, `AfterChangedWalk`), and room 0 of the story below for the story above's rooms.
+  A change of a story's openings sends the rooms whose openings differ from their last gather and room 0 of the story
+  below (`RequeueInnerDoors`, from `DrainWarmStories`).
+- **Brightness on both sides of an opening:** the game multiplies an indoor room's summed light by its normalisation
+  (`room+0x160`, [room-light-maps](../../engine/room-light-maps.md)) and an outdoor room's by nothing, so a lamp's light
+  through a window onto a balcony was its raw sum while the room around the lamp showed it x that factor (in game,
+  F7 of the balcony floor: 0.20 in its map 0.45 m outside the window, about half the room's own floor at the same distance).
+  In a texel's own solve (`SolvePoint`) the lamp's colour is scaled by the source room's factor over the solving room's,
+  1 for room 0 and the roofless rooms (`InnerNormScale`, `InnerLight::NormScale` in
+  [`inner_retry.h`](../../../features/inner_retry.h)). The strip right outside a window stays dark where the ray passes
+  under its sill: windows keep their kind's default sill (0.85 m) while their cutout masks are not read.
+- **A lifted lamp:** while a player drags a lamp the game takes it out of its room's registry until it is put down, and a
+  neighbour that gathers in between takes nothing from that room; once put down, only the rooms holding the lamp were
+  sent, so the neighbour stayed dark (in game). A gather that misses a source room's lamps it took before notes them
+  (`InnerRec::lost`, `NoteInnerLost`) and gathers again after 0.7, 1.5, 3 and 6 s while it keeps missing them, four times
+  at most ([`inner_retry.h`](../../../features/inner_retry.h), `SendInnerRetries` on the render thread); a value change of
+  that room sends it too (`SameStoryInner`), and a lamp edit's switch or move sends every room with an opening into the
+  lamp's room that holds none of the lamps (`RelightLampSwitch`, `RelightLot`). Log lines: `[InnerLamps] Story S room R:
+  the lamps of room X are gone at this gather (a lamp lifted?): it gathers again in N ms`, `[InnerLamps] Story S room R
+  gathers again: it missed the lamps of N rooms at its last gather (try T of 4)` and `[InnerLamps] <why>: N rooms with an
+  opening into the lamp's room gather again`.
+- **Diagnostics:** the log line `[InnerLamps] Room solve: story S room R: N indoor lights through its openings: L... (room
+  X through (x,z)-(x,z)) (D openings into K roofed rooms; C lamps considered, B beyond reach, H with no opening in sight)`
+  when a room's count or openings change; the status *indoor light through openings*; F8 lists the rooms and the lamps
+  shining out; the F7 wall block marks a lamp of a roofed neighbour with its share at the pixel.
+
+### Penumbra
+
+Every edge the walls and slabs give lamp light is soft by the lamp's size (2.13.0,
+[`features/penumbra.h`](../../../features/penumbra.h)). A lamp is a ball of radius R (*Shadow softness*); a point sees it
+through the cone from the point to the ball, which where the ray from the lamp (t = 0) to the point (t = 1) crosses an
+edge is a disc of half width R (1 - t) across the ray (similar triangles): sharp right behind a jamb, wider farther
+behind it. On a vertical wall the disc stretches by the ray's slant (`Penumbra::SlantOf`: 1 / cos of the horizontal angle
+along the wall, sqrt(1 - (d.T)^2) / |d.N| up it), at most 1 m. The share of the disc on the open side of an edge is
+`smoothstep(x / 2h + 1/2)` (`Penumbra::Cover`): the cumulative of a parabolic kernel, so the weight of a stretch [a, b] is
+`Cover(c - a) - Cover(c - b)` and stretches side by side add up exactly. Nothing is sampled: one evaluation per crossing.
+
+- **Grid walk** (`GridPassImpl`, light tree thread and the object rigs' copy): at each wall line crossed, the spot is
+  spread along the line (`GridLinePass`) over the cell crossed and its neighbours where the line goes on: both walled (an
+  opening's next cell, the next piece of a wall), both open, or a wall's free end (`GridVertexFree`: no other wall or
+  diagonal at the vertex). Each cell's stretch passes by its pieces (`GridEdgeSpot`): solid over its top, the opening
+  `Cover(sill) x Cover(head)` or over its top, an empty cell or one under its foot whole. At an L or T joint the spot is not
+  spread, so a closed corner leaks nothing. The rule that a side whose next cell is cut too has no rim follows by itself.
+  Diagonal walls keep the spot within their edge. MidPass uses the same penumbra (it had a fixed 0.3 m rim).
+- **Light maps:** while a room solve evaluates its map's texels (`SolvePoint`) the half width is also at least 0.75 of the
+  map's texel at the point (`t_mapAA` = 0.75 / texels per tile of the room's class, 0x00FF36AC; `Penumbra::Half` takes
+  `aa t` at the crossing): an edge covers at least 1.5 texels, so a sharp edge behind a jamb no longer draws as texel
+  stairs (4 texels a metre at class 2, 8 with *Light detail* high). The maps keep the game's filtering.
+- **Outside walls' copies** (`WallOpenings::CrossPass`, `SegPass`, the ground shade): the same spot over the patches; the
+  wall between patches stops its share; past a copy's end the spot is not spread.
+- **Slabs** (`LampVis::SlabGate`): the band of the same radius (it was a 0.3 m lantern), at least 4 cm.
+- **Minimum:** half width 2 cm (`Penumbra::kMinHalf`, the 4 cm rim of earlier builds); at R = 0.02 m and a ray square to
+  the wall the edges are the earlier ones exactly (`tools/roofed_openings_test`).
 
 ### Updates
 
@@ -573,10 +860,10 @@ visibility.
   light). The same values drop the mark; first sight, window lights, unreadable lamps and the filter switched off always
   mark. Not filtered: `0x006C7CCA`, occluder entries (`0x006C7939`), room creation and object removal.
 - `MarkDecide` keeps per lamp whether it is on (lit bit and colour sum > 1e-3), its position and room. A change makes the
-  lot due after 120 ms for a pure on/off change or 200 ms for a move or room change (`LampRefreshDelay`, 12/10), then
+  lot due after 120 ms for a pure on/off change or 200 ms for a move or room change (`LampRefreshDelay`), then
   `LampMarkFilter::OnPresent` runs `LevelLightShare::RelightLot` (every room of the lot, stories -4..7, room 0 too) and the
   rig refresh, at most once per 2 s per lot, or 500 ms for a lamp into another room or story or many lamps
-  (`LampLotGap`, 12/10). Nothing happens while the night level is between 0.02 and 0.98
+  (`LampLotGap`). Nothing happens while the night level is between 0.02 and 0.98
   (dusk and dawn switch every lamp), without a world, for first sight, for window lights, or for a light switching more
   than 3 times in 10 s.
 - A switch-only relight may keep a room that is at rest (state 5), has the same manager and id, gathered strictly after
@@ -615,6 +902,13 @@ lighting, diagnostic arming, solves or budgets. An empty file means no qualifyin
   load: ambient steps and wall passes of rooms sharing light, with thread, LOD class solving and shown, state, lamps,
   boost and merge flags, normalisation, ambient, ramp base, `Q` sent by Apex, `H` held until the solve ended, lot id,
   camera story and the room flag `+0x19` whose change invalidates a room, `0x006A5E00 -> 0x0069F160`).
+- F8 also lists the noted openings: cut cells per post lot id and story (by kind, with the lot object of the last post),
+  the lot ids whose story manager carried another id, and for each loaded lot and story where its cuts are looked up
+  (the manager's `+0x90` id, the owner lot and its id, how it was found, the cut cells found, its grid if built).
+- The log (developer mode) holds the first 10 posts of each lot id, rejected ones included, with the raw key bytes and
+  the reason (`[Openings] lot ... post N`), one line per lot id whose manager carried another id (manager, `+0x88`,
+  `+0x90`), and one `[YardGrid]` line per lot and story when its grid is built or its walls or openings change, with how
+  the lot was found.
 - Samples are recorded only while armed (Developer > Lighting *Record story light samples for the diagnostics*, or the
   first F8 of a session). The game's wall test is wrapped (`GameWallTest`, CALL at `0x0069FE93`) in every build (for the
   entry points of parts 3 and 4); the development build also records its result.
@@ -663,7 +957,10 @@ gather delay, solve class, queue order or time budget. The lookup comparison and
 [validation](../../validation/night-lighting-level-light-share.md#exterior-floor-lookup-2026-10-07).
 
 The point solve runs for every texel of a room light map. The hooks read the thread id from the TEB and do nothing for
-rooms without borrowed lamps. Diagnostic sample recording exists only in developer mode and runs only while armed. Every
+rooms without borrowed lamps. Outdoor light through openings adds, per texel of a roofed room that took such lamps, one
+grid walk per lamp (about one step per metre between the lamp and the texel, two grids for a ray that reaches the story
+above), and per gather of a roofed room of a story with openings a scan of the story's tiles for its outline and 9 rays
+per door for each room 0 lamp in reach. A story with no opening noted builds nothing. Diagnostic sample recording exists only in developer mode and runs only while armed. Every
 floor in full detail adds solve work once when entering a lot. In-game cost has not been measured (see
 [validation](../../validation/night-lighting-level-light-share.md)).
 
@@ -683,6 +980,25 @@ floor in full detail adds solve work once when entering a lot. In-game cost has 
 - Rebuilding a world-wide lighting refresh periodically instead of tracking lamp, floor and structure changes.
 - A balcony share (*Light behind balconies*) lit the wall behind a slab from a lamp beneath it (2026-10-12, captures
   18-38-41); a placed floor now blocks a lamp below it ([history](../../history/night-lighting-level-light-share.md)).
+- Filing a lot's cuts under its story manager's `+0x90/+0x94` id through an alias made by the first post that differed
+  (an earlier design): read while a lot streamed in after the world was still being built, it moved every cut of that lot
+  under an id its grids never asked for ([history](../../history/night-lighting-level-light-share.md)).
+- Taking a roofed room's outdoor lamps into its object rigs through the game's room-list gather `FUN_006bb2f0`
+  (`GatherAsRoom` with id 0): it drops the street-lamp class (`vfunc+0x20` true) and its 2D wall test against the room's
+  own walls pops any lamp behind the arch's wall, which it sees as a whole run (decompiled 2026-10-13). The per-light
+  test `FUN_006bb270` is called alone instead ([objects-and-rigs.md](objects-and-rigs.md)).
+- Masking story 0's room-0 solve for floor texels (2026-10-13, F7 08-16-00, a paved path lit through a free-standing
+  wall): that map is also the lot pass's lot map, which the pass already multiplies by the lot's ground lamp shade, so the
+  grass would be shaded twice. The floor shaders take the shade instead ([floors.md](floors.md)).
+- Scaling the light a roofed room takes through its openings to match the room 0 surfaces outside (2026-10-14, F8
+  20-43-05: a red post 0.54 m over an arcade's floor, its recess floor saturated, the paving outside much dimmer). The
+  room solve gives both sides the same law (room 2's normalisation was 1.000, no boost, and the lamp was an outdoor
+  lamp, not *Indoor light through openings*). The step at the arch comes from the 8-bit map clipping the sum at 1 (4 to
+  5 within 3 m of that post) and from the surface shaders: interior floors apply the tanh curve (gain about 1.35 to 1.46)
+  while outdoor floors and lot grass take `c3.x` x *Ground brightness* (and *Lot lamp brightness*). A factor between them
+  would be an artistic share, not physics. Unverified: which map (the GPU relight or the game's solve) the outside showed
+  at the capture, since that capture's Instant mode kept dropping the active lot's kept parts (over the 128 MB budget) and
+  sending its room 0s back to the game's solve.
 
 ## See also
 

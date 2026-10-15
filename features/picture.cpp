@@ -1073,6 +1073,7 @@ void RegisterHooks(IDirect3DDevice9* dev) {
         if (index == 0) gpu.curRT0 = rt;
         return HookAction::Continue;
     }, Priority::First);
+    ObserveReissuedDraws(kHookName); // (its scene run counts include the re-issued draws, as they always did)
     RegisterDrawIndexedPrimitive(kHookName, [](DeviceContext& ctx, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT) {
         OnGameDraw(ctx, false);
         return HookAction::Continue;

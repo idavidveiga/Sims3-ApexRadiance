@@ -5,6 +5,8 @@
 #include "features/native_terrain_sampler.h"
 #include "features/shader_patches.h"
 #include "features/lamp_reach.h"
+#include "features/ground_lamp_shadow.h"
+#include <algorithm>
 #include <d3dcompiler.h>
 #include <array>
 #include <chrono>
@@ -406,10 +408,35 @@ Out main(float4 pos:POSITION,float2 uv:TEXCOORD0){Out o;o.pos=pos;o.shadow=float
         const auto old = gpu.Render(oldPs, vs);
         Check(pixels[2000] != old[2000], "daylight terrain lamps no longer multiplied by zero");
     }
+    // The lamp shade (13/10, the mask's alpha): 0 leaves exactly the pass without lamps (the lot map, the atlas and the soft
+    // edge's target all go), 255 the full lamp term (as with no shade)
+    {
+        IDirect3DTexture9* mask = nullptr;
+        Check(SUCCEEDED(gpu.dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &mask, nullptr)), "lot shade mask texture");
+        const auto fillMask = [&](DWORD v) { D3DLOCKED_RECT r{}; mask->LockRect(0, &r, nullptr, 0); *static_cast<DWORD*>(r.pBits) = v; mask->UnlockRect(0); };
+        gpu.dev->SetTexture(3, mask);
+        gpu.dev->SetSamplerState(3, D3DSAMP_MINFILTER, D3DTEXF_POINT); gpu.dev->SetSamplerState(3, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        const float lit3[4] = {1, 0, 0, 0}, lit31[4] = {1.5f, 0, 0, 0}, dark3[4] = {0, 0, 0, 0}, dark31[4] = {0, 0, 0, 0};
+        for (float feather : {0.f, 1.f}) {
+            const float edge[4] = {feather, 1 - feather, 0, 0}; gpu.dev->SetPixelShaderConstantF(30, edge, 1);
+            fillMask(0x00FFFFFFu);
+            gpu.dev->SetPixelShaderConstantF(3, lit3, 1); gpu.dev->SetPixelShaderConstantF(31, lit31, 1);
+            const auto shaded = gpu.Render(newPs, vs);
+            fillMask(0xFFFFFFFFu);
+            gpu.dev->SetPixelShaderConstantF(3, dark3, 1); gpu.dev->SetPixelShaderConstantF(31, dark31, 1);
+            const auto noLamps = gpu.Render(newPs, vs);
+            gpu.dev->SetPixelShaderConstantF(3, lit3, 1); gpu.dev->SetPixelShaderConstantF(31, lit31, 1);
+            const auto full = gpu.Render(newPs, vs);
+            Check(shaded == noLamps, "lot shade 0 removes the whole lamp term");
+            Check(full != noLamps, "lot shade 1 keeps the lamp term");
+        }
+        gpu.dev->SetTexture(3, nullptr);
+        Release(mask);
+    }
     for (DWORD slot : {1ul, 2ul, 5ul}) gpu.dev->SetTexture(slot, nullptr);
     gpu.dev->SetVertexShader(nullptr); gpu.dev->SetPixelShader(nullptr);
     Release(oldPs); Release(newPs); Release(vs); Release(terrain); Release(lot); Release(shadow);
-    std::printf("Production lot HLSL: night equivalence and daytime border continuity checked\n");
+    std::printf("Production lot HLSL: night equivalence, daytime border continuity and the lamp shade checked\n");
 }
 
 void WallPixels(Gpu& gpu, const std::filesystem::path& capture) {
@@ -675,7 +702,9 @@ void ObjectLawPatches(Gpu& gpu, const std::wstring& roots) {
             for (int reach = 0; reach < 2; ++reach) {
                 auto t = original;
                 const bool r = reach != 0;
-                if (p == 0) { ShaderPatches::InstancedPatch o; ok[reach] = ShaderPatches::PatchInstancedLamps(t, o, r) && (!r || o.pixelLamps);
+                // fences without the ground lamp shade (13/10): the FIRST hashes stay those of the law alone (the shade has
+                // its own check, tools/floor_shade_check)
+                if (p == 0) { ShaderPatches::InstancedPatch o; ok[reach] = ShaderPatches::PatchInstancedLamps(t, o, r, false) && (!r || o.pixelLamps);
                     if (r && ok[reach]) { reachConst = o.reachConst; expectReach = o.coneConst + 2 * N; } }
                 else if (p == 1) { ShaderPatches::ObjectLampPatch o; ok[reach] = ShaderPatches::PatchObjectLampPs(t, o, r);
                     if (r && ok[reach]) { reachConst = o.reachConst; expectReach = o.lampParamConst + 1 + 4 * N; } }
@@ -732,7 +761,7 @@ float3 w=rows[0].xyz+uv.x*rows[1].xyz+uv.y*rows[2].xyz;o.uv=float4(uv,w.x,w.z);o
     for (bool reach : {false, true}) {
         auto code = ps;
         ShaderPatches::InstancedPatch o;
-        const bool ok = !code.empty() && ShaderPatches::PatchInstancedLamps(code, o, reach) && o.pixelLamps;
+        const bool ok = !code.empty() && ShaderPatches::PatchInstancedLamps(code, o, reach, false) && o.pixelLamps; // the law alone
         Check(ok, "synthetic fence shader takes the per-pixel lamps");
         if (!ok) { ID3DBlob* d = nullptr; if (!ps.empty() && SUCCEEDED(D3DDisassemble(ps.data(), ps.size() * 4, 0, nullptr, &d))) { std::printf("%s\n", static_cast<char*>(d->GetBufferPointer())); d->Release(); } continue; }
         auto* shader = gpu.Shader(code);
@@ -785,10 +814,101 @@ float3 w=rows[0].xyz+uv.x*rows[1].xyz+uv.y*rows[2].xyz;o.uv=float4(uv,w.x,w.z);o
     std::printf("Object law pixels: %d checks\n", checks - before);
 }
 
+// Walls shade lamp light on lot ground (13/10, GroundShadow): the production shade job on synthetic lots
+void GroundShadowChecks() {
+    using namespace GroundShadow;
+    const int before = checks;
+    const auto run = [](const Grid& g, std::vector<Lamp> lamps, std::vector<Wall> walls, int slices) {
+        ShadeJob job;
+        job.Init(g, std::move(lamps), std::move(walls));
+        int budget = 0, guard = 0;
+        // a few steps a slice, as the render thread's budget would cut it
+        while (!job.Step([&] { return ++budget % slices != 0; }) && guard++ < 1000000) {}
+        return job.Result();
+    };
+    Grid g; g.w = 160; g.h = 160; // a 40 x 40 m lot at the origin, ground at y 10
+    g.ty = 10.0f;
+    const auto at = [&](const std::vector<uint8_t>& m, float x, float z) { return m[static_cast<size_t>(z * 4) * g.w + static_cast<size_t>(x * 4)]; };
+    const Lamp post{10.0f, 12.0f, 20.0f, 0.4f * 30.0f}; // a garden post: head 2 m up
+    const Wall wall{14.0f, 15.0f, 14.0f, 25.0f, 10.0f, 13.0f}; // a free-standing wall 4 m east of it, 3 m tall, 10 m long
+    // no wall: 255 everywhere, exactly (the pass is unchanged)
+    const auto open = run(g, {post}, {}, 7);
+    Check(open.size() == 160u * 160u && std::all_of(open.begin(), open.end(), [](uint8_t v) { return v == 255; }), "ground shade: no wall, no shade");
+    const auto none = run(g, {}, {wall}, 7);
+    Check(std::all_of(none.begin(), none.end(), [](uint8_t v) { return v == 255; }), "ground shade: no lamp, no shade");
+    const auto m = run(g, {post}, {wall}, 3);
+    Check(at(m, 16.0f, 20.0f) < 8, "ground shade: the grass behind the wall is shaded");
+    // farther, where the post's stamp is under kOtherLight, only its own share goes (the lot map's other light stays)
+    Check(at(m, 18.0f, 20.0f) > 8 && at(m, 18.0f, 20.0f) < 96, "ground shade: faint blocked light takes only its share");
+    Check(at(m, 6.0f, 20.0f) == 255 && at(m, 12.0f, 20.0f) == 255, "ground shade: the lamp's side keeps its light");
+    Check(at(m, 18.0f, 5.0f) == 255, "ground shade: grass beside the wall's shadow keeps its light");
+    Check(at(m, 14.5f, 20.0f) < 255 && at(m, 13.5f, 20.0f) > 0, "ground shade: soft at the wall");
+    // the same lot built in one go: slicing changes nothing
+    Check(run(g, {post}, {wall}, 1000000) == m, "ground shade: sliced build equals a single build");
+    // a second lamp on the far side lights the grass behind the wall: a share, not black
+    const Lamp other{24.0f, 12.0f, 20.0f, 0.4f * 30.0f};
+    const auto two = run(g, {post, other}, {wall}, 5);
+    Check(at(two, 16.0f, 20.0f) > 64 && at(two, 16.0f, 20.0f) < 255, "ground shade: two lamps, one blocked, a share stays");
+    // a low wall (0.5 m) under a 2 m head shades only near its foot
+    const Wall low{14.0f, 15.0f, 14.0f, 25.0f, 10.0f, 10.5f};
+    const auto lowM = run(g, {post}, {low}, 5);
+    Check(at(lowM, 14.6f, 20.0f) < 255 && at(lowM, 19.0f, 20.0f) == 255, "ground shade: a low wall's shadow ends near it");
+    // a wall of an upper story (base over the head) shades nothing
+    const Wall upper{14.0f, 15.0f, 14.0f, 25.0f, 13.0f, 16.0f};
+    const auto up = run(g, {post}, {upper}, 5);
+    Check(std::all_of(up.begin(), up.end(), [](uint8_t v) { return v == 255; }), "ground shade: walls above the head do not shade the ground");
+    // a sconce on the wall's face (head 0.1 m in front): its own face does not shade the lamp's side; the far face does
+    const Wall faceA{14.0f, 15.0f, 14.0f, 25.0f, 10.0f, 13.0f}, faceB{14.2f, 15.0f, 14.2f, 25.0f, 10.0f, 13.0f};
+    const Lamp sconce{13.9f, 12.0f, 20.0f, 0.4f * 30.0f};
+    const auto sc = run(g, {sconce}, {faceA, faceB}, 5);
+    Check(at(sc, 10.0f, 20.0f) == 255 && at(sc, 16.0f, 20.0f) < 8, "ground shade: a sconce lights its side, not behind its wall");
+    // a rotated lot (90 degrees) gives the same shade at the same world points
+    Grid r = g; r.m0 = 0; r.m2 = 1; r.m8 = -1; r.m10 = 0; r.tx = 40.0f; r.tz = 0.0f; // world x = 40 - lz, world z = lx
+    const auto rot = run(r, {post}, {wall}, 5);
+    const auto atWorld = [&](const std::vector<uint8_t>& mm, const Grid& gg, float x, float z) {
+        float fi, fj; WorldTexel(gg, x, z, fi, fj); return mm[static_cast<size_t>(fj) * gg.w + static_cast<size_t>(fi)]; };
+    Check(atWorld(rot, r, 16.0f, 20.0f) < 8 && atWorld(rot, r, 6.0f, 20.0f) == 255 && atWorld(rot, r, 18.0f, 5.0f) == 255,
+          "ground shade: rotated lots shade the same world points");
+    // weights: the stamp's law, saturated next to the lamp, nothing past the reach
+    Check(Weight(post, 10.0f, 10.0f, 20.0f) == 1.0f && Weight(post, 10.0f + Reach(post, 10.0f) + 1.0f, 10.0f, 20.0f) < kMinWeight, "ground shade: stamp weight and reach");
+    std::printf("Ground shade: %d checks\n", checks - before);
+}
+// Foliage wrap with the daytime curve (13/10): the runtime variant is the defined one without its def (c255 set per draw)
+void FoliageWrapChecks(const std::wstring& roots) {
+    const int before = checks;
+    int found = 0;
+    for (size_t from = 0; from <= roots.size();) {
+        size_t to = roots.find(L';', from);
+        if (to == std::wstring::npos) to = roots.size();
+        const std::filesystem::path root = roots.substr(from, to - from);
+        from = to + 1;
+        if (root.empty() || !std::filesystem::exists(root)) continue;
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (!it->is_regular_file() || it->path().extension() != ".bin") continue;
+            const auto bytes = it->file_size();
+            if (bytes < 8 || bytes > 262144 || bytes % 4) continue;
+            std::ifstream f(it->path(), std::ios::binary);
+            std::vector<DWORD> code(static_cast<size_t>(bytes) / 4);
+            f.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(bytes));
+            if (!f || (code[0] & 0xFFFF0000u) != 0xFFFE0000u) continue;
+            auto a = code, b = code;
+            const bool pa = ShaderPatches::PatchFoliageVs(a), pb = ShaderPatches::PatchFoliageVs(b, true);
+            Check(pa == pb, "foliage wrap: both variants recognise the same shaders");
+            if (!pa || !pb) continue;
+            ++found;
+            Check(a.size() == b.size() + 6 && std::equal(b.begin() + 1, b.end(), a.begin() + 7) && a[0] == b[0], "foliage wrap: the runtime variant drops only the def");
+        }
+    }
+    std::printf("Foliage wrap: %d foliage vertex shaders, %d checks\n", found, checks - before);
+}
+
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const auto start = std::chrono::steady_clock::now();
     Policies(); std::printf("Policies: %d checks, %d failures\n", checks, failures);
+    GroundShadowChecks();
     ReachLawTable();
     SamplerRestoration(); std::printf("Sampler restoration complete\n"); Gpu gpu;
     Patches(gpu, argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path());
@@ -805,6 +925,7 @@ int wmain(int argc, wchar_t** argv) {
         if (n > 0 && n < 4096) lawRoots = buffer;
     }
     if (!lawRoots.empty()) ObjectLawPatches(gpu, lawRoots);
+    if (!lawRoots.empty()) FoliageWrapChecks(lawRoots);
     else std::printf("Object law coverage over captured shaders not run (no -ObjectLawRoots)\n");
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::printf("Terrain lighting: %d checks, %d failures; harness %.1f ms (not game FPS)\n", checks, failures, ms);

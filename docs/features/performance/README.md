@@ -11,9 +11,9 @@ frames while the camera moves.
 
 | | |
 |---|---|
-| Availability | Released. The individual switches were introduced between 2.1.0 and 2.7.0 (see the table below); the first twelve are on by default since 2.5.5. The single Overview switch for the group: Released in 2.6.0, covering fifteen switches since 2.7.0. Room to save, Lighter window updates and Faster scripts: Experimental, released in 2.7.0 |
+| Availability | Released. The individual switches were introduced between 2.1.0 and 2.7.0 (see the table below); the first twelve are on by default since 2.5.5. The single Overview switch for the group: Released in 2.6.0, covering fifteen switches since 2.7.0. Room to save, Lighter window updates and Faster scripts: Experimental, released in 2.7.0. Lamp lighting card: Released in 2.13.0 |
 | Default | All fifteen on when no saved choice exists. An explicit saved off choice stays off. The Lot Streaming switches are off by default |
-| Menu | System > Performance (cards *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
+| Menu | System > Performance (cards *Lamp lighting*, *Camera and lighting*, *Files and objects*, *Textures and Sims*, *Memory handling*, *Game and scripts*); System > Lot Streaming; Overview > Performance (one switch for the fifteen) |
 | Configuration | One `[patches.<Name>]` table per switch in `ApexRadiance.toml` |
 | Developer mode | Switches: no. Counters, verification controls and tuning: Developer > Performance |
 | Source | [`patches/performance_patches.cpp`](../../../patches/performance_patches.cpp), [`patches/performance.h`](../../../patches/performance.h), the feature modules linked from each page |
@@ -80,6 +80,27 @@ research and code by idavidveiga): [lot-streaming.md](lot-streaming.md). They ar
 
 One related change has no switch: the [Vulkan driver guard](vulkan-driver-guard.md) keeps an unused AMD Vulkan driver
 out of the game's address space on hybrid-GPU PCs.
+
+## Lamp lighting card
+
+The first card of System > Performance chooses how lot lamps update after one is switched, recoloured or moved. Its
+one row, *Lamp updates*, has two modes:
+
+| Mode | Row description | What runs |
+|---|---|---|
+| *Instant (GPU)* (default) | "Your graphics card updates outdoor lamp light instantly; moving lamps may dip FPS a little" | [Real-time outdoor lamps](../night-lighting/rt-outdoor-lamps.md) draws the active lot's outdoor lamps and their shadows on the graphics card, on the kept parts of [Quick outdoor lamp edits](../night-lighting/outdoor-lamp-delta.md); indoor lamps use the game's calculation |
+| *Classic* | "Lighter: lamp light updates after you release or change a lamp" | The game's room solves with every correction; a dragged lamp's rooms are solved once after the release ([lamp drags](../night-lighting/lamp-drags.md#classic-relight-only-after-release)) and an edit's stories change together ([Faster room lighting](room-light-queue.md#classic-show-all-floors-together)) |
+
+A warning note under the row says why Instant cannot run on the device (another game version than Steam 1.67.2, a
+graphics card that cannot draw the shadows, or shaders that could not start); the lamps then work as Classic, and once
+Classic is picked Instant cannot be chosen again. With Instant chosen but doing nothing, a note names the cause (*Outdoor
+light between floors* off, or its lamp edits could not start). Instant runs inside Night Lights: with Night Lights off
+the card shows *Needs Night Lights (Lighting page)* and a button to turn it on. Switching modes relights the active lot
+once. The GPU time of the last lamp edit is on Developer > [Tester](../dev-tools/tester.md).
+
+Setting: `lampLightingMode` (`"classic"` or `"instant"`, default `"instant"`) under `[patches.NightTerrainRelight]`; a
+saved value is kept, and a file without the key starts on Instant. Source: `LampLightingCard` in
+[`apex_gui.cpp`](../../../apex_gui.cpp).
 
 ## Settings
 

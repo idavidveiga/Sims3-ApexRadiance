@@ -9,7 +9,7 @@ same fixes apply to the snowy winter variants and to the fences that share the b
 
 | | |
 |---|---|
-| Availability | Released in 1.0.0 |
+| Availability | Released in 1.0.0. The daytime curve on foliage lamp colours and garden lamps blocked by buildings: Released in 2.13.0 |
 | Default | On |
 | Menu | Lighting > Objects > *Objects* card |
 | Configuration | `[patches.NightTerrainRelight]` in `ApexRadiance.toml` |
@@ -39,7 +39,13 @@ Three shader fixes, plus the CPU rig boost described in [objects-and-rigs.md](ob
 3. **Moon shadow in other foliage pixel shaders** (winter bushes and other variants): the shadow fade is lifted towards
    1 by the night level with a two-instruction bytecode patch.
 
-Fixes 1 and 3 act only at night (night level above 0.01). Fix 2 is applied whenever the option is on.
+Fixes 1 and 3 act only at night (night level above 0.01). Fix 2 is applied whenever the option is on; its wrap
+constants also carry the shared daytime curve (`LampDay(night)`: 3% by day, exactly the earlier constants at night), so the
+per-instance lamp colours no longer light foliage at night strength by day.
+
+Lamps behind buildings: the rig gather scales an outdoor lamp's per-instance colour by the share that reaches the
+instance's centre past the outside walls (and the slabs above the lamp), with *Buildings block lamp light on trees and objects*; trees
+behind a house no longer take a garden post's light through it ([objects-and-rigs.md](objects-and-rigs.md)).
 
 ## Settings
 
@@ -107,11 +113,14 @@ addressing on `c27`), with a `max r0, r0, cK.s` (full mask, no relative addressi
 Patch:
 
 ```
-def c255, 1/1.5, 0.5/1.5, 0, 0          ; inserted at the top
+def c255, 1/1.5, 0.5/1.5, 0, 0          ; classification copy only; the drawn copy leaves c255 to the draw
 max r0.x, r0, cK.s                      ; the sun keeps the plain clamp (original instruction, mask .x)
 mad r0.yzw, r0, c255.x, c255.y          ; lamps: N.L / 1.5 + 1/3
 max r0.yzw, r0, cK.s                    ; ... clamped at 0
 ```
+
+The drawn copy (`PatchFoliageVs(t, true)`) has no `def`: the foliage draw sets VS `c255 = (s/1.5, s 0.5/1.5, 0, 0)` with
+`s = LampDay(night)` and restores the game's `c255` afterwards (status *foliage (wrap light): N (by the daytime curve: N)*).
 
 `ClassifyVs` tests the foliage pattern after the road, instanced-structure, snow and floor classes; the road vertex shader
 is refused. The patched bytecode is stored in the shader's `VsInfo`, and `FoliageVsFor` creates the D3D9 shader at the

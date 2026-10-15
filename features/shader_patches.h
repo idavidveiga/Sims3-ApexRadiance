@@ -47,16 +47,36 @@ struct FloorPatch {
     int heightConst = -1; // PatchBakedAtlasPs, PatchFloor, PatchSnowFloor: cH, the atlas weight saturate(map.a * cH.y + cH.x) ((1, 0) = always); -1 = none
     bool maskAlpha = false; // map.a is readable at the atlas (the floor visibility mask; the winter floors copy it after the map's texld)
     bool loggedMask = false; // lot_light_bridge logged maskAlpha once
+    // The ground lamp shade of story-0 floors (13/10): max(map, atlas) is multiplied by 1 + gate (M - 1), M = the lot mask's
+    // alpha (ground_lamp_shadow.h, the lot light pass's shade) bound to shadeSampler, gate = 1 within about 1 m of the lot's
+    // ground. shadeConst .. + 2 = GroundShadow::FloorShadeRows (mask uv from world x and z, minus the ground height, the gate).
+    // -1 = no shade (no world y, or no sampler / constants to spare): the draw binds nothing more.
+    int shadeSampler = -1;
+    int shadeConst = -1;
 };
-bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out);
+// Where a vertex shader writes world y to one output component: "mov oK.c, rW.y" with rW.y = "dp4 rW.y, rP, c9" (the
+// last write before it) and rW.x / rW.z from c8 / c10, exactly one such write and nothing else writing oK.c, no flow control.
+// reg = oK. The winter floor tile shader kFloorVs has it as TEXCOORD1.w.
+struct WorldY {
+    int texcoord = -1;
+    int comp = 0;
+    int reg = -1;
+};
+bool WorldYOutput(const std::vector<DWORD>& t, WorldY& out);
+// worldY: where the paired vertex shader writes world y (WorldYOutput); with it, the ground lamp shade (out.shadeSampler).
+bool PatchFloor(std::vector<DWORD>& t, FloorPatch& out, const WorldY& worldY = WorldY{});
 // Snow lying on lot floor tiles (LightProbe-m69): the VS writes TEXCOORD7.xy = world xz / 2; the PS gets max(room map, atlas).
-// texcoord: where the VS puts world xz / 2 (7 = TEXCOORD7.xy, 0 = TEXCOORD0.zw).
+// texcoord: where the VS puts world xz / 2 (7 = TEXCOORD7.xy, 0 = TEXCOORD0.zw). worldY as PatchFloor (the shade's x and z
+// rows are doubled by the caller: the input is world xz / 2).
 bool IsSnowFloorVs(const std::vector<DWORD>& t, int& texcoord);
-bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out);
+bool PatchSnowFloor(std::vector<DWORD>& t, int texcoord, FloorPatch& out, const WorldY& worldY = WorldY{});
 // Baked-light surfaces (summer outdoor floors): max(light map, atlas at TEXCOORDn.xy = world xz, n from PatchObjectLampVs) before "mad ..., cK.x".
 // The atlas has no walls, so it is weighted by the floor map's alpha (out.heightConst, out.maskAlpha): level_light_share
-// stores there, for outdoor floor texels of the upper stories, the share of their lamps' light that walls block.
-bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out);
+// stores there, for outdoor floor texels of the upper stories, the share of their lamps' light that walls block. Story 0's
+// floor map is room 0's solve, with no wall test either: with groundShade, max(map, weighted atlas) is then multiplied by the
+// ground lamp shade (out.shadeSampler; world y = TEXCOORDn.z, which PatchObjectLampVs writes). groundShade = false gives the
+// bytes of the patch before the shade.
+bool PatchBakedAtlasPs(std::vector<DWORD>& t, int texcoord, FloorPatch& out, bool groundShade = true);
 
 // Winter foliage with a shadow map: "lrp rD.w, t5.x, cK.y, rS.w" is the moon shadow that also darkens lamp light.
 // After it: rD.w = lerp(rD.w, 1, cN.x), cN.x = night level.
@@ -65,8 +85,11 @@ bool IsFloorVs(const std::vector<DWORD>& t);
 bool PatchLeafShadow(std::vector<DWORD>& t, DWORD& nightConst);
 
 // Foliage vertex shaders (summer and winter): "max r0, r0, cK.w" clamps the sun (r0.x) and three lamps (r0.yzw) N.L at 0.
-// Lamps get wrap lighting instead (light passing through leaves): r0.yzw = max(N.L / 1.5 + 1/3, 0).
-bool PatchFoliageVs(std::vector<DWORD>& t);
+// Lamps get wrap lighting instead (light passing through leaves): r0.yzw = max(N.L x c255.x + c255.y, 0), c255 =
+// (1/1.5, 0.5/1.5) defined in the shader; runtimeWrap: c255 is not defined, the draw sets it (the daytime curve s:
+// (s/1.5, s 0.5/1.5), so the lamps' weights, and so their per-instance colours, are x s; bit for bit the same at s = 1).
+constexpr unsigned kFoliageWrapConst = 255;
+bool PatchFoliageVs(std::vector<DWORD>& t, bool runtimeWrap = false);
 
 // Instanced lot structures (fence rails and posts, railings, stairs: SceneModelArray, one light rig for a whole group at
 // its centre). Their vertex shader has POSITION1/POSITION2 instance streams, writes world xz to TEXCOORD1.zw and the 4
@@ -84,6 +107,10 @@ bool IsInstancedStructureVs(const std::vector<DWORD>& t);
 // the sum held under 1 per channel; r0^2 of lamp k at reachConst + k / 4, component k % 4 (2 rows after the cones). Without
 // the per-pixel lamps, or without room for 2 more rows, the reach variant is refused (t unchanged). reach = false gives the
 // bytes of the first law exactly.
+// groundShade (13/10): with the per-pixel lamps, the sum max(lamps, atlas x sat(N.y) x cB.x) is multiplied by the lot ground's
+// lamp shade as on the story-0 outdoor floors (FloorPatch::shadeSampler): 1 + gate (M - 1), M = the lot mask's alpha bound
+// to shadeSampler, shadeConst .. + 2 = GroundShadow::FloorShadeRows (xzScale 1; world x, z from TEXCOORD1.zw, y from
+// TEXCOORD2.w). -1 = no shade (no per-pixel lamps, or no sampler / constants to spare): the bytes of the patch without it.
 struct InstancedPatch {
     DWORD atlasSampler = 0;
     DWORD atlasConst = 0;
@@ -94,8 +121,10 @@ struct InstancedPatch {
     DWORD groundWeightConst = 0; // (a, b, 1, 0): atlas weight sat(N.y * a + b); (1, 0) with lamps, (0, 1) = every face (as before)
     DWORD coneConst = 0;         // per lamp k: its cones at coneConst + 2k / + 2k + 1 (= lampConst + 2 kObjectPixelLamps); the lamp colour .w = its spill
     DWORD reachConst = 0;        // reach variant: the 2 r0^2 rows (= coneConst + 2 kObjectPixelLamps); 0 = the first law
+    int shadeSampler = -1;       // the ground lamp shade: the lot mask (atlasSampler + 1); -1 = none
+    int shadeConst = -1;         // its 3 rows, right after the cones (first law) or the reach rows
 };
-bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out, bool reach = false);
+bool PatchInstancedLamps(std::vector<DWORD>& t, InstancedPatch& out, bool reach = false, bool groundShade = true);
 
 // Snow lying on objects (fence tops, rails, props: the winter snow-cover mesh drawn over the object). Its vertex shader
 // morphs between two positions with flags in TEXCOORD1.x ("slt rX, cK, v.x") and writes world xz to TEXCOORD3.xy
@@ -175,6 +204,34 @@ struct BasisSmoothPatch {
 bool BasisSamplers(const std::vector<DWORD>& t, int samplers[4]);
 bool PatchBasisSmooth(std::vector<DWORD>& t, BasisSmoothPatch& out);
 bool PatchIndoorBasis(std::vector<DWORD>& t, DWORD lmSampler, IndoorBasisPatch& out, bool capToFloorMap = true);
+// Smooth light maps (2.12.4): the room light map read of the room-lit pixel shaders. The pattern (docs/features/night-
+// lighting/room-map-smoothing.md; offline over every precomp pixel shader it matches InteriorFloor, InteriorWall and their
+// siblings that read the same room map, nothing else): a plain "texld rL, <TEXCOORD1>, sM" (t1 in ps_2_0, the v# declared
+// texcoord1 in ps_3_0; sM a 2D sampler read once), whose next use of rL, after at most one "mul rL, rS.c, rL", is
+// "mad rD.xyz, rL.w, cA, rL" with cA not def'd (rgb + alpha x InteriorBuildingAmbientColor). PatchRoomMapSmooth replaces
+// that read with a cubic B-spline read (4 bilinear taps, all four channels), the taps' v kept inside the texel band
+// bandConst describes; a ps_2_0 shader becomes ps_2_x (about 45 more instructions, 11 more temps: check the device's
+// PS20Caps). Per draw: sizeConst = (w, h, 1/w, 1/h) of the map at `sampler`; bandConst = (1/S, S, 0.5, S - 1), S = the
+// texel rows of one block (wall atlas: 3n + 1; floors: 65536, one block).
+struct RoomMapPatch {
+    DWORD sampler = 0;
+    DWORD sizeConst = 0;
+    DWORD bandConst = 0;
+    int temps = 0; // temps the copy uses (r0 .. r(temps - 1))
+    int slots = 0; // its instructions (no dcl, no def)
+    bool ps2x = false;
+};
+bool IsRoomMapPs(const std::vector<DWORD>& t);
+bool PatchRoomMapSmooth(std::vector<DWORD>& t, RoomMapPatch& out);
+// The scale of the room map uv a vertex shader writes: "mul o<TEXCOORD1>.xy, v#, cK.c" (either order), the only write of
+// that output's xy. The game's room-lit vertex shaders: 1/4096 for the wall atlas, 1/32767 for the floor maps (a def in
+// vs_3_0, a constant it may set in vs_2_0: read it at the draw when not defined).
+struct RoomMapUv {
+    int constReg = -1, comp = 0;
+    bool defined = false;
+    float value = 0.0f;
+};
+bool RoomMapUvScale(const std::vector<DWORD>& vs, RoomMapUv& out);
 // An object shader lit by the rig (Rooms at Night, lot_light_bridge): whether its diffuse sums the four rig light colours
 // c4..c7 (room-mode rigs have no sun: c4 = the strongest room light), and the constant whose .w weights its ambient cube (-1 = none)
 struct RigPsInfo {

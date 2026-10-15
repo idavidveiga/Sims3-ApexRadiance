@@ -184,3 +184,19 @@ daylight (night level 0.01 or less) the per-pixel pass is not drawn either, like
 **Finding:** shared fence-group lamp brightness and directionless ground light on vertical object faces can obscure spatial lamp response. Deferred wall refresh requests can already be covered by a newer generation.
 
 **Outcome:** retain spatial fence lighting with native fallback, per-pixel object cones, vertical ground-light isolation and generation-aware wall refresh. Offline CPU/GPU exploration remains research rather than a shipped companion DLL. Final release identity and gameplay coverage are recorded in the validation page.
+
+### 2026-10-14: a column inside an arcade drew black
+
+**Context:** F7 capture: a column object 4 m behind an arch from a two-headed garden post drew (0, 0, 0) while the floor
+around it and the columns outside were lit. Its rig's note: the post taken through the room's openings with share 1.00,
+"under the cut".
+
+**Finding:** the record of a lamp through an opening is the per-pixel lamps' law at the rig's centre (the walls' scale
+0.3), which the outdoor objects take with no cut; the rig test `FUN_006bb270` drops a record whose luminance is under
+`[0x01158D60]` = 0.1 (`[0x01158D64]` = 0.01 for a rig with `+8` set; read from `TS3W.exe`). The light reaching the column was
+under 0.1, so the lamp left its rig. Not a wall, grid or foundation issue: the share through the arch was 1.
+
+**Outcome:** a record whose law gives at least one 8-bit level is raised to the cut and kept, last in the rank, with its
+own colour (`rig_cut.h`, `KeepOverCut`). Offline: with the 12/10 garden post the game dropped the lamp from 4.25 m while
+its light stayed visible to 8.75 m; kept now (`tools/roofed_openings_test`). Developer Tester switch *Lamps through arches
+on indoor objects*. Not yet checked in game.

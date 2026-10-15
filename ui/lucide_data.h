@@ -768,6 +768,12 @@ inline constexpr Element kEllipsis[] = {
 };
 // chevron-up.svg
 inline constexpr Element kChevronUp[] = {{Kind::Path, "m18 15-6-6-6 6", {}, false}};
+// flask-conical.svg
+inline constexpr Element kFlaskConical[] = {
+    {Kind::Path, "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2", {}, false},
+    {Kind::Path, "M6.453 15h11.094", {}, false},
+    {Kind::Path, "M8.5 2h7", {}, false},
+};
 inline constexpr IconData kIcons[] = {
     {"activity", kActivity, static_cast<int>(sizeof(kActivity) / sizeof(kActivity[0]))},
     {"aperture", kAperture, static_cast<int>(sizeof(kAperture) / sizeof(kAperture[0]))},
@@ -885,6 +891,7 @@ inline constexpr IconData kIcons[] = {
     {"panel-left-open", kPanelLeftOpen, static_cast<int>(sizeof(kPanelLeftOpen) / sizeof(kPanelLeftOpen[0]))},
     {"ellipsis",kEllipsis,static_cast<int>(sizeof(kEllipsis)/sizeof(kEllipsis[0]))},
     {"chevron-up",kChevronUp,static_cast<int>(sizeof(kChevronUp)/sizeof(kChevronUp[0]))},
+    {"flask-conical", kFlaskConical, static_cast<int>(sizeof(kFlaskConical) / sizeof(kFlaskConical[0]))},
 };
 
 } // namespace ApexUi::LucideData

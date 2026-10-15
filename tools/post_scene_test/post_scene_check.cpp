@@ -21,6 +21,7 @@ bool RegisterSetRenderTarget(const std::string&, SetRenderTargetHook, Priority) 
 bool RegisterDrawIndexedPrimitive(const std::string&, DrawIndexedPrimitiveHook, Priority) { return true; }
 bool RegisterDrawPrimitive(const std::string&, DrawPrimitiveHook, Priority) { return true; }
 void UnregisterAll(const std::string&) {}
+void ObserveReissuedDraws(const std::string&) {}
 }
 IDirect3DSurface9* expectedDepth = nullptr;
 bool internalPass = false;

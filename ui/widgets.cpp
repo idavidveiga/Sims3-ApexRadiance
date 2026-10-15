@@ -622,6 +622,37 @@ void IconNote(IconId icon, const char* text, unsigned rgb) {
     ImGui::Dummy(ImVec2(width, h));
 }
 
+void FactRow(const char* const* labels, const char* const* values, int count) {
+    if (Hidden() || count <= 0) return;
+    PadAfterRow();
+    const float u = Unit();
+    const float startX = ImGui::GetCursorPosX(), startY = ImGui::GetCursorPosY();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float gap = kSpace3 * u;
+    // Side by side while each column keeps 90 units; else one under the other
+    const bool stacked = (width - gap * static_cast<float>(count - 1)) / static_cast<float>(count) < 90.0f * u;
+    const float colW = stacked ? width : (width - gap * static_cast<float>(count - 1)) / static_cast<float>(count);
+    float y = startY, bottom = startY;
+    for (int i = 0; i < count; i++) {
+        const float x = stacked ? startX : startX + static_cast<float>(i) * (colW + gap);
+        ImGui::SetCursorPos(ImVec2(x, stacked ? y : startY));
+        ImGui::BeginGroup();
+        ImGui::PushTextWrapPos(x + colW);
+        PushSized(nullptr, kSmallScale);
+        ImGui::PushStyleColor(ImGuiCol_Text, Col(VioletTheme::kTextMuted));
+        ImGui::TextWrapped("%s", T(labels[i]));
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::TextWrapped("%s", T(values[i]));
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        bottom = std::fmax(bottom, ImGui::GetItemRectMax().y - ImGui::GetWindowPos().y + ImGui::GetScrollY());
+        y = bottom + kSpace1 * u;
+    }
+    ImGui::SetCursorPos(ImVec2(startX, startY));
+    ImGui::Dummy(ImVec2(width, bottom - startY));
+}
+
 void Gap(float units) {
     if (Hidden()) return;
     ImGui::Dummy(ImVec2(0.0f, units * Unit()));
@@ -1681,7 +1712,7 @@ bool CardHeader(IconId icon, const char* title, const char* subtitle, const char
     if (chipSize.x > 0.0f) {
         ImGui::SetCursorPos(ImVec2(chipX, startY + std::fmax(0.0f, (rowH - chipSize.y) * 0.5f)));
         ChipImpl(chip, VioletTheme::kTextMuted);
-        Tooltip(kCostChipTooltip);
+        Tooltip(extra && extra->chipTooltip ? extra->chipTooltip : kCostChipTooltip);
     }
     if (hasBadge) {
         ImGui::SetCursorPos(ImVec2(badgeX, startY + std::fmax(0.0f, (rowH - badgeSize.y) * 0.5f)));

@@ -106,9 +106,10 @@ void SetTex(FakeDevice* d,DWORD s,FakeTexture* tex) { d->SetTexture(s,tex); }
 void SetPsConst(FakeDevice* d,UINT r,const float* v,UINT n) { ++d->writes; ++d->pixelWrites; std::memcpy(d->pixel[r].data(),v,n*16); }
 void SetVsConst(FakeDevice* d,UINT r,const float* v,UINT n) { ++d->writes; ++d->vertexWrites; std::memcpy(d->vertex[r].data(),v,n*16); }
 namespace RigTracker { int fixtureMode=2;int CurrentMode(){return fixtureMode;} }
+int RigMode(){return RigTracker::CurrentMode();} // production: RigTracker::CurrentMode read once per draw
 namespace ShaderPatches {
 constexpr unsigned kObjectPixelLamps=8;
-struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true,pixelLamps=true;UINT groundWeightConst=39;UINT reachConst=0;};
+struct ObjectPatch {UINT atlasConst=40,strengthConst=41,lampParamConst=42,atlasSampler=9;bool rigLamps=true,pixelLamps=true;UINT groundWeightConst=39;UINT reachConst=0;int shadeSampler=-1,shadeConst=-1;};
 bool PatchObjectLampPs(std::vector<DWORD>&,ObjectPatch&,bool=false){return true;}
 bool PatchInstancedLamps(std::vector<DWORD>&,ObjectPatch&,bool=false){return true;}
 }
@@ -136,8 +137,8 @@ FakeShader nativeVs{3},replacementVs{4};FakeShader* g_curVs=&nativeVs;
 float g_lampData[33][4]{};
 template<class Patch> PatchedPs& PatchedFor(FakeDevice*,int&,const char*,Patch,bool variant=false){return !variant?objectPatch:fixtureReachRefused?refusedPatch:reachPatch;}
 FakeShader* ObjectVsFor(FakeDevice*,FakeShader*){return &replacementVs;}
-int SelectLamps(float,float,float){return 1;}
-struct LampCone {float c1[4]={0,0,0,1},c2[4]={0,0,0,1};float spill=1;float w=0;float entries=1;};
+int SelectLamps(float,float,float,bool=false){return 1;}
+struct LampCone {float c1[4]={0,0,0,1},c2[4]={0,0,0,1};float spill=1;float w=0;float entries=1;uintptr_t light=0;};
 LampCone g_lampCone[16];
 bool g_fenceConeLogged=false,g_lampConeLogged=false;
 
@@ -146,6 +147,7 @@ float fixtureVisibility=1;
 int visCalls=0;float firstVis[3]{}; // the first point a draw tests (fences: the piece nearest the lamp, 12/10)
 namespace LevelLightShare {bool WallBlocks(const float*,const float*,float=0){return false;}
 float LampVisibility(const float*,const float* p,float=.2f){if(visCalls++==0)std::memcpy(firstVis,p,12);return fixtureVisibility;}
+float ExitLampVisibility(const void*,const float*,const float*,float=.2f){return -1;}
 bool RealisticReachActive(){return fixtureReach;}}
 uint32_t g_objLampsLeftOut=0,g_objLampsDimmed=0,g_fenceLampsLeftOut=0,g_fenceLampsDimmed=0,g_objGroundGated=0,g_objRigDayScaled=0;
 constexpr float kWindowWallSkip=.75f;
@@ -158,6 +160,21 @@ std::map<FakeShader*,int> g_wetLotPs;
 FakeShader* g_replacementWetPs=&replacementPs;
 void EnsureWetReplacement(FakeDevice*){}
 FakeTexture* LotMaskFor(FakeDevice*,const float*,const float*,const float*,const float*,const LotRect*,float* rows){std::memset(rows,0,32);return nullptr;}
+// the ground lamp shade of fences (13/10): the production FloorShadeBind (not extracted) binds the lot mask and 3 rows for the
+// draw; the fixture writes marker rows and restores them, and records the point the lot was looked up at
+std::atomic<long> g_fenceShadeLot{0},g_fenceShadeNoLot{0};
+const LotRect* fixtureShadeLot=nullptr;float fixtureShadeAt[2]{};int fixtureShadeLookups=0;
+const LotRect* FindLotAt(float x,float z){++fixtureShadeLookups;fixtureShadeAt[0]=x;fixtureShadeAt[1]=z;return fixtureShadeLot;}
+struct FloorShadeBind {
+    FakeDevice* d;UINT c=0;float old[3][4]{};bool active=false;
+    FloorShadeBind(FakeDevice* dev,int sampler,int constant,const LotRect* lot,float,std::atomic<long>& withLot,std::atomic<long>& noLot):d(dev){
+        if(sampler<0||constant<0) return;
+        c=UINT(constant);(lot?withLot:noLot)++;d->GetPixelShaderConstantF(c,&old[0][0],3);
+        const float rows[12]{7,7,7,7,7,7,7,7,7,7,7,7};SetPsConst(d,c,rows,3);active=true;
+    }
+    ~FloorShadeBind(){if(active)SetPsConst(d,c,&old[0][0],3);}
+    std::string Text() const {return active?"ground lamp shade: fixture":"ground lamp shade: none";}
+};
 template<class LampArray> std::string DescribeObjectDraw(FakeDevice*,const ShaderPatches::ObjectPatch&,int,bool,int,int,const LampArray&,int){return "fixture";}
 void SetVs(FakeDevice* d,FakeShader* shader){++d->writes;d->vs=shader;}
 #include "extracted_resource_paths.h"
@@ -176,6 +193,7 @@ void ResetGlobals() {
     reachPatch=PatchedPs{};reachPatch.obj.reachConst=reachPatch.inst.reachConst=42+1+4*ShaderPatches::kObjectPixelLamps;
     g_nativeWallScale=1.f;g_nativeWallTick=0;g_lotDrawTick=0;objectVsInfo.patched.worldK=8;
     g_reachObjDraws=g_reachFenceDraws=g_reachWindowDraws=g_reachLawRefused=0;visCalls=0;
+    objectPatch.inst.shadeSampler=objectPatch.inst.shadeConst=-1;fixtureShadeLot=nullptr;fixtureShadeLookups=0;g_fenceShadeLot=0;g_fenceShadeNoLot=0;
 }
 FakeDevice Device() {
     FakeDevice d; d.ps=g_curPs;
@@ -344,6 +362,22 @@ void InstancedChecks() {
     Check(!DrawInstanced(&d,[]{})&&d.writes==0,"disabled instanced path stays native");
     g_fenceFix=true;fixtureAtlas=nullptr;
     Check(!DrawInstanced(&d,[]{})&&d.writes==0,"missing instanced atlas stays native");
+    // the ground lamp shade (13/10): a copy with it binds its rows for the draw with the lot under the group's centre, and
+    // restores them; no group read: no lookup, counted without a lot; a copy without it binds nothing
+    for(int mode=0;mode<3;++mode){
+        ResetGlobals();d=Device();fixtureAtlas=&atlas;g_fenceFix=true;g_night=1;g_objPixelLamps=true;fixtureGroup=GroupCentre{};fixtureGroup.x=12;fixtureGroup.z=-3;
+        if(mode<2){objectPatch.inst.shadeSampler=10;objectPatch.inst.shadeConst=200;}
+        fixtureHasRect=true;fixtureShadeLot=&fixtureRect;fixtureNoGroup=mode==1;
+        const auto pixel=d.pixel;const auto textures=d.textures;
+        Check(DrawInstanced(&d,[&]{Check(mode<2?d.pixel[200][0]==7.f&&d.pixel[202][3]==7.f:Same(d.pixel[200],pixel[200]),"fence shade rows bound only by a copy with the shade");}),"fence with the shade draws");
+        Check(Same(d.pixel[200],pixel[200])&&Same(d.pixel[202],pixel[202])&&Same(d.textures,textures),"fence shade rows restored after the draw");
+        if(mode==0) Check(fixtureShadeLookups==1&&fixtureShadeAt[0]==12.f&&fixtureShadeAt[1]==-3.f&&g_fenceShadeLot==1&&g_fenceShadeNoLot==0,"fence shade: the lot under the group's centre");
+        if(mode==1) Check(fixtureShadeLookups==0&&g_fenceShadeLot==0&&g_fenceShadeNoLot==1,"fence shade: no group read, no lot (white, gate 0)");
+        if(mode==2) Check(g_fenceShadeLot==0&&g_fenceShadeNoLot==0,"fence copy without the shade binds nothing");
+    }
+    ResetGlobals();d=Device();fixtureAtlas=&atlas;fixtureCapture=true;g_fenceFix=true;g_night=1;g_objPixelLamps=true;fixtureGroup=GroupCentre{};objectPatch.inst.shadeSampler=10;objectPatch.inst.shadeConst=200;
+    Check(DrawInstanced(&d,[&]{Check(g_objDrawInfo.find("ground lamp shade: fixture")!=std::string::npos,"F7 fence line shows the ground lamp shade");}),"captured shaded fence draws");
+    ResetGlobals();
     std::printf("Extracted DrawInstanced: %d checks\n",checks-before);
 }
 HRESULT NativeSet(FakeDevice* d,DWORD s,FakeTexture* t) { return d->SetTexture(s,t); }

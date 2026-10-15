@@ -8,7 +8,7 @@ border. Near the border the two sides blend over 3 m, so a lamp standing next to
 
 | | |
 |---|---|
-| Availability | Released (part of Night Lighting since 0.1.0). Lot UV alignment, daylight terrain term and the constant-read guard: Released in 2.6.0. Rain and other weather variants recognised (exact rain variant and by structure): Released in 2.7.0 |
+| Availability | Released (part of Night Lighting since 0.1.0). Lot UV alignment, daylight terrain term and the constant-read guard: Released in 2.6.0. Rain and other weather variants recognised (exact rain variant and by structure): Released in 2.7.0. Lamp shade on lot ground (*Walls shade lamp light near the ground*) and lamps through the outside walls' openings: Released in 2.13.0 |
 | Default | On |
 | Menu | Lighting > Ground > Ground & Lots > *Street lamps light lots* |
 | Configuration | `[patches.NightTerrainRelight]` `luzDoPosteNaGramaDoLote` in `ApexRadiance.toml` |
@@ -88,9 +88,18 @@ The full table is in the [Night Lighting overview](README.md#settings).
 
 ## Limitations
 
-- The terrain stamp has no wall occlusion. Since 07/10 a per-lot room mask (4 texels a metre from the rooms of the two
+- The terrain stamp has no wall occlusion. A per-lot room mask (4 texels a metre from the rooms of the two
   lowest stories, `LevelLightShare::LotGroundMask`, s3 + PS c32/c33; the snowy passes s13/s14/s15 + PS c200/c201) keeps it
-  out of rooms, roofless walled yards included; fences still let it through.
+  out of rooms, roofless walled yards included; fences still let it through. The mask's alpha carries the lamp
+  shade (below): outside walls shade the lamp term; fences, plants and objects do not, and the world grass beyond the lot
+  edge is not shaded, so a shadow that reaches the lot edge ends there.
+- The walls' doors, windows, arches and half-wall cells let the lamps through (`OutsideWallsIn` with the
+  walls' patches, [level-light-share.md](level-light-share.md#openings-in-the-outside-walls-copies)): each texel keeps
+  each lamp's share past every wall (an opening's rim gives part of it) instead of a blocked bit; a wall with no known
+  opening is whole, as before.
+- The lamp shade is one factor for all lamps together (the share of their light the walls leave): on the grass, the
+  story-0 floors and the instanced groups near the ground it multiplies the whole lamp term, so a texel or pixel lit by a
+  second lamp that no wall hides is dimmed as much as the first lamp's shade there.
 - The winter lot pass with VS 436BB272 (m58, "prefeitura") is not handled ([snow.md](snow.md)).
 - The snowy lot pass has no soft edge.
 - A porch lamp within 3 m of the edge fades towards the atlas near the edge (with *Lot lamps light the street* the atlas
@@ -118,6 +127,7 @@ The full table is in the [Night Lighting overview](README.md#settings).
 | c31 | `(lot map gain, daylight terrain term, lot uv scale, lot uv offset)`: x = `LotMapGain()` at full night, the lot map's night gain before it; y = 0 (since 2.12.3: before full night c3.x itself is set to ground gain x `LampDay(night)` for one draw, `TerrainLightingPolicy::LotPass`, so the terrain and the lot map follow the shared daytime curve; until 2.12.2 y = `(1 - night) x ground gain`, the full gain by day), z/w = `1/63` and `-c12.x x 16/63` for the recognised VS, else 0 |
 | s0 | sky cube (game) |
 | s1 | lot light map (game) |
+| s3 | room mask (rgb) and lamp shade (alpha), A8R8G8B8, 4 texels a metre; c32 / c33 its uv rows |
 | s2 | terrain light (atlas or chunk map) |
 | s5 | sun/moon shadow map (game) |
 | TEXCOORD1.xy | terrain uv |
@@ -133,7 +143,7 @@ terrain = tex2D(sTerrain, terrainUv.xy).rgb * (c3.x + c31.y)
 lp      = (dot(float3(terrainUv.xy, 1), c28.xyz), dot(float3(terrainUv.xy, 1), c29.xyz))   // lot-local metres
 e       = min(lp, (c28.w, c29.w) - lp);  w = smoothstep01(saturate(min(e.x, e.y) * c30.x + c30.y))
 lotUv   = lotUv * (1 + c31.z) + c31.w
-lamps   = lerp(terrain, max(tex2D(sLot, lotUv).rgb * c31.x * c3.x, terrain), w)   // game: tex2D(sLot).rgb * c3.x
+lamps   = lerp(terrain, max(tex2D(sLot, lotUv).rgb * c31.x * c3.x, terrain), w) * shade   // game: tex2D(sLot).rgb * c3.x
 col     = sun * c0.rgb + lamps
 col     = texCUBE(sSky, n).rgb * c4.x + col
 return float4(col * 0.5, 0)                                                          // modulate2x
@@ -154,6 +164,28 @@ the native lot/window map scale is unchanged. fxc check: `fxc /T ps_3_0 /E main`
   terrain texture") and the game draws.
 - s2 is set to CLAMP/CLAMP, LINEAR min/mag/mip, sRGB off through `SamplerBind`; texture, sampler states, c14, PS
   c28..c31 and the PS are restored after the draw. Counter `g_lotDrawn` ("lot light fixed: N draws").
+
+### Lamp shade on lot ground (`GroundShadow`)
+
+The atlas is the terrain stamp, baked with no occluder, so a free-standing wall next to a garden post left the grass
+behind it fully lit. Per lot, on the room mask's grid, `features/ground_lamp_shadow.h` computes for each texel
+`M = 1 - sum w_i (1 - v_i) / max(sum w_i, 0.05)`: `w_i` the stamp weight of each bake lamp whose rect overlaps the lot
+(`sat(0.4 x lum(colour x intensity x range) x cos / d^2)`, at most 32 lamps), `v_i` 0 when an outside wall (the copy
+*Buildings block lamp light on trees and objects* tests) stands between the head and the ground texel. A wall within 1 m of the lot's
+ground is tested with the point at its own base; a crossing within 0.15 m of the head is the lamp's own face (a sconce).
+Two `[1 2 1]` blurs soften the edge. Inside rooms the alpha is 1 (their own lamps light them). The pass multiplies the
+whole lamp term (lot map, atlas and the soft edge's target) by it; the snowy passes get `mul r0.xyz, r0, r6.w` after their
+max. The build runs on the render thread from copies, 1 ms a frame (`ShadeTick`), and again only when the lot's place, its
+lamps (place, about 20% of light, in or out of the bake) or the outside walls in its box changed, at most every 2 s.
+It follows *Walls shade lamp light near the ground* (Lighting > Ground, `paredesSombreiamOChao`). Status (developer page): *Walls shade lamps on lot ground*. The lot's
+ground height is taken from room 0's matrix (`m13`, unverified as the ground under every texel).
+
+Outdoor floors on the ground (story 0) read the same texture: their shaders multiply `max(floor map, atlas)` by the
+alpha within about 1 m of the lot's ground (`FloorShadeBind`, `LotMaskTexture`; [floors.md](floors.md)). A floor draw
+finds its lot by its world rows (`FindFloorLot`: `FindLotRect`, else the same rotation with the rows' origin inside the
+lot rectangle). Fences, curbs, railings and stairs (instanced groups) take it too, on their per-pixel lamp sum and within
+the same 1 m: their lot is the one under the group's centre (`FindLotAt`; [fences.md](fences.md)). The alpha is
+one factor for all lamps, so a surface it shades is dimmed for every lamp, also one that no wall hides from it.
 
 ### Soft lot edges
 
@@ -209,6 +241,7 @@ Each was one of the failed attempts recorded in the history and is kept as a swi
 | | `LotRect`, `ReadLotRects` (SEH walk), `RefreshLotRects`, `FindLotRect`, `LotEdgeConstants`, `g_softEdges`, `kEdgeBand`; `SetSoftLotEdges`, `LotEdgeStatus` | Soft lot edges |
 | | `VisibleLot`, `LotVisible`, `TakeLotArrivals` | Visible lots for the arrival relight |
 | | `LotMapGain`, `GroundGain`, `ConstGain` | Gains |
+| | `LotMask`, `LotMaskFor`, `LotMaskTexture`, `ShadeTick`; `FindFloorLot`, `FindLotAt`, `FloorShadeBind` | Room mask and lamp shade; the shade on story-0 floors and instanced groups |
 | | `LotLightBridge::SetEnabled`, `Status`, `OnWorldChanged` (`ClearChunks`), `Shutdown(keepChunkMaps)`, `ChunkCount` | Lifecycle |
 | shader_ids.h | `kLotLightPs` {568, 0xFDAD274B}, `kLotLightVs` {680, 0x0C8CC5E8} | Exact gates |
 | lightmap_smooth.cpp | `LightmapSmooth::Atlas`, `Find`, `Get` | Terrain light source |

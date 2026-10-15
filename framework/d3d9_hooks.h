@@ -18,8 +18,9 @@
 //    lock that a draw / state callback takes while unregistering from another thread.
 #include <d3d9.h>
 #include <cstdint>
-#include <functional>
+#include <memory>
 #include <string>
+#include <type_traits>
 
 namespace D3D9Hooks {
 
@@ -51,21 +52,58 @@ struct DeviceContext {
     }
 };
 
-using DrawIndexedPrimitiveHook = std::function<HookAction(DeviceContext&, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT)>;
-using DrawPrimitiveHook = std::function<HookAction(DeviceContext&, D3DPRIMITIVETYPE, UINT, UINT)>;
-using SetRenderTargetHook = std::function<HookAction(DeviceContext&, DWORD, IDirect3DSurface9*)>;
-using SetPixelShaderHook = std::function<HookAction(DeviceContext&, IDirect3DPixelShader9*)>;
-using SetVertexShaderHook = std::function<HookAction(DeviceContext&, IDirect3DVertexShader9*)>;
-using SetTextureHook = std::function<HookAction(DeviceContext&, DWORD, IDirect3DBaseTexture9*)>;
-using PresentHook = std::function<HookAction(DeviceContext&, const RECT*, const RECT*, HWND, const RGNDATA*)>;
-using BeginSceneHook = std::function<HookAction(DeviceContext&)>;
-using CreateTextureHook = std::function<HookAction(DeviceContext&, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*)>;
-using CreateRenderTargetHook = std::function<HookAction(DeviceContext&, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*)>;
-using SetViewportHook = std::function<HookAction(DeviceContext&, const D3DVIEWPORT9*)>;
-using CreatePixelShaderHook = std::function<HookAction(DeviceContext&, const DWORD*, IDirect3DPixelShader9**)>;
-using CreateVertexShaderHook = std::function<HookAction(DeviceContext&, const DWORD*, IDirect3DVertexShader9**)>;
-using SetPixelShaderConstantFHook = std::function<HookAction(DeviceContext&, UINT, const float*, UINT)>;
-using SetVertexShaderConstantFHook = std::function<HookAction(DeviceContext&, UINT, const float*, UINT)>;
+// A registered callback: a plain function pointer and its object, called with one indirect call per dispatch (14/10:
+// std::function added a virtual call and a copy of the arguments per callback, ~6,000 dispatches a frame). Built
+// implicitly from any callable taking (DeviceContext&, args...) and returning HookAction: a lambda without captures is
+// called through a function made for its type (no object); any other callable is copied to the heap, kept alive by
+// the callback and every list that holds it.
+template <typename Sig> class Callback;
+template <typename... A> class Callback<HookAction(DeviceContext&, A...)> {
+  public:
+    using Raw = HookAction (*)(void* self, DeviceContext&, A...);
+    Callback() = default;
+    template <typename F, typename D = std::decay_t<F>,
+              typename = std::enable_if_t<!std::is_same_v<D, Callback> && std::is_invocable_r_v<HookAction, D&, DeviceContext&, A...>>>
+    Callback(F&& f) { // NOLINT: implicit on purpose (registration sites pass lambdas)
+        if constexpr (std::is_empty_v<D> && std::is_default_constructible_v<D>) {
+            fn_ = &Stateless<D>;
+        } else {
+            if constexpr (std::is_constructible_v<bool, const D&>)
+                if (!static_cast<bool>(f)) return; // an empty std::function: nothing registered
+            auto owned = std::make_shared<D>(std::forward<F>(f));
+            self_ = owned.get();
+            owner_ = std::move(owned);
+            fn_ = &Stateful<D>;
+        }
+    }
+    explicit operator bool() const { return fn_ != nullptr; }
+    HookAction operator()(DeviceContext& ctx, A... a) const { return fn_(self_, ctx, a...); }
+    Raw fn() const { return fn_; }
+    void* self() const { return self_; }
+
+  private:
+    template <typename D> static HookAction Stateless(void*, DeviceContext& ctx, A... a) { return D{}(ctx, a...); }
+    template <typename D> static HookAction Stateful(void* self, DeviceContext& ctx, A... a) { return (*static_cast<D*>(self))(ctx, a...); }
+    Raw fn_ = nullptr;
+    void* self_ = nullptr;
+    std::shared_ptr<void> owner_;
+};
+
+using DrawIndexedPrimitiveHook = Callback<HookAction(DeviceContext&, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT)>;
+using DrawPrimitiveHook = Callback<HookAction(DeviceContext&, D3DPRIMITIVETYPE, UINT, UINT)>;
+using SetRenderTargetHook = Callback<HookAction(DeviceContext&, DWORD, IDirect3DSurface9*)>;
+using SetPixelShaderHook = Callback<HookAction(DeviceContext&, IDirect3DPixelShader9*)>;
+using SetVertexShaderHook = Callback<HookAction(DeviceContext&, IDirect3DVertexShader9*)>;
+using SetTextureHook = Callback<HookAction(DeviceContext&, DWORD, IDirect3DBaseTexture9*)>;
+using PresentHook = Callback<HookAction(DeviceContext&, const RECT*, const RECT*, HWND, const RGNDATA*)>;
+using BeginSceneHook = Callback<HookAction(DeviceContext&)>;
+using CreateTextureHook = Callback<HookAction(DeviceContext&, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*)>;
+using CreateRenderTargetHook = Callback<HookAction(DeviceContext&, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*)>;
+using SetViewportHook = Callback<HookAction(DeviceContext&, const D3DVIEWPORT9*)>;
+using CreatePixelShaderHook = Callback<HookAction(DeviceContext&, const DWORD*, IDirect3DPixelShader9**)>;
+using CreateVertexShaderHook = Callback<HookAction(DeviceContext&, const DWORD*, IDirect3DVertexShader9**)>;
+using SetPixelShaderConstantFHook = Callback<HookAction(DeviceContext&, UINT, const float*, UINT)>;
+using SetVertexShaderConstantFHook = Callback<HookAction(DeviceContext&, UINT, const float*, UINT)>;
 
 bool RegisterDrawIndexedPrimitive(const std::string& name, DrawIndexedPrimitiveHook hook, Priority priority = Priority::Normal);
 bool RegisterDrawPrimitive(const std::string& name, DrawPrimitiveHook hook, Priority priority = Priority::Normal);
@@ -86,6 +124,24 @@ bool RegisterSetVertexShaderConstantF(const std::string& name, SetVertexShaderCo
 // Removes every callback registered under this name (all methods).
 void UnregisterAll(const std::string& name);
 
+// Draws re-issued by a callback (Night Lighting replaces a draw: it changes the shader or constants, calls the device to
+// draw, and skips the game's call; lot_light_bridge.cpp). The re-issued draw goes through the draw chains again, inside a
+// ReissueScope on this thread: there it runs only the callbacks registered under a name passed to ObserveReissuedDraws
+// (the Banding Fix, which dithers the replacement shader; Wall Heights, which runs after Night Lighting and sees a
+// replaced wall only there; PostScene and Picture, whose scene draw counts include it; the developer observers: Frame
+// Profiler, Light Probe, Frame Capture). The others (Ambient Occlusion's receiver replay, Night Lighting)
+// already ran for the game's call of the same draw with the same state, and their nested run changed nothing (14/10). In the development build the driver's time for a re-issued draw is booked
+// as "Re-issued draw (driver)", not as mod time.
+void ObserveReissuedDraws(const std::string& name); // DrawIndexedPrimitive and DrawPrimitive callbacks of this name, now and later
+void BeginReissue();
+void EndReissue();
+struct ReissueScope {
+    ReissueScope() { BeginReissue(); }
+    ~ReissueScope() { EndReissue(); }
+    ReissueScope(const ReissueScope&) = delete;
+    ReissueScope& operator=(const ReissueScope&) = delete;
+};
+
 // The device methods without any Apex callback: the next hook in the Detours chain (a module that detoured the same
 // function BEFORE Apex, e.g. official S3SS when it attached first), or the driver. A module that detoured it AFTER Apex
 // (outer) does not see these calls either. Before Install they call through the device's vtable.
@@ -105,6 +161,17 @@ HRESULT CallOriginalCreatePixelShader(IDirect3DDevice9* device, const DWORD* fun
 HRESULT CallOriginalCreateVertexShader(IDirect3DDevice9* device, const DWORD* function, IDirect3DVertexShader9** shader);
 HRESULT CallOriginalSetVertexShader(IDirect3DDevice9* device, IDirect3DVertexShader9* shader);
 HRESULT CallOriginalSetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9* texture);
+
+// ---- the shaders bound now (render thread) ----
+// Followed through the SetPixelShader / SetVertexShader dispatches and CallOriginalSet*Shader, so a draw callback knows
+// them without a device call (14/10: the Banding Fix read both back on every scene draw). Read back from the device, and
+// followed from then on, whenever they are not known: on another thread, after a device call made from another
+// thread, at every BeginScene and Present (a state block may have restored them: the menu overlay; a Reset), and after
+// ShaderStateChanged. The pointers are identities: the device holds the references.
+IDirect3DPixelShader9* BoundPixelShader(IDirect3DDevice9* device);
+IDirect3DVertexShader9* BoundVertexShader(IDirect3DDevice9* device);
+// Shaders were set without the device's Set*Shader (a state block applied, RtLampGpu::Engine::End): read them back
+void ShaderStateChanged();
 
 // ---- development build: counters for the Frame Profiler (zeros in the public build) ----
 // Calls that reached Apex's detours (the game's calls, and other modules' calls made through the device), counted

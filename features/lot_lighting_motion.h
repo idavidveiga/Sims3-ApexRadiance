@@ -37,6 +37,11 @@ bool CameraMoving();
 // wall shading gate when those are on.
 bool SampleCameraMoving();
 
+// The flush after a lamp drag (DragLite::SolveCapMs): Faster room lighting's drain takes what it needs up to the spread cap
+// (DrainBudget) and books what it spent (NoteDrainSpent, 0 at each pick); the lot being played gets the rest of the cap
+float DrainBudget(float wanted); // the drain's budget this frame (render thread)
+void NoteDrainSpent(float ms);   // what the drain spent this frame (render thread)
+
 std::string StatusText();
 // Development build: status lines
 void RenderDeveloperUI();

@@ -23,6 +23,7 @@
 #endif
 #include "object_light_bridge.h"
 #include "level_light_share.h"
+#include "lot_light_bridge.h"
 #include "game_addresses.h"
 #include "memory_patch.h"
 #include "apex_log.h"
@@ -39,6 +40,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "tester_toggles.h"
+#include "rig_cut.h"
 
 namespace {
 
@@ -154,9 +157,40 @@ struct LightVector {
 // (RequestRigRefresh), so the lamp switching on or off below reaches them too.
 std::mutex g_crossRigMx;
 std::unordered_set<BYTE*> g_crossRigSet;
-// The list's lamps of another room that reach the rig's centre: how many were written to lamps / ids; nearby: one of them
-// lies within kCrossRangeM, reached or not
-int CrossCandidates(BYTE* rig, BYTE* room, const LightVector* list, uintptr_t* lamps, int* ids, bool& nearby) {
+// Outdoor light through openings (2.12.4): a roofed room also holds the outdoor lamps of room 0 of its story that it takes
+// through its doors, windows and arches (LevelLightShare::OpeningLampReach, an immutable copy published by the room gathers,
+// so any gather thread may read it). Their id is 0, and the game's room-list gather FUN_006bb2f0 cannot take them: it drops
+// a light whose vfunc+0x20 is true (the street-lamp class, type 11: a garden post), then runs the 2D wall test 0x0069D4C0
+// against the room's walls (room+0x30) from the rig's centre to the lamp, which sees the arch's wall as a whole run and pops
+// the candidate (0x006BB3B7: [0x01158D24] -= 0x30; decompiled 13/10). So such a lamp goes through the game's per-light test
+// FUN_006bb270 alone (thiscall(rig, light) with rig+0x1E0 = 0: the same colour at the centre through ClassColour, the same
+// luminance cut, the same candidate list), and its record is scaled by its share through the openings instead of the
+// outdoor walls' test (ShadeRec): t_openShade carries that share to ClassColour on this thread.
+uintptr_t kRigLightTest = 0; // 0x006BB270: FUN_006bb270, from the call at FUN_006bb2f0 + 0x6D (its return address + 0x43 checked)
+using RigLightTest_t = bool(__thiscall*)(void* rig, void* light);
+struct OpenShade {
+    const void* light = nullptr;
+    float share = 1.0f;
+    const BYTE* rig = nullptr; // the rig being gathered (the cut it is tested against, KeepOverCut)
+};
+thread_local OpenShade t_openShade;
+std::atomic<long> g_openRigs{0}, g_openLamps{0}, g_openKept{0}, g_openLaw{0}, g_openOverCut{0}; // g_openLaw: records set by the per-pixel lamps' law (OpeningLawRec)
+struct RigOpenNote {
+    DWORD tick = 0;
+    int n = 0;
+    uintptr_t light[4] = {};
+    float share[4] = {};
+    bool kept[4] = {};
+};
+std::mutex g_rigOpenMx;
+std::unordered_map<uintptr_t, RigOpenNote> g_rigOpen; // rig -> its last gather's lamps through openings (F7 notes)
+std::atomic<bool> g_rigOpenAny{false}; // g_rigOpen has held a note (the gathers with none skip its lock until then)
+// The list's lamps of another room that reach the rig's centre: how many were written to lamps / ids / shares (id 0: an
+// outdoor lamp the room takes through its openings); nearby: one of them lies within kCrossRangeM, reached or not
+// open[k]: the lamp is one the room took through an opening (an outdoor lamp of room 0, or since 2.12.4 a lamp of a roofed
+// neighbour through an opening between them, LevelLightShare::OpeningLampReach): it goes through the game's per-light test
+// alone (OpeningLamps), as the room-list gather's wall test against the room's walls would pop it
+int CrossCandidates(BYTE* rig, BYTE* room, const LightVector* list, uintptr_t* lamps, int* ids, float* shares, bool* open, bool& nearby) {
     int n = 0;
     nearby = false;
     __try {
@@ -167,21 +201,66 @@ int CrossCandidates(BYTE* rig, BYTE* room, const LightVector* list, uintptr_t* l
             const uintptr_t light = *p;
             if (!light) continue;
             const int id = *reinterpret_cast<const int*>(light + 8);
-            if (id == own || id <= 0) continue;
+            if (id == own || id < 0 || (id == 0 && !kRigLightTest)) continue;
+            if (id == 0 && std::find(lamps, lamps + n, light) != lamps + n) continue; // (story 0's room 0 lamps are in the list twice)
             const float* head = reinterpret_cast<const float*>(light + 0x120); // the lamp's position
             const float dx = head[0] - centre[0], dy = head[1] - centre[1], dz = head[2] - centre[2];
             if (!(dx * dx + dy * dy + dz * dz < kCrossRangeM * kCrossRangeM)) continue; // the game's 0.1 cut drops it anyway
-            const float reach = LevelLightShare::CrossLampReach(room, reinterpret_cast<const void*>(light), centre);
-            if (reach >= 0.0f) nearby = true; // a lamp of another story this room takes
+            float reach = id == 0 ? LevelLightShare::OpeningLampReach(room, reinterpret_cast<const void*>(light), centre)
+                                  : LevelLightShare::CrossLampReach(room, reinterpret_cast<const void*>(light), centre);
+            bool throughOpening = id == 0;
+            if (reach < 0.0f && id > 0 && kRigLightTest) { // a lamp of a roofed neighbour taken through an opening
+                reach = LevelLightShare::OpeningLampReach(room, reinterpret_cast<const void*>(light), centre);
+                throughOpening = reach >= 0.0f;
+            }
+            if (reach >= 0.0f) nearby = true; // a lamp of another story (or through an opening) this room takes
             if (reach < kCrossReachMin) continue;
             lamps[n] = light;
             ids[n] = id;
+            shares[n] = reach;
+            open[n] = throughOpening;
             n++;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
     return n;
+}
+// The game's per-light test for one lamp, rig+0x1E0 = the lamp's room id (0 for room 0's) for the call; true = kept as a candidate
+bool RigLightTestAsRoom(BYTE* rig, uintptr_t light, int id) {
+    bool kept = false;
+    __try {
+        int& room = *reinterpret_cast<int*>(rig + 0x1E0);
+        const int saved = room;
+        room = id;
+        __try {
+            kept = reinterpret_cast<RigLightTest_t>(kRigLightTest)(rig, reinterpret_cast<void*>(light));
+        } __finally {
+            room = saved;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        kept = false;
+    }
+    return kept;
+}
+void OpeningLamps(BYTE* rig, const uintptr_t* lamps, const float* shares, int count, int id) {
+    RigOpenNote note{GetTickCount()};
+    for (int i = 0; i < count; i++) {
+        t_openShade = OpenShade{reinterpret_cast<const void*>(lamps[i]), shares[i], rig};
+        const bool kept = RigLightTestAsRoom(rig, lamps[i], id);
+        t_openShade = OpenShade{};
+        if (kept) g_openKept.fetch_add(1, std::memory_order_relaxed);
+        if (note.n < 4) {
+            note.light[note.n] = lamps[i], note.share[note.n] = shares[i], note.kept[note.n] = kept;
+            note.n++;
+        }
+    }
+    g_openRigs.fetch_add(1, std::memory_order_relaxed);
+    g_openLamps.fetch_add(count, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(g_rigOpenMx);
+    if (g_rigOpen.size() > 16384) g_rigOpen.clear();
+    g_rigOpen[reinterpret_cast<uintptr_t>(rig)] = note;
+    g_rigOpenAny.store(true, std::memory_order_relaxed);
 }
 // The game's gather for one room id's lamps, rig+0x1E0 set to that id for the call
 void GatherAsRoom(BYTE* rig, int id, void* a, LightVector* list, void* c, void* d) {
@@ -200,26 +279,46 @@ void GatherAsRoom(BYTE* rig, int id, void* a, LightVector* list, void* c, void* 
 void CrossStoryLamps(BYTE* rig, void* a, void* b, void* c, void* d) {
     uintptr_t lamps[kCrossMax];
     int ids[kCrossMax];
+    float shares[kCrossMax];
+    bool open[kCrossMax] = {};
     BYTE* room = static_cast<BYTE*>(a) - 0x30; // a = room+0x30, the room's walls (FUN_006bbde0 at 0x6BBE6A)
     bool nearby = false;
-    const int n = CrossCandidates(rig, room, static_cast<const LightVector*>(b), lamps, ids, nearby);
+    const int n = CrossCandidates(rig, room, static_cast<const LightVector*>(b), lamps, ids, shares, open, nearby);
     if (nearby) {
         std::lock_guard<std::mutex> lk(g_crossRigMx);
         if (g_crossRigSet.size() < 8192) g_crossRigSet.insert(rig);
     }
-    if (n <= 0) return;
+    if (n <= 0) {
+        if (g_rigOpenAny.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lk(g_rigOpenMx);
+            g_rigOpen.erase(reinterpret_cast<uintptr_t>(rig)); // (F7 notes: none through openings at this gather)
+        }
+        return;
+    }
     bool done[kCrossMax] = {};
+    bool opened = false;
     for (int i = 0; i < n; i++) {
         if (done[i]) continue;
         uintptr_t group[kCrossMax];
+        float groupShare[kCrossMax];
         int count = 0;
         for (int j = i; j < n; j++)
-            if (!done[j] && ids[j] == ids[i]) {
+            if (!done[j] && ids[j] == ids[i] && open[j] == open[i]) {
+                groupShare[count] = shares[j];
                 group[count++] = lamps[j];
                 done[j] = true;
             }
+        if (open[i]) { // lamps through the room's openings (above): outdoor ones (id 0) and those of a roofed neighbour
+            OpeningLamps(rig, group, groupShare, count, ids[i]);
+            opened = true;
+            continue;
+        }
         LightVector one{group, group + count, group + count};
         GatherAsRoom(rig, ids[i], a, &one, c, d);
+    }
+    if (!opened && g_rigOpenAny.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lk(g_rigOpenMx);
+        g_rigOpen.erase(reinterpret_cast<uintptr_t>(rig));
     }
     g_crossRigs.fetch_add(1, std::memory_order_relaxed);
     g_crossLamps.fetch_add(n, std::memory_order_relaxed);
@@ -290,6 +389,22 @@ void RegatherCrossRigs() {
     for (BYTE* rig : gone) g_crossRigSet.erase(rig);
 }
 
+// The room-mode rigs of the rooms whose outdoor lamps through openings changed (LevelLightShare::TakeOpeningRigRooms): the
+// game marks a room-mode rig only for a lamp of its own room, so they gather again here (render thread)
+void RegatherOpeningRooms() {
+    std::vector<const void*> rooms;
+    LevelLightShare::TakeOpeningRigRooms(rooms);
+    if (rooms.empty()) return;
+    std::sort(rooms.begin(), rooms.end());
+    std::vector<BYTE*> rigs;
+    {
+        std::lock_guard<std::mutex> lk(g_rigRoomMx);
+        for (const auto& [rig, room] : g_rigRoom)
+            if (std::binary_search(rooms.begin(), rooms.end(), room)) rigs.push_back(reinterpret_cast<BYTE*>(rig));
+    }
+    for (BYTE* rig : rigs) RegatherRoomRig(rig, 0);
+}
+
 // Render thread, every frame: current night level and light cells (0 when no world).
 bool ReadNight(float& level, uintptr_t& cells) {
     if (!kRootPtr) return false;
@@ -340,6 +455,20 @@ bool CellGatherReturns4() {
     return false;
 }
 
+// FUN_006bb270 (outdoor lamps through openings): the call at FUN_006bb2f0 + 0x6D, accepted only when the light colour call's
+// return address (kRigGatherReturn, 0x006BB2B3) lies 0x43 into it as on Steam 1.67.2; else those lamps stay out of the rigs
+void ResolveRigLightTest() {
+    kRigLightTest = 0;
+    const uintptr_t site = kRoomGather + 0x6D;
+    BYTE call[5] = {};
+    if (!kRoomGather || !kRigGatherReturn || !MemPatch::ReadBytes(site, call, sizeof call) || call[0] != 0xE8) return;
+    int32_t rel = 0;
+    std::memcpy(&rel, call + 1, 4);
+    const uintptr_t target = site + 5 + static_cast<uintptr_t>(static_cast<intptr_t>(rel));
+    if (target + 0x43 == kRigGatherReturn) kRigLightTest = target;
+    LOG_INFO(kRigLightTest ? std::format("[ObjectLightBridge] Outdoor lamps through openings: the per-light test at 0x{:08X}", kRigLightTest)
+                           : std::string("[ObjectLightBridge] Outdoor lamps through openings: the per-light test differs; those lamps stay out of the objects' light"));
+}
 bool InstallRoomGatherPatch() {
     std::string missing;
     if (!GameAddr::Have({GameAddr::Id::RoomGatherCall, GameAddr::Id::RoomGather, GameAddr::Id::CellGather, GameAddr::Id::RigUpdate, GameAddr::Id::RigVtable}, &missing)) {
@@ -351,7 +480,9 @@ bool InstallRoomGatherPatch() {
         return false;
     DWORD orig = static_cast<DWORD>(kRoomGather - (kRoomGatherCall + 5));
     const DWORD rel = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&RoomGatherThunk) - (kRoomGatherCall + 5));
-    return MemPatch::WriteDWORD(kRoomGatherCall + 1, rel, &g_roomPatches, &orig);
+    if (!MemPatch::WriteDWORD(kRoomGatherCall + 1, rel, &g_roomPatches, &orig)) return false;
+    ResolveRigLightTest();
+    return true;
 }
 
 bool InstallRigCtorPatch() {
@@ -438,7 +569,9 @@ float BoostConeShare(const BYTE* L, int type, const float* pos) { // reads the l
 void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
     __try {
         const BYTE f = L[0x100];
-        if (!(f & 0x20)) return; // lamp off
+        // lamp off: lit 0x20 and enabled 0x40, the terrain bake's own test (LotLightBridge InBake; a lit lamp a player
+        // disabled kept its boost on objects while the ground lost it)
+        if (!(f & 0x20) || (!(f & 0x40) && TesterToggles::disabledLampFix.load(std::memory_order_relaxed))) return;
         const int type = *reinterpret_cast<const int*>(L + 0xB0);
         if (!street) {
             if (!(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0) return; // outdoor lamps only
@@ -484,10 +617,116 @@ void BoostRec(BYTE* L, const float* pos, float* rec, bool street) {
     }
 }
 
+// Buildings block lamp light on rig objects (13/10: cypress trees behind a manor took a garden post's light through the
+// whole building, and a bush behind a free-standing wall was lit by the post in front of it). The rig gather has no wall
+// test for outdoor rigs (mode 2, the world cells). After the game's colour and the boost, an outdoor lamp's record (a street
+// lamp, or a lit outdoor lamp of room 0, types 3..6) is scaled by the share of the lamp that reaches the rig's centre
+// (LevelLightShare::LampVisibilityShared: the outside walls, and the slabs above the lamp; 1 while "Buildings block light
+// on objects" is off). A blocked lamp falls under the game's 0.1 luminance cut and the next lamp takes its rig slot. The
+// gather runs on more than one thread, so the test reads the immutable copy the render thread publishes.
+std::atomic<long> g_shadeTests{0}, g_shadeBlocked{0}, g_shadeDimmed{0};
+constexpr float kShadeNearSkip = 0.5f;
+// POD only (SEH): the lamp's head when its record is an outdoor lamp worth testing
+bool ShadeCandidate(const BYTE* L, const float* rec, bool street, float head[3]) {
+    __try {
+        if (!(rec[10] > 1e-4f)) return false; // nothing to scale (also NaN)
+        const BYTE f = L[0x100];
+        if (!(f & 0x20)) return false;
+        if (!street) {
+            const int type = *reinterpret_cast<const int*>(L + 0xB0);
+            if (!(f & 0x04) || *reinterpret_cast<const int*>(L + 0x08) != 0 || type < 3 || type > 6) return false;
+        }
+        std::memcpy(head, L + 0x120, 12);
+        return std::isfinite(head[0]) && std::isfinite(head[1]) && std::isfinite(head[2]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void ShadeRec(const BYTE* L, const float* pos, float* rec, bool street) {
+    if (!LevelLightShare::ObjectWallsOn() || !TesterToggles::rigBuildingBlock.load(std::memory_order_relaxed)) return;
+    float head[3];
+    if (!ShadeCandidate(L, rec, street, head)) return;
+    const float p[3] = {pos[0], pos[1], pos[2]};
+    if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return;
+    g_shadeTests.fetch_add(1, std::memory_order_relaxed);
+    // a wall crossed within 0.5 m of the centre is the wall the object is set in or stands against (doors, windows, wall
+    // decor; a turned window's centre is half a tile inside its wall): it does not block
+    const float v = LevelLightShare::LampVisibilityShared(head, p, kShadeNearSkip);
+    if (!(v < 1.0f)) return;
+    for (int c = 4; c <= 6; c++) rec[c] *= v;
+    rec[10] *= v;
+    (v <= 0.0f ? g_shadeBlocked : g_shadeDimmed).fetch_add(1, std::memory_order_relaxed);
+}
+
+// An outdoor lamp taken through a roofed room's openings (OpeningLamps, this thread): its share past the walls of its story
+// through the openings' holes replaces the outside walls' test (which knows no opening); applied whatever "Buildings block
+// light on objects" is, as the room's own maps apply it
+void OpeningShade(float* rec, float share) {
+    if (!(share < 1.0f)) return;
+    const float v = std::max(share, 0.0f);
+    for (int c = 4; c <= 6; c++) rec[c] *= v;
+    rec[10] *= v;
+}
+// A lamp taken through a roofed room's openings (13/10, in game: the columns inside an arcade, lit by a garden post through
+// its arches, were almost white while the columns and the facade facing the post stayed at its realistic light): the record
+// had the game's colour raised by the ground footprint's boost (BoostRec: about the lamp's full colour within half its
+// bounds), while the outdoor objects take the per-pixel lamps' law. Its colour is now that law at the rig's centre
+// (LotLightBridge::ObjectLampColourAt: the realistic reach law, the walls' scale and the slider, the daytime curve, the
+// cones), times its share through the openings; the record keeps the game's direction. False when that law is not in use
+// (per-pixel lamps off): the boost stays, as on the outdoor objects then. Only an outdoor lamp (room 0's, a street lamp): a
+// roofed neighbour's lamp keeps the game's colour, as on the objects of its own room.
+bool OutdoorRoomLamp(const void* L) { // POD only (SEH)
+    __try {
+        return *reinterpret_cast<const int*>(static_cast<const BYTE*>(L) + 0x08) == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool OpeningLawRec(const void* L, const float* pos, float* rec) {
+    if (!OutdoorRoomLamp(L)) return false;
+    float rgb[3];
+    if (!LotLightBridge::ObjectLampColourAt(L, pos, rgb)) return false;
+    for (int c = 0; c < 3; c++) rec[4 + c] = rgb[c];
+    const float* luma = reinterpret_cast<const float*>(kLumaWeights);
+    rec[10] = rec[4] * luma[0] + rec[5] * luma[1] + rec[6] * luma[2];
+    g_openLaw.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+// A lamp through a roofed room's openings keeps its light under the game's luminance cut (14/10, F7 in game: a column inside an
+// arcade, 4 m behind the arch from a garden post, drew black while the floor around it and the columns outside were lit).
+// Its record is the per-pixel lamps' law at the rig's centre (OpeningLawRec), which the outdoor objects take with no cut; the
+// rig test FUN_006bb270 then drops a record whose luminance rec[10] is under its cut (0x006BB2B9..0x006BB2D0: [0x01158D64]
+// for a rig with +8 set, else [0x01158D60]; 0.1 per the captures m32-m41), so the column lost the lamp altogether. A record
+// whose law gives at least one 8-bit level of light gets rec[10] raised to the cut: it is kept, last in the rank, with the
+// law's own colour (rec[4..6] untouched). After the cut rec[10] only ranks the candidates (FUN_006bb190 copies the record,
+// the sort's compare 0x006B8807 reads +0x28); the rig's colours come from rec[4..6]. UNVERIFIED: that no later step weighs
+// a light by rec[10]. Steam 1.67.2 addresses only; TesterToggles::openingLampCut switches it off.
+void KeepOverCut(const BYTE* rig, float* rec) {
+    if (!rig || !GameAddr::IsFixed() || !TesterToggles::openingLampCut.load(std::memory_order_relaxed)) return;
+    if (!(rec[10] >= RigCut::kMinLuma)) return; // (also NaN)
+    __try {
+        const bool flagged = *reinterpret_cast<const int*>(rig + 8) != 0;
+        const float cut = *reinterpret_cast<const float*>(flagged ? 0x01158D64 : 0x01158D60);
+        const float kept = RigCut::KeptLuma(rec[10], cut); // (the game keeps it: "comiss cut, rec[10]; ja drop" is false at equality)
+        if (kept == rec[10]) return;
+        rec[10] = kept;
+        g_openOverCut.fetch_add(1, std::memory_order_relaxed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
 template <int I> void __fastcall ClassColour(void* L, void* edx, const float* pos, float* rec) {
     reinterpret_cast<LightColour_t>(kClasses[I].orig)(L, edx, pos, rec);
     if (_ReturnAddress() != reinterpret_cast<void*>(kRigGatherReturn)) return;
+    if (t_openShade.light == L) {
+        bool law = false;
+        HookGuard::Run("ObjectLightBridge opening lamp law", [&] { law = OpeningLawRec(L, pos, rec); });
+        if (!law) BoostRec(static_cast<BYTE*>(L), pos, rec, I == kStreetClass);
+        OpeningShade(rec, t_openShade.share);
+        if (law) KeepOverCut(t_openShade.rig, rec);
+        return;
+    }
     BoostRec(static_cast<BYTE*>(L), pos, rec, I == kStreetClass);
+    HookGuard::Run("ObjectLightBridge lamp visibility", [=] { ShadeRec(static_cast<const BYTE*>(L), pos, rec, I == kStreetClass); });
 }
 
 const LightColour_t kClassThunks[] = {&ClassColour<0>, &ClassColour<1>, &ClassColour<2>, &ClassColour<3>, &ClassColour<4>, &ClassColour<5>, &ClassColour<6>,
@@ -846,6 +1085,7 @@ void OnPresent() {
         g_regatherLevel = -1.0f; // also the room-mode rigs
         RegatherCrossRigs();     // and those near a lamp of another story (the game never marks them for it)
     }
+    RegatherOpeningRooms(); // and those of the rooms whose outdoor lamps through openings changed
     UpdateRoomRigs();
     if (kBoostInsideCones && !g_coneLogged && g_coneOutside.load(std::memory_order_relaxed) > 0) LogConeOnce(); // (a string: kept out of this __try function)
 }
@@ -853,6 +1093,20 @@ void OnPresent() {
 void SetAllObjects(bool on) { g_forceAll = on; }
 
 void RequestRigRefresh() { g_refreshRequested = true; }
+
+std::string RigOpeningNote(uintptr_t rig) {
+    if (!rig) return std::string();
+    RigOpenNote n;
+    {
+        std::lock_guard<std::mutex> lk(g_rigOpenMx);
+        const auto it = g_rigOpen.find(rig);
+        if (it == g_rigOpen.end()) return std::string();
+        n = it->second;
+    }
+    std::string s = std::format(" | outdoor lamps through the room's openings at the rig's last gather ({:.1f} s ago):", (GetTickCount() - n.tick) / 1000.0);
+    for (int i = 0; i < n.n; i++) s += std::format(" L{:08X} share {:.2f} {}", n.light[i], n.share[i], n.kept[i] ? "kept" : "under the cut");
+    return s;
+}
 
 const void* RigRoom(uintptr_t rig) {
     if (!rig) return nullptr;
@@ -863,9 +1117,13 @@ const void* RigRoom(uintptr_t rig) {
 
 std::string Status() {
     return std::format("{} | light classes: {}/{} | lights boosted on objects: {} | objects opened to lamps (stairs, railings...): {}{} | in fenced areas: {} | "
-                       "indoor objects given lamps of another story: {} ({} lamps offered)",
+                       "indoor objects given lamps of another story: {} ({} lamps offered) | indoor objects given outdoor lamps through openings: {} ({} lamps "
+                       "offered, {} kept, {} by the per-pixel lamps' law, {} kept under the game's cut{}) | outdoor lamps behind buildings: tested {}, left out {}, dimmed {}",
                        g_installed ? "Active" : "Off", g_classesPatched.load(), std::size(kClasses), g_boosted.load(), g_forcedRigs.load(),
-                       g_rigPatches.empty() && g_installed ? " (not installed)" : "", g_roomRigs.load(), g_crossRigs.load(), g_crossLamps.load());
+                       g_rigPatches.empty() && g_installed ? " (not installed)" : "", g_roomRigs.load(), g_crossRigs.load(), g_crossLamps.load(), g_openRigs.load(),
+                       g_openLamps.load(), g_openKept.load(), g_openLaw.load(), g_openOverCut.load(), kRigLightTest || !g_installed ? "" : "; the per-light test differs: off", g_shadeTests.load(),
+                       g_shadeBlocked.load(), g_shadeDimmed.load()) +
+           " (" + LevelLightShare::SharedVisibilityStatus() + ")";
 }
 
 } // namespace ObjectLightBridge

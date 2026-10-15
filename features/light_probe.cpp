@@ -632,6 +632,7 @@ template <typename DrawFn> D3D9Hooks::HookAction OnDraw(IDirect3DDevice9* dev, c
 
 void RegisterHooks() {
     if (g_hooksRegistered) return;
+    D3D9Hooks::ObserveReissuedDraws(kHookName); // probes the replaced draws as drawn (as before)
     D3D9Hooks::RegisterDrawIndexedPrimitive(kHookName,
         [](D3D9Hooks::DeviceContext& ctx, D3DPRIMITIVETYPE type, INT bvi, UINT minV, UINT numV, UINT start, UINT prims) {
             return OnDraw(ctx.device, "DIP", type, prims, [&]() { ctx.device->DrawIndexedPrimitive(type, bvi, minV, numV, start, prims); }, static_cast<UINT>(bvi + static_cast<INT>(minV)), numV);

@@ -20,6 +20,7 @@ It must:
 | [`tools/exterior_lookup_test`](../../tools/exterior_lookup_test/README.md) | Extracted exterior floor lookup and per-point cache against the v2.10.0 implementation; alternating stories, replacement, missing data and eviction | `run.ps1 -ReferenceSource <v2.10.0-level_light_share.cpp>` | MSVC x86 |
 | [`tools/terrain_lighting_test/run_indoor_stories_checks.ps1`](../../tools/terrain_lighting_test/run_indoor_stories_checks.ps1) (`indoor_stories_fixture.cpp`) | Extracts the production `IndoorBoundaryPass`, `IndoorPassImpl` and `BasisLightHook` and runs them on mock game structures: all story pairs, open shafts, every solid intermediate floor, wall blocking, wall-mode restoration, tile heights, unavailable data, ghost rows and split-level crossings, the raised-room exterior wall veto, partial basis transmission. Optional `-ReferenceSource` compiles an older `IndoorPassImpl` to compare adjacent-story results | `run_indoor_stories_checks.ps1 [-OutDir ...] [-ReferenceSource ...]` | MSVC x86 |
 | [`tools/room_structure_test/run.ps1`](../../tools/room_structure_test/run.ps1) (`check.cpp`) | Extracts `NoteRoomStructure`: a new room schedules a refresh, LOD or repeated gathers do not, roof and wall changes do, repeated changes coalesce | `run.ps1` | MSVC x86 |
+| [`tools/roofed_openings_test/run.ps1`](../../tools/roofed_openings_test/run.ps1) (`check.cpp`) | Extracts the story grid, its ray walk (`GridPassImpl`) and the roofed rooms' doors (`RoofedDoors`, `DoorSig`, `DoorSeen`) and runs them on synthetic grids: a roofed room with a two-cell arch, a lamp in front sees it, one behind or beside does not; the lit floor patch through the arch is bounded by the jambs with no seam between the cells; a ray over the wall's top meets the room's roof; a closed room has no door and stays dark; a window's sill; an arch into another roofed room is no door, into a roofless room it is; the signature follows the doors | `run.ps1` | MSVC x86 |
 | [`tools/room_ambient_test`](../../tools/room_ambient_test/README.md) (`room_ambient_test.cpp`) | Room ambient and scheduling policy (`room_ambient_policy.h`): group deadlines, first dispatch, overdue updates, tick wrap, window recheck timing (0 / 2 s / 6 s, bounded, wrap), lamp refresh delay (120 / 200 ms), safety-net gap (2 s / 500 ms), edit urgency (8 s cap) and edit hold decision, gather ordering, floor priority, structure and floor-edit timing | `run.ps1` | MSVC x86 |
 | [`tools/basis_test/basis_test.cpp`](../../tools/basis_test/basis_test.cpp) | `PatchBasisSmooth` / `PatchIndoorBasis` on a captured pixel shader, disassembled with d3dcompiler_47 | `basis_test <ps.bin> [lmSampler]` | d3dcompiler_47, a captured shader |
 
@@ -33,6 +34,8 @@ Release preparation: the public x86 build passes with zero warnings. Exact relea
 
 | Date | Commit | Harness | Result | Backend |
 |---|---|---|---|---|
+| 2026-10-14 | `release/2.13.0` (`2aefeb7`) | Developer and public Release x86 builds; `tools/i18n_check`; `tools/menu_audit.pl`; `tools/roofed_openings_test`; `tools/rt_lamps_test`; `tools/outdoor_delta_test`; `tools/floor_shade_check -Precomp`; `tools/room_structure_test`; `tools/room_ambient_test` | Both builds: 0 errors. i18n_check OK (2118 keys, 17 tables complete). Roofed openings 173, real-time lamps 22, outdoor delta 11, floor shade 5842, room structure 11 and room ambient 107 checks, 0 failures; the unlit-rooms recovery executable of `room_ambient_test` was removed by security software after it compiled and did not run | native D3D9 |
+| 2026-10-13 | `release/2.12.4-arriscada`, outdoor light through openings | Developer and public Release x86 builds; `tools/roofed_openings_test`; `run_resource_checks.ps1`; `run_lamp_state_checks.ps1`; `tools/room_structure_test`; `tools/i18n_check` | Builds: 0 errors, 0 warnings; roofed openings 18 checks, 0 failures (it failed twice before the jamb fix: the seam between two arch cells); resource paths 14,618 checks, 0 failures; room structure 11 checks, 0 failures; lamp state passed; i18n 21 languages complete. The indoor-stories, world-pool, queue, dispatch and exterior-lookup harnesses still do not compile against the current source (as before) | None (mocks) / x86 build |
 | 2026-10-13 | Release preparation tree for 2.12.3; final SHA in the release PR | Developer and public Release x86 builds: 0 errors, 0 warnings; `tools/room_ambient_test`; `run_resource_checks.ps1` | Builds passed; room ambient policy 102 checks, 0 failures; resource paths 14,154 checks, 0 failures (*Buildings block light on objects* 14). The extracted indoor-stories, world-pool, queue and dispatch harnesses no longer compile against the current source (the same failure at v2.12.2), so they were not run | None (mocks) / x86 build |
 | 2026-10-12 | Release preparation tree; final SHA in PR | Public Release x86 build; Wall generation policy fixtures | Zero build warnings; Passed the clean source policy checks; no FPS or instantaneous-update guarantee | Native D3D9 fixtures / x86 build |
 | 2026-10-07 | v2.10.1 | Extracted exterior floor lookup against v2.10.0 | 86,364 checks passed; 84,000 to 7,000 full link searches in the fixed multi-story fixture | None (native accesses mocked) |
@@ -127,7 +130,27 @@ topology mutation inside a point is not reproduced. This release does not promis
 
 ## Open checks
 
+- 2.13.0 build, in game: outdoor light through openings (lot `B1280029950F0CA0`, story 0, the colonnade's room 48
+  and the garden post in front of its arches), developer mode:
+  - the log has `[RoofedLamps] Room solve: story 0 room 48: N outdoor lights through its openings: L...` with the post
+    among them (F8: room 48 in *outdoor light through openings*); with no line for room 48, the developer line *no door
+    to the outside known* tells whether the arches were noted on its outline;
+  - a red test lamp in front of an arch makes a red patch on the floor and the back wall inside, bounded by the jambs,
+    and nothing behind the solid wall beside the arch;
+  - F7 on a column of room 48 (`DescribeDraw`) lists the post among *outdoor lamps through the room's openings* and the
+    column is lit on its side toward the arch only;
+  - by day the inside takes the day factor (no lit patch at noon); switching the post off removes the patch at once;
+  - with *Outdoor light through openings* off everything is as before (the room's list holds its own lamps only);
+  - status *outdoor light through openings*: points tested and lit grow, no room is sent again and again (rooms sent for
+    lamp edits stays still while nothing changes).
+
+- 2.13.0 build, in game: *Doors block light*: a house with a front door, windows and an arch, a garden post in front of each, in developer mode. **Expected:** with the option on the room behind the door takes no outdoor lamp through it (`[RoofedLamps]` counts no door for a room whose only openings are doors), the ground and the objects behind the door stay dark, the window and the arch still let light in; `[YardGrid]` counts the doors as closed for lamps and F8 prints *doors block light: on*. Switching it off logs `[Openings] Doors block light off: N stories ...` with N the stories with doors, those rooms light through the doors again within a few seconds, and no other lot is lit again. Offline: `tools/roofed_openings_test` (door closed, arch and window open, unknown kind closed, option off as before).
+- 2.13.0 build, in game: roofed rooms on a foundation: lot `B1280029950F0CA0`, the garden post inside the colonnade. **Expected:** `[RoofedLamps]` for story 1 rooms 4, 7, 11 and 16 lists the post as a lamp of story 0 below, taken; the columns and the walls inside the arches take its light on the side toward the arch; the floor on the foundation stays dark where the bulb is under its plane; a post under a balcony of story 1 does not light the room above it.
+- 2.13.0 build, in game: openings capture: load the save, go to lot `B1280029950F0CA0` (streamed in after the world) with *Light through doors and windows* on, in developer mode. **Expected:** `[YardGrid] lot B1280029950F0CA0 story 0: ... N openings (0 noted cuts with no wall)` with N > 0 and "cuts looked up by its owner lot"; F8 lists that lot's owner id equal to its post lot id with the cut cells found; the yards of lots loaded with the world log the same openings as before.
 - 2.12.3 public build, not yet tested in game: a balcony or deck with a lamp under it and walls, windows, objects and fences on it; a lamp on the balcony; a lamp seen past the slab's edge. **Expected:** nothing above the slab takes the lamp below it; the edge dims rather than cuts; the lamp on the balcony still lights the wall below it.
+- 2.13.0 build, in game: Lamp lighting on *Instant (GPU)* and on *Classic*, each with a lamp switched, recoloured and dragged on a multi-story lot. **Expected:** Instant updates every floor within a frame or two; Classic relights a dragged lamp after its release and shows the floors together; switching modes relights the lot once; loading another save or travelling with relit maps leaves no stale light and no error in the log.
+- 2.13.0 build, in game: peak private bytes below 2 GB with Instant on a large multi-story lot (relit map buffers and the kept room parts, ceiling 160 MB).
+- 2.13.0 build, in game: a lamp that keeps moving for more than 20 s with Lamp lighting on Classic. **Expected:** room solves resume after 20 s; `[DragLite]` shows no lamp steps outside Build/Buy mode.
 - The indoor-stories, world-pool, queue and dispatch harnesses need their extractions updated to the current source.
 - Exact release artifact: final SHA, build verification and unchanged visual behavior after cleanup
 - Version footer and unread-version indicator on the final release build; all 21 changelog language tables pass offline validation
@@ -147,5 +170,32 @@ topology mutation inside a point is not reproduced. This release does not promis
 - An outdoor room 0 of story 3 sent to solve about every 50 ms for 3 s and never finishing (one F8, 2026-09-29): the
   journal fields `Q`/`H`, lot, camera story and flag `+0x19` should identify the source.
 - Basements: untouched by design, no report yet.
+- Openings in the outside walls' copies (2.12.4): a garden post inside an arcade lighting the grass, the columns and the
+  walls outside through the arches; a post outside a door lighting the floor and objects inside; half walls letting
+  light over them; F8's *outside walls' openings* lines and the `[WallCopy]` log; the cost of room 0's retest on a lot
+  with many openings. Offline: `tools/roofed_openings_test` (52 checks).
+- A colonnade on a foundation with a post on the terrain in front of its arches: its floor, columns and back wall lit
+  through the arches (offline: the foundation checks of `tools/roofed_openings_test`, 82 checks).
+- Indoor light through openings (not checked in game): a lit room's light through an arch onto the terrace and the garden,
+  not through a closed door or a wall; into a roofed room next door through an arch, not two rooms away; the outdoor objects
+  near the arch lit, those behind a wall not; the `[InnerLamps]` lines and the status counters; cost on a large house
+  (offline: `tools/roofed_openings_test`, 99 checks).
+- A lamp beside a window (not checked in game): the balcony floor outside as bright as the room's floor at the same
+  distance from the lamp, the strip under the sill dark; the status *points scaled by the source room's normalisation*;
+  the columns inside an arcade no brighter than those facing the post (*by the per-pixel lamps' law* in the objects status).
+- A lamp dragged and put down next to an opening (not checked in game): the next room lit again after every release, the
+  `[InnerLamps] ... gathers again` lines; a lamp deleted costs its neighbours four gathers at most (offline:
+  `tools/roofed_openings_test`, the retry checks).
+- Penumbra (not checked in game): the light through an arch into the next room sharp at the jambs and softer farther
+  away, no texel stairs on the floor; *Shadow softness* at 2 cm gives the earlier edges, at 50 cm wide soft edges; no light
+  in a closed room's corners; moving the slider lights again only the rooms with openings or yards (the `[Openings] Shadow
+  softness` line) (offline: `tools/roofed_openings_test`, 115 checks).
+- Openings on lots streamed in late: the `[YardGrid] ... rebuilt with N wall edges and M openings` line for
+  `B1280029950F0CA0` and a door found for its roofed rooms; the cuts looked up under the story manager's id on
+  `7975270033346670`.
 
 An isolated indoor cross-story update delay in the 2026-10-12 12:57:36 session resolved without a code change. The indoor feature was enabled and installed; no specific rejection cause was confirmed. Retained for follow-up.
+
+- Soft ground shade (not checked in game): the shade of a free-standing wall or a wall opening on lot grass and paths ends
+  in a soft edge, wider farther from the wall, with no texel steps; no light behind a wall's joints or corners (offline:
+  `tools/roofed_openings_test`, the ground soft checks). Developer > Tester > *Soft ground shade* off gives the hard edges.

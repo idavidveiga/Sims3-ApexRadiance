@@ -1,0 +1,30 @@
+#pragma once
+// Live switches for the per-frame performance work, so a frame rate can be compared with and without each item (A/B).
+// All default on; off restores the earlier per-frame path, with the same results. Read with relaxed loads from the
+// render thread (draw and state callbacks) and the light tree thread (room solves); written by the developer menu.
+// The dispatch structure itself (plain function-pointer callbacks, one exception frame per dispatch, the flags read once
+// per dispatch, Frame Capture's callbacks registered only while it records) has no switch.
+#include <atomic>
+
+namespace PerfToggles {
+// D3D9 registry: inside a re-issued draw (ReissueScope) only the callbacks that observe re-issued draws run (d3d9_hooks.cpp Run)
+inline std::atomic<bool> ReissueFilter{true};
+// D3D9 registry: BoundPixelShader / BoundVertexShader answer from the followed shaders, not a device read-back (d3d9_hooks.cpp)
+inline std::atomic<bool> FollowBoundShaders{true};
+// D3D9 registry, development build: one outermost dispatch in 16 is timed and scaled, not every one (d3d9_hooks.cpp ModTimeGuard)
+inline std::atomic<bool> SampledDispatchTiming{true};
+// Shader cache: PrecompileComplete keeps its answer once every job is done (shader_cache.cpp)
+inline std::atomic<bool> PrecompileAnswerCache{true};
+// Ambient Occlusion: the last bound pixel shader's Sim-receiver answer is kept (ambient_occlusion_patch.cpp)
+inline std::atomic<bool> AoLastShaderCache{true};
+// Banding Fix: the lock-free front caches of the shader copies are checked before the locked lookup (scene_dither.cpp)
+inline std::atomic<bool> SceneDitherFrontCache{true};
+// Night Lighting: one lookup per pixel shader change for its class and facts (lot_light_bridge.cpp TrackPs)
+inline std::atomic<bool> NightLightingPsFacts{true};
+// Night Lighting: the rig mode is read once per draw (lot_light_bridge.cpp RigMode)
+inline std::atomic<bool> RigModeOncePerDraw{true};
+// Night Lighting: indoor objects look for their room light map only in declared samplers, the last hit first (DrawIndoorObject)
+inline std::atomic<bool> IndoorSamplerScan{true};
+// Room solves: the room record lookup is kept while no record can have been erased or added (level_light_share.cpp SolveInfo)
+inline std::atomic<bool> SolveInfoCache{true};
+} // namespace PerfToggles

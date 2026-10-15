@@ -3,6 +3,7 @@
 // and live install/uninstall rules stay in patches/night_terrain_relight_patch.cpp; these functions only draw them.
 // All of them: render thread, inside the menu's ImGui frame. The Draw*Card functions open and close their own card
 // (ApexUi::BeginCard / EndCard, one PushID each) and do nothing when the feature does not exist.
+#include <string>
 
 namespace NightLighting {
 
@@ -47,6 +48,22 @@ void DrawSnowCard();      // Snow tab
 // which reads the scene depth of Depth Blur. Set saves the config like any Night Lighting option.
 float ShoreReflection();
 void SetShoreReflection(float strength);
+
+// ---- menu: Performance page, Lamp lighting card ----
+// The mode (lampLightingMode): 0 Classic (the game's room solves with every correction), 1 Instant (the default since 14/10; the
+// active lot's outdoor lamps drawn on the GPU with shadows into every story's outside maps). Set saves the config.
+int LampMode();
+void SetLampMode(int mode);
+// Developer Tester tab: the player options it shows, by TOML key ("luzDeForaPelasAberturas", "luzInternaPelasAberturas",
+// "portasBloqueiamLuz"); set as their own switch would (saved, pushed at the next Present). Unknown keys: false, nothing.
+bool TesterOption(const char* key);
+void SetTesterOption(const char* key, bool value);
+// Why this device cannot run Instant (English, for the log and a translated note), empty when it can or it is not known yet
+std::string InstantUnavailable();
+// The last measured GPU time of an Instant relight (ms), -1 while Instant is off or nothing was measured
+float InstantGpuMs();
+// Why Instant is chosen but does nothing now (English, translated by the menu), empty when it runs or is not chosen
+std::string InstantInactive();
 
 // ---- menu: Developer page (development build) ----
 // Status, census, false colour, rebuild / relight buttons, light diagnostics, the light probe, counters and the generic
