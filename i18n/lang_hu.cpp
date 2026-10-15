@@ -9,6 +9,7 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Hungarian}
 const I18n::Pair kPairs[] = {
+    {"The latest lighting features also work on the EA app version 1.69", "A legújabb világítási funkciók az EA app 1.69-es verzióján is működnek"},
     {"Walls shade lamp light on grass, streets and sidewalks outside the lot too", "A falak a telken kívüli füvön, utcákon és járdákon is árnyékot vetnek a lámpafényre"},
     {"Garden walls and fences shade lamp light on the ground by their height", "A kerítésfalak és kerítések magasságuk szerint vetnek árnyékot a lámpafényre a talajon"},
     {"Lamp light on lot grass has smooth shadow edges with Instant (GPU)", "A lámpafény a telek füvén lágy árnyékszélekkel jelenik meg Azonnali (GPU) módban"},

@@ -106,12 +106,18 @@ std::string Floats(uintptr_t a, int n) {
 // wall/floor light solve. Read-only; nothing changes on screen.
 std::string PixelLampDiag(const std::unordered_map<uintptr_t, size_t>& index) {
     std::string o = "\n==== LUZ POR PIXEL (passo 3, incremento 0) ====\n";
-    if (GameAddr::IsFixed()) { // Steam 1.67.2 globals (not looked up on other builds)
-        o += std::format("k1 [0x11D0A60]={:.6g} k2 [0x11D0A68]={:.6g} Cmax [0x11D1160]={} poste [0x1158DA8]={:.6g} tipo5 s [0x11D11A0]={:.6g}\n", Rd<float>(0x011D0A60),
-                         Rd<float>(0x011D0A68), Floats(0x011D1160, 4), Rd<float>(0x01158DA8), Rd<float>(0x011D11A0));
-        o += std::format("desfoque das paredes: passadas [0x1158B1C]={} modo [0x11D02E4]={}\n", Rd<uint32_t>(0x01158B1C), static_cast<int>(Rd<BYTE>(0x011D02E4)));
-    } else
-        o += "(constantes globais: so na versao Steam 1.67.2)\n";
+    { // the game's globals (GameAddr; Steam 1.67.2: 0x11D0A60, 0x11D0A68, 0x11D1160, 0x1158DA8, 0x11D11A0, 0x1158B1C, 0x11D02E4)
+        using GameAddr::Id;
+        const uintptr_t k1 = GameAddr::Get(Id::LampK1), k2 = GameAddr::Get(Id::LampK2), cmax = GameAddr::Get(Id::LampCmax), street = GameAddr::Get(Id::StreetLampScale),
+                        s5 = GameAddr::Get(Id::ConeScale5), passes = GameAddr::Get(Id::WallBlurPasses), mode = GameAddr::Get(Id::WallBlurMode);
+        if (k1 && k2 && cmax && street && s5)
+            o += std::format("k1 [{:#x}]={:.6g} k2 [{:#x}]={:.6g} Cmax [{:#x}]={} poste [{:#x}]={:.6g} tipo5 s [{:#x}]={:.6g}\n", k1, Rd<float>(k1), k2, Rd<float>(k2), cmax,
+                             Floats(cmax, 4), street, Rd<float>(street), s5, Rd<float>(s5));
+        else
+            o += "(constantes globais: nao encontradas nesta versao)\n";
+        if (passes && mode)
+            o += std::format("desfoque das paredes: passadas [{:#x}]={} modo [{:#x}]={}\n", passes, Rd<uint32_t>(passes), mode, static_cast<int>(Rd<BYTE>(mode)));
+    }
     const uintptr_t root = Rd<uintptr_t>(g_rootPtrAddr);
     const uintptr_t lightMgr = root ? Rd<uintptr_t>(root + 0x1C0) : 0;
     const uintptr_t tree = lightMgr ? Rd<uintptr_t>(lightMgr + 0xD4) : 0;

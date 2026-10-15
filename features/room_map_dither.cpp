@@ -32,11 +32,12 @@
 namespace RoomMapDither {
 namespace {
 
-constexpr uintptr_t kPackCall = 0x006A34DB; // CALL 0x0060CD10 in FUN_006a31d0
-constexpr uintptr_t kPack = 0x0060CD10;
-constexpr uintptr_t kSolveFn = 0x006A31D0;
-constexpr uintptr_t kTexelAddr = 0x006A330C; // the texel address code (above)
-constexpr uintptr_t kStore = 0x006A34E0;     // after the call: "mov ecx,[esp+54h]; add dword [esp+0Ch],30h; sub dword [esp+18h],1; mov [edi],ecx"
+// Game addresses (Steam 1.67.2 values), from GameAddr when Start runs (every build)
+uintptr_t kPackCall = 0;  // 0x006A34DB: CALL 0x0060CD10 in FUN_006a31d0 (TexelPackCall)
+uintptr_t kPack = 0;      // 0x0060CD10 (TexelPack)
+uintptr_t kSolveFn = 0;   // 0x006A31D0 (WallSolve)
+uintptr_t kTexelAddr = 0; // 0x006A330C: the texel address code (above) (TexelAddrSite)
+uintptr_t kStore = 0;     // 0x006A34E0: after the call: "mov ecx,[esp+54h]; add dword [esp+0Ch],30h; sub dword [esp+18h],1; mov [edi],ecx"
 
 std::mutex g_ctrl;
 std::vector<MemPatch::PatchLocation> g_patches;
@@ -105,10 +106,19 @@ bool CodeIs(uintptr_t at, std::initializer_list<BYTE> want) {
 bool Start(std::string& error) {
     std::lock_guard<std::mutex> lk(g_ctrl);
     if (g_running.load()) return true;
-    if (!GameAddr::IsFixed()) {
-        g_why = error = "Smooth light maps (dither): only on Steam 1.67.2";
+    using GameAddr::Id;
+    if (std::string missing; !GameAddr::Have({Id::TexelPackCall, Id::TexelPack, Id::WallSolve, Id::TexelAddrSite, Id::PackConst255, Id::PackMagic}, &missing)) {
+        g_why = error = "Smooth light maps (dither): " + GameAddr::NotAvailable(missing);
         return false;
     }
+    kPackCall = GameAddr::Get(Id::TexelPackCall);
+    kPack = GameAddr::Get(Id::TexelPack);
+    kSolveFn = GameAddr::Get(Id::WallSolve);
+    kTexelAddr = GameAddr::Get(Id::TexelAddrSite);
+    kStore = kPackCall + 5;
+    const uintptr_t k255At = GameAddr::Get(Id::PackConst255), magicAt = GameAddr::Get(Id::PackMagic);
+    const BYTE* k255b = reinterpret_cast<const BYTE*>(&k255At);
+    const BYTE* magicb = reinterpret_cast<const BYTE*>(&magicAt);
     int32_t rel = 0;
     const bool callOk = CodeIs(kPackCall, {0xE8}) && MemPatch::ReadBytes(kPackCall + 1, &rel, 4) && kPackCall + 5 + rel == kPack;
     const bool around = CodeIs(kPackCall - 0x19, {0x0F, 0x5D, 0x44, 0x24, 0x70}) &&                                      // minps xmm0,[esp+70h]
@@ -116,10 +126,10 @@ bool Start(std::string& error) {
                         CodeIs(kTexelAddr, {0x8B, 0x45, 0x0C, 0x0F, 0xB7, 0x56, 0x22, 0x0F, 0xAF, 0x50, 0x04, 0x0F, 0xB7, 0x4E, 0x20, 0x8D, 0x3C, 0x8A, 0x8B,
                                             0x55, 0x10, 0x03, 0x38}) &&
                         CodeIs(kSolveFn, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0});
-    const bool packOk = CodeIs(kPack, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0xB8, 0x01, 0x00, 0x00, 0x00}) && CodeIs(kPack + 0x16, {0xF3, 0x0F, 0x10, 0x05, 0x2C, 0x31, 0xFA, 0x00}) &&
-                        CodeIs(kPack + 0x5A, {0xF3, 0x0F, 0x10, 0x05, 0x4C, 0x77, 0xFE, 0x00});
+    const bool packOk = CodeIs(kPack, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0xB8, 0x01, 0x00, 0x00, 0x00}) && CodeIs(kPack + 0x16, {0xF3, 0x0F, 0x10, 0x05, k255b[0], k255b[1], k255b[2], k255b[3]}) &&
+                        CodeIs(kPack + 0x5A, {0xF3, 0x0F, 0x10, 0x05, magicb[0], magicb[1], magicb[2], magicb[3]}); // Steam: 0x00FA312C, 0x00FE774C
     float k255 = 0.0f, magic = 0.0f;
-    const bool constsOk = MemPatch::ReadBytes(0x00FA312C, &k255, 4) && MemPatch::ReadBytes(0x00FE774C, &magic, 4) && k255 == 255.0f && magic == 12582912.0f;
+    const bool constsOk = MemPatch::ReadBytes(k255At, &k255, 4) && MemPatch::ReadBytes(magicAt, &magic, 4) && k255 == 255.0f && magic == 12582912.0f;
     if (!callOk || !around || !packOk || !constsOk) {
         g_why = error = "Smooth light maps (dither): the game code differs";
         return false;

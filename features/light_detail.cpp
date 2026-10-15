@@ -53,17 +53,18 @@
 
 namespace {
 
-constexpr uintptr_t kTexelsPerTile = 0x00FF36AC; // int[3]
-constexpr uintptr_t kWallAtlasW = 0x00FF36DC;    // int[3]
-constexpr uintptr_t kWallAtlasH = 0x00FF36E8;    // int[3]
-constexpr uintptr_t kTexelsGetter = 0x006A8D20;  // FUN_006a8d20: mov eax,[ecx+8]; mov eax,[eax*4+0x00FF36AC]; ret
-constexpr uintptr_t kAtlasReads = 0x006A90FC;    // in FUN_006a90e0: mov edi,[eax+eax+0x00FF36DC]; mov ebx,[eax+eax+0x00FF36E8]
-constexpr uintptr_t kOriginCall = 0x006A7E5E;    // in FUN_006a7cf0: mov ecx,[esp+14h]; push 4; push ecx; lea edx,[esi+200h]; push edx; mov ecx,edi; call FUN_006aa480
-constexpr uintptr_t kOriginImm = 0x006A7E63;     // the 4 of that push (6A 04)
-constexpr uintptr_t kCopyCall = 0x006AA322;      // in FUN_006aa2e0: mov [ecx+74h],eax; push 4; movss [ecx+78h],xmm0; mov [ecx+0CCh],al; call FUN_006a9ad0; ret 8
-constexpr uintptr_t kCopyImm = 0x006AA326;       // the 4 of that push (6A 04)
-constexpr uintptr_t kCopyBuilt = 0x011D0510;     // byte (.data): FUN_006a9ad0 built its table (it builds it once)
-constexpr uintptr_t kCopyBuild = 0x006A9AD0;     // FUN_006a9ad0(int n): stdcall (ret 4), ecx unused
+// Game addresses (Steam 1.67.2 values in the comments), from GameAddr when ApplyAtStartup runs (every build)
+uintptr_t kTexelsPerTile = 0; // 0x00FF36AC int[3] (TexelsPerTile)
+uintptr_t kWallAtlasW = 0;    // 0x00FF36DC int[3] (WallAtlasW)
+uintptr_t kWallAtlasH = 0;    // 0x00FF36E8 int[3] (WallAtlasH)
+uintptr_t kTexelsGetter = 0;  // 0x006A8D20 FUN_006a8d20: mov eax,[ecx+8]; mov eax,[eax*4+0x00FF36AC]; ret (TexelsGetter)
+uintptr_t kAtlasReads = 0;    // 0x006A90FC in FUN_006a90e0: mov edi,[eax+eax+0x00FF36DC]; mov ebx,[eax+eax+0x00FF36E8] (AtlasReads)
+uintptr_t kOriginCall = 0;    // 0x006A7E5E in FUN_006a7cf0: mov ecx,[esp+14h]; push 4; push ecx; lea edx,[esi+200h]; push edx; mov ecx,edi; call FUN_006aa480 (OriginPush)
+uintptr_t kOriginImm = 0;     // 0x006A7E63 the 4 of that push (6A 04)
+uintptr_t kCopyCall = 0;      // 0x006AA322 in FUN_006aa2e0: mov [ecx+74h],eax; push 4; movss [ecx+78h],xmm0; mov [ecx+0CCh],al; call FUN_006a9ad0; ret 8 (CopyPush)
+uintptr_t kCopyImm = 0;       // 0x006AA326 the 4 of that push (6A 04)
+uintptr_t kCopyBuilt = 0;     // 0x011D0510 byte (.data): FUN_006a9ad0 built its table (it builds it once) (CopyBuilt)
+uintptr_t kCopyBuild = 0;     // 0x006A9AD0 FUN_006a9ad0(int n): stdcall (ret 4), ecx unused (CopyBuild)
 using CopyBuild_t = void(__stdcall*)(int n);
 constexpr DWORD kGameTexels[3] = {1, 2, 4}, kGameAtlasW[3] = {256, 512, 1024}, kGameAtlasH[3] = {128, 256, 512};
 constexpr BYTE kGameStride = 4;
@@ -146,15 +147,44 @@ bool ApplyAtStartup(int level) {
     if (g_tried) return g_active == level;
     g_tried = true;
     if (level <= 0) return true;
-    // Steam 1.67.2 only: the table addresses are fixed there, and the code that reads them, and the two places that write the
-    // class-2 floor layout's 4 in the code, are checked byte by byte
-    const BYTE getter[] = {0x8B, 0x41, 0x08, 0x8B, 0x04, 0x85, 0xAC, 0x36, 0xFF, 0x00, 0xC3};
-    const BYTE atlas[] = {0x8B, 0xBC, 0x00, 0xDC, 0x36, 0xFF, 0x00, 0x8B, 0x9C, 0x00, 0xE8, 0x36, 0xFF, 0x00};
-    const BYTE originCall[] = {0x8B, 0x4C, 0x24, 0x14, 0x6A, 0x04, 0x51, 0x8D, 0x96, 0x00, 0x02, 0x00, 0x00, 0x52, 0x8B, 0xCF, 0xE8, 0x0D, 0x26, 0x00, 0x00};
-    const BYTE copyCall[] = {0x89, 0x41, 0x74, 0x6A, 0x04, 0xF3, 0x0F, 0x11, 0x41, 0x78, 0x88, 0x81, 0xCC, 0x00, 0x00, 0x00, 0xE8, 0x99, 0xF7, 0xFF, 0xFF, 0xC2, 0x08, 0x00};
-    if (!GameAddr::IsFixed() || !CodeIs(kTexelsGetter, getter, sizeof getter) || !CodeIs(kAtlasReads, atlas, sizeof atlas) ||
-        !CodeIs(kOriginCall, originCall, sizeof originCall) || !CodeIs(kCopyCall, copyCall, sizeof copyCall)) {
-        g_status = "not available on this game version (Steam 1.67.2 only)";
+    // The table addresses come from the code that reads them (GameAddr); that code and the two places that write the class-2
+    // floor layout's 4 in the code are checked byte by byte (on Steam 1.67.2 with the rel32s it always had; on other builds
+    // with the addresses found, the two CALLs only checked to land on their function)
+    using GameAddr::Id;
+    std::string missing;
+    if (!GameAddr::Have({Id::TexelsGetter, Id::TexelsPerTile, Id::AtlasReads, Id::WallAtlasW, Id::WallAtlasH, Id::OriginPush, Id::CopyPush, Id::CopyBuild, Id::CopyBuilt}, &missing)) {
+        g_status = GameAddr::NotAvailable(missing);
+        LOG_WARNING("[LightDetail] " + g_status);
+        return false;
+    }
+    kTexelsPerTile = GameAddr::Get(Id::TexelsPerTile);
+    kWallAtlasW = GameAddr::Get(Id::WallAtlasW);
+    kWallAtlasH = GameAddr::Get(Id::WallAtlasH);
+    kTexelsGetter = GameAddr::Get(Id::TexelsGetter);
+    kAtlasReads = GameAddr::Get(Id::AtlasReads);
+    kOriginCall = GameAddr::Get(Id::OriginPush);
+    kOriginImm = kOriginCall + 5;
+    kCopyCall = GameAddr::Get(Id::CopyPush);
+    kCopyImm = kCopyCall + 4;
+    kCopyBuilt = GameAddr::Get(Id::CopyBuilt);
+    kCopyBuild = GameAddr::Get(Id::CopyBuild);
+    BYTE getter[] = {0x8B, 0x41, 0x08, 0x8B, 0x04, 0x85, 0xAC, 0x36, 0xFF, 0x00, 0xC3};
+    BYTE atlas[] = {0x8B, 0xBC, 0x00, 0xDC, 0x36, 0xFF, 0x00, 0x8B, 0x9C, 0x00, 0xE8, 0x36, 0xFF, 0x00};
+    BYTE originCall[] = {0x8B, 0x4C, 0x24, 0x14, 0x6A, 0x04, 0x51, 0x8D, 0x96, 0x00, 0x02, 0x00, 0x00, 0x52, 0x8B, 0xCF, 0xE8, 0x0D, 0x26, 0x00, 0x00};
+    BYTE copyCall[] = {0x89, 0x41, 0x74, 0x6A, 0x04, 0xF3, 0x0F, 0x11, 0x41, 0x78, 0x88, 0x81, 0xCC, 0x00, 0x00, 0x00, 0xE8, 0x99, 0xF7, 0xFF, 0xFF, 0xC2, 0x08, 0x00};
+    std::memcpy(getter + 6, &kTexelsPerTile, 4); // (on Steam these are the bytes above)
+    std::memcpy(atlas + 3, &kWallAtlasW, 4);
+    std::memcpy(atlas + 10, &kWallAtlasH, 4);
+    bool same = CodeIs(kTexelsGetter, getter, sizeof getter) && CodeIs(kAtlasReads, atlas, sizeof atlas);
+    if (GameAddr::IsFixed()) {
+        same = same && CodeIs(kOriginCall, originCall, sizeof originCall) && CodeIs(kCopyCall, copyCall, sizeof copyCall);
+    } else {
+        const int32_t copyRel = static_cast<int32_t>(kCopyBuild - (kCopyCall + 21));
+        std::memcpy(copyCall + 17, &copyRel, 4);
+        same = same && CodeIs(kOriginCall, originCall, 17) && CodeIs(kCopyCall, copyCall, sizeof copyCall); // the origin call's target is not studied
+    }
+    if (!same) {
+        g_status = "not available on this game version (the game code differs)";
         LOG_WARNING("[LightDetail] " + g_status);
         return false;
     }

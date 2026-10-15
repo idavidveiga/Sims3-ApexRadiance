@@ -9,6 +9,7 @@ namespace {
 
 // {English (exactly as in i18n/keys.tsv), Korean}
 const I18n::Pair kPairs[] = {
+    {"The latest lighting features also work on the EA app version 1.69", "최신 조명 기능이 EA 앱 1.69 버전에서도 작동합니다"},
     {"Walls shade lamp light on grass, streets and sidewalks outside the lot too", "벽이 부지 밖의 잔디, 도로, 보도에서도 램프 빛을 가립니다"},
     {"Garden walls and fences shade lamp light on the ground by their height", "담장과 울타리가 높이에 따라 바닥의 램프 빛을 가립니다"},
     {"Lamp light on lot grass has smooth shadow edges with Instant (GPU)", "즉시(GPU)에서 부지 잔디의 램프 빛 그림자 가장자리가 부드러워집니다"},
