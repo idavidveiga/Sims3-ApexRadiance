@@ -238,12 +238,12 @@ bool Start(int distance, int maxActiveLots, std::string* error) {
     if (g_running) return true;
 
     if (distance < kMinDistance || distance > kMaxDistance) {
-        if (error) *error = std::format("Lot detail distance {} is outside the validated range {}..{}",
+        if (error) *error = std::format("Lot detail distance {} is outside the configured range {}..{}",
                                         distance, kMinDistance, kMaxDistance);
         return false;
     }
     if (maxActiveLots < kMinActiveLots || maxActiveLots > kMaxActiveLots) {
-        if (error) *error = std::format("Maximum detailed lots {} is outside the validated range {}..{}",
+        if (error) *error = std::format("Maximum detailed lots {} is outside the configured range {}..{}",
                                         maxActiveLots, kMinActiveLots, kMaxActiveLots);
         return false;
     }
