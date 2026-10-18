@@ -29,7 +29,7 @@ game's values few lots are detailed, and while the camera moves lots switch deta
 Each step is a separate switch that sets the game's own value or flag; no lot loader is replaced.
 
 1. **Extended lot detail** sets the Lot LOD distance (`WorldManager+0xDC`) and Max Active Lots (`+0xE4`) of each live
-   WorldManager to the chosen values (300 and 16 by default; the game's metric is a squared distance).
+   WorldManager to the chosen values (400 and 32 by default in the experimental 400m/32-lot branch; the game's metric is a squared distance).
 2. **Smooth lot streaming** turns on the game's native "Throttle Lot LoD Transitions" flag and sets its camera-speed
    threshold (`+0xEC`) to 5.0.
 3. **Keep lot visibility stable** turns off the camera-view bias of the lot visibility metric: its short `JZ` becomes a
@@ -48,8 +48,8 @@ a value another mod set, and restores only what it changed.
 | Menu label | TOML key | Type | Default | Range | Effect |
 |---|---|---|---|---|---|
 | Extended lot detail (Experimental) | `[patches.LotDetailRange] enabled` | bool | off | | More lots in full detail, farther away, than the game's 70 / 8 |
-| Lot detail distance (shown while on) | `[patches.LotDetailRange] distance` | int | 300 | 70 to 300, steps of 10 | How far lots stay in full detail; 70 is the game's. Applied live |
-| Maximum detailed lots (shown while on) | `[patches.LotDetailRange] maxActiveLots` | int | 16 | 8 to 16 | How many lots can be detailed at once; 8 is the game's. More lots use more memory. Applied live |
+| Lot detail distance (shown while on) | `[patches.LotDetailRange] distance` | int | 400 (experimental) | 70 to 600, steps of 10 | How far lots stay in full detail; 70 is the game's. Applied live |
+| Maximum detailed lots (shown while on) | `[patches.LotDetailRange] maxActiveLots` | int | 32 (experimental) | 8 to 32 | How many lots can be detailed at once; 8 is the game's. More lots use more memory. Applied live |
 | Smooth lot streaming (Experimental) | `[patches.LotLodStreaming] enabled` | bool | off | | The native transition throttle and a camera threshold of 5.0 |
 | Keep lot visibility stable (Experimental) | `[patches.LotVisibilityOverride] enabled` | bool | off | | The viewing angle alone no longer makes lots load or unload |
 | Pause lot streaming in map view (Experimental) | `[patches.MapViewStreamingBlocker] enabled` | bool | off | | No lot detail streaming while the map view is open |
@@ -76,7 +76,8 @@ the player set them.
 
 ## Limitations
 
-- Distance 300 and 16 lots are the tested maximums; the menu does not go higher.
+- **Experimental branch only:** 300 distance and 16 lots remain the highest values validated in-game. This branch exposes 400-600 distance and 17-32 lots without an in-game validation claim; the production baseline remains 300/16. Testing is required before a stable release.
+- The game is 32-bit. Additional detailed lots consume more address space, increase lot-load work and can cause stutters or out-of-memory crashes. Reduce to 300/16 if problems occur. Do not assume a `CameraSpeedThreshold` of 32 implies a supported 32-lot capacity.
 - The Steam addresses of Extended lot detail, the visibility branch and the object throttle were found offline with the
   fork's EA signatures; the research and the controlled tests were made on the EA app build 1.69.
 - *Spread lot objects while loading* makes objects, lamps included, appear over a few frames when a lot is promoted.
