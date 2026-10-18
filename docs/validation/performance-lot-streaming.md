@@ -42,6 +42,12 @@ None offline.
 
 - The fork's controlled probes and the A/B above, on the EA app build 1.69.
 
+## Experimental 400m / 32-lot branch (not yet validated)
+
+This branch starts from upstream main and changes only the experimental range/capacity control, UI and documentation. New defaults are 400 distance and 32 detailed lots; adjustable limits are 70-600 and 8-32. Neither 32 lots nor distances above 300 have been proven safe or effective in-game. The last successful baseline remains 300/16.
+
+Test on a duplicate save and compare 300/16, 400/16, 400/24, 400/32, 500/32, then 600/32 *only if the earlier configurations are stable*. At each stage: count actual detailed lots at a dense camera point; verify the metric cutoffs around distance²; inspect the Apex log for guarded writes and restoration; record FPS, frametime spikes, lot transition rates, private bytes, largest free address-space block and save reliability during a long session. Switch the feature off and confirm that the original values return. Check world changes and reloads, and Steam 1.67 if available. Any crashes, memory pressure, visible missing geometry, excessive stutter or failed restoration block promotion to stable.
+
 ## Open checks
 
 - Steam 1.67.2: every part in game; its addresses were found offline (signatures), not confirmed in game.
