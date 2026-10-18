@@ -2,7 +2,7 @@ name: Windows build and CPU checks
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'experiment/lot-lod-400m-32-lots']
   workflow_dispatch:
 permissions:
   contents: read
