@@ -1021,13 +1021,13 @@ void LotStreamingCards() {
             char distanceValue[24];
             std::snprintf(distanceValue, sizeof distanceValue, "%d", Performance::LotDetailDistance());
             ApexUi::SliderOptions distanceOptions;
-            distanceOptions.tooltip = "How far lots stay in full detail; 70 is the game's, 300 the tested maximum";
+            distanceOptions.tooltip = "How far lots stay in full detail; 300 is validated, 400-600 is experimental";
             distanceOptions.valueText = distanceValue;
             distanceOptions.leftLabel = "70 (game)";
-            distanceOptions.rightLabel = "300";
-            distanceOptions.defaultValue = 300.0f;
-            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 300.0f, distanceOptions)) {
-                const int snappedDistance = std::clamp(70 + static_cast<int>(std::lround((distance - 70.0f) / 10.0f)) * 10, 70, 300);
+            distanceOptions.rightLabel = "600 (experimental)";
+            distanceOptions.defaultValue = 400.0f;
+            if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 600.0f, distanceOptions)) {
+                const int snappedDistance = std::clamp(70 + static_cast<int>(std::lround((distance - 70.0f) / 10.0f)) * 10, 70, 600);
                 Performance::SetLotDetailDistance(snappedDistance);
             }
 
@@ -1035,12 +1035,12 @@ void LotStreamingCards() {
             char maxLotsValue[24];
             std::snprintf(maxLotsValue, sizeof maxLotsValue, "%d", Performance::MaximumDetailedLots());
             ApexUi::SliderOptions maxLotsOptions;
-            maxLotsOptions.tooltip = "How many lots can be in full detail at once; 8 is the game's, 16 the tested maximum. More lots use more memory";
+            maxLotsOptions.tooltip = "How many lots can be in full detail at once; 16 is validated, 17-32 is experimental and uses more memory";
             maxLotsOptions.valueText = maxLotsValue;
             maxLotsOptions.leftLabel = "8 (game)";
-            maxLotsOptions.rightLabel = "16";
-            maxLotsOptions.defaultValue = 16.0f;
-            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 8.0f, 16.0f, maxLotsOptions))
+            maxLotsOptions.rightLabel = "32 (experimental)";
+            maxLotsOptions.defaultValue = 32.0f;
+            if (ApexUi::Slider("Maximum detailed lots", &maxLots, 8.0f, 32.0f, maxLotsOptions))
                 Performance::SetMaximumDetailedLots(static_cast<int>(std::lround(maxLots)));
         }
 
