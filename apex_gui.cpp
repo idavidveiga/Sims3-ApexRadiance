@@ -1024,7 +1024,7 @@ void LotStreamingCards() {
             distanceOptions.tooltip = "How far lots stay in full detail; 300 is validated, 400-600 is experimental";
             distanceOptions.valueText = distanceValue;
             distanceOptions.leftLabel = "70 (game)";
-            distanceOptions.rightLabel = "600 (experimental)";
+            distanceOptions.rightLabel = "600";
             distanceOptions.defaultValue = 400.0f;
             if (ApexUi::Slider("Lot detail distance", &distance, 70.0f, 600.0f, distanceOptions)) {
                 const int snappedDistance = std::clamp(70 + static_cast<int>(std::lround((distance - 70.0f) / 10.0f)) * 10, 70, 600);
@@ -1038,7 +1038,7 @@ void LotStreamingCards() {
             maxLotsOptions.tooltip = "How many lots can be in full detail at once; 16 is validated, 17-32 is experimental and uses more memory";
             maxLotsOptions.valueText = maxLotsValue;
             maxLotsOptions.leftLabel = "8 (game)";
-            maxLotsOptions.rightLabel = "32 (experimental)";
+            maxLotsOptions.rightLabel = "32";
             maxLotsOptions.defaultValue = 32.0f;
             if (ApexUi::Slider("Maximum detailed lots", &maxLots, 8.0f, 32.0f, maxLotsOptions))
                 Performance::SetMaximumDetailedLots(static_cast<int>(std::lround(maxLots)));
